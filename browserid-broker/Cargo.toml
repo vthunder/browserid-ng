@@ -1,0 +1,19 @@
+[package]
+name = "browserid-broker"
+description = "BrowserID-NG fallback identity provider (broker)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+browserid-core = { path = "../browserid-core" }
+tokio.workspace = true
+axum.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

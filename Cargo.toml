@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "browserid-core",
+    "browserid-broker",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+repository = "https://github.com/nicksandmill/browserid-ng"
+
+[workspace.dependencies]
+# Crypto
+ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }
+rand = "0.8"
+sha2 = "0.10"
+
+# JWT / JWS
+jsonwebtoken = "9"
+base64 = "0.22"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# HTTP
+axum = "0.7"
+reqwest = { version = "0.12", features = ["json"] }
+
+# DNS / DNSSEC (for later)
+# trust-dns-resolver = "0.23"
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
