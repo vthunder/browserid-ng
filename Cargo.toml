@@ -45,3 +45,13 @@ anyhow = "1"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Password hashing
+bcrypt = "0.16"
+
+# Cookies and middleware
+tower-cookies = "0.10"
+tower = "0.5"
+
+# UUID generation
+uuid = { version = "1", features = ["v4"] }
