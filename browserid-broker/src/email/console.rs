@@ -30,4 +30,17 @@ impl EmailSender for ConsoleEmailSender {
 
         Ok(())
     }
+
+    fn send_password_reset(&self, email: &str, code: &str) -> Result<(), String> {
+        println!();
+        println!("========================================");
+        println!("  PASSWORD RESET CODE FOR: {}", email);
+        println!("  CODE: {}", code);
+        println!("========================================");
+        println!();
+
+        tracing::info!(email = %email, code = %code, "Password reset code sent");
+
+        Ok(())
+    }
 }

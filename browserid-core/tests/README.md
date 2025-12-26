@@ -2,7 +2,7 @@
 
 Tests ported from mozilla/persona (~/src/browserid/tests/).
 
-## Ported
+## Ported (browserid-core)
 
 - [x] ca_test.rs (from ca-test.js) - Certificate authority / signing
 - [x] verifier_test.rs (from verifier-test.js) - Assertion verification
@@ -10,25 +10,32 @@ Tests ported from mozilla/persona (~/src/browserid/tests/).
 - [x] conformance_test.rs (from conformance-test.js) - JWT format compliance
 - [x] well_known_test.rs (from well-known-test.js) - Support document format, delegation, disabled domains
 
-## Not Yet Ported (require server infrastructure)
+## Ported (browserid-broker)
 
-- [ ] cert_key_test.rs (from cert-key-test.js) - Needs WSAPI server
-- [ ] account_cancel_test.rs - Needs database
-- [ ] add_email_with_assertion_test.rs - Needs WSAPI
-- [ ] address_info_test.rs - Needs database
-- [ ] auth_with_assertion_test.rs - Needs WSAPI
-- [ ] authentication_lockout_test.rs - Needs database
-- [ ] db_test.rs - Needs database
-- [ ] forgotten_pass_test.rs - Needs database + email
-- [ ] primary_then_secondary_test.rs - Needs full server
-- [ ] well_known_browserid_test.rs (from well-known-browserid.js) - Needs HTTP server
+See `browserid-broker/tests/README.md` for the full list. Key tests:
+
+- [x] cert_key_test.rs (from cert-key-test.js) - Certificate issuance
+- [x] session_context_test.rs (from session-context-test.js) - Session management
+- [x] logout_test.rs (from logout-test.js) - Logout flows
+- [x] password_length_test.rs (from password-length-test.js) - Password validation
+- [x] list_emails_wsapi_test.rs (from list-emails-wsapi-test.js) - Email listing
+- [x] remove_email_test.rs (from remove-email-test.js) - Email removal
+
+## Not Yet Ported
+
+- [ ] authentication_lockout_test.rs (from authentication-lockout-test.js) - Needs account lockout feature
+- [ ] registration_status_wsapi_test.rs (from registration-status-wsapi-test.js) - Needs status endpoint
+
+## Ported to browserid-broker
+
+- [x] forgotten_pass_test.rs (from forgotten-pass-test.js) - Password reset (broker-level feature)
 
 ## Not Applicable
 
-- bcrypt-compatibility-test.js - We use Ed25519, not bcrypt for passwords
+- bcrypt-compatibility-test.js - Legacy bcrypt migration
 - cef-logging.js - CEF logging specific
 - coarse-user-agent-parser-test.js - UA parsing specific
-- cookie-session-security-test.js - Session management
+- cookie-session-security-test.js - Covered by our session tests
 - fonts-request-test.js - Static assets
 - header-tests.js - HTTP headers
 - heartbeat-test.js - Health checks
@@ -36,3 +43,5 @@ Tests ported from mozilla/persona (~/src/browserid/tests/).
 - jshint-test.js - JS linting
 - kpi-test.js - Metrics
 - statsd-test.js - Metrics
+- primary-*.js - Primary IdP support (not implementing)
+- proxy-idp-test.js - IdP proxy (not implementing)

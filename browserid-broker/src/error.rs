@@ -34,6 +34,15 @@ pub enum BrokerError {
     #[error("Email not verified")]
     EmailNotVerified,
 
+    #[error("Password too short (minimum 8 characters)")]
+    PasswordTooShort,
+
+    #[error("Password too long (maximum 80 characters)")]
+    PasswordTooLong,
+
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -54,6 +63,13 @@ impl IntoResponse for BrokerError {
             BrokerError::NotAuthenticated => (StatusCode::UNAUTHORIZED, "Not authenticated"),
             BrokerError::InvalidCsrf => (StatusCode::FORBIDDEN, "Invalid CSRF token"),
             BrokerError::EmailNotVerified => (StatusCode::FORBIDDEN, "Email not verified"),
+            BrokerError::PasswordTooShort => {
+                (StatusCode::BAD_REQUEST, "Password too short (minimum 8 characters)")
+            }
+            BrokerError::PasswordTooLong => {
+                (StatusCode::BAD_REQUEST, "Password too long (maximum 80 characters)")
+            }
+            BrokerError::ValidationError(msg) => (StatusCode::BAD_REQUEST, msg.as_str()),
             BrokerError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")

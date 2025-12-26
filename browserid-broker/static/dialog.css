@@ -1,0 +1,307 @@
+/*
+ * BrowserID-NG Dialog Styles
+ * Based on Mozilla Persona (MPL 2.0) - branding removed
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #333;
+  background-color: #f5f5f5;
+}
+
+#dialog {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+.screen {
+  display: none;
+  position: absolute;
+  width: 100%;
+  max-width: 400px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.screen.active {
+  display: block;
+}
+
+.content {
+  padding: 24px;
+}
+
+.center {
+  text-align: center;
+}
+
+/* Typography */
+h2 {
+  margin: 0 0 16px 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+p {
+  margin: 0 0 16px 0;
+  color: #666;
+}
+
+.email-display {
+  font-weight: 500;
+  color: #333;
+  word-break: break-all;
+}
+
+/* Forms */
+.form-group {
+  margin-bottom: 16px;
+}
+
+label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #555;
+}
+
+input[type="email"],
+input[type="password"],
+input[type="text"] {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 14px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+input:focus {
+  border-color: #4a90d9;
+  box-shadow: 0 0 0 3px rgba(74, 144, 217, 0.2);
+}
+
+input.error {
+  border-color: #dc3545;
+}
+
+input.error:focus {
+  box-shadow: 0 0 0 3px rgba(220, 53, 69, 0.2);
+}
+
+.hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #888;
+}
+
+.error {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #dc3545;
+  min-height: 18px;
+}
+
+/* Buttons */
+.button-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+button {
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s, opacity 0.15s;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+button.primary {
+  flex: 1;
+  background-color: #4a90d9;
+  color: #fff;
+}
+
+button.primary:hover:not(:disabled) {
+  background-color: #357abd;
+}
+
+button.primary:active:not(:disabled) {
+  background-color: #2a5f8f;
+}
+
+button.back,
+button.cancel {
+  background-color: #e9ecef;
+  color: #495057;
+}
+
+button.back:hover:not(:disabled),
+button.cancel:hover:not(:disabled) {
+  background-color: #dee2e6;
+}
+
+button.back:active:not(:disabled),
+button.cancel:active:not(:disabled) {
+  background-color: #ced4da;
+}
+
+/* Links */
+.link-row {
+  margin-top: 16px;
+  text-align: center;
+}
+
+.link-row a {
+  color: #4a90d9;
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.link-row a:hover {
+  text-decoration: underline;
+}
+
+/* Email list for pick screen */
+.email-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px 0;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.email-list li {
+  border-bottom: 1px solid #eee;
+}
+
+.email-list li:last-child {
+  border-bottom: none;
+}
+
+.email-list label {
+  display: flex;
+  align-items: center;
+  padding: 12px;
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+
+.email-list label:hover {
+  background-color: #f8f9fa;
+}
+
+.email-list input[type="radio"] {
+  margin-right: 12px;
+}
+
+.email-list .email-text {
+  flex: 1;
+  font-weight: normal;
+  color: #333;
+  word-break: break-all;
+}
+
+/* Loading screen */
+#loading .center {
+  padding: 48px 24px;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 16px;
+  border: 3px solid #e9ecef;
+  border-top-color: #4a90d9;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Success screen */
+.checkmark {
+  width: 60px;
+  height: 60px;
+  margin: 0 auto 16px;
+  background-color: #28a745;
+  color: #fff;
+  font-size: 32px;
+  line-height: 60px;
+  border-radius: 50%;
+}
+
+/* RP info */
+.rp-name {
+  font-weight: 500;
+}
+
+/* Responsive */
+@media (max-width: 480px) {
+  .screen {
+    max-width: none;
+    height: 100%;
+    border-radius: 0;
+  }
+
+  .content {
+    padding: 20px;
+  }
+
+  .button-row {
+    flex-direction: column;
+  }
+
+  button.back,
+  button.cancel {
+    order: 1;
+  }
+}
+
+/* Animations */
+.screen {
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

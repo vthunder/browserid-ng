@@ -45,6 +45,22 @@ pub trait UserStore: Send + Sync {
 
     /// Delete expired pending verifications (older than given duration)
     fn cleanup_expired_pending(&self, max_age_minutes: i64) -> StoreResult<u64>;
+
+    /// Update a user's password hash
+    fn update_password(&self, user_id: UserId, password_hash: &str) -> StoreResult<()>;
+
+    /// Check if there's a pending password reset for an email
+    fn has_pending_reset(&self, email: &str) -> StoreResult<bool>;
+
+    /// Delete a user and all their associated data (emails, pending verifications)
+    fn delete_user(&self, user_id: UserId) -> StoreResult<()>;
+
+    /// Get pending verification by email and type
+    fn get_pending_by_email(
+        &self,
+        email: &str,
+        verification_type: VerificationType,
+    ) -> StoreResult<Option<PendingVerification>>;
 }
 
 /// Trait for session storage

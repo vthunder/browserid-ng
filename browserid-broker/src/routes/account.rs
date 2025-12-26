@@ -2,16 +2,16 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::crypto::{generate_secret, generate_verification_code, hash_password};
+use crate::crypto::{generate_verification_code, hash_password};
 use crate::email::EmailSender;
 use crate::error::BrokerError;
 use crate::state::AppState;
-use crate::store::{PendingVerification, SessionStore, UserStore};
+use crate::store::{PendingVerification, SessionStore, UserStore, VerificationType};
 
 #[derive(Deserialize)]
 pub struct StageUserRequest {
@@ -26,6 +26,11 @@ pub struct StageUserResponse {
     pub reason: Option<String>,
 }
 
+/// Minimum password length (same as original Persona)
+const MIN_PASSWORD_LENGTH: usize = 8;
+/// Maximum password length (same as original Persona)
+const MAX_PASSWORD_LENGTH: usize = 80;
+
 /// POST /wsapi/stage_user
 /// Start account creation by sending verification code
 pub async fn stage_user<U, S, E>(
@@ -37,6 +42,14 @@ where
     S: SessionStore,
     E: EmailSender,
 {
+    // Validate password length
+    if req.pass.len() < MIN_PASSWORD_LENGTH {
+        return Err(BrokerError::PasswordTooShort);
+    }
+    if req.pass.len() > MAX_PASSWORD_LENGTH {
+        return Err(BrokerError::PasswordTooLong);
+    }
+
     // Check if email already exists
     if state.user_store.get_user_by_email(&req.email)?.is_some() {
         return Err(BrokerError::EmailAlreadyExists);
@@ -46,16 +59,16 @@ where
     let password_hash = hash_password(&req.pass)
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
 
-    // Generate verification code and secret
+    // Generate verification code (this is both the user-facing code and the lookup key)
     let code = generate_verification_code();
-    let secret = generate_secret();
 
-    // Store pending verification
+    // Store pending verification with code as the lookup key
     let pending = PendingVerification {
-        secret: secret.clone(),
+        secret: code.clone(), // Use code as the lookup key
         email: req.email.clone(),
         user_id: None, // New account
         password_hash: Some(password_hash),
+        verification_type: VerificationType::NewAccount,
         created_at: Utc::now(),
     };
     state.user_store.create_pending(pending)?;
@@ -65,17 +78,6 @@ where
         .email_sender
         .send_verification(&req.email, &code)
         .map_err(|e| BrokerError::Internal(e))?;
-
-    // Store code -> secret mapping (simplified: use code as lookup, secret in pending)
-    // In production, you'd want a separate mapping
-    let pending_with_code = PendingVerification {
-        secret: code, // Use code as the lookup key
-        email: req.email.clone(),
-        user_id: None,
-        password_hash: None, // Reference the full record
-        created_at: Utc::now(),
-    };
-    state.user_store.create_pending(pending_with_code)?;
 
     Ok(Json(StageUserResponse {
         success: true,
@@ -120,21 +122,8 @@ where
         return Err(BrokerError::VerificationExpired);
     }
 
-    // Find the full pending record with password hash
-    // (In simplified impl, we need to look up by email)
-    let all_pending: Vec<_> = {
-        // This is a simplification - in production, use proper indexing
-        // For now, we'll store password hash directly in the code-indexed record
-        vec![pending.clone()]
-    };
-
-    let full_pending = all_pending
-        .iter()
-        .find(|p| p.password_hash.is_some())
-        .cloned()
-        .unwrap_or(pending.clone());
-
-    let password_hash = full_pending
+    // Get password hash from pending record
+    let password_hash = pending
         .password_hash
         .ok_or(BrokerError::InvalidVerificationCode)?;
 
@@ -155,4 +144,123 @@ where
         success: true,
         reason: None,
     }))
+}
+
+#[derive(Deserialize)]
+pub struct AccountCancelRequest {
+    pub email: String,
+    pub pass: String,
+}
+
+#[derive(Serialize)]
+pub struct AccountCancelResponse {
+    pub success: bool,
+}
+
+/// POST /wsapi/account_cancel
+/// Cancel (delete) user account
+pub async fn account_cancel<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: tower_cookies::Cookies,
+    Json(req): Json<AccountCancelRequest>,
+) -> Result<Json<AccountCancelResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    use crate::crypto::verify_password;
+
+    // Require authentication
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+
+    // Verify the provided email belongs to this user
+    let emails = state.user_store.list_emails(session.user_id)?;
+    let email_matches = emails.iter().any(|e| e.email == req.email);
+    if !email_matches {
+        return Err(BrokerError::InvalidCredentials);
+    }
+
+    // Verify password
+    let user = state
+        .user_store
+        .get_user(session.user_id)?
+        .ok_or(BrokerError::UserNotFound)?;
+
+    if !verify_password(&req.pass, &user.password_hash)
+        .map_err(|e| BrokerError::Internal(e.to_string()))?
+    {
+        return Err(BrokerError::InvalidCredentials);
+    }
+
+    // Delete session first
+    state.session_store.delete(&session.id)?;
+
+    // Delete user and all associated data
+    state.user_store.delete_user(session.user_id)?;
+
+    // Clear session cookie
+    super::session::clear_session_cookie(&cookies);
+
+    Ok(Json(AccountCancelResponse { success: true }))
+}
+
+#[derive(Deserialize)]
+pub struct UserCreationStatusQuery {
+    pub email: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct UserCreationStatusResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// GET /wsapi/user_creation_status
+/// Check the status of a pending user registration
+pub async fn user_creation_status<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    Query(query): Query<UserCreationStatusQuery>,
+) -> Result<Json<UserCreationStatusResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    // Email is required
+    let email = match &query.email {
+        Some(e) => e,
+        None => {
+            return Err(BrokerError::ValidationError(
+                "email parameter required".to_string(),
+            ))
+        }
+    };
+
+    // Check if user already exists (complete)
+    if state.user_store.get_user_by_email(email)?.is_some() {
+        return Ok(Json(UserCreationStatusResponse {
+            success: true,
+            status: Some("complete".to_string()),
+        }));
+    }
+
+    // Check for pending new account verification
+    if state
+        .user_store
+        .get_pending_by_email(email, VerificationType::NewAccount)?
+        .is_some()
+    {
+        return Ok(Json(UserCreationStatusResponse {
+            success: true,
+            status: Some("pending".to_string()),
+        }));
+    }
+
+    // No pending registration found - this is an error case
+    Err(BrokerError::ValidationError(
+        "no pending registration".to_string(),
+    ))
 }

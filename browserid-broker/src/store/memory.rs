@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::{
     Email, PendingVerification, Session, SessionId, SessionStore, StoreResult, User, UserId,
-    UserStore,
+    UserStore, VerificationType,
 };
 use crate::error::BrokerError;
 
@@ -135,6 +135,54 @@ impl UserStore for InMemoryUserStore {
         let before = pending.len();
         pending.retain(|_, p| p.created_at > cutoff);
         Ok((before - pending.len()) as u64)
+    }
+
+    fn update_password(&self, user_id: UserId, password_hash: &str) -> StoreResult<()> {
+        let mut users = self.users.write().unwrap();
+        if let Some(user) = users.get_mut(&user_id) {
+            user.password_hash = password_hash.to_string();
+            Ok(())
+        } else {
+            Err(BrokerError::UserNotFound)
+        }
+    }
+
+    fn has_pending_reset(&self, email: &str) -> StoreResult<bool> {
+        let pending = self.pending.read().unwrap();
+        Ok(pending.values().any(|p| {
+            p.email == email && p.verification_type == VerificationType::PasswordReset
+        }))
+    }
+
+    fn delete_user(&self, user_id: UserId) -> StoreResult<()> {
+        // Delete user
+        self.users.write().unwrap().remove(&user_id);
+
+        // Delete all emails for this user
+        self.emails
+            .write()
+            .unwrap()
+            .retain(|_, e| e.user_id != user_id);
+
+        // Delete pending verifications for this user
+        self.pending
+            .write()
+            .unwrap()
+            .retain(|_, p| p.user_id != Some(user_id));
+
+        Ok(())
+    }
+
+    fn get_pending_by_email(
+        &self,
+        email: &str,
+        verification_type: VerificationType,
+    ) -> StoreResult<Option<PendingVerification>> {
+        let pending = self.pending.read().unwrap();
+        Ok(pending
+            .values()
+            .find(|p| p.email == email && p.verification_type == verification_type)
+            .cloned())
     }
 }
 

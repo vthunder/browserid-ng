@@ -9,18 +9,10 @@ use anyhow::Result;
 use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-mod config;
-mod crypto;
-mod email;
-mod error;
-mod routes;
-mod state;
-mod store;
-
-use config::{load_or_generate_keypair, Config};
-use email::ConsoleEmailSender;
-use state::AppState;
-use store::{InMemorySessionStore, InMemoryUserStore};
+use browserid_broker::{
+    load_or_generate_keypair, routes, AppState, Config, ConsoleEmailSender,
+    InMemorySessionStore, InMemoryUserStore,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {

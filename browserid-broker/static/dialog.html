@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<!--
+  BrowserID-NG Dialog
+  Based on Mozilla Persona (MPL 2.0)
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In</title>
+  <link rel="stylesheet" href="dialog.css">
+</head>
+<body>
+  <div id="dialog">
+    <!-- Loading Screen -->
+    <section id="loading" class="screen active">
+      <div class="center">
+        <div class="spinner"></div>
+        <p>Loading...</p>
+      </div>
+    </section>
+
+    <!-- Email Entry Screen -->
+    <section id="email-screen" class="screen">
+      <div class="content">
+        <h2>Sign in to <span class="rp-name"></span></h2>
+
+        <form id="email-form">
+          <div class="form-group">
+            <label for="email">Email address</label>
+            <input type="email" id="email" name="email"
+                   placeholder="you@example.com"
+                   autocomplete="email"
+                   autocapitalize="off"
+                   autocorrect="off"
+                   required>
+            <div class="error" id="email-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Next</button>
+            <button type="button" class="cancel">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Password Entry Screen (for existing users) -->
+    <section id="password-screen" class="screen">
+      <div class="content">
+        <h2>Enter your password</h2>
+        <p class="email-display"></p>
+
+        <form id="password-form">
+          <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password"
+                   placeholder="Password"
+                   autocomplete="current-password"
+                   required>
+            <div class="error" id="password-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Sign In</button>
+            <button type="button" class="back">Back</button>
+          </div>
+
+          <p class="link-row">
+            <a href="#" id="forgot-password-link">Forgot your password?</a>
+          </p>
+        </form>
+      </div>
+    </section>
+
+    <!-- Create Account Screen (for new users) -->
+    <section id="create-screen" class="screen">
+      <div class="content">
+        <h2>Create your account</h2>
+        <p class="email-display"></p>
+
+        <form id="create-form">
+          <div class="form-group">
+            <label for="create-password">Password</label>
+            <input type="password" id="create-password" name="password"
+                   placeholder="Password (8+ characters)"
+                   autocomplete="new-password"
+                   minlength="8"
+                   maxlength="80"
+                   required>
+            <div class="hint">Must be 8-80 characters</div>
+            <div class="error" id="create-password-error"></div>
+          </div>
+
+          <div class="form-group">
+            <label for="confirm-password">Confirm Password</label>
+            <input type="password" id="confirm-password" name="confirm-password"
+                   placeholder="Confirm password"
+                   autocomplete="new-password"
+                   required>
+            <div class="error" id="confirm-password-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Create Account</button>
+            <button type="button" class="back">Back</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Verification Code Screen -->
+    <section id="verify-screen" class="screen">
+      <div class="content">
+        <h2>Check your email</h2>
+        <p>We sent a verification code to <span class="email-display"></span></p>
+
+        <form id="verify-form">
+          <div class="form-group">
+            <label for="verification-code">Verification Code</label>
+            <input type="text" id="verification-code" name="code"
+                   placeholder="000000"
+                   pattern="[0-9]{6}"
+                   maxlength="6"
+                   autocomplete="one-time-code"
+                   inputmode="numeric"
+                   required>
+            <div class="error" id="verify-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Verify</button>
+            <button type="button" class="back">Back</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Password Reset - Enter Email Screen -->
+    <section id="reset-email-screen" class="screen">
+      <div class="content">
+        <h2>Reset your password</h2>
+        <p>Enter your email address and we'll send you a reset code.</p>
+
+        <form id="reset-email-form">
+          <div class="form-group">
+            <label for="reset-email">Email address</label>
+            <input type="email" id="reset-email" name="email"
+                   placeholder="you@example.com"
+                   autocomplete="email"
+                   required>
+            <div class="error" id="reset-email-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Send Reset Code</button>
+            <button type="button" class="back">Back</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Password Reset - Enter Code & New Password Screen -->
+    <section id="reset-password-screen" class="screen">
+      <div class="content">
+        <h2>Enter your new password</h2>
+        <p>Check your email for the reset code.</p>
+
+        <form id="reset-password-form">
+          <div class="form-group">
+            <label for="reset-code">Reset Code</label>
+            <input type="text" id="reset-code" name="code"
+                   placeholder="000000"
+                   pattern="[0-9]{6}"
+                   maxlength="6"
+                   autocomplete="one-time-code"
+                   inputmode="numeric"
+                   required>
+            <div class="error" id="reset-code-error"></div>
+          </div>
+
+          <div class="form-group">
+            <label for="new-password">New Password</label>
+            <input type="password" id="new-password" name="password"
+                   placeholder="New password (8+ characters)"
+                   autocomplete="new-password"
+                   minlength="8"
+                   maxlength="80"
+                   required>
+            <div class="error" id="new-password-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Reset Password</button>
+            <button type="button" class="back">Back</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Email Selection Screen (for users with multiple emails) -->
+    <section id="pick-email-screen" class="screen">
+      <div class="content">
+        <h2>Sign in as...</h2>
+
+        <form id="pick-email-form">
+          <ul id="email-list" class="email-list">
+            <!-- Email options will be populated by JS -->
+          </ul>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Sign In</button>
+            <button type="button" class="cancel">Cancel</button>
+          </div>
+
+          <p class="link-row">
+            <a href="#" id="add-email-link">Use a different email</a>
+          </p>
+        </form>
+      </div>
+    </section>
+
+    <!-- Success Screen -->
+    <section id="success-screen" class="screen">
+      <div class="content center">
+        <div class="checkmark">&#10003;</div>
+        <h2>Signed in!</h2>
+        <p>Returning to <span class="rp-name"></span>...</p>
+      </div>
+    </section>
+
+    <!-- Error Screen -->
+    <section id="error-screen" class="screen">
+      <div class="content center">
+        <h2>Something went wrong</h2>
+        <p class="error-message"></p>
+        <div class="button-row">
+          <button type="button" class="primary try-again">Try Again</button>
+          <button type="button" class="cancel">Cancel</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="dialog.js"></script>
+</body>
+</html>

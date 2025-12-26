@@ -4,7 +4,7 @@
 
 | Category | Total | Ported | Remaining |
 |----------|-------|--------|-----------|
-| Backend API Tests | 53 | 14 | 39 |
+| Backend API Tests | 53 | 17 | 36 |
 | QUnit Dialog Tests | 19 | 0 | 19 |
 | Selenium E2E Tests | 19 | 0 | 19 |
 
@@ -30,16 +30,20 @@
 | (user creation) | authentication_test.rs | 3 |
 | (email staging) | stage_email_test.rs | 3 |
 | (verification) | verification_test.rs | 3 |
+| email-addition-status-test.js | email_addition_status_test.rs | 4 |
+| registration-status-wsapi-test.js | registration_status_test.rs | 6 |
+| cookie-session-security-test.js | cookie_session_security_test.rs | 6 |
 
 ### Ready to Port
 
-| Test | Description | Priority |
-|------|-------------|----------|
-| email-addition-status-test.js | Check pending email addition status | High |
-| registration-status-wsapi-test.js | Check pending registration status | High |
-| cookie-session-security-test.js | Session cookie security attributes | Medium |
-| session-prolong-test.js | Session extension on activity | Medium |
-| session-duration-test.js | Session expiration | Medium |
+All "ready to port" tests have been ported!
+
+### Needs Infrastructure (ephemeral sessions)
+
+| Test | Description | Needed |
+|------|-------------|--------|
+| session-prolong-test.js | Session extension on activity | ephemeral param, prolong_session endpoint |
+| session-duration-test.js | Session expiration | ephemeral param, primary IdP, UA detection |
 
 ### Not Applicable (infrastructure-specific)
 

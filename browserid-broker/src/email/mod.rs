@@ -8,4 +8,7 @@ pub use console::ConsoleEmailSender;
 pub trait EmailSender: Send + Sync {
     /// Send a verification code to an email address
     fn send_verification(&self, email: &str, code: &str) -> Result<(), String>;
+
+    /// Send a password reset code to an email address
+    fn send_password_reset(&self, email: &str, code: &str) -> Result<(), String>;
 }
