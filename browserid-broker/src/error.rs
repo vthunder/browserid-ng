@@ -1,0 +1,66 @@
+//! Broker error types
+
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use serde_json::json;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum BrokerError {
+    #[error("User not found")]
+    UserNotFound,
+
+    #[error("Email not found")]
+    EmailNotFound,
+
+    #[error("Email already exists")]
+    EmailAlreadyExists,
+
+    #[error("Invalid credentials")]
+    InvalidCredentials,
+
+    #[error("Invalid verification code")]
+    InvalidVerificationCode,
+
+    #[error("Verification code expired")]
+    VerificationExpired,
+
+    #[error("Not authenticated")]
+    NotAuthenticated,
+
+    #[error("Invalid CSRF token")]
+    InvalidCsrf,
+
+    #[error("Email not verified")]
+    EmailNotVerified,
+
+    #[error("Internal error: {0}")]
+    Internal(String),
+}
+
+impl IntoResponse for BrokerError {
+    fn into_response(self) -> Response {
+        let (status, message) = match &self {
+            BrokerError::UserNotFound => (StatusCode::NOT_FOUND, "User not found"),
+            BrokerError::EmailNotFound => (StatusCode::NOT_FOUND, "Email not found"),
+            BrokerError::EmailAlreadyExists => (StatusCode::CONFLICT, "Email already exists"),
+            BrokerError::InvalidCredentials => (StatusCode::UNAUTHORIZED, "Invalid credentials"),
+            BrokerError::InvalidVerificationCode => {
+                (StatusCode::BAD_REQUEST, "Invalid verification code")
+            }
+            BrokerError::VerificationExpired => {
+                (StatusCode::BAD_REQUEST, "Verification code expired")
+            }
+            BrokerError::NotAuthenticated => (StatusCode::UNAUTHORIZED, "Not authenticated"),
+            BrokerError::InvalidCsrf => (StatusCode::FORBIDDEN, "Invalid CSRF token"),
+            BrokerError::EmailNotVerified => (StatusCode::FORBIDDEN, "Email not verified"),
+            BrokerError::Internal(msg) => {
+                tracing::error!("Internal error: {}", msg);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+            }
+        };
+
+        let body = json!({ "success": false, "reason": message });
+        (status, axum::Json(body)).into_response()
+    }
+}

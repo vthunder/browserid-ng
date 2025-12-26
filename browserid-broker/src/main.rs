@@ -7,8 +7,10 @@ use anyhow::Result;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
+mod error;
 mod routes;
 mod state;
+mod store;
 
 #[tokio::main]
 async fn main() -> Result<()> {
