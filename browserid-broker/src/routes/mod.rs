@@ -7,14 +7,17 @@ mod email;
 mod reset;
 mod session;
 mod test;
+mod verify;
 mod well_known;
 
 use std::sync::Arc;
 
+use axum::http::{header, Method};
 use axum::response::Redirect;
 use axum::routing::{get, post};
 use axum::Router;
 use tower_cookies::CookieManagerLayer;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::email::EmailSender;
@@ -61,14 +64,23 @@ where
         .route("/wsapi/stage_reset", post(reset::stage_reset))
         .route("/wsapi/complete_reset", post(reset::complete_reset))
         .route("/wsapi/password_reset_status", get(reset::password_reset_status))
+        // Verification endpoint
+        .route("/verify", post(verify::verify))
         // Test endpoints (should only be enabled in dev/test)
         .route("/wsapi/test/pending_verification", get(test::get_pending_verification))
         // Compatibility routes for include.js
         .route("/sign_in", get(|| async { Redirect::to("/dialog/dialog.html") }))
         .nest_service("/relay", ServeDir::new(format!("{}/relay", static_path)))
         .route_service("/include.js", ServeFile::new(format!("{}/include.js", static_path)))
+        .route_service("/communication_iframe", ServeFile::new(format!("{}/communication_iframe.html", static_path)))
         // Serve static files (dialog, CSS, JS)
         .nest_service("/dialog", ServeDir::new(static_path))
         .layer(CookieManagerLayer::new())
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_headers([header::CONTENT_TYPE, header::ACCEPT]),
+        )
         .with_state(state)
 }

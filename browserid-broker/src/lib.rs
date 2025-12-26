@@ -10,6 +10,7 @@ pub mod error;
 pub mod routes;
 pub mod state;
 pub mod store;
+pub mod verifier;
 
 pub use config::{load_or_generate_keypair, Config};
 pub use email::{ConsoleEmailSender, EmailSender};
