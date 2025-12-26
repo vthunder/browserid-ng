@@ -7,6 +7,7 @@ use anyhow::Result;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
+mod crypto;
 mod error;
 mod routes;
 mod state;
