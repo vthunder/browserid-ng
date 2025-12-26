@@ -1,11 +1,12 @@
 //! HTTP routes for the broker
 
+mod account;
 mod session;
 mod well_known;
 
 use std::sync::Arc;
 
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use tower_cookies::CookieManagerLayer;
 
@@ -23,6 +24,8 @@ where
     Router::new()
         .route("/.well-known/browserid", get(well_known::get_support_document))
         .route("/wsapi/session_context", get(session::get_session_context))
+        .route("/wsapi/stage_user", post(account::stage_user))
+        .route("/wsapi/complete_user_creation", post(account::complete_user_creation))
         .layer(CookieManagerLayer::new())
         .with_state(state)
 }
