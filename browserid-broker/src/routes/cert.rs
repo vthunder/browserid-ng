@@ -55,11 +55,12 @@ where
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
 
-    // Verify user owns this email
+    // Verify user owns this email (case-insensitive)
+    let normalized_email = req.email.to_lowercase();
     let emails = state.user_store.list_emails(session.user_id)?;
     let email_record = emails
         .iter()
-        .find(|e| e.email == req.email)
+        .find(|e| e.email.to_lowercase() == normalized_email)
         .ok_or(BrokerError::EmailNotFound)?;
 
     // Verify email is verified

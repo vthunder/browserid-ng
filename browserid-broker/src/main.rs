@@ -45,8 +45,15 @@ async fn main() -> Result<()> {
         ConsoleEmailSender::new(),
     ));
 
+    // Determine static files path (relative to workspace root or package root)
+    let static_path = if std::path::Path::new("browserid-broker/static").exists() {
+        "browserid-broker/static"
+    } else {
+        "static"
+    };
+
     // Create router
-    let app = routes::create_router(state);
+    let app = routes::create_router_with_static_path(state, static_path);
 
     // Start server
     let addr = format!("0.0.0.0:{}", config.port);

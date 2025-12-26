@@ -55,22 +55,24 @@ impl UserStore for InMemoryUserStore {
     }
 
     fn get_user_by_email(&self, email: &str) -> StoreResult<Option<User>> {
+        let normalized = email.to_lowercase();
         let emails = self.emails.read().unwrap();
-        if let Some(email_record) = emails.get(email) {
+        if let Some(email_record) = emails.get(&normalized) {
             return self.get_user(email_record.user_id);
         }
         Ok(None)
     }
 
     fn add_email(&self, user_id: UserId, email: &str, verified: bool) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
         let mut emails = self.emails.write().unwrap();
-        if emails.contains_key(email) {
+        if emails.contains_key(&normalized) {
             return Err(BrokerError::EmailAlreadyExists);
         }
         emails.insert(
-            email.to_string(),
+            normalized.clone(),
             Email {
-                email: email.to_string(),
+                email: normalized, // Store normalized (lowercase) email
                 user_id,
                 verified,
                 verified_at: if verified { Some(Utc::now()) } else { None },
@@ -89,8 +91,9 @@ impl UserStore for InMemoryUserStore {
     }
 
     fn verify_email(&self, email: &str) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
         let mut emails = self.emails.write().unwrap();
-        if let Some(email_record) = emails.get_mut(email) {
+        if let Some(email_record) = emails.get_mut(&normalized) {
             email_record.verified = true;
             email_record.verified_at = Some(Utc::now());
             Ok(())
@@ -100,12 +103,13 @@ impl UserStore for InMemoryUserStore {
     }
 
     fn remove_email(&self, user_id: UserId, email: &str) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
         let mut emails = self.emails.write().unwrap();
-        if let Some(email_record) = emails.get(email) {
+        if let Some(email_record) = emails.get(&normalized) {
             if email_record.user_id != user_id {
                 return Err(BrokerError::EmailNotFound);
             }
-            emails.remove(email);
+            emails.remove(&normalized);
             Ok(())
         } else {
             Err(BrokerError::EmailNotFound)
@@ -178,10 +182,11 @@ impl UserStore for InMemoryUserStore {
         email: &str,
         verification_type: VerificationType,
     ) -> StoreResult<Option<PendingVerification>> {
+        let normalized = email.to_lowercase();
         let pending = self.pending.read().unwrap();
         Ok(pending
             .values()
-            .find(|p| p.email == email && p.verification_type == verification_type)
+            .find(|p| p.email.to_lowercase() == normalized && p.verification_type == verification_type)
             .cloned())
     }
 }

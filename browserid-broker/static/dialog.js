@@ -11,6 +11,7 @@
     email: null,
     origin: null,
     callback: null,
+    winchanCallback: null,  // WinChan response callback
     emails: [],
     selectedEmail: null
   };
@@ -25,7 +26,8 @@
     certKey: '/wsapi/cert_key',
     stageReset: '/wsapi/stage_reset',
     completeReset: '/wsapi/complete_reset',
-    logout: '/wsapi/logout'
+    logout: '/wsapi/logout',
+    addressInfo: '/wsapi/address_info'
   };
 
   // DOM elements
@@ -79,19 +81,11 @@
   // Check if email exists
   async function checkEmail(email) {
     try {
-      // Try to authenticate with empty password to see if user exists
-      // The API will return different errors for unknown user vs wrong password
-      await apiCall(API.authenticate, 'POST', {
-        email: email,
-        pass: '',
-        ephemeral: true
-      });
-      return { exists: true };
+      const response = await fetch(`${API.addressInfo}?email=${encodeURIComponent(email)}`);
+      const data = await response.json();
+      return { exists: data.state === 'known' };
     } catch (e) {
-      // "Invalid credentials" means user exists, other errors mean they don't
-      if (e.message.includes('Invalid credentials') || e.message.includes('Password')) {
-        return { exists: true };
-      }
+      // On error, assume email doesn't exist (new user flow)
       return { exists: false };
     }
   }
@@ -111,10 +105,10 @@
     // Request certificate from broker
     const certResponse = await apiCall(API.certKey, 'POST', {
       email: email,
-      pubkey: JSON.stringify({
+      pubkey: {
         algorithm: 'Ed25519',
         publicKey: publicKeyJwk.x
-      }),
+      },
       ephemeral: false
     });
 
@@ -179,6 +173,13 @@
 
   // Communication with parent window
   function sendResponse(data) {
+    // WinChan callback takes precedence
+    if (state.winchanCallback) {
+      state.winchanCallback(data);
+      state.winchanCallback = null;
+      return;
+    }
+    // Fallback to postMessage for simple popup case
     if (window.opener) {
       window.opener.postMessage(data, state.origin);
       window.close();
@@ -190,7 +191,12 @@
   }
 
   function sendCancel() {
-    sendResponse({ assertion: null, cancelled: true });
+    if (state.winchanCallback) {
+      state.winchanCallback(null);
+      state.winchanCallback = null;
+    } else {
+      sendResponse({ assertion: null, cancelled: true });
+    }
   }
 
   // Event handlers
@@ -480,5 +486,23 @@
     });
     init();
   }
-  // Otherwise wait for postMessage
+
+  // Also support WinChan protocol for include.js compatibility
+  if (typeof WinChan !== 'undefined' && WinChan.onOpen) {
+    try {
+      WinChan.onOpen(function(origin, args, cb) {
+        if (args && args.params) {
+          state.origin = origin;
+          state.winchanCallback = cb;
+          document.querySelectorAll('.rp-name').forEach(el => {
+            el.textContent = new URL(origin).hostname;
+          });
+          init();
+        }
+      });
+    } catch (e) {
+      // WinChan.onOpen may throw if not in popup context
+      console.log('WinChan not available:', e.message);
+    }
+  }
 })();
