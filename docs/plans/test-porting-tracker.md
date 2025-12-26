@@ -38,7 +38,7 @@
 
 All "ready to port" tests have been ported!
 
-### Needs Infrastructure (ephemeral sessions)
+### Deferred (ephemeral sessions - nice to have)
 
 | Test | Description | Needed |
 |------|-------------|--------|
