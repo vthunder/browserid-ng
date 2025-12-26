@@ -19,6 +19,9 @@ pub struct SessionContext {
     pub authenticated: bool,
     pub user_id: Option<u64>,
     pub server_time: i64,
+    /// Whether the client has cookies enabled
+    /// The communication_iframe checks this to know if it can proceed
+    pub cookies: bool,
 }
 
 /// GET /wsapi/session_context
@@ -44,6 +47,7 @@ where
             authenticated: true,
             user_id: Some(session.user_id.0),
             server_time: chrono::Utc::now().timestamp(),
+            cookies: true,
         }
     } else {
         SessionContext {
@@ -51,6 +55,7 @@ where
             authenticated: false,
             user_id: None,
             server_time: chrono::Utc::now().timestamp(),
+            cookies: true, // Assume cookies are enabled - the original checks for a test cookie
         }
     };
 

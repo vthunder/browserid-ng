@@ -10,7 +10,7 @@
 import { test, expect, generateTestEmail, generateTestPassword } from '../fixtures/test-helpers';
 
 test.describe('Returning User Flow', () => {
-  test('authenticated user with single email auto-completes', async ({ dialogPage, request, context }) => {
+  test('authenticated user with single email shows pick-email screen', async ({ dialogPage, request, context }) => {
     const testEmail = generateTestEmail();
     const testPassword = generateTestPassword();
     const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
@@ -39,12 +39,21 @@ test.describe('Returning User Flow', () => {
     await dialogPage.signInExistingUser(testEmail, testPassword);
     await dialogPage.waitForSuccess();
 
-    // Open dialog again - should auto-complete since user is authenticated
+    // Open dialog again - should show pick-email screen (even with one email)
     // Create a new page in same context to share cookies
     const newPage = await context.newPage();
     await newPage.goto(`${baseUrl}/dialog/dialog.html?origin=http://example.com`);
 
-    // Should show success screen directly (auto-sign-in for returning user)
+    // Should show pick-email screen with the user's email
+    await newPage.waitForSelector('#pick-email-screen.active', { timeout: 15000 });
+
+    // Email should be in the list and pre-selected
+    const emailInList = await newPage.locator(`input[value="${testEmail}"]`);
+    await expect(emailInList).toBeVisible();
+    await expect(emailInList).toBeChecked();
+
+    // User can confirm their email and proceed to success
+    await newPage.click('#pick-email-form button.primary');
     await newPage.waitForSelector('#success-screen.active', { timeout: 15000 });
 
     await newPage.close();

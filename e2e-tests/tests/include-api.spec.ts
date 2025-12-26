@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, generateTestEmail, generateTestPassword } from '../fixtures/test-helpers';
 
 test.describe('include.js API', () => {
   test.beforeEach(async ({ page }) => {
@@ -115,5 +115,91 @@ test.describe('include.js API', () => {
     });
 
     expect(throws).toBe(true);
+  });
+
+  test('watch() creates communication iframe', async ({ page }) => {
+    // Call watch() and verify the communication iframe is created
+    await page.evaluate(() => {
+      (navigator as any).id.watch({
+        onlogin: function() {},
+        onlogout: function() {}
+      });
+    });
+
+    // Wait for iframe to be created
+    await page.waitForTimeout(1000);
+
+    // Check if a hidden iframe pointing to communication_iframe exists
+    const iframeCount = await page.evaluate(() => {
+      const iframes = document.querySelectorAll('iframe');
+      let count = 0;
+      for (const iframe of iframes) {
+        if (iframe.src && iframe.src.includes('communication_iframe')) {
+          count++;
+        }
+      }
+      return count;
+    });
+
+    expect(iframeCount).toBe(1);
+  });
+
+  test('watch() with onready fires when communication_iframe loads', async ({ page }) => {
+    // Check that onready is called
+    const result = await page.evaluate(async () => {
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          resolve({ type: 'timeout' });
+        }, 10000);
+
+        (navigator as any).id.watch({
+          onlogin: function() {},
+          onlogout: function() {},
+          onready: function() {
+            clearTimeout(timeout);
+            resolve({ type: 'ready' });
+          }
+        });
+      });
+    });
+
+    expect((result as any).type).toBe('ready');
+  });
+
+  // Note: Silent assertion (onmatch/onlogin) requires localStorage session state
+  // which is only set when user signs in via the dialog, not via API.
+  // This test verifies the infrastructure works by checking logout behavior
+  // when the RP thinks user is logged in but broker doesn't have them in session.
+  test('watch() with loggedInUser calls onlogout when not actually logged in', async ({ page }) => {
+    // RP claims user is logged in, but broker has no session
+    const result = await page.evaluate(async () => {
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          resolve({ type: 'timeout' });
+        }, 10000);
+
+        (navigator as any).id.watch({
+          loggedInUser: 'nonexistent@example.com',
+          onlogin: function(assertion: string) {
+            clearTimeout(timeout);
+            resolve({ type: 'login', assertion: assertion ? true : false });
+          },
+          onlogout: function() {
+            clearTimeout(timeout);
+            resolve({ type: 'logout' });
+          },
+          onmatch: function() {
+            clearTimeout(timeout);
+            resolve({ type: 'match' });
+          },
+          onready: function() {
+            // onready may fire before callbacks
+          }
+        });
+      });
+    });
+
+    // Should call onlogout since broker doesn't have this user logged in
+    expect((result as any).type).toBe('logout');
   });
 });

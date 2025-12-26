@@ -6,37 +6,51 @@
 <head>
   <title>BrowserID Communication Frame</title>
   <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=Edge"/>
+
+  <!-- Core namespace -->
+  <script src="/common/js/browserid.js"></script>
+
+  <!-- Libraries -->
+  <script src="/common/js/lib/jschannel.js"></script>
+  <script src="/common/js/lib/tinyscore.js"></script>
+  <script src="/common/js/lib/hub.js"></script>
+  <script src="/common/js/lib/micrajax.js"></script>
+
+  <!-- Core utilities -->
+  <script src="/common/js/javascript-extensions.js"></script>
+  <script src="/common/js/mediator.js"></script>
+  <script src="/common/js/helpers.js"></script>
+  <script src="/common/js/class.js"></script>
+  <script src="/common/js/xhr_transport.js"></script>
+
+  <!-- Storage -->
+  <script src="/common/js/storage.js"></script>
+
+  <!-- Modules -->
+  <script src="/common/js/modules/module.js"></script>
+  <script src="/common/js/modules/xhr.js"></script>
+
+  <!-- Models -->
+  <script src="/common/js/models/models.js"></script>
+  <script src="/common/js/models/user-context.js"></script>
+  <script src="/common/js/models/network-context.js"></script>
+  <script src="/common/js/models/rp_info.js"></script>
+  <script src="/common/js/models/interaction_data.js"></script>
+
+  <!-- Network -->
+  <script src="/common/js/network.js"></script>
+
+  <!-- Crypto (our Ed25519 shim) -->
+  <script src="/common/js/lib/jwcrypto-compat.js"></script>
+  <script src="/common/js/crypto-loader.js"></script>
+
+  <!-- User management -->
+  <script src="/common/js/provisioning.js"></script>
+  <script src="/common/js/user.js"></script>
+
+  <!-- Communication iframe logic -->
+  <script src="/communication_iframe/start.js"></script>
 </head>
-<body>
-<script>
-// Minimal communication iframe for BrowserID-NG
-// This handles cross-origin communication between include.js and the broker
-
-(function() {
-  // jschannel-compatible message handler
-  // The full implementation would track login state and notify RPs of changes
-
-  var origin = null;
-  var channel = null;
-
-  window.addEventListener('message', function(event) {
-    // Accept messages and respond to jschannel protocol
-    try {
-      var msg = JSON.parse(event.data);
-
-      // jschannel uses a specific message format
-      if (msg.method === '__ready') {
-        // Respond that we're ready
-        event.source.postMessage(JSON.stringify({
-          id: msg.id,
-          result: true
-        }), event.origin);
-      }
-    } catch (e) {
-      // Not a JSON message or not for us
-    }
-  });
-})();
-</script>
-</body>
+<body></body>
 </html>
