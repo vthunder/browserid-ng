@@ -15,14 +15,34 @@ Tests ported from mozilla/persona (~/src/browserid/tests/).
 - [x] stage_email_test.rs (derived) - Email staging endpoints
 - [x] verification_test.rs (derived) - Verification code handling
 - [x] forgotten_pass_test.rs (from forgotten-pass-test.js) - Password reset flow
+- [x] verifier_test.rs (from verifier-test.js) - Assertion verification (13 tests):
+  - Success case with native IdP
+  - Fallback broker support
+  - Untrusted issuer rejection (security)
+  - Cross-domain issuer rejection (security)
+  - Audience mismatch (wrong host, port, scheme)
+  - Expired assertion/certificate
+  - Bad signatures (certificate and assertion)
+  - Missing certificate
+  - Invalid format
 
 ## Not Yet Ported
 
+### Broker Features
 - [ ] registration_status_wsapi_test.rs (from registration-status-wsapi-test.js) - Need user_creation_status endpoint
 - [ ] authentication_lockout_test.rs (from authentication-lockout-test.js) - Need account lockout feature
 - [ ] email_throttling_test.rs (from email-throttling-test.js) - Need rate limiting
 - [ ] session_duration_test.rs (from session-duration-test.js) - Need session expiry
 - [ ] session_prolong_test.rs (from session-prolong-test.js) - Need session refresh
+
+### Verification (from verifier-test.js)
+- [ ] Audience matching with default ports (http:80, https:443 equivalence)
+- [ ] POST format variations (form-urlencoded, JSON, query params)
+- [ ] Malformed assertion handling (truncated, prepended gunk)
+- [ ] Certificate chain rejection (multi-cert chains)
+- [ ] Wildcard audience rejection
+- [ ] Empty domain in audience rejection
+- [ ] Missing assertion/audience in request
 
 ## Not Applicable
 
@@ -32,6 +52,8 @@ Tests ported from mozilla/persona (~/src/browserid/tests/).
 - proxy-idp-test.js - IdP proxy (not implementing)
 - add-email-with-assertion-test.js - Primary IdP assertions (not implementing)
 - auth-with-assertion-test.js - Primary IdP assertions (not implementing)
+- Proxy IDP verification tests (from verifier-test.js) - Delegation not implemented
+- Uppercase domain with proxy IDP tests - Delegation not implemented
 
 ## Running Tests
 
