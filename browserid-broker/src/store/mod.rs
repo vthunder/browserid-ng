@@ -1,10 +1,12 @@
 //! Storage abstractions for the broker
 
-pub mod models;
 pub mod memory;
+pub mod models;
+pub mod sqlite;
 
-pub use models::*;
 pub use memory::{InMemorySessionStore, InMemoryUserStore};
+pub use models::*;
+pub use sqlite::SqliteStore;
 
 use crate::error::BrokerError;
 

@@ -16,6 +16,8 @@ pub struct Config {
     pub domain: String,
     /// Path to keypair file
     pub key_file: String,
+    /// Path to SQLite database file
+    pub database_path: String,
 }
 
 impl Default for Config {
@@ -24,6 +26,7 @@ impl Default for Config {
             port: 3000,
             domain: "localhost:3000".to_string(),
             key_file: "broker-key.json".to_string(),
+            database_path: "browserid.db".to_string(),
         }
     }
 }
@@ -42,10 +45,14 @@ impl Config {
         let key_file = std::env::var("BROKER_KEY_FILE")
             .unwrap_or_else(|_| "broker-key.json".to_string());
 
+        let database_path = std::env::var("DATABASE_PATH")
+            .unwrap_or_else(|_| "browserid.db".to_string());
+
         Self {
             port,
             domain,
             key_file,
+            database_path,
         }
     }
 }

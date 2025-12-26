@@ -24,6 +24,7 @@ uuid.workspace = true
 rand.workspace = true
 base64.workspace = true
 tower-http = { version = "0.6", features = ["fs"] }
+rusqlite.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

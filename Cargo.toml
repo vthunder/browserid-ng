@@ -55,3 +55,6 @@ tower = "0.5"
 
 # UUID generation
 uuid = { version = "1", features = ["v4"] }
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }

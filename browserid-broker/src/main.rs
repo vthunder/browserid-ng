@@ -10,8 +10,7 @@ use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use browserid_broker::{
-    load_or_generate_keypair, routes, AppState, Config, ConsoleEmailSender,
-    InMemorySessionStore, InMemoryUserStore,
+    load_or_generate_keypair, routes, AppState, Config, ConsoleEmailSender, SqliteStore,
 };
 
 #[tokio::main]
@@ -36,12 +35,17 @@ async fn main() -> Result<()> {
         "Loaded keypair"
     );
 
+    // Open SQLite database
+    let store = SqliteStore::open(&config.database_path)?;
+    let store = Arc::new(store);
+    tracing::info!(path = %config.database_path, "Opened database");
+
     // Create app state
     let state = Arc::new(AppState::new(
         keypair,
         config.domain.clone(),
-        InMemoryUserStore::new(),
-        InMemorySessionStore::new(),
+        store.clone(),
+        store.clone(),
         ConsoleEmailSender::new(),
     ));
 
