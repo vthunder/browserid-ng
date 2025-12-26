@@ -13,7 +13,8 @@
     callback: null,
     winchanCallback: null,  // WinChan response callback
     emails: [],
-    selectedEmail: null
+    selectedEmail: null,
+    newEmail: null  // Email being added to account
   };
 
   // API endpoints (relative to current origin)
@@ -27,7 +28,9 @@
     stageReset: '/wsapi/stage_reset',
     completeReset: '/wsapi/complete_reset',
     logout: '/wsapi/logout',
-    addressInfo: '/wsapi/address_info'
+    addressInfo: '/wsapi/address_info',
+    stageEmail: '/wsapi/stage_email',
+    completeEmailAddition: '/wsapi/complete_email_addition'
   };
 
   // DOM elements
@@ -40,6 +43,8 @@
     resetEmail: document.getElementById('reset-email-screen'),
     resetPassword: document.getElementById('reset-password-screen'),
     pickEmail: document.getElementById('pick-email-screen'),
+    addEmail: document.getElementById('add-email-screen'),
+    addEmailVerify: document.getElementById('add-email-verify-screen'),
     success: document.getElementById('success-screen'),
     error: document.getElementById('error-screen')
   };
@@ -386,10 +391,74 @@
       await completeSignIn(state.email);
     });
 
-    // Add email link
+    // Add email link - go to add email screen (not login screen)
     document.getElementById('add-email-link').addEventListener('click', (e) => {
       e.preventDefault();
-      showScreen('email');
+      document.getElementById('new-email').value = '';
+      document.getElementById('add-email-error').textContent = '';
+      showScreen('addEmail');
+    });
+
+    // Add email form
+    document.getElementById('add-email-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('new-email').value.trim();
+
+      if (!email) {
+        document.getElementById('add-email-error').textContent = 'Email is required';
+        return;
+      }
+
+      state.newEmail = email;
+      document.querySelectorAll('.new-email-display').forEach(el => el.textContent = email);
+
+      showScreen('loading');
+
+      try {
+        await apiCall(API.stageEmail, 'POST', { email });
+        showScreen('addEmailVerify');
+      } catch (e) {
+        showScreen('addEmail');
+        document.getElementById('add-email-error').textContent = e.message;
+      }
+    });
+
+    // Add email verification form
+    document.getElementById('add-email-verify-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = document.getElementById('add-email-code').value.trim();
+
+      if (!code || code.length !== 6) {
+        document.getElementById('add-email-verify-error').textContent = 'Please enter the 6-digit code';
+        return;
+      }
+
+      showScreen('loading');
+
+      try {
+        await apiCall(API.completeEmailAddition, 'POST', { token: code });
+        // Email added successfully - use it to sign in
+        state.email = state.newEmail;
+        await completeSignIn(state.email);
+      } catch (e) {
+        showScreen('addEmailVerify');
+        document.getElementById('add-email-verify-error').textContent = e.message;
+      }
+    });
+
+    // Back to pick email buttons
+    document.querySelectorAll('.back-to-pick').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        // Refresh email list and go back to pick screen
+        try {
+          const emailsResponse = await apiCall(API.listEmails);
+          state.emails = emailsResponse.emails || [];
+          populateEmailList(state.emails);
+        } catch (e) {
+          // Keep existing list
+        }
+        showScreen('pickEmail');
+      });
     });
 
     // Back buttons
@@ -451,12 +520,8 @@
         const emailsResponse = await apiCall(API.listEmails);
         state.emails = emailsResponse.emails || [];
 
-        if (state.emails.length === 1) {
-          // Only one email, use it directly
-          state.email = state.emails[0].email;
-          await completeSignIn(state.email);
-        } else if (state.emails.length > 1) {
-          // Multiple emails, let user pick
+        if (state.emails.length >= 1) {
+          // Show email picker - even with one email, let user confirm or add another
           populateEmailList(state.emails);
           showScreen('pickEmail');
         } else {

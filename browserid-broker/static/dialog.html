@@ -201,7 +201,7 @@
     <!-- Email Selection Screen (for users with multiple emails) -->
     <section id="pick-email-screen" class="screen">
       <div class="content">
-        <h2>Sign in as...</h2>
+        <h2>Sign in to <span class="rp-name"></span></h2>
 
         <form id="pick-email-form">
           <ul id="email-list" class="email-list">
@@ -216,6 +216,59 @@
           <p class="link-row">
             <a href="#" id="add-email-link">Use a different email</a>
           </p>
+        </form>
+      </div>
+    </section>
+
+    <!-- Add Email Screen (for adding email to existing account) -->
+    <section id="add-email-screen" class="screen">
+      <div class="content">
+        <h2>Add a new email</h2>
+        <p>Add another email address to your account.</p>
+
+        <form id="add-email-form">
+          <div class="form-group">
+            <label for="new-email">Email address</label>
+            <input type="email" id="new-email" name="email"
+                   placeholder="you@example.com"
+                   autocomplete="email"
+                   autocapitalize="off"
+                   autocorrect="off"
+                   required>
+            <div class="error" id="add-email-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Add Email</button>
+            <button type="button" class="back-to-pick">Back</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Add Email Verification Screen -->
+    <section id="add-email-verify-screen" class="screen">
+      <div class="content">
+        <h2>Verify your email</h2>
+        <p>We sent a verification code to <span class="new-email-display"></span></p>
+
+        <form id="add-email-verify-form">
+          <div class="form-group">
+            <label for="add-email-code">Verification Code</label>
+            <input type="text" id="add-email-code" name="code"
+                   placeholder="000000"
+                   pattern="[0-9]{6}"
+                   maxlength="6"
+                   autocomplete="one-time-code"
+                   inputmode="numeric"
+                   required>
+            <div class="error" id="add-email-verify-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Verify</button>
+            <button type="button" class="back-to-pick">Back</button>
+          </div>
         </form>
       </div>
     </section>
