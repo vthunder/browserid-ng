@@ -1,8 +1,10 @@
 //! Storage abstractions for the broker
 
 pub mod models;
+pub mod memory;
 
 pub use models::*;
+pub use memory::{InMemorySessionStore, InMemoryUserStore};
 
 use crate::error::BrokerError;
 
