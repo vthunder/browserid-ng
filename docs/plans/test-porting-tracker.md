@@ -6,7 +6,7 @@
 |----------|-------|--------|-----------|
 | Backend API Tests | 53 | 17 | 36 |
 | QUnit Dialog Tests | 19 | 0 | 19 |
-| Selenium E2E Tests | 19 | 0 | 19 |
+| Playwright E2E Tests | 19 | 3 | 16 |
 
 ---
 
@@ -126,54 +126,73 @@ All "ready to port" tests have been ported!
 
 ---
 
-## Selenium E2E Tests (19 total)
+## Playwright E2E Tests (19 original Selenium tests)
 
-### Not Started
+### Ported (7) - 50 test cases
 
-| Test | Description | Priority |
-|------|-------------|----------|
-| sign-in-test.js | Basic sign-in flow | High |
-| new-user/new-user-secondary-test.js | New secondary user signup | High |
-| returning-user.js | Returning user login | High |
-| change-password-test.js | Password change flow | High |
-| cancel-account.js | Account cancellation | High |
-| remove-email.js | Email removal | Medium |
-| reset-password-test.js | Password reset flow | Medium |
-| public-terminals.js | Public terminal handling | Medium |
-| health-check-tests.js | Health endpoint checks | Low |
-| frontend-qunit-test.js | Run QUnit in browser | Low |
-| api-tests/oncancel.js | Cancel callback testing | Medium |
-| new-user/new-user-primary-test.js | Primary IdP signup | Future |
-| add-primary-to-primary.js | Add primary to primary | Future |
-| add-primary-to-secondary.js | Add primary to secondary | Future |
-| idp-transition/broken-primary.js | Broken IdP handling | Future |
-| idp-transition/primary-shuts-down-single-email.js | IdP shutdown | Future |
-| idp-transition/primary-starts-up-single-email.js | IdP startup | Future |
-| idp-transition/transition-to-secondary.js | Transition to secondary | Future |
-| idp-transition/transition-to-secondary-forgot-password.js | Transition + reset | Future |
+| Original | Ported To | Test Cases |
+|----------|-----------|------------|
+| sign-in-test.js | sign-in.spec.ts | 7 |
+| new-user/new-user-secondary-test.js | new-user-signup.spec.ts | 8 |
+| returning-user.js | returning-user.spec.ts | 4 |
+| change-password-test.js | change-password.spec.ts | 4 |
+| reset-password-test.js | reset-password.spec.ts | 6 |
+| cancel-account.js | cancel-account.spec.ts | 5 |
+| remove-email.js | remove-email.spec.ts | 5 |
+| include.js (QUnit) | include-api.spec.ts | 6 |
+
+Additional tests created:
+- dialog-loads.spec.ts (5 tests) - Dialog initialization tests
+
+### Ready to Port
+
+All high/medium priority E2E tests have been ported!
+
+### Deferred
+
+| Test | Description | Reason |
+|------|-------------|--------|
+| public-terminals.js | Public terminal handling | Ephemeral sessions not implemented |
+| health-check-tests.js | Health endpoint checks | Low priority |
+| frontend-qunit-test.js | Run QUnit in browser | Separate QUnit infrastructure |
+| api-tests/oncancel.js | Cancel callback testing | Requires RP integration |
+
+### Primary IdP (future work)
+
+| Test | Description |
+|------|-------------|
+| new-user/new-user-primary-test.js | Primary IdP signup |
+| add-primary-to-primary.js | Add primary to primary |
+| add-primary-to-secondary.js | Add primary to secondary |
+| idp-transition/broken-primary.js | Broken IdP handling |
+| idp-transition/primary-shuts-down-single-email.js | IdP shutdown |
+| idp-transition/primary-starts-up-single-email.js | IdP startup |
+| idp-transition/transition-to-secondary.js | Transition to secondary |
+| idp-transition/transition-to-secondary-forgot-password.js | Transition + reset |
 
 ---
 
-## Testing Infrastructure Needed
+## Testing Infrastructure
 
-### For QUnit Tests
+### Playwright E2E Tests (DONE)
+- [x] Add Playwright as dev dependency
+- [x] Create test fixtures (test user creation via API)
+- [x] Create page objects for dialog (DialogPage)
+- [x] Add test endpoint for verification codes (/wsapi/test/pending_verification)
+- [ ] Configure CI for headless browser tests
+
+### For QUnit Tests (NOT STARTED)
 - [ ] Set up wasm-bindgen-test or similar for browser JS testing
 - [ ] Create test harness HTML page
 - [ ] Port test helpers (mocks, assertions)
 - [ ] Decide: test Rust WASM or keep JS tests separate
 
-### For Selenium/Playwright Tests
-- [ ] Add Playwright as dev dependency
-- [ ] Create test fixtures (test user creation)
-- [ ] Set up test RP (simple HTML page)
-- [ ] Create page objects for dialog
-- [ ] Configure CI for headless browser tests
-
 ---
 
 ## Next Steps
 
-1. **Backend**: Port remaining "Ready to Port" tests
-2. **Dialog Unit Tests**: Set up QUnit/JS test infrastructure
-3. **E2E Tests**: Set up Playwright infrastructure
-4. **Primary IdP**: Defer until primary IdP support is implemented
+1. ~~**E2E Tests**: Port remaining high-priority E2E tests (change-password, cancel-account, remove-email, reset-password)~~ DONE
+2. ~~**include.js Tests**: Port QUnit tests for navigator.id API~~ DONE (6 tests)
+3. **Dialog Unit Tests**: Set up QUnit/JS test infrastructure (lower priority - E2E covers most flows)
+4. **Backend**: Port remaining backend tests as needed
+5. **Primary IdP**: Defer until primary IdP support is implemented
