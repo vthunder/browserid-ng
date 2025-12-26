@@ -232,3 +232,251 @@ fn test_verify_assertion_primary_cannot_speak_for_other_domain() {
     assert_eq!(result.status, "failure");
     assert!(result.reason.unwrap().contains("not authorized"));
 }
+
+#[test]
+fn test_verify_assertion_expired() {
+    // Mirrors browserid verifier-test.js lines 783-805:
+    // An assertion that expired should fail
+    let domain_key = KeyPair::generate();
+    let user_key = KeyPair::generate();
+
+    let cert = Certificate::create(
+        "example.com",
+        "alice@example.com",
+        &user_key.public_key(),
+        Duration::hours(1),
+        &domain_key,
+    )
+    .unwrap();
+
+    // Create an assertion that's already expired (negative duration)
+    let assertion =
+        Assertion::create("https://relying-party.com", Duration::milliseconds(-10), &user_key)
+            .unwrap();
+
+    let backed = BackedAssertion::new(cert, assertion);
+    let encoded = backed.encode();
+
+    let mut fetcher = MockFetcher {
+        documents: HashMap::new(),
+    };
+    fetcher.documents.insert(
+        "example.com".to_string(),
+        SupportDocument::new(domain_key.public_key()),
+    );
+
+    let result = verify_assertion(&encoded, "https://relying-party.com", "broker.example.com", &fetcher);
+
+    assert_eq!(result.status, "failure");
+    assert!(result.reason.unwrap().to_lowercase().contains("expired"));
+}
+
+#[test]
+fn test_verify_assertion_bad_certificate_signature() {
+    // Mirrors browserid verifier-test.js lines 626-669:
+    // A certificate signed by the wrong key should fail
+    let domain_key = KeyPair::generate();
+    let wrong_key = KeyPair::generate(); // Different from domain_key
+    let user_key = KeyPair::generate();
+
+    // Certificate signed by wrong_key, but we'll claim domain_key in .well-known
+    let cert = Certificate::create(
+        "example.com",
+        "alice@example.com",
+        &user_key.public_key(),
+        Duration::hours(1),
+        &wrong_key, // Signed with wrong key!
+    )
+    .unwrap();
+
+    let assertion =
+        Assertion::create("https://relying-party.com", Duration::minutes(5), &user_key).unwrap();
+
+    let backed = BackedAssertion::new(cert, assertion);
+    let encoded = backed.encode();
+
+    let mut fetcher = MockFetcher {
+        documents: HashMap::new(),
+    };
+    // Domain advertises domain_key, but cert was signed with wrong_key
+    fetcher.documents.insert(
+        "example.com".to_string(),
+        SupportDocument::new(domain_key.public_key()),
+    );
+
+    let result = verify_assertion(&encoded, "https://relying-party.com", "broker.example.com", &fetcher);
+
+    assert_eq!(result.status, "failure");
+    assert!(result.reason.unwrap().to_lowercase().contains("signature"));
+}
+
+#[test]
+fn test_verify_assertion_bad_assertion_signature() {
+    // Assertion signed by wrong key (not matching certificate's public key)
+    let domain_key = KeyPair::generate();
+    let user_key = KeyPair::generate();
+    let wrong_user_key = KeyPair::generate();
+
+    let cert = Certificate::create(
+        "example.com",
+        "alice@example.com",
+        &user_key.public_key(), // Certificate contains user_key
+        Duration::hours(1),
+        &domain_key,
+    )
+    .unwrap();
+
+    // Assertion signed with wrong_user_key instead of user_key
+    let assertion =
+        Assertion::create("https://relying-party.com", Duration::minutes(5), &wrong_user_key)
+            .unwrap();
+
+    let backed = BackedAssertion::new(cert, assertion);
+    let encoded = backed.encode();
+
+    let mut fetcher = MockFetcher {
+        documents: HashMap::new(),
+    };
+    fetcher.documents.insert(
+        "example.com".to_string(),
+        SupportDocument::new(domain_key.public_key()),
+    );
+
+    let result = verify_assertion(&encoded, "https://relying-party.com", "broker.example.com", &fetcher);
+
+    assert_eq!(result.status, "failure");
+    assert!(result.reason.unwrap().to_lowercase().contains("signature"));
+}
+
+#[test]
+fn test_verify_assertion_expired_certificate() {
+    // Certificate that's already expired
+    let domain_key = KeyPair::generate();
+    let user_key = KeyPair::generate();
+
+    // Create certificate with negative duration (already expired)
+    let cert = Certificate::create(
+        "example.com",
+        "alice@example.com",
+        &user_key.public_key(),
+        Duration::milliseconds(-10), // Expired!
+        &domain_key,
+    )
+    .unwrap();
+
+    let assertion =
+        Assertion::create("https://relying-party.com", Duration::minutes(5), &user_key).unwrap();
+
+    let backed = BackedAssertion::new(cert, assertion);
+    let encoded = backed.encode();
+
+    let mut fetcher = MockFetcher {
+        documents: HashMap::new(),
+    };
+    fetcher.documents.insert(
+        "example.com".to_string(),
+        SupportDocument::new(domain_key.public_key()),
+    );
+
+    let result = verify_assertion(&encoded, "https://relying-party.com", "broker.example.com", &fetcher);
+
+    assert_eq!(result.status, "failure");
+    assert!(result.reason.unwrap().to_lowercase().contains("expired"));
+}
+
+#[test]
+fn test_verify_assertion_wrong_port() {
+    // Mirrors browserid verifier-test.js lines 231-242:
+    // Audience with wrong port should fail
+    let domain_key = KeyPair::generate();
+    let user_key = KeyPair::generate();
+
+    let cert = Certificate::create(
+        "example.com",
+        "alice@example.com",
+        &user_key.public_key(),
+        Duration::hours(1),
+        &domain_key,
+    )
+    .unwrap();
+
+    // Assertion for port 8080
+    let assertion =
+        Assertion::create("http://fakesite.com:8080", Duration::minutes(5), &user_key).unwrap();
+
+    let backed = BackedAssertion::new(cert, assertion);
+    let encoded = backed.encode();
+
+    let mut fetcher = MockFetcher {
+        documents: HashMap::new(),
+    };
+    fetcher.documents.insert(
+        "example.com".to_string(),
+        SupportDocument::new(domain_key.public_key()),
+    );
+
+    // Verify with different port (8888)
+    let result = verify_assertion(&encoded, "http://fakesite.com:8888", "broker.example.com", &fetcher);
+
+    assert_eq!(result.status, "failure");
+    assert!(result.reason.unwrap().to_lowercase().contains("audience"));
+}
+
+#[test]
+fn test_verify_assertion_wrong_scheme() {
+    // Mirrors browserid verifier-test.js lines 244-255:
+    // Audience with wrong scheme should fail
+    let domain_key = KeyPair::generate();
+    let user_key = KeyPair::generate();
+
+    let cert = Certificate::create(
+        "example.com",
+        "alice@example.com",
+        &user_key.public_key(),
+        Duration::hours(1),
+        &domain_key,
+    )
+    .unwrap();
+
+    // Assertion for http
+    let assertion =
+        Assertion::create("http://fakesite.com:8080", Duration::minutes(5), &user_key).unwrap();
+
+    let backed = BackedAssertion::new(cert, assertion);
+    let encoded = backed.encode();
+
+    let mut fetcher = MockFetcher {
+        documents: HashMap::new(),
+    };
+    fetcher.documents.insert(
+        "example.com".to_string(),
+        SupportDocument::new(domain_key.public_key()),
+    );
+
+    // Verify with https instead of http
+    let result = verify_assertion(&encoded, "https://fakesite.com:8080", "broker.example.com", &fetcher);
+
+    assert_eq!(result.status, "failure");
+    assert!(result.reason.unwrap().to_lowercase().contains("audience"));
+}
+
+#[test]
+fn test_verify_assertion_no_certificates() {
+    // Mirrors browserid verifier-test.js lines 830-852:
+    // An assertion with no certificate should fail
+    let fetcher = MockFetcher {
+        documents: HashMap::new(),
+    };
+
+    // Just a raw assertion without certificate bundle (missing the ~ separator)
+    let result = verify_assertion(
+        "eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiSldUIn0.eyJhdWQiOiJodHRwczovL2V4YW1wbGUuY29tIiwiZXhwIjoxNzM1MjUwMDAwfQ.signature",
+        "https://example.com",
+        "broker.example.com",
+        &fetcher
+    );
+
+    assert_eq!(result.status, "failure");
+    // Should indicate missing certificate or invalid format
+    assert!(result.reason.is_some());
+}
