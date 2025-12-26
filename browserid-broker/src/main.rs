@@ -3,7 +3,10 @@
 //! A fallback identity provider for domains that don't implement
 //! native BrowserID support. Similar to Mozilla's login.persona.org.
 
+use std::sync::Arc;
+
 use anyhow::Result;
+use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
@@ -13,6 +16,11 @@ mod error;
 mod routes;
 mod state;
 mod store;
+
+use config::{load_or_generate_keypair, Config};
+use email::ConsoleEmailSender;
+use state::AppState;
+use store::{InMemorySessionStore, InMemoryUserStore};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -25,14 +33,36 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    tracing::info!("BrowserID-NG Broker starting...");
+    // Load configuration
+    let config = Config::from_env();
+    tracing::info!(?config, "Loaded configuration");
 
-    // TODO: Load config
-    // TODO: Initialize state
-    // TODO: Set up routes
-    // TODO: Start server
+    // Load or generate keypair
+    let keypair = load_or_generate_keypair(&config.key_file)?;
+    tracing::info!(
+        public_key = %keypair.public_key().to_base64(),
+        "Loaded keypair"
+    );
 
-    tracing::info!("Broker not yet implemented");
+    // Create app state
+    let state = Arc::new(AppState::new(
+        keypair,
+        config.domain.clone(),
+        InMemoryUserStore::new(),
+        InMemorySessionStore::new(),
+        ConsoleEmailSender::new(),
+    ));
+
+    // Create router
+    let app = routes::create_router(state);
+
+    // Start server
+    let addr = format!("0.0.0.0:{}", config.port);
+    let listener = TcpListener::bind(&addr).await?;
+    tracing::info!("Broker listening on http://{}", addr);
+    tracing::info!("Support document at http://{}/.well-known/browserid", config.domain);
+
+    axum::serve(listener, app).await?;
 
     Ok(())
 }
