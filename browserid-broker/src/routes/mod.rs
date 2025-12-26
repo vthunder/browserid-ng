@@ -2,6 +2,7 @@
 
 mod account;
 mod auth;
+mod email;
 mod session;
 mod well_known;
 
@@ -29,6 +30,10 @@ where
         .route("/wsapi/complete_user_creation", post(account::complete_user_creation))
         .route("/wsapi/authenticate_user", post(auth::authenticate_user))
         .route("/wsapi/logout", post(auth::logout))
+        .route("/wsapi/list_emails", get(email::list_emails))
+        .route("/wsapi/stage_email", post(email::stage_email))
+        .route("/wsapi/complete_email_addition", post(email::complete_email_addition))
+        .route("/wsapi/remove_email", post(email::remove_email))
         .layer(CookieManagerLayer::new())
         .with_state(state)
 }
