@@ -1,6 +1,7 @@
 //! HTTP routes for the broker
 
 mod account;
+mod auth;
 mod session;
 mod well_known;
 
@@ -26,6 +27,8 @@ where
         .route("/wsapi/session_context", get(session::get_session_context))
         .route("/wsapi/stage_user", post(account::stage_user))
         .route("/wsapi/complete_user_creation", post(account::complete_user_creation))
+        .route("/wsapi/authenticate_user", post(auth::authenticate_user))
+        .route("/wsapi/logout", post(auth::logout))
         .layer(CookieManagerLayer::new())
         .with_state(state)
 }
