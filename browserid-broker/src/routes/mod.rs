@@ -2,6 +2,7 @@
 
 mod account;
 mod auth;
+mod cert;
 mod email;
 mod session;
 mod well_known;
@@ -34,6 +35,7 @@ where
         .route("/wsapi/stage_email", post(email::stage_email))
         .route("/wsapi/complete_email_addition", post(email::complete_email_addition))
         .route("/wsapi/remove_email", post(email::remove_email))
+        .route("/wsapi/cert_key", post(cert::cert_key))
         .layer(CookieManagerLayer::new())
         .with_state(state)
 }
