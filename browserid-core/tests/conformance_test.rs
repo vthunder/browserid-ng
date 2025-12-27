@@ -32,33 +32,26 @@ fn extract_components(signed_object: &str) -> Result<JwtComponents, String> {
         ));
     }
 
-    let header_segment = parts[0];
-    let payload_segment = parts[1];
-    let crypto_segment = parts[2];
-
     let header_bytes = URL_SAFE_NO_PAD
-        .decode(header_segment)
+        .decode(parts[0])
         .map_err(|e| format!("failed to decode header: {}", e))?;
     let header: Value = serde_json::from_slice(&header_bytes)
         .map_err(|e| format!("failed to parse header JSON: {}", e))?;
 
     let payload_bytes = URL_SAFE_NO_PAD
-        .decode(payload_segment)
+        .decode(parts[1])
         .map_err(|e| format!("failed to decode payload: {}", e))?;
     let payload: Value = serde_json::from_slice(&payload_bytes)
         .map_err(|e| format!("failed to parse payload JSON: {}", e))?;
 
     let signature_bytes = URL_SAFE_NO_PAD
-        .decode(crypto_segment)
+        .decode(parts[2])
         .map_err(|e| format!("failed to decode signature: {}", e))?;
 
     Ok(JwtComponents {
         header,
         payload,
         signature: signature_bytes,
-        header_segment: header_segment.to_string(),
-        payload_segment: payload_segment.to_string(),
-        crypto_segment: crypto_segment.to_string(),
     })
 }
 
@@ -67,9 +60,6 @@ struct JwtComponents {
     header: Value,
     payload: Value,
     signature: Vec<u8>,
-    header_segment: String,
-    payload_segment: String,
-    crypto_segment: String,
 }
 
 // =============================================================================
