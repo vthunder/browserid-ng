@@ -36,10 +36,10 @@ async fn test_list_emails_after_creation() {
     let body: Value = response.json();
     assert_eq!(body["success"], true);
 
+    // list_emails returns an array of email strings
     let emails = body["emails"].as_array().unwrap();
     assert_eq!(emails.len(), 1);
-    assert_eq!(emails[0]["email"], email);
-    assert_eq!(emails[0]["verified"], true);
+    assert_eq!(emails[0].as_str().unwrap(), email);
 }
 
 /// Test: list_emails returns multiple emails after adding one
@@ -81,12 +81,13 @@ async fn test_list_emails_multiple() {
     assert_eq!(response.status_code(), 200);
     let body: Value = response.json();
 
+    // list_emails returns an array of email strings
     let emails = body["emails"].as_array().unwrap();
     assert_eq!(emails.len(), 2);
 
     let email_addresses: Vec<&str> = emails
         .iter()
-        .map(|e| e["email"].as_str().unwrap())
+        .map(|e| e.as_str().unwrap())
         .collect();
     assert!(email_addresses.contains(&email1));
     assert!(email_addresses.contains(&email2));

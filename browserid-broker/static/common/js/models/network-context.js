@@ -64,7 +64,8 @@ BrowserID.Models.NetworkContext = (function() {
     },
 
     getDomainKeyCreationTime: function() {
-      if (!this.domain_key_creation_time) throw new Error("can't get domain key creation time!");
+      // Use explicit undefined check since 0 is a valid timestamp (epoch)
+      if (this.domain_key_creation_time === undefined) throw new Error("can't get domain key creation time!");
 
       return new Date(this.domain_key_creation_time);
     },

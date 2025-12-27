@@ -1,0 +1,31 @@
+#!/bin/bash
+#
+# Pre-push hook: Run full test suite before pushing
+#
+# This prevents pushing code that breaks tests in other parts of the codebase.
+# Example: changing an API endpoint format that's used by multiple consumers.
+#
+# Install: git config core.hooksPath .githooks
+# Skip:    git push --no-verify (use sparingly!)
+#
+
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+echo "Running full test suite before push..."
+echo ""
+
+# Run Rust tests
+echo "==> Running Rust tests..."
+cd "$ROOT"
+cargo test --quiet
+
+# Run E2E tests
+echo ""
+echo "==> Running E2E tests..."
+cd "$ROOT/e2e-tests"
+npx playwright test
+
+echo ""
+echo "All tests passed. Proceeding with push."

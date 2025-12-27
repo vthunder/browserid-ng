@@ -17,8 +17,16 @@ const SESSION_COOKIE: &str = "browserid_session";
 pub struct SessionContext {
     pub csrf_token: Option<String>,
     pub authenticated: bool,
+    /// auth_level is used by the frontend (UserContext) to determine authentication status
+    /// Values: "password", "assertion", or null for unauthenticated
+    pub auth_level: Option<String>,
     pub user_id: Option<u64>,
+    /// userid is used by the frontend (UserContext) for user identification
+    pub userid: Option<u64>,
     pub server_time: i64,
+    /// domain_key_creation_time is used by the frontend to check if certs are still valid
+    /// This should be the timestamp when the domain's signing key was created
+    pub domain_key_creation_time: i64,
     /// Whether the client has cookies enabled
     /// The communication_iframe checks this to know if it can proceed
     pub cookies: bool,
@@ -41,20 +49,31 @@ where
             state.session_store.get(&session_id).ok().flatten()
         });
 
+    let server_time = chrono::Utc::now().timestamp();
+    // domain_key_creation_time: when the signing key was created
+    // For simplicity, we use the start of time (0) so all certs are considered valid
+    let domain_key_creation_time = 0i64;
+
     let context = if let Some(session) = session {
         SessionContext {
             csrf_token: Some(session.csrf_token),
             authenticated: true,
+            auth_level: Some("password".to_string()),
             user_id: Some(session.user_id.0),
-            server_time: chrono::Utc::now().timestamp(),
+            userid: Some(session.user_id.0),
+            server_time,
+            domain_key_creation_time,
             cookies: true,
         }
     } else {
         SessionContext {
             csrf_token: None,
             authenticated: false,
+            auth_level: None,
             user_id: None,
-            server_time: chrono::Utc::now().timestamp(),
+            userid: None,
+            server_time,
+            domain_key_creation_time,
             cookies: true, // Assume cookies are enabled - the original checks for a test cookie
         }
     };

@@ -17,13 +17,8 @@ use crate::store::{PendingVerification, SessionStore, UserStore, VerificationTyp
 #[derive(Serialize)]
 pub struct ListEmailsResponse {
     pub success: bool,
-    pub emails: Vec<EmailInfo>,
-}
-
-#[derive(Serialize)]
-pub struct EmailInfo {
-    pub email: String,
-    pub verified: bool,
+    /// Just the email addresses as strings (for compatibility with original BrowserID protocol)
+    pub emails: Vec<String>,
 }
 
 /// GET /wsapi/list_emails
@@ -43,13 +38,7 @@ where
 
     Ok(Json(ListEmailsResponse {
         success: true,
-        emails: emails
-            .into_iter()
-            .map(|e| EmailInfo {
-                email: e.email,
-                verified: e.verified,
-            })
-            .collect(),
+        emails: emails.into_iter().map(|e| e.email).collect(),
     }))
 }
 

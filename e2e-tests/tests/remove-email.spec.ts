@@ -72,9 +72,9 @@ test.describe('Remove Email Flow', () => {
     });
 
     expect(listResult.success).toBeTruthy();
-    const emailAddresses = listResult.emails.map((e: { email: string }) => e.email);
-    expect(emailAddresses).toContain(primaryEmail);
-    expect(emailAddresses).toContain(secondaryEmail);
+    // list_emails returns an array of email strings
+    expect(listResult.emails).toContain(primaryEmail);
+    expect(listResult.emails).toContain(secondaryEmail);
   });
 
   test('can remove secondary email via API', async ({ dialogPage, request, page }) => {
@@ -145,9 +145,9 @@ test.describe('Remove Email Flow', () => {
       return response.json();
     });
 
-    const emailAddresses = listResult.emails.map((e: { email: string }) => e.email);
-    expect(emailAddresses).toContain(primaryEmail);
-    expect(emailAddresses).not.toContain(secondaryEmail);
+    // list_emails returns an array of email strings
+    expect(listResult.emails).toContain(primaryEmail);
+    expect(listResult.emails).not.toContain(secondaryEmail);
   });
 
   test('cannot remove last email', async ({ dialogPage, request, page }) => {

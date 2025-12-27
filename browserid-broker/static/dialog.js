@@ -6,6 +6,14 @@
 (function() {
   'use strict';
 
+  // Set storageCheck bit so communication_iframe knows localStorage is accessible
+  // (see issue #3905 in original browserid)
+  try {
+    localStorage.storageCheck = "true";
+  } catch (e) {
+    // localStorage may not be available (iOS privacy mode, etc.)
+  }
+
   // State
   let state = {
     email: null,
@@ -156,14 +164,68 @@
     return `${certificate}~${assertion}`;
   }
 
+  // Store logged-in state in localStorage for communication_iframe
+  // This mirrors what BrowserID.Storage.site.set does
+  function storeLoggedInState(origin, email) {
+    try {
+      const siteInfo = JSON.parse(localStorage.getItem('siteInfo') || '{}');
+      siteInfo[origin] = siteInfo[origin] || {};
+      siteInfo[origin].logged_in = email;
+      siteInfo[origin].email = email;
+      localStorage.setItem('siteInfo', JSON.stringify(siteInfo));
+    } catch (e) {
+      console.warn('Failed to store logged-in state:', e);
+    }
+  }
+
+  // Store email keypair and certificate for silent assertions
+  // This mirrors what BrowserID.Storage.addEmail does
+  async function storeEmailKeypair(email, publicKey, privateKey, certificate) {
+    try {
+      // Export keys to JWK format
+      const pubJwk = await crypto.subtle.exportKey('jwk', publicKey);
+      const privJwk = await crypto.subtle.exportKey('jwk', privateKey);
+
+      // Format keys for BrowserID storage format
+      // jwcrypto-compat.js expects: pub.x for public key, priv.d and priv.x for secret key
+      const pubObj = {
+        algorithm: 'Ed25519',
+        x: pubJwk.x
+      };
+      const privObj = {
+        algorithm: 'Ed25519',
+        d: privJwk.d,
+        x: privJwk.x  // Need x for the full keypair when signing
+      };
+
+      // Store in emails namespace (default issuer)
+      const allEmails = JSON.parse(localStorage.getItem('emails') || '{}');
+      allEmails['default'] = allEmails['default'] || {};
+      allEmails['default'][email] = {
+        pub: pubObj,
+        priv: privObj,
+        cert: certificate
+      };
+      localStorage.setItem('emails', JSON.stringify(allEmails));
+    } catch (e) {
+      console.warn('Failed to store email keypair:', e);
+    }
+  }
+
   // Complete sign-in and return assertion
   async function completeSignIn(email) {
     try {
       const audience = state.origin;
       const expiresAt = Date.now() + (5 * 60 * 1000); // 5 minutes
 
-      const { certificate, privateKey } = await generateCertificate(email);
+      const { certificate, privateKey, publicKey } = await generateCertificate(email);
       const assertion = await createAssertion(privateKey, certificate, audience, expiresAt);
+
+      // Store in localStorage so communication_iframe knows we're logged in
+      storeLoggedInState(audience, email);
+
+      // Store keypair and certificate for silent assertions
+      await storeEmailKeypair(email, publicKey, privateKey, certificate);
 
       showScreen('success');
 
@@ -497,12 +559,12 @@
     const list = document.getElementById('email-list');
     list.innerHTML = '';
 
-    emails.forEach((email, index) => {
+    emails.forEach((emailStr, index) => {
       const li = document.createElement('li');
       li.innerHTML = `
         <label>
-          <input type="radio" name="selected-email" value="${email.email}" ${index === 0 ? 'checked' : ''}>
-          <span class="email-text">${email.email}</span>
+          <input type="radio" name="selected-email" value="${emailStr}" ${index === 0 ? 'checked' : ''}>
+          <span class="email-text">${emailStr}</span>
         </label>
       `;
       list.appendChild(li);

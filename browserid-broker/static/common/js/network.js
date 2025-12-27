@@ -55,7 +55,9 @@ BrowserID.Network = (function() {
         setContext(result);
         complete(done, context);
       },
-      error: onFailure
+      error: function(err) {
+        onFailure(err);
+      }
     });
   }
 
@@ -586,7 +588,9 @@ BrowserID.Network = (function() {
         success: function(emails) {
           complete(onComplete, emails.emails);
         },
-        error: onFailure
+        error: function(err) {
+          onFailure && onFailure(err);
+        }
       });
     },
 

@@ -205,7 +205,6 @@ BrowserID.Storage = (function() {
   function siteGet(site, key) {
     var allSiteInfo = JSON.parse(storage.siteInfo || "{}");
     var siteInfo = allSiteInfo[site];
-
     return siteInfo && siteInfo[key];
   }
 

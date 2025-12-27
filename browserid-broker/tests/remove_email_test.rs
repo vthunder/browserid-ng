@@ -77,9 +77,10 @@ async fn test_can_remove_second_email() {
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie))
         .await;
     let body: Value = response.json();
+    // list_emails returns an array of email strings
     let emails = body["emails"].as_array().unwrap();
     assert_eq!(emails.len(), 1);
-    assert_eq!(emails[0]["email"], email1);
+    assert_eq!(emails[0].as_str().unwrap(), email1);
 }
 
 /// Test: cannot remove email that doesn't exist

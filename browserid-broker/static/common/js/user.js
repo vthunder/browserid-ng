@@ -1489,15 +1489,17 @@ BrowserID.User = (function() {
           loggedInEmail = storage.site.get(origin, "one_time");
         }
         // User is not signed in to Persona or not signed into the site.
-        if (!(authenticated && loggedInEmail))
+        if (!(authenticated && loggedInEmail)) {
           return complete(onComplete, null, null);
+        }
 
         User.resetCaches();
         User.addressInfo(loggedInEmail, function(info) {
           // If the address is in a transition state, the user must see
           // messaging in the dialog before continuing.
-          if (isTransitioning(info.state))
+          if (isTransitioning(info.state)) {
             return complete(onComplete, null, null);
+          }
 
           // If there has not been an issuer change and Persona's view of the
           // world agrees with the sites, then skip assertion generation.

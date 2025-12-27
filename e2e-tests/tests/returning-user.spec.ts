@@ -52,6 +52,10 @@ test.describe('Returning User Flow', () => {
     await expect(emailInList).toBeVisible();
     await expect(emailInList).toBeChecked();
 
+    // The visible label should show the actual email, not "undefined"
+    const emailLabel = await newPage.locator('.email-text').first();
+    await expect(emailLabel).toHaveText(testEmail);
+
     // User can confirm their email and proceed to success
     await newPage.click('#pick-email-form button.primary');
     await newPage.waitForSelector('#success-screen.active', { timeout: 15000 });
