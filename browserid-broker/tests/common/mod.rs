@@ -25,6 +25,7 @@ impl MockEmailSender {
     }
 
     /// Get the last verification code sent to an email
+    #[allow(dead_code)]
     pub fn get_code(&self, email: &str) -> Option<String> {
         self.sent
             .read()
@@ -74,6 +75,7 @@ pub fn create_test_server() -> (TestServer, MockEmailSender) {
 }
 
 /// Helper to create a user and return the session cookie
+#[allow(dead_code)]
 pub async fn create_user(
     server: &TestServer,
     email_sender: &MockEmailSender,
