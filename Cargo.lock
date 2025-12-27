@@ -239,6 +239,7 @@ dependencies = [
  "browserid-core",
  "chrono",
  "cookie",
+ "dotenvy",
  "http 1.4.0",
  "lettre",
  "rand",
@@ -471,6 +472,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "dotenvy"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "ed25519"
@@ -1905,7 +1912,6 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
- "windows-sys 0.52.0",
  "windows-sys 0.59.0",
 ]
 

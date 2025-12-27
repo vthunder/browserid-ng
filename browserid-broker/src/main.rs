@@ -16,6 +16,14 @@ use browserid_broker::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load .env file if present (before reading any config)
+    if let Err(e) = dotenvy::dotenv() {
+        if !matches!(e, dotenvy::Error::Io(_)) {
+            // Only warn if it's not a "file not found" error
+            eprintln!("Warning: Failed to load .env file: {}", e);
+        }
+    }
+
     // Initialize tracing
     tracing_subscriber::registry()
         .with(

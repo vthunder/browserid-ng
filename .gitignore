@@ -1,6 +1,7 @@
 /target
 broker-key.json
 browserid.db
+.env
 
 # Test artifacts
 test-results/
