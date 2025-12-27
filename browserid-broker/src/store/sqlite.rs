@@ -25,8 +25,16 @@ impl SqliteStore {
     pub fn open(path: &str) -> Result<Self, BrokerError> {
         let conn = Connection::open(path).map_err(|e| BrokerError::Internal(e.to_string()))?;
 
+        // Enable WAL mode for better concurrency
+        conn.execute_batch("PRAGMA journal_mode = WAL;")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+
         // Enable foreign keys
         conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+
+        // Set busy timeout to wait for locks instead of failing immediately
+        conn.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
 
         // Run migrations

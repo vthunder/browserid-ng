@@ -38,10 +38,15 @@ impl SmtpConfig {
     /// - SMTP_PORT (default: 465)
     /// - SMTP_FROM_NAME
     pub fn from_env() -> Option<Self> {
-        let host = std::env::var("SMTP_HOST").ok()?;
-        let username = std::env::var("SMTP_USERNAME").ok()?;
-        let password = std::env::var("SMTP_PASSWORD").ok()?;
-        let from_email = std::env::var("SMTP_FROM_EMAIL").ok()?;
+        // Helper to get non-empty env var
+        fn get_env(key: &str) -> Option<String> {
+            std::env::var(key).ok().filter(|s| !s.is_empty())
+        }
+
+        let host = get_env("SMTP_HOST")?;
+        let username = get_env("SMTP_USERNAME")?;
+        let password = get_env("SMTP_PASSWORD")?;
+        let from_email = get_env("SMTP_FROM_EMAIL")?;
 
         let port = std::env::var("SMTP_PORT")
             .ok()
