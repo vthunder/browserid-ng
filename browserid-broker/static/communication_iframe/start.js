@@ -49,7 +49,7 @@
   function checkAndEmit(oncomplete) {
     if (pause) return;
 
-    function onError() {
+    function onError(err) {
       chan.notify({ method: 'logout' });
       loggedInUser = null;
       oncomplete && oncomplete();
