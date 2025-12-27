@@ -13,6 +13,6 @@ pub mod store;
 pub mod verifier;
 
 pub use config::{load_or_generate_keypair, Config};
-pub use email::{ConsoleEmailSender, EmailSender};
+pub use email::{ConsoleEmailSender, EmailSender, SmtpConfig, SmtpEmailSender};
 pub use state::AppState;
 pub use store::{InMemorySessionStore, InMemoryUserStore, SessionStore, SqliteStore, UserStore};

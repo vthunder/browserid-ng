@@ -10,7 +10,8 @@ use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use browserid_broker::{
-    load_or_generate_keypair, routes, AppState, Config, ConsoleEmailSender, SqliteStore,
+    load_or_generate_keypair, routes, AppState, Config, ConsoleEmailSender, EmailSender,
+    SmtpConfig, SmtpEmailSender, SqliteStore,
 };
 
 #[tokio::main]
@@ -40,13 +41,25 @@ async fn main() -> Result<()> {
     let store = Arc::new(store);
     tracing::info!(path = %config.database_path, "Opened database");
 
+    // Create email sender (SMTP if configured, otherwise console)
+    let email_sender: Box<dyn EmailSender> = if let Some(smtp_config) = SmtpConfig::from_env() {
+        tracing::info!("Using SMTP email sender");
+        Box::new(
+            SmtpEmailSender::new(smtp_config)
+                .map_err(|e| anyhow::anyhow!("Failed to create SMTP sender: {}", e))?,
+        )
+    } else {
+        tracing::info!("Using console email sender (set SMTP_HOST to enable real emails)");
+        Box::new(ConsoleEmailSender::new())
+    };
+
     // Create app state
     let state = Arc::new(AppState::new(
         keypair,
         config.domain.clone(),
         store.clone(),
         store.clone(),
-        ConsoleEmailSender::new(),
+        email_sender,
     ));
 
     // Determine static files path (relative to workspace root or package root)
