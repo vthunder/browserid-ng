@@ -1434,9 +1434,9 @@ BrowserID.User = (function() {
       /**
        * Here is everything I know about silent assertions.
        *
-       * getSilentAssertion is used in both the communication_iframe and the
-       * internal_api to get assertions. Silent assertions drive the .watch
-       * API which in turn drives .get and .getVerifiedEmail.
+       * getSilentAssertion is used in the communication_iframe to get
+       * assertions. Silent assertions drive the .watch API which in turn
+       * drives .get and .getVerifiedEmail.
        *
        * Silent assertions are supposed to be fetched under the following
        * conditions (AND):

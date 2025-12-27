@@ -1,3 +1,7 @@
 /target
 broker-key.json
 browserid.db
+
+# Test artifacts
+test-results/
+playwright-report/

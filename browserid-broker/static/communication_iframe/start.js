@@ -157,10 +157,8 @@
   chan.bind("dialog_complete", function(trans, checkAuthStatus) {
     pause = false;
     // The dialog has closed, so that we get results from users who only open
-    // the dialog a single time, send the KPIs immediately. Note, this does not
-    // take care of native contexts. Native contexts are taken care of in in
-    // dialog/js/misc/internal_api.js. Errors sending the KPI data should not
-    // affect anything else.
+    // the dialog a single time, send the KPIs immediately. Errors sending the
+    // KPI data should not affect anything else.
     try {
       var currentData = interactionData.getCurrent();
       if (currentData) {
