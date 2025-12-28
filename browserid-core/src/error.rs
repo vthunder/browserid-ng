@@ -45,4 +45,10 @@ pub enum Error {
 
     #[error("Base64 decode error: {0}")]
     Base64(#[from] base64::DecodeError),
+
+    #[error("Invalid DNS record: {0}")]
+    InvalidDnsRecord(String),
+
+    #[error("Unsupported algorithm: {0}")]
+    UnsupportedAlgorithm(String),
 }

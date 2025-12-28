@@ -9,11 +9,13 @@ pub mod keys;
 pub mod certificate;
 pub mod assertion;
 pub mod discovery;
+pub mod dns;
 pub mod error;
 
 pub use keys::{KeyPair, PublicKey};
 pub use certificate::Certificate;
 pub use assertion::{Assertion, BackedAssertion};
+pub use dns::DnsRecord;
 pub use error::Error;
 
 /// Result type for browserid-core operations
