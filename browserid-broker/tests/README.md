@@ -1,59 +1,97 @@
-# Broker Test Porting Status
+# Broker Integration Tests
 
-Tests ported from mozilla/persona (~/src/browserid/tests/).
+Tests ported from mozilla/persona (`~/src/browserid/tests/`).
 
-## Ported
+## Test Summary
 
-- [x] session_context_test.rs (from session-context-test.js) - CSRF token, auth status, server_time
-- [x] logout_test.rs (from logout-test.js) - Logout flows, session invalidation
-- [x] password_length_test.rs (from password-length-test.js) - Password validation (8-80 chars)
-- [x] list_emails_wsapi_test.rs (from list-emails-wsapi-test.js) - Email listing
-- [x] remove_email_test.rs (from remove-email-test.js) - Email removal
-- [x] cert_key_test.rs (from cert-key-test.js) - Certificate issuance
-- [x] authentication_test.rs (derived from multiple tests) - Login/auth flows
-- [x] well_known_test.rs (from well-known-browserid.js) - Support document
-- [x] stage_email_test.rs (derived) - Email staging endpoints
-- [x] verification_test.rs (derived) - Verification code handling
-- [x] forgotten_pass_test.rs (from forgotten-pass-test.js) - Password reset flow
-- [x] verifier_test.rs (from verifier-test.js) - Assertion verification (13 tests):
-  - Success case with native IdP
-  - Fallback broker support
-  - Untrusted issuer rejection (security)
-  - Cross-domain issuer rejection (security)
-  - Audience mismatch (wrong host, port, scheme)
-  - Expired assertion/certificate
-  - Bad signatures (certificate and assertion)
-  - Missing certificate
-  - Invalid format
+**19 test files, 98 tests total**
 
-## Not Yet Ported
+## Ported Tests
 
-### Broker Features
-- [ ] registration_status_wsapi_test.rs (from registration-status-wsapi-test.js) - Need user_creation_status endpoint
-- [ ] authentication_lockout_test.rs (from authentication-lockout-test.js) - Need account lockout feature
-- [ ] email_throttling_test.rs (from email-throttling-test.js) - Need rate limiting
-- [ ] session_duration_test.rs (from session-duration-test.js) - Need session expiry
-- [ ] session_prolong_test.rs (from session-prolong-test.js) - Need session refresh
+### Authentication & Session
 
-### Verification (from verifier-test.js)
-- [ ] Audience matching with default ports (http:80, https:443 equivalence)
-- [ ] POST format variations (form-urlencoded, JSON, query params)
-- [ ] Malformed assertion handling (truncated, prepended gunk)
-- [ ] Certificate chain rejection (multi-cert chains)
-- [ ] Wildcard audience rejection
-- [ ] Empty domain in audience rejection
-- [ ] Missing assertion/audience in request
+| Test File | Tests | Original |
+|-----------|-------|----------|
+| authentication_test.rs | 3 | (derived from multiple) |
+| session_context_test.rs | 5 | session-context-test.js |
+| logout_test.rs | 5 | logout-test.js |
+| cookie_session_security_test.rs | 6 | cookie-session-security-test.js |
 
-## Not Applicable
+### Certificate & Verification
 
-- bcrypt-compatibility-test.js - Legacy bcrypt migration
-- primary-secondary-transition-test.js - Primary IdP support (not implementing)
-- primary-then-secondary-test.js - Primary IdP support (not implementing)
-- proxy-idp-test.js - IdP proxy (not implementing)
-- add-email-with-assertion-test.js - Primary IdP assertions (not implementing)
-- auth-with-assertion-test.js - Primary IdP assertions (not implementing)
-- Proxy IDP verification tests (from verifier-test.js) - Delegation not implemented
-- Uppercase domain with proxy IDP tests - Delegation not implemented
+| Test File | Tests | Original |
+|-----------|-------|----------|
+| cert_key_test.rs | 7 | cert-key-test.js |
+| verifier_test.rs | 13 | verifier-test.js |
+| well_known_test.rs | 1 | well-known-test.js |
+
+### Email Management
+
+| Test File | Tests | Original |
+|-----------|-------|----------|
+| address_info_test.rs | 7 | address-info-test.js |
+| list_emails_wsapi_test.rs | 4 | list-emails-wsapi-test.js |
+| remove_email_test.rs | 5 | remove-email-test.js |
+| stage_email_test.rs | 3 | (derived) |
+| email_addition_status_test.rs | 4 | email-addition-status-test.js |
+
+### Password Management
+
+| Test File | Tests | Original |
+|-----------|-------|----------|
+| password_length_test.rs | 3 | password-length-test.js |
+| password_update_test.rs | 8 | password-update-test.js |
+| forgotten_pass_test.rs | 12 | forgotten-pass-test.js |
+
+### Account & Registration
+
+| Test File | Tests | Original |
+|-----------|-------|----------|
+| account_cancel_test.rs | 8 | account-cancel-test.js |
+| registration_status_test.rs | 6 | registration-status-wsapi-test.js |
+| verification_test.rs | 3 | (derived) |
+
+## Verifier Test Coverage
+
+The verifier_test.rs covers key security scenarios from the original verifier-test.js:
+
+- [x] Valid assertion verification (fallback broker)
+- [x] Untrusted issuer rejection
+- [x] Cross-domain issuer rejection
+- [x] Audience mismatch (wrong host, port, scheme)
+- [x] Expired assertion/certificate handling
+- [x] Bad signature detection (certificate and assertion)
+- [x] Missing certificate handling
+- [x] Invalid format handling
+
+### Edge Cases Not Yet Covered
+
+- [ ] Default port equivalence (http:80 ≡ http)
+- [ ] POST format variations (form-urlencoded, JSON)
+- [ ] Malformed assertion handling (truncated, prepended data)
+- [ ] Certificate chain rejection
+- [ ] Wildcard/empty audience rejection
+
+## Not Ported
+
+### Deferred (nice to have)
+
+| Original | Reason |
+|----------|--------|
+| authentication-lockout-test.js | Need rate limiting infrastructure |
+| email-throttling-test.js | Need rate limiting infrastructure |
+| session-duration-test.js | Need session expiry feature |
+| session-prolong-test.js | Need prolong_session endpoint |
+
+### Not Applicable
+
+| Original | Reason |
+|----------|--------|
+| bcrypt-compatibility-test.js | Legacy bcrypt migration |
+| primary-*.js | Primary IdP support not implemented |
+| proxy-idp-test.js | IdP proxy not implemented |
+| add-email-with-assertion-test.js | Primary IdP assertions not implemented |
+| auth-with-assertion-test.js | Primary IdP assertions not implemented |
 
 ## Running Tests
 
@@ -66,4 +104,7 @@ cargo test -p browserid-broker --test session_context_test
 
 # Run specific test
 cargo test -p browserid-broker test_session_context_authenticated
+
+# Run with output
+cargo test -p browserid-broker -- --nocapture
 ```

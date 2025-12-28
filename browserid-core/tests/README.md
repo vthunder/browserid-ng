@@ -1,47 +1,136 @@
-# Test Porting Status
+# Core Protocol Tests
 
-Tests ported from mozilla/persona (~/src/browserid/tests/).
+Tests for the BrowserID protocol primitives, ported from mozilla/persona.
 
-## Ported (browserid-core)
+## Test Summary
 
-- [x] ca_test.rs (from ca-test.js) - Certificate authority / signing
-- [x] verifier_test.rs (from verifier-test.js) - Assertion verification
-- [x] discovery_test.rs (from discovery-test.js) - Domain discovery
-- [x] conformance_test.rs (from conformance-test.js) - JWT format compliance
-- [x] well_known_test.rs (from well-known-test.js) - Support document format, delegation, disabled domains
+**5 test files, 77 tests total**
 
-## Ported (browserid-broker)
+## Test Files
 
-See `browserid-broker/tests/README.md` for the full list. Key tests:
+### ca_test.rs (6 tests)
 
-- [x] cert_key_test.rs (from cert-key-test.js) - Certificate issuance
-- [x] session_context_test.rs (from session-context-test.js) - Session management
-- [x] logout_test.rs (from logout-test.js) - Logout flows
-- [x] password_length_test.rs (from password-length-test.js) - Password validation
-- [x] list_emails_wsapi_test.rs (from list-emails-wsapi-test.js) - Email listing
-- [x] remove_email_test.rs (from remove-email-test.js) - Email removal
+Certificate Authority operations, from `ca-test.js`:
 
-## Not Yet Ported
+- Keypair generation (Ed25519)
+- Certificate creation and signing
+- Certificate structure validation (3 JWT parts)
+- Signature verification with correct key
+- Signature rejection with wrong key
+- Certificate claims validation
 
-- [ ] authentication_lockout_test.rs (from authentication-lockout-test.js) - Needs account lockout feature
-- [ ] registration_status_wsapi_test.rs (from registration-status-wsapi-test.js) - Needs status endpoint
+### verifier_test.rs (23 tests)
 
-## Ported to browserid-broker
+Assertion verification, from `verifier-test.js`:
 
-- [x] forgotten_pass_test.rs (from forgotten-pass-test.js) - Password reset (broker-level feature)
+**Core Verification:**
+- Valid assertion verification
+- Fallback broker support
+- Primary IdP support (native domains)
 
-## Not Applicable
+**Security Checks:**
+- Untrusted issuer rejection
+- Cross-domain issuer rejection (IdP can't speak for other domains)
+- Audience mismatch detection (wrong host, port, scheme)
 
-- bcrypt-compatibility-test.js - Legacy bcrypt migration
-- cef-logging.js - CEF logging specific
-- coarse-user-agent-parser-test.js - UA parsing specific
-- cookie-session-security-test.js - Covered by our session tests
-- fonts-request-test.js - Static assets
-- header-tests.js - HTTP headers
-- heartbeat-test.js - Health checks
-- i18n-tests.js - Internationalization
-- jshint-test.js - JS linting
-- kpi-test.js - Metrics
-- statsd-test.js - Metrics
-- primary-*.js - Primary IdP support (not implementing)
-- proxy-idp-test.js - IdP proxy (not implementing)
+**Expiration Handling:**
+- Expired assertion rejection
+- Expired certificate rejection
+
+**Signature Validation:**
+- Bad certificate signature detection
+- Bad assertion signature detection
+
+**Format Validation:**
+- Missing certificate handling
+- Invalid format handling
+- No certificates error
+
+### discovery_test.rs (13 tests)
+
+Domain discovery, from `discovery-test.js`:
+
+- Email domain extraction
+- Well-known URL construction
+- Support document parsing
+- Delegation chain following
+- Disabled domain detection
+- Fallback IdP handling
+- Public key retrieval
+
+### conformance_test.rs (22 tests)
+
+JWT format compliance, from `conformance-test.js`:
+
+**Structure Validation:**
+- Assertion format (3 JWT parts)
+- Certificate format (3 JWT parts)
+- Base64url encoding validation
+
+**Header Validation:**
+- Algorithm field (EdDSA)
+- Type field (JWT)
+
+**Payload Validation:**
+- Issuer (iss) field
+- Expiration (exp) timestamp
+- Issued-at (iat) timestamp
+- Audience (aud) field
+- Principal/email claims
+- Public key format
+
+### well_known_test.rs (13 tests)
+
+Support document format, from `well-known-test.js`:
+
+- Full document structure
+- Delegation configuration
+- Disabled domain handling
+- Public key format
+- Authority metadata
+- Issuer information
+
+## Original Test Mapping
+
+| browserid-ng | Original (browserid/tests/) |
+|--------------|----------------------------|
+| ca_test.rs | ca-test.js |
+| verifier_test.rs | verifier-test.js (partial) |
+| discovery_test.rs | discovery-test.js |
+| conformance_test.rs | conformance-test.js |
+| well_known_test.rs | well-known-test.js |
+
+## Coverage Notes
+
+The original `verifier-test.js` was 42KB with extensive edge case testing. Key scenarios are covered, but some edge cases remain:
+
+### Covered
+- [x] Basic verification flow
+- [x] Issuer validation
+- [x] Audience matching
+- [x] Expiration checking
+- [x] Signature validation
+- [x] Fallback broker support
+
+### Not Yet Covered
+- [ ] Default port equivalence (http:80 ≡ http, https:443 ≡ https)
+- [ ] Malformed input handling (truncated, prepended data)
+- [ ] Certificate chain rejection (multi-cert chains)
+- [ ] Wildcard audience rejection
+- [ ] Proxy IdP verification (delegation chains)
+
+## Running Tests
+
+```bash
+# Run all core tests
+cargo test -p browserid-core
+
+# Run specific test file
+cargo test -p browserid-core --test verifier_test
+
+# Run specific test
+cargo test -p browserid-core test_verify_assertion_success
+
+# Run with output
+cargo test -p browserid-core -- --nocapture
+```
