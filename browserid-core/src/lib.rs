@@ -15,7 +15,7 @@ pub mod error;
 pub use keys::{KeyPair, PublicKey};
 pub use certificate::Certificate;
 pub use assertion::{Assertion, BackedAssertion};
-pub use dns::DnsRecord;
+pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;
 
 /// Result type for browserid-core operations

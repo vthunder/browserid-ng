@@ -152,3 +152,54 @@ mod well_known_host {
         assert_eq!(record.well_known_host("example.com"), "example.com");
     }
 }
+
+mod dnssec_status {
+    use browserid_core::{DnssecStatus, DnsLookupResult, KeyPair, DnsRecord};
+
+    #[test]
+    fn test_secure_is_secure() {
+        assert!(DnssecStatus::Secure.is_secure());
+        assert!(!DnssecStatus::Insecure.is_secure());
+        assert!(!DnssecStatus::Bogus.is_secure());
+    }
+
+    #[test]
+    fn test_insecure_allows_fallback() {
+        assert!(!DnssecStatus::Secure.allows_fallback());
+        assert!(DnssecStatus::Insecure.allows_fallback());
+        assert!(!DnssecStatus::Bogus.allows_fallback());
+    }
+
+    #[test]
+    fn test_bogus_is_bogus() {
+        assert!(!DnssecStatus::Secure.is_bogus());
+        assert!(!DnssecStatus::Insecure.is_bogus());
+        assert!(DnssecStatus::Bogus.is_bogus());
+    }
+
+    #[test]
+    fn test_lookup_result_constructors() {
+        let key = KeyPair::generate();
+        let txt = format!(
+            "v=browserid1; public-key-algorithm=Ed25519; public-key={}",
+            key.public_key().to_base64()
+        );
+        let record = DnsRecord::parse(&txt).unwrap();
+
+        let secure = DnsLookupResult::secure(record);
+        assert!(secure.record.is_some());
+        assert_eq!(secure.dnssec_status, DnssecStatus::Secure);
+
+        let nxdomain = DnsLookupResult::secure_nxdomain();
+        assert!(nxdomain.record.is_none());
+        assert_eq!(nxdomain.dnssec_status, DnssecStatus::Secure);
+
+        let insecure = DnsLookupResult::insecure();
+        assert!(insecure.record.is_none());
+        assert_eq!(insecure.dnssec_status, DnssecStatus::Insecure);
+
+        let bogus = DnsLookupResult::bogus();
+        assert!(bogus.record.is_none());
+        assert_eq!(bogus.dnssec_status, DnssecStatus::Bogus);
+    }
+}

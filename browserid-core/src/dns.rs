@@ -87,3 +87,74 @@ impl DnsRecord {
         self.host.as_deref().unwrap_or(default_domain)
     }
 }
+
+/// DNSSEC validation status
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnssecStatus {
+    /// Response is DNSSEC-validated (AD flag set)
+    Secure,
+    /// Response is not DNSSEC-validated (insecure zone or no DNSSEC)
+    Insecure,
+    /// DNSSEC validation failed (BOGUS - indicates attack or misconfiguration)
+    Bogus,
+}
+
+impl DnssecStatus {
+    /// Returns true if the response is cryptographically validated
+    pub fn is_secure(&self) -> bool {
+        matches!(self, DnssecStatus::Secure)
+    }
+
+    /// Returns true if this status allows fallback to broker
+    pub fn allows_fallback(&self) -> bool {
+        matches!(self, DnssecStatus::Insecure)
+    }
+
+    /// Returns true if this status should cause hard rejection
+    pub fn is_bogus(&self) -> bool {
+        matches!(self, DnssecStatus::Bogus)
+    }
+}
+
+/// Result of a DNS lookup for BrowserID
+#[derive(Debug, Clone)]
+pub struct DnsLookupResult {
+    /// The parsed record, if found
+    pub record: Option<DnsRecord>,
+    /// DNSSEC validation status
+    pub dnssec_status: DnssecStatus,
+}
+
+impl DnsLookupResult {
+    /// Create a secure result with a record
+    pub fn secure(record: DnsRecord) -> Self {
+        Self {
+            record: Some(record),
+            dnssec_status: DnssecStatus::Secure,
+        }
+    }
+
+    /// Create a secure result with no record (NXDOMAIN)
+    pub fn secure_nxdomain() -> Self {
+        Self {
+            record: None,
+            dnssec_status: DnssecStatus::Secure,
+        }
+    }
+
+    /// Create an insecure result
+    pub fn insecure() -> Self {
+        Self {
+            record: None,
+            dnssec_status: DnssecStatus::Insecure,
+        }
+    }
+
+    /// Create a bogus result
+    pub fn bogus() -> Self {
+        Self {
+            record: None,
+            dnssec_status: DnssecStatus::Bogus,
+        }
+    }
+}
