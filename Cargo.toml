@@ -35,8 +35,8 @@ tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 
-# DNS / DNSSEC (for later)
-# trust-dns-resolver = "0.23"
+# DNS / DNSSEC
+hickory-resolver = { version = "0.24", features = ["dnssec-ring"] }
 
 # Error handling
 thiserror = "1"
