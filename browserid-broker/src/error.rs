@@ -48,6 +48,12 @@ pub enum BrokerError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("DNSSEC validation failed for domain {domain}")]
+    DnssecValidationFailed { domain: String },
+
+    #[error("Discovery failed: {0}")]
+    Discovery(String),
 }
 
 impl IntoResponse for BrokerError {
@@ -79,6 +85,14 @@ impl IntoResponse for BrokerError {
             BrokerError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+            }
+            BrokerError::DnssecValidationFailed { domain } => {
+                tracing::warn!("DNSSEC validation failed for domain: {}", domain);
+                (StatusCode::BAD_REQUEST, "DNSSEC validation failed")
+            }
+            BrokerError::Discovery(msg) => {
+                tracing::error!("Discovery failed: {}", msg);
+                (StatusCode::BAD_GATEWAY, "Discovery failed")
             }
         };
 
