@@ -14,6 +14,7 @@ use serde_json::json;
 pub struct TestContext {
     pub server: TestServer,
     pub email_sender: MockEmailSender,
+    #[allow(dead_code)]
     pub user_store: Arc<InMemoryUserStore>,
 }
 
