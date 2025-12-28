@@ -10,6 +10,8 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+use crate::fallback_fetcher::FallbackFetcher;
+
 /// HTTP-based support document fetcher
 pub struct HttpFetcher {
     client: Client,
@@ -270,6 +272,122 @@ fn verify_signatures(
 
     // Verify certificate signature with issuer's key
     if let Err(e) = cert.verify(&issuer_key) {
+        return VerificationResult::failure(format!("Certificate signature invalid: {}", e));
+    }
+
+    VerificationResult::success(email.to_string(), issuer.to_string(), expires)
+}
+
+/// Verify assertion with DNS-first discovery (async)
+///
+/// Uses FallbackFetcher to try DNS with DNSSEC first,
+/// falling back to broker if needed.
+pub async fn verify_assertion_with_dns(
+    assertion: &str,
+    audience: &str,
+    fallback_fetcher: &FallbackFetcher,
+    trusted_broker: &str,
+) -> VerificationResult {
+    // Parse the backed assertion
+    let backed = match BackedAssertion::parse(assertion) {
+        Ok(b) => b,
+        Err(e) => return VerificationResult::failure(format!("Invalid assertion format: {}", e)),
+    };
+
+    // Get the certificate
+    let cert = match backed.certificates().first() {
+        Some(c) => c,
+        None => return VerificationResult::failure("No certificate in assertion".to_string()),
+    };
+
+    let issuer = cert.issuer().to_string();
+    let expires = backed.assertion().claims().exp;
+
+    // Get email and its domain
+    let email = match cert.email() {
+        Some(e) => e.to_string(),
+        None => return VerificationResult::failure("Certificate has no email".to_string()),
+    };
+
+    let email_domain = match email.split('@').nth(1) {
+        Some(d) => d.to_string(),
+        None => return VerificationResult::failure("Invalid email format".to_string()),
+    };
+
+    // Try DNS discovery for the email domain
+    let discovery_result = match fallback_fetcher.discover(&email_domain).await {
+        Ok(r) => r,
+        Err(e) => return VerificationResult::failure(format!("Discovery failed: {}", e)),
+    };
+
+    // Check issuer authorization based on discovery result
+    let issuer_authorized = if discovery_result.is_primary {
+        // Primary IdP mode - issuer must match email domain
+        issuer == email_domain
+    } else {
+        // Fallback mode - issuer must be trusted broker
+        issuer == trusted_broker
+    };
+
+    if !issuer_authorized {
+        let expected = if discovery_result.is_primary {
+            &email_domain
+        } else {
+            trusted_broker
+        };
+        return VerificationResult::failure(format!(
+            "Issuer '{}' is not authorized (expected '{}')",
+            issuer, expected
+        ));
+    }
+
+    // Verify signatures using discovery result's public key
+    verify_signatures_with_doc(
+        &backed,
+        audience,
+        &issuer,
+        &email,
+        expires,
+        &discovery_result.document,
+    )
+}
+
+/// Verify signatures using a pre-fetched support document
+fn verify_signatures_with_doc(
+    backed: &BackedAssertion,
+    audience: &str,
+    issuer: &str,
+    email: &str,
+    expires: i64,
+    doc: &SupportDocument,
+) -> VerificationResult {
+    // Check audience
+    if backed.assertion().audience() != audience {
+        return VerificationResult::failure(format!(
+            "Audience mismatch: expected {}, got {}",
+            audience,
+            backed.assertion().audience()
+        ));
+    }
+
+    // Check assertion expiration
+    if backed.assertion().is_expired() {
+        return VerificationResult::failure("Assertion expired".to_string());
+    }
+
+    // Check certificate expiration
+    let cert = backed.certificates().first().unwrap();
+    if cert.is_expired() {
+        return VerificationResult::failure("Certificate expired".to_string());
+    }
+
+    // Verify assertion signature with certificate's public key
+    if let Err(e) = backed.assertion().verify(cert.public_key()) {
+        return VerificationResult::failure(format!("Assertion signature invalid: {}", e));
+    }
+
+    // Verify certificate signature with issuer's key (from discovery)
+    if let Err(e) = cert.verify(&doc.public_key) {
         return VerificationResult::failure(format!("Certificate signature invalid: {}", e));
     }
 
