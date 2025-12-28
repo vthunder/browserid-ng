@@ -148,6 +148,14 @@ BrowserID-NG diverges from the original BrowserID specification by using **DNS T
 | Trust Anchor | HTTPS/TLS certificate | DNSSEC |
 | Fallback | None | Broker as fallback IdP |
 
+**DNS Record Format:**
+```
+_browserid.example.com TXT "v=browserid1; public-key=<base64url>; host=idp.example.com"
+```
+- `v` - Version (required)
+- `public-key` - Ed25519 public key, base64url-encoded (required)
+- `host` - Host for `.well-known/browserid` lookup to get auth/provision endpoints (optional, defaults to email domain)
+
 **Why the change:**
 - DNS is more fundamental infrastructure than HTTP endpoints
 - DNSSEC provides cryptographic authentication independent of TLS PKI

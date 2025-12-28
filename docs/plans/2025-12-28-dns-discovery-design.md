@@ -69,10 +69,10 @@ Example: `_browserid.example.com`
 
 ### TXT Record Value Format
 
-Single-line key-value pairs separated by semicolons:
+Minimal key-value pairs separated by semicolons:
 
 ```
-v=browserid1; public-key=<base64url-encoded-ed25519-public-key>; auth=/auth; prov=/provision
+v=browserid1; public-key=<base64url-encoded-ed25519-public-key>
 ```
 
 Fields:
@@ -80,27 +80,32 @@ Fields:
 |-------|----------|-------------|
 | `v` | Yes | Version identifier (browserid1) |
 | `public-key` | Yes | Base64url-encoded Ed25519 public key (32 bytes) |
-| `auth` | No | Authentication endpoint path |
-| `prov` | No | Provisioning endpoint path |
-| `disabled` | No | If present, domain has disabled BrowserID |
-| `authority` | No | Delegation to another domain |
+| `host` | No | Host for `.well-known/browserid` lookup (defaults to email domain) |
+
+The DNS record contains only the public key and optionally a host for further discovery. Authentication and provisioning endpoint paths are obtained via `.well-known/browserid` lookup on the specified host (or the email domain if no host is specified).
 
 ### Example Records
 
-**Primary IdP (native support):**
+**Primary IdP (simple - same host for endpoints):**
 ```
 _browserid.example.com TXT "v=browserid1; public-key=KFaU7T5YCQ3F8IhaHd_80rKOAQFMwIKMrRAsJfZ6biI"
 ```
+→ Auth/provision endpoints fetched from `https://example.com/.well-known/browserid`
 
-**Delegation:**
+**Primary IdP (separate IdP host):**
 ```
-_browserid.example.com TXT "v=browserid1; authority=idp.example.net"
+_browserid.example.com TXT "v=browserid1; public-key=KFaU7T5YCQ3F8IhaHd_80rKOAQFMwIKMrRAsJfZ6biI; host=idp.example.com"
 ```
+→ Auth/provision endpoints fetched from `https://idp.example.com/.well-known/browserid`
 
-**Disabled:**
-```
-_browserid.example.com TXT "v=browserid1; disabled"
-```
+### Discovery Flow
+
+1. Query `_browserid.<email-domain>` TXT record with DNSSEC
+2. If DNSSEC-validated record found:
+   - Extract `public-key` (required for certificate verification)
+   - Extract `host` (optional, defaults to email domain)
+   - Fetch `https://<host>/.well-known/browserid` for `authentication` and `provisioning` paths
+3. If no DNSSEC or no record → fall back to broker
 
 ## DNSSEC Requirement
 
@@ -133,16 +138,12 @@ The BOGUS case (DNSSEC validation failure) is a security event and must not fall
 ```rust
 pub struct DnsRecord {
     pub version: String,
-    pub public_key: Option<PublicKey>,
-    pub authentication: Option<String>,
-    pub provisioning: Option<String>,
-    pub authority: Option<String>,
-    pub disabled: bool,
+    pub public_key: PublicKey,
+    pub host: Option<String>,  // Host for .well-known lookup
 }
 
 impl DnsRecord {
     pub fn parse(txt: &str) -> Result<Self>;
-    pub fn to_support_document(&self) -> Result<SupportDocument>;
 }
 ```
 
@@ -193,6 +194,7 @@ Key implementation details:
 ```rust
 pub struct FallbackFetcher {
     dns_fetcher: DnsFetcher,
+    http_fetcher: HttpFetcher,
     trusted_broker: String,
 }
 
@@ -203,13 +205,20 @@ impl FallbackFetcher {
 
         match dns_result.dnssec_status {
             DnssecStatus::Secure => {
-                // Primary IdP mode - use DNS public key
-                Ok((dns_result.record.to_support_document()?, domain))
+                // Primary IdP mode
+                let record = dns_result.record.unwrap();
+                let host = record.host.as_deref().unwrap_or(domain);
+
+                // Fetch .well-known for auth/provision endpoints
+                let mut doc = self.http_fetcher.fetch(host)?;
+                // Override public key with DNSSEC-validated key
+                doc.public_key = record.public_key;
+
+                Ok((doc, domain.to_string()))
             }
             DnssecStatus::Insecure => {
                 // No DNSSEC - fall back to broker
-                // Return broker's support document
-                Ok((broker_document(), self.trusted_broker))
+                Ok((self.http_fetcher.fetch(&self.trusted_broker)?, self.trusted_broker.clone()))
             }
             DnssecStatus::Bogus => {
                 // DNSSEC validation failed - reject
