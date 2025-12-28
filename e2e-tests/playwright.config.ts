@@ -23,9 +23,8 @@ export default defineConfig({
 
   // Run broker before tests
   webServer: {
-    // Set SMTP_HOST empty to force console email sender during tests
-    // (dotenvy loads .env AFTER process starts, so env -u doesn't work)
-    command: 'SMTP_HOST= cargo run -p browserid-broker',
+    // DISABLE_SMTP=1 prevents .env from enabling SMTP (checked before .env loads)
+    command: 'DISABLE_SMTP=1 cargo run -p browserid-broker',
     url: 'http://localhost:3000/.well-known/browserid',
     cwd: '..',
     reuseExistingServer: !process.env.CI,

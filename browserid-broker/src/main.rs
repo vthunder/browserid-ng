@@ -16,12 +16,21 @@ use browserid_broker::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Check if SMTP should be disabled (e.g., for testing)
+    // This must be checked BEFORE loading .env to prevent .env from overriding
+    let disable_smtp = std::env::var("DISABLE_SMTP").is_ok();
+
     // Load .env file if present (before reading any config)
     if let Err(e) = dotenvy::dotenv() {
         if !matches!(e, dotenvy::Error::Io(_)) {
             // Only warn if it's not a "file not found" error
             eprintln!("Warning: Failed to load .env file: {}", e);
         }
+    }
+
+    // Clear SMTP config if DISABLE_SMTP was set before .env loaded
+    if disable_smtp {
+        std::env::remove_var("SMTP_HOST");
     }
 
     // Initialize tracing
