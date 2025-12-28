@@ -136,7 +136,30 @@ Where both are JWTs:
 - Uses Ed25519 instead of RSA/DSA
 - SQLite storage instead of MySQL
 - Simplified codebase focused on core protocol
-- No primary IdP support yet (fallback broker only)
+- DNS-based primary IdP discovery (see below)
+
+### DNS-Based Key Discovery (Spec Divergence)
+
+BrowserID-NG diverges from the original BrowserID specification by using **DNS TXT records with DNSSEC validation** for primary IdP key discovery, instead of the `.well-known/browserid` HTTP approach.
+
+| Aspect | Original Spec | BrowserID-NG |
+|--------|---------------|--------------|
+| Key Location | `https://<domain>/.well-known/browserid` | `_browserid.<domain>` TXT record |
+| Trust Anchor | HTTPS/TLS certificate | DNSSEC |
+| Fallback | None | Broker as fallback IdP |
+
+**Why the change:**
+- DNS is more fundamental infrastructure than HTTP endpoints
+- DNSSEC provides cryptographic authentication independent of TLS PKI
+- Simpler deployment for domain operators (DNS record vs. hosted file)
+- Domains without DNSSEC automatically fall back to broker
+
+**Fallback behavior:**
+- If domain has DNSSEC-validated `_browserid` TXT record → Domain acts as primary IdP
+- If domain has no DNSSEC or no record → Broker acts as fallback IdP
+- If DNSSEC validation fails (BOGUS) → Verification rejected (security error)
+
+See `docs/plans/2025-12-28-dns-discovery-design.md` for full implementation details.
 
 ## LICENSE
 
