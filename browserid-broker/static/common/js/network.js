@@ -559,9 +559,11 @@ BrowserID.Network = (function() {
      */
     certKey: function(email, pubkey, forceIssuer, allowUnverified,
         onComplete, onFailure) {
+      // pubkey.serialize() returns a JSON string, but the broker expects an object
+      var pubkeyObj = JSON.parse(pubkey.serialize());
       var postData = {
         email: email,
-        pubkey: pubkey.serialize(),
+        pubkey: pubkeyObj,
         ephemeral: !storage.usersComputer.confirmed(email),
         allowUnverified: allowUnverified
       };

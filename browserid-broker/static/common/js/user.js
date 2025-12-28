@@ -329,7 +329,9 @@ BrowserID.User = (function() {
   function certifyEmailKeypair(email, keypair, onComplete, onFailure) {
     var rpInfo = User.rpInfo;
     network.certKey(email, keypair.publicKey, rpInfo.getIssuer(), rpInfo.getAllowUnverified(),
-        function(cert) {
+        function(response) {
+      // Extract cert from response object (response is {success: true, cert: "..."})
+      var cert = response.cert || response;
       persistEmailKeypair(email, keypair, cert, onComplete, onFailure);
     }, onFailure);
   }

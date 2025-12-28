@@ -73,9 +73,10 @@ where
 
     // Check if verification is still within the 90-day silent reissuance window
     // After 90 days, user must re-verify their email
+    // If verified_at is missing, treat as expired (require re-verification)
     let verified_at = email_record
         .verified_at
-        .ok_or(BrokerError::EmailNotVerified)?;
+        .ok_or(BrokerError::EmailVerificationExpired)?;
     let verification_age = Utc::now() - verified_at;
     if verification_age > Duration::days(VERIFICATION_VALIDITY_DAYS) {
         return Err(BrokerError::EmailVerificationExpired);
