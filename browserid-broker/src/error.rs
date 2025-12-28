@@ -34,6 +34,9 @@ pub enum BrokerError {
     #[error("Email not verified")]
     EmailNotVerified,
 
+    #[error("Email verification expired (re-verification required)")]
+    EmailVerificationExpired,
+
     #[error("Password too short (minimum 8 characters)")]
     PasswordTooShort,
 
@@ -63,6 +66,9 @@ impl IntoResponse for BrokerError {
             BrokerError::NotAuthenticated => (StatusCode::UNAUTHORIZED, "Not authenticated"),
             BrokerError::InvalidCsrf => (StatusCode::FORBIDDEN, "Invalid CSRF token"),
             BrokerError::EmailNotVerified => (StatusCode::FORBIDDEN, "Email not verified"),
+            BrokerError::EmailVerificationExpired => {
+                (StatusCode::FORBIDDEN, "Email verification expired (re-verification required)")
+            }
             BrokerError::PasswordTooShort => {
                 (StatusCode::BAD_REQUEST, "Password too short (minimum 8 characters)")
             }

@@ -4,11 +4,14 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::Json;
-use chrono::Duration;
+use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use tower_cookies::Cookies;
 
 use browserid_core::{Certificate, PublicKey};
+
+/// Duration for which a verified email can have certificates reissued without re-verification
+const VERIFICATION_VALIDITY_DAYS: i64 = 90;
 
 use crate::email::EmailSender;
 use crate::error::BrokerError;
@@ -68,6 +71,16 @@ where
         return Err(BrokerError::EmailNotVerified);
     }
 
+    // Check if verification is still within the 90-day silent reissuance window
+    // After 90 days, user must re-verify their email
+    let verified_at = email_record
+        .verified_at
+        .ok_or(BrokerError::EmailNotVerified)?;
+    let verification_age = Utc::now() - verified_at;
+    if verification_age > Duration::days(VERIFICATION_VALIDITY_DAYS) {
+        return Err(BrokerError::EmailVerificationExpired);
+    }
+
     // Parse public key
     if req.pubkey.algorithm != "Ed25519" {
         return Err(BrokerError::Internal(format!(
@@ -79,11 +92,12 @@ where
     let user_pubkey = PublicKey::from_base64(&req.pubkey.public_key)
         .map_err(|e| BrokerError::Internal(format!("Invalid public key: {}", e)))?;
 
-    // Certificate validity: 30 days for normal, 1 hour for ephemeral
+    // Certificate validity: 24 hours for normal, 1 hour for ephemeral
+    // Certificates are short-lived, but can be silently reissued within the 90-day window
     let validity = if req.ephemeral {
         Duration::hours(1)
     } else {
-        Duration::days(30)
+        Duration::hours(24)
     };
 
     // Issue certificate

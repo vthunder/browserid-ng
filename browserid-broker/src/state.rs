@@ -37,6 +37,23 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             email_sender: Arc::new(email_sender),
         }
     }
+
+    /// Create AppState with pre-wrapped Arc stores (useful for testing)
+    pub fn new_with_arcs(
+        keypair: KeyPair,
+        domain: String,
+        user_store: Arc<U>,
+        session_store: Arc<S>,
+        email_sender: Arc<E>,
+    ) -> Self {
+        Self {
+            keypair,
+            domain,
+            user_store,
+            session_store,
+            email_sender,
+        }
+    }
 }
 
 /// Type alias for the default in-memory state

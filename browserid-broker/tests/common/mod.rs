@@ -10,6 +10,13 @@ use browserid_broker::{
 use browserid_core::KeyPair;
 use serde_json::json;
 
+/// Test server with access to underlying stores
+pub struct TestContext {
+    pub server: TestServer,
+    pub email_sender: MockEmailSender,
+    pub user_store: Arc<InMemoryUserStore>,
+}
+
 /// Mock email sender that captures verification codes
 #[derive(Default, Clone)]
 pub struct MockEmailSender {
@@ -57,21 +64,35 @@ impl EmailSender for MockEmailSender {
 
 /// Create a test server with mock email sender
 pub fn create_test_server() -> (TestServer, MockEmailSender) {
-    let keypair = KeyPair::generate();
-    let email_sender = MockEmailSender::new();
+    let ctx = create_test_context();
+    (ctx.server, ctx.email_sender)
+}
 
-    let state = Arc::new(AppState::new(
+/// Create a test context with access to underlying stores
+pub fn create_test_context() -> TestContext {
+    let keypair = KeyPair::generate();
+    let email_sender = Arc::new(MockEmailSender::new());
+    let user_store = Arc::new(InMemoryUserStore::new());
+    let session_store = Arc::new(InMemorySessionStore::new());
+
+    let state = Arc::new(AppState::new_with_arcs(
         keypair,
         "localhost:3000".to_string(),
-        InMemoryUserStore::new(),
-        InMemorySessionStore::new(),
+        user_store.clone(),
+        session_store,
         email_sender.clone(),
     ));
 
     let app = routes::create_router(state);
     let server = TestServer::new(app).expect("Failed to create test server");
 
-    (server, email_sender)
+    TestContext {
+        server,
+        email_sender: MockEmailSender {
+            sent: email_sender.sent.clone(),
+        },
+        user_store,
+    }
 }
 
 /// Helper to create a user and return the session cookie

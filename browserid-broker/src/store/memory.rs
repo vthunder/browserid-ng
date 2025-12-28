@@ -30,6 +30,22 @@ impl InMemoryUserStore {
             next_user_id: AtomicU64::new(1),
         }
     }
+
+    /// Set the verified_at timestamp for an email (for testing purposes)
+    pub fn set_verified_at(
+        &self,
+        email: &str,
+        verified_at: chrono::DateTime<chrono::Utc>,
+    ) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let mut emails = self.emails.write().unwrap();
+        if let Some(email_record) = emails.get_mut(&normalized) {
+            email_record.verified_at = Some(verified_at);
+            Ok(())
+        } else {
+            Err(BrokerError::EmailNotFound)
+        }
+    }
 }
 
 impl Default for InMemoryUserStore {
