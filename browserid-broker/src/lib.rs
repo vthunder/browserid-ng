@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod crypto;
+pub mod dns_fetcher;
 pub mod email;
 pub mod error;
 pub mod routes;
@@ -13,6 +14,7 @@ pub mod store;
 pub mod verifier;
 
 pub use config::{load_or_generate_keypair, Config};
+pub use dns_fetcher::DnsFetcher;
 pub use email::{ConsoleEmailSender, EmailSender, SmtpConfig, SmtpEmailSender};
 pub use state::AppState;
 pub use store::{InMemorySessionStore, InMemoryUserStore, SessionStore, SqliteStore, UserStore};
