@@ -37,6 +37,7 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 
 # DNS / DNSSEC
 hickory-resolver = { version = "0.24", features = ["dnssec-ring"] }
+hickory-client = { version = "0.24", features = ["dnssec-ring"] }
 
 # Error handling
 thiserror = "1"
