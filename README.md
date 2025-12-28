@@ -150,10 +150,11 @@ BrowserID-NG diverges from the original BrowserID specification by using **DNS T
 
 **DNS Record Format:**
 ```
-_browserid.example.com TXT "v=browserid1; public-key=<base64url>; host=idp.example.com"
+_browserid.example.com TXT "v=browserid1; public-key-algorithm=Ed25519; public-key=<base64url>; host=idp.example.com"
 ```
 - `v` - Version (required)
-- `public-key` - Ed25519 public key, base64url-encoded (required)
+- `public-key-algorithm` - Algorithm for the public key, e.g., `Ed25519` (required)
+- `public-key` - Public key, base64url-encoded (required)
 - `host` - Host for `.well-known/browserid` lookup to get auth/provision endpoints (optional, defaults to email domain)
 
 **Why the change:**

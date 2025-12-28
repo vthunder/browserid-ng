@@ -72,14 +72,15 @@ Example: `_browserid.example.com`
 Minimal key-value pairs separated by semicolons:
 
 ```
-v=browserid1; public-key=<base64url-encoded-ed25519-public-key>
+v=browserid1; public-key-algorithm=Ed25519; public-key=<base64url-encoded-public-key>
 ```
 
 Fields:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `v` | Yes | Version identifier (browserid1) |
-| `public-key` | Yes | Base64url-encoded Ed25519 public key (32 bytes) |
+| `public-key-algorithm` | Yes | Algorithm for the public key (e.g., `Ed25519`) |
+| `public-key` | Yes | Base64url-encoded public key |
 | `host` | No | Host for `.well-known/browserid` lookup (defaults to email domain) |
 
 The DNS record contains only the public key and optionally a host for further discovery. Authentication and provisioning endpoint paths are obtained via `.well-known/browserid` lookup on the specified host (or the email domain if no host is specified).
@@ -88,13 +89,13 @@ The DNS record contains only the public key and optionally a host for further di
 
 **Primary IdP (simple - same host for endpoints):**
 ```
-_browserid.example.com TXT "v=browserid1; public-key=KFaU7T5YCQ3F8IhaHd_80rKOAQFMwIKMrRAsJfZ6biI"
+_browserid.example.com TXT "v=browserid1; public-key-algorithm=Ed25519; public-key=KFaU7T5YCQ3F8IhaHd_80rKOAQFMwIKMrRAsJfZ6biI"
 ```
 → Auth/provision endpoints fetched from `https://example.com/.well-known/browserid`
 
 **Primary IdP (separate IdP host):**
 ```
-_browserid.example.com TXT "v=browserid1; public-key=KFaU7T5YCQ3F8IhaHd_80rKOAQFMwIKMrRAsJfZ6biI; host=idp.example.com"
+_browserid.example.com TXT "v=browserid1; public-key-algorithm=Ed25519; public-key=KFaU7T5YCQ3F8IhaHd_80rKOAQFMwIKMrRAsJfZ6biI; host=idp.example.com"
 ```
 → Auth/provision endpoints fetched from `https://idp.example.com/.well-known/browserid`
 
@@ -138,6 +139,7 @@ The BOGUS case (DNSSEC validation failure) is a security event and must not fall
 ```rust
 pub struct DnsRecord {
     pub version: String,
+    pub public_key_algorithm: String,  // e.g., "Ed25519"
     pub public_key: PublicKey,
     pub host: Option<String>,  // Host for .well-known lookup
 }
