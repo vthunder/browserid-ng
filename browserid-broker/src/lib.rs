@@ -19,4 +19,6 @@ pub use dns_fetcher::DnsFetcher;
 pub use email::{ConsoleEmailSender, EmailSender, SmtpConfig, SmtpEmailSender};
 pub use fallback_fetcher::{FallbackFetcher, FallbackResult};
 pub use state::AppState;
-pub use store::{InMemorySessionStore, InMemoryUserStore, SessionStore, SqliteStore, UserStore};
+pub use store::{
+    EmailType, InMemorySessionStore, InMemoryUserStore, SessionStore, SqliteStore, UserStore,
+};

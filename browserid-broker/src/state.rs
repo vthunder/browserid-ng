@@ -70,6 +70,14 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             .await
             .cloned()
     }
+
+    /// Get the fallback fetcher if already initialized (does not create one)
+    ///
+    /// This is useful for contexts where you want to use DNS discovery if available,
+    /// but don't want to trigger the (potentially blocking) initialization.
+    pub fn get_fallback_fetcher(&self) -> Option<Arc<FallbackFetcher>> {
+        self.fallback_fetcher.get().cloned()
+    }
 }
 
 /// Type alias for the default in-memory state

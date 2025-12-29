@@ -12,7 +12,7 @@ use crate::crypto::generate_verification_code;
 use crate::email::EmailSender;
 use crate::error::BrokerError;
 use crate::state::AppState;
-use crate::store::{PendingVerification, SessionStore, UserStore, VerificationType};
+use crate::store::{EmailType, PendingVerification, SessionStore, UserStore, VerificationType};
 
 #[derive(Serialize)]
 pub struct ListEmailsResponse {
@@ -201,10 +201,10 @@ pub struct AddressInfoQuery {
 
 #[derive(Serialize)]
 pub struct AddressInfoResponse {
-    /// Type of identity provider ("secondary" for broker-managed)
+    /// Type of identity provider ("primary" or "secondary")
     #[serde(rename = "type")]
     pub addr_type: String,
-    /// State of the email ("known" or "unknown")
+    /// State of the email ("known", "unknown", "transition_to_primary", etc.)
     pub state: String,
     /// The issuing domain
     pub issuer: String,
@@ -213,6 +213,36 @@ pub struct AddressInfoResponse {
     /// Normalized form of the email
     #[serde(rename = "normalizedEmail")]
     pub normalized_email: String,
+    /// Authentication URL (primary IdP only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
+    /// Provisioning URL (primary IdP only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prov: Option<String>,
+}
+
+/// Determine state based on password_known, last_used_as, current_type
+fn compute_state(
+    password_known: bool,
+    last_used_as: Option<EmailType>,
+    current_type: EmailType,
+) -> &'static str {
+    match (password_known, last_used_as, current_type) {
+        // User has password
+        (true, Some(EmailType::Primary), EmailType::Primary) => "known",
+        (true, Some(EmailType::Primary), EmailType::Secondary) => "transition_to_secondary",
+        (true, Some(EmailType::Secondary), EmailType::Primary) => "transition_to_primary",
+        (true, Some(EmailType::Secondary), EmailType::Secondary) => "known",
+
+        // User has no password
+        (false, Some(EmailType::Primary), EmailType::Primary) => "known",
+        (false, Some(EmailType::Primary), EmailType::Secondary) => "transition_no_password",
+        (false, Some(EmailType::Secondary), EmailType::Primary) => "transition_to_primary",
+        (false, Some(EmailType::Secondary), EmailType::Secondary) => "transition_no_password",
+
+        // Email not in database
+        (_, None, _) => "unknown",
+    }
 }
 
 /// GET /wsapi/address_info
@@ -220,7 +250,7 @@ pub struct AddressInfoResponse {
 pub async fn address_info<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     Query(query): Query<AddressInfoQuery>,
-) -> Json<AddressInfoResponse>
+) -> Result<Json<AddressInfoResponse>, BrokerError>
 where
     U: UserStore,
     S: SessionStore,
@@ -229,21 +259,72 @@ where
     // Normalize email (lowercase)
     let normalized = query.email.to_lowercase();
 
-    // Check if email exists
-    let exists = state
-        .user_store
-        .get_user_by_email(&normalized)
-        .ok()
-        .flatten()
-        .is_some();
+    // Extract domain from email
+    let domain = normalized
+        .split('@')
+        .nth(1)
+        .ok_or(BrokerError::InvalidEmail)?;
 
-    Json(AddressInfoResponse {
-        addr_type: "secondary".to_string(),
-        state: if exists { "known" } else { "unknown" }.to_string(),
-        issuer: state.domain.clone(),
+    // Try DNS discovery if fallback_fetcher is already initialized
+    // We use get_fallback_fetcher() to avoid triggering initialization in contexts
+    // where it might cause issues (e.g., tests without DNS support)
+    let discovery = if let Some(fetcher) = state.get_fallback_fetcher() {
+        Some(fetcher.discover(domain).await?)
+    } else {
+        None
+    };
+
+    // Determine type and URLs based on discovery
+    let (addr_type, current_type, auth, prov, issuer) = if let Some(ref result) = discovery {
+        if result.is_primary {
+            // Primary IdP - use domain as issuer
+            let auth_url = result
+                .document
+                .authentication
+                .as_ref()
+                .map(|path| format!("https://{}{}", domain, path));
+            let prov_url = result
+                .document
+                .provisioning
+                .as_ref()
+                .map(|path| format!("https://{}{}", domain, path));
+            (
+                "primary",
+                EmailType::Primary,
+                auth_url,
+                prov_url,
+                domain.to_string(),
+            )
+        } else {
+            // Secondary (fallback to broker)
+            ("secondary", EmailType::Secondary, None, None, state.domain.clone())
+        }
+    } else {
+        // No discovery available - treat as secondary
+        ("secondary", EmailType::Secondary, None, None, state.domain.clone())
+    };
+
+    // Look up email in database
+    let email_record = state.user_store.get_email(&normalized)?;
+
+    let email_state = if let Some(ref email) = email_record {
+        // Email exists - compute state based on password and type history
+        let password_known = state.user_store.has_password(email.user_id)?;
+        compute_state(password_known, Some(email.last_used_as), current_type)
+    } else {
+        // Email not in database
+        "unknown"
+    };
+
+    Ok(Json(AddressInfoResponse {
+        addr_type: addr_type.to_string(),
+        state: email_state.to_string(),
+        issuer,
         disabled: false,
         normalized_email: normalized,
-    })
+        auth,
+        prov,
+    }))
 }
 
 #[derive(Deserialize)]

@@ -43,6 +43,9 @@ pub enum BrokerError {
     #[error("Password too long (maximum 80 characters)")]
     PasswordTooLong,
 
+    #[error("Invalid email address")]
+    InvalidEmail,
+
     #[error("Validation error: {0}")]
     ValidationError(String),
 
@@ -81,6 +84,7 @@ impl IntoResponse for BrokerError {
             BrokerError::PasswordTooLong => {
                 (StatusCode::BAD_REQUEST, "Password too long (maximum 80 characters)")
             }
+            BrokerError::InvalidEmail => (StatusCode::BAD_REQUEST, "Invalid email address"),
             BrokerError::ValidationError(msg) => (StatusCode::BAD_REQUEST, msg.as_str()),
             BrokerError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
