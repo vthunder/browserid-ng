@@ -14,6 +14,32 @@ pub enum VerificationType {
     PasswordReset,
 }
 
+/// Type of email (how it was added to the account)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmailType {
+    /// Email verified through a primary IdP
+    Primary,
+    /// Email verified through the broker (secondary flow)
+    Secondary,
+}
+
+impl EmailType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EmailType::Primary => "primary",
+            EmailType::Secondary => "secondary",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "primary" => Some(EmailType::Primary),
+            "secondary" => Some(EmailType::Secondary),
+            _ => None,
+        }
+    }
+}
+
 /// Unique user identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserId(pub u64);
@@ -37,6 +63,10 @@ pub struct Email {
     pub user_id: UserId,
     pub verified: bool,
     pub verified_at: Option<DateTime<Utc>>,
+    /// How this email was added (primary IdP or secondary broker flow)
+    pub email_type: EmailType,
+    /// How this email was last used (for tracking type transitions)
+    pub last_used_as: EmailType,
 }
 
 /// A pending email verification

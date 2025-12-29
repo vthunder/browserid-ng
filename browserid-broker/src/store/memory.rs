@@ -8,8 +8,8 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    Email, PendingVerification, Session, SessionId, SessionStore, StoreResult, User, UserId,
-    UserStore, VerificationType,
+    Email, EmailType, PendingVerification, Session, SessionId, SessionStore, StoreResult, User,
+    UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
 
@@ -66,6 +66,11 @@ impl UserStore for InMemoryUserStore {
         Ok(id)
     }
 
+    fn create_user_no_password(&self) -> StoreResult<UserId> {
+        // Use empty string as sentinel for "no password"
+        self.create_user("")
+    }
+
     fn get_user(&self, user_id: UserId) -> StoreResult<Option<User>> {
         Ok(self.users.read().unwrap().get(&user_id).cloned())
     }
@@ -80,6 +85,17 @@ impl UserStore for InMemoryUserStore {
     }
 
     fn add_email(&self, user_id: UserId, email: &str, verified: bool) -> StoreResult<()> {
+        // Default to secondary type for backwards compatibility
+        self.add_email_with_type(user_id, email, verified, EmailType::Secondary)
+    }
+
+    fn add_email_with_type(
+        &self,
+        user_id: UserId,
+        email: &str,
+        verified: bool,
+        email_type: EmailType,
+    ) -> StoreResult<()> {
         let normalized = email.to_lowercase();
         let mut emails = self.emails.write().unwrap();
         if emails.contains_key(&normalized) {
@@ -92,6 +108,8 @@ impl UserStore for InMemoryUserStore {
                 user_id,
                 verified,
                 verified_at: if verified { Some(Utc::now()) } else { None },
+                email_type,
+                last_used_as: email_type,
             },
         );
         Ok(())
@@ -204,6 +222,38 @@ impl UserStore for InMemoryUserStore {
             .values()
             .find(|p| p.email.to_lowercase() == normalized && p.verification_type == verification_type)
             .cloned())
+    }
+
+    fn update_email_last_used(&self, email: &str, email_type: EmailType) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let mut emails = self.emails.write().unwrap();
+        if let Some(email_record) = emails.get_mut(&normalized) {
+            email_record.last_used_as = email_type;
+            Ok(())
+        } else {
+            Err(BrokerError::EmailNotFound)
+        }
+    }
+
+    fn get_email(&self, email: &str) -> StoreResult<Option<Email>> {
+        let normalized = email.to_lowercase();
+        let emails = self.emails.read().unwrap();
+        Ok(emails.get(&normalized).cloned())
+    }
+
+    fn has_password(&self, user_id: UserId) -> StoreResult<bool> {
+        let users = self.users.read().unwrap();
+        if let Some(user) = users.get(&user_id) {
+            // User has a password if password_hash is non-empty
+            Ok(!user.password_hash.is_empty())
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn set_password(&self, user_id: UserId, password_hash: &str) -> StoreResult<()> {
+        // Delegate to update_password which has the same behavior
+        self.update_password(user_id, password_hash)
     }
 }
 

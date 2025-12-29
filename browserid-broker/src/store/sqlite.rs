@@ -7,13 +7,13 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    Email, PendingVerification, Session, SessionId, SessionStore, StoreResult, User, UserId,
-    UserStore, VerificationType,
+    Email, EmailType, PendingVerification, Session, SessionId, SessionStore, StoreResult, User,
+    UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -59,6 +59,10 @@ impl SqliteStore {
 
             if current_version < 1 {
                 Self::migrate_v1(conn)?;
+            }
+
+            if current_version < 2 {
+                Self::migrate_v2(conn)?;
             }
 
             // Update schema version
@@ -144,6 +148,22 @@ impl SqliteStore {
 
         Ok(())
     }
+
+    /// Migration to version 2: add email type tracking for primary IdP support
+    fn migrate_v2(conn: &Connection) -> Result<(), BrokerError> {
+        conn.execute_batch(
+            r#"
+            -- Add type column (primary or secondary)
+            ALTER TABLE emails ADD COLUMN email_type TEXT NOT NULL DEFAULT 'secondary';
+
+            -- Add last_used_as column (tracks type at last use for transitions)
+            ALTER TABLE emails ADD COLUMN last_used_as TEXT NOT NULL DEFAULT 'secondary';
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+
+        Ok(())
+    }
 }
 
 // Helper to convert VerificationType to/from string
@@ -179,6 +199,11 @@ impl UserStore for SqliteStore {
 
         let id = conn.last_insert_rowid() as u64;
         Ok(UserId(id))
+    }
+
+    fn create_user_no_password(&self) -> StoreResult<UserId> {
+        // Use empty string as sentinel for "no password"
+        self.create_user("")
     }
 
     fn get_user(&self, user_id: UserId) -> StoreResult<Option<User>> {
@@ -226,6 +251,17 @@ impl UserStore for SqliteStore {
     }
 
     fn add_email(&self, user_id: UserId, email: &str, verified: bool) -> StoreResult<()> {
+        // Default to secondary type for backwards compatibility
+        self.add_email_with_type(user_id, email, verified, EmailType::Secondary)
+    }
+
+    fn add_email_with_type(
+        &self,
+        user_id: UserId,
+        email: &str,
+        verified: bool,
+        email_type: EmailType,
+    ) -> StoreResult<()> {
         let normalized = email.to_lowercase();
         let conn = self.conn.lock().unwrap();
         let verified_at = if verified {
@@ -233,10 +269,11 @@ impl UserStore for SqliteStore {
         } else {
             None
         };
+        let type_str = email_type.as_str();
 
         conn.execute(
-            "INSERT INTO emails (email, user_id, verified, verified_at) VALUES (?1, ?2, ?3, ?4)",
-            params![normalized, user_id.0 as i64, verified as i32, verified_at],
+            "INSERT INTO emails (email, user_id, verified, verified_at, email_type, last_used_as) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![normalized, user_id.0 as i64, verified as i32, verified_at, type_str, type_str],
         )
         .map_err(|e| {
             if let rusqlite::Error::SqliteFailure(ref err, _) = e {
@@ -254,7 +291,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn
-            .prepare("SELECT email, user_id, verified, verified_at FROM emails WHERE user_id = ?1")
+            .prepare("SELECT email, user_id, verified, verified_at, email_type, last_used_as FROM emails WHERE user_id = ?1")
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
 
         let emails = stmt
@@ -263,6 +300,8 @@ impl UserStore for SqliteStore {
                 let uid: i64 = row.get(1)?;
                 let verified: i32 = row.get(2)?;
                 let verified_at: Option<String> = row.get(3)?;
+                let email_type_str: String = row.get(4)?;
+                let last_used_as_str: String = row.get(5)?;
                 Ok(Email {
                     email,
                     user_id: UserId(uid as u64),
@@ -272,6 +311,10 @@ impl UserStore for SqliteStore {
                             .map(|dt| dt.with_timezone(&Utc))
                             .ok()
                     }),
+                    email_type: EmailType::from_str(&email_type_str)
+                        .unwrap_or(EmailType::Secondary),
+                    last_used_as: EmailType::from_str(&last_used_as_str)
+                        .unwrap_or(EmailType::Secondary),
                 })
             })
             .map_err(|e| BrokerError::Internal(e.to_string()))?
@@ -479,6 +522,79 @@ impl UserStore for SqliteStore {
         .optional()
         .map_err(|e| BrokerError::Internal(e.to_string()))
     }
+
+    fn update_email_last_used(&self, email: &str, email_type: EmailType) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+
+        let rows_affected = conn
+            .execute(
+                "UPDATE emails SET last_used_as = ?1 WHERE email = ?2",
+                params![email_type.as_str(), normalized],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+
+        if rows_affected == 0 {
+            return Err(BrokerError::EmailNotFound);
+        }
+
+        Ok(())
+    }
+
+    fn get_email(&self, email: &str) -> StoreResult<Option<Email>> {
+        let normalized = email.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+
+        conn.query_row(
+            "SELECT email, user_id, verified, verified_at, email_type, last_used_as FROM emails WHERE email = ?1",
+            params![normalized],
+            |row| {
+                let email: String = row.get(0)?;
+                let uid: i64 = row.get(1)?;
+                let verified: i32 = row.get(2)?;
+                let verified_at: Option<String> = row.get(3)?;
+                let email_type_str: String = row.get(4)?;
+                let last_used_as_str: String = row.get(5)?;
+                Ok(Email {
+                    email,
+                    user_id: UserId(uid as u64),
+                    verified: verified != 0,
+                    verified_at: verified_at.and_then(|s| {
+                        DateTime::parse_from_rfc3339(&s)
+                            .map(|dt| dt.with_timezone(&Utc))
+                            .ok()
+                    }),
+                    email_type: EmailType::from_str(&email_type_str)
+                        .unwrap_or(EmailType::Secondary),
+                    last_used_as: EmailType::from_str(&last_used_as_str)
+                        .unwrap_or(EmailType::Secondary),
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn has_password(&self, user_id: UserId) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let password_hash: Option<String> = conn
+            .query_row(
+                "SELECT password_hash FROM users WHERE id = ?1",
+                params![user_id.0 as i64],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+
+        // User has a password if password_hash exists and is non-empty
+        Ok(password_hash.map(|h| !h.is_empty()).unwrap_or(false))
+    }
+
+    fn set_password(&self, user_id: UserId, password_hash: &str) -> StoreResult<()> {
+        // Delegate to update_password which has the same behavior
+        self.update_password(user_id, password_hash)
+    }
 }
 
 impl SessionStore for SqliteStore {
@@ -604,6 +720,36 @@ impl UserStore for std::sync::Arc<SqliteStore> {
         verification_type: VerificationType,
     ) -> StoreResult<Option<PendingVerification>> {
         (**self).get_pending_by_email(email, verification_type)
+    }
+
+    fn create_user_no_password(&self) -> StoreResult<UserId> {
+        (**self).create_user_no_password()
+    }
+
+    fn add_email_with_type(
+        &self,
+        user_id: UserId,
+        email: &str,
+        verified: bool,
+        email_type: EmailType,
+    ) -> StoreResult<()> {
+        (**self).add_email_with_type(user_id, email, verified, email_type)
+    }
+
+    fn update_email_last_used(&self, email: &str, email_type: EmailType) -> StoreResult<()> {
+        (**self).update_email_last_used(email, email_type)
+    }
+
+    fn get_email(&self, email: &str) -> StoreResult<Option<Email>> {
+        (**self).get_email(email)
+    }
+
+    fn has_password(&self, user_id: UserId) -> StoreResult<bool> {
+        (**self).has_password(user_id)
+    }
+
+    fn set_password(&self, user_id: UserId, password_hash: &str) -> StoreResult<()> {
+        (**self).set_password(user_id, password_hash)
     }
 }
 

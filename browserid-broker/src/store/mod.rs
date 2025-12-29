@@ -18,6 +18,9 @@ pub trait UserStore: Send + Sync {
     /// Create a new user with the given password hash
     fn create_user(&self, password_hash: &str) -> StoreResult<UserId>;
 
+    /// Create a user without a password (for primary-only users)
+    fn create_user_no_password(&self) -> StoreResult<UserId>;
+
     /// Get a user by ID
     fn get_user(&self, user_id: UserId) -> StoreResult<Option<User>>;
 
@@ -26,6 +29,15 @@ pub trait UserStore: Send + Sync {
 
     /// Add an email to a user's account
     fn add_email(&self, user_id: UserId, email: &str, verified: bool) -> StoreResult<()>;
+
+    /// Add email with type tracking
+    fn add_email_with_type(
+        &self,
+        user_id: UserId,
+        email: &str,
+        verified: bool,
+        email_type: EmailType,
+    ) -> StoreResult<()>;
 
     /// List all emails for a user
     fn list_emails(&self, user_id: UserId) -> StoreResult<Vec<Email>>;
@@ -63,6 +75,18 @@ pub trait UserStore: Send + Sync {
         email: &str,
         verification_type: VerificationType,
     ) -> StoreResult<Option<PendingVerification>>;
+
+    /// Update email's last_used_as when type changes
+    fn update_email_last_used(&self, email: &str, email_type: EmailType) -> StoreResult<()>;
+
+    /// Get email record by address
+    fn get_email(&self, email: &str) -> StoreResult<Option<Email>>;
+
+    /// Check if user has a password set (non-empty password_hash)
+    fn has_password(&self, user_id: UserId) -> StoreResult<bool>;
+
+    /// Set password for a user (for transition cases)
+    fn set_password(&self, user_id: UserId, password_hash: &str) -> StoreResult<()>;
 }
 
 /// Trait for session storage
