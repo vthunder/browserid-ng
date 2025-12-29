@@ -3,8 +3,10 @@
 use std::sync::Arc;
 
 use browserid_core::KeyPair;
+use tokio::sync::OnceCell;
 
 use crate::email::EmailSender;
+use crate::fallback_fetcher::FallbackFetcher;
 use crate::store::{SessionStore, UserStore};
 
 /// Shared application state
@@ -19,6 +21,8 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     pub session_store: Arc<S>,
     /// Email sender
     pub email_sender: Arc<E>,
+    /// Lazy-initialized fallback fetcher for DNS-first discovery
+    pub fallback_fetcher: OnceCell<Arc<FallbackFetcher>>,
 }
 
 impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
@@ -35,6 +39,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             user_store: Arc::new(user_store),
             session_store: Arc::new(session_store),
             email_sender: Arc::new(email_sender),
+            fallback_fetcher: OnceCell::new(),
         }
     }
 
@@ -52,7 +57,18 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             user_store,
             session_store,
             email_sender,
+            fallback_fetcher: OnceCell::new(),
         }
+    }
+
+    /// Get or create the fallback fetcher
+    pub async fn fallback_fetcher(&self) -> Result<Arc<FallbackFetcher>, String> {
+        self.fallback_fetcher
+            .get_or_try_init(|| async {
+                FallbackFetcher::new(self.domain.clone()).map(Arc::new)
+            })
+            .await
+            .cloned()
     }
 }
 
