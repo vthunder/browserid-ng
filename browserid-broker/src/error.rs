@@ -57,6 +57,9 @@ pub enum BrokerError {
 
     #[error("Discovery failed: {0}")]
     Discovery(String),
+
+    #[error("Invalid assertion: {0}")]
+    InvalidAssertion(String),
 }
 
 impl IntoResponse for BrokerError {
@@ -98,6 +101,7 @@ impl IntoResponse for BrokerError {
                 tracing::error!("Discovery failed: {}", msg);
                 (StatusCode::BAD_GATEWAY, "Discovery failed")
             }
+            BrokerError::InvalidAssertion(msg) => (StatusCode::BAD_REQUEST, msg.as_str()),
         };
 
         let body = json!({ "success": false, "reason": message });

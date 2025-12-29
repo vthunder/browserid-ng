@@ -4,6 +4,7 @@ mod account;
 mod auth;
 mod cert;
 mod email;
+mod primary;
 mod reset;
 mod session;
 mod test;
@@ -64,6 +65,8 @@ where
         .route("/wsapi/stage_reset", post(reset::stage_reset))
         .route("/wsapi/complete_reset", post(reset::complete_reset))
         .route("/wsapi/password_reset_status", get(reset::password_reset_status))
+        // Primary IdP authentication
+        .route("/wsapi/auth_with_assertion", post(primary::auth_with_assertion))
         // Verification endpoint
         .route("/verify", post(verify::verify))
         // Test endpoints (should only be enabled in dev/test)
