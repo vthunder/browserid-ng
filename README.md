@@ -29,7 +29,7 @@ This repository contains:
   - Compatible `navigator.id` API via `include.js`
 
 * **e2e-tests**: Playwright end-to-end tests
-  - 50 tests covering all authentication flows
+  - 60 tests covering all authentication flows
 
 ## Getting Started
 

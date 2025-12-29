@@ -1,5 +1,15 @@
 # DNS-Based Key Discovery with DNSSEC
 
+## Implementation Status
+
+**Implemented:** 2025-12-29
+
+See commits in main branch for implementation details. Key files:
+- `browserid-core/src/dns.rs` - DNS record parsing and DNSSEC status types
+- `browserid-broker/src/dns_fetcher.rs` - DNSSEC-validating DNS fetcher
+- `browserid-broker/src/fallback_fetcher.rs` - DNS-first discovery with broker fallback
+- `browserid-broker/src/verifier.rs` - `verify_assertion_with_dns` async function
+
 ## Overview
 
 Diverge from the original BrowserID spec by using DNS TXT records with DNSSEC validation for primary IdP key discovery, instead of the `.well-known/browserid` HTTP approach.
