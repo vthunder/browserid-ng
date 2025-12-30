@@ -67,6 +67,7 @@ where
         .route("/wsapi/password_reset_status", get(reset::password_reset_status))
         // Primary IdP authentication
         .route("/wsapi/auth_with_assertion", post(primary::auth_with_assertion))
+        .route("/wsapi/set_password", post(primary::set_password))
         // Verification endpoint
         .route("/verify", post(verify::verify))
         // Test endpoints (should only be enabled in dev/test)
