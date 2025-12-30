@@ -724,37 +724,142 @@
     }
   }
 
+  // Check for auth return from primary IdP
+  function checkAuthReturn() {
+    const hash = window.location.hash;
+
+    if (hash === '#AUTH_RETURN' || hash === '#AUTH_RETURN_CANCEL') {
+      // Clear hash from URL
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+
+      // Restore state from sessionStorage
+      const email = sessionStorage.getItem('browserid_pending_email');
+      const origin = sessionStorage.getItem('browserid_pending_origin');
+
+      if (!email || !origin) {
+        console.error('Missing auth return state');
+        showScreen('email');
+        return true;
+      }
+
+      state.email = email;
+      state.origin = origin;
+
+      // Clear stored state
+      sessionStorage.removeItem('browserid_pending_email');
+      sessionStorage.removeItem('browserid_pending_origin');
+
+      // Update UI
+      document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+      document.querySelectorAll('.rp-name').forEach(el => {
+        el.textContent = new URL(origin).hostname;
+      });
+
+      if (hash === '#AUTH_RETURN') {
+        // Auth succeeded - retry provisioning
+        retryProvisioningAfterAuth(email);
+      } else {
+        // Auth was cancelled
+        showError('Authentication was cancelled');
+      }
+
+      return true;  // Signal that auth return was handled
+    }
+
+    return false;  // No auth return, proceed with normal init
+  }
+
+  // Retry provisioning after user authenticated with primary IdP
+  async function retryProvisioningAfterAuth(email) {
+    showScreen('loading');
+
+    try {
+      // Get address info again to get provisioning URL
+      const addressInfo = await checkEmail(email);
+
+      if (addressInfo.type !== 'primary' || !addressInfo.prov) {
+        throw new Error('Email is no longer a primary IdP');
+      }
+
+      // Retry provisioning (should succeed now that user is authenticated with IdP)
+      const result = await tryPrimaryProvisioning(email, addressInfo.prov, addressInfo.auth);
+
+      // Got certificate! Create assertion
+      const audience = state.origin;
+      const expiresAt = Date.now() + (5 * 60 * 1000);
+
+      const assertion = await createAssertionFromPrimary(
+        result.keypair.privateKey,
+        result.certificate,
+        audience,
+        expiresAt
+      );
+
+      // Store keypair for future use
+      await storeEmailKeypair(
+        email,
+        result.keypair.publicKey,
+        result.keypair.privateKey,
+        result.certificate
+      );
+
+      // Authenticate with broker to establish session
+      await apiCall('/wsapi/auth_with_assertion', 'POST', {
+        assertion: assertion,
+        ephemeral: false
+      });
+
+      storeLoggedInState(audience, email);
+      showScreen('success');
+
+      setTimeout(() => {
+        sendResponse({ assertion });
+      }, 1000);
+
+    } catch (e) {
+      if (e.needsAuth) {
+        // Still needs auth? Something went wrong
+        showError('Authentication failed. Please try again.');
+      } else {
+        showError('Provisioning failed after authentication: ' + (e.message || e));
+      }
+    }
+  }
+
   // Setup and start
   setupEventHandlers();
 
-  // Get origin from URL params or wait for message
-  const params = new URLSearchParams(window.location.search);
-  const origin = params.get('origin');
+  // Check for auth return from primary IdP before normal init
+  if (!checkAuthReturn()) {
+    // Normal initialization
+    const params = new URLSearchParams(window.location.search);
+    const origin = params.get('origin');
 
-  if (origin) {
-    state.origin = origin;
-    document.querySelectorAll('.rp-name').forEach(el => {
-      el.textContent = new URL(origin).hostname;
-    });
-    init();
-  }
-
-  // Also support WinChan protocol for include.js compatibility
-  if (typeof WinChan !== 'undefined' && WinChan.onOpen) {
-    try {
-      WinChan.onOpen(function(origin, args, cb) {
-        if (args && args.params) {
-          state.origin = origin;
-          state.winchanCallback = cb;
-          document.querySelectorAll('.rp-name').forEach(el => {
-            el.textContent = new URL(origin).hostname;
-          });
-          init();
-        }
+    if (origin) {
+      state.origin = origin;
+      document.querySelectorAll('.rp-name').forEach(el => {
+        el.textContent = new URL(origin).hostname;
       });
-    } catch (e) {
-      // WinChan.onOpen may throw if not in popup context
-      console.log('WinChan not available:', e.message);
+      init();
+    }
+
+    // Also support WinChan protocol for include.js compatibility
+    if (typeof WinChan !== 'undefined' && WinChan.onOpen) {
+      try {
+        WinChan.onOpen(function(origin, args, cb) {
+          if (args && args.params) {
+            state.origin = origin;
+            state.winchanCallback = cb;
+            document.querySelectorAll('.rp-name').forEach(el => {
+              el.textContent = new URL(origin).hostname;
+            });
+            init();
+          }
+        });
+      } catch (e) {
+        // WinChan.onOpen may throw if not in popup context
+        console.log('WinChan not available:', e.message);
+      }
     }
   }
 })();
