@@ -91,15 +91,16 @@
     return data;
   }
 
-  // Check if email exists
+  // Check email address info (type, state, primary IdP URLs)
   async function checkEmail(email) {
     try {
       const response = await fetch(`${API.addressInfo}?email=${encodeURIComponent(email)}`);
       const data = await response.json();
-      return { exists: data.state === 'known' };
+      // Return full addressInfo for primary IdP support
+      return data;
     } catch (e) {
       // On error, assume email doesn't exist (new user flow)
-      return { exists: false };
+      return { type: 'secondary', state: 'unknown' };
     }
   }
 
@@ -212,6 +213,109 @@
     }
   }
 
+  // Try to provision certificate from primary IdP
+  async function tryPrimaryProvisioning(email, provUrl, authUrl) {
+    return new Promise((resolve, reject) => {
+      BrowserID.Provisioning.start(
+        provUrl,
+        email,
+        function onSuccess(result) {
+          resolve(result);
+        },
+        function onFailure(reason) {
+          // Provisioning failed - need to authenticate
+          reject({ needsAuth: true, authUrl: authUrl, reason: reason });
+        }
+      );
+    });
+  }
+
+  // Handle primary IdP flow
+  async function handlePrimaryIdP(email, addressInfo) {
+    showScreen('loading');
+
+    try {
+      // Try provisioning first
+      const result = await tryPrimaryProvisioning(email, addressInfo.prov, addressInfo.auth);
+
+      // Got certificate! Create assertion
+      const audience = state.origin;
+      const expiresAt = Date.now() + (5 * 60 * 1000);
+
+      const assertion = await createAssertionFromPrimary(
+        result.keypair.privateKey,
+        result.certificate,
+        audience,
+        expiresAt
+      );
+
+      // Store keypair for future use
+      await storeEmailKeypair(
+        email,
+        result.keypair.publicKey,
+        result.keypair.privateKey,
+        result.certificate
+      );
+
+      // Authenticate with broker to establish session
+      await apiCall('/wsapi/auth_with_assertion', 'POST', {
+        assertion: assertion,
+        ephemeral: false
+      });
+
+      storeLoggedInState(audience, email);
+      showScreen('success');
+
+      setTimeout(() => {
+        sendResponse({ assertion });
+      }, 1000);
+
+    } catch (e) {
+      if (e.needsAuth) {
+        // Need to redirect to auth page
+        redirectToPrimaryAuth(email, e.authUrl);
+      } else {
+        showError('Primary IdP provisioning failed: ' + e.message);
+      }
+    }
+  }
+
+  // Redirect to primary IdP auth page
+  function redirectToPrimaryAuth(email, authUrl) {
+    // Store state for return
+    sessionStorage.setItem('browserid_pending_email', email);
+    sessionStorage.setItem('browserid_pending_origin', state.origin);
+
+    // Redirect to IdP auth page
+    const url = new URL(authUrl);
+    url.searchParams.set('email', email);
+    url.searchParams.set('return_to', window.location.origin + '/sign_in');
+    window.location.href = url.toString();
+  }
+
+  // Create assertion from primary IdP certificate
+  async function createAssertionFromPrimary(privateKey, certificate, audience, expiresAt) {
+    const payload = { aud: audience, exp: expiresAt };
+    const header = { alg: 'EdDSA', typ: 'JWT' };
+    const headerB64 = btoa(JSON.stringify(header)).replace(/=/g, '');
+    const payloadB64 = btoa(JSON.stringify(payload)).replace(/=/g, '');
+    const message = `${headerB64}.${payloadB64}`;
+
+    const encoder = new TextEncoder();
+    const signature = await crypto.subtle.sign(
+      { name: 'Ed25519' },
+      privateKey,
+      encoder.encode(message)
+    );
+
+    const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+
+    return `${certificate}~${message}.${signatureB64}`;
+  }
+
   // Complete sign-in and return assertion
   async function completeSignIn(email) {
     try {
@@ -284,11 +388,32 @@
       showScreen('loading');
 
       try {
-        const check = await checkEmail(email);
-        if (check.exists) {
-          showScreen('password');
+        const addressInfo = await checkEmail(email);
+
+        // Handle based on type and state
+        if (addressInfo.type === 'primary' && addressInfo.prov) {
+          // Primary IdP flow
+          if (addressInfo.state === 'transition_to_secondary') {
+            // Was primary, now secondary with password
+            showScreen('password');
+          } else if (addressInfo.state === 'transition_no_password') {
+            // Was primary, now secondary without password - need to set one
+            // This will be handled in Task 7
+            showScreen('create');
+          } else {
+            // Normal primary flow (known or unknown)
+            await handlePrimaryIdP(email, addressInfo);
+          }
         } else {
-          showScreen('create');
+          // Secondary flow
+          if (addressInfo.state === 'known') {
+            showScreen('password');
+          } else if (addressInfo.state === 'transition_to_primary' && addressInfo.prov) {
+            // Was secondary, now primary
+            await handlePrimaryIdP(email, addressInfo);
+          } else {
+            showScreen('create');
+          }
         }
       } catch (e) {
         showError('Failed to check email: ' + e.message);
