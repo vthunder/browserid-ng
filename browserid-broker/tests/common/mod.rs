@@ -1,5 +1,7 @@
 //! Common test utilities for broker integration tests
 
+#![allow(unused)]
+
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -14,7 +16,6 @@ use serde_json::json;
 pub struct TestContext {
     pub server: TestServer,
     pub email_sender: MockEmailSender,
-    #[allow(dead_code)]
     pub user_store: Arc<InMemoryUserStore>,
 }
 
@@ -33,7 +34,6 @@ impl MockEmailSender {
     }
 
     /// Get the last verification code sent to an email
-    #[allow(dead_code)]
     pub fn get_code(&self, email: &str) -> Option<String> {
         self.sent
             .read()
@@ -97,7 +97,6 @@ pub fn create_test_context() -> TestContext {
 }
 
 /// Helper to create a user and return the session cookie
-#[allow(dead_code)]
 pub async fn create_user(
     server: &TestServer,
     email_sender: &MockEmailSender,
