@@ -76,6 +76,9 @@ where
         .nest_service("/relay", ServeDir::new(format!("{}/relay", static_path)))
         .route_service("/include.js", ServeFile::new(format!("{}/include.js", static_path)))
         .route_service("/communication_iframe", ServeFile::new(format!("{}/communication_iframe.html", static_path)))
+        // API shims for primary IdP pages
+        .route_service("/provisioning_api.js", ServeFile::new(format!("{}/provisioning_api.js", static_path)))
+        .route_service("/authentication_api.js", ServeFile::new(format!("{}/authentication_api.js", static_path)))
         // Serve common JS files (for communication_iframe)
         .nest_service("/common/js", ServeDir::new(format!("{}/common/js", static_path)))
         // Serve communication_iframe scripts (explicit route to avoid conflict)
