@@ -22,7 +22,8 @@
     winchanCallback: null,  // WinChan response callback
     emails: [],
     selectedEmail: null,
-    newEmail: null  // Email being added to account
+    newEmail: null,  // Email being added to account
+    pendingAddressInfo: null  // Stored addressInfo for transition flows
   };
 
   // API endpoints (relative to current origin)
@@ -53,6 +54,8 @@
     pickEmail: document.getElementById('pick-email-screen'),
     addEmail: document.getElementById('add-email-screen'),
     addEmailVerify: document.getElementById('add-email-verify-screen'),
+    setPassword: document.getElementById('set-password-screen'),
+    primaryTransition: document.getElementById('primary-transition-screen'),
     success: document.getElementById('success-screen'),
     error: document.getElementById('error-screen')
   };
@@ -398,8 +401,7 @@
             showScreen('password');
           } else if (addressInfo.state === 'transition_no_password') {
             // Was primary, now secondary without password - need to set one
-            // This will be handled in Task 7
-            showScreen('create');
+            showScreen('setPassword');
           } else {
             // Normal primary flow (known or unknown)
             await handlePrimaryIdP(email, addressInfo);
@@ -409,8 +411,11 @@
           if (addressInfo.state === 'known') {
             showScreen('password');
           } else if (addressInfo.state === 'transition_to_primary' && addressInfo.prov) {
-            // Was secondary, now primary
-            await handlePrimaryIdP(email, addressInfo);
+            // Was secondary, now primary - show transition info screen
+            const domain = email.split('@')[1];
+            document.querySelectorAll('.idp-name').forEach(el => el.textContent = domain);
+            state.pendingAddressInfo = addressInfo;
+            showScreen('primaryTransition');
           } else {
             showScreen('create');
           }
@@ -630,6 +635,65 @@
       } catch (e) {
         showScreen('addEmailVerify');
         document.getElementById('add-email-verify-error').textContent = e.message;
+      }
+    });
+
+    // Set password form (for primary->secondary transition without password)
+    document.getElementById('set-password-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const password = document.getElementById('set-password').value;
+      const confirm = document.getElementById('set-password-confirm').value;
+
+      // Clear previous errors
+      document.getElementById('set-password-error').textContent = '';
+      document.getElementById('set-password-confirm-error').textContent = '';
+
+      if (password.length < 8) {
+        document.getElementById('set-password-error').textContent = 'Password must be at least 8 characters';
+        return;
+      }
+
+      if (password !== confirm) {
+        document.getElementById('set-password-confirm-error').textContent = 'Passwords do not match';
+        return;
+      }
+
+      showScreen('loading');
+
+      try {
+        await apiCall('/wsapi/set_password', 'POST', {
+          email: state.email,
+          pass: password
+        });
+
+        await apiCall(API.authenticate, 'POST', {
+          email: state.email,
+          pass: password,
+          ephemeral: false
+        });
+
+        await completeSignIn(state.email);
+      } catch (e) {
+        showScreen('setPassword');
+        document.getElementById('set-password-error').textContent = e.message;
+      }
+    });
+
+    // Continue to primary IdP button (for secondary->primary transition)
+    document.getElementById('continue-to-primary').addEventListener('click', async () => {
+      showScreen('loading');
+
+      try {
+        const addressInfo = await fetch(`${API.addressInfo}?email=${encodeURIComponent(state.email)}`)
+          .then(r => r.json());
+
+        if (addressInfo.type === 'primary' && addressInfo.prov) {
+          await handlePrimaryIdP(state.email, addressInfo);
+        } else {
+          showError('This email is no longer a primary IdP');
+        }
+      } catch (e) {
+        showError('Failed to connect to email provider: ' + e.message);
       }
     });
 

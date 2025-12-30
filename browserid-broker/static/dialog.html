@@ -273,6 +273,56 @@
       </div>
     </section>
 
+    <!-- Set Password Screen (for primary->secondary transition without password) -->
+    <section id="set-password-screen" class="screen">
+      <div class="content">
+        <h2>Set Your Password</h2>
+        <p>Your email <strong class="email-display"></strong> was previously verified through your email provider.</p>
+        <p>Since your email provider no longer supports BrowserID, please set a password for your account.</p>
+
+        <form id="set-password-form">
+          <div class="form-group">
+            <label for="set-password">Password</label>
+            <input type="password" id="set-password" name="password"
+                   placeholder="Choose a password (8+ characters)"
+                   autocomplete="new-password"
+                   minlength="8"
+                   maxlength="80"
+                   required>
+            <div class="error" id="set-password-error"></div>
+          </div>
+
+          <div class="form-group">
+            <label for="set-password-confirm">Confirm Password</label>
+            <input type="password" id="set-password-confirm" name="confirm-password"
+                   placeholder="Confirm password"
+                   autocomplete="new-password"
+                   required>
+            <div class="error" id="set-password-confirm-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Set Password</button>
+            <button type="button" class="cancel">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Primary Transition Screen (for secondary->primary transition) -->
+    <section id="primary-transition-screen" class="screen">
+      <div class="content">
+        <h2>Sign in with your email provider</h2>
+        <p>Your email <strong class="email-display"></strong> can now be verified directly by your email provider.</p>
+        <p>Click continue to sign in with <strong class="idp-name"></strong>.</p>
+
+        <div class="button-row">
+          <button type="button" id="continue-to-primary" class="primary">Continue</button>
+          <button type="button" class="cancel">Cancel</button>
+        </div>
+      </div>
+    </section>
+
     <!-- Success Screen -->
     <section id="success-screen" class="screen">
       <div class="content center">
