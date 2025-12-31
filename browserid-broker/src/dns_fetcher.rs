@@ -104,7 +104,7 @@ impl DnsFetcher {
         };
 
         // Get client connection
-        let mut client = match self.get_client().await {
+        let client = match self.get_client().await {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("Failed to get DNS client: {}", e);
