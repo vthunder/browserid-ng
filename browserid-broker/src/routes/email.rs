@@ -265,43 +265,66 @@ where
         .nth(1)
         .ok_or(BrokerError::InvalidEmail)?;
 
-    // Use DNS discovery to determine if domain is a primary IdP
-    // The fallback fetcher is initialized at startup in main.rs
-    let discovery = if let Some(fetcher) = state.get_fallback_fetcher() {
-        Some(fetcher.discover(domain).await?)
-    } else {
-        // No DNS fetcher available (e.g., in tests) - treat as secondary
-        None
-    };
+    // Check mock primary IdP registry first (for testing)
+    let mock_idp = state.get_mock_primary_idp(domain).await;
 
-    // Determine type and URLs based on discovery
-    let (addr_type, current_type, auth, prov, issuer) = if let Some(ref result) = discovery {
-        if result.is_primary {
-            // Primary IdP - use domain as issuer
-            let auth_url = result
-                .document
-                .authentication
-                .as_ref()
-                .map(|path| format!("https://{}{}", domain, path));
-            let prov_url = result
-                .document
-                .provisioning
-                .as_ref()
-                .map(|path| format!("https://{}{}", domain, path));
-            (
-                "primary",
-                EmailType::Primary,
-                auth_url,
-                prov_url,
-                domain.to_string(),
-            )
+    // Determine type and URLs based on mock or DNS discovery
+    let (addr_type, current_type, auth, prov, issuer) = if let Some(mock) = mock_idp {
+        // Mock primary IdP configured for testing
+        tracing::debug!("Using mock primary IdP for domain: {}", domain);
+        let auth_url = Some(format!("{}{}", mock.base_url, mock.auth_path));
+        let prov_url = Some(format!("{}{}", mock.base_url, mock.prov_path));
+        (
+            "primary",
+            EmailType::Primary,
+            auth_url,
+            prov_url,
+            domain.to_string(),
+        )
+    } else {
+        // Use DNS discovery to determine if domain is a primary IdP
+        let discovery = match state.fallback_fetcher().await {
+            Ok(fetcher) => match fetcher.discover(domain).await {
+                Ok(result) => Some(result),
+                Err(e) => {
+                    tracing::warn!("DNS discovery failed for {}: {}", domain, e);
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::debug!("DNS fetcher not available: {}", e);
+                None
+            }
+        };
+
+        if let Some(ref result) = discovery {
+            if result.is_primary {
+                // Primary IdP - use domain as issuer
+                let auth_url = result
+                    .document
+                    .authentication
+                    .as_ref()
+                    .map(|path| format!("https://{}{}", domain, path));
+                let prov_url = result
+                    .document
+                    .provisioning
+                    .as_ref()
+                    .map(|path| format!("https://{}{}", domain, path));
+                (
+                    "primary",
+                    EmailType::Primary,
+                    auth_url,
+                    prov_url,
+                    domain.to_string(),
+                )
+            } else {
+                // Secondary (fallback to broker)
+                ("secondary", EmailType::Secondary, None, None, state.domain.clone())
+            }
         } else {
-            // Secondary (fallback to broker)
+            // No discovery available - treat as secondary
             ("secondary", EmailType::Secondary, None, None, state.domain.clone())
         }
-    } else {
-        // No discovery available - treat as secondary
-        ("secondary", EmailType::Secondary, None, None, state.domain.clone())
     };
 
     // Look up email in database

@@ -11,6 +11,21 @@ use crate::dns_fetcher::DnsFetcher;
 use crate::error::BrokerError;
 use crate::verifier::HttpFetcher;
 
+/// Wrapper to run sync HTTP fetch in a blocking task
+async fn fetch_blocking(host: &str) -> Result<SupportDocument, BrokerError> {
+    let host = host.to_string();
+
+    // Run in blocking task since reqwest::blocking::Client isn't Send
+    let result = tokio::task::spawn_blocking(move || {
+        let fetcher = HttpFetcher::new();
+        fetcher.fetch(&host)
+    })
+    .await
+    .map_err(|e| BrokerError::Discovery(format!("Blocking task failed: {}", e)))?;
+
+    result.map_err(|e| BrokerError::Discovery(format!("HTTP fetch failed: {}", e)))
+}
+
 /// Discovery result including the authoritative domain
 pub struct FallbackResult {
     /// The support document
@@ -24,7 +39,6 @@ pub struct FallbackResult {
 /// Fetcher that tries DNS first, falls back to broker
 pub struct FallbackFetcher {
     dns_fetcher: DnsFetcher,
-    http_fetcher: HttpFetcher,
     trusted_broker: String,
 }
 
@@ -33,20 +47,14 @@ impl FallbackFetcher {
     pub fn new(trusted_broker: String) -> Result<Self, String> {
         Ok(Self {
             dns_fetcher: DnsFetcher::new()?,
-            http_fetcher: HttpFetcher::new(),
             trusted_broker,
         })
     }
 
-    /// Create with custom fetchers (for testing)
-    pub fn with_fetchers(
-        dns_fetcher: DnsFetcher,
-        http_fetcher: HttpFetcher,
-        trusted_broker: String,
-    ) -> Self {
+    /// Create with custom DNS fetcher (for testing)
+    pub fn with_dns_fetcher(dns_fetcher: DnsFetcher, trusted_broker: String) -> Self {
         Self {
             dns_fetcher,
-            http_fetcher,
             trusted_broker,
         }
     }
@@ -66,13 +74,8 @@ impl FallbackFetcher {
                     // Primary IdP mode - use DNS public key
                     let host = record.well_known_host(domain);
 
-                    // Fetch .well-known for auth/provision endpoints
-                    let mut doc = self.http_fetcher.fetch(host).map_err(|e| {
-                        BrokerError::Discovery(format!(
-                            "Failed to fetch .well-known from {}: {}",
-                            host, e
-                        ))
-                    })?;
+                    // Fetch .well-known for auth/provision endpoints (via blocking task)
+                    let mut doc = fetch_blocking(host).await?;
 
                     // Override public key with DNSSEC-validated key
                     doc.public_key = record.public_key;
@@ -84,12 +87,12 @@ impl FallbackFetcher {
                     })
                 } else {
                     // DNSSEC-validated NXDOMAIN - fall back to broker
-                    self.fallback_to_broker()
+                    self.fallback_to_broker().await
                 }
             }
             DnssecStatus::Insecure => {
                 // No DNSSEC - fall back to broker
-                self.fallback_to_broker()
+                self.fallback_to_broker().await
             }
             DnssecStatus::Bogus => {
                 // DNSSEC validation failed - reject
@@ -100,13 +103,8 @@ impl FallbackFetcher {
         }
     }
 
-    fn fallback_to_broker(&self) -> Result<FallbackResult, BrokerError> {
-        let doc = self.http_fetcher.fetch(&self.trusted_broker).map_err(|e| {
-            BrokerError::Discovery(format!(
-                "Failed to fetch broker .well-known: {}",
-                e
-            ))
-        })?;
+    async fn fallback_to_broker(&self) -> Result<FallbackResult, BrokerError> {
+        let doc = fetch_blocking(&self.trusted_broker).await?;
 
         Ok(FallbackResult {
             document: doc,

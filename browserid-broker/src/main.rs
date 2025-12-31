@@ -79,11 +79,6 @@ async fn main() -> Result<()> {
         email_sender,
     ));
 
-    // Initialize the fallback fetcher eagerly so address_info can use it
-    if let Err(e) = state.fallback_fetcher().await {
-        tracing::warn!("Failed to initialize DNS fetcher: {}", e);
-    }
-
     // Determine static files path (relative to workspace root or package root)
     let static_path = if std::path::Path::new("browserid-broker/static").exists() {
         "browserid-broker/static"

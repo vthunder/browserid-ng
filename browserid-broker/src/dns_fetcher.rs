@@ -12,10 +12,8 @@ use hickory_client::proto::xfer::DnsHandle;
 use hickory_client::udp::UdpClientStream;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
 
 /// Default DNS resolver address (Google Public DNS)
 const DEFAULT_RESOLVER: &str = "8.8.8.8";
@@ -27,8 +25,6 @@ const DEFAULT_RESOLVER: &str = "8.8.8.8";
 /// AD (Authenticated Data) flag if DNSSEC validation succeeded.
 pub struct DnsFetcher {
     resolver_addr: SocketAddr,
-    /// Cached client connection (lazily initialized)
-    client: Arc<Mutex<Option<AsyncClient>>>,
 }
 
 impl DnsFetcher {
@@ -49,21 +45,11 @@ impl DnsFetcher {
             return Err(format!("Invalid resolver address: {}", addr));
         };
 
-        Ok(Self {
-            resolver_addr,
-            client: Arc::new(Mutex::new(None)),
-        })
+        Ok(Self { resolver_addr })
     }
 
-    /// Get or create an async client connection
-    async fn get_client(&self) -> Result<AsyncClient, String> {
-        let mut client_guard = self.client.lock().await;
-
-        // If we have a cached client, clone it
-        if let Some(ref client) = *client_guard {
-            return Ok(client.clone());
-        }
-
+    /// Create a fresh client connection for a single query
+    async fn connect(&self) -> Result<AsyncClient, String> {
         // Create a new UDP client stream with timeout
         let stream = UdpClientStream::<UdpSocket>::with_timeout(
             self.resolver_addr,
@@ -75,11 +61,8 @@ impl DnsFetcher {
             .await
             .map_err(|e| format!("Failed to connect to DNS resolver: {}", e))?;
 
-        // Spawn the background task to handle responses
+        // Spawn the background task - it will complete when the query is done
         tokio::spawn(bg);
-
-        // Cache the client for future use
-        *client_guard = Some(client.clone());
 
         Ok(client)
     }
@@ -103,8 +86,8 @@ impl DnsFetcher {
             }
         };
 
-        // Get client connection
-        let client = match self.get_client().await {
+        // Create fresh client connection for this query
+        let client = match self.connect().await {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("Failed to get DNS client: {}", e);

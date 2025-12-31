@@ -10,7 +10,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::email::EmailSender;
-use crate::state::AppState;
+use crate::state::{AppState, MockPrimaryIdp};
 use crate::store::{SessionStore, UserStore, VerificationType};
 
 #[derive(Debug, Deserialize)]
@@ -65,4 +65,77 @@ where
             verification_type: None,
         }),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetMockPrimaryIdpRequest {
+    /// Domain to register as primary IdP (e.g., "test-idp.example")
+    pub domain: String,
+    /// Base URL where the mock IdP is running (e.g., "http://localhost:4000")
+    pub base_url: String,
+    /// Authentication path (default: "/browserid/auth")
+    #[serde(default = "default_auth_path")]
+    pub auth_path: String,
+    /// Provisioning path (default: "/browserid/provision")
+    #[serde(default = "default_prov_path")]
+    pub prov_path: String,
+}
+
+fn default_auth_path() -> String {
+    "/browserid/auth".to_string()
+}
+
+fn default_prov_path() -> String {
+    "/browserid/provision".to_string()
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetMockPrimaryIdpResponse {
+    pub success: bool,
+}
+
+/// POST /wsapi/test/set_mock_primary_idp
+/// Register a domain as a mock primary IdP for testing
+pub async fn set_mock_primary_idp<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    Json(req): Json<SetMockPrimaryIdpRequest>,
+) -> Json<SetMockPrimaryIdpResponse>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let config = MockPrimaryIdp {
+        auth_path: req.auth_path,
+        prov_path: req.prov_path,
+        base_url: req.base_url,
+    };
+
+    state
+        .register_mock_primary_idp(req.domain.clone(), config)
+        .await;
+
+    tracing::info!("Registered mock primary IdP for domain: {}", req.domain);
+
+    Json(SetMockPrimaryIdpResponse { success: true })
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClearMockPrimaryIdpsResponse {
+    pub success: bool,
+}
+
+/// POST /wsapi/test/clear_mock_primary_idps
+/// Clear all mock primary IdP registrations
+pub async fn clear_mock_primary_idps<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+) -> Json<ClearMockPrimaryIdpsResponse>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    state.clear_mock_primary_idps().await;
+    tracing::info!("Cleared all mock primary IdPs");
+    Json(ClearMockPrimaryIdpsResponse { success: true })
 }
