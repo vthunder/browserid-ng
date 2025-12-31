@@ -240,6 +240,7 @@ dependencies = [
  "chrono",
  "cookie",
  "dotenvy",
+ "futures-util",
  "hickory-client",
  "hickory-resolver",
  "http 1.4.0",

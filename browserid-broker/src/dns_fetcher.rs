@@ -1,13 +1,16 @@
 //! DNS-based BrowserID discovery with DNSSEC validation
 //!
 //! Queries `_browserid.<domain>` TXT records and validates DNSSEC.
-//! Uses hickory-client to access the AD (Authenticated Data) flag.
+//! Uses hickory-client with EDNS DO bit to get AD flag from validating resolver.
 
 use browserid_core::{DnsLookupResult, DnsRecord, DnssecStatus};
-use hickory_client::client::{AsyncClient, ClientHandle};
-use hickory_client::proto::rr::{DNSClass, Name, RecordType};
+use futures_util::StreamExt;
+use hickory_client::client::AsyncClient;
+use hickory_client::proto::op::{Edns, Message, MessageType, OpCode, Query};
+use hickory_client::proto::rr::{DNSClass, Name, RData, RecordType};
+use hickory_client::proto::xfer::DnsHandle;
 use hickory_client::udp::UdpClientStream;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,13 +18,13 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 
 /// Default DNS resolver address (Google Public DNS)
-const DEFAULT_RESOLVER: &str = "8.8.8.8:53";
+const DEFAULT_RESOLVER: &str = "8.8.8.8";
 
 /// DNS fetcher with DNSSEC validation using hickory-client
 ///
-/// This implementation uses hickory-client's AsyncClient to query DNS
-/// and check the AD (Authenticated Data) flag in responses, which indicates
-/// whether the response has been validated via DNSSEC.
+/// This implementation uses hickory-client to query DNS with the EDNS DO bit set,
+/// which causes validating resolvers like Google DNS (8.8.8.8) to return the
+/// AD (Authenticated Data) flag if DNSSEC validation succeeded.
 pub struct DnsFetcher {
     resolver_addr: SocketAddr,
     /// Cached client connection (lazily initialized)
@@ -35,10 +38,16 @@ impl DnsFetcher {
     }
 
     /// Create a DNS fetcher with a custom resolver address
+    /// Accepts either just IP (e.g., "8.8.8.8") or IP:port (e.g., "8.8.8.8:53")
     pub fn with_resolver_addr(addr: &str) -> Result<Self, String> {
-        let resolver_addr: SocketAddr = addr
-            .parse()
-            .map_err(|e| format!("Invalid resolver address: {}", e))?;
+        // Try parsing as SocketAddr first (with port), then as just IP
+        let resolver_addr = if let Ok(socket_addr) = addr.parse::<SocketAddr>() {
+            socket_addr
+        } else if let Ok(ip) = addr.parse::<IpAddr>() {
+            SocketAddr::new(ip, 53) // Default port
+        } else {
+            return Err(format!("Invalid resolver address: {}", addr));
+        };
 
         Ok(Self {
             resolver_addr,
@@ -103,10 +112,33 @@ impl DnsFetcher {
             }
         };
 
-        // Query for TXT records
-        let response = match client.query(name.clone(), DNSClass::IN, RecordType::TXT).await {
-            Ok(r) => r,
-            Err(e) => {
+        // Build query with EDNS and DO bit for DNSSEC
+        let mut query = Query::new();
+        query.set_name(name.clone());
+        query.set_query_type(RecordType::TXT);
+        query.set_query_class(DNSClass::IN);
+
+        // Build message with EDNS options
+        let mut message = Message::new();
+        message.set_id(rand::random());
+        message.set_message_type(MessageType::Query);
+        message.set_op_code(OpCode::Query);
+        message.set_recursion_desired(true);
+        message.add_query(query);
+
+        // Add EDNS with DO bit set - this requests DNSSEC validation
+        let mut edns = Edns::new();
+        edns.set_dnssec_ok(true); // Set DO bit
+        edns.set_max_payload(4096);
+        message.set_edns(edns);
+
+        tracing::debug!("Querying {} with EDNS DO=true", name_str);
+
+        // Send the custom message with DO bit
+        let mut response_stream = client.send(message);
+        let response = match response_stream.next().await {
+            Some(Ok(r)) => r,
+            Some(Err(e)) => {
                 let error_str = e.to_string().to_lowercase();
 
                 // Check if this is a DNSSEC validation failure (BOGUS)
@@ -121,6 +153,10 @@ impl DnsFetcher {
 
                 // NXDOMAIN or other error - treat as insecure
                 tracing::debug!("DNS lookup failed for {}: {}", domain, e);
+                return DnsLookupResult::insecure();
+            }
+            None => {
+                tracing::debug!("No DNS response for {}", domain);
                 return DnsLookupResult::insecure();
             }
         };
@@ -140,7 +176,7 @@ impl DnsFetcher {
         let mut txt_data: Option<String> = None;
 
         for record in response.answers() {
-            if let Some(txt) = record.data().and_then(|d| d.as_txt()) {
+            if let Some(RData::TXT(txt)) = record.data() {
                 // Concatenate all character strings in the TXT record
                 let combined: String = txt
                     .txt_data()

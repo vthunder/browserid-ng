@@ -265,12 +265,12 @@ where
         .nth(1)
         .ok_or(BrokerError::InvalidEmail)?;
 
-    // Try DNS discovery if fallback_fetcher is already initialized
-    // We use get_fallback_fetcher() to avoid triggering initialization in contexts
-    // where it might cause issues (e.g., tests without DNS support)
+    // Use DNS discovery to determine if domain is a primary IdP
+    // The fallback fetcher is initialized at startup in main.rs
     let discovery = if let Some(fetcher) = state.get_fallback_fetcher() {
         Some(fetcher.discover(domain).await?)
     } else {
+        // No DNS fetcher available (e.g., in tests) - treat as secondary
         None
     };
 
