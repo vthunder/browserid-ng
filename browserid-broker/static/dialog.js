@@ -371,8 +371,20 @@
           resolve(result);
         },
         function onFailure(reason) {
-          // Provisioning failed - need to authenticate
-          reject({ needsAuth: true, authUrl: authUrl, reason: reason });
+          // Check if this is an authentication issue or another error
+          const reasonLower = (reason || '').toLowerCase();
+          const isAuthError = reasonLower.includes('not authenticated') ||
+                              reasonLower.includes('unauthenticated') ||
+                              reasonLower.includes('login required') ||
+                              reasonLower.includes('authentication required');
+
+          if (isAuthError) {
+            // User needs to authenticate with IdP
+            reject({ needsAuth: true, authUrl: authUrl, reason: reason });
+          } else {
+            // Other error (cert_key failure, email mismatch, etc.)
+            reject(new Error(reason || 'Provisioning failed'));
+          }
         }
       );
     });
@@ -450,7 +462,10 @@
 
     // Show waiting screen
     showScreen('loading');
-    document.querySelector('.loading-message').textContent = 'Authenticating with your email provider...';
+    const loadingText = document.querySelector('#loading p');
+    if (loadingText) {
+      loadingText.textContent = 'Authenticating with your email provider...';
+    }
 
     // Open popup
     const popup = window.open(url.toString(), 'browserid_auth', 'width=600,height=600');

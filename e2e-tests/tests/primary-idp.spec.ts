@@ -706,7 +706,7 @@ test.describe('Primary IdP: PostMessage Communication', () => {
     }
   });
 
-  test('unauthenticated user triggers provisioning failure', async ({ page, request }) => {
+  test('unauthenticated user triggers provisioning failure', async ({ page, context, request }) => {
     const mockIdp = new MockIdpServer();
     await mockIdp.start();
     const testDomain = `postmsg3-${Date.now()}.example`;
@@ -719,18 +719,26 @@ test.describe('Primary IdP: PostMessage Communication', () => {
 
       await page.goto(`${baseUrl}/dialog/dialog.html?origin=http://example.com`);
       await page.fill('#email', testEmail);
+
+      // Listen for popup (new behavior: opens popup for auth)
+      const popupPromise = context.waitForEvent('page', { timeout: 10000 }).catch(() => null);
+
       await page.click('#email-form button[type="submit"]');
 
-      // Wait for provisioning to fail
-      await page.waitForFunction(() => {
-        return window.location.href.includes('/browserid/auth') ||
-               document.querySelector('#error-screen')?.classList.contains('active');
-      }, { timeout: 10000 }).catch(() => {});
+      // Wait for either: popup opens, redirect to auth, error screen, or loading screen
+      const popup = await popupPromise;
 
+      // Verify provisioning was attempted
+      await page.waitForTimeout(2000); // Give time for provisioning to complete
       const idpLogs = mockIdp.getLogs();
       expect(idpLogs.some(l => l.includes('GET /browserid/provision'))).toBe(true);
       expect(idpLogs.some(l => l.includes('whoami returning: null'))).toBe(true);
       expect(idpLogs.some(l => l.includes('POST /api/browserid/cert_key'))).toBe(false);
+
+      // Close popup if it opened
+      if (popup) {
+        await popup.close();
+      }
     } finally {
       await removeMockIdp(request, testDomain);
       await mockIdp.stop();
