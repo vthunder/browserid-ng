@@ -20,6 +20,7 @@
     origin: null,
     callback: null,
     winchanCallback: null,  // WinChan response callback
+    winchanHandle: null,    // WinChan handle with detach() method
     emails: [],
     selectedEmail: null,
     newEmail: null,  // Email being added to account
@@ -288,6 +289,13 @@
     // Store state for return
     sessionStorage.setItem('browserid_pending_email', email);
     sessionStorage.setItem('browserid_pending_origin', state.origin);
+
+    // CRITICAL: Detach WinChan's unload handler before navigating.
+    // Without this, WinChan sends "client closed window" error when the page
+    // navigates away, causing the RP to think sign-in was cancelled.
+    if (state.winchanHandle) {
+      state.winchanHandle.detach();
+    }
 
     // Redirect to IdP auth page
     const url = new URL(authUrl);
@@ -910,7 +918,8 @@
     // Also support WinChan protocol for include.js compatibility
     if (typeof WinChan !== 'undefined' && WinChan.onOpen) {
       try {
-        WinChan.onOpen(function(origin, args, cb) {
+        // Store the handle so we can call detach() before navigating to IdP auth
+        state.winchanHandle = WinChan.onOpen(function(origin, args, cb) {
           if (args && args.params) {
             state.origin = origin;
             state.winchanCallback = cb;
