@@ -183,6 +183,150 @@
     }
   }
 
+  // Get stored email keypair and certificate
+  // Returns { pub, priv, cert } or null if not found
+  function getStoredEmailKeypair(email) {
+    try {
+      const allEmails = JSON.parse(localStorage.getItem('emails') || '{}');
+      const defaultEmails = allEmails['default'] || {};
+      return defaultEmails[email] || null;
+    } catch (e) {
+      console.warn('Failed to get stored email keypair:', e);
+      return null;
+    }
+  }
+
+  // Check if a certificate is expired
+  // Certificate is JWT format: header.payload.signature
+  function isCertExpired(cert) {
+    try {
+      const parts = cert.split('.');
+      if (parts.length !== 3) return true;
+
+      // Decode payload (base64url)
+      const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+      const exp = payload.exp;
+
+      if (!exp) return true;
+
+      // exp is in seconds (Unix timestamp)
+      const now = Math.floor(Date.now() / 1000);
+      return now >= exp;
+    } catch (e) {
+      console.warn('Failed to check cert expiration:', e);
+      return true; // Assume expired on error
+    }
+  }
+
+  // Create assertion from stored keypair and certificate
+  // This is used when we have a valid stored cert from a primary IdP
+  async function createAssertionFromStored(email, stored) {
+    try {
+      const audience = state.origin;
+      const expiresAt = Date.now() + (5 * 60 * 1000); // 5 minutes
+
+      // Import the private key from stored JWK format
+      const privateKeyJwk = {
+        kty: 'OKP',
+        crv: 'Ed25519',
+        d: stored.priv.d,
+        x: stored.priv.x
+      };
+      const privateKey = await crypto.subtle.importKey(
+        'jwk',
+        privateKeyJwk,
+        { name: 'Ed25519' },
+        false,
+        ['sign']
+      );
+
+      // Create assertion using stored certificate
+      const assertion = await createAssertionFromPrimary(
+        privateKey,
+        stored.cert,
+        audience,
+        expiresAt
+      );
+
+      storeLoggedInState(audience, email);
+      showScreen('success');
+
+      setTimeout(() => {
+        sendResponse({ assertion });
+      }, 1000);
+    } catch (e) {
+      showError('Failed to create assertion: ' + e.message);
+    }
+  }
+
+  // Handle email chosen - implements the full state machine from original browserid
+  // See: browserid/resources/static/common/js/user.js getAssertion()
+  // See: browserid/resources/static/dialog/js/misc/state.js email_chosen handler
+  async function handleEmailChosen(email) {
+    showScreen('loading');
+
+    try {
+      // 1. Check for valid stored cert/key (like storedID.priv check in user.js:1338-1344)
+      const stored = getStoredEmailKeypair(email);
+      if (stored && stored.priv && stored.cert && !isCertExpired(stored.cert)) {
+        // Use stored cert/key to create assertion
+        return await createAssertionFromStored(email, stored);
+      }
+
+      // 2. No valid stored cert - get addressInfo from server (like user.js:1347)
+      const addressInfo = await checkEmail(email);
+
+      // 3. Handle based on type and state (like state.js:400-476)
+
+      if (addressInfo.type === 'primary') {
+        // Primary email without valid cert - provision from IdP (state.js:429-434)
+        return await handlePrimaryIdP(email, addressInfo);
+      }
+
+      // Everything below is secondary (state.js:436)
+
+      if (addressInfo.state === 'transition_to_secondary') {
+        // Was primary, now secondary - need password + verification (state.js:437-447)
+        // For now, show authenticate screen to get password
+        state.email = email;
+        document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+        showScreen('login');
+        return;
+      }
+
+      if (addressInfo.state === 'transition_no_password') {
+        // Primary user without password - need to set one (state.js:449-450)
+        state.email = email;
+        document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+        showScreen('setPassword');
+        return;
+      }
+
+      if (addressInfo.state === 'unverified') {
+        // Email not verified - need to re-verify (state.js:452-455)
+        // Stage re-verification
+        await apiCall(API.stageEmail, 'POST', { email });
+        state.email = email;
+        document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+        showScreen('verify');
+        return;
+      }
+
+      // Secondary, known, verified - check authentication level (state.js:457-472)
+      // Then generate assertion from broker
+      if (addressInfo.state === 'known') {
+        // Can issue new cert from broker
+        return await completeSignIn(email);
+      }
+
+      // Unknown state - shouldn't happen for a selected email
+      showError('Cannot sign in with this email (unknown state: ' + addressInfo.state + ')');
+
+    } catch (e) {
+      showError('Failed to sign in: ' + e.message);
+    }
+  }
+
   // Store email keypair and certificate for silent assertions
   // This mirrors what BrowserID.Storage.addEmail does
   async function storeEmailKeypair(email, publicKey, privateKey, certificate) {
@@ -597,7 +741,7 @@
       }
 
       state.email = selected.value;
-      await completeSignIn(state.email);
+      await handleEmailChosen(state.email);
     });
 
     // Add email link - go to add email screen (not login screen)

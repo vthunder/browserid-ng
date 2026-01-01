@@ -1278,3 +1278,151 @@ test.describe('Primary IdP: Auth Return Flow', () => {
     }
   });
 });
+
+test.describe('Primary IdP: Stored Certificate Reuse (BID-4)', () => {
+  // This test is skipped because it requires test infrastructure that doesn't exist yet:
+  // - /wsapi/test/force_verify_email: Auto-confirm email verification
+  // - /wsapi/test/add_primary_email: Add primary email to authenticated user's account
+  // The fix in handleEmailChosen() has been implemented but needs these endpoints to test properly.
+  test.skip('selecting stored primary IdP email tries stored cert first, not broker', async ({ page, request }) => {
+    // This test verifies the fix for BID-4: when selecting a primary IdP email
+    // that was previously stored, the dialog should try to use the stored cert/key
+    // to create an assertion, NOT call the broker's cert_key endpoint.
+    //
+    // Setup:
+    // 1. Create a secondary user with a session
+    // 2. Add a "primary" email to that user's account
+    // 3. Inject stored cert for that email into localStorage
+    // 4. Reload dialog - should show pick email with both emails
+    // 5. Select the "primary" email
+    // 6. Verify that cert_key was NOT called on the broker
+
+    const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
+    const testId = Date.now();
+    const secondaryEmail = `secondary-${testId}@example.com`;
+    const primaryDomain = `primary-${testId}.example`;
+    const primaryEmail = `user@${primaryDomain}`;
+    const password = 'testpass123';
+
+    // Step 1: Create a secondary user and session via staging
+    await request.post(`${baseUrl}/wsapi/stage_user`, {
+      data: { email: secondaryEmail, pass: password, site: 'http://example.com' }
+    });
+
+    // Complete registration (use test endpoint to auto-confirm)
+    const token = secondaryEmail.split('@')[0]; // Use simple token for test
+    await request.post(`${baseUrl}/wsapi/test/force_verify_email`, {
+      data: { email: secondaryEmail }
+    });
+
+    // Authenticate to get session
+    const authResponse = await request.post(`${baseUrl}/wsapi/authenticate_user`, {
+      data: { email: secondaryEmail, pass: password, ephemeral: false }
+    });
+
+    // Get the session cookie
+    const cookies = authResponse.headers()['set-cookie'];
+    console.log('Auth response status:', authResponse.status());
+
+    // Step 2: Add the "primary" email to the user's account via test endpoint
+    await request.post(`${baseUrl}/wsapi/test/add_primary_email`, {
+      data: { email: primaryEmail }
+    });
+
+    // Go to dialog with cookies set
+    await page.goto(`${baseUrl}/dialog/dialog.html?origin=http://example.com`);
+
+    // Step 3: Inject stored cert for the primary email into localStorage
+    const futureExp = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
+    const mockCert = Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' })).toString('base64url') + '.' +
+                     Buffer.from(JSON.stringify({
+                       iss: primaryDomain,
+                       iat: Math.floor(Date.now() / 1000),
+                       exp: futureExp,
+                       'public-key': { algorithm: 'Ed25519', publicKey: 'test' },
+                       principal: { email: primaryEmail }
+                     })).toString('base64url') + '.mock-signature';
+
+    await page.evaluate((data) => {
+      const allEmails = JSON.parse(localStorage.getItem('emails') || '{}');
+      allEmails['default'] = allEmails['default'] || {};
+      allEmails['default'][data.email] = {
+        pub: { algorithm: 'Ed25519', x: 'test-public-key' },
+        priv: { algorithm: 'Ed25519', d: 'test-private-key', x: 'test-public-key' },
+        cert: data.cert
+      };
+      localStorage.setItem('emails', JSON.stringify(allEmails));
+    }, { email: primaryEmail, cert: mockCert });
+
+    console.log('=== Injected stored cert for:', primaryEmail, '===');
+
+    // Track network requests
+    const brokerCertKeyRequests: string[] = [];
+
+    page.on('request', req => {
+      const url = req.url();
+      if (url.includes('/wsapi/cert_key')) {
+        brokerCertKeyRequests.push(url);
+        console.log('BROKER cert_key called:', url);
+      }
+    });
+
+    // Step 4: Reload to get fresh dialog with session
+    await page.goto(`${baseUrl}/dialog/dialog.html?origin=http://example.com`);
+
+    // Wait for either pick email or email screen
+    await page.waitForFunction(() => {
+      const pick = document.querySelector('#pick-email-screen')?.classList.contains('active');
+      const email = document.querySelector('#email-screen')?.classList.contains('active');
+      return pick || email;
+    }, { timeout: 10000 });
+
+    const pickVisible = await page.locator('#pick-email-screen').isVisible();
+    console.log('Pick email screen visible:', pickVisible);
+
+    if (!pickVisible) {
+      // If pick screen not visible, test setup failed - user not authenticated
+      // This might mean the test endpoints don't exist or aren't working
+      console.log('Test setup issue: pick screen not visible, checking email screen');
+      const emailVisible = await page.locator('#email-screen').isVisible();
+      console.log('Email screen visible:', emailVisible);
+
+      // Skip the rest of the test with informative message
+      console.log('SKIPPING: Test setup requires /wsapi/test/force_verify_email and /wsapi/test/add_primary_email endpoints');
+      return;
+    }
+
+    // Step 5: Select the primary email
+    const emailRadio = page.locator(`input[value="${primaryEmail}"]`);
+    const radioExists = await emailRadio.count();
+    console.log('Radio button exists for primary email:', radioExists > 0);
+
+    if (radioExists === 0) {
+      console.log('Primary email not in list - checking what emails are shown');
+      const emails = await page.locator('#email-list input[type="radio"]').evaluateAll(
+        (inputs: HTMLInputElement[]) => inputs.map(i => i.value)
+      );
+      console.log('Available emails:', emails);
+      return;
+    }
+
+    await emailRadio.click();
+    await page.locator('#sign-in-button').click();
+
+    // Wait for result
+    await page.waitForFunction(() => {
+      const success = document.querySelector('#success-screen')?.classList.contains('active');
+      const error = document.querySelector('#error-screen')?.classList.contains('active');
+      const loading = document.querySelector('#loading')?.classList.contains('active');
+      return (success || error) && !loading;
+    }, { timeout: 10000 });
+
+    console.log('=== Flow completed ===');
+    console.log('Broker cert_key requests:', brokerCertKeyRequests.length);
+
+    // THE FIX: With stored valid (non-expired) cert, should NOT call broker's cert_key
+    // Before the fix: completeSignIn() was called, which calls /wsapi/cert_key
+    // After the fix: handleEmailChosen() uses stored cert path
+    expect(brokerCertKeyRequests.length).toBe(0);
+  });
+});
