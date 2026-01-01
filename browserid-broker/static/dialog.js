@@ -437,24 +437,102 @@
     }
   }
 
-  // Redirect to primary IdP auth page
+  // Open primary IdP auth in a popup window (resilient to buggy IdPs)
   function redirectToPrimaryAuth(email, authUrl) {
-    // Store state for return
+    // Store state for return (used by popup when it loads dialog with #AUTH_RETURN)
     sessionStorage.setItem('browserid_pending_email', email);
     sessionStorage.setItem('browserid_pending_origin', state.origin);
 
-    // CRITICAL: Detach WinChan's unload handler before navigating.
-    // Without this, WinChan sends "client closed window" error when the page
-    // navigates away, causing the RP to think sign-in was cancelled.
-    if (state.winchanHandle) {
-      state.winchanHandle.detach();
-    }
-
-    // Redirect to IdP auth page
+    // Build auth URL
     const url = new URL(authUrl);
     url.searchParams.set('email', email);
     url.searchParams.set('return_to', window.location.origin + '/sign_in');
-    window.location.href = url.toString();
+
+    // Show waiting screen
+    showScreen('loading');
+    document.querySelector('.loading-message').textContent = 'Authenticating with your email provider...';
+
+    // Open popup
+    const popup = window.open(url.toString(), 'browserid_auth', 'width=600,height=600');
+
+    if (!popup) {
+      showError('Popup blocked. Please allow popups for this site and try again.');
+      return;
+    }
+
+    // Set up auth return listener
+    const AUTH_TIMEOUT = 120000; // 2 minutes
+    let timeoutId = null;
+    let pollId = null;
+
+    function cleanup() {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (pollId) clearInterval(pollId);
+      window.removeEventListener('message', handleMessage);
+    }
+
+    function handleMessage(event) {
+      // Accept messages from our own origin (popup loading dialog with #AUTH_RETURN)
+      if (event.origin !== window.location.origin) return;
+
+      if (event.data && event.data.type === 'browserid_auth_complete') {
+        cleanup();
+        if (event.data.success) {
+          // Auth succeeded, continue provisioning
+          handleAuthReturn();
+        } else {
+          showError('Authentication was cancelled.');
+        }
+      }
+    }
+
+    window.addEventListener('message', handleMessage);
+
+    // Handle successful auth return from popup
+    function handleAuthReturn() {
+      // State was stored in sessionStorage before opening popup
+      const email = sessionStorage.getItem('browserid_pending_email');
+      const origin = sessionStorage.getItem('browserid_pending_origin');
+
+      if (!email || !origin) {
+        showError('Session expired. Please try again.');
+        return;
+      }
+
+      // Restore state (don't clear yet - retryProvisioningAfterAuth uses it)
+      state.email = email;
+      state.origin = origin;
+
+      // Update UI
+      document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+      document.querySelectorAll('.rp-name').forEach(el => {
+        el.textContent = new URL(origin).hostname;
+      });
+
+      // Clear stored state
+      sessionStorage.removeItem('browserid_pending_email');
+      sessionStorage.removeItem('browserid_pending_origin');
+
+      // Retry provisioning now that user is authenticated with IdP
+      retryProvisioningAfterAuth(email);
+    }
+
+    // Timeout if auth takes too long
+    timeoutId = setTimeout(() => {
+      cleanup();
+      if (popup && !popup.closed) {
+        popup.close();
+      }
+      showError('Authentication timed out. Please try again.');
+    }, AUTH_TIMEOUT);
+
+    // Poll to detect if popup closed without responding
+    pollId = setInterval(() => {
+      if (popup.closed) {
+        cleanup();
+        showError('Authentication window was closed. Please try again.');
+      }
+    }, 500);
   }
 
   // Create assertion from primary IdP certificate
@@ -954,6 +1032,23 @@
     const hash = window.location.hash;
 
     if (hash === '#AUTH_RETURN' || hash === '#AUTH_RETURN_CANCEL') {
+      const success = hash === '#AUTH_RETURN';
+
+      // If we're in a popup, notify the opener and close
+      if (window.opener && window.opener !== window) {
+        try {
+          window.opener.postMessage({
+            type: 'browserid_auth_complete',
+            success: success
+          }, window.location.origin);
+          window.close();
+          return true;
+        } catch (e) {
+          // Opener may have been closed, fall through to standalone handling
+          console.warn('Failed to notify opener:', e);
+        }
+      }
+
       // Clear hash from URL
       history.replaceState(null, '', window.location.pathname + window.location.search);
 
@@ -980,7 +1075,7 @@
         el.textContent = new URL(origin).hostname;
       });
 
-      if (hash === '#AUTH_RETURN') {
+      if (success) {
         // Auth succeeded - retry provisioning
         retryProvisioningAfterAuth(email);
       } else {
