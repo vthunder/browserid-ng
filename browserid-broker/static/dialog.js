@@ -242,16 +242,22 @@
       // Try provisioning first
       const result = await tryPrimaryProvisioning(email, addressInfo.prov, addressInfo.auth);
 
-      // Got certificate! Create assertion
-      const audience = state.origin;
       const expiresAt = Date.now() + (5 * 60 * 1000);
 
-      const assertion = await createAssertionFromPrimary(
+      // First assertion: audience = broker (to prove email ownership to browserid)
+      const brokerAudience = window.location.origin;
+      const brokerAssertion = await createAssertionFromPrimary(
         result.keypair.privateKey,
         result.certificate,
-        audience,
+        brokerAudience,
         expiresAt
       );
+
+      // Authenticate with broker to establish session
+      await apiCall('/wsapi/auth_with_assertion', 'POST', {
+        assertion: brokerAssertion,
+        ephemeral: false
+      });
 
       // Store keypair for future use
       await storeEmailKeypair(
@@ -261,17 +267,20 @@
         result.certificate
       );
 
-      // Authenticate with broker to establish session
-      await apiCall('/wsapi/auth_with_assertion', 'POST', {
-        assertion: assertion,
-        ephemeral: false
-      });
+      // Second assertion: audience = RP (to return to relying party)
+      const rpAudience = state.origin;
+      const rpAssertion = await createAssertionFromPrimary(
+        result.keypair.privateKey,
+        result.certificate,
+        rpAudience,
+        expiresAt
+      );
 
-      storeLoggedInState(audience, email);
+      storeLoggedInState(rpAudience, email);
       showScreen('success');
 
       setTimeout(() => {
-        sendResponse({ assertion });
+        sendResponse({ assertion: rpAssertion });
       }, 1000);
 
     } catch (e) {
@@ -856,16 +865,22 @@
       // Retry provisioning (should succeed now that user is authenticated with IdP)
       const result = await tryPrimaryProvisioning(email, addressInfo.prov, addressInfo.auth);
 
-      // Got certificate! Create assertion
-      const audience = state.origin;
       const expiresAt = Date.now() + (5 * 60 * 1000);
 
-      const assertion = await createAssertionFromPrimary(
+      // First assertion: audience = broker (to prove email ownership to browserid)
+      const brokerAudience = window.location.origin;
+      const brokerAssertion = await createAssertionFromPrimary(
         result.keypair.privateKey,
         result.certificate,
-        audience,
+        brokerAudience,
         expiresAt
       );
+
+      // Authenticate with broker to establish session
+      await apiCall('/wsapi/auth_with_assertion', 'POST', {
+        assertion: brokerAssertion,
+        ephemeral: false
+      });
 
       // Store keypair for future use
       await storeEmailKeypair(
@@ -875,17 +890,20 @@
         result.certificate
       );
 
-      // Authenticate with broker to establish session
-      await apiCall('/wsapi/auth_with_assertion', 'POST', {
-        assertion: assertion,
-        ephemeral: false
-      });
+      // Second assertion: audience = RP (to return to relying party)
+      const rpAudience = state.origin;
+      const rpAssertion = await createAssertionFromPrimary(
+        result.keypair.privateKey,
+        result.certificate,
+        rpAudience,
+        expiresAt
+      );
 
-      storeLoggedInState(audience, email);
+      storeLoggedInState(rpAudience, email);
       showScreen('success');
 
       setTimeout(() => {
-        sendResponse({ assertion });
+        sendResponse({ assertion: rpAssertion });
       }, 1000);
 
     } catch (e) {
