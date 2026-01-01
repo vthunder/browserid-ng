@@ -68,7 +68,12 @@
   }
 
   function showError(message) {
-    document.querySelector('.error-message').textContent = message;
+    const errorEl = document.querySelector('.error-message');
+    if (errorEl) {
+      errorEl.textContent = message;
+    } else {
+      console.error('Error (no error element):', message);
+    }
     showScreen('error');
   }
 
