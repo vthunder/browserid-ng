@@ -640,7 +640,7 @@ BrowserID.User = (function() {
             complete(userInfo);
           }
           else {
-            onFailure($.extend(info, { action: { message: error }}));
+            onFailure(Object.assign({}, info, { action: { message: error }}));
           }
         }
       );
