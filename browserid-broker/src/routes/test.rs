@@ -139,3 +139,37 @@ where
     tracing::info!("Cleared all mock primary IdPs");
     Json(ClearMockPrimaryIdpsResponse { success: true })
 }
+
+#[derive(Debug, Deserialize)]
+pub struct RemoveMockPrimaryIdpRequest {
+    /// Domain to remove from mock primary IdP registry
+    pub domain: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RemoveMockPrimaryIdpResponse {
+    pub success: bool,
+    /// Whether the domain was found and removed
+    pub removed: bool,
+}
+
+/// POST /wsapi/test/remove_mock_primary_idp
+/// Remove a specific mock primary IdP registration
+pub async fn remove_mock_primary_idp<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    Json(req): Json<RemoveMockPrimaryIdpRequest>,
+) -> Json<RemoveMockPrimaryIdpResponse>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let removed = state.remove_mock_primary_idp(&req.domain).await;
+    if removed {
+        tracing::info!("Removed mock primary IdP for domain: {}", req.domain);
+    }
+    Json(RemoveMockPrimaryIdpResponse {
+        success: true,
+        removed,
+    })
+}

@@ -92,6 +92,15 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
         self.mock_primary_idps.write().await.clear();
     }
 
+    /// Remove a specific mock primary IdP by domain
+    pub async fn remove_mock_primary_idp(&self, domain: &str) -> bool {
+        self.mock_primary_idps
+            .write()
+            .await
+            .remove(domain)
+            .is_some()
+    }
+
     /// Get or create the fallback fetcher
     pub async fn fallback_fetcher(&self) -> Result<Arc<FallbackFetcher>, String> {
         self.fallback_fetcher

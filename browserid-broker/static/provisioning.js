@@ -29,6 +29,9 @@
      * @param {function} onFailure - Called with reason on failure
      */
     start: function(provisioningUrl, email, onSuccess, onFailure) {
+      // Clean up any previous provisioning attempt first
+      this._cleanup();
+
       this._onSuccess = onSuccess;
       this._onFailure = onFailure;
       this._email = email;
@@ -38,7 +41,6 @@
       this._iframeOrigin = url.origin;
 
       // Create hidden iframe
-      this._cleanup();
       this._iframe = document.createElement('iframe');
       this._iframe.style.display = 'none';
       this._iframe.src = provisioningUrl;

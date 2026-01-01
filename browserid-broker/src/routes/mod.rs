@@ -74,6 +74,7 @@ where
         .route("/wsapi/test/pending_verification", get(test::get_pending_verification))
         .route("/wsapi/test/set_mock_primary_idp", post(test::set_mock_primary_idp))
         .route("/wsapi/test/clear_mock_primary_idps", post(test::clear_mock_primary_idps))
+        .route("/wsapi/test/remove_mock_primary_idp", post(test::remove_mock_primary_idp))
         // Compatibility routes for include.js
         .route("/sign_in", get(|| async { Redirect::to("/dialog/dialog.html") }))
         .nest_service("/relay", ServeDir::new(format!("{}/relay", static_path)))
