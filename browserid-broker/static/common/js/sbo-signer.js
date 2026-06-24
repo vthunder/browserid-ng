@@ -76,19 +76,29 @@
     opener.postMessage(msg, origin);
   }
 
+  // The signer is a PERSISTENT session service: it stays open and serves many
+  // sign requests from its opener (no per-write popup). The opener holds the
+  // window and reuses it; only the first open needs a user gesture. Requests
+  // carry an `id` so the opener can correlate concurrent replies.
+  var signedCount = 0;
+
   window.addEventListener("message", function (e) {
+    // Only the window that opened this popup may drive it (defense in depth;
+    // the substantive gate is the per-origin grant below).
+    if (e.source !== opener) return;
     var d = e.data;
     if (!d || d.type !== "sbo:sign") return;
-    var rpOrigin = e.origin; // the requesting RP; replies target this exactly
+    var rpOrigin = e.origin; // browser-set, unforgeable; replies target this
+    var id = d.id;           // opaque correlation id chosen by the opener
 
     if (!grantedFor(rpOrigin)) {
-      reply(rpOrigin, { type: "sbo:sign-error", error: "not_granted",
+      reply(rpOrigin, { type: "sbo:sign-error", id: id, error: "not_granted",
         message: "origin " + rpOrigin + " has not been granted SBO signing" });
       return;
     }
     var rec = identityFor(d.email, d.issuer);
     if (!rec || !rec.priv || !rec.cert) {
-      reply(rpOrigin, { type: "sbo:sign-error", error: "no_identity",
+      reply(rpOrigin, { type: "sbo:sign-error", id: id, error: "no_identity",
         message: "no cert-bound key for " + d.email });
       return;
     }
@@ -103,12 +113,12 @@
     loadSbo().then(function (sbo) {
       return SboSign.signEnvelope(sbo, d.envelope, identity, rec.priv);
     }).then(function (res) {
-      reply(rpOrigin, { type: "sbo:signed",
+      reply(rpOrigin, { type: "sbo:signed", id: id,
         signature: res.signature, cert: res.cert, pubkey: res.pubkey });
-      log("signed ✓");
-      setTimeout(function () { try { window.close(); } catch (_) {} }, 250);
+      signedCount += 1;
+      log("ready — signed " + signedCount); // stay open for reuse
     }).catch(function (err) {
-      reply(rpOrigin, { type: "sbo:sign-error", error: "sign_failed",
+      reply(rpOrigin, { type: "sbo:sign-error", id: id, error: "sign_failed",
         message: (err && err.message) || String(err) });
       log("error: " + ((err && err.message) || String(err)));
     });
