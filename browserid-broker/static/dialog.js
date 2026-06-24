@@ -257,11 +257,8 @@
       );
 
       storeLoggedInState(audience, email);
-      showScreen('success');
-
-      setTimeout(() => {
-        sendResponse({ assertion });
-      }, 1000);
+      state.email = email;
+      returnAssertion(assertion);
     } catch (e) {
       showError('Failed to create assertion: ' + e.message);
     }
@@ -441,11 +438,8 @@
       );
 
       storeLoggedInState(rpAudience, email);
-      showScreen('success');
-
-      setTimeout(() => {
-        sendResponse({ assertion: rpAssertion });
-      }, 1000);
+      state.email = email;
+      returnAssertion(rpAssertion);
 
     } catch (e) {
       if (e.needsAuth) {
@@ -596,27 +590,41 @@
       // Store keypair and certificate for silent assertions
       await storeEmailKeypair(email, publicKey, privateKey, certificate);
 
-      // If the RP requested the SBO typed-signing capability and the user has
-      // not yet granted this origin, ask for consent before returning. Ordinary
-      // (assertion-only) RPs skip this entirely — the login contract is
-      // unchanged. The grant is what communication_iframe enforces.
-      if (state.sboSign && !sboSignGranted(state.origin)) {
-        state.pendingAssertion = assertion;
-        const emailEl = screens.sboConsent.querySelector('.email-display');
-        if (emailEl) emailEl.textContent = email;
-        showScreen('sboConsent');
-        return;
-      }
-
-      showScreen('success');
-
-      // Return assertion to parent
-      setTimeout(() => {
-        sendResponse({ assertion });
-      }, 1000);
+      state.email = email;
+      returnAssertion(assertion);
     } catch (e) {
       showError('Failed to generate assertion: ' + e.message);
     }
+  }
+
+  // Single exit for every assertion-returning path. If the RP requested the SBO
+  // typed-signing capability and this origin is not yet granted, show the
+  // consent screen first; otherwise return immediately. Ordinary (assertion-
+  // only) RPs are unaffected — the login contract is unchanged. Centralizing
+  // here means the consent gate covers ALL paths (fresh cert, stored cert,
+  // primary IdP), not just fresh sign-in.
+  function returnAssertion(assertion) {
+    if (state.sboSign && !sboSignGranted(state.origin)) {
+      state.pendingAssertion = assertion;
+      const emailEl = screens.sboConsent.querySelector('.email-display');
+      if (emailEl) emailEl.textContent = state.email || '';
+      showScreen('sboConsent');
+      return;
+    }
+    showScreen('success');
+    setTimeout(() => {
+      sendResponse(buildAssertionResponse(assertion));
+    }, 1000);
+  }
+
+  // The response returned to the RP. When the RP requested SBO signing, report
+  // the grant decision explicitly so it never has to guess.
+  function buildAssertionResponse(assertion) {
+    const resp = { assertion };
+    if (state.sboSign) {
+      resp.sbo_sign_granted = sboSignGranted(state.origin);
+    }
+    return resp;
   }
 
   // Per-origin grant for the SBO typed-signing capability, persisted in the same
@@ -1035,7 +1043,7 @@
       state.pendingAssertion = null;
       showScreen('success');
       setTimeout(() => {
-        sendResponse({ assertion });
+        sendResponse(buildAssertionResponse(assertion));
       }, 1000);
     }
     document.getElementById('sbo-consent-allow').addEventListener('click', () => {
@@ -1216,11 +1224,8 @@
       );
 
       storeLoggedInState(rpAudience, email);
-      showScreen('success');
-
-      setTimeout(() => {
-        sendResponse({ assertion: rpAssertion });
-      }, 1000);
+      state.email = email;
+      returnAssertion(rpAssertion);
 
     } catch (e) {
       if (e.needsAuth) {
