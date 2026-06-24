@@ -84,26 +84,51 @@
     const sbo = await import(`${BROKER}/common/js/sbo-wasm/sbo_wasm.js`);
     await sbo.default(); // init() fetches the .wasm
 
+    // Surface otherwise-invisible failures (iframe errors, rejections).
+    window.addEventListener("error", (e) =>
+      log("window error: " + (e.message || e), "err"));
+    window.addEventListener("unhandledrejection", (e) =>
+      log("unhandled rejection: " + (e.reason && e.reason.message || e.reason), "err"));
+
     // --- a hidden communication iframe + a channel to it (scope mozid_ni) -----
     const iframe = document.createElement("iframe");
     iframe.style.display = "none";
     iframe.src = `${BROKER}/communication_iframe`;
+    iframe.onerror = () => log("iframe failed to load", "err");
     document.body.appendChild(iframe);
     await new Promise((res) => (iframe.onload = res));
+    log("✓ communication iframe loaded", "muted");
 
+    let chanReady = false;
     const chan = Channel.build({
       window: iframe.contentWindow,
       origin: BROKER,
-      scope: "mozid_ni"
+      scope: "mozid_ni",
+      onReady: () => { chanReady = true; log("✓ channel handshake ready", "muted"); }
     });
 
+    // Robust caller: hard timeout so we never hang silently, plus a jschannel
+    // per-call timeout. Reports whether the handshake completed.
     function callSign(params) {
       return new Promise((resolve, reject) => {
+        let done = false;
+        const finish = (fn) => (x, y) => { if (!done) { done = true; fn(x, y); } };
+        const ok = finish((v) => resolve(v));
+        const fail = finish((err, message) => reject(new Error(`${err}: ${message || ""}`)));
+        setTimeout(() => {
+          if (!done) {
+            done = true;
+            reject(new Error(chanReady
+              ? "timeout: agent did not respond to signSboEnvelope (binding hung?)"
+              : "timeout: channel handshake never completed (iframe channel not ready)"));
+          }
+        }, 12000);
         chan.call({
           method: "signSboEnvelope",
           params,
-          success: resolve,
-          error: (err, message) => reject(new Error(`${err}: ${message}`))
+          timeout: 11000,
+          success: (v) => ok(v),
+          error: (err, message) => fail(err, message)
         });
       });
     }
