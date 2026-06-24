@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -263,4 +264,68 @@ where
     Err(BrokerError::ValidationError(
         "no pending registration".to_string(),
     ))
+}
+
+// ===========================================================================
+// Admin seed provisioning (SBO Mingo demo)
+//
+// Create a pre-verified account directly, bypassing email verification — for
+// provisioning @mingo.place seed/admin accounts on a domain with no MX (demo
+// decision #5). Gated by the ADMIN_TOKEN env var (X-Admin-Token header). Not a
+// general signup path; only enabled when ADMIN_TOKEN is set.
+// ===========================================================================
+
+#[derive(Deserialize)]
+pub struct AdminCreateRequest {
+    pub email: String,
+    pub pass: String,
+}
+
+#[derive(Serialize)]
+pub struct AdminCreateResponse {
+    pub success: bool,
+    pub email: String,
+}
+
+/// POST /admin/create_account  (header: X-Admin-Token: <ADMIN_TOKEN>)
+pub async fn admin_create_account<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    headers: HeaderMap,
+    Json(req): Json<AdminCreateRequest>,
+) -> Result<Json<AdminCreateResponse>, (StatusCode, String)>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let expected = std::env::var("ADMIN_TOKEN").ok().filter(|t| !t.is_empty());
+    let provided = headers.get("x-admin-token").and_then(|v| v.to_str().ok());
+    match (expected, provided) {
+        (Some(exp), Some(got)) if exp == got => {}
+        _ => return Err((StatusCode::FORBIDDEN, "admin token required".into())),
+    }
+
+    if req.pass.len() < MIN_PASSWORD_LENGTH || req.pass.len() > MAX_PASSWORD_LENGTH {
+        return Err((StatusCode::BAD_REQUEST, "invalid password length".into()));
+    }
+    let ise = |e: String| (StatusCode::INTERNAL_SERVER_ERROR, e);
+    if state
+        .user_store
+        .get_user_by_email(&req.email)
+        .map_err(|e| ise(e.to_string()))?
+        .is_some()
+    {
+        return Err((StatusCode::CONFLICT, "email already exists".into()));
+    }
+    let hash = hash_password(&req.pass).map_err(|e| ise(e.to_string()))?;
+    let user_id = state
+        .user_store
+        .create_user(&hash)
+        .map_err(|e| ise(e.to_string()))?;
+    state
+        .user_store
+        .add_email(user_id, &req.email, true)
+        .map_err(|e| ise(e.to_string()))?;
+
+    Ok(Json(AdminCreateResponse { success: true, email: req.email }))
 }

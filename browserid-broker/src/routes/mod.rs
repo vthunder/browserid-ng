@@ -52,6 +52,8 @@ where
         .route("/wsapi/stage_user", post(account::stage_user))
         .route("/wsapi/complete_user_creation", post(account::complete_user_creation))
         .route("/wsapi/user_creation_status", get(account::user_creation_status))
+        // Admin seed provisioning (ADMIN_TOKEN-gated; for @mingo.place demo accounts)
+        .route("/admin/create_account", post(account::admin_create_account))
         .route("/wsapi/authenticate_user", post(auth::authenticate_user))
         .route("/wsapi/logout", post(auth::logout))
         .route("/wsapi/update_password", post(auth::update_password))
