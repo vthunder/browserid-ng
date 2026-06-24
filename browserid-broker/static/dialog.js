@@ -24,7 +24,9 @@
     emails: [],
     selectedEmail: null,
     newEmail: null,  // Email being added to account
-    pendingAddressInfo: null  // Stored addressInfo for transition flows
+    pendingAddressInfo: null,  // Stored addressInfo for transition flows
+    sboSign: false,  // RP requested the SBO typed-signing capability
+    pendingAssertion: null  // Assertion held while showing the SBO consent screen
   };
 
   // API endpoints (relative to current origin)
@@ -57,6 +59,7 @@
     addEmailVerify: document.getElementById('add-email-verify-screen'),
     setPassword: document.getElementById('set-password-screen'),
     primaryTransition: document.getElementById('primary-transition-screen'),
+    sboConsent: document.getElementById('sbo-consent-screen'),
     success: document.getElementById('success-screen'),
     error: document.getElementById('error-screen')
   };
@@ -593,6 +596,18 @@
       // Store keypair and certificate for silent assertions
       await storeEmailKeypair(email, publicKey, privateKey, certificate);
 
+      // If the RP requested the SBO typed-signing capability and the user has
+      // not yet granted this origin, ask for consent before returning. Ordinary
+      // (assertion-only) RPs skip this entirely — the login contract is
+      // unchanged. The grant is what communication_iframe enforces.
+      if (state.sboSign && !sboSignGranted(state.origin)) {
+        state.pendingAssertion = assertion;
+        const emailEl = screens.sboConsent.querySelector('.email-display');
+        if (emailEl) emailEl.textContent = email;
+        showScreen('sboConsent');
+        return;
+      }
+
       showScreen('success');
 
       // Return assertion to parent
@@ -601,6 +616,28 @@
       }, 1000);
     } catch (e) {
       showError('Failed to generate assertion: ' + e.message);
+    }
+  }
+
+  // Per-origin grant for the SBO typed-signing capability, persisted in the same
+  // `siteInfo` localStorage map communication_iframe reads via storage.site.get.
+  function sboSignGranted(origin) {
+    try {
+      const siteInfo = JSON.parse(localStorage.getItem('siteInfo') || '{}');
+      return !!(siteInfo[origin] && siteInfo[origin].sbo_sign_granted);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function grantSboSign(origin) {
+    try {
+      const siteInfo = JSON.parse(localStorage.getItem('siteInfo') || '{}');
+      siteInfo[origin] = siteInfo[origin] || {};
+      siteInfo[origin].sbo_sign_granted = true;
+      localStorage.setItem('siteInfo', JSON.stringify(siteInfo));
+    } catch (e) {
+      console.warn('Failed to store SBO signing grant:', e);
     }
   }
 
@@ -990,10 +1027,30 @@
       showScreen('email');
     });
 
+    // SBO signing consent: Allow grants this origin the typed-signing
+    // capability; Not now returns the assertion without granting (login still
+    // succeeds; the iframe will report not_granted until granted later).
+    function finishAfterConsent() {
+      const assertion = state.pendingAssertion;
+      state.pendingAssertion = null;
+      showScreen('success');
+      setTimeout(() => {
+        sendResponse({ assertion });
+      }, 1000);
+    }
+    document.getElementById('sbo-consent-allow').addEventListener('click', () => {
+      grantSboSign(state.origin);
+      finishAfterConsent();
+    });
+    document.getElementById('sbo-consent-deny').addEventListener('click', () => {
+      finishAfterConsent();
+    });
+
     // Handle messages from parent
     window.addEventListener('message', (e) => {
       if (e.data && e.data.type === 'browserid:request') {
         state.origin = e.origin;
+        state.sboSign = !!(e.data.params && e.data.params.sboSign);
         document.querySelectorAll('.rp-name').forEach(el => {
           el.textContent = new URL(e.origin).hostname;
         });
@@ -1186,6 +1243,7 @@
 
     if (origin) {
       state.origin = origin;
+      state.sboSign = params.get('sbo_sign') === '1';
       document.querySelectorAll('.rp-name').forEach(el => {
         el.textContent = new URL(origin).hostname;
       });
@@ -1199,6 +1257,7 @@
         state.winchanHandle = WinChan.onOpen(function(origin, args, cb) {
           if (args && args.params) {
             state.origin = origin;
+            state.sboSign = !!args.params.sboSign;
             state.winchanCallback = cb;
             document.querySelectorAll('.rp-name').forEach(el => {
               el.textContent = new URL(origin).hostname;
