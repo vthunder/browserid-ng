@@ -88,6 +88,8 @@ where
         .nest_service("/common/js", ServeDir::new(format!("{}/common/js", static_path)))
         // Serve communication_iframe scripts (explicit route to avoid conflict)
         .route_service("/communication_iframe/start.js", ServeFile::new(format!("{}/communication_iframe/start.js", static_path)))
+        // SBO signer popup (first-party broker window for cross-site typed signing)
+        .route_service("/sign", ServeFile::new(format!("{}/sign.html", static_path)))
         // Serve static files (dialog, CSS, JS)
         .nest_service("/dialog", ServeDir::new(static_path))
         .layer(CookieManagerLayer::new())

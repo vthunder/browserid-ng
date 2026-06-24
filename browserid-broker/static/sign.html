@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+<!--
+  SBO signer popup. A first-party broker window an RP opens (window.open) to
+  sign a typed SBO envelope with the user's cert-bound key. See
+  common/js/sbo-signer.js for the protocol. No user interaction required
+  (consent granted at login); just a brief spinner, then it posts the signature
+  back and closes.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Signing…</title>
+  <style>
+    body { font: 14px/1.5 -apple-system, system-ui, sans-serif; display: flex;
+           align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { text-align: center; }
+    .spinner { width: 28px; height: 28px; border: 3px solid #e2e8f0;
+               border-top-color: #2563eb; border-radius: 50%;
+               animation: spin 1s linear infinite; margin: 0 auto 12px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #status { color: #64748b; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner"></div>
+    <div id="status">connecting…</div>
+  </div>
+  <!-- sbo-sign.js (exposes window.SboSign) must load before sbo-signer.js -->
+  <script src="/common/js/sbo-sign.js"></script>
+  <script src="/common/js/sbo-signer.js"></script>
+</body>
+</html>

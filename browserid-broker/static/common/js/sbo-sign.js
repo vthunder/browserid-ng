@@ -32,8 +32,9 @@
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api; // Node (tests)
   }
-  if (root && root.BrowserID) {
-    root.BrowserID.SboSign = api; // browser agent
+  if (root) {
+    if (root.BrowserID) root.BrowserID.SboSign = api; // full agent (comm iframe)
+    root.SboSign = api; // global fallback (the minimal signer popup)
   }
 })(typeof self !== "undefined" ? self : this, function() {
   "use strict";
