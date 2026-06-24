@@ -13,13 +13,14 @@ mod well_known;
 
 use std::sync::Arc;
 
-use axum::http::{header, Method};
+use axum::http::{header, HeaderValue, Method};
 use axum::response::Redirect;
 use axum::routing::{get, post};
 use axum::Router;
 use tower_cookies::CookieManagerLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::email::EmailSender;
 use crate::state::AppState;
@@ -96,5 +97,13 @@ where
                 .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
                 .allow_headers([header::CONTENT_TYPE, header::ACCEPT]),
         )
+        // Always revalidate served assets (HTML/JS/wasm). The broker ships
+        // security-critical agent code (login + typed signing); stale cached
+        // JS must never silently run. `no-cache` still permits 304s via
+        // etag/last-modified, so it's cheap — just never blindly fresh.
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        ))
         .with_state(state)
 }
