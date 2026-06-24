@@ -329,3 +329,148 @@ where
 
     Ok(Json(AdminCreateResponse { success: true, email: req.email }))
 }
+
+// ===========================================================================
+// Passwordless external login + federated @mingo.place provisioning (SBO T1)
+//
+// The Mingo demo's identity flow (decision #5): authenticate an EXTERNAL email
+// (e.g. danmills@sandmill.org, gmail) by email round-trip — no password — then
+// provision a local <handle>@mingo.place identity linked to that account. The
+// existing cert_key then issues @mingo.place certs (issuer browserid.me, pinned
+// + DNSSEC-anchored → SBO-attributable). See the typed-signing design note.
+// ===========================================================================
+
+#[derive(Deserialize)]
+pub struct StageLoginRequest {
+    pub email: String,
+}
+
+/// POST /wsapi/stage_login  — email a one-time code to `email` (no password).
+/// Works whether or not an account exists (login or first-time).
+pub async fn stage_login<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    Json(req): Json<StageLoginRequest>,
+) -> Result<Json<StageUserResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let email = req.email.trim().to_lowercase();
+    if !email.contains('@') {
+        return Err(BrokerError::ValidationError("invalid email".into()));
+    }
+    let code = generate_verification_code();
+    state.user_store.create_pending(PendingVerification {
+        secret: code.clone(),
+        email: email.clone(),
+        user_id: None,
+        password_hash: None, // passwordless
+        verification_type: VerificationType::NewAccount,
+        created_at: Utc::now(),
+    })?;
+    state
+        .email_sender
+        .send_verification(&email, &code)
+        .map_err(BrokerError::Internal)?;
+    Ok(Json(StageUserResponse { success: true, reason: None }))
+}
+
+#[derive(Deserialize)]
+pub struct CompleteLoginRequest {
+    pub token: String,
+}
+
+#[derive(Serialize)]
+pub struct CompleteLoginResponse {
+    pub success: bool,
+    pub email: String,
+}
+
+/// POST /wsapi/complete_login — verify the code, open a session. Creates a
+/// passwordless account on first login for this external email.
+pub async fn complete_login<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: tower_cookies::Cookies,
+    Json(req): Json<CompleteLoginRequest>,
+) -> Result<Json<CompleteLoginResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let pending = state
+        .user_store
+        .get_pending(&req.token)?
+        .ok_or(BrokerError::InvalidVerificationCode)?;
+    if (Utc::now() - pending.created_at).num_minutes() > 15 {
+        state.user_store.delete_pending(&req.token)?;
+        return Err(BrokerError::VerificationExpired);
+    }
+
+    let user_id = match state.user_store.get_user_by_email(&pending.email)? {
+        Some(user) => user.id,
+        None => {
+            let uid = state.user_store.create_user_no_password()?;
+            state.user_store.add_email(uid, &pending.email, true)?;
+            uid
+        }
+    };
+    state.user_store.delete_pending(&req.token)?;
+
+    let session = state.session_store.create(user_id)?;
+    super::session::set_session_cookie(&cookies, &session.id.0);
+    Ok(Json(CompleteLoginResponse { success: true, email: pending.email }))
+}
+
+#[derive(Deserialize)]
+pub struct ProvisionMingoRequest {
+    pub handle: String,
+}
+
+#[derive(Serialize)]
+pub struct ProvisionMingoResponse {
+    pub success: bool,
+    pub email: String,
+}
+
+/// POST /wsapi/provision_mingo — add <handle>@<MINGO_DOMAIN> as a verified email
+/// on the authenticated account (the federated IdP step). Idempotent for the
+/// owner; rejects a handle owned by another account. cert_key can then issue its
+/// cert. Requires a session (from complete_login).
+pub async fn provision_mingo<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: tower_cookies::Cookies,
+    Json(req): Json<ProvisionMingoRequest>,
+) -> Result<Json<ProvisionMingoResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+
+    let handle = req.handle.trim().to_lowercase();
+    let valid = !handle.is_empty()
+        && handle.len() <= 31
+        && handle.bytes().enumerate().all(|(i, b)| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || (i > 0 && matches!(b, b'-' | b'_' | b'.'))
+        });
+    if !valid {
+        return Err(BrokerError::ValidationError(
+            "handle must be lowercase [a-z0-9] then [a-z0-9._-]".into(),
+        ));
+    }
+    let domain = std::env::var("MINGO_DOMAIN").unwrap_or_else(|_| "mingo.place".to_string());
+    let email = format!("{handle}@{domain}");
+
+    if let Some(existing) = state.user_store.get_user_by_email(&email)? {
+        if existing.id != session.user_id {
+            return Err(BrokerError::ValidationError("handle already taken".into()));
+        }
+        return Ok(Json(ProvisionMingoResponse { success: true, email })); // idempotent
+    }
+    state.user_store.add_email(session.user_id, &email, true)?;
+    Ok(Json(ProvisionMingoResponse { success: true, email }))
+}
