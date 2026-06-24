@@ -182,6 +182,8 @@
   // the caller-built envelope spec (sbo-wasm shape); the agent binds it to the
   // identity, rebuilds canonical bytes, and signs with the stored key.
   chan.bind("signSboEnvelope", function(trans, params) {
+    var L = function(m) { try { console.log("[sbo-sign]", m); } catch (_) {} };
+    L("binding invoked; origin=" + trans.origin);
     setRemoteOrigin(trans.origin);
     trans.delayReturn(true);
 
@@ -198,6 +200,7 @@
         return trans.error("not_granted",
           "origin " + remoteOrigin + " has not been granted SBO signing");
       }
+      L("grant ok for " + remoteOrigin);
 
       // Load the stored cert-bound identity (private JWK + Auth-Cert).
       var issuer = params.issuer || storage.site.get(remoteOrigin, "issuer");
@@ -206,25 +209,33 @@
         return trans.error("no_identity",
           "no cert-bound key for " + email + (issuer ? " @ " + issuer : ""));
       }
+      L("identity record found; SboSign=" + (typeof bid.SboSign));
 
       var identity = {
         email: email,
         pubkeyHex: bid.SboSign.pubkeyHexFromJwkX(record.pub ? record.pub.x : record.priv.x),
         cert: record.cert
       };
+      L("identity built; loading sbo-wasm…");
 
       loadSboWasm().then(function(sbo) {
+        L("sbo-wasm loaded; signing…");
         return bid.SboSign.signEnvelope(sbo, envelope, identity, record.priv);
       }).then(function(res) {
+        L("signed; completing");
         trans.complete({
           signature: res.signature,
           cert: res.cert,
           pubkey: res.pubkey
         });
       }).catch(function(err) {
+        L("ERROR: " + ((err && err.message) || String(err)));
+        try { console.error("[sbo-sign]", err); } catch (_) {}
         trans.error("sign_failed", (err && err.message) || String(err));
       });
     } catch (e) {
+      L("THROW: " + ((e && e.message) || String(e)));
+      try { console.error("[sbo-sign]", e); } catch (_) {}
       trans.error("sign_failed", (e && e.message) || String(e));
     }
   });
