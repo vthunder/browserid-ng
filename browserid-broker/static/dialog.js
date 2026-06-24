@@ -26,7 +26,9 @@
     newEmail: null,  // Email being added to account
     pendingAddressInfo: null,  // Stored addressInfo for transition flows
     sboSign: false,  // RP requested the SBO typed-signing capability
-    pendingAssertion: null  // Assertion held while showing the SBO consent screen
+    pendingAssertion: null,  // Assertion held while showing the SBO consent screen
+    flow: null,  // 'mingo' = passwordless external login → provision @mingo.place
+    externalEmail: null  // the external identity authenticated in the Mingo flow
   };
 
   // API endpoints (relative to current origin)
@@ -42,7 +44,11 @@
     logout: '/wsapi/logout',
     addressInfo: '/wsapi/address_info',
     stageEmail: '/wsapi/stage_email',
-    completeEmailAddition: '/wsapi/complete_email_addition'
+    completeEmailAddition: '/wsapi/complete_email_addition',
+    // Mingo T1 federated flow (passwordless external login → provision @mingo.place)
+    stageLogin: '/wsapi/stage_login',
+    completeLogin: '/wsapi/complete_login',
+    provisionMingo: '/wsapi/provision_mingo'
   };
 
   // DOM elements
@@ -60,6 +66,8 @@
     setPassword: document.getElementById('set-password-screen'),
     primaryTransition: document.getElementById('primary-transition-screen'),
     sboConsent: document.getElementById('sbo-consent-screen'),
+    mingoCode: document.getElementById('mingo-code-screen'),
+    mingoHandle: document.getElementById('mingo-handle-screen'),
     success: document.getElementById('success-screen'),
     error: document.getElementById('error-screen')
   };
@@ -597,6 +605,20 @@
     }
   }
 
+  // Mingo T1: email a one-time code to the external identity (passwordless).
+  async function startMingoLogin(email) {
+    state.email = email;
+    state.externalEmail = email;
+    showScreen('loading');
+    try {
+      await apiCall(API.stageLogin, 'POST', { email });
+      document.querySelectorAll('.mingo-external').forEach(el => el.textContent = email);
+      showScreen('mingoCode');
+    } catch (e) {
+      showError('Could not send a sign-in code: ' + e.message);
+    }
+  }
+
   // Single exit for every assertion-returning path. If the RP requested the SBO
   // typed-signing capability and this origin is not yet granted, show the
   // consent screen first; otherwise return immediately. Ordinary (assertion-
@@ -624,6 +646,8 @@
     if (state.sboSign) {
       resp.sbo_sign_granted = sboSignGranted(state.origin);
     }
+    // Mingo flow returns the provisioned identity so the RP knows who it is.
+    if (state.flow === 'mingo') resp.email = state.email;
     return resp;
   }
 
@@ -689,6 +713,11 @@
         return;
       }
 
+      // Mingo T1 flow: passwordless external login → provision @mingo.place.
+      if (state.flow === 'mingo') {
+        return startMingoLogin(email);
+      }
+
       state.email = email;
       document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
 
@@ -726,6 +755,49 @@
         }
       } catch (e) {
         showError('Failed to check email: ' + e.message);
+      }
+    });
+
+    // Mingo flow: code entry (after emailed one-time code)
+    document.getElementById('mingo-code-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = document.getElementById('mingo-code').value.trim();
+      if (!code) return;
+      showScreen('loading');
+      try {
+        await apiCall(API.completeLogin, 'POST', { token: code }); // sets session cookie
+        // Suggest a handle from the external email local-part.
+        const suggested = (state.externalEmail || '').split('@')[0].replace(/[^a-z0-9._-]/gi, '').toLowerCase();
+        const hi = document.getElementById('mingo-handle');
+        if (hi && !hi.value) hi.value = suggested;
+        showScreen('mingoHandle');
+      } catch (err) {
+        document.getElementById('mingo-code-error').textContent = 'Invalid or expired code';
+        showScreen('mingoCode');
+      }
+    });
+
+    // Live handle preview
+    document.getElementById('mingo-handle').addEventListener('input', (e) => {
+      const v = e.target.value.trim().toLowerCase() || 'handle';
+      document.getElementById('mingo-handle-preview').textContent = v;
+    });
+
+    // Mingo flow: pick @mingo.place handle → provision → cert → consent → return
+    document.getElementById('mingo-handle-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const handle = document.getElementById('mingo-handle').value.trim().toLowerCase();
+      if (!handle) return;
+      showScreen('loading');
+      try {
+        const res = await apiCall(API.provisionMingo, 'POST', { handle });
+        state.email = res.email; // <handle>@mingo.place
+        state.sboSign = true;    // Mingo always wants the signing capability
+        document.querySelectorAll('.email-display').forEach(el => el.textContent = res.email);
+        await completeSignIn(res.email); // cert_key (session) → key+cert stored → consent → return
+      } catch (err) {
+        document.getElementById('mingo-handle-error').textContent = err.message || 'Could not provision handle';
+        showScreen('mingoHandle');
       }
     });
 
@@ -1059,6 +1131,7 @@
       if (e.data && e.data.type === 'browserid:request') {
         state.origin = e.origin;
         state.sboSign = !!(e.data.params && e.data.params.sboSign);
+        state.flow = (e.data.params && e.data.params.flow) || null;
         document.querySelectorAll('.rp-name').forEach(el => {
           el.textContent = new URL(e.origin).hostname;
         });
@@ -1086,6 +1159,12 @@
 
   // Initialize
   async function init() {
+    // Mingo T1 flow always starts at email entry (enter the EXTERNAL identity),
+    // regardless of any existing broker session.
+    if (state.flow === 'mingo') {
+      showScreen('email');
+      return;
+    }
     try {
       // Check if already authenticated
       const session = await apiCall(API.sessionContext);
@@ -1249,6 +1328,7 @@
     if (origin) {
       state.origin = origin;
       state.sboSign = params.get('sbo_sign') === '1';
+      state.flow = params.get('flow');
       document.querySelectorAll('.rp-name').forEach(el => {
         el.textContent = new URL(origin).hostname;
       });
@@ -1263,6 +1343,7 @@
           if (args && args.params) {
             state.origin = origin;
             state.sboSign = !!args.params.sboSign;
+            state.flow = args.params.flow || null;
             state.winchanCallback = cb;
             document.querySelectorAll('.rp-name').forEach(el => {
               el.textContent = new URL(origin).hostname;
