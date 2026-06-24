@@ -150,6 +150,85 @@
     return true;
   });
 
+  // ==========================================================================
+  // Typed signing extension — SBO envelopes (Phase 7.4)
+  //
+  // A second, domain-separated capability over the cert-bound key: sign a typed,
+  // parsed-and-bound SBO envelope. Origin-gated (per-app grant), identity-bound
+  // (Owner == signing email; Public-Key/Auth-Cert overridden to the agent's),
+  // and the canonical bytes are rebuilt in-agent via sbo-wasm — never opaque
+  // caller bytes. See common/js/sbo-sign.js and the design note in the SBO repo.
+  // ==========================================================================
+
+  // Where the agent records that the user granted an origin the SBO signing
+  // capability (a one-time per-app grant; the consent UI lives in the dialog).
+  var SBO_GRANT_KEY = "sbo_sign_granted";
+
+  // sbo-wasm is an ES module; load + init once and cache the promise.
+  var sboWasmPromise = null;
+  function loadSboWasm() {
+    if (!sboWasmPromise) {
+      sboWasmPromise = import("/common/js/sbo-wasm/sbo_wasm.js").then(function(mod) {
+        // `--target web` exports a default init() that fetches the .wasm.
+        return Promise.resolve(mod.default && mod.default()).then(function() {
+          return mod;
+        });
+      });
+    }
+    return sboWasmPromise;
+  }
+
+  // Sign a typed SBO envelope for `email` as `remoteOrigin`. The request carries
+  // the caller-built envelope spec (sbo-wasm shape); the agent binds it to the
+  // identity, rebuilds canonical bytes, and signs with the stored key.
+  chan.bind("signSboEnvelope", function(trans, params) {
+    setRemoteOrigin(trans.origin);
+    trans.delayReturn(true);
+
+    try {
+      params = params || {};
+      var email = params.email;
+      var envelope = params.envelope;
+      if (!email || !envelope) {
+        return trans.error("bad_request", "email and envelope are required");
+      }
+
+      // Origin gating: the capability is offered only to granted origins.
+      if (!storage.site.get(remoteOrigin, SBO_GRANT_KEY)) {
+        return trans.error("not_granted",
+          "origin " + remoteOrigin + " has not been granted SBO signing");
+      }
+
+      // Load the stored cert-bound identity (private JWK + Auth-Cert).
+      var issuer = params.issuer || storage.site.get(remoteOrigin, "issuer");
+      var record = storage.getEmail(email, issuer);
+      if (!record || !record.priv || !record.cert) {
+        return trans.error("no_identity",
+          "no cert-bound key for " + email + (issuer ? " @ " + issuer : ""));
+      }
+
+      var identity = {
+        email: email,
+        pubkeyHex: bid.SboSign.pubkeyHexFromJwkX(record.pub ? record.pub.x : record.priv.x),
+        cert: record.cert
+      };
+
+      loadSboWasm().then(function(sbo) {
+        return bid.SboSign.signEnvelope(sbo, envelope, identity, record.priv);
+      }).then(function(res) {
+        trans.complete({
+          signature: res.signature,
+          cert: res.cert,
+          pubkey: res.pubkey
+        });
+      }).catch(function(err) {
+        trans.error("sign_failed", (err && err.message) || String(err));
+      });
+    } catch (e) {
+      trans.error("sign_failed", (e && e.message) || String(e));
+    }
+  });
+
   chan.bind("dialog_running", function(trans, params) {
     pause = true;
   });
