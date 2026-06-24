@@ -14,7 +14,7 @@ mod well_known;
 use std::sync::Arc;
 
 use axum::http::{header, HeaderValue, Method};
-use axum::response::Redirect;
+use axum::response::Html;
 use axum::routing::{get, post};
 use axum::Router;
 use tower_cookies::CookieManagerLayer;
@@ -83,7 +83,7 @@ where
         .route("/wsapi/test/clear_mock_primary_idps", post(test::clear_mock_primary_idps))
         .route("/wsapi/test/remove_mock_primary_idp", post(test::remove_mock_primary_idp))
         // Compatibility routes for include.js
-        .route("/sign_in", get(|| async { Redirect::to("/dialog/dialog.html") }))
+        .route("/sign_in", get(sign_in_return))
         .nest_service("/relay", ServeDir::new(format!("{}/relay", static_path)))
         .route_service("/include.js", ServeFile::new(format!("{}/include.js", static_path)))
         .route_service("/communication_iframe", ServeFile::new(format!("{}/communication_iframe.html", static_path)))
@@ -114,4 +114,40 @@ where
             HeaderValue::from_static("no-cache"),
         ))
         .with_state(state)
+}
+
+/// `GET /sign_in` — the primary-IdP auth-return handler. After the IdP
+/// authenticates the user it redirects this popup to `/sign_in#AUTH_RETURN`
+/// (or `#AUTH_RETURN_CANCEL`). This page signals the opening dialog via
+/// postMessage and closes, completing the primary provisioning flow. (Was a
+/// blind redirect to the dialog, which dropped the completion signal.)
+async fn sign_in_return() -> Html<&'static str> {
+    Html(
+        r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Signing in…</title></head>
+<body style="font:14px/1.5 system-ui,sans-serif;text-align:center;margin-top:40px;color:#555">
+<p id="m">Completing sign-in…</p>
+<script>
+(function () {
+  var hash = window.location.hash;
+  var cancel = hash === '#AUTH_RETURN_CANCEL';
+  var ok = hash === '#AUTH_RETURN';
+  if ((ok || cancel) && window.opener) {
+    try {
+      window.opener.postMessage(
+        { type: 'browserid_auth_complete', success: ok },
+        window.location.origin
+      );
+    } catch (e) { /* opener gone */ }
+    window.close();
+  } else if (!ok && !cancel) {
+    // Direct hit with no auth-return state — go to the dialog.
+    window.location.replace('/dialog/dialog.html');
+  } else {
+    document.getElementById('m').textContent = 'You can close this window.';
+  }
+})();
+</script>
+</body></html>"#,
+    )
 }
