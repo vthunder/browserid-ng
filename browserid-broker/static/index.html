@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>browserid.me — identity broker</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 16px/1.6 system-ui, -apple-system, sans-serif; max-width: 40rem;
+      margin: 5rem auto; padding: 0 1.25rem; color: #1a1a1a; }
+    @media (prefers-color-scheme: dark) { body { color: #e8e8e8; background: #161616; } }
+    h1 { font-size: 1.6rem; margin-bottom: .25rem; }
+    .muted { opacity: .65; }
+    code { font-family: ui-monospace, monospace; background: rgba(127,127,127,.18);
+      padding: .12em .4em; border-radius: 5px; font-size: .9em; }
+    .card { border: 1px solid rgba(127,127,127,.3); border-radius: 12px;
+      padding: 1rem 1.25rem; margin-top: 1.5rem; }
+    button { font: inherit; padding: .5rem .9rem; border-radius: 9px;
+      border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
+    a { color: #2b6cb0; } @media (prefers-color-scheme: dark){ a{color:#7db3e8} }
+    #out { margin-top: .75rem; font-size: .9em; }
+  </style>
+</head>
+<body>
+  <h1>browserid.me</h1>
+  <p class="muted">A BrowserID identity broker — it custodies your signing keys and
+  brokers logins for relying-party apps. There's nothing to do here directly;
+  apps invoke the login dialog and signer for you.</p>
+
+  <div class="card">
+    <strong>Reset cached identities</strong>
+    <p class="muted" style="margin:.4rem 0">Clears this browser's cached certificates
+    and per-site grants held by the broker (the <code>emails</code> and
+    <code>siteInfo</code> stores). Use this if a sign-in is reusing a stale cert.</p>
+    <button id="reset">Clear cached identities</button>
+    <div id="out"></div>
+  </div>
+
+  <script>
+    document.getElementById('reset').onclick = function () {
+      try {
+        localStorage.removeItem('emails');
+        localStorage.removeItem('siteInfo');
+        document.getElementById('out').textContent = '✓ Cleared. Sign in again in the app.';
+      } catch (e) {
+        document.getElementById('out').textContent = 'Could not clear: ' + e.message;
+      }
+    };
+  </script>
+</body>
+</html>
