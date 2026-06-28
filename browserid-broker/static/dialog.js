@@ -106,15 +106,15 @@
 
   // Check email address info (type, state, primary IdP URLs)
   async function checkEmail(email) {
-    try {
-      const response = await fetch(`${API.addressInfo}?email=${encodeURIComponent(email)}`);
-      const data = await response.json();
-      // Return full addressInfo for primary IdP support
-      return data;
-    } catch (e) {
-      // On error, assume email doesn't exist (new user flow)
-      return { type: 'secondary', state: 'unknown' };
+    // A lookup failure must NOT be silently treated as "new user" — doing so routed
+    // existing/primary emails into the create-account flow and produced a confusing
+    // "email already exists" 409. Surface the error so the caller can show it and let
+    // the user retry. A genuinely-new email still returns 200 with state:"unknown".
+    const response = await fetch(`${API.addressInfo}?email=${encodeURIComponent(email)}`);
+    if (!response.ok) {
+      throw new Error(`couldn't look up this email (${response.status}) — please try again`);
     }
+    return await response.json();
   }
 
   // Generate keypair and get certificate
@@ -715,17 +715,28 @@
             await handlePrimaryIdP(email, addressInfo);
           }
         } else {
-          // Secondary flow
+          // Secondary flow — also covers a primary email transiently seen as secondary
+          // (e.g. a discovery hiccup), whose existing record yields a transition_* state.
+          // Mirror handleEmailChosen so an *existing* account never falls into create.
           if (addressInfo.state === 'known') {
             showScreen('password');
+          } else if (addressInfo.state === 'transition_to_secondary') {
+            // Existing account (was primary) — authenticate with password
+            showScreen('password');
+          } else if (addressInfo.state === 'transition_no_password') {
+            // Existing account without a password — set one
+            showScreen('setPassword');
           } else if (addressInfo.state === 'transition_to_primary' && addressInfo.prov) {
             // Was secondary, now primary - show transition info screen
             const domain = email.split('@')[1];
             document.querySelectorAll('.idp-name').forEach(el => el.textContent = domain);
             state.pendingAddressInfo = addressInfo;
             showScreen('primaryTransition');
-          } else {
+          } else if (addressInfo.state === 'unknown') {
+            // Genuinely new email — create an account
             showScreen('create');
+          } else {
+            showError('Cannot sign in with this email (unexpected state: ' + addressInfo.state + ')');
           }
         }
       } catch (e) {
@@ -786,8 +797,17 @@
 
         showScreen('verify');
       } catch (e) {
-        showScreen('create');
-        document.getElementById('create-password-error').textContent = e.message;
+        // The account already exists (e.g. we reached 'create' from a transient
+        // mis-detection). Don't dead-end — route to sign-in for the existing account.
+        if (/already exists/i.test(e.message)) {
+          document.querySelectorAll('.email-display').forEach(el => el.textContent = state.email);
+          showScreen('password');
+          const pwErr = document.getElementById('password-error');
+          if (pwErr) pwErr.textContent = 'This email is already registered — sign in below.';
+        } else {
+          showScreen('create');
+          document.getElementById('create-password-error').textContent = e.message;
+        }
       }
     });
 
