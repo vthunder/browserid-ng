@@ -361,6 +361,21 @@ impl UserStore for SqliteStore {
         Ok(())
     }
 
+    fn transfer_email(&self, email: &str, to_user_id: UserId) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE emails SET user_id = ?1 WHERE email = ?2",
+                params![to_user_id.0 as i64, normalized],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::EmailNotFound);
+        }
+        Ok(())
+    }
+
     fn create_pending(&self, pending: PendingVerification) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
 
@@ -686,6 +701,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
         (**self).remove_email(user_id, email)
     }
 
+    fn transfer_email(&self, email: &str, to_user_id: UserId) -> StoreResult<()> {
+        (**self).transfer_email(email, to_user_id)
+    }
+
     fn create_pending(&self, pending: PendingVerification) -> StoreResult<()> {
         (**self).create_pending(pending)
     }
@@ -803,6 +822,35 @@ mod tests {
 
         let user = store.get_user_by_email("TEST@EXAMPLE.COM").unwrap();
         assert!(user.is_some());
+    }
+
+    #[test]
+    fn test_transfer_email_moves_ownership() {
+        let (store, _dir) = create_test_store();
+
+        // Two separate accounts, each with its own email (the U1/U2 split from
+        // mingo-1c6v): a sandmill.org email and a mingo.place email.
+        let u1 = store.create_user("pw1").unwrap();
+        store.add_email(u1, "danmills@sandmill.org", true).unwrap();
+        let u2 = store.create_user("pw2").unwrap();
+        store.add_email(u2, "dan@mingo.place", true).unwrap();
+
+        // Prove the sandmill.org email under u2's session → transfer it onto u2.
+        store.transfer_email("danmills@sandmill.org", u2).unwrap();
+
+        // Ownership moved to u2; both emails now list under u2; u1 is empty.
+        assert_eq!(
+            store.get_email("danmills@sandmill.org").unwrap().unwrap().user_id,
+            u2
+        );
+        let u2_emails: Vec<String> =
+            store.list_emails(u2).unwrap().into_iter().map(|e| e.email).collect();
+        assert!(u2_emails.contains(&"danmills@sandmill.org".to_string()));
+        assert!(u2_emails.contains(&"dan@mingo.place".to_string()));
+        assert!(store.list_emails(u1).unwrap().is_empty());
+
+        // Transferring an unknown email errors (EmailNotFound).
+        assert!(store.transfer_email("nope@nowhere.test", u2).is_err());
     }
 
     #[test]

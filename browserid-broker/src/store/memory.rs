@@ -150,6 +150,18 @@ impl UserStore for InMemoryUserStore {
         }
     }
 
+    fn transfer_email(&self, email: &str, to_user_id: UserId) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let mut emails = self.emails.write().unwrap();
+        match emails.get_mut(&normalized) {
+            Some(rec) => {
+                rec.user_id = to_user_id;
+                Ok(())
+            }
+            None => Err(BrokerError::EmailNotFound),
+        }
+    }
+
     fn create_pending(&self, pending: PendingVerification) -> StoreResult<()> {
         self.pending
             .write()

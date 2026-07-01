@@ -48,6 +48,12 @@ pub trait UserStore: Send + Sync {
     /// Remove an email from a user's account
     fn remove_email(&self, user_id: UserId, email: &str) -> StoreResult<()>;
 
+    /// Reassign an existing email to `to_user_id`, moving it off whatever account
+    /// currently owns it — per-email transfer on proof of ownership (Persona
+    /// semantics). Errors with `EmailNotFound` if the email doesn't exist.
+    /// Callers are responsible for deleting a former account left with no emails.
+    fn transfer_email(&self, email: &str, to_user_id: UserId) -> StoreResult<()>;
+
     /// Store a pending verification
     fn create_pending(&self, pending: PendingVerification) -> StoreResult<()>;
 
