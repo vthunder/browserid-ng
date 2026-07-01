@@ -935,6 +935,20 @@
       showScreen('loading');
 
       try {
+        // A primary-IdP email must be proven via its own IdP (provisioning), not
+        // SMTP. Detect it first — otherwise a primary like alice@example.com (whose
+        // domain runs BrowserID) wrongly gets an emailed code. Only genuine
+        // secondary emails fall through to SMTP staging. handlePrimaryIdP provisions
+        // against the IdP and, when a session exists, links the email into the
+        // current account (see auth_with_assertion linking, mingo-1c6v).
+        const addressInfo = await checkEmail(email);
+        if (addressInfo.type === 'primary' && addressInfo.prov) {
+          state.email = email;
+          document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+          await handlePrimaryIdP(email, addressInfo);
+          return;
+        }
+
         await apiCall(API.stageEmail, 'POST', { email });
         showScreen('addEmailVerify');
       } catch (e) {
