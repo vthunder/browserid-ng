@@ -54,6 +54,11 @@ pub trait UserStore: Send + Sync {
     /// Callers are responsible for deleting a former account left with no emails.
     fn transfer_email(&self, email: &str, to_user_id: UserId) -> StoreResult<()>;
 
+    /// Set (or clear) an email's parent — the controlling identity for a
+    /// subordinate/derived email (mingo-cm8z). Private account metadata; callers
+    /// must ensure both emails belong to the same account. `None` clears it.
+    fn set_parent_email(&self, email: &str, parent_email: Option<&str>) -> StoreResult<()>;
+
     /// Store a pending verification
     fn create_pending(&self, pending: PendingVerification) -> StoreResult<()>;
 

@@ -13,7 +13,7 @@ use super::{
 use crate::error::BrokerError;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -63,6 +63,10 @@ impl SqliteStore {
 
             if current_version < 2 {
                 Self::migrate_v2(conn)?;
+            }
+
+            if current_version < 3 {
+                Self::migrate_v3(conn)?;
             }
 
             // Update schema version
@@ -162,6 +166,14 @@ impl SqliteStore {
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
 
+        Ok(())
+    }
+
+    fn migrate_v3(conn: &Connection) -> Result<(), BrokerError> {
+        // Parent email for subordinate/derived identities (mingo-cm8z). Nullable;
+        // references another email in the same account. Private account metadata.
+        conn.execute_batch("ALTER TABLE emails ADD COLUMN parent_email TEXT;")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
 }
@@ -291,7 +303,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn
-            .prepare("SELECT email, user_id, verified, verified_at, email_type, last_used_as FROM emails WHERE user_id = ?1")
+            .prepare("SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email FROM emails WHERE user_id = ?1")
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
 
         let emails = stmt
@@ -315,6 +327,7 @@ impl UserStore for SqliteStore {
                         .unwrap_or(EmailType::Secondary),
                     last_used_as: EmailType::from_str(&last_used_as_str)
                         .unwrap_or(EmailType::Secondary),
+                    parent_email: row.get::<_, Option<String>>(6)?,
                 })
             })
             .map_err(|e| BrokerError::Internal(e.to_string()))?
@@ -368,6 +381,22 @@ impl UserStore for SqliteStore {
             .execute(
                 "UPDATE emails SET user_id = ?1 WHERE email = ?2",
                 params![to_user_id.0 as i64, normalized],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::EmailNotFound);
+        }
+        Ok(())
+    }
+
+    fn set_parent_email(&self, email: &str, parent_email: Option<&str>) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let parent = parent_email.map(|p| p.to_lowercase());
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE emails SET parent_email = ?1 WHERE email = ?2",
+                params![parent, normalized],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         if rows == 0 {
@@ -561,7 +590,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         conn.query_row(
-            "SELECT email, user_id, verified, verified_at, email_type, last_used_as FROM emails WHERE email = ?1",
+            "SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email FROM emails WHERE email = ?1",
             params![normalized],
             |row| {
                 let email: String = row.get(0)?;
@@ -583,6 +612,7 @@ impl UserStore for SqliteStore {
                         .unwrap_or(EmailType::Secondary),
                     last_used_as: EmailType::from_str(&last_used_as_str)
                         .unwrap_or(EmailType::Secondary),
+                    parent_email: row.get::<_, Option<String>>(6)?,
                 })
             },
         )
@@ -703,6 +733,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn transfer_email(&self, email: &str, to_user_id: UserId) -> StoreResult<()> {
         (**self).transfer_email(email, to_user_id)
+    }
+
+    fn set_parent_email(&self, email: &str, parent_email: Option<&str>) -> StoreResult<()> {
+        (**self).set_parent_email(email, parent_email)
     }
 
     fn create_pending(&self, pending: PendingVerification) -> StoreResult<()> {
@@ -851,6 +885,33 @@ mod tests {
 
         // Transferring an unknown email errors (EmailNotFound).
         assert!(store.transfer_email("nope@nowhere.test", u2).is_err());
+    }
+
+    #[test]
+    fn set_parent_email_records_and_clears() {
+        let (store, _dir) = create_test_store();
+        let u = store.create_user("pw").unwrap();
+        store.add_email(u, "danmills@sandmill.org", true).unwrap();
+        store.add_email(u, "dan@mingo.place", true).unwrap();
+
+        // No parent initially.
+        assert_eq!(store.get_email("dan@mingo.place").unwrap().unwrap().parent_email, None);
+
+        // Set + read back (normalized).
+        store.set_parent_email("dan@mingo.place", Some("danmills@sandmill.org")).unwrap();
+        assert_eq!(
+            store.get_email("dan@mingo.place").unwrap().unwrap().parent_email.as_deref(),
+            Some("danmills@sandmill.org")
+        );
+        // Also visible via list_emails.
+        let listed = store.list_emails(u).unwrap();
+        let child = listed.iter().find(|e| e.email == "dan@mingo.place").unwrap();
+        assert_eq!(child.parent_email.as_deref(), Some("danmills@sandmill.org"));
+
+        // Clearing works; unknown email errors.
+        store.set_parent_email("dan@mingo.place", None).unwrap();
+        assert_eq!(store.get_email("dan@mingo.place").unwrap().unwrap().parent_email, None);
+        assert!(store.set_parent_email("nope@nowhere.test", Some("x@y.z")).is_err());
     }
 
     #[test]

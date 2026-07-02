@@ -67,6 +67,11 @@ pub struct Email {
     pub email_type: EmailType,
     /// How this email was last used (for tracking type transitions)
     pub last_used_as: EmailType,
+    /// For a *subordinate/derived* identity (e.g. a minted `<handle>@issuer`), the
+    /// parent email in the same account that controls it. Private account metadata
+    /// — set via `set_parent_email`, never exposed publicly (mingo-cm8z). `None`
+    /// for ordinary identities.
+    pub parent_email: Option<String>,
 }
 
 /// A pending email verification

@@ -43,6 +43,61 @@ where
 }
 
 #[derive(Deserialize)]
+pub struct SetParentRequest {
+    pub email: String,
+    pub parent_email: String,
+}
+
+#[derive(Serialize)]
+pub struct SetParentResponse {
+    pub success: bool,
+}
+
+/// POST /wsapi/set_parent — record that `email` is a subordinate/derived identity
+/// controlled by `parent_email` (mingo-cm8z). Session-gated: BOTH emails must
+/// belong to the caller's account, so a caller can only relate their own
+/// identities. The mapping is private account metadata — never exposed by any
+/// read endpoint.
+pub async fn set_parent<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<SetParentRequest>,
+) -> Result<Json<SetParentResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+
+    if req.email.eq_ignore_ascii_case(&req.parent_email) {
+        return Err(BrokerError::ValidationError(
+            "an identity cannot be its own parent".to_string(),
+        ));
+    }
+
+    // Both the child and parent must belong to the authenticated account.
+    let child = state
+        .user_store
+        .get_email(&req.email)?
+        .ok_or(BrokerError::EmailNotFound)?;
+    let parent = state
+        .user_store
+        .get_email(&req.parent_email)?
+        .ok_or(BrokerError::EmailNotFound)?;
+    if child.user_id != session.user_id || parent.user_id != session.user_id {
+        return Err(BrokerError::NotAuthenticated);
+    }
+
+    state
+        .user_store
+        .set_parent_email(&req.email, Some(&req.parent_email))?;
+
+    Ok(Json(SetParentResponse { success: true }))
+}
+
+#[derive(Deserialize)]
 pub struct StageEmailRequest {
     pub email: String,
 }
