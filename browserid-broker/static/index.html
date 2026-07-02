@@ -28,22 +28,55 @@
   apps invoke the login dialog and signer for you.</p>
 
   <div class="card">
-    <strong>Reset cached identities</strong>
-    <p class="muted" style="margin:.4rem 0">Clears this browser's cached certificates
-    and per-site grants held by the broker (the <code>emails</code> and
-    <code>siteInfo</code> stores). Use this if a sign-in is reusing a stale cert.</p>
-    <button id="reset">Clear cached identities</button>
+    <strong>Sign out of browserid</strong>
+    <p class="muted" style="margin:.4rem 0">Ends your broker <em>session</em> and clears
+    this browser's cached certificates. After this the login dialog will show no
+    identities until you sign in again. (Your accounts aren't deleted — they
+    reappear when you next authenticate.)</p>
+    <button id="signout">Sign out</button>
     <div id="out"></div>
   </div>
 
+  <div class="card">
+    <strong>Clear cached certificates only</strong>
+    <p class="muted" style="margin:.4rem 0">Drops just this browser's cached
+    certificates and per-site grants (the <code>emails</code> and <code>siteInfo</code>
+    localStorage stores) — <em>without</em> ending your session, so the dialog still
+    lists your account's identities. Use this if a sign-in is reusing a stale cert.</p>
+    <button id="reset">Clear cached certificates</button>
+    <div id="out2"></div>
+  </div>
+
   <script>
-    document.getElementById('reset').onclick = function () {
+    function clearLocal() {
+      localStorage.removeItem('emails');
+      localStorage.removeItem('siteInfo');
+    }
+
+    document.getElementById('signout').onclick = async function () {
+      const out = document.getElementById('out');
+      out.textContent = 'Signing out…';
       try {
-        localStorage.removeItem('emails');
-        localStorage.removeItem('siteInfo');
-        document.getElementById('out').textContent = '✓ Cleared. Sign in again in the app.';
+        // End the broker session (deletes it server-side + clears the cookie),
+        // then drop the local cert cache so nothing is left to auto-complete a login.
+        const r = await fetch('/wsapi/logout', { method: 'POST', credentials: 'same-origin' });
+        clearLocal();
+        out.textContent = r.ok
+          ? '✓ Signed out. The login dialog will now be empty until you sign in.'
+          : 'Session end returned ' + r.status + ' (local cache cleared anyway).';
       } catch (e) {
-        document.getElementById('out').textContent = 'Could not clear: ' + e.message;
+        try { clearLocal(); } catch (_) {}
+        out.textContent = 'Could not reach the broker: ' + e.message + ' (local cache cleared).';
+      }
+    };
+
+    document.getElementById('reset').onclick = function () {
+      const out = document.getElementById('out2');
+      try {
+        clearLocal();
+        out.textContent = '✓ Cached certificates cleared. (Still signed in — use “Sign out” to empty the dialog.)';
+      } catch (e) {
+        out.textContent = 'Could not clear: ' + e.message;
       }
     };
   </script>
