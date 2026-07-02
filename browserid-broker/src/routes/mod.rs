@@ -63,6 +63,7 @@ where
         .route("/wsapi/remove_email", post(email::remove_email))
         .route("/wsapi/address_info", get(email::address_info))
         .route("/wsapi/set_parent", post(email::set_parent))
+        .route("/wsapi/parent_of", get(email::parent_of))
         .route("/wsapi/email_addition_status", get(email::email_addition_status))
         .route("/wsapi/cert_key", post(cert::cert_key))
         .route("/wsapi/account_cancel", post(account::account_cancel))

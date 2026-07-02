@@ -43,6 +43,44 @@ where
 }
 
 #[derive(Deserialize)]
+pub struct ParentOfQuery {
+    pub email: String,
+}
+
+#[derive(Serialize)]
+pub struct ParentOfResponse {
+    /// The controlling parent identity, if this email is subordinate. Null otherwise.
+    pub parent_email: Option<String>,
+}
+
+/// GET /wsapi/parent_of?email= — the parent of a subordinate identity, if any.
+/// Session-gated and scoped to the caller's OWN account emails, so a user can
+/// only see the parent of their own identities (never a public lookup). Used by
+/// the dialog to decide whether to substitute the parent when logging into the
+/// identity's issuer (mingo-cm8z).
+pub async fn parent_of<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    axum::extract::Query(q): axum::extract::Query<ParentOfQuery>,
+) -> Result<Json<ParentOfResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    let email = state
+        .user_store
+        .get_email(&q.email)?
+        .ok_or(BrokerError::EmailNotFound)?;
+    if email.user_id != session.user_id {
+        return Err(BrokerError::NotAuthenticated);
+    }
+    Ok(Json(ParentOfResponse { parent_email: email.parent_email }))
+}
+
+#[derive(Deserialize)]
 pub struct SetParentRequest {
     pub email: String,
     pub parent_email: String,

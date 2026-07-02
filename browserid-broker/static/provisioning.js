@@ -90,13 +90,16 @@
           break;
 
         case 'registerCertificate':
-          // Success! Store certificate and notify
+          // Success! Store certificate and notify. `metadata` is optional private
+          // provisioning metadata from the IdP (e.g. { subordinate_to }) carried
+          // over this channel only — never in the cert (mingo-cm8z).
           clearTimeout(this._timeout);
           const cert = data.data.certificate;
           if (this._onSuccess) {
             this._onSuccess({
               certificate: cert,
-              keypair: this._keypair
+              keypair: this._keypair,
+              metadata: (data.data && data.data.metadata) || null
             });
           }
           this._cleanup();

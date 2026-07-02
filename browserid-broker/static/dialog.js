@@ -268,10 +268,35 @@
   // Handle email chosen - implements the full state machine from original browserid
   // See: browserid/resources/static/common/js/user.js getAssertion()
   // See: browserid/resources/static/dialog/js/misc/state.js email_chosen handler
-  async function handleEmailChosen(email) {
+  async function handleEmailChosen(email, _substituted) {
     showScreen('loading');
 
     try {
+      // 0. Subordinate-identity substitution (mingo-cm8z). A derived identity
+      // (e.g. a minted <handle>@issuer) cannot authenticate to its OWN issuer —
+      // the issuer mints it but requires a fresh proof of the controlling parent.
+      // So when logging INTO the issuer, authenticate the parent and deliver ITS
+      // assertion instead of completing with the subordinate's cached cert. For
+      // every OTHER relying party, the subordinate is a first-class identity (fall
+      // through and use its own cert — nothing about the parent is revealed).
+      // parent_of is session-gated and scoped to our own emails, so the mapping
+      // never leaks; the `_substituted` guard prevents any loop.
+      if (!_substituted) {
+        let rpHost = null;
+        try { rpHost = new URL(state.origin).hostname.toLowerCase(); } catch (e) { /* ignore */ }
+        const emailDomain = (email.split('@')[1] || '').toLowerCase();
+        if (rpHost && emailDomain === rpHost) {
+          try {
+            const pj = await apiCall(`/wsapi/parent_of?email=${encodeURIComponent(email)}`);
+            if (pj && pj.parent_email) {
+              return await handleEmailChosen(pj.parent_email, true);
+            }
+          } catch (e) {
+            // Not subordinate, not our email, or not signed in → proceed normally.
+          }
+        }
+      }
+
       // 1. Check for valid stored cert/key (like storedID.priv check in user.js:1338-1344)
       const stored = getStoredEmailKeypair(email);
       if (stored && stored.priv && stored.cert && !isCertExpired(stored.cert)) {
@@ -428,6 +453,22 @@
         result.keypair.privateKey,
         result.certificate
       );
+
+      // Record a derived/subordinate identity's parent (mingo-cm8z). The IdP
+      // supplied `subordinate_to` privately over the provisioning channel (never
+      // in the cert). Both this email and the parent are now in the account (the
+      // auth_with_assertion above linked this one), so set_parent will accept it.
+      // Non-fatal: a failure just means the substitution UX won't kick in yet.
+      if (result.metadata && result.metadata.subordinate_to) {
+        try {
+          await apiCall('/wsapi/set_parent', 'POST', {
+            email: email,
+            parent_email: result.metadata.subordinate_to
+          });
+        } catch (e) {
+          console.warn('set_parent failed (non-fatal):', e.message);
+        }
+      }
 
       // Second assertion: audience = RP (to return to relying party)
       const rpAudience = state.origin;
@@ -1260,6 +1301,22 @@
         result.keypair.privateKey,
         result.certificate
       );
+
+      // Record a derived/subordinate identity's parent (mingo-cm8z). The IdP
+      // supplied `subordinate_to` privately over the provisioning channel (never
+      // in the cert). Both this email and the parent are now in the account (the
+      // auth_with_assertion above linked this one), so set_parent will accept it.
+      // Non-fatal: a failure just means the substitution UX won't kick in yet.
+      if (result.metadata && result.metadata.subordinate_to) {
+        try {
+          await apiCall('/wsapi/set_parent', 'POST', {
+            email: email,
+            parent_email: result.metadata.subordinate_to
+          });
+        } catch (e) {
+          console.warn('set_parent failed (non-fatal):', e.message);
+        }
+      }
 
       // Second assertion: audience = RP (to return to relying party)
       const rpAudience = state.origin;
