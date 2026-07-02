@@ -281,7 +281,14 @@
       // through and use its own cert — nothing about the parent is revealed).
       // parent_of is session-gated and scoped to our own emails, so the mapping
       // never leaks; the `_substituted` guard prevents any loop.
-      if (!_substituted) {
+      //
+      // Skip when the RP explicitly asked to provision THIS identity
+      // (state.provisionEmail): that's a deliberate request to custody the
+      // subordinate's own cert (e.g. mingo minting <handle>@mingo.place after the
+      // parent already authenticated), not a user choosing it to log in — so we
+      // must provision it as-is, not substitute the parent. Substitution applies
+      // only to interactive selection of a subordinate for login.
+      if (!_substituted && !state.provisionEmail) {
         let rpHost = null;
         try { rpHost = new URL(state.origin).hostname.toLowerCase(); } catch (e) { /* ignore */ }
         const emailDomain = (email.split('@')[1] || '').toLowerCase();
