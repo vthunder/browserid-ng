@@ -268,40 +268,43 @@
   // Handle email chosen - implements the full state machine from original browserid
   // See: browserid/resources/static/common/js/user.js getAssertion()
   // See: browserid/resources/static/dialog/js/misc/state.js email_chosen handler
+  // Subordinate-identity substitution (mingo-cm8z). A derived identity (e.g. a
+  // minted <handle>@issuer) cannot authenticate to its OWN issuer — the issuer
+  // mints it but requires a fresh proof of the controlling parent. So when logging
+  // INTO the issuer, we authenticate the parent and deliver ITS assertion instead
+  // of completing with the subordinate's cached cert. For every OTHER relying
+  // party the subordinate is a first-class identity (returns null → proceed
+  // normally, revealing nothing about the parent).
+  //
+  // Returns the parent email to substitute, or null. `parent_of` is session-gated
+  // and scoped to our own emails, so the mapping never leaks. Skipped when the RP
+  // explicitly asked to provision THIS identity (state.provisionEmail) — that's a
+  // deliberate request to custody the subordinate's own cert (e.g. mingo minting
+  // <handle>@mingo.place after the parent already authenticated), not a user
+  // choosing it to log in.
+  async function maybeSubstituteParent(email) {
+    if (state.provisionEmail) return null;
+    let rpHost = null;
+    try { rpHost = new URL(state.origin).hostname.toLowerCase(); } catch (e) { return null; }
+    const emailDomain = (email.split('@')[1] || '').toLowerCase();
+    if (!rpHost || emailDomain !== rpHost) return null;
+    try {
+      const pj = await apiCall(`/wsapi/parent_of?email=${encodeURIComponent(email)}`);
+      return (pj && pj.parent_email) ? pj.parent_email : null;
+    } catch (e) {
+      // Not subordinate, not our email, or not signed in → no substitution.
+      return null;
+    }
+  }
+
   async function handleEmailChosen(email, _substituted) {
     showScreen('loading');
 
     try {
-      // 0. Subordinate-identity substitution (mingo-cm8z). A derived identity
-      // (e.g. a minted <handle>@issuer) cannot authenticate to its OWN issuer —
-      // the issuer mints it but requires a fresh proof of the controlling parent.
-      // So when logging INTO the issuer, authenticate the parent and deliver ITS
-      // assertion instead of completing with the subordinate's cached cert. For
-      // every OTHER relying party, the subordinate is a first-class identity (fall
-      // through and use its own cert — nothing about the parent is revealed).
-      // parent_of is session-gated and scoped to our own emails, so the mapping
-      // never leaks; the `_substituted` guard prevents any loop.
-      //
-      // Skip when the RP explicitly asked to provision THIS identity
-      // (state.provisionEmail): that's a deliberate request to custody the
-      // subordinate's own cert (e.g. mingo minting <handle>@mingo.place after the
-      // parent already authenticated), not a user choosing it to log in — so we
-      // must provision it as-is, not substitute the parent. Substitution applies
-      // only to interactive selection of a subordinate for login.
-      if (!_substituted && !state.provisionEmail) {
-        let rpHost = null;
-        try { rpHost = new URL(state.origin).hostname.toLowerCase(); } catch (e) { /* ignore */ }
-        const emailDomain = (email.split('@')[1] || '').toLowerCase();
-        if (rpHost && emailDomain === rpHost) {
-          try {
-            const pj = await apiCall(`/wsapi/parent_of?email=${encodeURIComponent(email)}`);
-            if (pj && pj.parent_email) {
-              return await handleEmailChosen(pj.parent_email, true);
-            }
-          } catch (e) {
-            // Not subordinate, not our email, or not signed in → proceed normally.
-          }
-        }
+      // 0. Subordinate-identity substitution (mingo-cm8z) — see maybeSubstituteParent.
+      if (!_substituted) {
+        const parent = await maybeSubstituteParent(email);
+        if (parent) return await handleEmailChosen(parent, true);
       }
 
       // 1. Check for valid stored cert/key (like storedID.priv check in user.js:1338-1344)
@@ -747,6 +750,12 @@
       showScreen('loading');
 
       try {
+        // Subordinate substitution for a TYPED identity (mingo-cm8z), same as the
+        // chooser path: typing a subordinate to log into its own issuer
+        // authenticates the parent instead. No-ops when not applicable / signed out.
+        const parent = await maybeSubstituteParent(email);
+        if (parent) return await handleEmailChosen(parent, true);
+
         const addressInfo = await checkEmail(email);
 
         // Handle based on type and state
