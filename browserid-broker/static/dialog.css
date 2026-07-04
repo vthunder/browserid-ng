@@ -235,6 +235,15 @@ button.secondary:active:not(:disabled) {
   word-break: break-all;
 }
 
+/* Derived/subordinate identity (mingo-cm8z): named parent it signs in through. */
+.email-list .email-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: #888;
+  font-weight: normal;
+}
+
 /* Loading screen */
 #loading .center {
   padding: 48px 24px;

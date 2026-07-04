@@ -22,6 +22,7 @@
     winchanCallback: null,  // WinChan response callback
     winchanHandle: null,    // WinChan handle with detach() method
     emails: [],
+    derived: {},  // subordinate identity -> controlling parent email (mingo-cm8z)
     selectedEmail: null,
     newEmail: null,  // Email being added to account
     pendingAddressInfo: null,  // Stored addressInfo for transition flows
@@ -1103,6 +1104,7 @@
         try {
           const emailsResponse = await apiCall(API.listEmails);
           state.emails = emailsResponse.emails || [];
+          state.derived = derivedMapFromResponse(emailsResponse);
           populateEmailList(state.emails);
         } catch (e) {
           // Keep existing list
@@ -1163,17 +1165,38 @@
     });
   }
 
-  // Populate email list
+  // Build the subordinate -> parent map from a list_emails response (mingo-cm8z).
+  function derivedMapFromResponse(resp) {
+    const map = {};
+    (resp && resp.derived || []).forEach(d => { map[d.email] = d.parent_email; });
+    return map;
+  }
+
+  // Escape a value for safe interpolation into innerHTML.
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
+  // Populate email list. Derived/subordinate identities (mingo-cm8z) get a
+  // distinct sub-label naming the parent they sign in through.
   function populateEmailList(emails) {
     const list = document.getElementById('email-list');
     list.innerHTML = '';
 
     emails.forEach((emailStr, index) => {
+      const parent = state.derived[emailStr];
       const li = document.createElement('li');
+      if (parent) li.className = 'derived';
+      const safeEmail = escapeHtml(emailStr);
+      const sub = parent
+        ? `<span class="email-sub">signs in via ${escapeHtml(parent)}</span>`
+        : '';
       li.innerHTML = `
         <label>
-          <input type="radio" name="selected-email" value="${emailStr}" ${index === 0 ? 'checked' : ''}>
-          <span class="email-text">${emailStr}</span>
+          <input type="radio" name="selected-email" value="${safeEmail}" ${index === 0 ? 'checked' : ''}>
+          <span class="email-text">${safeEmail}${sub}</span>
         </label>
       `;
       list.appendChild(li);
@@ -1198,6 +1221,7 @@
         // Get user's emails
         const emailsResponse = await apiCall(API.listEmails);
         state.emails = emailsResponse.emails || [];
+        state.derived = derivedMapFromResponse(emailsResponse);
 
         if (state.emails.length >= 1) {
           // Show email picker - even with one email, let user confirm or add another

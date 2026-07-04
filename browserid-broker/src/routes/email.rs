@@ -15,10 +15,22 @@ use crate::state::AppState;
 use crate::store::{EmailType, PendingVerification, SessionStore, UserStore, VerificationType};
 
 #[derive(Serialize)]
+pub struct DerivedIdentity {
+    /// A subordinate/derived identity in the caller's account.
+    pub email: String,
+    /// The parent (controlling) identity it is subordinate to.
+    pub parent_email: String,
+}
+
+#[derive(Serialize)]
 pub struct ListEmailsResponse {
     pub success: bool,
     /// Just the email addresses as strings (for compatibility with original BrowserID protocol)
     pub emails: Vec<String>,
+    /// Subordinate/derived identities in this account paired with their controlling
+    /// parent (mingo-cm8z). Session-gated own-account only, same privacy scope as
+    /// `parent_of`; lets the chooser label derived identities ("signs in via …").
+    pub derived: Vec<DerivedIdentity>,
 }
 
 /// GET /wsapi/list_emails
@@ -36,9 +48,20 @@ where
 
     let emails = state.user_store.list_emails(session.user_id)?;
 
+    let derived = emails
+        .iter()
+        .filter_map(|e| {
+            e.parent_email.as_ref().map(|parent| DerivedIdentity {
+                email: e.email.clone(),
+                parent_email: parent.clone(),
+            })
+        })
+        .collect();
+
     Ok(Json(ListEmailsResponse {
         success: true,
         emails: emails.into_iter().map(|e| e.email).collect(),
+        derived,
     }))
 }
 
@@ -94,8 +117,9 @@ pub struct SetParentResponse {
 /// POST /wsapi/set_parent — record that `email` is a subordinate/derived identity
 /// controlled by `parent_email` (mingo-cm8z). Session-gated: BOTH emails must
 /// belong to the caller's account, so a caller can only relate their own
-/// identities. The mapping is private account metadata — never exposed by any
-/// read endpoint.
+/// identities. The mapping is private account metadata — readable only by the
+/// owning session (via `parent_of` / `list_emails`), never by another account,
+/// an unauthenticated caller, or in a cert/assertion sent to an RP.
 pub async fn set_parent<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,

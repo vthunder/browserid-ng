@@ -91,4 +91,60 @@ async fn test_list_emails_multiple() {
         .collect();
     assert!(email_addresses.contains(&email1));
     assert!(email_addresses.contains(&email2));
+
+    // No derived identities were declared → `derived` is present but empty.
+    assert_eq!(body["derived"].as_array().unwrap().len(), 0);
+}
+
+/// Test: list_emails surfaces a subordinate/derived identity paired with its
+/// parent so the chooser can label it (mingo-cm8z). Ordinary emails stay absent
+/// from `derived`.
+#[tokio::test]
+async fn test_list_emails_reports_derived() {
+    let (server, email_sender) = create_test_server();
+    let parent = "parent@example.com";
+    let child = "child@example.com";
+    let password = "testpassword";
+
+    // Create the account with the parent email, then add the child email.
+    let session_cookie = create_user(&server, &email_sender, parent, password).await;
+
+    let response = server
+        .post("/wsapi/stage_email")
+        .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
+        .json(&json!({ "email": child }))
+        .await;
+    assert_eq!(response.status_code(), 200);
+    let code = email_sender.get_code(child).expect("No code for child email");
+    let response = server
+        .post("/wsapi/complete_email_addition")
+        .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
+        .json(&json!({ "token": code }))
+        .await;
+    assert_eq!(response.status_code(), 200);
+
+    // Mark the child as subordinate to the parent.
+    let response = server
+        .post("/wsapi/set_parent")
+        .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
+        .json(&json!({ "email": child, "parent_email": parent }))
+        .await;
+    assert_eq!(response.status_code(), 200);
+
+    // list_emails now reports the derived pairing.
+    let response = server
+        .get("/wsapi/list_emails")
+        .add_cookie(cookie::Cookie::new("browserid_session", session_cookie))
+        .await;
+    assert_eq!(response.status_code(), 200);
+    let body: Value = response.json();
+
+    // Both emails still listed as plain strings.
+    assert_eq!(body["emails"].as_array().unwrap().len(), 2);
+
+    // Exactly the child appears in `derived`, pointing at the parent.
+    let derived = body["derived"].as_array().unwrap();
+    assert_eq!(derived.len(), 1);
+    assert_eq!(derived[0]["email"].as_str().unwrap(), child);
+    assert_eq!(derived[0]["parent_email"].as_str().unwrap(), parent);
 }
