@@ -1,11 +1,11 @@
 ---
 # browserid-ng-l8lw
 title: 'Agent-native browserid: headless attributed identity issuance + agent→API auth'
-status: in-progress
+status: completed
 type: feature
 priority: high
 created_at: 2026-07-08T00:07:30Z
-updated_at: 2026-07-08T21:45:51Z
+updated_at: 2026-07-08T21:47:52Z
 ---
 
 Make browserid-ng agent-native: let agents acquire and use a browserid-backed
@@ -142,8 +142,8 @@ they already run.
 - [x] Phase 1: broker REST provisioning — per-user API keys + quota (`/wsapi/agent_keys` mgmt + `/agent/*` endpoints; enable with `AGENT_PROVISIONING=1`). Deploying the dedicated `agents.browserid.me` instance is ops, tracked outside this repo.
 - [x] Phase 1: headless agent SDK — new `browserid-agent` crate (`AgentIdentity::provision` → `assertion_for` with auto re-mint, raw `sign()` for typed payloads, save/load persistence that never stores the API key)
 - [x] Phase 2: RP-side — `browserid-rp` crate (Verifier w/ pinned or well-known-fetched issuer keys, TokenStore, `exchange()` w/ OAuth error codes, RFC 8414 metadata), `browserid_core::rp_auth` wire contract (`WWW-Authenticate: BrowserID` challenge + RFC 7521-shaped grant `urn:x-browserid:grant-type:assertion`), and SDK `token_for()` doing cold discovery → assertion → token exchange
-- [ ] Phase 3: federation — publish provisioning + grant endpoints as a REST spec
-- [ ] Later (separate product): escrow / trust-by-bond model
+- [x] Phase 3: federation — REST spec published at `docs/specs/agent-provisioning-and-grant-api.md` (provisioning §4 + grant exchange §5, conformance table pointing at the reference impls)
+- Later (separate product): escrow / trust-by-bond model — tracked as draft bean browserid-ng-dj9p, not part of this bean's scope
 
 ## Notes
 
@@ -152,3 +152,17 @@ they already run.
 - Downstream consumer work (wiring the SBO checkpoint attestor + supporting
   non-mingo.place `@agents.browserid.me` identities on-chain) is tracked in the mingo
   repo, not here.
+
+## Summary of Changes
+
+Shipped across five commits on 2026-07-08:
+
+- **Design doc** (`docs/plans/2026-07-08-agent-native-browserid-design.md`): converged direction — attribution-first, RP-unaware, transport-not-trust; cert acquisition as the single problem.
+- **Broker Phase 1a** (`932569f`): sqlite migration v4 `api_keys` (SHA-256-hashed `bidk_` secrets, `parent_email` attribution root), `EmailType::Agent` reusing cm8z parent machinery, `/wsapi/agent_keys*` key management (session+CSRF), `/agent/identities` `/agent/cert` `/agent/identities/revoke` (Bearer-gated, per-user quota default 5), shared `issue_certificate()` behind both front doors, gated by `AGENT_PROVISIONING=1`.
+- **SDK Phase 1b** (`a11bfde`): `browserid-agent` crate — `provision()`, `assertion_for()` w/ auto re-mint, raw `sign()`, save/load that never persists the API key.
+- **RP Phase 2** (`e723303`): `browserid-core::rp_auth` wire contract (`WWW-Authenticate: BrowserID` challenge, grant `urn:x-browserid:grant-type:assertion`), `browserid-rp` crate (Verifier w/ pinned or well-known-fetched issuer trust, TokenStore, `exchange()` w/ OAuth errors, RFC 8414 metadata), SDK `token_for()` cold discovery→exchange.
+- **Federation Phase 3**: REST spec at `docs/specs/agent-provisioning-and-grant-api.md`.
+
+Test coverage: 10 broker integration tests, SDK e2e against a real socket, full agent→RP flow test (broker + axum RP + SDK, trust bootstrapped from `.well-known/browserid`), plus a live-binary sqlite smoke test.
+
+Follow-ups: browserid-ng-sdp2 (per-key rate limiting), browserid-ng-btmg (key-management UI), browserid-ng-dj9p (escrow, draft). One design correction during implementation: agent emails use the broker domain verbatim (issuer == email domain is required by chain verification), so dev deployments mint e.g. `bot@localhost:3000`.
