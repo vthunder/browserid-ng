@@ -60,6 +60,18 @@ pub enum BrokerError {
 
     #[error("Invalid assertion: {0}")]
     InvalidAssertion(String),
+
+    #[error("Invalid or revoked API key")]
+    InvalidApiKey,
+
+    #[error("API key not found")]
+    ApiKeyNotFound,
+
+    #[error("Agent identity quota exceeded")]
+    QuotaExceeded,
+
+    #[error("Agent provisioning is not enabled")]
+    AgentProvisioningDisabled,
 }
 
 impl IntoResponse for BrokerError {
@@ -102,6 +114,14 @@ impl IntoResponse for BrokerError {
                 (StatusCode::BAD_GATEWAY, "Discovery failed")
             }
             BrokerError::InvalidAssertion(msg) => (StatusCode::BAD_REQUEST, msg.as_str()),
+            BrokerError::InvalidApiKey => (StatusCode::UNAUTHORIZED, "Invalid or revoked API key"),
+            BrokerError::ApiKeyNotFound => (StatusCode::NOT_FOUND, "API key not found"),
+            BrokerError::QuotaExceeded => {
+                (StatusCode::TOO_MANY_REQUESTS, "Agent identity quota exceeded")
+            }
+            BrokerError::AgentProvisioningDisabled => {
+                (StatusCode::NOT_FOUND, "Agent provisioning is not enabled")
+            }
         };
 
         let body = json!({ "success": false, "reason": message });

@@ -7,13 +7,13 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    Email, EmailType, PendingVerification, Session, SessionId, SessionStore, StoreResult, User,
-    UserId, UserStore, VerificationType,
+    ApiKey, Email, EmailType, PendingVerification, Session, SessionId, SessionStore, StoreResult,
+    User, UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -67,6 +67,10 @@ impl SqliteStore {
 
             if current_version < 3 {
                 Self::migrate_v3(conn)?;
+            }
+
+            if current_version < 4 {
+                Self::migrate_v4(conn)?;
             }
 
             // Update schema version
@@ -176,7 +180,58 @@ impl SqliteStore {
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v4(conn: &Connection) -> Result<(), BrokerError> {
+        // Per-user API keys for headless agent provisioning (l8lw). Only the
+        // SHA-256 of the secret is stored; parent_email is the attribution
+        // root for identities minted with the key.
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                key_hash TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                parent_email TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT,
+                revoked_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
+
+// Row → ApiKey mapping shared by the api_key queries
+fn api_key_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
+    let parse_ts = |s: Option<String>| {
+        s.and_then(|s| {
+            DateTime::parse_from_rfc3339(&s)
+                .map(|dt| dt.with_timezone(&Utc))
+                .ok()
+        })
+    };
+    let id: i64 = row.get(0)?;
+    let user_id: i64 = row.get(1)?;
+    let created_at: String = row.get(4)?;
+    Ok(ApiKey {
+        id: id as u64,
+        user_id: UserId(user_id as u64),
+        key_hash: row.get(2)?,
+        name: row.get(3)?,
+        parent_email: row.get(5)?,
+        created_at: DateTime::parse_from_rfc3339(&created_at)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+        last_used_at: parse_ts(row.get(6)?),
+        revoked_at: parse_ts(row.get(7)?),
+    })
+}
+
+const API_KEY_COLUMNS: &str = "id, user_id, key_hash, name, created_at, parent_email, last_used_at, revoked_at";
 
 // Helper to convert VerificationType to/from string
 impl VerificationType {
@@ -640,6 +695,104 @@ impl UserStore for SqliteStore {
         // Delegate to update_password which has the same behavior
         self.update_password(user_id, password_hash)
     }
+
+    fn unverify_email(&self, email: &str) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE emails SET verified = 0, verified_at = NULL WHERE email = ?1",
+                params![normalized],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::EmailNotFound);
+        }
+        Ok(())
+    }
+
+    fn create_api_key(
+        &self,
+        user_id: UserId,
+        name: &str,
+        parent_email: &str,
+        key_hash: &str,
+    ) -> StoreResult<ApiKey> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now();
+        let parent = parent_email.to_lowercase();
+
+        conn.execute(
+            "INSERT INTO api_keys (user_id, key_hash, name, parent_email, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![user_id.0 as i64, key_hash, name, parent, now.to_rfc3339()],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+
+        Ok(ApiKey {
+            id: conn.last_insert_rowid() as u64,
+            user_id,
+            key_hash: key_hash.to_string(),
+            name: name.to_string(),
+            parent_email: parent,
+            created_at: now,
+            last_used_at: None,
+            revoked_at: None,
+        })
+    }
+
+    fn get_api_key_by_hash(&self, key_hash: &str) -> StoreResult<Option<ApiKey>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            &format!("SELECT {API_KEY_COLUMNS} FROM api_keys WHERE key_hash = ?1"),
+            params![key_hash],
+            api_key_from_row,
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn list_api_keys(&self, user_id: UserId) -> StoreResult<Vec<ApiKey>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {API_KEY_COLUMNS} FROM api_keys WHERE user_id = ?1 ORDER BY id"
+            ))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let keys = stmt
+            .query_map(params![user_id.0 as i64], api_key_from_row)
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(keys)
+    }
+
+    fn revoke_api_key(&self, user_id: UserId, key_id: u64) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE api_keys SET revoked_at = COALESCE(revoked_at, ?1) WHERE id = ?2 AND user_id = ?3",
+                params![Utc::now().to_rfc3339(), key_id as i64, user_id.0 as i64],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::ApiKeyNotFound);
+        }
+        Ok(())
+    }
+
+    fn touch_api_key(&self, key_id: u64) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE api_keys SET last_used_at = ?1 WHERE id = ?2",
+                params![Utc::now().to_rfc3339(), key_id as i64],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::ApiKeyNotFound);
+        }
+        Ok(())
+    }
 }
 
 impl SessionStore for SqliteStore {
@@ -803,6 +956,36 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn set_password(&self, user_id: UserId, password_hash: &str) -> StoreResult<()> {
         (**self).set_password(user_id, password_hash)
+    }
+
+    fn unverify_email(&self, email: &str) -> StoreResult<()> {
+        (**self).unverify_email(email)
+    }
+
+    fn create_api_key(
+        &self,
+        user_id: UserId,
+        name: &str,
+        parent_email: &str,
+        key_hash: &str,
+    ) -> StoreResult<ApiKey> {
+        (**self).create_api_key(user_id, name, parent_email, key_hash)
+    }
+
+    fn get_api_key_by_hash(&self, key_hash: &str) -> StoreResult<Option<ApiKey>> {
+        (**self).get_api_key_by_hash(key_hash)
+    }
+
+    fn list_api_keys(&self, user_id: UserId) -> StoreResult<Vec<ApiKey>> {
+        (**self).list_api_keys(user_id)
+    }
+
+    fn revoke_api_key(&self, user_id: UserId, key_id: u64) -> StoreResult<()> {
+        (**self).revoke_api_key(user_id, key_id)
+    }
+
+    fn touch_api_key(&self, key_id: u64) -> StoreResult<()> {
+        (**self).touch_api_key(key_id)
     }
 }
 
@@ -986,6 +1169,56 @@ mod tests {
 
         // Session should be gone
         assert!(store.get(&session.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn api_key_lifecycle() {
+        let (store, _dir) = create_test_store();
+        let u = store.create_user("pw").unwrap();
+        store.add_email(u, "human@example.com", true).unwrap();
+
+        let key = store
+            .create_api_key(u, "ci-bot", "Human@Example.com", "abc123hash")
+            .unwrap();
+        assert_eq!(key.parent_email, "human@example.com"); // normalized
+        assert!(key.is_active());
+
+        // Lookup by hash; miss returns None
+        let found = store.get_api_key_by_hash("abc123hash").unwrap().unwrap();
+        assert_eq!(found.id, key.id);
+        assert_eq!(found.name, "ci-bot");
+        assert!(store.get_api_key_by_hash("nope").unwrap().is_none());
+
+        // touch records last_used_at
+        assert!(found.last_used_at.is_none());
+        store.touch_api_key(key.id).unwrap();
+        let touched = store.get_api_key_by_hash("abc123hash").unwrap().unwrap();
+        assert!(touched.last_used_at.is_some());
+
+        // Revocation is scoped to the owning user and sticks
+        let other = store.create_user("pw2").unwrap();
+        assert!(store.revoke_api_key(other, key.id).is_err());
+        store.revoke_api_key(u, key.id).unwrap();
+        let revoked = store.get_api_key_by_hash("abc123hash").unwrap().unwrap();
+        assert!(!revoked.is_active());
+        assert_eq!(store.list_api_keys(u).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unverify_email_clears_verification() {
+        let (store, _dir) = create_test_store();
+        let u = store.create_user("pw").unwrap();
+        store
+            .add_email_with_type(u, "bot@localhost:3000", true, EmailType::Agent)
+            .unwrap();
+
+        store.unverify_email("bot@localhost:3000").unwrap();
+        let rec = store.get_email("bot@localhost:3000").unwrap().unwrap();
+        assert!(!rec.verified);
+        assert!(rec.verified_at.is_none());
+        assert_eq!(rec.email_type, EmailType::Agent);
+
+        assert!(store.unverify_email("missing@x.y").is_err());
     }
 
     #[test]

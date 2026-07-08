@@ -37,7 +37,17 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     pub fallback_fetcher: OnceCell<Arc<FallbackFetcher>>,
     /// Mock primary IdPs for testing (domain -> config)
     pub mock_primary_idps: RwLock<HashMap<String, MockPrimaryIdp>>,
+    /// Whether headless agent provisioning (`/agent/*` + API-key management)
+    /// is enabled on this deployment (l8lw). Off by default; the dedicated
+    /// agent IdP deployment turns it on.
+    pub agent_provisioning_enabled: bool,
+    /// Per-user cap on active (non-revoked) agent identities — the sybil
+    /// limit that replaces SMTP friction for headless issuance
+    pub max_agent_identities_per_user: usize,
 }
+
+/// Default per-user agent identity quota
+pub const DEFAULT_AGENT_QUOTA: usize = 5;
 
 impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
     pub fn new(
@@ -55,6 +65,8 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             email_sender: Arc::new(email_sender),
             fallback_fetcher: OnceCell::new(),
             mock_primary_idps: RwLock::new(HashMap::new()),
+            agent_provisioning_enabled: false,
+            max_agent_identities_per_user: DEFAULT_AGENT_QUOTA,
         }
     }
 
@@ -74,6 +86,8 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             email_sender,
             fallback_fetcher: OnceCell::new(),
             mock_primary_idps: RwLock::new(HashMap::new()),
+            agent_provisioning_enabled: false,
+            max_agent_identities_per_user: DEFAULT_AGENT_QUOTA,
         }
     }
 

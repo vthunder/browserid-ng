@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-07-08T00:07:30Z
-updated_at: 2026-07-08T18:48:33Z
+updated_at: 2026-07-08T19:05:51Z
 ---
 
 Make browserid-ng agent-native: let agents acquire and use a browserid-backed
@@ -139,7 +139,7 @@ they already run.
 ## Phasing / TODO
 
 - [x] Write design doc in `docs/plans/` capturing this converged direction — `docs/plans/2026-07-08-agent-native-browserid-design.md`
-- [ ] Phase 1: `agents.browserid.me` REST provisioning — per-user API keys + quota (generalize the mingo `/admin/provision` prototype)
+- [x] Phase 1: broker REST provisioning — per-user API keys + quota (`/wsapi/agent_keys` mgmt + `/agent/*` endpoints; enable with `AGENT_PROVISIONING=1`). Deploying the dedicated `agents.browserid.me` instance is ops, tracked outside this repo.
 - [ ] Phase 1: headless agent SDK (`browserid-core` outside the browser: key → cert → assertion/typed-payload signing)
 - [ ] Phase 2: RP-side grant-exchange `/token` + verify library + `WWW-Authenticate` challenge + OAuth `.well-known`
 - [ ] Phase 3: federation — publish provisioning + grant endpoints as a REST spec

@@ -71,13 +71,33 @@ async fn main() -> Result<()> {
     };
 
     // Create app state
-    let state = Arc::new(AppState::new(
+    let mut state = AppState::new(
         keypair,
         config.domain.clone(),
         store.clone(),
         store.clone(),
         email_sender,
-    ));
+    );
+
+    // Headless agent provisioning (l8lw): off unless explicitly enabled —
+    // intended for the dedicated agent-IdP deployment (agents.browserid.me)
+    state.agent_provisioning_enabled = std::env::var("AGENT_PROVISIONING")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if let Some(quota) = std::env::var("AGENT_MAX_IDENTITIES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        state.max_agent_identities_per_user = quota;
+    }
+    if state.agent_provisioning_enabled {
+        tracing::info!(
+            quota = state.max_agent_identities_per_user,
+            "Agent provisioning enabled"
+        );
+    }
+
+    let state = Arc::new(state);
 
     // Determine static files path (relative to workspace root or package root)
     let static_path = if std::path::Path::new("browserid-broker/static").exists() {

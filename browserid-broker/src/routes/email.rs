@@ -357,6 +357,10 @@ fn compute_state(
         (false, Some(EmailType::Secondary), EmailType::Primary) => "transition_to_primary",
         (false, Some(EmailType::Secondary), EmailType::Secondary) => "transition_no_password",
 
+        // Agent identities (l8lw) are broker-issued and never transition
+        (_, Some(EmailType::Agent), _) => "known",
+        (_, Some(_), EmailType::Agent) => "known",
+
         // Email not in database
         (_, None, _) => "unknown",
     }

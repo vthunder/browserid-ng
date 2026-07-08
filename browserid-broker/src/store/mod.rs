@@ -98,6 +98,33 @@ pub trait UserStore: Send + Sync {
 
     /// Set password for a user (for transition cases)
     fn set_password(&self, user_id: UserId, password_hash: &str) -> StoreResult<()>;
+
+    /// Clear an email's verified flag — used to revoke agent identities
+    /// (re-mints then fail the ordinary verified check; certs age out)
+    fn unverify_email(&self, email: &str) -> StoreResult<()>;
+
+    /// Create an API key row (l8lw agent provisioning). `key_hash` is the
+    /// SHA-256 hex of the secret; the secret itself is never stored.
+    fn create_api_key(
+        &self,
+        user_id: UserId,
+        name: &str,
+        parent_email: &str,
+        key_hash: &str,
+    ) -> StoreResult<ApiKey>;
+
+    /// Look up an API key by the hash of a presented secret
+    fn get_api_key_by_hash(&self, key_hash: &str) -> StoreResult<Option<ApiKey>>;
+
+    /// List a user's API keys (active and revoked)
+    fn list_api_keys(&self, user_id: UserId) -> StoreResult<Vec<ApiKey>>;
+
+    /// Soft-revoke an API key. Scoped to the owning user; errors with
+    /// `ApiKeyNotFound` if the key doesn't exist or belongs to someone else.
+    fn revoke_api_key(&self, user_id: UserId, key_id: u64) -> StoreResult<()>;
+
+    /// Update an API key's last_used_at to now (audit trail)
+    fn touch_api_key(&self, key_id: u64) -> StoreResult<()>;
 }
 
 /// Trait for session storage

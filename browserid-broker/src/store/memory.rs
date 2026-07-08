@@ -8,8 +8,8 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    Email, EmailType, PendingVerification, Session, SessionId, SessionStore, StoreResult, User,
-    UserId, UserStore, VerificationType,
+    ApiKey, Email, EmailType, PendingVerification, Session, SessionId, SessionStore, StoreResult,
+    User, UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
 
@@ -18,7 +18,9 @@ pub struct InMemoryUserStore {
     users: RwLock<HashMap<UserId, User>>,
     emails: RwLock<HashMap<String, Email>>,
     pending: RwLock<HashMap<String, PendingVerification>>,
+    api_keys: RwLock<HashMap<u64, ApiKey>>,
     next_user_id: AtomicU64,
+    next_api_key_id: AtomicU64,
 }
 
 impl InMemoryUserStore {
@@ -27,7 +29,9 @@ impl InMemoryUserStore {
             users: RwLock::new(HashMap::new()),
             emails: RwLock::new(HashMap::new()),
             pending: RwLock::new(HashMap::new()),
+            api_keys: RwLock::new(HashMap::new()),
             next_user_id: AtomicU64::new(1),
+            next_api_key_id: AtomicU64::new(1),
         }
     }
 
@@ -279,6 +283,76 @@ impl UserStore for InMemoryUserStore {
     fn set_password(&self, user_id: UserId, password_hash: &str) -> StoreResult<()> {
         // Delegate to update_password which has the same behavior
         self.update_password(user_id, password_hash)
+    }
+
+    fn unverify_email(&self, email: &str) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let mut emails = self.emails.write().unwrap();
+        match emails.get_mut(&normalized) {
+            Some(rec) => {
+                rec.verified = false;
+                rec.verified_at = None;
+                Ok(())
+            }
+            None => Err(BrokerError::EmailNotFound),
+        }
+    }
+
+    fn create_api_key(
+        &self,
+        user_id: UserId,
+        name: &str,
+        parent_email: &str,
+        key_hash: &str,
+    ) -> StoreResult<ApiKey> {
+        let key = ApiKey {
+            id: self.next_api_key_id.fetch_add(1, Ordering::SeqCst),
+            user_id,
+            key_hash: key_hash.to_string(),
+            name: name.to_string(),
+            parent_email: parent_email.to_lowercase(),
+            created_at: Utc::now(),
+            last_used_at: None,
+            revoked_at: None,
+        };
+        self.api_keys.write().unwrap().insert(key.id, key.clone());
+        Ok(key)
+    }
+
+    fn get_api_key_by_hash(&self, key_hash: &str) -> StoreResult<Option<ApiKey>> {
+        let keys = self.api_keys.read().unwrap();
+        Ok(keys.values().find(|k| k.key_hash == key_hash).cloned())
+    }
+
+    fn list_api_keys(&self, user_id: UserId) -> StoreResult<Vec<ApiKey>> {
+        let keys = self.api_keys.read().unwrap();
+        let mut result: Vec<ApiKey> = keys.values().filter(|k| k.user_id == user_id).cloned().collect();
+        result.sort_by_key(|k| k.id);
+        Ok(result)
+    }
+
+    fn revoke_api_key(&self, user_id: UserId, key_id: u64) -> StoreResult<()> {
+        let mut keys = self.api_keys.write().unwrap();
+        match keys.get_mut(&key_id) {
+            Some(k) if k.user_id == user_id => {
+                if k.revoked_at.is_none() {
+                    k.revoked_at = Some(Utc::now());
+                }
+                Ok(())
+            }
+            _ => Err(BrokerError::ApiKeyNotFound),
+        }
+    }
+
+    fn touch_api_key(&self, key_id: u64) -> StoreResult<()> {
+        let mut keys = self.api_keys.write().unwrap();
+        match keys.get_mut(&key_id) {
+            Some(k) => {
+                k.last_used_at = Some(Utc::now());
+                Ok(())
+            }
+            None => Err(BrokerError::ApiKeyNotFound),
+        }
     }
 }
 
