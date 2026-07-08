@@ -6,3 +6,6 @@ browserid.db*
 # Test artifacts
 test-results/
 playwright-report/
+
+# macOS
+.DS_Store
