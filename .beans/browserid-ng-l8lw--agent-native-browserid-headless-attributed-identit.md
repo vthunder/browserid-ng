@@ -1,11 +1,11 @@
 ---
 # browserid-ng-l8lw
 title: 'Agent-native browserid: headless attributed identity issuance + agent→API auth'
-status: todo
+status: in-progress
 type: feature
 priority: high
 created_at: 2026-07-08T00:07:30Z
-updated_at: 2026-07-08T00:07:30Z
+updated_at: 2026-07-08T18:48:33Z
 ---
 
 Make browserid-ng agent-native: let agents acquire and use a browserid-backed
@@ -138,7 +138,7 @@ they already run.
 
 ## Phasing / TODO
 
-- [ ] Write design doc in `docs/plans/` capturing this converged direction
+- [x] Write design doc in `docs/plans/` capturing this converged direction — `docs/plans/2026-07-08-agent-native-browserid-design.md`
 - [ ] Phase 1: `agents.browserid.me` REST provisioning — per-user API keys + quota (generalize the mingo `/admin/provision` prototype)
 - [ ] Phase 1: headless agent SDK (`browserid-core` outside the browser: key → cert → assertion/typed-payload signing)
 - [ ] Phase 2: RP-side grant-exchange `/token` + verify library + `WWW-Authenticate` challenge + OAuth `.well-known`
