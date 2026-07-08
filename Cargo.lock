@@ -234,6 +234,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "browserid-agent"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "browserid-broker",
+ "browserid-core",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "browserid-broker"
 version = "0.1.0"
 dependencies = [

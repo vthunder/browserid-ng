@@ -1,0 +1,21 @@
+[package]
+name = "browserid-agent"
+description = "Headless browserid client for agents: provision an attributed identity via API key, sign assertions locally"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+browserid-core = { path = "../browserid-core" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+browserid-broker = { path = "../browserid-broker" }
+tokio.workspace = true
+axum.workspace = true
+tempfile = "3"
