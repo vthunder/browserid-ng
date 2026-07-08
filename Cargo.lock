@@ -241,6 +241,7 @@ dependencies = [
  "base64 0.22.1",
  "browserid-broker",
  "browserid-core",
+ "browserid-rp",
  "chrono",
  "reqwest",
  "serde",
@@ -301,6 +302,21 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "browserid-rp"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "browserid-core",
+ "chrono",
+ "rand",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]

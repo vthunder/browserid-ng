@@ -27,7 +27,10 @@ use base64::Engine;
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use browserid_core::{Assertion, BackedAssertion, Certificate, KeyPair};
+use browserid_core::rp_auth::TokenErrorResponse;
+use browserid_core::{
+    Assertion, BackedAssertion, Certificate, KeyPair, RpChallenge, TokenRequest, TokenResponse,
+};
 
 /// Default validity for assertions minted by [`AgentIdentity::assertion_for`]
 pub const ASSERTION_VALIDITY_MINUTES: i64 = 5;
@@ -49,6 +52,12 @@ pub enum AgentError {
 
     #[error("stored identity is invalid: {0}")]
     InvalidStored(String),
+
+    #[error("no BrowserID challenge at {url} (status {status})")]
+    NoChallenge { url: String, status: u16 },
+
+    #[error("token exchange refused ({status}): {error}")]
+    Exchange { status: u16, error: String },
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -205,6 +214,67 @@ impl AgentIdentity {
         )
         .await?;
         Ok(())
+    }
+
+    /// Authenticate to an API RP cold (l8lw Phase 2): probe `resource_url`,
+    /// read the `WWW-Authenticate: BrowserID …` challenge off the 401, sign
+    /// an assertion for the RP's advertised audience, and exchange it at the
+    /// RP's token endpoint for the RP's own bearer token. Zero pre-config —
+    /// the RP is entirely self-describing.
+    pub async fn token_for(&mut self, resource_url: &str) -> Result<TokenResponse> {
+        let challenge = self.discover_challenge(resource_url).await?;
+        self.exchange_for_token(&challenge).await
+    }
+
+    /// Probe a resource URL for its `WWW-Authenticate: BrowserID` challenge
+    pub async fn discover_challenge(&self, resource_url: &str) -> Result<RpChallenge> {
+        let response = self.http.get(resource_url).send().await?;
+        let status = response.status().as_u16();
+        response
+            .headers()
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok())
+            .and_then(RpChallenge::parse)
+            .ok_or_else(|| AgentError::NoChallenge {
+                url: resource_url.to_string(),
+                status,
+            })
+    }
+
+    /// Exchange an assertion for the RP's bearer token per a known challenge
+    /// (skips the discovery probe; useful when the challenge is cached)
+    pub async fn exchange_for_token(&mut self, challenge: &RpChallenge) -> Result<TokenResponse> {
+        self.ensure_fresh_cert().await?;
+        let assertion = Assertion::create(
+            &challenge.audience,
+            Duration::minutes(ASSERTION_VALIDITY_MINUTES),
+            &self.keypair,
+        )?;
+        let backed = BackedAssertion::new(self.cert.clone(), assertion).encode();
+
+        let response = self
+            .http
+            .post(&challenge.token_endpoint)
+            .form(&TokenRequest::new(backed))
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error = response
+                .json::<TokenErrorResponse>()
+                .await
+                .map(|e| {
+                    e.error_description
+                        .map_or(e.error.clone(), |d| format!("{}: {}", e.error, d))
+                })
+                .unwrap_or_else(|_| "no error body".to_string());
+            return Err(AgentError::Exchange {
+                status: status.as_u16(),
+                error,
+            });
+        }
+        Ok(response.json::<TokenResponse>().await?)
     }
 
     async fn ensure_fresh_cert(&mut self) -> Result<()> {

@@ -11,12 +11,14 @@ pub mod assertion;
 pub mod discovery;
 pub mod dns;
 pub mod error;
+pub mod rp_auth;
 
 pub use keys::{KeyPair, PublicKey};
 pub use certificate::Certificate;
 pub use assertion::{Assertion, BackedAssertion};
 pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;
+pub use rp_auth::{RpChallenge, TokenRequest, TokenResponse};
 
 /// Result type for browserid-core operations
 pub type Result<T> = std::result::Result<T, Error>;

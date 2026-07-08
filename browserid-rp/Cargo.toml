@@ -1,6 +1,6 @@
 [package]
-name = "browserid-agent"
-description = "Headless browserid client for agents: provision an attributed identity via API key, sign assertions locally"
+name = "browserid-rp"
+description = "Relying-party library for BrowserID-NG: verify assertions, exchange them for bearer tokens, advertise the auth API"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,11 +12,8 @@ serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
+rand.workspace = true
 base64.workspace = true
 
 [dev-dependencies]
-browserid-broker = { path = "../browserid-broker" }
-browserid-rp = { path = "../browserid-rp" }
 tokio.workspace = true
-axum.workspace = true
-tempfile = "3"

@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-07-08T00:07:30Z
-updated_at: 2026-07-08T19:11:02Z
+updated_at: 2026-07-08T21:45:51Z
 ---
 
 Make browserid-ng agent-native: let agents acquire and use a browserid-backed
@@ -141,7 +141,7 @@ they already run.
 - [x] Write design doc in `docs/plans/` capturing this converged direction — `docs/plans/2026-07-08-agent-native-browserid-design.md`
 - [x] Phase 1: broker REST provisioning — per-user API keys + quota (`/wsapi/agent_keys` mgmt + `/agent/*` endpoints; enable with `AGENT_PROVISIONING=1`). Deploying the dedicated `agents.browserid.me` instance is ops, tracked outside this repo.
 - [x] Phase 1: headless agent SDK — new `browserid-agent` crate (`AgentIdentity::provision` → `assertion_for` with auto re-mint, raw `sign()` for typed payloads, save/load persistence that never stores the API key)
-- [ ] Phase 2: RP-side grant-exchange `/token` + verify library + `WWW-Authenticate` challenge + OAuth `.well-known`
+- [x] Phase 2: RP-side — `browserid-rp` crate (Verifier w/ pinned or well-known-fetched issuer keys, TokenStore, `exchange()` w/ OAuth error codes, RFC 8414 metadata), `browserid_core::rp_auth` wire contract (`WWW-Authenticate: BrowserID` challenge + RFC 7521-shaped grant `urn:x-browserid:grant-type:assertion`), and SDK `token_for()` doing cold discovery → assertion → token exchange
 - [ ] Phase 3: federation — publish provisioning + grant endpoints as a REST spec
 - [ ] Later (separate product): escrow / trust-by-bond model
 

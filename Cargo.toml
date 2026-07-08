@@ -4,6 +4,7 @@ members = [
     "browserid-core",
     "browserid-broker",
     "browserid-agent",
+    "browserid-rp",
 ]
 
 [workspace.package]
