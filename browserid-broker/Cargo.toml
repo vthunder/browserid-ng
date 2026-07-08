@@ -30,6 +30,8 @@ dotenvy = "0.15"
 futures-util = "0.3"
 hickory-resolver.workspace = true
 hickory-client.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

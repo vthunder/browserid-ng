@@ -37,7 +37,10 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 
 # DNS / DNSSEC
 hickory-resolver = { version = "0.24", features = ["dnssec-ring"] }
-hickory-client = { version = "0.24", features = ["dnssec-ring"] }
+hickory-client = { version = "0.24", features = ["dnssec-ring", "dns-over-rustls"] }
+# TLS for DNS-over-TLS (versions must match hickory-proto 0.24's rustls dependency)
+rustls = "0.21"
+webpki-roots = "0.25"
 
 # Error handling
 thiserror = "1"
