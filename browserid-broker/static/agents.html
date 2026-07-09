@@ -174,11 +174,49 @@ async function boot() {
   await refreshList();
 }
 
-function showIdentityNote() {
+/// Whether an IdP speaks the agent-provisioning API. Probe its
+/// /provision/reserve: a participating IdP (broker or e.g. mingo.place)
+/// answers (any status, with CORS); a human-only primary (e.g. sandmill.org)
+/// has no such route and no CORS, so the cross-origin fetch throws.
+const agentSupport = new Map(); // idpUrl -> bool
+async function idpSupportsAgents(idpUrl) {
+  if (agentSupport.has(idpUrl)) return agentSupport.get(idpUrl);
+  let ok = false;
+  try {
+    // Same-origin (broker) always resolves; cross-origin resolves only with CORS.
+    await fetch(`${idpUrl}/provision/reserve`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    });
+    ok = true; // any HTTP response (even 400) means the endpoint + CORS exist
+  } catch { ok = false; }
+  agentSupport.set(idpUrl, ok);
+  return ok;
+}
+
+async function showIdentityNote() {
   const id = localIdentities().find(i => i.email === $('identity').value);
-  $('identity-note').textContent = id?.issuer
-    ? `Agent will be minted at ${id.issuer} (the IdP that issued this identity).` : '';
+  if (!id) return;
   updatePreview();
+  const idpDomain = id.issuer || location.host;
+  const idpUrl = /^(localhost|127\.)/.test(idpDomain) ? `http://${idpDomain}` : `https://${idpDomain}`;
+  $('identity-note').textContent = 'Checking whether this provider supports agent identities…';
+  const supported = idpDomain === location.host ? true : await idpSupportsAgents(idpUrl);
+  // Only apply if the selection hasn't changed while we probed.
+  if ($('identity').value !== id.email) return;
+  if (supported) {
+    $('identity-note').className = 'muted';
+    $('identity-note').style.fontSize = '.85em';
+    $('identity-note').textContent = `Agent will be minted at ${idpDomain}.`;
+    $('create').disabled = false;
+  } else {
+    $('identity-note').className = 'err';
+    $('identity-note').style.fontSize = '.85em';
+    $('identity-note').textContent =
+      `${idpDomain} runs its own identity provider but doesn't support agent identities, ` +
+      `so no agent can be created for ${id.email}. (Agents need a provider that implements ` +
+      `agent provisioning — e.g. a mingo.place identity, or an email on a domain without its own provider.)`;
+    $('create').disabled = true;
+  }
 }
 
 async function refreshList() {
