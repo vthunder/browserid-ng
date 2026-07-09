@@ -1,194 +1,261 @@
 # BrowserID Agent Provisioning & Grant Exchange — REST API Specification
 
-**Version:** 0.1 (draft)
-**Date:** 2026-07-08
-**Status:** Published for federation (l8lw Phase 3). The `browserid-ng` broker
-(with `AGENT_PROVISIONING=1`) is the reference implementation; the
-`browserid-agent` and `browserid-rp` crates are reference clients for the two
-sides.
+**Version:** 0.2 (draft)
+**Date:** 2026-07-09
+**Status:** Published for federation. v0.2 replaces v0.1's bearer API keys
+with a user-signed **delegation chain** plus per-request **broker
+endorsement** (design: `docs/plans/2026-07-09-agent-delegation-chain-design.md`).
+The `browserid-ng` broker is the reference implementation; `browserid-agent`
+and `browserid-rp` are reference clients for the two sides.
 
 ## 1. Purpose and scope
 
-This document specifies the two HTTP surfaces that make BrowserID usable by
+This document specifies the HTTP surfaces that make BrowserID usable by
 software agents without a browser:
 
-1. **Provisioning API** (§4) — how an agent holding an **API key** obtains and
-   renews a certified identity from an IdP. Any BrowserID IdP may implement
-   this; nothing in it is specific to one deployment.
+1. **Provisioning protocol** (§4) — how an agent holding a **provisioning
+   credential** (a private key whose public half was delegated by a user's
+   certified identity key) obtains and renews a certified identity from an
+   IdP, with a broker co-signing each request per policy.
 2. **Grant exchange** (§5) — how an agent authenticates to an API relying
    party by swapping an ordinary backed assertion for the RP's own bearer
    token, including in-band (`WWW-Authenticate`) and out-of-band (RFC 8414)
    discovery.
 
-Everything between those two surfaces is standard BrowserID: the certificate,
-the assertion, and chain verification are unchanged, and an RP cannot tell an
-agent-held identity from any other. **Agent-ness is issuer-side metadata,
-never a protocol-visible type.** This spec deliberately does not define an
-`agent.*` identity syntax, a delegation claim, or RP-visible scopes.
+Everything downstream of provisioning is standard BrowserID: the agent's
+certificate, assertions, and chain verification are unchanged, and an RP
+cannot tell an agent-held identity from any other. **Agent-ness is
+issuer-side metadata, never a protocol-visible type.**
 
-Out of scope: how a human obtains an API key from their IdP (IdP-local
-policy, §4.1), browser session establishment at RPs, and escrow/stake trust
-models.
+Out of scope: browser session establishment at RPs, and escrow/stake trust
+models. The broker's key-management UI is described non-normatively (§4.6).
 
 ## 2. Terminology
 
-- **IdP** — a BrowserID identity provider implementing the provisioning API.
-  It is authoritative for identities under its own domain.
-- **Agent** — a headless client that generates and holds its own keypair.
-- **API key** — a long-lived bearer secret, minted by an authenticated human
-  at the IdP, that authorizes certificate minting for agent identities on
-  that human's account. Wire format: the opaque string SHOULD begin with
-  `bidk_` so leaked keys are greppable by secret scanners.
-- **Attribution root** (`parent_email`) — the human identity an agent
-  identity chains to. Every agent identity MUST have one.
-- **Agent identity** — an email-shaped identity `<name>@<idp-domain>` whose
-  certificates are minted via the provisioning API.
-- **Backed assertion** — standard BrowserID `cert~assertion`.
-- **RP** — an HTTP API accepting BrowserID via grant exchange (§5).
+- **IdP** — a BrowserID identity provider implementing §4. It is
+  authoritative for identities under its own domain.
+- **Broker** — a fallback IdP (e.g. browserid.me) that additionally
+  registers provisioning certificates, applies account-level policy, and
+  endorses provisioning requests. A broker is also an IdP for its own
+  domain.
+- **Agent** — a headless client holding the provisioning private key and its
+  own (separate) identity keypair.
+- **Delegator / parent identity** — the user identity (`a@b.c`) whose
+  certified key signed the delegation. Every agent identity MUST chain to
+  one.
+- **U_cert** — the delegator's ordinary identity certificate (IdP-signed,
+  binds `U_pub` to `a@b.c`).
+- **P_cert** — the provisioning certificate: signed by `U_priv`, binds the
+  provisioning public key `P_pub` to the delegation.
+- **Delegation bundle** — `U_cert~P_cert` (the `~` framing of backed
+  assertions).
+- **Request bundle** — `U_cert~P_cert~R` where `R` is a provisioning
+  request signed by `P_priv`.
+- **Endorsement (E)** — the broker's short-lived signature over a specific
+  request bundle.
+- **Agent identity** — `<name>@<idp-domain>`, certified by the IdP for the
+  agent's own key `A_pub`.
 
 Key words MUST/SHOULD/MAY are RFC 2119.
 
 ## 3. Trust model (normative summary)
 
-- **Attribution replaces inbox friction.** Headless issuance removes SMTP
-  verification as the identity-creation rate limit, so IdPs MUST enforce a
-  per-account quota of active agent identities (reference default: 5) and
-  SHOULD rate-limit provisioning per API key.
-- **The API key is the standing credential.** The agent keypair MAY rotate at
-  any re-mint; possession of a valid API key is what authorizes minting.
-  IdPs MUST store only a digest of the key (reference: SHA-256) and MUST
-  return the secret exactly once at mint time.
-- **Revocation is soft.** Revoking a key or identity stops future mints;
-  outstanding certificates age out within their TTL. Certificate lifetime
-  MUST therefore be short (reference: 24 h, 1 h ephemeral). Hard revocation
-  (verifier-consulted lists) is a future extension.
-- **Scope of an API key.** A key MUST only authorize operations on *agent*
-  identities of its own account. It MUST NOT read account data, alter
-  credentials, or mint certificates for the account's human identities.
-  A leaked key's blast radius is impersonating that account's agents until
-  revocation + TTL.
-- **Domain-level governance.** Operators MAY run a dedicated agent IdP
-  domain (e.g. `agents.example.com`) to rate-limit, monitor, or apply policy
-  to an entire agent population, and RPs MAY apply per-issuer-domain policy.
-  Once federated, agent identities are NOT guaranteed to be identifiable by
-  domain — RP-side agent detection is explicitly a non-goal.
+- **Authorization is user-signed.** An IdP MUST NOT mint an agent identity
+  without a valid chain terminating in a `P_cert` signed by the delegator's
+  certified key. A broker endorsement alone authorizes nothing.
+- **Policy is broker-signed.** An IdP MUST also require a fresh endorsement
+  from a broker it explicitly trusts (its *accepted brokers* set is local
+  configuration). The endorsement states the request is within account-level
+  policy (sybil/quota/rate), which only the broker can see globally.
+- **Identity-domain rule.** The agent's identity domain is the domain of the
+  IdP that roots the delegator's identity. Consequently the `U_cert` an IdP
+  verifies is always its own issuance, and for delegators rooted at the
+  broker itself, endorser and issuer are the same party (one code path, two
+  roles).
+- **Signing-time semantics.** `U_cert` is short-lived; `P_cert` is
+  long-lived. Verifiers MUST require `P_cert.iat` to fall within `U_cert`'s
+  validity window and MUST NOT require `U_cert` to be currently unexpired.
+  An IdP MAY additionally consult its own issuance records for `U_pub`.
+- **Revocation is endorsement-gated.** Every mint — including routine
+  re-mints — requires a fresh endorsement, and agent certificates MUST be
+  short-lived (reference: 24 h, 1 h ephemeral). Revoking a provisioning
+  certificate at the broker therefore takes effect within one certificate
+  TTL. IdPs MAY additionally revoke identities locally (§4.5).
+- **Scope of the provisioning credential.** A request bundle MUST only
+  enable operations on *agent* identities delegated by its own chain. It
+  MUST NOT permit reading account data, altering credentials, or acting on
+  the delegator's (or anyone's) human identities. `P_priv` never transits
+  the wire; only signatures do.
+- **Quota is layered.** The broker enforces account-global policy at
+  endorsement time; IdPs SHOULD additionally enforce a per-delegator quota
+  of active agent identities (reference default: 5).
 
-## 4. Provisioning API
+## 4. Provisioning protocol
 
-All endpoints are rooted at the IdP origin. Authentication for every endpoint
-in this section: `Authorization: Bearer <api-key>`. Requests and responses
-are JSON (`Content-Type: application/json`). Every success response includes
-`"success": true`; every error body includes `"success": false` and a
-`"reason"` string.
+### 4.1 Claim formats
 
-Common error status codes:
+All three are Ed25519 JWS with an explicit `typ` claim for domain
+separation. Verifiers MUST reject a token whose `typ` does not match the
+expected value. None of these shapes is parseable as an identity certificate
+(no `principal`) or an assertion (no `aud` on `P_cert`/`R`).
+
+**Provisioning certificate (`P_cert`)** — signed by the delegator's identity
+key:
+
+```json
+{
+  "typ": "browserid-provisioning-cert-v1",
+  "iss": "a@b.c",
+  "iat": 1783600000,
+  "exp": 1791376000,
+  "public-key": { "algorithm": "Ed25519", "publicKey": "<P_pub base64url>" }
+}
+```
+
+`iss` MUST equal the `principal.email` of the accompanying `U_cert`.
+Reference validity: 90 days.
+
+**Provisioning request (`R`)** — signed by `P_priv`:
+
+```json
+{
+  "typ": "browserid-provisioning-request-v1",
+  "iat": 1783600000,
+  "exp": 1783600600,
+  "action": "mint",
+  "domain": "mingo.place",
+  "name": "attestor2",
+  "agent-key": { "algorithm": "Ed25519", "publicKey": "<A_pub base64url>" },
+  "ephemeral": false
+}
+```
+
+- `action` ∈ `mint` | `list` | `revoke`. `name` is required for
+  `mint`/`revoke`; `agent-key` (and optional `ephemeral`) for `mint`.
+- `domain` MUST equal the target IdP's domain (audience pinning).
+- Requests MUST be short-lived (≤ 10 min recommended).
+
+**Endorsement (`E`)** — signed by the broker's published key:
+
+```json
+{
+  "typ": "browserid-provisioning-endorsement-v1",
+  "iss": "browserid.me",
+  "aud": "mingo.place",
+  "sub": "sha256:<hex of the exact request-bundle string>",
+  "delegator": "a@b.c",
+  "iat": 1783600000,
+  "exp": 1783600600
+}
+```
+
+`sub` binds the endorsement to one specific request bundle. `delegator` is
+the identity the broker verified from the chain. Endorsements MUST be
+short-lived (≤ 10 min recommended).
+
+### 4.2 Broker: `POST /provision/endorse`
+
+Request: `{ "request_bundle": "<U_cert~P_cert~R>" }`. No other
+authentication — the bundle is the credential.
+
+The broker MUST: verify the full chain (`R` under `P_cert`, `P_cert` under
+`U_cert` with signing-time semantics, `U_cert` under its issuer's key — via
+its normal discovery for foreign domains); require the `P_cert` to be
+**registered and unrevoked** in its registry (§4.6); apply account-level
+policy; then return `200 { "success": true, "endorsement": "<E JWS>" }`
+with `aud` = `R.domain`.
+
+Errors (shape `{"success": false, "reason": "…"}`):
 
 | Status | Meaning |
 |---|---|
-| 401 | Missing, malformed, unknown, or revoked API key |
-| 403 | Identity exists but is revoked (re-mint/re-create refused) |
-| 404 | Identity unknown, not owned by this account, not an agent identity — or the IdP has provisioning disabled. The three cases MUST be indistinguishable. |
-| 409 | Requested name is taken by another account |
-| 429 | Per-account quota (or rate limit) exceeded |
+| 400 | Malformed bundle / bad chain / expired request |
+| 403 | Chain valid but not registered, revoked, or refused by policy |
+| 429 | Endorsement rate limit |
 
-### 4.1 API key issuance (non-normative)
-
-How a human mints, lists, and revokes API keys is IdP-local (the reference
-implementation uses session+CSRF-gated `/wsapi/agent_keys*` endpoints and a
-browser UI). Interoperability only requires that the resulting secret works
-as the Bearer credential below, that it is shown once, and that each key
-records an attribution root chosen from the account's verified human
-identities. An agent identity MUST NOT be an attribution root.
-
-### 4.2 `POST /agent/identities` — mint an identity
+### 4.3 IdP: `POST /agent/identities` — mint
 
 Request:
 
 ```json
-{
-  "pubkey": { "algorithm": "Ed25519", "publicKey": "<base64url raw key>" },
-  "name": "attestor"          // optional; server generates when omitted
-}
+{ "request_bundle": "<U_cert~P_cert~R with action=mint>",
+  "endorsement": "<E JWS>" }
 ```
 
-- `name` is the local-part: 1–32 characters of `[a-z0-9-]`, no leading or
-  trailing `-`. Servers MUST lowercase before validating and MUST validate.
-- The minted identity is `<name>@<idp-domain>`, where `<idp-domain>` is
-  exactly the certificate issuer domain (chain verification requires
-  issuer == email domain).
-- The server binds the identity to the key's account, records the key's
-  attribution root as its parent, marks it verified, and returns a
-  certificate for the presented pubkey.
-- **Idempotent re-provision:** if `name` already exists on the same account
-  as an active agent identity, the server MUST treat the call as a re-mint
-  for the presented pubkey (agents restart; they must not need
-  create-vs-renew logic). If it exists but is revoked → 403. If another
-  account owns it → 409.
-- Quota: creating a *new* identity when the account already has ≥ quota
-  active agent identities → 429.
+The IdP MUST verify, in addition to §3's chain rules: `R.domain` and
+`E.aud` equal its own domain; `E` is signed by an accepted broker, fresh,
+and `E.sub` matches the hash of the exact `request_bundle` string; the
+`U_cert` is its own issuance for the delegator.
 
-Response:
+Semantics (unchanged from v0.1): names share one `<local>@<domain>`
+namespace with human identities and MUST be validated (including any
+reserved-name policy); minting is **idempotent** for an existing active
+identity of the same delegator (returns a fresh certificate for the
+presented `agent-key`, which MAY rotate freely); revoked names are never
+recycled; new identities count against the delegator's quota.
+
+Response: `{ "success": true, "email": "attestor2@mingo.place",
+"cert": "<JWS>" }`.
+
+| Status | Meaning |
+|---|---|
+| 400 | Malformed / bad chain / bad `typ` / expired |
+| 401 | Chain verifies but endorsement missing, stale, wrong `aud`, hash mismatch, or from an unaccepted broker |
+| 403 | Identity exists but is revoked |
+| 404 | Provisioning disabled (indistinguishable from unknown routes) |
+| 409 | Name taken by another delegator or a human identity |
+| 429 | Per-delegator quota exceeded |
+
+### 4.4 IdP: `POST /agent/list`
+
+`{ "request_bundle": "<… action=list>", "endorsement": "<E>" }` → the
+delegator's agent identities:
 
 ```json
-{ "success": true, "email": "attestor@agents.example.com", "cert": "<JWS>" }
+{ "success": true, "identities": [
+  { "email": "attestor2@mingo.place", "parent_email": "a@b.c",
+    "active": true, "created_at": "2026-07-09T…Z" } ] }
 ```
 
-### 4.3 `POST /agent/cert` — re-mint a certificate
+Visibility rule: a request chain only ever sees identities delegated by its
+own delegator; everything else — including human identities — is
+indistinguishable from nonexistent (404 on §4.5, absent here).
 
-Request:
+### 4.5 IdP: `POST /agent/revoke`
+
+`{ "request_bundle": "<… action=revoke, name=…>", "endorsement": "<E>" }` →
+`{ "success": true }`. Disables the identity: further mints fail (403), the
+name is never recycled, outstanding certificates age out within their TTL.
+
+### 4.6 Broker registry & key management (non-normative)
+
+How a user creates and manages provisioning certificates is broker-local.
+The reference broker: a signed-in user picks an identity; the page generates
+the P keypair locally, signs `P_cert` with the identity key held in
+broker-origin storage (a typed-signing operation), registers
+`{delegation bundle, label}` with the account (session + CSRF), and receives
+the **agent credential** exactly once:
 
 ```json
-{
-  "email": "attestor@agents.example.com",
-  "pubkey": { "algorithm": "Ed25519", "publicKey": "<base64url raw key>" },
-  "ephemeral": false           // optional; true → short-lived cert
-}
+{ "secret_key": "<P_priv base64url>",
+  "delegation": "<U_cert~P_cert>",
+  "broker": "https://browserid.me",
+  "idp": "https://mingo.place" }
 ```
 
-The presented pubkey is what gets certified — keypair rotation is free. The
-identity MUST be an active agent identity of the key's account (else 404 per
-the visibility rule, or 403 if revoked). Certificate validity: reference
-24 h normal, 1 h ephemeral; implementations SHOULD NOT exceed 24 h.
-
-Because the standing credential is re-checked live at every mint, agent
-identities are exempt from any staleness window an IdP applies to
-SMTP-verified emails.
-
-Response: `{ "success": true, "cert": "<JWS>" }`
-
-### 4.4 `GET /agent/identities` — list
-
-Returns all agent identities of the key's account:
-
-```json
-{
-  "success": true,
-  "identities": [
-    {
-      "email": "attestor@agents.example.com",
-      "parent_email": "human@example.com",
-      "active": true,
-      "verified_at": "2026-07-08T19:05:30Z"
-    }
-  ]
-}
-```
-
-### 4.5 `POST /agent/identities/revoke` — revoke an identity
-
-Request: `{ "email": "attestor@agents.example.com" }` →
-`{ "success": true }`.
-
-After revocation, re-mints and re-creates of that name on this account MUST
-fail (403); the name MUST NOT be silently revivable. Outstanding certificates
-age out within their TTL.
+`P_priv` is never sent to any server. The registry stores only public data;
+listing shows label, delegator, creation and last-endorsed times; revocation
+flips one row and starves future endorsements. Interoperability requires
+only that the resulting delegation verifies per §4.1 and that the broker
+endorses per §4.2.
 
 ## 5. Grant exchange (RP side)
 
+*(Unchanged from v0.1.)*
+
 An RP opts in with one endpoint: exchange a verified assertion for the RP's
-own bearer token (RFC 7521 assertion-grant shape). The RP's session machinery
-past that point is untouched, and the RP learns exactly what BrowserID always
-tells it: an email.
+own bearer token (RFC 7521 assertion-grant shape). The RP learns exactly
+what BrowserID always tells it: an email.
 
 ### 5.1 Grant type
 
@@ -206,11 +273,9 @@ WWW-Authenticate: BrowserID realm="api",
     token_endpoint="https://api.example.com/token"
 ```
 
-- `audience` (REQUIRED) — the exact audience assertions must be signed for.
-  The RP names it; agents MUST NOT guess. SHOULD be the API origin, MAY be a
-  stable logical identifier.
-- `token_endpoint` (REQUIRED) — absolute URL of the exchange endpoint.
-- `realm` (OPTIONAL). Unknown parameters MUST be ignored.
+`audience` (REQUIRED) — the exact audience assertions must be signed for;
+the RP names it. `token_endpoint` (REQUIRED) — absolute URL. `realm`
+OPTIONAL; unknown parameters MUST be ignored.
 
 ### 5.3 Token endpoint
 
@@ -221,23 +286,20 @@ grant_type=urn:x-browserid:grant-type:assertion
 assertion=<backed assertion (cert~assertion)>
 ```
 
-The RP MUST verify: assertion audience equals its advertised audience;
-assertion and certificate are unexpired and correctly signed; the certificate
-issuer equals the identity's domain; and the issuer is one the RP trusts
-(pinned key, or fetched from the issuer's `/.well-known/browserid`).
-
-Success — `200`, OAuth-shaped:
+The RP MUST verify audience, expiry, the signature chain, issuer == identity
+domain, and that the issuer is trusted (pinned key or fetched from
+`/.well-known/browserid`). Success — `200`, OAuth-shaped:
 
 ```json
 { "access_token": "…", "token_type": "Bearer", "expires_in": 3600, "email": "…" }
 ```
 
-(`email` is an optional extra member.) Failure — `400` with
-`{ "error": "unsupported_grant_type" | "invalid_grant", "error_description": "…" }`.
+Failure — `400` with `{ "error": "unsupported_grant_type" | "invalid_grant",
+"error_description": "…" }`.
 
 ### 5.4 Out-of-band discovery: RFC 8414
 
-RPs SHOULD additionally serve `/.well-known/oauth-authorization-server`:
+RPs SHOULD serve `/.well-known/oauth-authorization-server`:
 
 ```json
 {
@@ -249,35 +311,40 @@ RPs SHOULD additionally serve `/.well-known/oauth-authorization-server`:
 }
 ```
 
-No new `.well-known` name is defined. (The IdP-side
-`/.well-known/browserid` is a different, pre-existing document.)
-
 ## 6. Security considerations
 
-- **Transport:** every endpoint in this spec MUST be served over HTTPS in
-  production; API keys and assertions are bearer material.
-- **Key storage:** IdPs MUST NOT store API-key secrets recoverably. A plain
-  cryptographic digest is sufficient — the secret is high-entropy, so a slow
-  KDF adds nothing.
-- **Enumeration:** the 404 visibility rule (§4) prevents an API key from
-  probing whether an email exists outside its own agent namespace.
-- **Assertion lifetime at the token endpoint:** assertions are short-lived
-  by construction; RPs MAY additionally replay-protect the token endpoint
-  but the exchanged token's own lifetime is the primary control.
-- **Attribution chains:** an agent identity MUST NOT serve as an attribution
-  root, preventing unattributable agent→agent trees from one leaked key.
+- **Transport:** all endpoints MUST be HTTPS in production.
+- **Domain separation:** the three `typ` values in §4.1 MUST be enforced;
+  `U_priv` signing a `P_cert` must never be replayable as a certificate or
+  assertion (structurally guaranteed, belt-and-suspenders via `typ`).
+- **`P_priv` leak:** the attacker can request endorsements until the user
+  revokes; abuse is attributable to `P_pub` in broker logs (requests are
+  signed, unlike bearer secrets). Blast radius stays confined to the
+  delegator's *agent* identities.
+- **Broker compromise:** can endorse rogue requests but cannot fabricate a
+  user authorization — the IdP independently verifies the user-signed chain.
+- **Audience pinning:** `R.domain` + `E.aud` make a bundle for one IdP
+  useless at another; `E.sub` prevents endorsement reuse across requests.
+- **Enumeration:** §4.4/§4.5 visibility rules prevent a provisioning
+  credential from probing anything outside its own delegation.
+- **Attribution chains:** an agent identity MUST NOT serve as a delegator
+  (no unattributable agent→agent trees).
 
 ## 7. Conformance
 
-An **IdP** conforms if it implements §4.2–§4.5 with the §3 requirements. An
+An **IdP** conforms if it implements §4.3–§4.5 under §3's rules. A
+**broker** conforms if it additionally implements §4.2 (+ a registry). An
 **RP** conforms if it implements §5.2–§5.3 (§5.4 recommended). Reference
-implementations in this repository:
+implementations in this repository and the mingo repository:
 
 | Role | Reference |
 |---|---|
-| IdP | `browserid-broker` with `AGENT_PROVISIONING=1` (`src/routes/agent.rs`) |
-| Agent | `browserid-agent` crate (`provision`, `assertion_for`, `token_for`) |
-| RP | `browserid-rp` crate (`Verifier`, `exchange`, `oauth_metadata`) + the axum reference in `browserid-agent/tests/rp_flow_test.rs` |
-| Wire contract | `browserid-core::rp_auth` |
+| Broker + IdP | `browserid-broker` with `AGENT_PROVISIONING=1` |
+| IdP (federated) | `mingo-idp` (mingo repo) |
+| Agent | `browserid-agent` crate |
+| RP | `browserid-rp` crate |
+| Chain formats | `browserid-core::provisioning` |
 
-Design rationale: `docs/plans/2026-07-08-agent-native-browserid-design.md`.
+Design rationale: `docs/plans/2026-07-09-agent-delegation-chain-design.md`
+(v2), `docs/plans/2026-07-08-agent-native-browserid-design.md` (v1,
+superseded in §4).
