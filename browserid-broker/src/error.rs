@@ -61,11 +61,17 @@ pub enum BrokerError {
     #[error("Invalid assertion: {0}")]
     InvalidAssertion(String),
 
-    #[error("Invalid or revoked API key")]
-    InvalidApiKey,
+    #[error("Invalid provisioning request: {0}")]
+    InvalidProvisioningRequest(String),
 
-    #[error("API key not found")]
-    ApiKeyNotFound,
+    #[error("Provisioning not endorsed: {0}")]
+    NotEndorsed(String),
+
+    #[error("Provisioning certificate not found")]
+    ProvisioningCertNotFound,
+
+    #[error("Provisioning refused by policy: {0}")]
+    PolicyRefused(String),
 
     #[error("Agent identity quota exceeded")]
     QuotaExceeded,
@@ -114,8 +120,12 @@ impl IntoResponse for BrokerError {
                 (StatusCode::BAD_GATEWAY, "Discovery failed")
             }
             BrokerError::InvalidAssertion(msg) => (StatusCode::BAD_REQUEST, msg.as_str()),
-            BrokerError::InvalidApiKey => (StatusCode::UNAUTHORIZED, "Invalid or revoked API key"),
-            BrokerError::ApiKeyNotFound => (StatusCode::NOT_FOUND, "API key not found"),
+            BrokerError::InvalidProvisioningRequest(msg) => (StatusCode::BAD_REQUEST, msg.as_str()),
+            BrokerError::NotEndorsed(msg) => (StatusCode::UNAUTHORIZED, msg.as_str()),
+            BrokerError::ProvisioningCertNotFound => {
+                (StatusCode::NOT_FOUND, "Provisioning certificate not found")
+            }
+            BrokerError::PolicyRefused(msg) => (StatusCode::FORBIDDEN, msg.as_str()),
             BrokerError::QuotaExceeded => {
                 (StatusCode::TOO_MANY_REQUESTS, "Agent identity quota exceeded")
             }

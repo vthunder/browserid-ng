@@ -7,13 +7,13 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    ApiKey, Email, EmailType, PendingVerification, Session, SessionId, SessionStore, StoreResult,
-    User, UserId, UserStore, VerificationType,
+    Email, EmailType, PendingVerification, ProvisioningCertRecord, Session, SessionId,
+    SessionStore, StoreResult, User, UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -71,6 +71,10 @@ impl SqliteStore {
 
             if current_version < 4 {
                 Self::migrate_v4(conn)?;
+            }
+
+            if current_version < 5 {
+                Self::migrate_v5(conn)?;
             }
 
             // Update schema version
@@ -203,10 +207,36 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v5(conn: &Connection) -> Result<(), BrokerError> {
+        // Registered provisioning certificates (tdxf, spec v0.2). Replaces the
+        // v4 bearer-key scheme: the broker holds only public delegation data,
+        // never a secret. The dead `api_keys` table (v4) is left in place —
+        // it never carried real users, and a DROP is riskier than an unused
+        // table.
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS provisioning_certs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                delegator_email TEXT NOT NULL,
+                provisioning_pub TEXT NOT NULL UNIQUE,
+                bundle TEXT NOT NULL,
+                label TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_endorsed_at TEXT,
+                revoked_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_prov_certs_user ON provisioning_certs(user_id);
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
-// Row → ApiKey mapping shared by the api_key queries
-fn api_key_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
+// Row → ProvisioningCertRecord mapping shared by the registry queries
+fn prov_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProvisioningCertRecord> {
     let parse_ts = |s: Option<String>| {
         s.and_then(|s| {
             DateTime::parse_from_rfc3339(&s)
@@ -216,22 +246,24 @@ fn api_key_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
     };
     let id: i64 = row.get(0)?;
     let user_id: i64 = row.get(1)?;
-    let created_at: String = row.get(4)?;
-    Ok(ApiKey {
+    let created_at: String = row.get(6)?;
+    Ok(ProvisioningCertRecord {
         id: id as u64,
         user_id: UserId(user_id as u64),
-        key_hash: row.get(2)?,
-        name: row.get(3)?,
-        parent_email: row.get(5)?,
+        delegator_email: row.get(2)?,
+        provisioning_pub: row.get(3)?,
+        bundle: row.get(4)?,
+        label: row.get(5)?,
         created_at: DateTime::parse_from_rfc3339(&created_at)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
-        last_used_at: parse_ts(row.get(6)?),
-        revoked_at: parse_ts(row.get(7)?),
+        last_endorsed_at: parse_ts(row.get(7)?),
+        revoked_at: parse_ts(row.get(8)?),
     })
 }
 
-const API_KEY_COLUMNS: &str = "id, user_id, key_hash, name, created_at, parent_email, last_used_at, revoked_at";
+const PROV_CERT_COLUMNS: &str =
+    "id, user_id, delegator_email, provisioning_pub, bundle, label, created_at, last_endorsed_at, revoked_at";
 
 // Helper to convert VerificationType to/from string
 impl VerificationType {
@@ -711,85 +743,103 @@ impl UserStore for SqliteStore {
         Ok(())
     }
 
-    fn create_api_key(
+    fn register_provisioning_cert(
         &self,
         user_id: UserId,
-        name: &str,
-        parent_email: &str,
-        key_hash: &str,
-    ) -> StoreResult<ApiKey> {
+        delegator_email: &str,
+        provisioning_pub: &str,
+        bundle: &str,
+        label: &str,
+    ) -> StoreResult<ProvisioningCertRecord> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now();
-        let parent = parent_email.to_lowercase();
+        let delegator = delegator_email.to_lowercase();
 
         conn.execute(
-            "INSERT INTO api_keys (user_id, key_hash, name, parent_email, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![user_id.0 as i64, key_hash, name, parent, now.to_rfc3339()],
+            "INSERT INTO provisioning_certs (user_id, delegator_email, provisioning_pub, bundle, label, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![user_id.0 as i64, delegator, provisioning_pub, bundle, label, now.to_rfc3339()],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
 
-        Ok(ApiKey {
+        Ok(ProvisioningCertRecord {
             id: conn.last_insert_rowid() as u64,
             user_id,
-            key_hash: key_hash.to_string(),
-            name: name.to_string(),
-            parent_email: parent,
+            delegator_email: delegator,
+            provisioning_pub: provisioning_pub.to_string(),
+            bundle: bundle.to_string(),
+            label: label.to_string(),
             created_at: now,
-            last_used_at: None,
+            last_endorsed_at: None,
             revoked_at: None,
         })
     }
 
-    fn get_api_key_by_hash(&self, key_hash: &str) -> StoreResult<Option<ApiKey>> {
+    fn get_provisioning_cert_by_pub(
+        &self,
+        provisioning_pub: &str,
+    ) -> StoreResult<Option<ProvisioningCertRecord>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            &format!("SELECT {API_KEY_COLUMNS} FROM api_keys WHERE key_hash = ?1"),
-            params![key_hash],
-            api_key_from_row,
+            &format!("SELECT {PROV_CERT_COLUMNS} FROM provisioning_certs WHERE provisioning_pub = ?1"),
+            params![provisioning_pub],
+            prov_cert_from_row,
         )
         .optional()
         .map_err(|e| BrokerError::Internal(e.to_string()))
     }
 
-    fn list_api_keys(&self, user_id: UserId) -> StoreResult<Vec<ApiKey>> {
+    fn list_provisioning_certs(&self, user_id: UserId) -> StoreResult<Vec<ProvisioningCertRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT {API_KEY_COLUMNS} FROM api_keys WHERE user_id = ?1 ORDER BY id"
+                "SELECT {PROV_CERT_COLUMNS} FROM provisioning_certs WHERE user_id = ?1 ORDER BY id"
             ))
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        let keys = stmt
-            .query_map(params![user_id.0 as i64], api_key_from_row)
+        let certs = stmt
+            .query_map(params![user_id.0 as i64], prov_cert_from_row)
             .map_err(|e| BrokerError::Internal(e.to_string()))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        Ok(keys)
+        Ok(certs)
     }
 
-    fn revoke_api_key(&self, user_id: UserId, key_id: u64) -> StoreResult<()> {
+    fn count_active_provisioning_certs(&self, user_id: UserId) -> StoreResult<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM provisioning_certs WHERE user_id = ?1 AND revoked_at IS NULL",
+                params![user_id.0 as i64],
+                |r| r.get(0),
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(n as usize)
+    }
+
+    fn revoke_provisioning_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .execute(
-                "UPDATE api_keys SET revoked_at = COALESCE(revoked_at, ?1) WHERE id = ?2 AND user_id = ?3",
-                params![Utc::now().to_rfc3339(), key_id as i64, user_id.0 as i64],
+                "UPDATE provisioning_certs SET revoked_at = COALESCE(revoked_at, ?1) WHERE id = ?2 AND user_id = ?3",
+                params![Utc::now().to_rfc3339(), cert_id as i64, user_id.0 as i64],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         if rows == 0 {
-            return Err(BrokerError::ApiKeyNotFound);
+            return Err(BrokerError::ProvisioningCertNotFound);
         }
         Ok(())
     }
 
-    fn touch_api_key(&self, key_id: u64) -> StoreResult<()> {
+    fn touch_provisioning_cert(&self, cert_id: u64) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .execute(
-                "UPDATE api_keys SET last_used_at = ?1 WHERE id = ?2",
-                params![Utc::now().to_rfc3339(), key_id as i64],
+                "UPDATE provisioning_certs SET last_endorsed_at = ?1 WHERE id = ?2",
+                params![Utc::now().to_rfc3339(), cert_id as i64],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         if rows == 0 {
-            return Err(BrokerError::ApiKeyNotFound);
+            return Err(BrokerError::ProvisioningCertNotFound);
         }
         Ok(())
     }
@@ -962,30 +1012,38 @@ impl UserStore for std::sync::Arc<SqliteStore> {
         (**self).unverify_email(email)
     }
 
-    fn create_api_key(
+    fn register_provisioning_cert(
         &self,
         user_id: UserId,
-        name: &str,
-        parent_email: &str,
-        key_hash: &str,
-    ) -> StoreResult<ApiKey> {
-        (**self).create_api_key(user_id, name, parent_email, key_hash)
+        delegator_email: &str,
+        provisioning_pub: &str,
+        bundle: &str,
+        label: &str,
+    ) -> StoreResult<ProvisioningCertRecord> {
+        (**self).register_provisioning_cert(user_id, delegator_email, provisioning_pub, bundle, label)
     }
 
-    fn get_api_key_by_hash(&self, key_hash: &str) -> StoreResult<Option<ApiKey>> {
-        (**self).get_api_key_by_hash(key_hash)
+    fn get_provisioning_cert_by_pub(
+        &self,
+        provisioning_pub: &str,
+    ) -> StoreResult<Option<ProvisioningCertRecord>> {
+        (**self).get_provisioning_cert_by_pub(provisioning_pub)
     }
 
-    fn list_api_keys(&self, user_id: UserId) -> StoreResult<Vec<ApiKey>> {
-        (**self).list_api_keys(user_id)
+    fn list_provisioning_certs(&self, user_id: UserId) -> StoreResult<Vec<ProvisioningCertRecord>> {
+        (**self).list_provisioning_certs(user_id)
     }
 
-    fn revoke_api_key(&self, user_id: UserId, key_id: u64) -> StoreResult<()> {
-        (**self).revoke_api_key(user_id, key_id)
+    fn count_active_provisioning_certs(&self, user_id: UserId) -> StoreResult<usize> {
+        (**self).count_active_provisioning_certs(user_id)
     }
 
-    fn touch_api_key(&self, key_id: u64) -> StoreResult<()> {
-        (**self).touch_api_key(key_id)
+    fn revoke_provisioning_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
+        (**self).revoke_provisioning_cert(user_id, cert_id)
+    }
+
+    fn touch_provisioning_cert(&self, cert_id: u64) -> StoreResult<()> {
+        (**self).touch_provisioning_cert(cert_id)
     }
 }
 
@@ -1172,36 +1230,41 @@ mod tests {
     }
 
     #[test]
-    fn api_key_lifecycle() {
+    fn provisioning_cert_lifecycle() {
         let (store, _dir) = create_test_store();
         let u = store.create_user("pw").unwrap();
         store.add_email(u, "human@example.com", true).unwrap();
 
-        let key = store
-            .create_api_key(u, "ci-bot", "Human@Example.com", "abc123hash")
+        let rec = store
+            .register_provisioning_cert(u, "Human@Example.com", "PPUB", "UCERT~PCERT", "ci-bot")
             .unwrap();
-        assert_eq!(key.parent_email, "human@example.com"); // normalized
-        assert!(key.is_active());
+        assert_eq!(rec.delegator_email, "human@example.com"); // normalized
+        assert!(rec.is_active());
+        assert_eq!(store.count_active_provisioning_certs(u).unwrap(), 1);
 
-        // Lookup by hash; miss returns None
-        let found = store.get_api_key_by_hash("abc123hash").unwrap().unwrap();
-        assert_eq!(found.id, key.id);
-        assert_eq!(found.name, "ci-bot");
-        assert!(store.get_api_key_by_hash("nope").unwrap().is_none());
+        // Lookup by P_pub; miss returns None
+        let found = store.get_provisioning_cert_by_pub("PPUB").unwrap().unwrap();
+        assert_eq!(found.id, rec.id);
+        assert_eq!(found.label, "ci-bot");
+        assert!(store.get_provisioning_cert_by_pub("nope").unwrap().is_none());
 
-        // touch records last_used_at
-        assert!(found.last_used_at.is_none());
-        store.touch_api_key(key.id).unwrap();
-        let touched = store.get_api_key_by_hash("abc123hash").unwrap().unwrap();
-        assert!(touched.last_used_at.is_some());
+        // touch records last_endorsed_at
+        assert!(found.last_endorsed_at.is_none());
+        store.touch_provisioning_cert(rec.id).unwrap();
+        assert!(store
+            .get_provisioning_cert_by_pub("PPUB")
+            .unwrap()
+            .unwrap()
+            .last_endorsed_at
+            .is_some());
 
         // Revocation is scoped to the owning user and sticks
         let other = store.create_user("pw2").unwrap();
-        assert!(store.revoke_api_key(other, key.id).is_err());
-        store.revoke_api_key(u, key.id).unwrap();
-        let revoked = store.get_api_key_by_hash("abc123hash").unwrap().unwrap();
-        assert!(!revoked.is_active());
-        assert_eq!(store.list_api_keys(u).unwrap().len(), 1);
+        assert!(store.revoke_provisioning_cert(other, rec.id).is_err());
+        store.revoke_provisioning_cert(u, rec.id).unwrap();
+        assert!(!store.get_provisioning_cert_by_pub("PPUB").unwrap().unwrap().is_active());
+        assert_eq!(store.count_active_provisioning_certs(u).unwrap(), 0);
+        assert_eq!(store.list_provisioning_certs(u).unwrap().len(), 1);
     }
 
     #[test]

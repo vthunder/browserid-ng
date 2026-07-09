@@ -1,6 +1,7 @@
-//! Integration tests for headless agent provisioning (l8lw):
-//! browser-minted API keys → REST identity mint → local assertion signing →
-//! cryptographic verification against the broker key. No browser, no SMTP.
+//! Integration tests for delegation-chain agent provisioning (tdxf, spec
+//! v0.2): browser-registered provisioning certs → broker endorsement → mint
+//! against the broker as target IdP → local assertion → offline verify. The
+//! broker holds no secret; the "API key" (P_priv) stays with the agent.
 
 mod common;
 
@@ -8,437 +9,423 @@ use std::sync::Arc;
 
 use axum_test::TestServer;
 use browserid_broker::{routes, AppState, InMemorySessionStore, InMemoryUserStore};
-use browserid_core::{Assertion, BackedAssertion, Certificate, KeyPair, PublicKey};
+use browserid_core::provisioning::{ProvisioningCert, ProvisioningRequest, RequestBundle};
+use browserid_core::{
+    Assertion, BackedAssertion, Certificate, Endorsement, KeyPair, PublicKey,
+};
 use chrono::Duration;
 use common::{create_user, MockEmailSender};
 use serde_json::{json, Value};
 
 const AUDIENCE: &str = "https://rp.example.com";
+const DOMAIN: &str = "localhost:3000";
 
-/// Test server with agent provisioning enabled; returns the broker public key
-/// so tests can verify issued cert chains offline.
 fn create_agent_server(quota: usize) -> (TestServer, MockEmailSender, PublicKey) {
     let keypair = KeyPair::generate();
-    let broker_pubkey = keypair.public_key();
+    let broker_pub = keypair.public_key();
     let email_sender = Arc::new(MockEmailSender::new());
-
     let mut state = AppState::new_with_arcs(
         keypair,
-        "localhost:3000".to_string(),
+        DOMAIN.to_string(),
         Arc::new(InMemoryUserStore::new()),
         Arc::new(InMemorySessionStore::new()),
         email_sender.clone(),
     );
     state.agent_provisioning_enabled = true;
     state.max_agent_identities_per_user = quota;
-
     let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
-    let sender = MockEmailSender { sent: email_sender.sent.clone() };
-    (server, sender, broker_pubkey)
+    (server, MockEmailSender { sent: email_sender.sent.clone() }, broker_pub)
 }
 
-/// Get the session's CSRF token via /wsapi/session_context
 async fn get_csrf(server: &TestServer, session: &str) -> String {
-    let response = server
+    server
         .get("/wsapi/session_context")
         .add_cookie(cookie::Cookie::new("browserid_session", session.to_string()))
-        .await;
-    response.json::<Value>()["csrf_token"].as_str().unwrap().to_string()
+        .await
+        .json::<Value>()["csrf_token"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
-/// Create a human account and mint an API key attributed to it
-async fn mint_api_key(
+/// Mint a real broker-issued U_cert for `email` via /wsapi/cert_key (session
+/// authorizes it). This is exactly how the browser page gets the identity cert
+/// it will delegate from.
+async fn issue_user_cert(server: &TestServer, session: &str, email: &str, user_kp: &KeyPair) -> Certificate {
+    let body: Value = server
+        .post("/wsapi/cert_key")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.to_string()))
+        .json(&json!({
+            "email": email,
+            "pubkey": { "algorithm": "Ed25519", "publicKey": user_kp.public_key().to_base64() },
+            "ephemeral": false
+        }))
+        .await
+        .json();
+    assert_eq!(body["success"], true, "cert_key failed: {body}");
+    Certificate::parse(body["cert"].as_str().unwrap()).unwrap()
+}
+
+/// The full browser-side "create agent key" ceremony, done with real crypto:
+/// account + verified email, issue U_cert for an (ephemeral) identity key,
+/// sign a P_cert delegating to a fresh provisioning key, register it. Returns
+/// (delegation_bundle `U_cert~P_cert`, provisioning keypair, session).
+async fn register_agent_key(
     server: &TestServer,
     email_sender: &MockEmailSender,
-    human_email: &str,
-) -> String {
-    let session = create_user(server, email_sender, human_email, "testpassword").await;
+    email: &str,
+) -> (String, KeyPair, String) {
+    let session = create_user(server, email_sender, email, "testpassword").await;
+
+    let user_kp = KeyPair::generate();
+    let user_cert = issue_user_cert(server, &session, email, &user_kp).await;
+
+    let provisioning_kp = KeyPair::generate();
+    let p_cert = ProvisioningCert::create(
+        email,
+        &provisioning_kp.public_key(),
+        Duration::days(90),
+        &user_kp,
+    )
+    .unwrap();
+    let bundle = format!("{}~{}", user_cert.encoded(), p_cert.encoded());
+
     let csrf = get_csrf(server, &session).await;
-
-    let response = server
-        .post("/wsapi/create_agent_key")
-        .add_cookie(cookie::Cookie::new("browserid_session", session))
-        .json(&json!({ "csrf": csrf, "name": "ci-bot", "parent_email": human_email }))
+    let resp = server
+        .post("/wsapi/register_provisioning_cert")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": csrf, "label": "ci-bot", "bundle": bundle }))
         .await;
-    assert_eq!(response.status_code(), 200);
-    let body: Value = response.json();
-    assert_eq!(body["success"], true);
-    let key = body["api_key"].as_str().unwrap().to_string();
-    assert!(key.starts_with("bidk_"), "key should be prefixed: {key}");
-    key
+    assert_eq!(resp.status_code(), 200, "register failed: {:?}", resp.text());
+
+    (bundle, provisioning_kp, session)
 }
 
-fn pubkey_json(kp: &KeyPair) -> Value {
-    json!({ "algorithm": "Ed25519", "publicKey": kp.public_key().to_base64() })
+/// Endorse a request bundle at the broker, returning the endorsement JWS.
+async fn endorse(server: &TestServer, request_bundle: &str) -> String {
+    let body: Value = server
+        .post("/provision/endorse")
+        .json(&json!({ "request_bundle": request_bundle }))
+        .await
+        .json();
+    assert_eq!(body["success"], true, "endorse failed: {body}");
+    body["endorsement"].as_str().unwrap().to_string()
 }
 
-/// The flagship round-trip: human session → API key → headless identity mint
-/// → locally signed assertion → chain verifies against the broker key, with
-/// no browser involvement past the key mint.
+/// Build a mint request bundle for an agent key + name.
+fn mint_bundle(delegation: &str, provisioning_kp: &KeyPair, name: &str, agent_kp: &KeyPair) -> String {
+    let (u, p) = delegation.split_once('~').unwrap();
+    let request =
+        ProvisioningRequest::mint(DOMAIN, name, &agent_kp.public_key(), false, provisioning_kp).unwrap();
+    RequestBundle::new(
+        Certificate::parse(u).unwrap(),
+        ProvisioningCert::parse(p).unwrap(),
+        request,
+    )
+    .encoded()
+    .to_string()
+}
+
+/// The flagship round-trip: register a delegation → endorse a mint → mint at
+/// the broker (as target IdP) → sign an assertion locally → verify offline.
 #[tokio::test]
-async fn test_headless_mint_assert_verify_roundtrip() {
-    let (server, email_sender, broker_pubkey) = create_agent_server(5);
-    let api_key = mint_api_key(&server, &email_sender, "human@example.com").await;
+async fn delegation_mint_assert_verify_roundtrip() {
+    let (server, email_sender, broker_pub) = create_agent_server(5);
+    let (delegation, prov_kp, _session) =
+        register_agent_key(&server, &email_sender, "human@example.com").await;
 
-    // Agent generates and holds its own keypair
     let agent_kp = KeyPair::generate();
+    let bundle = mint_bundle(&delegation, &prov_kp, "attestor", &agent_kp);
+    let endorsement = endorse(&server, &bundle).await;
 
-    let response = server
-        .post("/agent/identities")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "pubkey": pubkey_json(&agent_kp), "name": "attestor" }))
-        .await;
-    assert_eq!(response.status_code(), 200);
-    let body: Value = response.json();
-    assert_eq!(body["success"], true);
+    let body: Value = server
+        .post("/provision/mint")
+        .json(&json!({ "request_bundle": bundle, "endorsement": endorsement }))
+        .await
+        .json();
+    assert_eq!(body["success"], true, "mint failed: {body}");
     assert_eq!(body["email"], "attestor@localhost:3000");
 
-    // Agent mints an assertion locally — pure signing, no further HTTP
+    // Local assertion → offline chain verification against the broker key.
     let cert = Certificate::parse(body["cert"].as_str().unwrap()).unwrap();
     let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &agent_kp).unwrap();
-    let backed = BackedAssertion::new(cert, assertion);
-
-    // An RP verifying the chain against the issuer key learns just an email
-    let email = backed
-        .verify(AUDIENCE, |_domain| Ok(broker_pubkey.clone()))
+    let email = BackedAssertion::new(cert, assertion)
+        .verify(AUDIENCE, |_| Ok(broker_pub.clone()))
         .unwrap();
     assert_eq!(email, "attestor@localhost:3000");
 
-    // Attribution is recorded issuer-side
-    let response = server
-        .get("/agent/identities")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .await;
-    let body: Value = response.json();
-    let identities = body["identities"].as_array().unwrap();
-    assert_eq!(identities.len(), 1);
-    assert_eq!(identities[0]["email"], "attestor@localhost:3000");
-    assert_eq!(identities[0]["parent_email"], "human@example.com");
-    assert_eq!(identities[0]["active"], true);
+    // Attribution recorded: agent → human@example.com.
+    let list_req = {
+        let (u, p) = delegation.split_once('~').unwrap();
+        let r = ProvisioningRequest::list(DOMAIN, &prov_kp).unwrap();
+        RequestBundle::new(Certificate::parse(u).unwrap(), ProvisioningCert::parse(p).unwrap(), r)
+            .encoded()
+            .to_string()
+    };
+    let endorsement = endorse(&server, &list_req).await;
+    let body: Value = server
+        .post("/provision/list")
+        .json(&json!({ "request_bundle": list_req, "endorsement": endorsement }))
+        .await
+        .json();
+    let ids = body["identities"].as_array().unwrap();
+    assert_eq!(ids.len(), 1);
+    assert_eq!(ids[0]["parent_email"], "human@example.com");
+    assert_eq!(ids[0]["active"], true);
 }
 
-/// Re-mint via /agent/cert works with a rotated keypair (the API key is the
-/// root credential, not the agent keypair), and create is idempotent-ish.
+/// A mint with no endorsement, or an endorsement for a different bundle, is
+/// rejected.
 #[tokio::test]
-async fn test_remint_and_idempotent_create() {
-    let (server, email_sender, broker_pubkey) = create_agent_server(5);
-    let api_key = mint_api_key(&server, &email_sender, "human@example.com").await;
+async fn mint_requires_matching_endorsement() {
+    let (server, email_sender, _) = create_agent_server(5);
+    let (delegation, prov_kp, _s) =
+        register_agent_key(&server, &email_sender, "human@example.com").await;
+    let bundle = mint_bundle(&delegation, &prov_kp, "attestor", &KeyPair::generate());
 
-    let kp1 = KeyPair::generate();
-    let response = server
-        .post("/agent/identities")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "pubkey": pubkey_json(&kp1), "name": "bot" }))
+    // Missing/garbage endorsement → 401.
+    let resp = server
+        .post("/provision/mint")
+        .json(&json!({ "request_bundle": bundle, "endorsement": "not-a-jws" }))
         .await;
-    assert_eq!(response.status_code(), 200);
+    assert_eq!(resp.status_code(), 401);
 
-    // Re-mint with a fresh keypair
-    let kp2 = KeyPair::generate();
-    let response = server
-        .post("/agent/cert")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "email": "bot@localhost:3000", "pubkey": pubkey_json(&kp2) }))
+    // Endorsement for a *different* bundle → 401 (hash binding).
+    let other = mint_bundle(&delegation, &prov_kp, "other", &KeyPair::generate());
+    let endorsement = endorse(&server, &other).await;
+    let resp = server
+        .post("/provision/mint")
+        .json(&json!({ "request_bundle": bundle, "endorsement": endorsement }))
         .await;
-    assert_eq!(response.status_code(), 200);
-    let body: Value = response.json();
-    let cert = Certificate::parse(body["cert"].as_str().unwrap()).unwrap();
-    let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &kp2).unwrap();
-    let email = BackedAssertion::new(cert, assertion)
-        .verify(AUDIENCE, |_| Ok(broker_pubkey.clone()))
-        .unwrap();
-    assert_eq!(email, "bot@localhost:3000");
-
-    // POSTing the same name again re-provisions instead of erroring
-    let response = server
-        .post("/agent/identities")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "pubkey": pubkey_json(&kp2), "name": "bot" }))
-        .await;
-    assert_eq!(response.status_code(), 200);
-
-    // Still one identity, not two
-    let response = server
-        .get("/agent/identities")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .await;
-    assert_eq!(response.json::<Value>()["identities"].as_array().unwrap().len(), 1);
+    assert_eq!(resp.status_code(), 401);
 }
 
-/// Quota bounds active identities (the sybil limit)
+/// The broker will not endorse an unregistered or revoked provisioning cert.
 #[tokio::test]
-async fn test_quota_enforced() {
+async fn endorse_requires_registered_active_cert() {
+    let (server, email_sender, _) = create_agent_server(5);
+
+    // A delegation the broker has never seen (self-issued end to end).
+    let idp = KeyPair::generate(); // stands in for some issuer
+    let user_kp = KeyPair::generate();
+    let stray_cert =
+        Certificate::create("elsewhere.example", "x@elsewhere.example", &user_kp.public_key(), Duration::hours(24), &idp)
+            .unwrap();
+    let prov_kp = KeyPair::generate();
+    let p_cert =
+        ProvisioningCert::create("x@elsewhere.example", &prov_kp.public_key(), Duration::days(90), &user_kp).unwrap();
+    let req = ProvisioningRequest::list("elsewhere.example", &prov_kp).unwrap();
+    let stray_bundle =
+        RequestBundle::new(stray_cert, p_cert, req).encoded().to_string();
+    let resp = server
+        .post("/provision/endorse")
+        .json(&json!({ "request_bundle": stray_bundle }))
+        .await;
+    assert_eq!(resp.status_code(), 404, "unregistered cert must not be endorsed");
+
+    // Register a real one, then revoke it → endorse refused (403).
+    let (delegation, prov_kp, session) =
+        register_agent_key(&server, &email_sender, "human@example.com").await;
+    let certs: Value = server
+        .get("/wsapi/provisioning_certs")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    let id = certs["certs"][0]["id"].as_u64().unwrap();
+    let csrf = get_csrf(&server, &session).await;
+    let resp = server
+        .post("/wsapi/revoke_provisioning_cert")
+        .add_cookie(cookie::Cookie::new("browserid_session", session))
+        .json(&json!({ "csrf": csrf, "id": id }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+
+    let (u, p) = delegation.split_once('~').unwrap();
+    let req = ProvisioningRequest::list(DOMAIN, &prov_kp).unwrap();
+    let bundle = RequestBundle::new(
+        Certificate::parse(u).unwrap(),
+        ProvisioningCert::parse(p).unwrap(),
+        req,
+    )
+    .encoded()
+    .to_string();
+    let resp = server
+        .post("/provision/endorse")
+        .json(&json!({ "request_bundle": bundle }))
+        .await;
+    assert_eq!(resp.status_code(), 403, "revoked cert must not be endorsed");
+}
+
+/// Registration rejects a delegation whose delegator isn't a verified email on
+/// the session account (the human-authorization gate).
+#[tokio::test]
+async fn register_requires_owned_verified_email() {
+    let (server, email_sender, _) = create_agent_server(5);
+    let session = create_user(&server, &email_sender, "human@example.com", "testpassword").await;
+
+    // A U_cert for an email the account does NOT own.
+    let user_kp = KeyPair::generate();
+    let foreign = issue_user_cert(&server, &session, "human@example.com", &user_kp).await;
+    // Sign a P_cert claiming a different delegator than the cert certifies.
+    let prov_kp = KeyPair::generate();
+    let p_cert =
+        ProvisioningCert::create("someone@else.example", &prov_kp.public_key(), Duration::days(90), &user_kp).unwrap();
+    let bundle = format!("{}~{}", foreign.encoded(), p_cert.encoded());
+    let csrf = get_csrf(&server, &session).await;
+    let resp = server
+        .post("/wsapi/register_provisioning_cert")
+        .add_cookie(cookie::Cookie::new("browserid_session", session))
+        .json(&json!({ "csrf": csrf, "label": "x", "bundle": bundle }))
+        .await;
+    // delegator mismatch caught first → 400.
+    assert_eq!(resp.status_code(), 400);
+}
+
+/// Quota bounds active identities.
+#[tokio::test]
+async fn quota_enforced() {
     let (server, email_sender, _) = create_agent_server(2);
-    let api_key = mint_api_key(&server, &email_sender, "human@example.com").await;
+    let (delegation, prov_kp, _s) =
+        register_agent_key(&server, &email_sender, "human@example.com").await;
 
     for name in ["one", "two"] {
-        let response = server
-            .post("/agent/identities")
-            .add_header("authorization", format!("Bearer {api_key}"))
-            .json(&json!({ "pubkey": pubkey_json(&KeyPair::generate()), "name": name }))
+        let bundle = mint_bundle(&delegation, &prov_kp, name, &KeyPair::generate());
+        let e = endorse(&server, &bundle).await;
+        let resp = server
+            .post("/provision/mint")
+            .json(&json!({ "request_bundle": bundle, "endorsement": e }))
             .await;
-        assert_eq!(response.status_code(), 200);
+        assert_eq!(resp.status_code(), 200);
     }
-
-    let response = server
-        .post("/agent/identities")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "pubkey": pubkey_json(&KeyPair::generate()), "name": "three" }))
+    let bundle = mint_bundle(&delegation, &prov_kp, "three", &KeyPair::generate());
+    let e = endorse(&server, &bundle).await;
+    let resp = server
+        .post("/provision/mint")
+        .json(&json!({ "request_bundle": bundle, "endorsement": e }))
         .await;
-    assert_eq!(response.status_code(), 429);
+    assert_eq!(resp.status_code(), 429);
 }
 
-/// Bearer auth: missing, malformed, and revoked keys are all rejected
+/// Re-mint with a rotated agent keypair (P_cert unchanged) still verifies.
 #[tokio::test]
-async fn test_api_key_auth_rejections() {
+async fn remint_rotated_agent_key() {
+    let (server, email_sender, broker_pub) = create_agent_server(5);
+    let (delegation, prov_kp, _s) =
+        register_agent_key(&server, &email_sender, "human@example.com").await;
+
+    let bundle = mint_bundle(&delegation, &prov_kp, "bot", &KeyPair::generate());
+    let e = endorse(&server, &bundle).await;
+    server
+        .post("/provision/mint")
+        .json(&json!({ "request_bundle": bundle, "endorsement": e }))
+        .await
+        .json::<Value>();
+
+    // Re-mint for the same name with a fresh agent keypair.
+    let rotated = KeyPair::generate();
+    let bundle = mint_bundle(&delegation, &prov_kp, "bot", &rotated);
+    let e = endorse(&server, &bundle).await;
+    let body: Value = server
+        .post("/provision/mint")
+        .json(&json!({ "request_bundle": bundle, "endorsement": e }))
+        .await
+        .json();
+    assert_eq!(body["success"], true);
+    let cert = Certificate::parse(body["cert"].as_str().unwrap()).unwrap();
+    let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &rotated).unwrap();
+    let email = BackedAssertion::new(cert, assertion)
+        .verify(AUDIENCE, |_| Ok(broker_pub.clone()))
+        .unwrap();
+    assert_eq!(email, "bot@localhost:3000");
+}
+
+/// Revocation of an identity sticks: re-mint fails, and the name isn't revived.
+#[tokio::test]
+async fn identity_revocation_sticks() {
     let (server, email_sender, _) = create_agent_server(5);
-    let human = "human@example.com";
-    let session = create_user(&server, &email_sender, human, "testpassword").await;
-    let csrf = get_csrf(&server, &session).await;
+    let (delegation, prov_kp, _s) =
+        register_agent_key(&server, &email_sender, "human@example.com").await;
 
-    let response = server
-        .post("/wsapi/create_agent_key")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": csrf, "name": "ci-bot", "parent_email": human }))
+    let bundle = mint_bundle(&delegation, &prov_kp, "doomed", &KeyPair::generate());
+    let e = endorse(&server, &bundle).await;
+    server
+        .post("/provision/mint")
+        .json(&json!({ "request_bundle": bundle, "endorsement": e }))
         .await;
-    let body: Value = response.json();
-    let api_key = body["api_key"].as_str().unwrap().to_string();
-    let key_id = body["id"].as_u64().unwrap();
 
-    let mint = |key: String| {
-        server
-            .post("/agent/identities")
-            .add_header("authorization", format!("Bearer {key}"))
-            .json(&json!({ "pubkey": pubkey_json(&KeyPair::generate()) }))
-    };
-
-    // No auth header at all
-    let response = server
-        .post("/agent/identities")
-        .json(&json!({ "pubkey": pubkey_json(&KeyPair::generate()) }))
+    // Revoke it.
+    let (u, p) = delegation.split_once('~').unwrap();
+    let req = ProvisioningRequest::revoke(DOMAIN, "doomed", &prov_kp).unwrap();
+    let rev_bundle = RequestBundle::new(
+        Certificate::parse(u).unwrap(),
+        ProvisioningCert::parse(p).unwrap(),
+        req,
+    )
+    .encoded()
+    .to_string();
+    let e = endorse(&server, &rev_bundle).await;
+    let resp = server
+        .post("/provision/revoke")
+        .json(&json!({ "request_bundle": rev_bundle, "endorsement": e }))
         .await;
-    assert_eq!(response.status_code(), 401);
+    assert_eq!(resp.status_code(), 200);
 
-    // Wrong secret
-    assert_eq!(mint("bidk_not-a-real-key".to_string()).await.status_code(), 401);
-
-    // Works before revocation…
-    assert_eq!(mint(api_key.clone()).await.status_code(), 200);
-
-    // …and is dead after
-    let csrf = get_csrf(&server, &session).await;
-    let response = server
-        .post("/wsapi/revoke_agent_key")
-        .add_cookie(cookie::Cookie::new("browserid_session", session))
-        .json(&json!({ "csrf": csrf, "id": key_id }))
+    // Re-mint now fails (403 — revoked identity, EmailNotVerified).
+    let bundle = mint_bundle(&delegation, &prov_kp, "doomed", &KeyPair::generate());
+    let e = endorse(&server, &bundle).await;
+    let resp = server
+        .post("/provision/mint")
+        .json(&json!({ "request_bundle": bundle, "endorsement": e }))
         .await;
-    assert_eq!(response.status_code(), 200);
-    assert_eq!(mint(api_key).await.status_code(), 401);
+    assert_eq!(resp.status_code(), 403);
 }
 
-/// Revoking an identity stops re-mints, and revocation sticks even through
-/// the idempotent create path
+/// Disabled by default: every provisioning surface 404s.
 #[tokio::test]
-async fn test_identity_revocation_sticks() {
-    let (server, email_sender, _) = create_agent_server(5);
-    let api_key = mint_api_key(&server, &email_sender, "human@example.com").await;
-    let kp = KeyPair::generate();
-
-    let response = server
-        .post("/agent/identities")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "pubkey": pubkey_json(&kp), "name": "doomed" }))
-        .await;
-    assert_eq!(response.status_code(), 200);
-
-    let response = server
-        .post("/agent/identities/revoke")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "email": "doomed@localhost:3000" }))
-        .await;
-    assert_eq!(response.status_code(), 200);
-
-    // Re-mint fails
-    let response = server
-        .post("/agent/cert")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "email": "doomed@localhost:3000", "pubkey": pubkey_json(&kp) }))
-        .await;
-    assert_eq!(response.status_code(), 403);
-
-    // Re-create of the same name fails too — no silent revival
-    let response = server
-        .post("/agent/identities")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "pubkey": pubkey_json(&kp), "name": "doomed" }))
-        .await;
-    assert_eq!(response.status_code(), 403);
-
-    // Listed as inactive
-    let response = server
-        .get("/agent/identities")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .await;
-    let body: Value = response.json();
-    assert_eq!(body["identities"][0]["active"], false);
-}
-
-/// The API key must never act on the human's own (non-agent) identities
-#[tokio::test]
-async fn test_api_key_cannot_touch_human_emails() {
-    let (server, email_sender, _) = create_agent_server(5);
-    let human = "human@example.com";
-    let api_key = mint_api_key(&server, &email_sender, human).await;
-
-    // Certs for the human email via the agent path: invisible → 404
-    let response = server
-        .post("/agent/cert")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "email": human, "pubkey": pubkey_json(&KeyPair::generate()) }))
-        .await;
-    assert_eq!(response.status_code(), 404);
-
-    // Same for revocation
-    let response = server
-        .post("/agent/identities/revoke")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "email": human }))
-        .await;
-    assert_eq!(response.status_code(), 404);
-}
-
-/// Key management requires a session and a matching CSRF token
-#[tokio::test]
-async fn test_key_management_session_and_csrf() {
-    let (server, email_sender, _) = create_agent_server(5);
-    let human = "human@example.com";
-
-    // No session
-    let response = server
-        .post("/wsapi/create_agent_key")
-        .json(&json!({ "csrf": "x", "name": "k", "parent_email": human }))
-        .await;
-    assert_eq!(response.status_code(), 401);
-
-    let session = create_user(&server, &email_sender, human, "testpassword").await;
-
-    // Wrong CSRF
-    let response = server
-        .post("/wsapi/create_agent_key")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": "wrong", "name": "k", "parent_email": human }))
-        .await;
-    assert_eq!(response.status_code(), 403);
-
-    // Parent email not on the account
-    let csrf = get_csrf(&server, &session).await;
-    let response = server
-        .post("/wsapi/create_agent_key")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": csrf, "name": "k", "parent_email": "other@example.com" }))
-        .await;
-    assert_eq!(response.status_code(), 404);
-
-    // Happy path, then the key shows in the list without its secret
-    let csrf = get_csrf(&server, &session).await;
-    let response = server
-        .post("/wsapi/create_agent_key")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": csrf, "name": "k", "parent_email": human }))
-        .await;
-    assert_eq!(response.status_code(), 200);
-
-    let response = server
-        .get("/wsapi/agent_keys")
-        .add_cookie(cookie::Cookie::new("browserid_session", session))
-        .await;
-    let body: Value = response.json();
-    let keys = body["keys"].as_array().unwrap();
-    assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0]["name"], "k");
-    assert_eq!(keys[0]["revoked"], false);
-    assert!(keys[0].get("api_key").is_none(), "secret must never be listed");
-}
-
-/// An agent identity cannot be the attribution root for another key —
-/// attribution must chain to a human identity
-#[tokio::test]
-async fn test_agent_identity_cannot_parent_a_key() {
-    let (server, email_sender, _) = create_agent_server(5);
-    let human = "human@example.com";
-    let session = create_user(&server, &email_sender, human, "testpassword").await;
-    let csrf = get_csrf(&server, &session).await;
-
-    let response = server
-        .post("/wsapi/create_agent_key")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": csrf, "name": "k1", "parent_email": human }))
-        .await;
-    let api_key = response.json::<Value>()["api_key"].as_str().unwrap().to_string();
-
-    let response = server
-        .post("/agent/identities")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "pubkey": pubkey_json(&KeyPair::generate()), "name": "bot" }))
-        .await;
-    assert_eq!(response.status_code(), 200);
-
-    let csrf = get_csrf(&server, &session).await;
-    let response = server
-        .post("/wsapi/create_agent_key")
-        .add_cookie(cookie::Cookie::new("browserid_session", session))
-        .json(&json!({ "csrf": csrf, "name": "k2", "parent_email": "bot@localhost:3000" }))
-        .await;
-    assert_eq!(response.status_code(), 400);
-}
-
-/// With provisioning disabled (the default), every agent surface 404s
-#[tokio::test]
-async fn test_disabled_by_default() {
+async fn disabled_by_default() {
     let (server, email_sender) = common::create_test_server();
-    let human = "human@example.com";
-    let session = create_user(&server, &email_sender, human, "testpassword").await;
+    let session = create_user(&server, &email_sender, "human@example.com", "testpassword").await;
     let csrf = get_csrf(&server, &session).await;
 
-    let response = server
-        .post("/wsapi/create_agent_key")
+    let resp = server
+        .post("/wsapi/register_provisioning_cert")
         .add_cookie(cookie::Cookie::new("browserid_session", session))
-        .json(&json!({ "csrf": csrf, "name": "k", "parent_email": human }))
+        .json(&json!({ "csrf": csrf, "label": "x", "bundle": "a~b" }))
         .await;
-    assert_eq!(response.status_code(), 404);
+    assert_eq!(resp.status_code(), 404);
 
-    let response = server
-        .post("/agent/identities")
-        .add_header("authorization", "Bearer bidk_whatever")
-        .json(&json!({ "pubkey": { "algorithm": "Ed25519", "publicKey": "x" } }))
+    let resp = server
+        .post("/provision/endorse")
+        .json(&json!({ "request_bundle": "x~y~z" }))
         .await;
-    assert_eq!(response.status_code(), 404);
+    assert_eq!(resp.status_code(), 404);
 }
 
-/// Bad desired names are rejected; omitted name gets a generated one
+/// An endorsement issued by a foreign key is rejected at mint (the broker only
+/// trusts its own endorsements for its own domain).
 #[tokio::test]
-async fn test_name_validation_and_generation() {
+async fn foreign_endorsement_rejected() {
     let (server, email_sender, _) = create_agent_server(5);
-    let api_key = mint_api_key(&server, &email_sender, "human@example.com").await;
+    let (delegation, prov_kp, _s) =
+        register_agent_key(&server, &email_sender, "human@example.com").await;
+    let agent_kp = KeyPair::generate();
+    let bundle_str = mint_bundle(&delegation, &prov_kp, "attestor", &agent_kp);
 
-    // (uppercase is normalized to lowercase rather than rejected)
-    for bad in ["-bad", "bad-", "has space", "x@y"] {
-        let response = server
-            .post("/agent/identities")
-            .add_header("authorization", format!("Bearer {api_key}"))
-            .json(&json!({ "pubkey": pubkey_json(&KeyPair::generate()), "name": bad }))
-            .await;
-        assert_eq!(response.status_code(), 400, "name {bad:?} should be rejected");
-    }
-
-    let response = server
-        .post("/agent/identities")
-        .add_header("authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "pubkey": pubkey_json(&KeyPair::generate()) }))
+    // Forge an endorsement with a rogue broker key.
+    let rogue = KeyPair::generate();
+    let bundle = RequestBundle::parse(&bundle_str).unwrap();
+    let forged = Endorsement::create(
+        DOMAIN,
+        DOMAIN,
+        &bundle,
+        "human@example.com",
+        Duration::minutes(10),
+        &rogue,
+    )
+    .unwrap();
+    let resp = server
+        .post("/provision/mint")
+        .json(&json!({ "request_bundle": bundle_str, "endorsement": forged.encoded() }))
         .await;
-    assert_eq!(response.status_code(), 200);
-    let email = response.json::<Value>()["email"].as_str().unwrap().to_string();
-    assert!(
-        email.starts_with("agent-") && email.ends_with("@localhost:3000"),
-        "generated identity: {email}"
-    );
+    assert_eq!(resp.status_code(), 401);
 }

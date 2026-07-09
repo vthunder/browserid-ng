@@ -8,8 +8,8 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    ApiKey, Email, EmailType, PendingVerification, Session, SessionId, SessionStore, StoreResult,
-    User, UserId, UserStore, VerificationType,
+    Email, EmailType, PendingVerification, ProvisioningCertRecord, Session, SessionId,
+    SessionStore, StoreResult, User, UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
 
@@ -18,9 +18,9 @@ pub struct InMemoryUserStore {
     users: RwLock<HashMap<UserId, User>>,
     emails: RwLock<HashMap<String, Email>>,
     pending: RwLock<HashMap<String, PendingVerification>>,
-    api_keys: RwLock<HashMap<u64, ApiKey>>,
+    prov_certs: RwLock<HashMap<u64, ProvisioningCertRecord>>,
     next_user_id: AtomicU64,
-    next_api_key_id: AtomicU64,
+    next_prov_cert_id: AtomicU64,
 }
 
 impl InMemoryUserStore {
@@ -29,9 +29,9 @@ impl InMemoryUserStore {
             users: RwLock::new(HashMap::new()),
             emails: RwLock::new(HashMap::new()),
             pending: RwLock::new(HashMap::new()),
-            api_keys: RwLock::new(HashMap::new()),
+            prov_certs: RwLock::new(HashMap::new()),
             next_user_id: AtomicU64::new(1),
-            next_api_key_id: AtomicU64::new(1),
+            next_prov_cert_id: AtomicU64::new(1),
         }
     }
 
@@ -298,60 +298,77 @@ impl UserStore for InMemoryUserStore {
         }
     }
 
-    fn create_api_key(
+    fn register_provisioning_cert(
         &self,
         user_id: UserId,
-        name: &str,
-        parent_email: &str,
-        key_hash: &str,
-    ) -> StoreResult<ApiKey> {
-        let key = ApiKey {
-            id: self.next_api_key_id.fetch_add(1, Ordering::SeqCst),
+        delegator_email: &str,
+        provisioning_pub: &str,
+        bundle: &str,
+        label: &str,
+    ) -> StoreResult<ProvisioningCertRecord> {
+        let rec = ProvisioningCertRecord {
+            id: self.next_prov_cert_id.fetch_add(1, Ordering::SeqCst),
             user_id,
-            key_hash: key_hash.to_string(),
-            name: name.to_string(),
-            parent_email: parent_email.to_lowercase(),
+            delegator_email: delegator_email.to_lowercase(),
+            provisioning_pub: provisioning_pub.to_string(),
+            bundle: bundle.to_string(),
+            label: label.to_string(),
             created_at: Utc::now(),
-            last_used_at: None,
+            last_endorsed_at: None,
             revoked_at: None,
         };
-        self.api_keys.write().unwrap().insert(key.id, key.clone());
-        Ok(key)
+        self.prov_certs.write().unwrap().insert(rec.id, rec.clone());
+        Ok(rec)
     }
 
-    fn get_api_key_by_hash(&self, key_hash: &str) -> StoreResult<Option<ApiKey>> {
-        let keys = self.api_keys.read().unwrap();
-        Ok(keys.values().find(|k| k.key_hash == key_hash).cloned())
+    fn get_provisioning_cert_by_pub(
+        &self,
+        provisioning_pub: &str,
+    ) -> StoreResult<Option<ProvisioningCertRecord>> {
+        let certs = self.prov_certs.read().unwrap();
+        Ok(certs
+            .values()
+            .find(|c| c.provisioning_pub == provisioning_pub)
+            .cloned())
     }
 
-    fn list_api_keys(&self, user_id: UserId) -> StoreResult<Vec<ApiKey>> {
-        let keys = self.api_keys.read().unwrap();
-        let mut result: Vec<ApiKey> = keys.values().filter(|k| k.user_id == user_id).cloned().collect();
-        result.sort_by_key(|k| k.id);
+    fn list_provisioning_certs(&self, user_id: UserId) -> StoreResult<Vec<ProvisioningCertRecord>> {
+        let certs = self.prov_certs.read().unwrap();
+        let mut result: Vec<ProvisioningCertRecord> =
+            certs.values().filter(|c| c.user_id == user_id).cloned().collect();
+        result.sort_by_key(|c| c.id);
         Ok(result)
     }
 
-    fn revoke_api_key(&self, user_id: UserId, key_id: u64) -> StoreResult<()> {
-        let mut keys = self.api_keys.write().unwrap();
-        match keys.get_mut(&key_id) {
-            Some(k) if k.user_id == user_id => {
-                if k.revoked_at.is_none() {
-                    k.revoked_at = Some(Utc::now());
+    fn count_active_provisioning_certs(&self, user_id: UserId) -> StoreResult<usize> {
+        let certs = self.prov_certs.read().unwrap();
+        Ok(certs
+            .values()
+            .filter(|c| c.user_id == user_id && c.is_active())
+            .count())
+    }
+
+    fn revoke_provisioning_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
+        let mut certs = self.prov_certs.write().unwrap();
+        match certs.get_mut(&cert_id) {
+            Some(c) if c.user_id == user_id => {
+                if c.revoked_at.is_none() {
+                    c.revoked_at = Some(Utc::now());
                 }
                 Ok(())
             }
-            _ => Err(BrokerError::ApiKeyNotFound),
+            _ => Err(BrokerError::ProvisioningCertNotFound),
         }
     }
 
-    fn touch_api_key(&self, key_id: u64) -> StoreResult<()> {
-        let mut keys = self.api_keys.write().unwrap();
-        match keys.get_mut(&key_id) {
-            Some(k) => {
-                k.last_used_at = Some(Utc::now());
+    fn touch_provisioning_cert(&self, cert_id: u64) -> StoreResult<()> {
+        let mut certs = self.prov_certs.write().unwrap();
+        match certs.get_mut(&cert_id) {
+            Some(c) => {
+                c.last_endorsed_at = Some(Utc::now());
                 Ok(())
             }
-            None => Err(BrokerError::ApiKeyNotFound),
+            None => Err(BrokerError::ProvisioningCertNotFound),
         }
     }
 }

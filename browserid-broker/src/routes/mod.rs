@@ -67,14 +67,18 @@ where
         .route("/wsapi/parent_of", get(email::parent_of))
         .route("/wsapi/email_addition_status", get(email::email_addition_status))
         .route("/wsapi/cert_key", post(cert::cert_key))
-        // Agent provisioning (l8lw) — no-ops with 404 unless
-        // state.agent_provisioning_enabled is set
-        .route("/wsapi/agent_keys", get(agent::list_agent_keys))
-        .route("/wsapi/create_agent_key", post(agent::create_agent_key))
-        .route("/wsapi/revoke_agent_key", post(agent::revoke_agent_key))
-        .route("/agent/identities", post(agent::create_identity).get(agent::list_identities))
-        .route("/agent/cert", post(agent::agent_cert))
-        .route("/agent/identities/revoke", post(agent::revoke_identity))
+        // Agent provisioning (tdxf, delegation chain) — 404 unless
+        // state.agent_provisioning_enabled is set.
+        // Browser-side registry management (session + CSRF):
+        .route("/wsapi/provisioning_certs", get(agent::list_provisioning_certs))
+        .route("/wsapi/register_provisioning_cert", post(agent::register_provisioning_cert))
+        .route("/wsapi/revoke_provisioning_cert", post(agent::revoke_provisioning_cert))
+        // Broker-as-endorser:
+        .route("/provision/endorse", post(agent::endorse))
+        // Broker-as-target-IdP (for @<broker-domain> agents):
+        .route("/provision/mint", post(agent::mint))
+        .route("/provision/list", post(agent::list))
+        .route("/provision/revoke", post(agent::revoke))
         .route("/wsapi/account_cancel", post(account::account_cancel))
         .route("/wsapi/stage_reset", post(reset::stage_reset))
         .route("/wsapi/complete_reset", post(reset::complete_reset))

@@ -103,28 +103,36 @@ pub trait UserStore: Send + Sync {
     /// (re-mints then fail the ordinary verified check; certs age out)
     fn unverify_email(&self, email: &str) -> StoreResult<()>;
 
-    /// Create an API key row (l8lw agent provisioning). `key_hash` is the
-    /// SHA-256 hex of the secret; the secret itself is never stored.
-    fn create_api_key(
+    /// Register a provisioning certificate (tdxf, spec v0.2). Stores only
+    /// public data: the delegation bundle and its `P_pub`.
+    fn register_provisioning_cert(
         &self,
         user_id: UserId,
-        name: &str,
-        parent_email: &str,
-        key_hash: &str,
-    ) -> StoreResult<ApiKey>;
+        delegator_email: &str,
+        provisioning_pub: &str,
+        bundle: &str,
+        label: &str,
+    ) -> StoreResult<ProvisioningCertRecord>;
 
-    /// Look up an API key by the hash of a presented secret
-    fn get_api_key_by_hash(&self, key_hash: &str) -> StoreResult<Option<ApiKey>>;
+    /// Look up a registered provisioning cert by its `P_pub` (endorse path)
+    fn get_provisioning_cert_by_pub(
+        &self,
+        provisioning_pub: &str,
+    ) -> StoreResult<Option<ProvisioningCertRecord>>;
 
-    /// List a user's API keys (active and revoked)
-    fn list_api_keys(&self, user_id: UserId) -> StoreResult<Vec<ApiKey>>;
+    /// List a user's registered provisioning certs (active and revoked)
+    fn list_provisioning_certs(&self, user_id: UserId) -> StoreResult<Vec<ProvisioningCertRecord>>;
 
-    /// Soft-revoke an API key. Scoped to the owning user; errors with
-    /// `ApiKeyNotFound` if the key doesn't exist or belongs to someone else.
-    fn revoke_api_key(&self, user_id: UserId, key_id: u64) -> StoreResult<()>;
+    /// Count a user's active (unrevoked) provisioning certs — account-level
+    /// policy input at endorse time
+    fn count_active_provisioning_certs(&self, user_id: UserId) -> StoreResult<usize>;
 
-    /// Update an API key's last_used_at to now (audit trail)
-    fn touch_api_key(&self, key_id: u64) -> StoreResult<()>;
+    /// Soft-revoke a provisioning cert. Scoped to the owning user; errors with
+    /// `ProvisioningCertNotFound` if it doesn't exist or belongs to someone else.
+    fn revoke_provisioning_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()>;
+
+    /// Update a cert's last_endorsed_at to now (audit trail)
+    fn touch_provisioning_cert(&self, cert_id: u64) -> StoreResult<()>;
 }
 
 /// Trait for session storage

@@ -94,27 +94,30 @@ pub struct PendingVerification {
     pub created_at: DateTime<Utc>,
 }
 
-/// A per-user API key: the standing credential an agent uses to (re-)mint
-/// certificates headlessly (l8lw). The secret itself is never stored — only
-/// its SHA-256 hash. Scoped to minting certs for agent identities on the
-/// owning account; revocation is soft (re-mints fail, certs age out ≤24h).
+/// A registered provisioning certificate (tdxf, spec v0.2). The broker holds
+/// only public data: the delegation bundle `U_cert~P_cert` the user's identity
+/// key signed in-browser, plus the provisioning public key `P_pub` it delegates
+/// to. The broker never sees `P_priv` (the "API key"). Endorsement is granted
+/// only for a registered, unrevoked cert; revoking one starves future
+/// endorsements so agents age out within a cert TTL (≤24h).
 #[derive(Debug, Clone)]
-pub struct ApiKey {
+pub struct ProvisioningCertRecord {
     pub id: u64,
     pub user_id: UserId,
-    /// SHA-256 of the secret, hex-encoded
-    pub key_hash: String,
+    /// The delegating identity (`P_cert.iss` == `U_cert` email)
+    pub delegator_email: String,
+    /// P_pub, base64 — the registry lookup key at endorse time
+    pub provisioning_pub: String,
+    /// The full `U_cert~P_cert` delegation bundle
+    pub bundle: String,
     /// Human label ("ci-bot")
-    pub name: String,
-    /// Attribution root: the human email agent identities minted with this
-    /// key chain to (becomes their `parent_email`)
-    pub parent_email: String,
+    pub label: String,
     pub created_at: DateTime<Utc>,
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub last_endorsed_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
-impl ApiKey {
+impl ProvisioningCertRecord {
     pub fn is_active(&self) -> bool {
         self.revoked_at.is_none()
     }
