@@ -243,6 +243,7 @@ dependencies = [
  "browserid-core",
  "browserid-rp",
  "chrono",
+ "rand",
  "reqwest",
  "serde",
  "serde_json",
