@@ -107,6 +107,8 @@ where
         .route_service("/communication_iframe/start.js", ServeFile::new(format!("{}/communication_iframe/start.js", static_path)))
         // SBO signer popup (first-party broker window for cross-site typed signing)
         .route_service("/sign", ServeFile::new(format!("{}/sign.html", static_path)))
+        // Agent-key management UI (tdxf) — create/list/revoke provisioning certs
+        .route_service("/agents", ServeFile::new(format!("{}/agents.html", static_path)))
         // Landing page at the root.
         .route_service("/", ServeFile::new(format!("{}/index.html", static_path)))
         // Serve static files (dialog, CSS, JS)

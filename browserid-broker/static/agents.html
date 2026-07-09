@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>browserid.me — agent keys</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 16px/1.6 system-ui, -apple-system, sans-serif; max-width: 44rem;
+      margin: 4rem auto; padding: 0 1.25rem; color: #1a1a1a; }
+    @media (prefers-color-scheme: dark) { body { color: #e8e8e8; background: #161616; } }
+    h1 { font-size: 1.6rem; margin-bottom: .25rem; }
+    .muted { opacity: .65; }
+    code, pre { font-family: ui-monospace, monospace; }
+    code { background: rgba(127,127,127,.18); padding: .12em .4em; border-radius: 5px; font-size: .9em; }
+    .card { border: 1px solid rgba(127,127,127,.3); border-radius: 12px;
+      padding: 1rem 1.25rem; margin-top: 1.5rem; }
+    button { font: inherit; padding: .5rem .9rem; border-radius: 9px;
+      border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
+    button.primary { background: #2b6cb0; color: #fff; border-color: #2b6cb0; }
+    button:disabled { opacity: .5; cursor: default; }
+    label { display: block; margin: .6rem 0 .2rem; font-weight: 600; font-size: .95em; }
+    select, input { font: inherit; padding: .45rem .6rem; border-radius: 8px; width: 100%;
+      box-sizing: border-box; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; }
+    pre { background: rgba(127,127,127,.14); padding: .8rem; border-radius: 8px; overflow-x: auto;
+      font-size: .82em; white-space: pre-wrap; word-break: break-all; }
+    table { width: 100%; border-collapse: collapse; margin-top: .5rem; font-size: .9em; }
+    th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid rgba(127,127,127,.2); }
+    .warn { color: #b7791f; } .err { color: #c53030; } .ok { color: #2f855a; }
+    .revoked { opacity: .5; text-decoration: line-through; }
+  </style>
+</head>
+<body>
+  <h1>Agent keys</h1>
+  <p class="muted">An <strong>agent key</strong> lets a program act with one of your
+  identities — signing in to apps and services on your behalf — without a browser.
+  You authorize it here by signing a short delegation with your identity; the
+  program holds a private key, and browser­id vouches for each use under your
+  policy. Revoke any time; agents stop working within a day.</p>
+
+  <div id="auth-gate" class="card">
+    <p>Checking your session…</p>
+  </div>
+
+  <div id="app" hidden>
+    <div class="card">
+      <strong>Create an agent key</strong>
+      <label for="email">Identity to delegate</label>
+      <select id="email"></select>
+      <label for="label">Label (for your reference)</label>
+      <input id="label" placeholder="e.g. ci-bot, checkpoint-attestor" maxlength="64">
+      <p style="margin-top:.9rem">
+        <button id="create" class="primary">Create agent key</button>
+        <span id="create-status" class="muted"></span>
+      </p>
+    </div>
+
+    <div id="credential-card" class="card" hidden>
+      <strong class="warn">Copy this now — it is shown only once</strong>
+      <p class="muted" style="margin:.4rem 0">This is the agent credential. It contains a
+      private key that is never sent to our servers. Save it to your agent's secret
+      storage (e.g. <code>agent-credential.json</code>).</p>
+      <pre id="credential"></pre>
+      <button id="download">Download JSON</button>
+      <button id="dismiss">Done</button>
+    </div>
+
+    <div class="card">
+      <strong>Your agent keys</strong>
+      <div id="list"><p class="muted">Loading…</p></div>
+    </div>
+  </div>
+
+  <p class="muted" style="margin-top:2rem"><a href="/">← back to browserid.me</a></p>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const enc = new TextEncoder();
+
+let csrf = null;
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { credentials: 'same-origin', ...opts });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok || body.success === false) {
+    throw new Error(body.reason || body.error || `HTTP ${r.status}`);
+  }
+  return body;
+}
+
+// A minimal Ed25519 JWS matching browserid-core (header {"alg":"EdDSA","typ":"JWT"}).
+async function signJws(claims, privKey) {
+  const header = b64url(enc.encode(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' })));
+  const payload = b64url(enc.encode(JSON.stringify(claims)));
+  const signingInput = `${header}.${payload}`;
+  const sig = new Uint8Array(await crypto.subtle.sign('Ed25519', privKey, enc.encode(signingInput)));
+  return `${signingInput}.${b64url(sig)}`;
+}
+
+async function genKeypair() {
+  const kp = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+  const rawPub = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
+  const jwk = await crypto.subtle.exportKey('jwk', kp.privateKey); // d = 32-byte seed (base64url)
+  return { priv: kp.privateKey, pubB64: b64url(rawPub), seedB64url: jwk.d };
+}
+
+async function boot() {
+  let ctx;
+  try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
+  if (!ctx.authenticated) {
+    $('auth-gate').innerHTML = `<p>You are not signed in. Agent keys are managed from your
+      browser­id session — sign in through any app's login dialog first, then reload this page.</p>`;
+    return;
+  }
+  if (!(window.crypto?.subtle)) {
+    $('auth-gate').innerHTML = `<p class="err">This browser lacks WebCrypto; cannot create keys here.</p>`;
+    return;
+  }
+  csrf = ctx.csrf_token;
+  $('auth-gate').hidden = true;
+  $('app').hidden = false;
+
+  const { emails } = await api('/wsapi/list_emails');
+  const sel = $('email');
+  sel.innerHTML = '';
+  for (const e of emails) {
+    const o = document.createElement('option'); o.value = e; o.textContent = e; sel.appendChild(o);
+  }
+  if (!emails.length) {
+    $('create').disabled = true;
+    $('create-status').textContent = 'No verified identities on this account yet.';
+  }
+  await refreshList();
+}
+
+async function refreshList() {
+  const { certs } = await api('/wsapi/provisioning_certs');
+  if (!certs.length) { $('list').innerHTML = '<p class="muted">None yet.</p>'; return; }
+  const rows = certs.map(c => `
+    <tr class="${c.revoked ? 'revoked' : ''}">
+      <td>${escapeHtml(c.label)}</td>
+      <td>${escapeHtml(c.delegator_email)}</td>
+      <td>${c.last_endorsed_at ? 'used ' + new Date(c.last_endorsed_at).toLocaleDateString() : '<span class="muted">unused</span>'}</td>
+      <td>${c.revoked ? '<span class="muted">revoked</span>'
+            : `<button data-id="${c.id}" class="revoke">Revoke</button>`}</td>
+    </tr>`).join('');
+  $('list').innerHTML = `<table><thead><tr><th>Label</th><th>Identity</th><th>Last used</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  for (const b of document.querySelectorAll('.revoke')) {
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        await api('/wsapi/revoke_provisioning_cert', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ csrf, id: Number(b.dataset.id) }),
+        });
+        await refreshList();
+      } catch (e) { b.disabled = false; alert('Revoke failed: ' + e.message); }
+    };
+  }
+}
+
+function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+$('create').onclick = async () => {
+  const email = $('email').value;
+  const label = $('label').value.trim() || 'agent key';
+  const status = $('create-status');
+  $('create').disabled = true; status.className = 'muted'; status.textContent = 'Creating…';
+  try {
+    // 1. Ephemeral identity key, certified by the broker for this email (U_cert).
+    const idKey = await genKeypair();
+    const cert = await api('/wsapi/cert_key', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, pubkey: { algorithm: 'Ed25519', publicKey: idKey.pubB64 }, ephemeral: false }),
+    });
+    const uCert = cert.cert;
+
+    // 2. Provisioning key, delegated by signing a P_cert with the identity key.
+    const provKey = await genKeypair();
+    const now = Math.floor(Date.now() / 1000);
+    const pCert = await signJws({
+      typ: 'browserid-provisioning-cert-v1',
+      iss: email,
+      iat: now,
+      exp: now + 90 * 24 * 3600,
+      'public-key': { algorithm: 'Ed25519', publicKey: provKey.pubB64 },
+    }, idKey.priv);
+
+    const delegation = `${uCert}~${pCert}`;
+
+    // 3. Register the delegation (public data only).
+    await api('/wsapi/register_provisioning_cert', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ csrf, label, bundle: delegation }),
+    });
+
+    // 4. Present the credential once. secret_key (P_priv seed) never left this page.
+    const credential = {
+      secret_key: provKey.seedB64url,
+      delegation,
+      broker: location.origin,
+      idp: location.origin,
+    };
+    showCredential(credential);
+    status.textContent = '';
+    $('label').value = '';
+    await refreshList();
+  } catch (e) {
+    status.className = 'err'; status.textContent = 'Failed: ' + e.message;
+  } finally {
+    $('create').disabled = false;
+  }
+};
+
+function showCredential(cred) {
+  const json = JSON.stringify(cred, null, 2);
+  $('credential').textContent = json;
+  $('credential-card').hidden = false;
+  $('download').onclick = () => {
+    const blob = new Blob([json], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'agent-credential.json'; a.click();
+    URL.revokeObjectURL(a.href);
+  };
+  $('dismiss').onclick = () => { $('credential').textContent = ''; $('credential-card').hidden = true; };
+  $('credential-card').scrollIntoView({ behavior: 'smooth' });
+}
+
+boot().catch(e => { $('auth-gate').innerHTML = `<p class="err">Error: ${escapeHtml(e.message)}</p>`; });
+</script>
+</body>
+</html>
