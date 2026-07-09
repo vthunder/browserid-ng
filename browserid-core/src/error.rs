@@ -51,4 +51,7 @@ pub enum Error {
 
     #[error("Unsupported algorithm: {0}")]
     UnsupportedAlgorithm(String),
+
+    #[error("Invalid provisioning material: {0}")]
+    InvalidProvisioning(String),
 }
