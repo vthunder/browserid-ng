@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: high
 created_at: 2026-07-09T12:12:18Z
-updated_at: 2026-07-09T13:21:03Z
+updated_at: 2026-07-09T16:37:31Z
 ---
 
 Supersedes the bearer bidk_ API-key scheme from l8lw with a cryptographic delegation chain (2026-07-09 design discussion): user identity key signs a provisioning cert for the agent's provisioning keypair; broker co-signs each provisioning request per policy (sybil/quota, revocation); the parent identity's root IdP verifies the dual-signed request and mints the agent cert. Key management centralizes at browserid.me (UI to create/list/revoke), trust flows to the IdP, the API-key secret never transits the wire, and the broker never holds it.
@@ -34,3 +34,16 @@ The earlier open question (primary identities needing the primary IdP to certify
 ## Downstream complete + deployed (2026-07-09)
 
 browserid.me DEPLOYED with v2 (commit 480a4be): migration v4→v5 clean, /provision/{endorse,mint,list,revoke} live, /agents UI serving, old bearer /agent/* gone (404). mingo-idp reworked to a v2 target IdP + sbo id provision-agent consumes a credential file (both tracked in mingo-ua8w, committed). All test suites green: browserid-core provisioning (8), broker (9), SDK e2e, mingo-idp conformance (4).
+
+
+## v0.3: constraint model + reserve (2026-07-09)
+
+Both provisioning modes shipped per the design discussion (commits 5f40d82, d1bb886):
+- Constraint { names, patterns } required on the P_cert; patterns are `<prefix>+*` subaddress grants (naked * rejected); enforced at endorse + mint.
+- /provision/reserve pre-allocates the bound names at key-creation using the just-generated provisioning key (all-or-nothing, quota-consuming), returning { taken: [...] } on collision so the UI reports which handles to change.
+- Opacity fixed for bound keys: the /agents list shows agent IDENTITIES from the constraint the broker already stores (no mint-tracking).
+- UI: single-handle default (preview + reservation) + advanced multi-handle/pattern section.
+- SDK: no-name provision derives `<prefix>+<hex>` from the credential pattern.
+- spec v0.3. mingo-idp matched (mingo-ua8w). Deploy sequencing: mingo-vzo1.
+
+All tests green across browserid-core, broker, SDK, mingo-idp.
