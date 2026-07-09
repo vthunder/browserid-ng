@@ -211,10 +211,7 @@ async function showIdentityNote() {
   } else {
     $('identity-note').className = 'err';
     $('identity-note').style.fontSize = '.85em';
-    $('identity-note').textContent =
-      `${idpDomain} runs its own identity provider but doesn't support agent identities, ` +
-      `so no agent can be created for ${id.email}. (Agents need a provider that implements ` +
-      `agent provisioning — e.g. a mingo.place identity, or an email on a domain without its own provider.)`;
+    $('identity-note').textContent = 'This identity does not support agent keys.';
     $('create').disabled = true;
   }
 }
