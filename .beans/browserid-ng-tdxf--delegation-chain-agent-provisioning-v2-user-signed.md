@@ -1,11 +1,11 @@
 ---
 # browserid-ng-tdxf
 title: 'Delegation-chain agent provisioning (v2): user-signed provisioning certs + broker endorsement + key-management UI'
-status: in-progress
+status: completed
 type: feature
 priority: high
 created_at: 2026-07-09T12:12:18Z
-updated_at: 2026-07-09T13:03:21Z
+updated_at: 2026-07-09T13:21:03Z
 ---
 
 Supersedes the bearer bidk_ API-key scheme from l8lw with a cryptographic delegation chain (2026-07-09 design discussion): user identity key signs a provisioning cert for the agent's provisioning keypair; broker co-signs each provisioning request per policy (sybil/quota, revocation); the parent identity's root IdP verifies the dual-signed request and mints the agent cert. Key management centralizes at browserid.me (UI to create/list/revoke), trust flows to the IdP, the API-key secret never transits the wire, and the broker never holds it.
@@ -30,3 +30,7 @@ Creating a credential delegated from a PRIMARY identity (dan@mingo.place) needs 
 ## Correction (2026-07-09): primary-credential "open question" was wrong
 
 The earlier open question (primary identities needing the primary IdP to certify a fresh key) was a mistake from mirroring the test harness. The browser already holds the identity private key for EVERY logged-in identity (fallback or primary) in the browserid.me-origin `emails` localStorage store, alongside its IdP-issued cert — this is what sbo-signer.js signs SBO envelopes with. So /agents signs the P_cert with that existing key and delegates from the existing cert; the target IdP is read from the cert issuer. One UI, both rooting paths, no cross-origin dance. The design doc already specified this correctly; only the first implementation drifted. RESOLVED.
+
+## Downstream complete + deployed (2026-07-09)
+
+browserid.me DEPLOYED with v2 (commit 480a4be): migration v4→v5 clean, /provision/{endorse,mint,list,revoke} live, /agents UI serving, old bearer /agent/* gone (404). mingo-idp reworked to a v2 target IdP + sbo id provision-agent consumes a credential file (both tracked in mingo-ua8w, committed). All test suites green: browserid-core provisioning (8), broker (9), SDK e2e, mingo-idp conformance (4).
