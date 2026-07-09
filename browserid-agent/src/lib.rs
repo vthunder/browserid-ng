@@ -1,24 +1,22 @@
-//! Headless browserid client for agents (l8lw).
+//! Headless browserid client for agents (tdxf, spec v0.2 — delegation chain).
 //!
-//! An agent holds its own Ed25519 keypair, provisions an attributed identity
-//! from an agent-enabled broker (`POST /agent/identities`, gated by a
-//! browser-minted `bidk_…` API key), and from then on signs assertions
-//! locally — re-minting its short-lived certificate through the same API key
-//! whenever it expires. RPs verify the result as ordinary browserid.
+//! An agent holds a **provisioning credential**: a private key (`P_priv`)
+//! whose public half a user delegated in-browser by signing a provisioning
+//! certificate with their identity key, plus the `U_cert~P_cert` delegation
+//! bundle, and the broker + target-IdP URLs. The agent never holds any user
+//! secret; it signs short-lived provisioning requests with `P_priv`, has the
+//! broker endorse each one, and presents the dual-signed request to the IdP,
+//! which mints an agent certificate for the agent's own (separate) keypair.
 //!
 //! ```no_run
 //! # async fn demo() -> Result<(), browserid_agent::AgentError> {
-//! use browserid_agent::AgentIdentity;
+//! use browserid_agent::{AgentCredential, AgentIdentity};
 //!
-//! let mut agent = AgentIdentity::provision(
-//!     "https://agents.browserid.me",
-//!     std::env::var("BROWSERID_API_KEY").unwrap(),
-//!     Some("checkpoint-attestor"),
-//! )
-//! .await?;
+//! let credential = AgentCredential::load("agent-credential.json")?;
+//! let mut agent = AgentIdentity::provision(&credential, Some("checkpoint-attestor")).await?;
 //!
-//! // A backed assertion (`cert~assertion`) for one RP — pure local signing,
-//! // with an automatic cert re-mint if the cached one has expired
+//! // A backed assertion (`cert~assertion`) for one RP — local signing, with
+//! // an automatic endorse→re-mint if the cached cert is stale.
 //! let assertion = agent.assertion_for("https://api.example.com").await?;
 //! # Ok(()) }
 //! ```
@@ -27,9 +25,11 @@ use base64::Engine;
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 
+use browserid_core::provisioning::{ProvisioningRequest, RequestBundle};
 use browserid_core::rp_auth::TokenErrorResponse;
 use browserid_core::{
-    Assertion, BackedAssertion, Certificate, KeyPair, RpChallenge, TokenRequest, TokenResponse,
+    Assertion, BackedAssertion, Certificate, KeyPair, ProvisioningCert, RpChallenge, TokenRequest,
+    TokenResponse,
 };
 
 /// Default validity for assertions minted by [`AgentIdentity::assertion_for`]
@@ -44,13 +44,19 @@ pub enum AgentError {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
+    #[error("broker refused endorsement ({status}): {reason}")]
+    Endorse { status: u16, reason: String },
+
     #[error("IdP rejected the request ({status}): {reason}")]
     Idp { status: u16, reason: String },
 
     #[error("browserid error: {0}")]
     Core(#[from] browserid_core::Error),
 
-    #[error("stored identity is invalid: {0}")]
+    #[error("invalid credential: {0}")]
+    InvalidCredential(String),
+
+    #[error("invalid stored identity: {0}")]
     InvalidStored(String),
 
     #[error("no BrowserID challenge at {url} (status {status})")]
@@ -68,101 +74,125 @@ pub enum AgentError {
 
 type Result<T> = std::result::Result<T, AgentError>;
 
-/// An agent-held browserid identity: its own keypair, the identity email the
-/// IdP minted, and a cached short-lived certificate. The API key is the
-/// standing credential used to (re-)mint certs; the keypair never leaves the
-/// agent.
+/// The provisioning credential a user hands their agent — the v2 "API key".
+/// Created by the browser key-management UI; `secret_key` (`P_priv`) is shown
+/// once and never sent to any server.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AgentCredential {
+    /// base64url (no pad) Ed25519 seed of the provisioning key `P_priv`
+    pub secret_key: String,
+    /// The `U_cert~P_cert` delegation bundle
+    pub delegation: String,
+    /// Broker base URL (endorses requests), e.g. `https://browserid.me`
+    pub broker: String,
+    /// Target IdP base URL (mints), e.g. `https://mingo.place`
+    pub idp: String,
+}
+
+impl AgentCredential {
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+    }
+
+    fn provisioning_key(&self) -> Result<KeyPair> {
+        let seed = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(self.secret_key.trim())
+            .map_err(|e| AgentError::InvalidCredential(format!("bad secret_key: {e}")))?;
+        KeyPair::from_seed(&seed)
+            .map_err(|e| AgentError::InvalidCredential(format!("bad provisioning key: {e}")))
+    }
+}
+
+// Don't leak the provisioning secret through logs.
+impl std::fmt::Debug for AgentCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentCredential")
+            .field("secret_key", &"<redacted>")
+            .field("broker", &self.broker)
+            .field("idp", &self.idp)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The `<idp-domain>` a request must target — the IdP URL's host (with port).
+fn url_host(url: &str) -> &str {
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    after_scheme.split('/').next().unwrap_or(after_scheme)
+}
+
+/// An agent-held browserid identity: its own keypair + a cached short-lived
+/// cert, plus the provisioning credential used to (re-)mint. The agent keypair
+/// and the provisioning key both stay local; only signatures cross the wire.
 pub struct AgentIdentity {
     http: reqwest::Client,
-    /// Base URL of the agent-enabled IdP, e.g. `https://agents.browserid.me`
-    idp_url: String,
-    api_key: String,
+    credential: AgentCredential,
+    idp_domain: String,
     keypair: KeyPair,
     email: String,
     cert: Certificate,
 }
 
-// Manual impl: the api_key and private key must never leak through logs
 impl std::fmt::Debug for AgentIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentIdentity")
-            .field("idp_url", &self.idp_url)
+            .field("idp", &self.credential.idp)
             .field("email", &self.email)
-            .field("api_key", &"<redacted>")
             .finish_non_exhaustive()
     }
 }
 
-/// Serializable form of an identity: the key seed, the identity email, the
-/// last certificate, and the IdP it came from. Deliberately excludes the API
-/// key — that stays in the caller's secret management and is re-supplied on
-/// [`AgentIdentity::load`].
+/// Serializable identity: the agent key seed, email, and last cert. Excludes
+/// the credential — that is re-supplied on [`AgentIdentity::load`].
 #[derive(Serialize, Deserialize)]
 pub struct StoredIdentity {
-    /// base64url (no pad) Ed25519 seed
+    /// base64url (no pad) Ed25519 seed of the agent key
     pub secret_key: String,
     pub email: String,
     pub cert: String,
-    pub idp_url: String,
 }
 
 impl AgentIdentity {
-    /// Provision a new identity: generate a keypair locally and ask the IdP
-    /// to mint an identity + certificate for its public half. `name` is the
-    /// desired local-part; the IdP generates one when `None`. Idempotent for
-    /// an existing `name` owned by the same account (returns a fresh cert).
-    pub async fn provision(
-        idp_url: impl Into<String>,
-        api_key: impl Into<String>,
-        name: Option<&str>,
-    ) -> Result<Self> {
-        let idp_url = idp_url.into().trim_end_matches('/').to_string();
-        let api_key = api_key.into();
+    /// Provision a new identity: generate an agent keypair locally, sign a
+    /// `mint` request with the provisioning key, have the broker endorse it,
+    /// and present the dual-signed request to the IdP. `name` is the desired
+    /// local-part; the IdP generates one when `None`. Idempotent for an
+    /// existing active name under the same delegation.
+    pub async fn provision(credential: &AgentCredential, name: Option<&str>) -> Result<Self> {
         let http = reqwest::Client::new();
         let keypair = KeyPair::generate();
+        let idp_domain = url_host(&credential.idp).to_string();
 
-        let mut body = serde_json::json!({
-            "pubkey": {
-                "algorithm": "Ed25519",
-                "publicKey": keypair.public_key().to_base64(),
-            }
-        });
-        if let Some(name) = name {
-            body["name"] = serde_json::Value::String(name.to_string());
-        }
+        // A server-generated name is not expressible in a signed request
+        // (the name is inside R), so the SDK picks one when the caller omits it.
+        let name = name.map(str::to_string).unwrap_or_else(random_agent_name);
 
-        let response =
-            post_json(&http, &idp_url, "/agent/identities", &api_key, &body).await?;
-        let email = response["email"]
-            .as_str()
-            .ok_or_else(|| AgentError::InvalidStored("IdP response missing email".into()))?
-            .to_string();
-        let cert = parse_cert_field(&response)?;
+        let (email, cert) =
+            mint(&http, credential, &idp_domain, &name, &keypair).await?;
 
         Ok(Self {
             http,
-            idp_url,
-            api_key,
+            credential: credential.clone(),
+            idp_domain,
             keypair,
             email,
             cert,
         })
     }
 
-    /// The identity email the IdP minted (e.g. `attestor@agents.browserid.me`)
     pub fn email(&self) -> &str {
         &self.email
     }
 
-    /// The current certificate (may be close to expiry; [`Self::assertion_for`]
-    /// refreshes it automatically)
     pub fn certificate(&self) -> &Certificate {
         &self.cert
     }
 
-    /// Produce a backed assertion (`cert~assertion`) for `audience`, valid
-    /// for [`ASSERTION_VALIDITY_MINUTES`]. Signing is local; the certificate
-    /// is re-minted through the IdP first if expired or about to expire.
+    /// Backed assertion (`cert~assertion`) for `audience`, valid for
+    /// [`ASSERTION_VALIDITY_MINUTES`]. Signing is local; the cert is re-minted
+    /// (endorse→mint) first if stale.
     pub async fn assertion_for(&mut self, audience: &str) -> Result<String> {
         self.ensure_fresh_cert().await?;
         let assertion = Assertion::create(
@@ -173,60 +203,65 @@ impl AgentIdentity {
         Ok(BackedAssertion::new(self.cert.clone(), assertion).encode())
     }
 
-    /// Sign arbitrary bytes with the certified key — the typed-payload path
-    /// (e.g. SBO envelopes). Domain separation of the payload is the
-    /// caller's responsibility.
+    /// Sign arbitrary bytes with the certified agent key — the typed-payload
+    /// path (e.g. SBO envelopes). Domain separation is the caller's concern.
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
         self.keypair.sign(message)
     }
 
-    /// The agent's keypair (the private key custody is the whole point —
-    /// exposed for callers that need richer signing than [`Self::sign`])
     pub fn keypair(&self) -> &KeyPair {
         &self.keypair
     }
 
-    /// Re-mint the certificate now, regardless of expiry
+    /// Re-mint the certificate now (endorse a fresh `mint` request → IdP),
+    /// regardless of expiry. The agent keypair is unchanged.
     pub async fn remint(&mut self) -> Result<()> {
-        let body = serde_json::json!({
-            "email": self.email,
-            "pubkey": {
-                "algorithm": "Ed25519",
-                "publicKey": self.keypair.public_key().to_base64(),
-            }
-        });
-        let response =
-            post_json(&self.http, &self.idp_url, "/agent/cert", &self.api_key, &body).await?;
-        self.cert = parse_cert_field(&response)?;
+        // Re-derive the local part from the minted email.
+        let name = self
+            .email
+            .split('@')
+            .next()
+            .ok_or_else(|| AgentError::InvalidStored("email has no local part".into()))?
+            .to_string();
+        let (_email, cert) = mint(
+            &self.http,
+            &self.credential,
+            &self.idp_domain,
+            &name,
+            &self.keypair,
+        )
+        .await?;
+        self.cert = cert;
         Ok(())
     }
 
-    /// Revoke this identity at the IdP: re-mints stop failing-open and the
-    /// outstanding certificate ages out within its TTL
+    /// Revoke this identity at the IdP (endorsed `revoke` request): future
+    /// mints fail and the outstanding cert ages out within its TTL.
     pub async fn revoke(self) -> Result<()> {
-        let body = serde_json::json!({ "email": self.email });
-        post_json(
+        let name = self.email.split('@').next().unwrap_or_default().to_string();
+        let key = self.credential.provisioning_key()?;
+        let request = ProvisioningRequest::revoke(&self.idp_domain, &name, &key)?;
+        let bundle = build_bundle(&self.credential, request)?;
+        let endorsement = endorse(&self.http, &self.credential.broker, &bundle).await?;
+        idp_post(
             &self.http,
-            &self.idp_url,
-            "/agent/identities/revoke",
-            &self.api_key,
-            &body,
+            &self.credential.idp,
+            "/provision/revoke",
+            &bundle,
+            &endorsement,
         )
         .await?;
         Ok(())
     }
 
-    /// Authenticate to an API RP cold (l8lw Phase 2): probe `resource_url`,
-    /// read the `WWW-Authenticate: BrowserID …` challenge off the 401, sign
-    /// an assertion for the RP's advertised audience, and exchange it at the
-    /// RP's token endpoint for the RP's own bearer token. Zero pre-config —
-    /// the RP is entirely self-describing.
+    /// Authenticate to an API RP cold: read its `WWW-Authenticate: BrowserID`
+    /// challenge, sign an assertion for the advertised audience, exchange it
+    /// for the RP's own bearer token. Zero pre-config.
     pub async fn token_for(&mut self, resource_url: &str) -> Result<TokenResponse> {
         let challenge = self.discover_challenge(resource_url).await?;
         self.exchange_for_token(&challenge).await
     }
 
-    /// Probe a resource URL for its `WWW-Authenticate: BrowserID` challenge
     pub async fn discover_challenge(&self, resource_url: &str) -> Result<RpChallenge> {
         let response = self.http.get(resource_url).send().await?;
         let status = response.status().as_u16();
@@ -241,8 +276,6 @@ impl AgentIdentity {
             })
     }
 
-    /// Exchange an assertion for the RP's bearer token per a known challenge
-    /// (skips the discovery probe; useful when the challenge is cached)
     pub async fn exchange_for_token(&mut self, challenge: &RpChallenge) -> Result<TokenResponse> {
         self.ensure_fresh_cert().await?;
         let assertion = Assertion::create(
@@ -258,7 +291,6 @@ impl AgentIdentity {
             .form(&TokenRequest::new(backed))
             .send()
             .await?;
-
         let status = response.status();
         if !status.is_success() {
             let error = response
@@ -269,10 +301,7 @@ impl AgentIdentity {
                         .map_or(e.error.clone(), |d| format!("{}: {}", e.error, d))
                 })
                 .unwrap_or_else(|_| "no error body".to_string());
-            return Err(AgentError::Exchange {
-                status: status.as_u16(),
-                error,
-            });
+            return Err(AgentError::Exchange { status: status.as_u16(), error });
         }
         Ok(response.json::<TokenResponse>().await?)
     }
@@ -285,21 +314,18 @@ impl AgentIdentity {
         Ok(())
     }
 
-    /// Serializable form (excludes the API key)
     pub fn to_stored(&self) -> StoredIdentity {
         StoredIdentity {
             secret_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .encode(self.keypair.secret_bytes()),
             email: self.email.clone(),
             cert: self.cert.encoded().to_string(),
-            idp_url: self.idp_url.clone(),
         }
     }
 
-    /// Rehydrate from a stored identity plus the API key (from the caller's
-    /// secret management). An expired stored cert is fine — it is re-minted
-    /// on the next [`Self::assertion_for`].
-    pub fn from_stored(stored: StoredIdentity, api_key: impl Into<String>) -> Result<Self> {
+    /// Rehydrate from a stored identity plus the credential. An expired stored
+    /// cert is fine — it re-mints on the next use.
+    pub fn from_stored(stored: StoredIdentity, credential: &AgentCredential) -> Result<Self> {
         let seed = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(&stored.secret_key)
             .map_err(|e| AgentError::InvalidStored(format!("bad secret_key: {e}")))?;
@@ -307,133 +333,212 @@ impl AgentIdentity {
         let cert = Certificate::parse(&stored.cert)?;
         Ok(Self {
             http: reqwest::Client::new(),
-            idp_url: stored.idp_url,
-            api_key: api_key.into(),
+            idp_domain: url_host(&credential.idp).to_string(),
+            credential: credential.clone(),
             keypair,
             email: stored.email,
             cert,
         })
     }
 
-    /// Persist to a JSON file (600-style secrecy is the caller's concern; the
-    /// file contains the private key seed)
     pub fn save(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
-        let json = serde_json::to_string_pretty(&self.to_stored())?;
-        std::fs::write(path, json)?;
+        std::fs::write(path, serde_json::to_string_pretty(&self.to_stored())?)?;
         Ok(())
     }
 
-    /// Load from a JSON file written by [`Self::save`]
-    pub fn load(
-        path: impl AsRef<std::path::Path>,
-        api_key: impl Into<String>,
-    ) -> Result<Self> {
-        let contents = std::fs::read_to_string(path)?;
-        let stored: StoredIdentity = serde_json::from_str(&contents)?;
-        Self::from_stored(stored, api_key)
+    pub fn load(path: impl AsRef<std::path::Path>, credential: &AgentCredential) -> Result<Self> {
+        let stored: StoredIdentity = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+        Self::from_stored(stored, credential)
     }
 }
 
-/// POST a JSON body with the Bearer API key; map non-2xx into
-/// [`AgentError::Idp`] carrying the IdP's `reason` when present.
-async fn post_json(
+/// Build `U_cert~P_cert~R` from the credential's delegation plus a request.
+fn build_bundle(credential: &AgentCredential, request: ProvisioningRequest) -> Result<RequestBundle> {
+    let (u, p) = credential
+        .delegation
+        .split_once('~')
+        .ok_or_else(|| AgentError::InvalidCredential("delegation must be U_cert~P_cert".into()))?;
+    Ok(RequestBundle::new(
+        Certificate::parse(u)?,
+        ProvisioningCert::parse(p)?,
+        request,
+    ))
+}
+
+/// Sign a mint request, endorse it, mint at the IdP. Returns (email, cert).
+async fn mint(
     http: &reqwest::Client,
-    idp_url: &str,
-    path: &str,
-    api_key: &str,
-    body: &serde_json::Value,
-) -> Result<serde_json::Value> {
+    credential: &AgentCredential,
+    idp_domain: &str,
+    name: &str,
+    agent_key: &KeyPair,
+) -> Result<(String, Certificate)> {
+    let key = credential.provisioning_key()?;
+    let request =
+        ProvisioningRequest::mint(idp_domain, name, &agent_key.public_key(), false, &key)?;
+    let bundle = build_bundle(credential, request)?;
+    let endorsement = endorse(http, &credential.broker, &bundle).await?;
+    let resp = idp_post(http, &credential.idp, "/provision/mint", &bundle, &endorsement).await?;
+    let email = resp["email"]
+        .as_str()
+        .ok_or_else(|| AgentError::InvalidStored("mint response missing email".into()))?
+        .to_string();
+    let cert = Certificate::parse(
+        resp["cert"]
+            .as_str()
+            .ok_or_else(|| AgentError::InvalidStored("mint response missing cert".into()))?,
+    )?;
+    Ok((email, cert))
+}
+
+/// POST the request bundle to the broker's endorse endpoint.
+async fn endorse(
+    http: &reqwest::Client,
+    broker: &str,
+    bundle: &RequestBundle,
+) -> Result<String> {
     let response = http
-        .post(format!("{idp_url}{path}"))
-        .bearer_auth(api_key)
-        .json(body)
+        .post(format!("{}/provision/endorse", broker.trim_end_matches('/')))
+        .json(&serde_json::json!({ "request_bundle": bundle.encoded() }))
         .send()
         .await?;
-
     let status = response.status();
     let value: serde_json::Value = response.json().await.unwrap_or_default();
     if !status.is_success() || value["success"] != serde_json::Value::Bool(true) {
-        let reason = value["reason"]
-            .as_str()
-            .unwrap_or("no reason given")
-            .to_string();
+        return Err(AgentError::Endorse {
+            status: status.as_u16(),
+            reason: value["reason"].as_str().unwrap_or("no reason given").to_string(),
+        });
+    }
+    value["endorsement"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| AgentError::InvalidStored("endorse response missing endorsement".into()))
+}
+
+/// POST {request_bundle, endorsement} to an IdP provisioning endpoint.
+async fn idp_post(
+    http: &reqwest::Client,
+    idp: &str,
+    path: &str,
+    bundle: &RequestBundle,
+    endorsement: &str,
+) -> Result<serde_json::Value> {
+    let response = http
+        .post(format!("{}{}", idp.trim_end_matches('/'), path))
+        .json(&serde_json::json!({
+            "request_bundle": bundle.encoded(),
+            "endorsement": endorsement,
+        }))
+        .send()
+        .await?;
+    let status = response.status();
+    let value: serde_json::Value = response.json().await.unwrap_or_default();
+    if !status.is_success() || value["success"] != serde_json::Value::Bool(true) {
         return Err(AgentError::Idp {
             status: status.as_u16(),
-            reason,
+            reason: value["reason"].as_str().unwrap_or("no reason given").to_string(),
         });
     }
     Ok(value)
 }
 
-fn parse_cert_field(response: &serde_json::Value) -> Result<Certificate> {
-    let encoded = response["cert"]
-        .as_str()
-        .ok_or_else(|| AgentError::InvalidStored("IdP response missing cert".into()))?;
-    Ok(Certificate::parse(encoded)?)
+/// A random valid agent local-part (`agent-xxxxxxxx`) for the no-name case.
+fn random_agent_name() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 4];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    format!("agent-{}", bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn stored_identity_roundtrip() {
-        let keypair = KeyPair::generate();
-        let issuer = KeyPair::generate();
-        let cert = Certificate::create(
-            "agents.example.com",
-            "bot@agents.example.com",
-            &keypair.public_key(),
+    fn credential() -> (AgentCredential, KeyPair) {
+        // A self-consistent (but not broker-registered) credential for
+        // serialization tests.
+        let idp = KeyPair::generate();
+        let user = KeyPair::generate();
+        let prov = KeyPair::generate();
+        let u_cert = Certificate::create(
+            "mingo.place",
+            "dan@mingo.place",
+            &user.public_key(),
             Duration::hours(24),
-            &issuer,
+            &idp,
         )
         .unwrap();
-
-        let identity = AgentIdentity {
-            http: reqwest::Client::new(),
-            idp_url: "https://agents.example.com".to_string(),
-            api_key: "bidk_secret".to_string(),
-            keypair,
-            email: "bot@agents.example.com".to_string(),
-            cert,
+        let p_cert = ProvisioningCert::create(
+            "dan@mingo.place",
+            &prov.public_key(),
+            Duration::days(90),
+            &user,
+        )
+        .unwrap();
+        let credential = AgentCredential {
+            secret_key: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(prov.secret_bytes()),
+            delegation: format!("{}~{}", u_cert.encoded(), p_cert.encoded()),
+            broker: "https://browserid.me".into(),
+            idp: "https://mingo.place".into(),
         };
-
-        let stored = identity.to_stored();
-        assert!(serde_json::to_string(&stored).unwrap().contains("bot@"));
-        // The API key must never end up in the stored form
-        assert!(!serde_json::to_string(&stored).unwrap().contains("bidk_"));
-
-        let restored = AgentIdentity::from_stored(stored, "bidk_secret").unwrap();
-        assert_eq!(restored.email(), identity.email());
-        assert_eq!(
-            restored.keypair.public_key(),
-            identity.keypair.public_key()
-        );
-        assert_eq!(restored.cert.encoded(), identity.cert.encoded());
+        (credential, prov)
     }
 
     #[test]
-    fn signing_is_local() {
-        let keypair = KeyPair::generate();
+    fn credential_loads_provisioning_key() {
+        let (cred, prov) = credential();
+        assert_eq!(cred.provisioning_key().unwrap().public_key(), prov.public_key());
+        // Debug never prints the secret.
+        assert!(!format!("{cred:?}").contains(&cred.secret_key));
+    }
+
+    #[test]
+    fn url_host_extraction() {
+        assert_eq!(url_host("https://mingo.place"), "mingo.place");
+        assert_eq!(url_host("http://127.0.0.1:7899/"), "127.0.0.1:7899");
+        assert_eq!(url_host("https://mingo.place/path"), "mingo.place");
+    }
+
+    #[test]
+    fn stored_identity_excludes_credential() {
+        let agent_kp = KeyPair::generate();
         let issuer = KeyPair::generate();
         let cert = Certificate::create(
-            "agents.example.com",
-            "bot@agents.example.com",
-            &keypair.public_key(),
+            "mingo.place",
+            "bot@mingo.place",
+            &agent_kp.public_key(),
             Duration::hours(24),
             &issuer,
         )
         .unwrap();
+        let (cred, _) = credential();
         let identity = AgentIdentity {
             http: reqwest::Client::new(),
-            idp_url: "https://agents.example.com".to_string(),
-            api_key: "k".to_string(),
-            keypair,
-            email: "bot@agents.example.com".to_string(),
+            idp_domain: "mingo.place".into(),
+            credential: cred.clone(),
+            keypair: agent_kp,
+            email: "bot@mingo.place".into(),
             cert,
         };
+        let json = serde_json::to_string(&identity.to_stored()).unwrap();
+        assert!(json.contains("bot@mingo.place"));
+        assert!(!json.contains(&cred.secret_key), "credential must not be persisted");
 
-        let sig = identity.sign(b"typed payload bytes");
-        assert!(!sig.is_empty());
+        let restored = AgentIdentity::from_stored(
+            serde_json::from_str(&json).unwrap(),
+            &cred,
+        )
+        .unwrap();
+        assert_eq!(restored.email(), "bot@mingo.place");
+    }
+
+    #[test]
+    fn random_names_are_valid_localparts() {
+        for _ in 0..20 {
+            let n = random_agent_name();
+            assert!(n.starts_with("agent-") && n.len() <= 32);
+            assert!(n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'));
+        }
     }
 }

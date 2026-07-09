@@ -158,12 +158,15 @@ short-lived (≤ 10 min recommended).
 Request: `{ "request_bundle": "<U_cert~P_cert~R>" }`. No other
 authentication — the bundle is the credential.
 
-The broker MUST: verify the full chain (`R` under `P_cert`, `P_cert` under
-`U_cert` with signing-time semantics, `U_cert` under its issuer's key — via
-its normal discovery for foreign domains); require the `P_cert` to be
-**registered and unrevoked** in its registry (§4.6); apply account-level
-policy; then return `200 { "success": true, "endorsement": "<E JWS>" }`
-with `aud` = `R.domain`.
+The broker MUST: verify the request signature (`R` under `P_cert`'s key) and
+that the request is unexpired; require the `P_cert` to be **registered and
+unrevoked** in its registry (§4.6) — the registry established the
+`U_cert`→`P_cert` delegation at registration time, so the broker need not
+re-verify `U_cert` here; apply account-level policy; then return
+`200 { "success": true, "endorsement": "<E JWS>" }` with `aud` = `R.domain`.
+(The user-signed authorization is still verified end to end — the target IdP
+verifies the whole chain at mint, §4.3 — so a broker endorsement never
+substitutes for it.)
 
 Errors (shape `{"success": false, "reason": "…"}`):
 
@@ -173,7 +176,7 @@ Errors (shape `{"success": false, "reason": "…"}`):
 | 403 | Chain valid but not registered, revoked, or refused by policy |
 | 429 | Endorsement rate limit |
 
-### 4.3 IdP: `POST /agent/identities` — mint
+### 4.3 IdP: `POST /provision/mint`
 
 Request:
 
@@ -206,7 +209,7 @@ Response: `{ "success": true, "email": "attestor2@mingo.place",
 | 409 | Name taken by another delegator or a human identity |
 | 429 | Per-delegator quota exceeded |
 
-### 4.4 IdP: `POST /agent/list`
+### 4.4 IdP: `POST /provision/list`
 
 `{ "request_bundle": "<… action=list>", "endorsement": "<E>" }` → the
 delegator's agent identities:
@@ -221,7 +224,7 @@ Visibility rule: a request chain only ever sees identities delegated by its
 own delegator; everything else — including human identities — is
 indistinguishable from nonexistent (404 on §4.5, absent here).
 
-### 4.5 IdP: `POST /agent/revoke`
+### 4.5 IdP: `POST /provision/revoke`
 
 `{ "request_bundle": "<… action=revoke, name=…>", "endorsement": "<E>" }` →
 `{ "success": true }`. Disables the identity: further mints fail (403), the

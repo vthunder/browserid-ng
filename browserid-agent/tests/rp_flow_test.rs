@@ -23,7 +23,7 @@ use browserid_agent::{AgentError, AgentIdentity};
 use browserid_core::rp_auth::GRANT_TYPE_ASSERTION;
 use browserid_core::TokenRequest;
 use browserid_rp::{oauth_metadata, TokenStore, Verifier};
-use common::{mint_api_key, start_broker};
+use common::{make_credential, start_broker};
 use serde_json::{json, Value};
 
 struct RpState {
@@ -106,12 +106,10 @@ async fn start_rp(broker_base: &str) -> String {
 #[tokio::test]
 async fn agent_authenticates_to_cold_rp() {
     let (broker, _) = start_broker().await;
-    let api_key = mint_api_key(&broker).await;
+    let credential = make_credential(&broker).await;
     let rp = start_rp(&broker).await;
 
-    let mut agent = AgentIdentity::provision(&broker, &api_key, Some("worker"))
-        .await
-        .unwrap();
+    let mut agent = AgentIdentity::provision(&credential, Some("worker")).await.unwrap();
 
     // Cold hit: discover the challenge, exchange an assertion, get a token
     let grant = agent.token_for(&format!("{rp}/data")).await.unwrap();
@@ -152,10 +150,10 @@ async fn rp_advertises_oauth_metadata() {
 #[tokio::test]
 async fn no_challenge_and_bad_assertion_are_clean_errors() {
     let (broker, _) = start_broker().await;
-    let api_key = mint_api_key(&broker).await;
+    let credential = make_credential(&broker).await;
     let rp = start_rp(&broker).await;
 
-    let mut agent = AgentIdentity::provision(&broker, &api_key, None).await.unwrap();
+    let mut agent = AgentIdentity::provision(&credential, None).await.unwrap();
 
     // An endpoint that never challenges
     match agent.token_for(&format!("{rp}/open")).await {

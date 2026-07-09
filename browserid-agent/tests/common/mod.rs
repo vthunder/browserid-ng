@@ -1,14 +1,19 @@
-//! Shared test harness: boot a real agent-enabled broker on a socket and
-//! drive the one human-in-the-loop moment (account + API key) over HTTP.
+//! Shared test harness: boot a real agent-enabled broker on a socket, and
+//! drive the browser-side "create agent key" ceremony to produce an
+//! `AgentCredential` — the one human-in-the-loop moment. Everything after is
+//! the SDK's headless path.
 
 #![allow(unused)]
 
 use std::sync::Arc;
 
+use browserid_agent::AgentCredential;
 use browserid_broker::{
     routes, AppState, ConsoleEmailSender, InMemorySessionStore, InMemoryUserStore,
 };
-use browserid_core::{KeyPair, PublicKey};
+use browserid_core::provisioning::ProvisioningCert;
+use browserid_core::{Certificate, KeyPair, PublicKey};
+use chrono::Duration;
 use serde_json::{json, Value};
 
 /// Start a real broker on 127.0.0.1:0 with agent provisioning enabled.
@@ -38,20 +43,24 @@ pub async fn start_broker() -> (String, PublicKey) {
     (format!("http://{domain}"), broker_pubkey)
 }
 
-/// Drive the one human-in-the-loop moment over plain HTTP: create an account
-/// and mint an API key. Everything after this is the SDK's headless path.
-pub async fn mint_api_key(base: &str) -> String {
+/// Create an account + verified email, get a broker U_cert for a fresh
+/// identity key, sign a P_cert delegating to a new provisioning key, and
+/// register it — returning an `AgentCredential` where broker == idp (the
+/// fallback / broker-rooted case). This mirrors exactly what the browser
+/// key-management page does.
+pub async fn make_credential(base: &str) -> AgentCredential {
     let http = reqwest::Client::new();
     let email = "human@example.com";
 
-    let response = http
+    // Account creation (stage → verify → complete).
+    assert!(http
         .post(format!("{base}/wsapi/stage_user"))
         .json(&json!({ "email": email, "pass": "testpassword" }))
         .send()
         .await
-        .unwrap();
-    assert!(response.status().is_success());
-
+        .unwrap()
+        .status()
+        .is_success());
     let code = http
         .get(format!("{base}/wsapi/test/pending_verification?email={email}"))
         .send()
@@ -63,14 +72,13 @@ pub async fn mint_api_key(base: &str) -> String {
         .as_str()
         .unwrap()
         .to_string();
-
-    let response = http
+    let complete = http
         .post(format!("{base}/wsapi/complete_user_creation"))
         .json(&json!({ "token": code }))
         .send()
         .await
         .unwrap();
-    let session_cookie = response
+    let session_cookie = complete
         .headers()
         .get("set-cookie")
         .unwrap()
@@ -94,16 +102,54 @@ pub async fn mint_api_key(base: &str) -> String {
         .unwrap()
         .to_string();
 
-    let body = http
-        .post(format!("{base}/wsapi/create_agent_key"))
+    // U_cert for a fresh identity key (cert_key, session-authorized).
+    let user_kp = KeyPair::generate();
+    let cert_body: Value = http
+        .post(format!("{base}/wsapi/cert_key"))
         .header("cookie", &session_cookie)
-        .json(&json!({ "csrf": csrf, "name": "sdk-test", "parent_email": email }))
+        .json(&json!({
+            "email": email,
+            "pubkey": { "algorithm": "Ed25519", "publicKey": user_kp.public_key().to_base64() },
+            "ephemeral": false
+        }))
         .send()
         .await
         .unwrap()
-        .json::<Value>()
+        .json()
         .await
         .unwrap();
-    assert_eq!(body["success"], true, "key mint failed: {body}");
-    body["api_key"].as_str().unwrap().to_string()
+    let user_cert = Certificate::parse(cert_body["cert"].as_str().unwrap()).unwrap();
+
+    // Delegate to a fresh provisioning key.
+    let provisioning_kp = KeyPair::generate();
+    let p_cert = ProvisioningCert::create(
+        email,
+        &provisioning_kp.public_key(),
+        Duration::days(90),
+        &user_kp,
+    )
+    .unwrap();
+    let delegation = format!("{}~{}", user_cert.encoded(), p_cert.encoded());
+
+    let reg: Value = http
+        .post(format!("{base}/wsapi/register_provisioning_cert"))
+        .header("cookie", &session_cookie)
+        .json(&json!({ "csrf": csrf, "label": "sdk-test", "bundle": delegation }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(reg["success"], true, "register failed: {reg}");
+
+    AgentCredential {
+        secret_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(provisioning_kp.secret_bytes()),
+        delegation,
+        broker: base.to_string(),
+        idp: base.to_string(),
+    }
 }
+
+use base64::Engine as _;
