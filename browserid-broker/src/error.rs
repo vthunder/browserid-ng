@@ -73,6 +73,11 @@ pub enum BrokerError {
     #[error("Provisioning refused by policy: {0}")]
     PolicyRefused(String),
 
+    /// Reservation collision — carries the specific unavailable names so the
+    /// UI can tell the user which handles to change.
+    #[error("some requested handles are unavailable")]
+    NamesTaken(Vec<String>),
+
     #[error("Agent identity quota exceeded")]
     QuotaExceeded,
 
@@ -82,6 +87,15 @@ pub enum BrokerError {
 
 impl IntoResponse for BrokerError {
     fn into_response(self) -> Response {
+        // Reservation collisions carry the specific unavailable names.
+        if let BrokerError::NamesTaken(taken) = &self {
+            let body = json!({
+                "success": false,
+                "reason": "some requested handles are unavailable",
+                "taken": taken,
+            });
+            return (StatusCode::CONFLICT, axum::Json(body)).into_response();
+        }
         let (status, message) = match &self {
             BrokerError::UserNotFound => (StatusCode::NOT_FOUND, "User not found"),
             BrokerError::EmailNotFound => (StatusCode::NOT_FOUND, "Email not found"),
@@ -126,6 +140,8 @@ impl IntoResponse for BrokerError {
                 (StatusCode::NOT_FOUND, "Provisioning certificate not found")
             }
             BrokerError::PolicyRefused(msg) => (StatusCode::FORBIDDEN, msg.as_str()),
+            // Handled above with a structured body; unreachable here.
+            BrokerError::NamesTaken(_) => (StatusCode::CONFLICT, "handles unavailable"),
             BrokerError::QuotaExceeded => {
                 (StatusCode::TOO_MANY_REQUESTS, "Agent identity quota exceeded")
             }

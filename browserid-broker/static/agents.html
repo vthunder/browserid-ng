@@ -331,8 +331,13 @@ async function reserveNames(provKey, idpDomain, idpUrl, delegation) {
   });
   const body = await r.json().catch(() => ({}));
   if (!r.ok || body.success === false) {
-    throw new Error('reservation failed: ' + (body.reason || `HTTP ${r.status}`) +
-      ' (a handle may be taken)');
+    if (Array.isArray(body.taken) && body.taken.length) {
+      // Per-name feedback: tell the user exactly which handles to change.
+      const e = new Error(`already taken: ${body.taken.join(', ')} — choose different handles`);
+      e.taken = body.taken;
+      throw e;
+    }
+    throw new Error('reservation failed: ' + (body.reason || `HTTP ${r.status}`));
   }
 }
 

@@ -561,13 +561,18 @@ where
         .user_store
         .get_user_by_email(&verified.delegator)?
         .ok_or_else(|| BrokerError::Internal("delegator email has no account".into()))?;
+    // Collect every unavailable name (taken by another account or a non-agent
+    // identity) so the user learns exactly which handles to change.
+    let mut taken = Vec::new();
     for name in &names {
         if let Some(rec) = state.user_store.get_email(&format!("{}@{}", name, state.domain))? {
-            // Taken by another account, or a non-agent identity → conflict.
             if rec.user_id != account.id || rec.email_type != EmailType::Agent {
-                return Err(BrokerError::EmailAlreadyExists);
+                taken.push(name.clone());
             }
         }
+    }
+    if !taken.is_empty() {
+        return Err(BrokerError::NamesTaken(taken));
     }
     for name in &names {
         ensure_agent_identity(&state, &verified, name)?;

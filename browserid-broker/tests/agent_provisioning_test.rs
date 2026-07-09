@@ -555,3 +555,56 @@ async fn register_rejects_unconstrained_cert() {
     .is_err());
     let _ = user_cert;
 }
+
+/// A reservation collision reports exactly which names are unavailable, so the
+/// UI can ask the user to change them.
+#[tokio::test]
+async fn reserve_reports_taken_names() {
+    let (server, email_sender, _) = create_agent_server(10);
+    // First account reserves "shared".
+    let (deleg_a, kp_a, _sa) = register_agent_key_with(
+        &server,
+        &email_sender,
+        "alice@example.com",
+        Constraint::names(["shared", "alice-only"]),
+    )
+    .await;
+    let (u, p) = deleg_a.split_once('~').unwrap();
+    let reserve_a = RequestBundle::new(
+        Certificate::parse(u).unwrap(),
+        ProvisioningCert::parse(p).unwrap(),
+        ProvisioningRequest::reserve(DOMAIN, &kp_a).unwrap(),
+    )
+    .encoded()
+    .to_string();
+    let e = endorse(&server, &reserve_a).await;
+    assert_eq!(
+        server.post("/provision/reserve").json(&json!({ "request_bundle": reserve_a, "endorsement": e })).await.status_code(),
+        200
+    );
+
+    // Second account tries to reserve "shared" (taken) + "bob-only" (free).
+    let (deleg_b, kp_b, _sb) = register_agent_key_with(
+        &server,
+        &email_sender,
+        "bob@example.com",
+        Constraint::names(["shared", "bob-only"]),
+    )
+    .await;
+    let (u, p) = deleg_b.split_once('~').unwrap();
+    let reserve_b = RequestBundle::new(
+        Certificate::parse(u).unwrap(),
+        ProvisioningCert::parse(p).unwrap(),
+        ProvisioningRequest::reserve(DOMAIN, &kp_b).unwrap(),
+    )
+    .encoded()
+    .to_string();
+    let e = endorse(&server, &reserve_b).await;
+    let resp = server
+        .post("/provision/reserve")
+        .json(&json!({ "request_bundle": reserve_b, "endorsement": e }))
+        .await;
+    assert_eq!(resp.status_code(), 409);
+    let body: Value = resp.json();
+    assert_eq!(body["taken"], json!(["shared"]), "only the taken name is reported");
+}
