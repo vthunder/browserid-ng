@@ -101,6 +101,16 @@ impl AgentCredential {
         KeyPair::from_seed(&seed)
             .map_err(|e| AgentError::InvalidCredential(format!("bad provisioning key: {e}")))
     }
+
+    /// The constraint this credential's delegation authorizes (`names` +
+    /// `patterns`) — from the `P_cert` inside the delegation bundle.
+    pub fn constraint(&self) -> Result<browserid_core::Constraint> {
+        let (_, p) = self
+            .delegation
+            .split_once('~')
+            .ok_or_else(|| AgentError::InvalidCredential("delegation must be U_cert~P_cert".into()))?;
+        Ok(ProvisioningCert::parse(p)?.constraint().clone())
+    }
 }
 
 // Don't leak the provisioning secret through logs.
@@ -165,9 +175,26 @@ impl AgentIdentity {
         let keypair = KeyPair::generate();
         let idp_domain = url_host(&credential.idp).to_string();
 
-        // A server-generated name is not expressible in a signed request
-        // (the name is inside R), so the SDK picks one when the caller omits it.
-        let name = name.map(str::to_string).unwrap_or_else(random_agent_name);
+        // Every name must be authorized by the credential's constraint. When
+        // the caller omits one, derive a random name under the first `<prefix>+*`
+        // pattern (`<prefix>+<hex>`) — a constraint with only fixed `names` has
+        // no room for a generated name, so the caller must pass one explicitly.
+        let name = match name {
+            Some(n) => n.to_string(),
+            None => credential
+                .constraint()?
+                .patterns
+                .first()
+                .and_then(|p| browserid_core::Constraint::pattern_prefix(p))
+                .map(|prefix| format!("{}+{}", prefix, random_hex()))
+                .ok_or_else(|| {
+                    AgentError::InvalidCredential(
+                        "no name given and the credential has no `<prefix>+*` pattern to \
+                         generate one under; pass an explicit reserved name"
+                            .into(),
+                    )
+                })?,
+        };
 
         let (email, cert) =
             mint(&http, credential, &idp_domain, &name, &keypair).await?;
@@ -443,12 +470,12 @@ async fn idp_post(
     Ok(value)
 }
 
-/// A random valid agent local-part (`agent-xxxxxxxx`) for the no-name case.
-fn random_agent_name() -> String {
+/// 8 random hex chars, for a generated subaddress suffix (`<prefix>+<hex>`).
+fn random_hex() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 4];
     rand::thread_rng().fill_bytes(&mut bytes);
-    format!("agent-{}", bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>())
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 #[cfg(test)]
@@ -472,6 +499,7 @@ mod tests {
         let p_cert = ProvisioningCert::create(
             "dan@mingo.place",
             &prov.public_key(),
+            browserid_core::Constraint::names(["bot"]),
             Duration::days(90),
             &user,
         )
@@ -534,11 +562,15 @@ mod tests {
     }
 
     #[test]
-    fn random_names_are_valid_localparts() {
+    fn generated_subaddress_names_are_valid() {
         for _ in 0..20 {
-            let n = random_agent_name();
-            assert!(n.starts_with("agent-") && n.len() <= 32);
-            assert!(n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'));
+            let n = format!("svc+{}", random_hex());
+            assert!(n.starts_with("svc+") && n.len() <= 32);
+            assert!(browserid_core::Constraint {
+                names: vec![],
+                patterns: vec!["svc+*".into()]
+            }
+            .authorizes(&n));
         }
     }
 }

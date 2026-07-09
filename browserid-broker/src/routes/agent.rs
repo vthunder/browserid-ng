@@ -72,9 +72,21 @@ pub struct ProvisioningCertInfo {
     pub id: u64,
     pub label: String,
     pub delegator_email: String,
+    /// Bound agent identities (`<name>@<domain>`) — legible because they live
+    /// in the P_cert constraint the broker stores, no mint-tracking needed.
+    pub names: Vec<String>,
+    /// `<prefix>+*` subaddress grants this key may mint under.
+    pub patterns: Vec<String>,
+    pub domain: String,
     pub created_at: DateTime<Utc>,
     pub last_endorsed_at: Option<DateTime<Utc>>,
     pub revoked: bool,
+}
+
+/// The `<domain>` an identity delegated by `delegator_email` mints under —
+/// the domain of the IdP rooting that identity (the email's domain).
+fn idp_domain_of(delegator_email: &str) -> &str {
+    delegator_email.split('@').nth(1).unwrap_or("")
 }
 
 #[derive(Serialize)]
@@ -99,13 +111,25 @@ where
         .user_store
         .list_provisioning_certs(session.user_id)?
         .into_iter()
-        .map(|c| ProvisioningCertInfo {
-            id: c.id,
-            label: c.label,
-            delegator_email: c.delegator_email,
-            created_at: c.created_at,
-            last_endorsed_at: c.last_endorsed_at,
-            revoked: c.revoked_at.is_some(),
+        .map(|c| {
+            // The bound identities live in the stored delegation's P_cert.
+            let constraint = c
+                .bundle
+                .split_once('~')
+                .and_then(|(_, p)| ProvisioningCert::parse(p).ok())
+                .map(|p| p.constraint().clone())
+                .unwrap_or_default();
+            ProvisioningCertInfo {
+                id: c.id,
+                domain: idp_domain_of(&c.delegator_email).to_string(),
+                label: c.label,
+                delegator_email: c.delegator_email,
+                names: constraint.names,
+                patterns: constraint.patterns,
+                created_at: c.created_at,
+                last_endorsed_at: c.last_endorsed_at,
+                revoked: c.revoked_at.is_some(),
+            }
         })
         .collect();
     Ok(Json(ListCertsResponse { success: true, certs }))
@@ -179,6 +203,17 @@ where
         .map_err(|e| BrokerError::ValidationError(format!("provisioning cert not signed by the identity key: {e}")))?;
     if p_cert.is_expired() {
         return Err(BrokerError::ValidationError("provisioning cert expired".into()));
+    }
+    // The constraint must be valid (≥1 name/pattern, well-formed patterns) and
+    // every requested name must be a valid agent handle.
+    p_cert
+        .constraint()
+        .validate()
+        .map_err(|e| BrokerError::ValidationError(e.to_string()))?;
+    for n in &p_cert.constraint().names {
+        if !valid_agent_name(n) {
+            return Err(BrokerError::ValidationError(format!("invalid name '{n}' in constraint")));
+        }
     }
     let delegator = user_cert
         .email()
@@ -309,6 +344,19 @@ where
         return Err(BrokerError::InvalidProvisioningRequest("request expired".into()));
     }
 
+    // The endorsement affirms the request is within policy — so a mint whose
+    // name the constraint doesn't authorize is refused here too (defense in
+    // depth; the target IdP also checks).
+    if request.claims().action == Action::Mint {
+        if let Some(name) = &request.claims().name {
+            if !bundle.provisioning_cert().constraint().authorizes(name) {
+                return Err(BrokerError::PolicyRefused(format!(
+                    "'{name}' is not authorized by this key's constraint"
+                )));
+            }
+        }
+    }
+
     // Account-level policy would live here (rate limits, aggregate sybil
     // signals). The registry membership check above is the v1 gate.
 
@@ -412,18 +460,50 @@ where
         .name
         .as_deref()
         .ok_or_else(|| BrokerError::InvalidProvisioningRequest("mint requires a name".into()))?;
-    if !valid_agent_name(name) {
-        return Err(BrokerError::ValidationError(
-            "name must be 1-32 chars of [a-z0-9-], not starting/ending with '-'".into(),
-        ));
-    }
     let agent_pub = verified
         .request
         .agent_key
         .as_ref()
         .ok_or_else(|| BrokerError::InvalidProvisioningRequest("mint requires an agent-key".into()))?;
 
-    // Resolve the account from the delegator (its verified email).
+    let record = ensure_agent_identity(&state, &verified, name)?;
+    let ephemeral = verified.request.ephemeral.unwrap_or(false);
+    let cert = issue_certificate(
+        &state.domain,
+        &state.keypair,
+        &record,
+        &agent_pubkey_json(agent_pub),
+        ephemeral,
+    )?;
+
+    tracing::info!(email = %record.email, delegator = %verified.delegator, "minted agent identity (delegation chain)");
+    Ok(Json(MintResponse {
+        success: true,
+        email: record.email,
+        cert,
+    }))
+}
+
+/// Ensure the agent identity `<name>@<domain>` exists for the delegator's
+/// account, creating it (quota-checked) if new — used by both mint (then
+/// issues a cert) and reserve (pre-allocates, no cert). Enforces that the
+/// constraint authorizes `name` and that the name is a valid agent handle.
+fn ensure_agent_identity<U: UserStore, S: SessionStore, E: EmailSender>(
+    state: &AppState<U, S, E>,
+    verified: &VerifiedRequest,
+    name: &str,
+) -> Result<crate::store::Email, BrokerError> {
+    if !valid_agent_name(name) {
+        return Err(BrokerError::ValidationError(
+            "name must be 1-64 chars of [a-z0-9._+-], starting alphanumeric".into(),
+        ));
+    }
+    if !verified.constraint.authorizes(name) {
+        return Err(BrokerError::PolicyRefused(format!(
+            "'{name}' is not authorized by this key's constraint"
+        )));
+    }
+
     let delegator = &verified.delegator;
     let account = state
         .user_store
@@ -431,15 +511,14 @@ where
         .ok_or_else(|| BrokerError::Internal("delegator email has no account".into()))?;
 
     let email = format!("{}@{}", name, state.domain);
-    let record = match state.user_store.get_email(&email)? {
-        // Restart / re-mint: same account, active agent identity.
+    match state.user_store.get_email(&email)? {
         Some(rec) if rec.user_id == account.id && rec.email_type == EmailType::Agent => {
             if !rec.verified {
                 return Err(BrokerError::EmailNotVerified); // revoked; sticks
             }
-            rec
+            Ok(rec)
         }
-        Some(_) => return Err(BrokerError::EmailAlreadyExists),
+        Some(_) => Err(BrokerError::EmailAlreadyExists),
         None => {
             let active = state
                 .user_store
@@ -457,25 +536,44 @@ where
             state
                 .user_store
                 .get_email(&email)?
-                .ok_or_else(|| BrokerError::Internal("identity vanished after insert".into()))?
+                .ok_or_else(|| BrokerError::Internal("identity vanished after insert".into()))
         }
-    };
+    }
+}
 
-    let ephemeral = verified.request.ephemeral.unwrap_or(false);
-    let cert = issue_certificate(
-        &state.domain,
-        &state.keypair,
-        &record,
-        &agent_pubkey_json(agent_pub),
-        ephemeral,
-    )?;
-
-    tracing::info!(email = %record.email, delegator = %delegator, "minted agent identity (delegation chain)");
-    Ok(Json(MintResponse {
-        success: true,
-        email: record.email,
-        cert,
-    }))
+/// POST /provision/reserve — pre-allocate the cert's bound `names` so a later
+/// mint can't be refused. Idempotent; consumes quota.
+pub async fn reserve<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    Json(req): Json<ProvisionRequest>,
+) -> Result<Json<SuccessResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    require_enabled(&state)?;
+    let (_bundle, verified) = verify_as_target_idp(&state, &req, Action::Reserve)?;
+    // Reserve every bound name (all-or-nothing: any collision aborts before the
+    // first insert, since we check availability up front).
+    let names = verified.constraint.names.clone();
+    let account = state
+        .user_store
+        .get_user_by_email(&verified.delegator)?
+        .ok_or_else(|| BrokerError::Internal("delegator email has no account".into()))?;
+    for name in &names {
+        if let Some(rec) = state.user_store.get_email(&format!("{}@{}", name, state.domain))? {
+            // Taken by another account, or a non-agent identity → conflict.
+            if rec.user_id != account.id || rec.email_type != EmailType::Agent {
+                return Err(BrokerError::EmailAlreadyExists);
+            }
+        }
+    }
+    for name in &names {
+        ensure_agent_identity(&state, &verified, name)?;
+    }
+    tracing::info!(delegator = %verified.delegator, count = names.len(), "reserved agent identities");
+    Ok(Json(SuccessResponse { success: true }))
 }
 
 #[derive(Serialize)]
@@ -560,15 +658,16 @@ where
     Ok(Json(SuccessResponse { success: true }))
 }
 
-/// Agent identity local-part: 1–32 chars of [a-z0-9-], no leading/trailing '-'
+/// Agent identity local-part: 1–64 chars of [a-z0-9._+-] (the `+` enables
+/// `<handle>+<suffix>` subaddressing), starting alphanumeric.
 fn valid_agent_name(name: &str) -> bool {
     let b = name.as_bytes();
     !b.is_empty()
-        && b.len() <= 32
-        && b.iter()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
-        && b[0] != b'-'
-        && b[b.len() - 1] != b'-'
+        && b.len() <= 64
+        && b[0].is_ascii_alphanumeric()
+        && b.iter().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'+' | b'-')
+        })
 }
 
 #[cfg(test)]
@@ -579,11 +678,13 @@ mod tests {
     fn agent_name_validation() {
         assert!(valid_agent_name("checkpoint-attestor"));
         assert!(valid_agent_name("a"));
+        assert!(valid_agent_name("dan+ci"), "subaddressing allowed");
+        assert!(valid_agent_name("svc+1a2b"));
         assert!(!valid_agent_name(""));
-        assert!(!valid_agent_name("-x"));
-        assert!(!valid_agent_name("x-"));
-        assert!(!valid_agent_name("Ab"));
-        assert!(!valid_agent_name("a b"));
-        assert!(!valid_agent_name(&"x".repeat(33)));
+        assert!(!valid_agent_name("-x"), "must start alphanumeric");
+        assert!(!valid_agent_name("+x"));
+        assert!(!valid_agent_name("Ab"), "no uppercase");
+        assert!(!valid_agent_name("a b"), "no spaces");
+        assert!(!valid_agent_name(&"x".repeat(65)));
     }
 }

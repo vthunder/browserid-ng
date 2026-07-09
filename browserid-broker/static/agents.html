@@ -43,10 +43,28 @@
   <div id="app" hidden>
     <div class="card">
       <strong>Create an agent key</strong>
-      <label for="identity">Identity to delegate</label>
+      <label for="identity">Identity to delegate from</label>
       <select id="identity"></select>
       <p id="identity-note" class="muted" style="font-size:.85em;margin:.2rem 0 0"></p>
-      <label for="label">Label (for your reference)</label>
+
+      <label for="handle">Agent handle</label>
+      <input id="handle" placeholder="e.g. attestor" maxlength="64">
+      <p class="muted" style="font-size:.85em;margin:.2rem 0 0">
+        The agent will be <code id="preview">…</code>. Reserved for you now.</p>
+
+      <p style="margin:.7rem 0 .2rem"><a href="#" id="advanced-toggle" style="font-size:.9em">Advanced: multiple handles / subaddress patterns ▸</a></p>
+      <div id="advanced" hidden style="border-left:2px solid rgba(127,127,127,.3);padding-left:.8rem">
+        <label for="extra-names" style="margin-top:.3rem">Extra handles (comma-separated)</label>
+        <input id="extra-names" placeholder="e.g. worker, batch">
+        <label for="patterns">Subaddress patterns</label>
+        <input id="patterns" placeholder="e.g. attestor+*, worker+*">
+        <p class="muted" style="font-size:.82em;margin:.2rem 0 0">
+          A pattern <code>&lt;handle&gt;+*</code> lets the agent mint any <code>&lt;handle&gt;+suffix</code>
+          on demand (not reserved; still counts against your quota). Patterns must be
+          under a handle you control.</p>
+      </div>
+
+      <label for="label" style="margin-top:.5rem">Label (for your reference)</label>
       <input id="label" placeholder="e.g. ci-bot, checkpoint-attestor" maxlength="64">
       <p style="margin-top:.9rem">
         <button id="create" class="primary">Create agent key</button>
@@ -160,20 +178,26 @@ function showIdentityNote() {
   const id = localIdentities().find(i => i.email === $('identity').value);
   $('identity-note').textContent = id?.issuer
     ? `Agent will be minted at ${id.issuer} (the IdP that issued this identity).` : '';
+  updatePreview();
 }
 
 async function refreshList() {
   const { certs } = await api('/wsapi/provisioning_certs');
   if (!certs.length) { $('list').innerHTML = '<p class="muted">None yet.</p>'; return; }
+  const identityList = (c) => {
+    const items = (c.names || []).map(n => `<code>${escapeHtml(n)}@${escapeHtml(c.domain)}</code>`)
+      .concat((c.patterns || []).map(p => `<code>${escapeHtml(p)}@${escapeHtml(c.domain)}</code>`));
+    return items.length ? items.join(' ') : '<span class="muted">—</span>';
+  };
   const rows = certs.map(c => `
     <tr class="${c.revoked ? 'revoked' : ''}">
       <td>${escapeHtml(c.label)}</td>
-      <td>${escapeHtml(c.delegator_email)}</td>
+      <td>${identityList(c)}<br><span class="muted" style="font-size:.85em">via ${escapeHtml(c.delegator_email)}</span></td>
       <td>${c.last_endorsed_at ? 'used ' + new Date(c.last_endorsed_at).toLocaleDateString() : '<span class="muted">unused</span>'}</td>
       <td>${c.revoked ? '<span class="muted">revoked</span>'
             : `<button data-id="${c.id}" class="revoke">Revoke</button>`}</td>
     </tr>`).join('');
-  $('list').innerHTML = `<table><thead><tr><th>Label</th><th>Identity</th><th>Last used</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  $('list').innerHTML = `<table><thead><tr><th>Label</th><th>Agent identities</th><th>Last used</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   for (const b of document.querySelectorAll('.revoke')) {
     b.onclick = async () => {
       b.disabled = true;
@@ -188,26 +212,65 @@ async function refreshList() {
   }
 }
 
+// Advanced section toggle + live handle preview.
+$('advanced-toggle').onclick = (e) => {
+  e.preventDefault();
+  const a = $('advanced'); a.hidden = !a.hidden;
+  $('advanced-toggle').textContent = a.hidden
+    ? 'Advanced: multiple handles / subaddress patterns ▸'
+    : 'Advanced: multiple handles / subaddress patterns ▾';
+};
+function updatePreview() {
+  const id = localIdentities().find(i => i.email === $('identity').value);
+  const dom = id?.issuer || location.host;
+  const h = $('handle').value.trim() || 'attestor';
+  $('preview').textContent = `${h}@${dom}`;
+}
+$('handle').oninput = updatePreview;
+
+/// Assemble the constraint from the form: primary handle + extra names + patterns.
+function buildConstraint() {
+  const split = (s) => s.split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+  const names = [$('handle').value.trim().toLowerCase(), ...split($('extra-names').value)].filter(Boolean);
+  const patterns = split($('patterns').value);
+  // Dedupe.
+  return { names: [...new Set(names)], patterns: [...new Set(patterns)] };
+}
+
 $('create').onclick = async () => {
   const id = localIdentities().find(i => i.email === $('identity').value);
   const label = $('label').value.trim() || 'agent key';
   const status = $('create-status');
   if (!id) return;
+  const constraint = buildConstraint();
+  if (!constraint.names.length && !constraint.patterns.length) {
+    status.className = 'err'; status.textContent = 'Enter at least one handle.'; return;
+  }
+  for (const p of constraint.patterns) {
+    if (!/^[a-z0-9._-]+\+\*$/.test(p)) {
+      status.className = 'err'; status.textContent = `Pattern "${p}" must be <handle>+*`; return;
+    }
+  }
   $('create').disabled = true; status.className = 'muted'; status.textContent = 'Creating…';
   try {
-    // Sign the provisioning cert with the identity's own key (already held
-    // in this origin). No IdP round-trip — the delegation is user-signed.
+    const idpDomain = id.issuer || location.host;
+    const idpUrl = /^(localhost|127\.)/.test(idpDomain) ? `http://${idpDomain}` : `https://${idpDomain}`;
+
+    // Sign the provisioning cert with the identity's own key (held in this
+    // origin) — the delegation is user-signed, no IdP round-trip to create it.
     const userKey = window.jwcrypto.loadSecretKeyFromObject(id.priv);
     const provKey = await genKeypair();
     const now = Math.floor(Date.now() / 1000);
     const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
-    const payload = b64urlJson({
+    const certClaims = {
       typ: 'browserid-provisioning-cert-v1',
       iss: id.email,
       iat: now,
       exp: now + 90 * 24 * 3600,
       'public-key': { algorithm: 'Ed25519', publicKey: provKey.publicKey._jwk.x },
-    });
+      constraint,
+    };
+    const payload = b64urlJson(certClaims);
     const sig = await sign(userKey, `${header}.${payload}`);
     const pCert = `${header}.${payload}.${sig}`;
     const delegation = `${id.cert}~${pCert}`;
@@ -218,17 +281,20 @@ $('create').onclick = async () => {
       body: JSON.stringify({ csrf, label, bundle: delegation }),
     });
 
+    // Reserve the bound names now, using the just-generated provisioning key
+    // (the agent will use the same key to mint later). We sign a reserve
+    // request, have the broker endorse it, and send it to the target IdP.
+    if (constraint.names.length) {
+      status.textContent = 'Reserving handles…';
+      await reserveNames(provKey, idpDomain, idpUrl, delegation);
+    }
+
     // The credential: P_priv seed + delegation. broker = us; idp = the
     // identity's issuer (mingo.place for a primary identity, us for a fallback).
-    const idpDomain = id.issuer || location.host;
-    const credential = {
-      secret_key: provKey.secretKey._jwk.d,
-      delegation,
-      broker: location.origin,
-      idp: /^(localhost|127\.)/.test(idpDomain) ? `http://${idpDomain}` : `https://${idpDomain}`,
-    };
+    const credential = { secret_key: provKey.secretKey._jwk.d, delegation, broker: location.origin, idp: idpUrl };
     showCredential(credential);
-    status.textContent = ''; $('label').value = '';
+    status.textContent = '';
+    $('handle').value = ''; $('extra-names').value = ''; $('patterns').value = ''; $('label').value = '';
     await refreshList();
   } catch (e) {
     status.className = 'err'; status.textContent = 'Failed: ' + e.message;
@@ -236,6 +302,39 @@ $('create').onclick = async () => {
     $('create').disabled = false;
   }
 };
+
+/// Sign a `reserve` request with the provisioning key, get a broker
+/// endorsement, and submit it to the target IdP — so the bound names are
+/// pre-allocated and the agent's later mint can't be refused.
+async function reserveNames(provKey, idpDomain, idpUrl, delegation) {
+  const now = Math.floor(Date.now() / 1000);
+  const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+  const payload = b64urlJson({
+    typ: 'browserid-provisioning-request-v1',
+    iat: now, exp: now + 600,
+    action: 'reserve',
+    domain: idpDomain,
+  });
+  const provSk = window.jwcrypto.loadSecretKeyFromObject({ algorithm: 'Ed25519', d: provKey.secretKey._jwk.d, x: provKey.publicKey._jwk.x });
+  const sig = await sign(provSk, `${header}.${payload}`);
+  const request = `${header}.${payload}.${sig}`;
+  const bundle = `${delegation}~${request}`;
+
+  const { endorsement } = await api(`${location.origin}/provision/endorse`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ request_bundle: bundle }),
+  });
+  // The IdP may be a different origin (mingo.place); this is a plain CORS POST.
+  const r = await fetch(`${idpUrl}/provision/reserve`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ request_bundle: bundle, endorsement }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok || body.success === false) {
+    throw new Error('reservation failed: ' + (body.reason || `HTTP ${r.status}`) +
+      ' (a handle may be taken)');
+  }
+}
 
 function showCredential(cred) {
   const json = JSON.stringify(cred, null, 2);

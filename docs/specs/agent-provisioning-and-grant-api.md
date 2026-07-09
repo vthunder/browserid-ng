@@ -1,6 +1,6 @@
 # BrowserID Agent Provisioning & Grant Exchange — REST API Specification
 
-**Version:** 0.2 (draft)
+**Version:** 0.3 (draft)
 **Date:** 2026-07-09
 **Status:** Published for federation. v0.2 replaces v0.1's bearer API keys
 with a user-signed **delegation chain** plus per-request **broker
@@ -108,12 +108,33 @@ key:
   "iss": "a@b.c",
   "iat": 1783600000,
   "exp": 1791376000,
-  "public-key": { "algorithm": "Ed25519", "publicKey": "<P_pub base64url>" }
+  "public-key": { "algorithm": "Ed25519", "publicKey": "<P_pub base64url>" },
+  "constraint": {
+    "names": ["attestor2", "worker"],
+    "patterns": ["dan+*"]
+  }
 }
 ```
 
 `iss` MUST equal the `principal.email` of the accompanying `U_cert`.
 Reference validity: 90 days.
+
+**Constraint (v0.3, REQUIRED).** A `P_cert` MUST carry a `constraint` that
+authorizes at least one identity — an unconstrained key (empty constraint)
+MUST be rejected. It has two optional arrays, at least one non-empty:
+
+- `names`: exact agent handles the key may mint. These SHOULD be **reserved**
+  at key-creation (§4.2a) so the mint can't later be refused.
+- `patterns`: `<prefix>+*` subaddress grants — the key may mint any
+  `<prefix>+<non-empty-suffix>`. `<prefix>` MUST be a valid handle; a naked
+  `*` (or any pattern without the `+*` suffix) MUST be rejected. Patterns are
+  not reserved (unbounded); the per-delegator quota still bounds the count.
+  A pattern SHOULD be under a handle the delegator controls (e.g. their own
+  handle or one of `names`), keeping every minted identity attributable.
+
+An IdP and the broker MUST enforce that a mint's `name` is authorized by the
+constraint (exact `names` match, or a `patterns` match). Agent names may
+contain `+` (for subaddressing); human handles may not.
 
 **Provisioning request (`R`)** — signed by `P_priv`:
 
@@ -130,8 +151,9 @@ Reference validity: 90 days.
 }
 ```
 
-- `action` ∈ `mint` | `list` | `revoke`. `name` is required for
+- `action` ∈ `mint` | `list` | `revoke` | `reserve`. `name` is required for
   `mint`/`revoke`; `agent-key` (and optional `ephemeral`) for `mint`.
+  `reserve` carries neither — it acts on the `P_cert`'s `constraint.names`.
 - `domain` MUST equal the target IdP's domain (audience pinning).
 - Requests MUST be short-lived (≤ 10 min recommended).
 
@@ -173,8 +195,22 @@ Errors (shape `{"success": false, "reason": "…"}`):
 | Status | Meaning |
 |---|---|
 | 400 | Malformed bundle / bad chain / expired request |
-| 403 | Chain valid but not registered, revoked, or refused by policy |
+| 403 | Chain valid but not registered, revoked, or refused by policy (incl. a mint whose `name` the constraint doesn't authorize) |
 | 429 | Endorsement rate limit |
+
+### 4.2a IdP: `POST /provision/reserve`
+
+Request: `{ "request_bundle": "<… action=reserve>", "endorsement": "<E>" }`.
+Reserves **all** of the `P_cert`'s `constraint.names` for the delegator's
+account, all-or-nothing: if any name is already taken by another account (or
+is a human handle), the whole request MUST fail (`409`) and reserve nothing.
+Reservation pre-allocates the identity (no certificate yet) and consumes
+quota, so a later `mint` of a reserved name cannot be refused. Idempotent for
+names already reserved by the same delegator.
+
+Performed once at key-creation, in the browser, using the just-generated
+provisioning key (the same key the agent later mints with). Returns
+`{ "success": true }`.
 
 ### 4.3 IdP: `POST /provision/mint`
 

@@ -120,11 +120,17 @@ pub async fn make_credential(base: &str) -> AgentCredential {
         .unwrap();
     let user_cert = Certificate::parse(cert_body["cert"].as_str().unwrap()).unwrap();
 
-    // Delegate to a fresh provisioning key.
+    // Delegate to a fresh provisioning key. Constraint covers the fixed names
+    // the tests mint plus an `svc+*` pattern for the generated-name path.
     let provisioning_kp = KeyPair::generate();
+    let constraint = browserid_core::Constraint {
+        names: ["attestor", "worker", "bot"].iter().map(|s| s.to_string()).collect(),
+        patterns: vec!["svc+*".into()],
+    };
     let p_cert = ProvisioningCert::create(
         email,
         &provisioning_kp.public_key(),
+        constraint,
         Duration::days(90),
         &user_kp,
     )

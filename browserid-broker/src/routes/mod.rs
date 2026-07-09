@@ -76,6 +76,7 @@ where
         // Broker-as-endorser:
         .route("/provision/endorse", post(agent::endorse))
         // Broker-as-target-IdP (for @<broker-domain> agents):
+        .route("/provision/reserve", post(agent::reserve))
         .route("/provision/mint", post(agent::mint))
         .route("/provision/list", post(agent::list))
         .route("/provision/revoke", post(agent::revoke))

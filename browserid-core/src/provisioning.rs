@@ -82,6 +82,77 @@ fn expired(exp: i64) -> bool {
 // Provisioning certificate (P_cert)
 // --------------------------------------------------------------------------
 
+/// What a provisioning cert authorizes minting (spec v0.3). At least one of
+/// `names`/`patterns` must be non-empty — an empty constraint (and a naked `*`
+/// pattern) authorizes nothing, on purpose: every agent identity is either an
+/// explicitly reserved handle or a subaddress under a handle the user already
+/// controls, never an arbitrary name.
+///
+/// - `names`: exact handles the key may mint (and which are reserved at
+///   key-creation so the mint can't later be refused).
+/// - `patterns`: `<prefix>+*` subaddress grants — the key may mint any
+///   `<prefix>+<suffix>`. These are not reserved (unbounded); the count is
+///   still bounded by the per-delegator quota.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Constraint {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patterns: Vec<String>,
+}
+
+impl Constraint {
+    pub fn names(names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self { names: names.into_iter().map(Into::into).collect(), patterns: Vec::new() }
+    }
+
+    /// A pattern's required shape: `<prefix>+*`, where `<prefix>` is a
+    /// non-empty run of `[a-z0-9._-]` (a valid handle). No naked `*`.
+    pub fn pattern_prefix(pattern: &str) -> Option<&str> {
+        let prefix = pattern.strip_suffix("+*")?;
+        let ok = !prefix.is_empty()
+            && prefix
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-'));
+        ok.then_some(prefix)
+    }
+
+    /// Validate the constraint: at least one entry, and every pattern is a
+    /// well-formed `<prefix>+*` (naked `*` rejected).
+    pub fn validate(&self) -> Result<()> {
+        if self.names.is_empty() && self.patterns.is_empty() {
+            return Err(invalid("constraint", "must grant at least one name or pattern"));
+        }
+        for p in &self.patterns {
+            if Self::pattern_prefix(p).is_none() {
+                return Err(invalid(
+                    "constraint",
+                    format!("pattern '{p}' must be '<prefix>+*'"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether this constraint authorizes minting the agent name `name`:
+    /// either an exact `names` entry, or a `<prefix>+*` pattern where
+    /// `name == "<prefix>+<non-empty suffix>"`.
+    pub fn authorizes(&self, name: &str) -> bool {
+        if self.names.iter().any(|n| n == name) {
+            return true;
+        }
+        self.patterns.iter().any(|p| {
+            Self::pattern_prefix(p)
+                .map(|prefix| {
+                    name.strip_prefix(prefix)
+                        .and_then(|rest| rest.strip_prefix('+'))
+                        .is_some_and(|suffix| !suffix.is_empty())
+                })
+                .unwrap_or(false)
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvisioningCertClaims {
     /// MUST be [`TYP_PROVISIONING_CERT`]
@@ -93,6 +164,10 @@ pub struct ProvisioningCertClaims {
     /// The provisioning public key (P_pub)
     #[serde(rename = "public-key")]
     pub public_key: PublicKey,
+    /// What this key may mint (v0.3). Defaults empty for backward-compatible
+    /// decoding, but `create` requires a valid (non-empty) constraint.
+    #[serde(default)]
+    pub constraint: Constraint,
 }
 
 /// The delegation: `U_priv` certifies that `P_pub` may provision agent
@@ -104,13 +179,17 @@ pub struct ProvisioningCert {
 }
 
 impl ProvisioningCert {
-    /// Sign a new provisioning cert with the delegator's identity key
+    /// Sign a new provisioning cert with the delegator's identity key. The
+    /// `constraint` must be valid (at least one name/pattern, well-formed
+    /// patterns) — an unconstrained key is rejected.
     pub fn create(
         delegator_email: &str,
         provisioning_pub: &PublicKey,
+        constraint: Constraint,
         validity: Duration,
         identity_key: &KeyPair,
     ) -> Result<Self> {
+        constraint.validate()?;
         let now = Utc::now();
         let claims = ProvisioningCertClaims {
             typ: TYP_PROVISIONING_CERT.to_string(),
@@ -118,6 +197,7 @@ impl ProvisioningCert {
             iat: now.timestamp(),
             exp: (now + validity).timestamp(),
             public_key: provisioning_pub.clone(),
+            constraint,
         };
         let encoded = jws_sign(&claims, identity_key)?;
         Ok(Self { encoded, claims })
@@ -154,6 +234,11 @@ impl ProvisioningCert {
         &self.claims.public_key
     }
 
+    /// What this key may mint
+    pub fn constraint(&self) -> &Constraint {
+        &self.claims.constraint
+    }
+
     pub fn encoded(&self) -> &str {
         &self.encoded
     }
@@ -169,6 +254,10 @@ pub enum Action {
     Mint,
     List,
     Revoke,
+    /// Pre-allocate the cert's bound `names` at key-creation so a later mint
+    /// can't be refused (spec v0.3). Acts on the P_cert's `constraint.names`;
+    /// carries no `name` of its own.
+    Reserve,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,6 +324,12 @@ impl ProvisioningRequest {
         Self::create(Self::base_claims(Action::List, domain), provisioning_key)
     }
 
+    /// Reserve the cert's bound `names` (no per-request name — the target
+    /// reads them from the verified `constraint.names`).
+    pub fn reserve(domain: &str, provisioning_key: &KeyPair) -> Result<Self> {
+        Self::create(Self::base_claims(Action::Reserve, domain), provisioning_key)
+    }
+
     pub fn revoke(domain: &str, name: &str, provisioning_key: &KeyPair) -> Result<Self> {
         let mut claims = Self::base_claims(Action::Revoke, domain);
         claims.name = Some(name.to_string());
@@ -283,6 +378,9 @@ pub struct VerifiedRequest {
     pub issuer: String,
     /// P_pub, for registry lookups / audit
     pub provisioning_pub: PublicKey,
+    /// What the delegation authorizes minting — callers enforce
+    /// `constraint.authorizes(request.name)` for mints.
+    pub constraint: Constraint,
     pub request: ProvisioningRequestClaims,
 }
 
@@ -407,6 +505,7 @@ impl RequestBundle {
             delegator: delegator.to_string(),
             issuer: self.user_cert.issuer().to_string(),
             provisioning_pub: self.provisioning_cert.public_key().clone(),
+            constraint: self.provisioning_cert.constraint().clone(),
             request: self.request.claims().clone(),
         })
     }
@@ -534,6 +633,7 @@ mod tests {
         let p_cert = ProvisioningCert::create(
             "dan@mingo.place",
             &provisioning.public_key(),
+            Constraint::names(["attestor2"]),
             Duration::days(PROVISIONING_CERT_VALIDITY_DAYS),
             &user,
         )
@@ -549,6 +649,65 @@ mod tests {
 
         let bundle = RequestBundle::new(u_cert, p_cert, request);
         Chain { idp, user, provisioning, bundle }
+    }
+
+    #[test]
+    fn constraint_validation_and_matching() {
+        // Empty → invalid.
+        assert!(Constraint::default().validate().is_err());
+        // Names only.
+        let c = Constraint::names(["attestor2", "worker"]);
+        c.validate().unwrap();
+        assert!(c.authorizes("attestor2"));
+        assert!(c.authorizes("worker"));
+        assert!(!c.authorizes("other"));
+
+        // Patterns: <prefix>+* only; naked * rejected.
+        let c = Constraint { names: vec![], patterns: vec!["dan+*".into(), "foo+*".into()] };
+        c.validate().unwrap();
+        assert!(c.authorizes("dan+ci"));
+        assert!(c.authorizes("foo+worker"));
+        assert!(!c.authorizes("dan"), "bare prefix is not authorized by the +* pattern");
+        assert!(!c.authorizes("dan+"), "empty suffix is not authorized");
+        assert!(!c.authorizes("other+x"));
+        assert!(Constraint { names: vec![], patterns: vec!["*".into()] }.validate().is_err());
+        assert!(Constraint { names: vec![], patterns: vec!["dan*".into()] }.validate().is_err());
+
+        // Combined names + patterns (the user's example).
+        let c = Constraint {
+            names: vec!["foo".into(), "bar".into()],
+            patterns: vec!["user+*".into(), "foo+*".into()],
+        };
+        c.validate().unwrap();
+        assert!(c.authorizes("foo") && c.authorizes("bar"));
+        assert!(c.authorizes("user+ci") && c.authorizes("foo+ci"));
+        assert!(!c.authorizes("baz"));
+    }
+
+    #[test]
+    fn create_rejects_empty_constraint() {
+        let user = KeyPair::generate();
+        let p = KeyPair::generate();
+        assert!(ProvisioningCert::create(
+            "dan@mingo.place",
+            &p.public_key(),
+            Constraint::default(),
+            Duration::days(90),
+            &user,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn constraint_survives_the_chain() {
+        let c = chain(Duration::hours(24));
+        let verified = c.bundle.verify(&c.idp.public_key()).unwrap();
+        assert!(verified.constraint.authorizes("attestor2"));
+        assert!(!verified.constraint.authorizes("nope"));
+        // Reserve request carries no name.
+        let r = ProvisioningRequest::reserve("mingo.place", &c.provisioning).unwrap();
+        assert_eq!(r.claims().action, Action::Reserve);
+        assert!(r.claims().name.is_none());
     }
 
     #[test]
@@ -598,6 +757,7 @@ mod tests {
         let p_cert = ProvisioningCert::create(
             "mallory@mingo.place",
             &c.provisioning.public_key(),
+            Constraint::names(["attestor2"]),
             Duration::days(90),
             &c.user,
         )

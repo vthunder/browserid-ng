@@ -20,7 +20,8 @@ pub use assertion::{Assertion, BackedAssertion};
 pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;
 pub use provisioning::{
-    Action, Endorsement, ProvisioningCert, ProvisioningRequest, RequestBundle, VerifiedRequest,
+    Action, Constraint, Endorsement, ProvisioningCert, ProvisioningRequest, RequestBundle,
+    VerifiedRequest,
 };
 pub use rp_auth::{RpChallenge, TokenRequest, TokenResponse};
 
