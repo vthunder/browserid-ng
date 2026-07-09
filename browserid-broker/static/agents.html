@@ -34,19 +34,18 @@
   <h1>Agent keys</h1>
   <p class="muted">An <strong>agent key</strong> lets a program act with one of your
   identities — signing in to apps and services on your behalf — without a browser.
-  You authorize it here by signing a short delegation with your identity; the
-  program holds a private key, and browser­id vouches for each use under your
-  policy. Revoke any time; agents stop working within a day.</p>
+  You authorize it here by signing a short delegation with your identity's own key
+  (held in this browser); the program keeps a private key, and browser­id vouches for
+  each use under your policy. Revoke any time; agents stop working within a day.</p>
 
-  <div id="auth-gate" class="card">
-    <p>Checking your session…</p>
-  </div>
+  <div id="auth-gate" class="card"><p>Checking your session…</p></div>
 
   <div id="app" hidden>
     <div class="card">
       <strong>Create an agent key</strong>
-      <label for="email">Identity to delegate</label>
-      <select id="email"></select>
+      <label for="identity">Identity to delegate</label>
+      <select id="identity"></select>
+      <p id="identity-note" class="muted" style="font-size:.85em;margin:.2rem 0 0"></p>
       <label for="label">Label (for your reference)</label>
       <input id="label" placeholder="e.g. ci-bot, checkpoint-attestor" maxlength="64">
       <p style="margin-top:.9rem">
@@ -57,9 +56,9 @@
 
     <div id="credential-card" class="card" hidden>
       <strong class="warn">Copy this now — it is shown only once</strong>
-      <p class="muted" style="margin:.4rem 0">This is the agent credential. It contains a
-      private key that is never sent to our servers. Save it to your agent's secret
-      storage (e.g. <code>agent-credential.json</code>).</p>
+      <p class="muted" style="margin:.4rem 0">The agent credential. It contains a private
+      key that never left this page. Save it to your agent's secret storage
+      (e.g. <code>agent-credential.json</code>).</p>
       <pre id="credential"></pre>
       <button id="download">Download JSON</button>
       <button id="dismiss">Done</button>
@@ -73,36 +72,50 @@
 
   <p class="muted" style="margin-top:2rem"><a href="/">← back to browserid.me</a></p>
 
+<script src="/common/js/lib/jwcrypto-compat.js"></script>
 <script type="module">
 const $ = (id) => document.getElementById(id);
-const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const enc = new TextEncoder();
+const b64urlJson = (obj) => btoa(String.fromCharCode(...enc.encode(JSON.stringify(obj))))
+  .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const escapeHtml = (s) => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const sign = (key, msg) => new Promise((res, rej) =>
+  key.sign(msg, (err, sig) => err ? rej(err) : res(sig)));
+const genKeypair = () => new Promise((res, rej) =>
+  window.jwcrypto.generateKeypair({ algorithm: 'Ed25519' }, (err, kp) => err ? rej(err) : res(kp)));
 
 let csrf = null;
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { credentials: 'same-origin', ...opts });
   const body = await r.json().catch(() => ({}));
-  if (!r.ok || body.success === false) {
-    throw new Error(body.reason || body.error || `HTTP ${r.status}`);
-  }
+  if (!r.ok || body.success === false) throw new Error(body.reason || body.error || `HTTP ${r.status}`);
   return body;
 }
 
-// A minimal Ed25519 JWS matching browserid-core (header {"alg":"EdDSA","typ":"JWT"}).
-async function signJws(claims, privKey) {
-  const header = b64url(enc.encode(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' })));
-  const payload = b64url(enc.encode(JSON.stringify(claims)));
-  const signingInput = `${header}.${payload}`;
-  const sig = new Uint8Array(await crypto.subtle.sign('Ed25519', privKey, enc.encode(signingInput)));
-  return `${signingInput}.${b64url(sig)}`;
+/// Every locally-held identity: {email, cert, priv, issuer, exp} from the
+/// browserid.me-origin `emails` store (the same records the dialog + SBO
+/// signer use). The private key is here regardless of which IdP issued the
+/// cert, so both fallback and primary identities work.
+function localIdentities() {
+  let store = {};
+  try { store = JSON.parse(localStorage.emails || '{}'); } catch {}
+  const out = [];
+  for (const issuerKey of Object.keys(store)) {
+    for (const [email, rec] of Object.entries(store[issuerKey] || {})) {
+      if (!rec || !rec.priv || !rec.cert) continue;
+      out.push({ email, cert: rec.cert, priv: rec.priv, ...certMeta(rec.cert) });
+    }
+  }
+  return out;
 }
 
-async function genKeypair() {
-  const kp = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
-  const rawPub = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
-  const jwk = await crypto.subtle.exportKey('jwk', kp.privateKey); // d = 32-byte seed (base64url)
-  return { priv: kp.privateKey, pubB64: b64url(rawPub), seedB64url: jwk.d };
+/// Pull {issuer, exp} out of a cert's payload without verifying (display only).
+function certMeta(cert) {
+  try {
+    const p = JSON.parse(atob(cert.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+    return { issuer: p.iss, exp: p.exp };
+  } catch { return { issuer: null, exp: 0 }; }
 }
 
 async function boot() {
@@ -110,28 +123,43 @@ async function boot() {
   try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
   if (!ctx.authenticated) {
     $('auth-gate').innerHTML = `<p>You are not signed in. Agent keys are managed from your
-      browser­id session — sign in through any app's login dialog first, then reload this page.</p>`;
+      browser­id session — sign in through any app's login dialog first, then reload.</p>`;
     return;
   }
-  if (!(window.crypto?.subtle)) {
-    $('auth-gate').innerHTML = `<p class="err">This browser lacks WebCrypto; cannot create keys here.</p>`;
+  if (!window.jwcrypto || !window.crypto?.subtle) {
+    $('auth-gate').innerHTML = `<p class="err">This browser lacks the crypto needed to sign keys here.</p>`;
     return;
   }
   csrf = ctx.csrf_token;
   $('auth-gate').hidden = true;
   $('app').hidden = false;
 
-  const { emails } = await api('/wsapi/list_emails');
-  const sel = $('email');
+  const ids = localIdentities();
+  const sel = $('identity');
   sel.innerHTML = '';
-  for (const e of emails) {
-    const o = document.createElement('option'); o.value = e; o.textContent = e; sel.appendChild(o);
+  const now = Math.floor(Date.now() / 1000);
+  for (const id of ids) {
+    const o = document.createElement('option');
+    o.value = id.email;
+    const stale = id.exp && id.exp < now;
+    o.textContent = id.email + (stale ? ' (needs re-login)' : '');
+    o.disabled = stale;
+    sel.appendChild(o);
   }
-  if (!emails.length) {
+  if (!ids.length) {
     $('create').disabled = true;
-    $('create-status').textContent = 'No verified identities on this account yet.';
+    $('identity-note').textContent = 'No identities cached in this browser yet — sign in to an app first.';
+  } else {
+    sel.onchange = showIdentityNote;
+    showIdentityNote();
   }
   await refreshList();
+}
+
+function showIdentityNote() {
+  const id = localIdentities().find(i => i.email === $('identity').value);
+  $('identity-note').textContent = id?.issuer
+    ? `Agent will be minted at ${id.issuer} (the IdP that issued this identity).` : '';
 }
 
 async function refreshList() {
@@ -160,51 +188,47 @@ async function refreshList() {
   }
 }
 
-function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-
 $('create').onclick = async () => {
-  const email = $('email').value;
+  const id = localIdentities().find(i => i.email === $('identity').value);
   const label = $('label').value.trim() || 'agent key';
   const status = $('create-status');
+  if (!id) return;
   $('create').disabled = true; status.className = 'muted'; status.textContent = 'Creating…';
   try {
-    // 1. Ephemeral identity key, certified by the broker for this email (U_cert).
-    const idKey = await genKeypair();
-    const cert = await api('/wsapi/cert_key', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email, pubkey: { algorithm: 'Ed25519', publicKey: idKey.pubB64 }, ephemeral: false }),
-    });
-    const uCert = cert.cert;
-
-    // 2. Provisioning key, delegated by signing a P_cert with the identity key.
+    // Sign the provisioning cert with the identity's own key (already held
+    // in this origin). No IdP round-trip — the delegation is user-signed.
+    const userKey = window.jwcrypto.loadSecretKeyFromObject(id.priv);
     const provKey = await genKeypair();
     const now = Math.floor(Date.now() / 1000);
-    const pCert = await signJws({
+    const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+    const payload = b64urlJson({
       typ: 'browserid-provisioning-cert-v1',
-      iss: email,
+      iss: id.email,
       iat: now,
       exp: now + 90 * 24 * 3600,
-      'public-key': { algorithm: 'Ed25519', publicKey: provKey.pubB64 },
-    }, idKey.priv);
+      'public-key': { algorithm: 'Ed25519', publicKey: provKey.publicKey._jwk.x },
+    });
+    const sig = await sign(userKey, `${header}.${payload}`);
+    const pCert = `${header}.${payload}.${sig}`;
+    const delegation = `${id.cert}~${pCert}`;
 
-    const delegation = `${uCert}~${pCert}`;
-
-    // 3. Register the delegation (public data only).
+    // Register the delegation (public data only) at the broker.
     await api('/wsapi/register_provisioning_cert', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ csrf, label, bundle: delegation }),
     });
 
-    // 4. Present the credential once. secret_key (P_priv seed) never left this page.
+    // The credential: P_priv seed + delegation. broker = us; idp = the
+    // identity's issuer (mingo.place for a primary identity, us for a fallback).
+    const idpDomain = id.issuer || location.host;
     const credential = {
-      secret_key: provKey.seedB64url,
+      secret_key: provKey.secretKey._jwk.d,
       delegation,
       broker: location.origin,
-      idp: location.origin,
+      idp: /^(localhost|127\.)/.test(idpDomain) ? `http://${idpDomain}` : `https://${idpDomain}`,
     };
     showCredential(credential);
-    status.textContent = '';
-    $('label').value = '';
+    status.textContent = ''; $('label').value = '';
     await refreshList();
   } catch (e) {
     status.className = 'err'; status.textContent = 'Failed: ' + e.message;
