@@ -29,7 +29,7 @@ use browserid_core::provisioning::{ProvisioningRequest, RequestBundle};
 use browserid_core::rp_auth::TokenErrorResponse;
 use browserid_core::{
     Assertion, BackedAssertion, Certificate, KeyPair, ProvisioningCert, RpChallenge, TokenRequest,
-    TokenResponse, Warrant,
+    TokenResponse, Warrant, WarrantGrant,
 };
 
 /// Default validity for assertions minted by [`AgentIdentity::assertion_for`]
@@ -176,7 +176,8 @@ impl std::fmt::Debug for AgentIdentity {
 /// `verification_uri` to the principal; poll with the `code`.
 #[derive(Debug, Clone)]
 pub struct WarrantRequestHandle {
-    pub audience: String,
+    /// The audiences this request asks grants for (one warrant each)
+    pub audiences: Vec<String>,
     pub code: String,
     pub verification_uri: String,
     pub expires_in: i64,
@@ -270,16 +271,27 @@ impl AgentIdentity {
         self.warrants.keys().map(String::as_str).collect()
     }
 
-    /// Raise a **consent request** at the registrar (spec §6.2): ask the
-    /// principal to approve a warrant for `audience` with `scopes`. Returns a
-    /// handle whose `verification_uri` must reach the principal (print it,
-    /// message it — whatever channel exists); they approve on the registrar's
-    /// consent page.
+    /// Raise a **consent request** at the registrar (spec §6.2) for a single
+    /// audience — sugar over [`Self::request_warrants`].
     pub async fn request_warrant(
         &self,
         audience: &str,
         scopes: Option<Vec<String>>,
     ) -> Result<WarrantRequestHandle> {
+        self.request_warrants(vec![WarrantGrant { aud: audience.to_string(), scopes }])
+            .await
+    }
+
+    /// Raise a **consent request** at the registrar for one or more grants
+    /// (spec §6.2): the principal approves the whole set in one deliberate
+    /// action and one single-audience warrant per grant comes back. Returns a
+    /// handle whose `verification_uri` must reach the principal (print it,
+    /// message it — whatever channel exists).
+    pub async fn request_warrants(
+        &self,
+        grants: Vec<WarrantGrant>,
+    ) -> Result<WarrantRequestHandle> {
+        let audiences: Vec<String> = grants.iter().map(|g| g.aud.clone()).collect();
         let name = self
             .email
             .split('@')
@@ -287,8 +299,7 @@ impl AgentIdentity {
             .ok_or_else(|| AgentError::InvalidStored("email has no local part".into()))?;
         let registrar_domain = url_host(&self.credential.broker).to_string();
         let key = self.credential.provisioning_key()?;
-        let request =
-            ProvisioningRequest::warrant(&registrar_domain, name, audience, scopes, &key)?;
+        let request = ProvisioningRequest::warrant(&registrar_domain, name, grants, &key)?;
         let bundle = build_bundle(&self.credential, request)?;
 
         let response = self
@@ -309,7 +320,7 @@ impl AgentIdentity {
             });
         }
         Ok(WarrantRequestHandle {
-            audience: audience.to_string(),
+            audiences,
             code: value["code"].as_str().unwrap_or_default().to_string(),
             verification_uri: value["verification_uri"].as_str().unwrap_or_default().to_string(),
             expires_in: value["expires_in"].as_i64().unwrap_or(900),
@@ -341,28 +352,57 @@ impl AgentIdentity {
             Some("pending") => Ok(false),
             Some("denied") => Err(AgentError::WarrantDenied),
             Some("approved") => {
-                let warrant = value["warrant"].as_str().ok_or_else(|| {
-                    AgentError::InvalidWarrant("approved response missing warrant".into())
-                })?;
-                self.add_warrant(warrant)?;
+                // Batch shape: `warrants` array; `warrant` kept for N==1.
+                let mut stored = 0;
+                if let Some(list) = value["warrants"].as_array() {
+                    for w in list {
+                        if let Some(jws) = w.as_str() {
+                            self.add_warrant(jws)?;
+                            stored += 1;
+                        }
+                    }
+                }
+                if stored == 0 {
+                    let warrant = value["warrant"].as_str().ok_or_else(|| {
+                        AgentError::InvalidWarrant("approved response missing warrants".into())
+                    })?;
+                    self.add_warrant(warrant)?;
+                }
                 Ok(true)
             }
             Some("expired") | None | Some(_) => Err(AgentError::WarrantExpired),
         }
     }
 
-    /// The whole consent loop: request, surface the verification URI via
-    /// `notify`, poll until the principal responds (or the request expires).
+    /// The whole consent loop for a single audience — sugar over
+    /// [`Self::obtain_warrants`].
     pub async fn obtain_warrant(
         &mut self,
         audience: &str,
         scopes: Option<Vec<String>>,
         notify: impl FnOnce(&WarrantRequestHandle),
     ) -> Result<()> {
-        if self.warrants.contains_key(audience) {
+        self.obtain_warrants(vec![WarrantGrant { aud: audience.to_string(), scopes }], notify)
+            .await
+    }
+
+    /// The whole consent loop for a set of grants: request the batch,
+    /// surface the verification URI via `notify`, poll until the principal
+    /// responds (or the request expires). Grants already covered by held
+    /// warrants are skipped; if nothing is missing, no request is raised.
+    pub async fn obtain_warrants(
+        &mut self,
+        grants: Vec<WarrantGrant>,
+        notify: impl FnOnce(&WarrantRequestHandle),
+    ) -> Result<()> {
+        let missing: Vec<WarrantGrant> = grants
+            .into_iter()
+            .filter(|g| !self.warrants.contains_key(&g.aud))
+            .collect();
+        if missing.is_empty() {
             return Ok(());
         }
-        let handle = self.request_warrant(audience, scopes).await?;
+        let handle = self.request_warrants(missing).await?;
         notify(&handle);
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_secs(handle.expires_in.max(0) as u64);

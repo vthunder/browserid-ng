@@ -218,9 +218,9 @@ contain `+` (for subaddressing); human handles may not.
 
 - `action` ∈ `mint` | `list` | `revoke` | `reserve` | `warrant` (§6). `name`
   is required for `mint`/`revoke`; `agent-key` (and optional `ephemeral`)
-  for `mint`; `warrant` carries the fields of §6.2. `reserve` carries
-  neither `name` nor `agent-key` — it acts on the `P_cert`'s
-  `constraint.names`.
+  for `mint`; `warrant` carries `name` plus `warrant-grants` (§6.2).
+  `reserve` carries neither `name` nor `agent-key` — it acts on the
+  `P_cert`'s `constraint.names`.
 - `domain` MUST equal the target IdP's domain (audience pinning).
 - Requests MUST be short-lived (≤ 10 min recommended).
 
@@ -513,10 +513,19 @@ Request: `{ "request_bundle": "<U_cert~P_cert~R>" }` where `R` has:
   "action": "warrant",
   "domain": "<registrar domain>",
   "name": "attestor2",
-  "warrant-aud": "https://api.mingo.place",
-  "warrant-scopes": ["post", "read"]
+  "warrant-grants": [
+    { "aud": "https://api.mingo.place", "scopes": ["post", "read"] },
+    { "aud": "sbo://mingo.place",       "scopes": ["claim"] }
+  ]
 }
 ```
+
+`warrant-grants` carries **1–8 grants**, one per audience (duplicates MUST be
+rejected), each with its own scopes — an agent that needs several audiences
+(e.g. a web service *and* a ledger) asks once and the principal approves
+once. Each grant still yields its own **single-audience** warrant (§5.2);
+batching exists only at the request/consent layer, so the privacy analysis
+is unchanged.
 
 The registrar verifies the bundle exactly as in §4.2 (registered, unrevoked,
 policy), checks `name` against the constraint, then creates a **pending
@@ -535,14 +544,17 @@ principal directly when it has a channel to them.
 ### 6.3 Consent page
 
 Served by the registrar at `verification_uri`, to the signed-in delegator
-only. It MUST display: the agent's handle and label, the **verified origin**
-of `warrant-aud`, and the requested scopes — prefilled from the request,
-never user-typed. Where the RP publishes §7.4 metadata, the page MAY enrich
-the display (name/logo) but MUST still show the origin itself.
+only. It MUST display: the agent's handle and label, and — for **every**
+grant in the request, each with equal prominence (no folding N grants
+behind a summary line) — the **verified audience** and its requested
+scopes, prefilled from the request, never user-typed. Where an RP publishes
+§7.4 metadata, the page MAY enrich the display (name/logo) but MUST still
+show the audience itself.
 
-On approval, the page signs the §5.2 warrant with the identity key held in
-registrar-origin storage (the same typed-signing operation as `P_cert`
-creation, §4.6) and attaches it to the pending request. Policy knobs
+On approval, the page signs one §5.2 warrant **per grant** with the
+identity key held in registrar-origin storage (the same typed-signing
+operation as `P_cert` creation, §4.6) and attaches them to the pending
+request; approval is all-or-nothing over the displayed set. Policy knobs
 (deny, "always ask", standing per-agent preferences) are registrar-local
 and non-normative. The approve action MUST be deliberate (no
 default-focused approve button); consent-fatigue resistance is a design
@@ -554,7 +566,7 @@ Request: `{ "code": "<code>" }`. Responses:
 
 | Status | Body | Meaning |
 |---|---|---|
-| 200 | `{ "status": "approved", "warrant": "<W JWS>" }` | Done — the pending request is deleted on delivery |
+| 200 | `{ "status": "approved", "warrants": ["<W JWS>", …], "warrant": "<W JWS>\|null" }` | Done — one warrant per grant, in grant order (`warrant` is populated iff exactly one); the pending request is deleted on delivery |
 | 200 | `{ "status": "pending" }` | Poll again after `interval` seconds |
 | 200 | `{ "status": "denied" }` | The user declined |
 | 410 | `{ "status": "expired" }` | Request expired unapproved |

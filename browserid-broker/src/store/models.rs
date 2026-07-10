@@ -142,16 +142,25 @@ pub struct WarrantRequestRecord {
     pub agent_email: String,
     /// Label of the provisioning cert that raised the request (display)
     pub label: String,
-    /// The RP audience, verbatim from the RP's challenge
-    pub audience: String,
-    /// Scopes the RP requested (RP vocabulary)
-    pub scopes: Vec<String>,
+    /// The requested grants — one per RP audience, each with its own scopes
+    /// (audiences verbatim from RP challenges). Approval yields one
+    /// single-audience warrant per grant.
+    pub grants: Vec<WarrantGrantItem>,
     pub status: WarrantRequestStatus,
-    /// The signed warrant JWS, present once approved
-    pub warrant: Option<String>,
+    /// The signed warrant JWSs (one per grant, same order), present once
+    /// approved
+    pub warrants: Option<Vec<String>>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub last_polled_at: Option<DateTime<Utc>>,
+}
+
+/// One grant inside a pending warrant request
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WarrantGrantItem {
+    pub audience: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

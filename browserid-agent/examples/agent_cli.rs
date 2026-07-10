@@ -24,6 +24,7 @@ fn usage() -> ! {
         "usage: agent_cli <credential.json> <command> [...]\n\
          commands:\n  \
          provision [name]      provision (or refresh) the agent identity\n  \
+         grant <aud> [aud...]  request warrants for one or more audiences (one consent)\n  \
          assert <audience>     print a warrant-backed assertion (runs consent if needed)\n  \
          token <resource-url>  full flow: challenge -> consent -> RP bearer token\n  \
          warrants              list audiences this agent holds warrants for\n  \
@@ -106,6 +107,26 @@ async fn run(
             let name = args.get(2).map(String::as_str);
             let agent = load_or_provision(&credential, credential_path, name).await?;
             println!("{}", agent.email());
+        }
+        "grant" => {
+            let audiences: Vec<&str> = args[2..].iter().map(String::as_str).collect();
+            if audiences.is_empty() {
+                usage();
+            }
+            let mut agent = load_or_provision(&credential, credential_path, None).await?;
+            let grants = audiences
+                .iter()
+                .map(|a| browserid_core::WarrantGrant { aud: a.to_string(), scopes: None })
+                .collect();
+            agent
+                .obtain_warrants(grants, |handle| {
+                    eprintln!("\n  ==> approve at: {}\n", handle.verification_uri);
+                })
+                .await?;
+            agent.save(&ipath)?;
+            for a in audiences {
+                eprintln!("warrant held for {a}");
+            }
         }
         "assert" => {
             let audience = args.get(2).map(String::as_str).unwrap_or_else(|| usage());

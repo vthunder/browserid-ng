@@ -14,7 +14,7 @@ use super::{
 use crate::error::BrokerError;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 6;
+const SCHEMA_VERSION: i32 = 7;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -79,6 +79,9 @@ impl SqliteStore {
             }
             if current_version < 6 {
                 Self::migrate_v6(conn)?;
+            }
+            if current_version < 7 {
+                Self::migrate_v7(conn)?;
             }
 
             // Update schema version
@@ -265,6 +268,33 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v7(conn: &Connection) -> Result<(), BrokerError> {
+        // Batch consent (g0ba): a request now carries N grants and N signed
+        // warrants. Rows are 15-minute ephemera, so drop-and-recreate is
+        // safe — no data worth migrating can exist.
+        conn.execute_batch(
+            r#"
+            DROP TABLE IF EXISTS warrant_requests;
+            CREATE TABLE warrant_requests (
+                code TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                delegator_email TEXT NOT NULL,
+                agent_email TEXT NOT NULL,
+                label TEXT NOT NULL,
+                grants TEXT NOT NULL,
+                status TEXT NOT NULL,
+                warrants TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                last_polled_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_warrant_requests_user ON warrant_requests(user_id);
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → WarrantRequestRecord mapping
@@ -282,26 +312,26 @@ fn warrant_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Warrant
             .unwrap_or_else(|_| Utc::now())
     };
     let user_id: i64 = row.get(1)?;
-    let scopes_json: String = row.get(6)?;
-    let status_str: String = row.get(7)?;
+    let grants_json: String = row.get(5)?;
+    let status_str: String = row.get(6)?;
+    let warrants_json: Option<String> = row.get(7)?;
     Ok(WarrantRequestRecord {
         code: row.get(0)?,
         user_id: UserId(user_id as u64),
         delegator_email: row.get(2)?,
         agent_email: row.get(3)?,
         label: row.get(4)?,
-        audience: row.get(5)?,
-        scopes: serde_json::from_str(&scopes_json).unwrap_or_default(),
+        grants: serde_json::from_str(&grants_json).unwrap_or_default(),
         status: WarrantRequestStatus::from_str(&status_str)
             .unwrap_or(WarrantRequestStatus::Pending),
-        warrant: row.get(8)?,
-        created_at: parse_ts(row.get(9)?),
-        expires_at: parse_ts(row.get(10)?),
-        last_polled_at: parse_ts_opt(row.get(11)?),
+        warrants: warrants_json.and_then(|w| serde_json::from_str(&w).ok()),
+        created_at: parse_ts(row.get(8)?),
+        expires_at: parse_ts(row.get(9)?),
+        last_polled_at: parse_ts_opt(row.get(10)?),
     })
 }
 
-const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, audience, scopes, status, warrant, created_at, expires_at, last_polled_at";
+const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, last_polled_at";
 
 // Row → ProvisioningCertRecord mapping shared by the registry queries
 fn prov_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProvisioningCertRecord> {
@@ -901,18 +931,17 @@ impl UserStore for SqliteStore {
     fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO warrant_requests (code, user_id, delegator_email, agent_email, label, audience, scopes, status, warrant, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO warrant_requests (code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 req.code,
                 req.user_id.0 as i64,
                 req.delegator_email,
                 req.agent_email,
                 req.label,
-                req.audience,
-                serde_json::to_string(&req.scopes).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&req.grants).unwrap_or_else(|_| "[]".into()),
                 req.status.as_str(),
-                req.warrant,
+                req.warrants.as_ref().map(|w| serde_json::to_string(w).unwrap_or_else(|_| "[]".into())),
                 req.created_at.to_rfc3339(),
                 req.expires_at.to_rfc3339(),
             ],
@@ -959,18 +988,21 @@ impl UserStore for SqliteStore {
         &self,
         user_id: UserId,
         code: &str,
-        warrant: Option<&str>,
+        warrants: Option<&[String]>,
     ) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
-        let (status, warrant_val) = match warrant {
-            Some(w) => ("approved", Some(w.to_string())),
+        let (status, warrants_val) = match warrants {
+            Some(w) => (
+                "approved",
+                Some(serde_json::to_string(w).unwrap_or_else(|_| "[]".into())),
+            ),
             None => ("denied", None),
         };
         let rows = conn
             .execute(
-                "UPDATE warrant_requests SET status = ?1, warrant = ?2
+                "UPDATE warrant_requests SET status = ?1, warrants = ?2
                  WHERE code = ?3 AND user_id = ?4 AND status = 'pending' AND expires_at > ?5",
-                params![status, warrant_val, code, user_id.0 as i64, Utc::now().to_rfc3339()],
+                params![status, warrants_val, code, user_id.0 as i64, Utc::now().to_rfc3339()],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         if rows == 0 {
@@ -1257,9 +1289,9 @@ impl UserStore for std::sync::Arc<SqliteStore> {
         &self,
         user_id: UserId,
         code: &str,
-        warrant: Option<&str>,
+        warrants: Option<&[String]>,
     ) -> StoreResult<()> {
-        (**self).respond_warrant_request(user_id, code, warrant)
+        (**self).respond_warrant_request(user_id, code, warrants)
     }
 
     fn touch_warrant_poll(&self, code: &str) -> StoreResult<Option<DateTime<Utc>>> {

@@ -22,7 +22,7 @@ pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;
 pub use provisioning::{
     Action, Constraint, Endorsement, ProvisioningCert, ProvisioningRequest, RequestBundle,
-    VerifiedRequest,
+    VerifiedRequest, WarrantGrant, MAX_WARRANT_GRANTS,
 };
 pub use rp_auth::{RpChallenge, TokenRequest, TokenResponse};
 pub use warrant::{Warrant, TYP_AGENT_WARRANT, WARRANT_VALIDITY_DAYS};

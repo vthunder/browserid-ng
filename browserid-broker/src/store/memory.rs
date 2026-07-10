@@ -408,7 +408,7 @@ impl UserStore for InMemoryUserStore {
         &self,
         user_id: UserId,
         code: &str,
-        warrant: Option<&str>,
+        warrants: Option<&[String]>,
     ) -> StoreResult<()> {
         let mut reqs = self.warrant_requests.write().unwrap();
         match reqs.get_mut(code) {
@@ -417,10 +417,10 @@ impl UserStore for InMemoryUserStore {
                     && r.status == WarrantRequestStatus::Pending
                     && !r.is_expired() =>
             {
-                match warrant {
+                match warrants {
                     Some(w) => {
                         r.status = WarrantRequestStatus::Approved;
-                        r.warrant = Some(w.to_string());
+                        r.warrants = Some(w.to_vec());
                     }
                     None => r.status = WarrantRequestStatus::Denied,
                 }

@@ -32,8 +32,8 @@
 <body>
   <h1>Agent consent</h1>
   <p class="muted">An agent acting for you is asking to sign in somewhere new. Approving
-  signs a <strong>warrant</strong> with your identity's own key (held in this browser):
-  a grant valid <em>only at the site shown</em>, with <em>only the scopes shown</em>,
+  signs a <strong>warrant</strong> with your identity's own key (held in this browser) —
+  one per place shown, each valid <em>only there</em>, with <em>only the scopes shown</em>,
   revocable by revoking the agent. Nothing is shared with any other site.</p>
 
   <div id="auth-gate" class="card"><p>Checking your session…</p></div>
@@ -146,18 +146,22 @@ function render(requests) {
       asks to sign in somewhere new, it appears here.</p></div>`;
     return;
   }
+  // Every grant in a batch is rendered with equal prominence — approval
+  // covers exactly the set shown, nothing folded away.
+  const grantBlock = (g) => `
+      <p class="origin" style="margin-bottom:.15rem">${escapeHtml(g.audience)}</p>
+      <p style="margin-top:0">${(g.scopes || []).length
+          ? 'with scopes: ' + g.scopes.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')
+          : '<span class="muted">no specific scopes requested (site-level access)</span>'}</p>`;
   list.innerHTML = requests.map(r => `
     <div class="card ${r.code === linkedCode ? 'hot' : ''}" id="req-${escapeHtml(r.code)}">
       <p style="margin-top:0"><span class="who">${escapeHtml(r.agent_email)}</span>
         <span class="muted">(${escapeHtml(r.label)}, acting for
         <span class="who">${escapeHtml(r.delegator_email)}</span>)</span><br>
-        wants to act for you at</p>
-      <p class="origin">${escapeHtml(r.audience)}</p>
-      <p>${(r.scopes || []).length
-          ? 'with scopes: ' + r.scopes.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')
-          : '<span class="muted">no specific scopes requested (site-level access)</span>'}</p>
+        wants to act for you at${(r.grants || []).length > 1 ? ' each of' : ''}</p>
+      ${(r.grants || []).map(grantBlock).join('')}
       <p>
-        <button class="approve" data-code="${escapeHtml(r.code)}">Approve</button>
+        <button class="approve" data-code="${escapeHtml(r.code)}">Approve${(r.grants || []).length > 1 ? ' all ' + r.grants.length : ''}</button>
         <button class="deny" data-code="${escapeHtml(r.code)}">Deny</button>
         <span class="muted" style="font-size:.85em">expires ${new Date(r.expires_at).toLocaleTimeString()}</span>
       </p>
@@ -181,26 +185,30 @@ async function resolve(r, approve) {
   const card = document.getElementById(`req-${r.code}`);
   for (const b of card.querySelectorAll('button')) b.disabled = true;
   try {
-    let warrant = null;
+    let warrants = null;
     if (approve) {
       status.className = 'row-status muted';
-      status.textContent = 'Signing warrant…';
+      status.textContent = 'Signing warrants…';
       const id = await freshIdentity(r.delegator_email);
       if (!id) throw new Error(
         `the identity key for ${r.delegator_email} is not available in this browser — ` +
         `sign in to an app with that identity here first, then retry`);
-      warrant = await signWarrant(id, r.agent_email, r.audience, r.scopes);
-      logWarrant({ delegator: r.delegator_email, agent: r.agent_email,
-                   aud: r.audience, scopes: r.scopes || [],
-                   exp: Math.floor(Date.now() / 1000) + 90 * 24 * 3600, jws: warrant });
+      warrants = [];
+      for (const g of (r.grants || [])) {
+        const jws = await signWarrant(id, r.agent_email, g.audience, g.scopes);
+        warrants.push(jws);
+        logWarrant({ delegator: r.delegator_email, agent: r.agent_email,
+                     aud: g.audience, scopes: g.scopes || [],
+                     exp: Math.floor(Date.now() / 1000) + 90 * 24 * 3600, jws });
+      }
     }
     await api('/wsapi/warrant_respond', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ csrf, code: r.code, approve, warrant }),
+      body: JSON.stringify({ csrf, code: r.code, approve, warrants }),
     });
     status.className = approve ? 'row-status ok' : 'row-status muted';
     status.textContent = approve
-      ? 'Approved — the agent will pick this up within a few seconds.'
+      ? `Approved${(r.grants || []).length > 1 ? ' (' + r.grants.length + ' warrants)' : ''} — the agent will pick this up within a few seconds.`
       : 'Denied.';
   } catch (e) {
     status.className = 'row-status err';

@@ -6,7 +6,7 @@
 mod common;
 
 use browserid_agent::{AgentError, AgentIdentity};
-use browserid_core::{BackedAssertion, Certificate, Warrant};
+use browserid_core::{BackedAssertion, Certificate, Warrant, WarrantGrant};
 use chrono::Duration;
 use common::{make_credential, start_broker};
 use serde_json::{json, Value};
@@ -14,14 +14,15 @@ use serde_json::{json, Value};
 const AUDIENCE: &str = "https://api.example.com";
 
 /// The consent page's job, done with raw HTTP + real crypto: list pending
-/// requests, sign the warrant with the user's identity key, respond.
+/// requests, sign one warrant per grant with the user's identity key,
+/// respond. Returns (response, grant count).
 async fn approve_pending(
     base: &str,
     session_cookie: &str,
     user_kp: &browserid_core::KeyPair,
     parent_cert: &Certificate,
     approve: bool,
-) -> Value {
+) -> (Value, usize) {
     let http = reqwest::Client::new();
     let csrf = http
         .get(format!("{base}/wsapi/session_context"))
@@ -48,44 +49,46 @@ async fn approve_pending(
     let requests = pending["requests"].as_array().unwrap();
     assert_eq!(requests.len(), 1, "expected one pending request: {pending}");
     let r = &requests[0];
-    assert_eq!(r["audience"], AUDIENCE);
-    assert_eq!(r["scopes"][0], "post");
+    let grants = r["grants"].as_array().unwrap();
+    assert!(!grants.is_empty());
 
-    let warrant = approve.then(|| {
-        Warrant::create(
-            parent_cert,
-            r["agent_email"].as_str().unwrap(),
-            r["audience"].as_str().unwrap(),
-            Some(
-                r["scopes"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|s| s.as_str().unwrap().to_string())
-                    .collect(),
-            ),
-            Duration::days(30),
-            user_kp,
-        )
-        .unwrap()
-        .encoded()
-        .to_string()
+    let warrants = approve.then(|| {
+        grants
+            .iter()
+            .map(|g| {
+                Warrant::create(
+                    parent_cert,
+                    r["agent_email"].as_str().unwrap(),
+                    g["audience"].as_str().unwrap(),
+                    g["scopes"].as_array().map(|ss| {
+                        ss.iter().map(|s| s.as_str().unwrap().to_string()).collect()
+                    }),
+                    Duration::days(30),
+                    user_kp,
+                )
+                .unwrap()
+                .encoded()
+                .to_string()
+            })
+            .collect::<Vec<_>>()
     });
 
-    http.post(format!("{base}/wsapi/warrant_respond"))
+    let resp = http
+        .post(format!("{base}/wsapi/warrant_respond"))
         .header("cookie", session_cookie)
         .json(&json!({
             "csrf": csrf,
             "code": r["code"],
             "approve": approve,
-            "warrant": warrant,
+            "warrants": warrants,
         }))
         .send()
         .await
         .unwrap()
         .json()
         .await
-        .unwrap()
+        .unwrap();
+    (resp, grants.len())
 }
 
 #[tokio::test]
@@ -108,8 +111,9 @@ async fn consent_flow_approval_roundtrip() {
     assert!(!agent.poll_warrant(&handle).await.unwrap());
 
     // The principal approves on the consent surface.
-    let resp = approve_pending(&base, &session, &user_kp, &parent_cert, true).await;
+    let (resp, grant_count) = approve_pending(&base, &session, &user_kp, &parent_cert, true).await;
     assert_eq!(resp["success"], true, "respond failed: {resp}");
+    assert_eq!(grant_count, 1);
 
     // Poll picks the warrant up (respecting the interval), stores it, and the
     // agent can now present at the audience.
@@ -168,4 +172,55 @@ async fn warrant_request_requires_registered_credential() {
     // Provisioning already fails at endorse; build the request path directly
     // via a provisioned agent at the right broker instead.
     assert!(agent_result.is_err());
+}
+
+#[tokio::test]
+async fn batch_consent_two_audiences_one_approval() {
+    let (base, broker_pubkey) = start_broker().await;
+    let (credential, user_kp, session) = make_credential(&base).await;
+    let mut agent = AgentIdentity::provision(&credential, Some("attestor")).await.unwrap();
+    let (u, _) = credential.delegation.split_once('~').unwrap();
+    let parent_cert = Certificate::parse(u).unwrap();
+
+    // One request, two grants — a web audience and a non-HTTP (ledger) one,
+    // with different scopes.
+    let handle = agent
+        .request_warrants(vec![
+            WarrantGrant { aud: "https://mingo.example".into(), scopes: Some(vec!["post".into()]) },
+            WarrantGrant { aud: "sbo://mingo.example".into(), scopes: Some(vec!["claim".into()]) },
+        ])
+        .await
+        .unwrap();
+    assert_eq!(handle.audiences.len(), 2);
+
+    // One approval signs both.
+    let (resp, grant_count) = approve_pending(&base, &session, &user_kp, &parent_cert, true).await;
+    assert_eq!(resp["success"], true, "respond failed: {resp}");
+    assert_eq!(grant_count, 2);
+
+    tokio::time::sleep(std::time::Duration::from_secs(handle.interval as u64)).await;
+    assert!(agent.poll_warrant(&handle).await.unwrap());
+    assert!(agent.warrant_for("https://mingo.example").is_some());
+    assert!(agent.warrant_for("sbo://mingo.example").is_some());
+
+    // Each warrant works only at its own audience, with its own scopes.
+    let assertion = agent.assertion_for("sbo://mingo.example").await.unwrap();
+    let verified = BackedAssertion::parse(&assertion)
+        .unwrap()
+        .verify("sbo://mingo.example", |_| Ok(broker_pubkey.clone()))
+        .unwrap();
+    assert_eq!(verified.agent.unwrap().scopes, vec!["claim"]);
+
+    // Already-held audiences are skipped: obtain_warrants with both held
+    // resolves without raising a request.
+    agent
+        .obtain_warrants(
+            vec![
+                WarrantGrant { aud: "https://mingo.example".into(), scopes: None },
+                WarrantGrant { aud: "sbo://mingo.example".into(), scopes: None },
+            ],
+            |_| panic!("no new request expected"),
+        )
+        .await
+        .unwrap();
 }

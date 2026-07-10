@@ -28,7 +28,9 @@ use tower_cookies::Cookies;
 use crate::email::EmailSender;
 use crate::error::BrokerError;
 use crate::state::AppState;
-use crate::store::{SessionStore, UserStore, WarrantRequestRecord, WarrantRequestStatus};
+use crate::store::{
+    SessionStore, UserStore, WarrantGrantItem, WarrantRequestRecord, WarrantRequestStatus,
+};
 
 /// Pending consent requests expire unapproved after this long
 const REQUEST_VALIDITY_SECONDS: i64 = 900;
@@ -135,19 +137,32 @@ where
             "'{name}' is not authorized by this key's constraint"
         )));
     }
-    let audience = claims.warrant_aud.as_deref().ok_or_else(|| {
-        BrokerError::InvalidProvisioningRequest("warrant request requires warrant-aud".into())
-    })?;
-    if audience.is_empty() || audience.contains('*') || audience.len() > 512 {
-        return Err(BrokerError::InvalidProvisioningRequest(
-            "warrant-aud must be one exact origin".into(),
-        ));
+    let grants = claims.warrant_grants.clone().unwrap_or_default();
+    if grants.is_empty() || grants.len() > browserid_core::MAX_WARRANT_GRANTS {
+        return Err(BrokerError::InvalidProvisioningRequest(format!(
+            "warrant request must carry 1..={} grants",
+            browserid_core::MAX_WARRANT_GRANTS
+        )));
     }
-    let scopes = claims.warrant_scopes.clone().unwrap_or_default();
-    if scopes.len() > 32 || scopes.iter().any(|s| s.len() > 64) {
-        return Err(BrokerError::InvalidProvisioningRequest(
-            "too many / too long scopes".into(),
-        ));
+    let mut seen_auds: Vec<&str> = Vec::new();
+    for g in &grants {
+        if g.aud.is_empty() || g.aud.contains('*') || g.aud.len() > 512 {
+            return Err(BrokerError::InvalidProvisioningRequest(
+                "each grant audience must be one exact identifier".into(),
+            ));
+        }
+        if seen_auds.contains(&g.aud.as_str()) {
+            return Err(BrokerError::InvalidProvisioningRequest(
+                "duplicate grant audiences".into(),
+            ));
+        }
+        seen_auds.push(&g.aud);
+        let scopes = g.scopes.as_deref().unwrap_or_default();
+        if scopes.len() > 32 || scopes.iter().any(|s| s.len() > 64) {
+            return Err(BrokerError::InvalidProvisioningRequest(
+                "too many / too long scopes".into(),
+            ));
+        }
     }
 
     // The agent's identity domain is the domain of the IdP that roots the
@@ -170,10 +185,15 @@ where
         delegator_email: rec.delegator_email.clone(),
         agent_email,
         label: rec.label.clone(),
-        audience: audience.to_string(),
-        scopes,
+        grants: grants
+            .into_iter()
+            .map(|g| WarrantGrantItem {
+                audience: g.aud,
+                scopes: g.scopes.unwrap_or_default(),
+            })
+            .collect(),
         status: WarrantRequestStatus::Pending,
-        warrant: None,
+        warrants: None,
         created_at: now,
         expires_at: now + Duration::seconds(REQUEST_VALIDITY_SECONDS),
         last_polled_at: None,
@@ -244,9 +264,12 @@ where
             Json(json!({ "status": "pending" })).into_response()
         }
         WarrantRequestStatus::Approved => {
-            let warrant = rec.warrant.clone().unwrap_or_default();
+            let warrants = rec.warrants.clone().unwrap_or_default();
             let _ = state.user_store.delete_warrant_request(&req.code);
-            Json(json!({ "status": "approved", "warrant": warrant })).into_response()
+            // `warrant` (singular) kept for single-grant compat.
+            let single = (warrants.len() == 1).then(|| warrants[0].clone());
+            Json(json!({ "status": "approved", "warrants": warrants, "warrant": single }))
+                .into_response()
         }
         WarrantRequestStatus::Denied => {
             let _ = state.user_store.delete_warrant_request(&req.code);
@@ -265,8 +288,8 @@ pub struct PendingRequestInfo {
     pub delegator_email: String,
     pub agent_email: String,
     pub label: String,
-    pub audience: String,
-    pub scopes: Vec<String>,
+    /// Requested grants — one per audience, each with its scopes
+    pub grants: Vec<WarrantGrantItem>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -301,8 +324,7 @@ where
             delegator_email: r.delegator_email,
             agent_email: r.agent_email,
             label: r.label,
-            audience: r.audience,
-            scopes: r.scopes,
+            grants: r.grants,
             created_at: r.created_at,
             expires_at: r.expires_at,
         })
@@ -315,8 +337,9 @@ pub struct RespondBody {
     pub csrf: String,
     pub code: String,
     pub approve: bool,
-    /// The warrant JWS the consent page signed client-side (approve only)
-    pub warrant: Option<String>,
+    /// The warrant JWSs the consent page signed client-side, one per grant
+    /// in the request's grant order (approve only)
+    pub warrants: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -363,30 +386,42 @@ where
         return Ok(Json(RespondResponse { success: true }));
     }
 
-    let warrant_jws = req.warrant.as_deref().ok_or_else(|| {
-        BrokerError::ValidationError("approve requires the signed warrant".into())
+    // All-or-nothing: exactly one signed warrant per requested grant, in
+    // grant order, each validated against its grant — no swapped-in grants.
+    let warrant_jwss = req.warrants.as_deref().ok_or_else(|| {
+        BrokerError::ValidationError("approve requires the signed warrants".into())
     })?;
-    let warrant = Warrant::parse(warrant_jws)
-        .map_err(|e| BrokerError::ValidationError(format!("bad warrant: {e}")))?;
-    if warrant.audience() != rec.audience {
-        return Err(BrokerError::ValidationError(
-            "warrant audience does not match the request".into(),
-        ));
+    if warrant_jwss.len() != rec.grants.len() {
+        return Err(BrokerError::ValidationError(format!(
+            "expected {} warrants (one per grant), got {}",
+            rec.grants.len(),
+            warrant_jwss.len()
+        )));
     }
-    if warrant.agent() != rec.agent_email {
-        return Err(BrokerError::ValidationError(
-            "warrant agent does not match the request".into(),
-        ));
-    }
-    if !warrant.delegator().eq_ignore_ascii_case(&rec.delegator_email) {
-        return Err(BrokerError::ValidationError(
-            "warrant delegator does not match the request".into(),
-        ));
+    for (jws, grant) in warrant_jwss.iter().zip(&rec.grants) {
+        let warrant = Warrant::parse(jws)
+            .map_err(|e| BrokerError::ValidationError(format!("bad warrant: {e}")))?;
+        if warrant.audience() != grant.audience {
+            return Err(BrokerError::ValidationError(
+                "warrant audience does not match its grant".into(),
+            ));
+        }
+        if warrant.agent() != rec.agent_email {
+            return Err(BrokerError::ValidationError(
+                "warrant agent does not match the request".into(),
+            ));
+        }
+        if !warrant.delegator().eq_ignore_ascii_case(&rec.delegator_email) {
+            return Err(BrokerError::ValidationError(
+                "warrant delegator does not match the request".into(),
+            ));
+        }
     }
 
     state
         .user_store
-        .respond_warrant_request(session.user_id, &req.code, Some(warrant_jws))?;
-    tracing::info!(delegator = %rec.delegator_email, "warrant consent approved");
+        .respond_warrant_request(session.user_id, &req.code, Some(warrant_jwss))?;
+    tracing::info!(delegator = %rec.delegator_email, grants = rec.grants.len(),
+        "warrant consent approved");
     Ok(Json(RespondResponse { success: true }))
 }

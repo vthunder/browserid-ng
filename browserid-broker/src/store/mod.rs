@@ -147,14 +147,15 @@ pub trait UserStore: Send + Sync {
     fn list_pending_warrant_requests(&self, user_id: UserId)
         -> StoreResult<Vec<WarrantRequestRecord>>;
 
-    /// Resolve a pending request: approve with the signed warrant JWS, or
-    /// deny with `None`. Scoped to the owning user; errors with
-    /// `WarrantRequestNotFound` if absent, another user's, or not pending.
+    /// Resolve a pending request: approve with the signed warrant JWSs (one
+    /// per grant, in grant order), or deny with `None`. Scoped to the owning
+    /// user; errors with `WarrantRequestNotFound` if absent, another user's,
+    /// or not pending.
     fn respond_warrant_request(
         &self,
         user_id: UserId,
         code: &str,
-        warrant: Option<&str>,
+        warrants: Option<&[String]>,
     ) -> StoreResult<()>;
 
     /// Record a poll (rate-limiting input), returning the previous

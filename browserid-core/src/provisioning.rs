@@ -282,14 +282,31 @@ pub struct ProvisioningRequestClaims {
     pub agent_key: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ephemeral: Option<bool>,
-    /// The RP audience a warrant is requested for (action=warrant only) —
-    /// copied verbatim from the RP's challenge, never typed by anyone
-    #[serde(rename = "warrant-aud", skip_serializing_if = "Option::is_none")]
-    pub warrant_aud: Option<String>,
-    /// The scopes the RP requested (action=warrant only; RP vocabulary)
-    #[serde(rename = "warrant-scopes", skip_serializing_if = "Option::is_none")]
-    pub warrant_scopes: Option<Vec<String>>,
+    /// The grants a warrant consent request asks for (action=warrant only):
+    /// one entry per RP audience, each with its own scopes — audiences are
+    /// copied verbatim from RP challenges, never typed by anyone. Approval
+    /// yields one single-audience warrant per entry.
+    #[serde(rename = "warrant-grants", skip_serializing_if = "Option::is_none")]
+    pub warrant_grants: Option<Vec<WarrantGrant>>,
 }
+
+/// One requested grant in a warrant consent request (spec §6.2): a single
+/// audience plus the scopes the RP asked for there. The signed warrant that
+/// comes back is the same shape — one audience each; batching exists only at
+/// the request/consent layer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WarrantGrant {
+    /// Exact-match audience (https origin, or a scheme-specific URI like
+    /// `sbo://…`); no wildcards
+    pub aud: String,
+    /// Scopes requested at this audience (RP vocabulary)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+}
+
+/// Maximum grants in one consent request — a consent screen must be able to
+/// show every audience with equal prominence
+pub const MAX_WARRANT_GRANTS: usize = 8;
 
 /// A single provisioning operation, signed by `P_priv`. Short-lived.
 #[derive(Debug, Clone)]
@@ -315,8 +332,7 @@ impl ProvisioningRequest {
             name: None,
             agent_key: None,
             ephemeral: None,
-            warrant_aud: None,
-            warrant_scopes: None,
+            warrant_grants: None,
         }
     }
 
@@ -350,26 +366,39 @@ impl ProvisioningRequest {
         Self::create(claims, provisioning_key)
     }
 
-    /// A consent request for a warrant at the registrar (spec §6.2):
-    /// `domain` is the **registrar's** domain; `audience`/`scopes` come from
-    /// the RP's challenge.
+    /// A consent request for one or more warrants at the registrar (spec
+    /// §6.2): `domain` is the **registrar's** domain; each grant's
+    /// audience/scopes come from the RPs' challenges. One approval signs one
+    /// single-audience warrant per grant.
     pub fn warrant(
         domain: &str,
         name: &str,
-        audience: &str,
-        scopes: Option<Vec<String>>,
+        grants: Vec<WarrantGrant>,
         provisioning_key: &KeyPair,
     ) -> Result<Self> {
-        if audience.is_empty() || audience.contains('*') {
+        if grants.is_empty() || grants.len() > MAX_WARRANT_GRANTS {
             return Err(invalid(
                 "provisioning request",
-                "warrant audience must be one exact origin (no wildcards)",
+                format!("must request 1..={MAX_WARRANT_GRANTS} grants"),
             ));
+        }
+        for g in &grants {
+            if g.aud.is_empty() || g.aud.contains('*') {
+                return Err(invalid(
+                    "provisioning request",
+                    "each grant audience must be one exact identifier (no wildcards)",
+                ));
+            }
+        }
+        let mut auds: Vec<&str> = grants.iter().map(|g| g.aud.as_str()).collect();
+        auds.sort_unstable();
+        auds.dedup();
+        if auds.len() != grants.len() {
+            return Err(invalid("provisioning request", "duplicate grant audiences"));
         }
         let mut claims = Self::base_claims(Action::Warrant, domain);
         claims.name = Some(name.to_string());
-        claims.warrant_aud = Some(audience.to_string());
-        claims.warrant_scopes = scopes;
+        claims.warrant_grants = Some(grants);
         Self::create(claims, provisioning_key)
     }
 
