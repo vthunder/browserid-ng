@@ -2,8 +2,43 @@
 
 > **STATUS: DRAFT / WIP.** Phase 1–2 output of bean `browserid-ng-v9rz`
 > (review Mozilla id-specs → document divergences → decide keep/reconcile →
-> author canonical spec). Not yet human-reviewed. The keep/reconcile flags are
-> *preliminary recommendations* to drive the Phase 3 decision, not conclusions.
+> author canonical spec). The Phase 1–2 catalog below is the *review record*;
+> the **Phase 3 decisions** section that follows supersedes the preliminary
+> keep/reconcile flags wherever they differ.
+
+## Phase 3 decisions (resolved 2026-07-10)
+
+These are the decisions taken after the review; they drive the canonical spec
+(`browserid-ng-protocol.md`).
+
+1. **DNSSEC is the required, sole root of trust** (resolves #1/#10, bean
+   `browserid-ng-28uc`). A primary issuer's identity key is obtained **only**
+   from the authenticated `_browserid` DNSSEC record (RFC 9102 / DoT / AD flag;
+   SERVFAIL → reject). `.well-known/browserid` is **no longer a key-trust
+   source** — no dual path, no downgrade. `.well-known` is **retained for
+   endpoint discovery** (auth/provision URLs) and optional host-cert delivery.
+   Long tail unaffected: domains/users without DNSSEC go through the
+   `browserid.me` broker, which itself publishes DNSSEC.
+2. **Host principal / host certificates: reinstated** (resolves item A). Do
+   *not* keep the email-only narrowing. Certificates may carry a **host**
+   principal again, but a host cert MUST be **signed by the DNSSEC key**
+   (`K_dns`), not self-signed-and-trusted-via-`.well-known`. This is an
+   **optional** intermediate: `K_dns → (optional) host cert (K_host) → user
+   cert`. It enables DNS-admin ≠ host/IdP-operator separation and operational
+   key rotation without a DNS change. *(Implementation: Phase 2 of 28uc.)*
+3. **`disabled` support-document field: removed** (resolves item D). A domain
+   opts out simply by publishing no `_browserid` record / no endpoints; we do
+   not need an explicit disabled signal. *(Done on branch
+   `fix/discovery-cleanup`.)*
+4. **Placeholder all-zero key: removed** (resolves item B) — the support
+   document's key is now `Option<PublicKey>`; consumers fail closed on `None`.
+   *(Done on branch `fix/discovery-cleanup`.)*
+5. **Stale discovery doc-comment** (item C): fix folds into the 28uc
+   implementation (discovery is DNSSEC-primary, not `.well-known`-first).
+6. **Layering:** agent provisioning + SBO on-chain attribution remain
+   **separate linked modules** on top of the core protocol, not core.
+
+---
 
 ## Phase 1 — The Mozilla baseline
 
@@ -29,27 +64,28 @@ defines:
 ## Phase 2 — Divergence catalog
 
 Flag legend: **KEEP** (deliberate, sound) · **RECONCILE** (drift / needs a
-decision) · **DECIDE** (open protocol question, tracked elsewhere).
+decision) · **DECIDE** (open protocol question, tracked elsewhere). *(See the
+Phase 3 decisions above for final resolutions.)*
 
 ### 1. Discovery / DNSSEC — *our biggest addition*
 - **Mozilla:** `/.well-known/browserid` over HTTPS only; trust root = WebPKI (any CA).
 - **Ours:** authenticated **`_browserid.<domain>` DNS TXT** record is the primary trust root — `browserid-core/src/dns.rs:1` parses `v=browserid1; public-key-algorithm=Ed25519; public-key=<b64url>; host=<opt>`; `browserid-broker/src/dns_fetcher.rs:1-16,126-208` fetches over **DNS-over-TLS**, sets the EDNS DO bit, trusts the resolver **AD** flag only because the channel is authenticated, treats **SERVFAIL as Bogus → hard reject**, and AD-unset as insecure → broker fallback. `.well-known` is still fetched by `browserid-core/src/discovery.rs`.
-- **Flag: KEEP** (the DNSSEC root is the whole differentiator — offline-verifiable proofs, on-chain attribution). **But see #10 (dual-path) — DECIDE.**
+- **Flag: KEEP** → **Phase 3 #1: DNSSEC required + sole root.**
 
 ### 2. Crypto / keys
 - **Mozilla:** RSA (RS256), JWK params `n`/`e`.
 - **Ours:** **Ed25519 / EdDSA everywhere** — `browserid-core/src/keys.rs:3`; public keys are raw 32-byte base64url, **not** JWK (`keys.rs:35`).
-- **Flag: KEEP** (modern, compact, matches on-chain `ed25519:` keys). Note for spec: we deliberately drop JWK in favor of `ed25519:<hex>` / base64url forms.
+- **Flag: KEEP.** Spec: deliberately drop JWK in favor of `ed25519:<hex>` / base64url forms.
 
 ### 3. Support document
 - **Mozilla:** `public-key`, `authentication`, `provisioning`, `authority`.
-- **Ours:** same four **plus `disabled`** (explicit opt-out) — `browserid-core/src/discovery.rs:13-33`. Broker emits `public-key` + `/auth` + `/provision` (`routes/well_known.rs:23-27`).
-- **Flag: KEEP** `disabled` (useful explicit signal), but **RECONCILE the doc-comment drift** (`discovery.rs:3` still says discovery is "by fetching `/.well-known/browserid`", now false as the primary path).
+- **Ours:** same four **plus `disabled`** — `browserid-core/src/discovery.rs:13-33`. Broker emits `public-key` + `/auth` + `/provision` (`routes/well_known.rs:23-27`).
+- **Flag: RECONCILE** → **Phase 3 #3: `disabled` removed.** Doc-comment drift → #C.
 
 ### 4. Certificate format
 - **Mozilla:** JWT `iss/exp/iat/public-key/principal`, principal = **email OR host**.
 - **Ours:** JWT `iss/exp/iat/public-key/principal`, principal = **email only** — `browserid-core/src/certificate.rs:14-19,42-59`. Signed EdDSA.
-- **Flag: RECONCILE / DECIDE.** Dropping the **host principal** is unremarked — see Flagged item A.
+- **Flag: RECONCILE** → **Phase 3 #2: host principal reinstated (DNSSEC-signed host certs).**
 
 ### 5. Backed assertion + assertion format
 - **Mozilla:** `<cert>~…~<assertion>`; assertion `exp`+`aud`.
@@ -58,39 +94,38 @@ decision) · **DECIDE** (open protocol question, tracked elsewhere).
 
 ### 6. Verification
 - **Mozilla:** remote verifier API `{assertion, audience}`.
-- **Ours:** `POST /verify` mirrors it (`routes/verify.rs`), but verification is **DNS/DNSSEC-aware** (`verifier.rs::verify_assertion_with_dns`) and can resolve the issuer's key from the authenticated DNS record rather than only `.well-known`.
-- **Flag: KEEP.**
+- **Ours:** `POST /verify` mirrors it (`routes/verify.rs`), but verification is **DNS/DNSSEC-aware** (`verifier.rs::verify_assertion_with_dns`).
+- **Flag: KEEP** → unified around the DNSSEC-rooted path (28uc).
 
 ### 7. Primary IdP + browser API
-- **Mozilla:** shimmed **`navigator.id`** (`beginProvisioning`/`genKeyPair`/`registerCertificate`/`get`), dialog-driven.
+- **Mozilla:** shimmed **`navigator.id`**, dialog-driven.
 - **Ours:** **no `navigator.id`.** First-party `/auth` + `/provision` pages, `provisioning_api.js`/`authentication_api.js` shims, `wsapi/*` endpoints, a broker **signer popup** (`/sign`), and `include.js` + `communication_iframe` kept only for RP compat (`routes/mod.rs`).
-- **Flag: KEEP** (navigator.id was never standardized; Persona is dead). Spec should describe our page/postMessage model as the replacement.
+- **Flag: KEEP** (navigator.id was never standardized; Persona is dead).
 
 ### 8. Fallback / broker
 - **Mozilla:** `login.persona.org` central fallback.
 - **Ours:** **`browserid.me`** broker — SMTP-verifies emails, issues certs as `iss=browserid.me`, **publishes its own `_browserid` DNSSEC key**, and is a pinned **broker trust anchor** for on-chain attribution (`/sys/trust/brokers`).
-- **Flag: KEEP** (same role; DNSSEC-rooted + attribution-aware rather than a trusted central host).
+- **Flag: KEEP.**
 
 ### 9. Agent provisioning + on-chain attribution — *net-new, no Mozilla analog*
 - Delegation-chain provisioning + grant API (`docs/specs/agent-provisioning-and-grant-api.md`); SBO on-chain attribution of an email identity to an `ed25519:` key via DNSSEC-proof objects.
-- **Flag: KEEP**, spec as **layered/optional modules** on top of the core protocol so a plain RP need not know about them.
+- **Flag: KEEP** → **Phase 3 #6: layered modules.**
 
 ### 10. Dual discovery path (the open decision)
-- Core still fetches `.well-known`; broker prefers DNSSEC. Accepting **either** means security = the weaker path (a mis-issued TLS cert forges `.well-known`). Tracked by **`browserid-ng-28uc`** (unify verifier) and the "make DNSSEC mandatory" question.
-- **Flag: DECIDE** (Phase 3 / 28uc).
+- **Flag: DECIDE** → **Phase 3 #1: resolved — DNSSEC required, sole root.**
 
-## Flagged — looks accidental or unjustified (needs a human decision)
+## Flagged items — resolutions
 
-- **A. Certificate `principal` narrowed to email-only** (`certificate.rs:14-19`). Mozilla allowed a **host** principal for delegated/primary cert chaining. We removed it *silently*. Possibly fine (our delegation runs through support-doc `authority` + the agent provisioning chain, not host-principal certs) — but confirm it's intentional, not an oversight, before the spec canonizes email-only.
-- **B. Placeholder all-zero public key** in `SupportDocument::delegate()` and `::disabled()` (`discovery.rs:62,73` — `PublicKey::from_bytes(&[0u8;32])`). A real (if unusable) Ed25519 point standing in as a sentinel; a latent footgun if such a doc were ever verified against. Prefer `Option<PublicKey>`. Code smell, not protocol — but flag.
-- **C. Stale doc-comment** (`discovery.rs:3`, and the module still framed as ".well-known first") now contradicts the DNSSEC-primary reality. Drift; fix when authoring.
-- **D. `disabled` field** is un-specced (not in Mozilla). Deliberate-looking, but it needs to be *written down* with precedence rules (does `disabled:true` override a valid DNS key? which wins?).
+- **A. Cert `principal` email-only** → **reinstate host principal** (DNSSEC-signed host certs). Phase 3 #2.
+- **B. Placeholder all-zero key** → **fixed** (`Option<PublicKey>`). Phase 3 #4.
+- **C. Stale doc-comment** → fix in 28uc implementation. Phase 3 #5.
+- **D. `disabled` field** → **removed.** Phase 3 #3.
 
-## Open decisions for Phase 3
-1. **Mandatory DNSSEC vs. dual-path** (#10 / 28uc) — the load-bearing one.
-2. **Host principal**: drop for good (email-only) or restore (A)?
-3. **`disabled` precedence** and whether DNS or `.well-known` wins on conflict (D).
-4. Whether agent-provisioning + SBO attribution live in the core spec or as separate linked modules (recommend: modules).
-
-## Suggested spec structure (Phase 4)
-`docs/specs/browserid-ng-protocol.md` (core: discovery, support doc, cert, assertion, backed assertion, verification, primary + broker), with `agent-provisioning-and-grant-api.md` and a new `sbo-attribution.md` as linked modules. Each section notes *inherited from BrowserID* vs *deliberate departure*.
+## Spec structure (Phase 4)
+Suite: `browserid-ng-protocol.md` (core), with `agent-provisioning-and-grant-api.md`
+as a linked module in this repo. The general **offline-verification** capability
+(detached DNSSEC proofs) lives in the core (§6.3); the **SBO on-chain
+attribution** application of it lives in the **sbo** repo
+(`specs/SBO Attribution Specification.md`), since sbo depends on browserid-ng,
+not the reverse. Each core section notes *inherited from BrowserID* vs
+*deliberate departure*.
