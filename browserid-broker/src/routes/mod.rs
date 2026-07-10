@@ -110,6 +110,9 @@ where
         .route_service("/sign", ServeFile::new(format!("{}/sign.html", static_path)))
         // Agent-key management UI (tdxf) — create/list/revoke provisioning certs
         .route_service("/agents", ServeFile::new(format!("{}/agents.html", static_path)))
+        // Broker account utilities (sign out / clear cached certs / agent keys),
+        // moved off the root when the marketing landing page took `/`.
+        .route_service("/account", ServeFile::new(format!("{}/account.html", static_path)))
         // Landing page at the root.
         .route_service("/", ServeFile::new(format!("{}/index.html", static_path)))
         // Serve static files (dialog, CSS, JS)

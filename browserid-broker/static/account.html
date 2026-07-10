@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>browserid.me — identity broker</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 16px/1.6 system-ui, -apple-system, sans-serif; max-width: 40rem;
+      margin: 5rem auto; padding: 0 1.25rem; color: #1a1a1a; }
+    @media (prefers-color-scheme: dark) { body { color: #e8e8e8; background: #161616; } }
+    h1 { font-size: 1.6rem; margin-bottom: .25rem; }
+    .muted { opacity: .65; }
+    code { font-family: ui-monospace, monospace; background: rgba(127,127,127,.18);
+      padding: .12em .4em; border-radius: 5px; font-size: .9em; }
+    .card { border: 1px solid rgba(127,127,127,.3); border-radius: 12px;
+      padding: 1rem 1.25rem; margin-top: 1.5rem; }
+    button { font: inherit; padding: .5rem .9rem; border-radius: 9px;
+      border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
+    a { color: #2b6cb0; } @media (prefers-color-scheme: dark){ a{color:#7db3e8} }
+    #out { margin-top: .75rem; font-size: .9em; }
+  </style>
+</head>
+<body>
+  <h1>browserid.me</h1>
+  <p class="muted">A BrowserID identity broker — it custodies your signing keys and
+  brokers logins for relying-party apps. There's nothing to do here directly;
+  apps invoke the login dialog and signer for you.</p>
+
+  <div class="card">
+    <strong>Sign out of browserid</strong>
+    <p class="muted" style="margin:.4rem 0">Ends your broker <em>session</em> and clears
+    this browser's cached certificates. After this the login dialog will show no
+    identities until you sign in again. (Your accounts aren't deleted — they
+    reappear when you next authenticate.)</p>
+    <button id="signout">Sign out</button>
+    <div id="out"></div>
+  </div>
+
+  <div class="card">
+    <strong>Clear cached certificates only</strong>
+    <p class="muted" style="margin:.4rem 0">Drops just this browser's cached
+    certificates and per-site grants (the <code>emails</code> and <code>siteInfo</code>
+    localStorage stores) — <em>without</em> ending your session, so the dialog still
+    lists your account's identities. Use this if a sign-in is reusing a stale cert.</p>
+    <button id="reset">Clear cached certificates</button>
+    <div id="out2"></div>
+  </div>
+
+  <div class="card">
+    <strong>Agent keys</strong>
+    <p class="muted" style="margin:.4rem 0">Authorize a program to act with one of your
+    identities — headless sign-in for CI jobs, agents, and services — without sharing a
+    password or a browser session. Create and revoke agent keys here.</p>
+    <p><a href="/agents">Manage agent keys →</a></p>
+  </div>
+
+  <script>
+    function clearLocal() {
+      localStorage.removeItem('emails');
+      localStorage.removeItem('siteInfo');
+    }
+
+    document.getElementById('signout').onclick = async function () {
+      const out = document.getElementById('out');
+      out.textContent = 'Signing out…';
+      try {
+        // End the broker session (deletes it server-side + clears the cookie),
+        // then drop the local cert cache so nothing is left to auto-complete a login.
+        const r = await fetch('/wsapi/logout', { method: 'POST', credentials: 'same-origin' });
+        clearLocal();
+        out.textContent = r.ok
+          ? '✓ Signed out. The login dialog will now be empty until you sign in.'
+          : 'Session end returned ' + r.status + ' (local cache cleared anyway).';
+      } catch (e) {
+        try { clearLocal(); } catch (_) {}
+        out.textContent = 'Could not reach the broker: ' + e.message + ' (local cache cleared).';
+      }
+    };
+
+    document.getElementById('reset').onclick = function () {
+      const out = document.getElementById('out2');
+      try {
+        clearLocal();
+        out.textContent = '✓ Cached certificates cleared. (Still signed in — use “Sign out” to empty the dialog.)';
+      } catch (e) {
+        out.textContent = 'Could not clear: ' + e.message;
+      }
+    };
+  </script>
+</body>
+</html>
