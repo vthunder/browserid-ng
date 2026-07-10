@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-07-10T08:50:20Z
-updated_at: 2026-07-10T09:28:16Z
+updated_at: 2026-07-10T09:55:44Z
 ---
 
 ## Motivation
@@ -73,3 +73,25 @@ Flagged for Phase 3 human decision (possible accidental drift):
 
 ## Divergence 'A' RESOLVED (2026-07-10)
 Do NOT keep the email-only cert narrowing. REINSTATE host certificates, but require them to be signed by the DNSSEC key (K_dns) rather than self-signed + well-known-trusted. Optional intermediate: DNSSEC key → (optional) host cert → user cert. Canonize this chain in the spec. Rationale + full model on browserid-ng-28uc (FINAL decision).
+
+## Divergences B + D addressed (2026-07-10) — branch fix/discovery-cleanup (a6e9573, unmerged)
+- B (all-zero placeholder key): SupportDocument.public_key is now Option<PublicKey>; delegate()=None; verifier/fallback_fetcher/browserid-rp updated to fail closed ('published no public key') on None.
+- D (un-specced disabled): removed the support-document disabled field/constructor/is_disabled + discover() branch + tests. (Note: routes/email.rs AddressInfoResponse.disabled is a SEPARATE address-info API field — left untouched.)
+- C (stale discovery.rs doc-comment) still pending → folds into the 28uc DNSSEC-only implementation.
+Build clean; browserid-core 30 pass, broker suites green. Awaiting review/merge (deploy alongside 28uc verifier work).
+
+## Phase 4 drafting started (2026-07-10) — branch docs/spec-suite (25202e8, unmerged)
+
+Suite committed: docs/specs/browserid-ng-divergence-analysis.md (now with a Phase 3 decisions section), browserid-ng-protocol.md (core), sbo-attribution.md (module). agent-provisioning-and-grant-api.md referenced as the third module.
+
+SETTLED sections written: crypto/keys (Ed25519, no JWK), support-document endpoints, assertions + backed assertions (tilde format kept faithful), verifier API shape, primary-IdP overview (no navigator.id), broker/fallback.
+
+PENDING (decided model stated, wording finalizes when feat/dnssec-required lands): discovery/trust-root (DNSSEC required + sole root), verification algorithm (unified path), certificates section incl. optional DNSSEC-signed host cert (28uc Phase 2).
+
+Next: finalize the PENDING core sections against the shipped verifier once 28uc Phase 1 merges; add host-cert section after Phase 2.
+
+## SBO attribution split out (2026-07-10)
+Per dependency boundary (sbo depends on browserid-ng, not the reverse): removed sbo-attribution.md from this repo; added the general 'offline verification with detached DNSSEC proofs' capability to the core (browserid-ng-protocol.md section 6.3) as the rationale for the DNSSEC trust root. The ledger-specific attribution spec now lives in the sbo repo: specs/SBO Attribution Specification.md (branch docs/attribution-spec, 0c4f1f2). browserid-ng branch docs/spec-suite now at 38e33ce.
+
+## Spec §3/§6.2 finalized (2026-07-10)
+Confirmed all active primaries DNSSEC-validate (AD=true via Google + Cloudflare/1.1.1.1): sandmill.org, mingo.place, browserid.me. So no production breakage from the DNSSEC-required change. Flipped browserid-ng-protocol.md §3 (discovery/trust-root) and §6.2 (verification algorithm) from PENDING to SETTLED against shipped verifier 85021d2; folded in broker-key-also-DNSSEC. §4.2 host certs remain the only PENDING section (28uc Phase 2). docs/spec-suite now has the finalized core.

@@ -1,11 +1,11 @@
 ---
 # browserid-ng-28uc
 title: Unify verifier paths / decide DNSSEC-required vs .well-known primary support
-status: todo
+status: in-progress
 type: task
 priority: high
 created_at: 2026-07-08T06:13:39Z
-updated_at: 2026-07-10T09:28:16Z
+updated_at: 2026-07-10T09:50:54Z
 parent: browserid-ng-8u60
 blocked_by:
     - browserid-ng-l7q1
@@ -53,3 +53,9 @@ The 'remove .well-known' wording above is too strong. Revised direction (pending
 Resolves divergence 'A': reinstate host certs (DNSSEC-signed); do NOT keep the email-only narrowing.
 
 Implementation scope: require DNSSEC + sole root; add OPTIONAL DNSSEC-signed host-cert verification; keep .well-known for endpoints; unify the verifier around the single DNSSEC-rooted chain. Canonize in v9rz. Follow-up: key-rotation tooling (egr7-adjacent).
+
+## Phase 1 IMPLEMENTED (2026-07-10) — branch feat/dnssec-required (85021d2, off fix/discovery-cleanup, unmerged)
+Unified the verifier to a single DNSSEC-rooted path. Removed the dead sync verify path (no production caller). Key resolved ONLY from the authenticated _browserid DNSSEC record (Secure+record; Bogus->reject; Insecure/NXDOMAIN->broker); .well-known fetched for ENDPOINTS only, key overridden with the DNSSEC one. Also closed the BROKER-fallback downgrade: broker key now DNSSEC-resolved too (a non-DNSSEC broker is a hard error). New Discoverer trait (RPITIT) makes the verifier unit-testable with a mock. Tests green: verifier_test 14/14 incl downgrade-closure + bogus-rejection; core/broker/rp suites pass.
+Production impact (intentional): all active primaries publish DNSSEC (mingo.place ok, sandmill.org has record+RRSIG - CONFIRM AD=true before deploy; browserid.me ok). Broker now MUST have DNSSEC -> any dev/local non-DNSSEC broker (localhost) hard-errors on fallback.
+Phase 2 hook (host certs): inserts at the final cert check in verify_signatures_with_doc - if user cert not signed by K_dns directly, verify a K_dns-signed host cert authorizing the signer, then verify user cert against the host key.
+Remaining: Phase 2 (optional DNSSEC-signed host certs); C doc-comment fixed as part of Phase 1.
