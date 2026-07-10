@@ -292,12 +292,6 @@ $('signin-form').onsubmit = async (e) => {
 function idpUrlFor(domain) {
   return /^(localhost|127\.)/.test(domain) ? `http://${domain}` : `https://${domain}`;
 }
-/// address_info returns `auth` as an absolute URL; only synthesize one when
-/// it's missing or relative.
-function authUrlFrom(info, domain) {
-  if (info.auth && /^https?:\/\//.test(info.auth)) return info.auth;
-  return idpUrlFor(domain) + (info.auth || '/');
-}
 
 function renderUserIdentities() {
   const rows = account.emails
@@ -367,11 +361,15 @@ async function activate(email, btn) {
   btn.disabled = true;
   let info;
   try { info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`); } catch { info = {}; }
-  // Primary identities are provisioned by their own IdP — link there.
+  // Primary identities are provisioned by their own IdP through the browserid
+  // login dialog — which runs when you sign into an *app* with this identity,
+  // not by opening the IdP's /auth shim directly (that only works inside the
+  // dialog). Point at the app; full in-place activation is bean 9rlu.
   if (info.type === 'primary') {
     const domain = email.split('@')[1];
-    btn.outerHTML = `<a class="small rowbtn" href="${escapeHtml(authUrlFrom(info, domain))}"
-      target="_blank" rel="noopener">Sign in at ${escapeHtml(domain)} ↗</a>`;
+    btn.outerHTML = `<a class="small rowbtn" href="${idpUrlFor(domain)}"
+      target="_blank" rel="noopener" title="Sign in to this app with ${escapeHtml(email)}; its cert is then cached here"
+      >Sign in at ${escapeHtml(domain)} ↗</a>`;
     return;
   }
   // Secondary (broker-verified): generate a key here, get a broker cert, cache it.
@@ -407,9 +405,9 @@ $('ae-btn').onclick = async () => {
       if (info.type === 'primary') {
         const domain = email.split('@')[1];
         status.className = 'status muted';
-        status.innerHTML = `${escapeHtml(email)} is managed by its own provider. ` +
-          `<a href="${escapeHtml(authUrlFrom(info, domain))}" target="_blank" rel="noopener">Sign in at ${escapeHtml(domain)} ↗</a> ` +
-          `to add it (no code needed).`;
+        status.innerHTML = `${escapeHtml(email)} is managed by ${escapeHtml(domain)}. ` +
+          `Sign in to an app with it (e.g. <a href="${idpUrlFor(domain)}" target="_blank" rel="noopener">${escapeHtml(domain)} ↗</a>) ` +
+          `and it's added automatically — no code needed.`;
         return;
       }
       status.textContent = 'Sending code…';
