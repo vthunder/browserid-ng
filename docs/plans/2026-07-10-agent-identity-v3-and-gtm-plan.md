@@ -314,8 +314,12 @@ other. Landing repositioning is independent; its *claims* gate on Phase 2.
 
 ## 9. Open questions (deliberately unresolved)
 
-- Warrant `agent` binding: by name or by `P_pub`? (Name survives agent-key
-  rotation; key is tighter. Decide in spec drafting.)
+- ~~Warrant `agent` binding: by name or by `P_pub`?~~ **Resolved in spec
+  v0.4: by agent identity email.** Forced by the presentation model — the
+  RP never sees `P_pub` (the `P_cert` is not in the presented chain), and
+  identity binding survives free agent-key rotation. The warrant embeds the
+  delegator's `U_cert` (`parent-cert` claim) so verification is
+  self-contained.
 - Warrant TTL + renewal UX (silent renewal at consent-time policy vs
   re-prompt).
 - Status-list SDK default: fail-open grace window length vs hard fail-closed.

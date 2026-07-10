@@ -19,7 +19,7 @@ on top. A plain relying party only needs the core.
 | Document | What it covers |
 |---|---|
 | **[Protocol Specification (core)](./browserid-ng-protocol.md)** | **Start here.** Discovery & the DNSSEC trust root, keys, certificates, assertions & backed assertions, verification, the primary-IdP model, and the fallback broker. |
-| **[Agent Provisioning & Grant Exchange](./agent-provisioning-and-grant-api.md)** | *Module.* How an agent obtains its own delegated identity from a principal's, via a broker-endorsed provisioning chain. |
+| **[Agent Provisioning, Warrants & Grant Exchange](./agent-provisioning-and-grant-api.md)** | *Module.* How an agent obtains its own delegated identity from a principal's (registrar-endorsed provisioning chain), and how user-signed **warrants** confine it to the audiences and scopes its principal authorized. |
 | **[SBO Attribution Specification](https://github.com/vthunder/sbo/blob/main/specs/SBO%20Attribution%20Specification.md)** *(sbo repo)* | *Module.* How a ledger attributes an email identity to an on-chain `ed25519:` key, built on the core's offline-verification primitive (§6.3). Lives in the sbo repo because it is ledger-specific and sbo depends on browserid-ng, not the reverse. |
 | **[Divergence Analysis](./browserid-ng-divergence-analysis.md)** | *Background.* A point-by-point comparison with Mozilla BrowserID and the rationale for each deliberate departure. |
 
@@ -36,6 +36,10 @@ on top. A plain relying party only needs the core.
 
 ## Status
 
-Core protocol: implemented and deployed. The one planned extension is optional
-**host certificates** (core §4.2) — see bean `browserid-ng-dff5`. The Divergence
+Core protocol: implemented and deployed. Planned extensions: optional
+**host certificates** (core §4.2, bean `browserid-ng-dff5`) and **certificate
+status lists** (core §6.4, bean `browserid-ng-egr7`). The agent module's
+**v0.4** (agent-cert `typ`, warrants, consent flow, registrar-defaults-to-self)
+is design-complete but not yet implemented — epic `browserid-ng-gsnm`, plan
+`docs/plans/2026-07-10-agent-identity-v3-and-gtm-plan.md`. The Divergence
 Analysis is a working document (bean `browserid-ng-v9rz`).

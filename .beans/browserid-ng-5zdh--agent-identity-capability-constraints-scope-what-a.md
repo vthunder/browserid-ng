@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-10T08:09:05Z
-updated_at: 2026-07-10T15:23:38Z
+updated_at: 2026-07-10T15:34:37Z
 parent: browserid-ng-gsnm
 ---
 
@@ -49,8 +49,8 @@ Design converged; canonical write-up: `docs/plans/2026-07-10-agent-identity-v3-a
 - **Rejected for v3**: caveat/attenuation tokens (Biscuit-style), purpose strings in cert, agent-side downscoping (delegation-time-only scoping is policy).
 
 ### Todo
-- [ ] Spec v0.4: agent claims block + cert typ (core §4, §6.2)
-- [ ] Spec v0.4: warrant format + chain framing (agent module)
+- [x] Spec v0.4: agent claims block + cert typ (core §4, §6.2)
+- [x] Spec v0.4: warrant format + chain framing (agent module — §5, incl. warrant binding by agent identity email with embedded parent-cert)
 - [ ] browserid-core: warrant type, chain parsing, typ enforcement
 - [ ] browserid-rp: fail-closed verification + scope intersection at token endpoint
 - [ ] browserid-agent: warrant storage + presentation

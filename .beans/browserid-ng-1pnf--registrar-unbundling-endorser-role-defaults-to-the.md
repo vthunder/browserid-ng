@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-10T15:24:05Z
-updated_at: 2026-07-10T15:24:05Z
+updated_at: 2026-07-10T15:34:37Z
 parent: browserid-ng-gsnm
 ---
 
@@ -26,7 +26,7 @@ Under the identity-domain rule an agent always mints at its delegator's own IdP,
 User story: **you manage your agents where your identity lives.**
 
 ### Todo
-- [ ] Spec v0.4: registrar terminology + accepted-registrars default-self + external-registrar config
+- [x] Spec v0.4: registrar terminology + accepted-registrars default-self + external-registrar config
 - [ ] Extract registrar component (registry, endorsement signer, key-mgmt UI) from broker
 - [ ] mingo-idp: adopt registrar component (or external-registrar config path)
 - [ ] Reconcile with bean btmg scope

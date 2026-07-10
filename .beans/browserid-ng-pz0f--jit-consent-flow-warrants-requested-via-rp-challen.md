@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-10T15:24:22Z
-updated_at: 2026-07-10T15:24:22Z
+updated_at: 2026-07-10T15:34:37Z
 parent: browserid-ng-gsnm
 blocked_by:
     - browserid-ng-5zdh
@@ -29,7 +29,7 @@ Nobody should ever type an audience string. The RP names its own audience author
 - MVP fallback: manual audience entry in registrar UI. aud is exact-origin only in v3 (no wildcards).
 
 ### Todo
-- [ ] Spec v0.4: scope param on WWW-Authenticate challenge; consent-request + pickup endpoints (RFC 8628 shape)
+- [x] Spec v0.4: scope param on WWW-Authenticate challenge; consent-request + pickup endpoints (RFC 8628 shape) — agent spec §6, §7.2
 - [ ] Registrar: consent request storage, notification/link, consent page + typed-signing warrant issuance
 - [ ] browserid-agent: challenge parse → consent request → poll → warrant store
 - [ ] Anti-phishing review of consent surface

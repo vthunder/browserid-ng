@@ -10,7 +10,9 @@
 > [`browserid-ng-divergence-analysis.md`](./browserid-ng-divergence-analysis.md).
 >
 > Everything described here is implemented and deployed, except **§4.2 (optional
-> host certificates)**, a planned extension (bean `browserid-ng-dff5`).
+> host certificates)**, a planned extension (bean `browserid-ng-dff5`), and the
+> **certificate `typ`/`status` rules (§4.1, §6.2, §6.4)** added for the agent
+> module's v0.4 (epic `browserid-ng-gsnm`).
 >
 > Layered on this core: [agent provisioning & grant exchange](./agent-provisioning-and-grant-api.md)
 > (this repo), and SBO on-chain attribution (in the **sbo** repo, built on §6.3).
@@ -119,6 +121,8 @@ identity:
 | `iat`, `exp` | Validity window. |
 | `public-key` | The certified subject key (base64url Ed25519). |
 | `principal` | `{ "email": "user@domain" }`. |
+| `typ` | Absent on a plain user certificate. Modules may define **typed certificate variants** (e.g. the agent module's `browserid-agent-cert-v1`); a verifier MUST reject any certificate bearing a `typ` it does not recognize. This makes module credentials fail-closed at verifiers that predate the module. |
+| `status` | Optional fast-revocation hook: `{ "uri", "idx" }` pointing into a signed status list (§6.4). |
 
 Reference: `browserid-core/src/certificate.rs`.
 
@@ -164,6 +168,11 @@ deployments omit it and sign user certs directly with `K_dns`. Host certs carry
   signed by the leaf certificate's subject key. Only the signature algorithm
   (EdDSA) differs from BrowserID.
 
+  Modules may define chains with additional, typed segments (e.g. the agent
+  module's warrant, `agent_cert~warrant~assertion`). A verifier MUST reject a
+  backed assertion containing a segment it does not recognize — chains are
+  fail-closed, never skip-what-you-don't-understand.
+
 Reference: `browserid-core/src/assertion.rs`.
 
 ## 6. Verification
@@ -176,15 +185,21 @@ verifier contract. Reference: `browserid-broker/src/routes/verify.rs`.
 
 ### 6.2 Verification algorithm
 
-1. Parse the backed assertion into its cert chain + assertion.
+1. Parse the backed assertion into its cert chain + assertion. Reject any
+   segment of unrecognized type (§5) and any certificate bearing an
+   unrecognized `typ` (§4.1). A certificate `typ` a verifier *does* recognize
+   activates that module's presentation rules (e.g. the agent module's
+   warrant requirement) **before** step 5.
 2. Resolve the issuer (`iss`) IdP key **via the authenticated DNSSEC record**
    (§3). No `.well-known` key trust; no dual path.
 3. Verify the cert chain: each cert signed by the previous key; the root cert
    signed by `K_dns` directly. *(The optional host-cert intermediate (§4.2) is
    not yet implemented; when added it hooks in at this step.)*
 4. Verify the assertion signature against the leaf certificate's subject key,
-   and that `aud` matches the RP and nothing is expired.
-5. Return the certified email.
+   and that `aud` matches the RP and nothing is expired. Where a certificate
+   carries a `status` claim, the verifier SHOULD check it (§6.4).
+5. Return the certified email (plus any module metadata, e.g. agent
+   attribution).
 
 This collapses the former well-known-vs-DNSSEC branching into one path
 (`verifier.rs`).
@@ -209,6 +224,39 @@ refreshes it, and how it roots identities in its own trust model, is out of
 scope for the core protocol. The on-chain consumer is specified separately — see
 **SBO Attribution Specification** in the sbo repo, which layers ledger-specific
 identity rooting and trust anchors on this primitive.
+
+### 6.4 Certificate status (fast revocation)
+
+> **Planned extension — not yet implemented** (bean `browserid-ng-egr7`; design:
+> `docs/plans/2026-07-10-agent-identity-v3-and-gtm-plan.md` §5). This section
+> specifies the target.
+
+Certificates are offline, self-contained credentials, so absent anything else
+a certificate is valid until `exp` — revocation latency equals the TTL. For
+sub-TTL revocation, a certificate MAY carry:
+
+```json
+"status": { "uri": "https://<idp>/.well-known/browserid-status", "idx": 42 }
+```
+
+- `uri` names a **signed status list** published by the issuing IdP; `idx` is
+  the certificate's position in it. The list format follows the **IETF OAuth
+  Token Status List** mechanism (a compact, issuer-signed bitmap) rather than
+  a bespoke format.
+- Verifiers SHOULD fetch and cache the list (reference cache: 5 minutes) and
+  treat a set bit as **revoked → reject**. Fetching the whole list reveals
+  nothing about which subject is being checked (no OCSP-style privacy leak).
+- The dependency is soft: if the list is unreachable, behavior degrades to
+  TTL-only semantics. Whether that failure is open (honor the cert until
+  `exp`) or closed is RP policy; libraries SHOULD default to a short
+  fail-open grace, then fail closed.
+- Detached-proof consumers (§6.3) can pair a certificate with a **status-list
+  snapshot**, giving offline verification a defined freshness window ("valid
+  as of T").
+
+Layered with short TTLs and the agent module's delegation-root revocation,
+this yields: instant revocation for new sign-ins at status-checking RPs,
+≤ cache-window for live sessions there, ≤ TTL at RPs that skip the check.
 
 ## 7. Primary IdP & browser integration
 
@@ -240,9 +288,13 @@ attribution-aware broker occupying the same role.
 
 ## 9. Layered modules
 
-- **[Agent provisioning & grant exchange](./agent-provisioning-and-grant-api.md)** —
-  how an agent obtains its own delegated identity from a principal's, with a
-  broker-endorsed provisioning chain.
+- **[Agent provisioning, warrants & grant exchange](./agent-provisioning-and-grant-api.md)** —
+  how an agent obtains its own delegated identity from a principal's
+  (registrar-endorsed provisioning chain), and how user-signed **warrants**
+  confine it to the audiences and scopes its principal authorized. Defines the
+  `browserid-agent-cert-v1` certificate `typ` and the
+  `agent_cert~warrant~assertion` chain that §4.1/§5/§6.2's fail-closed rules
+  exist for.
 - **SBO on-chain attribution** — attributing an email identity to an `ed25519:`
   key on a ledger, built on the offline-verification primitive (§6.3). Specified
   in the **sbo** repo (`specs/SBO Attribution Specification.md`), not here:

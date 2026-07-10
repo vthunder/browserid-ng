@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-10T08:09:05Z
-updated_at: 2026-07-10T15:23:47Z
+updated_at: 2026-07-10T15:34:37Z
 parent: browserid-ng-gsnm
 ---
 
@@ -54,7 +54,7 @@ Warrants need no separate revocation: they're only meaningful alongside a live a
 Resulting story: instant for new sign-ins at status-checking RPs; ≤ cache window for live sessions there; ≤ TTL at naive RPs.
 
 ### Todo
-- [ ] Spec v0.4: status claim in certs + list format/endpoint (IETF token-status-list)
+- [x] Spec v0.4: status claim in certs + list format/endpoint (IETF token-status-list) — core §6.4
 - [ ] Broker/IdP: status list publication + revocation wiring to registry switch
 - [ ] browserid-rp: status check with cache, fail-open/closed policy knob
 - [ ] Decide SDK default: fail-open grace window vs hard fail-closed
