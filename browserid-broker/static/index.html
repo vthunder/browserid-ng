@@ -112,7 +112,6 @@
   .hero h1 { font-family: var(--font-mono); font-weight: 600; font-size: clamp(34px, 5vw, 56px); line-height: 1.04; letter-spacing: -0.025em; margin: 20px 0 0; }
   .hl-human { color: var(--accent); }
   .hl-agent { color: var(--agent); }
-  .hl-agent::after { content: "▸"; font-size: .5em; vertical-align: middle; margin-left: .18em; opacity: .7; }
 
   .aud-toggle { display: inline-flex; margin-top: 26px; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 4px; gap: 2px; }
   .aud-toggle button {
@@ -371,7 +370,7 @@
   <div class="wrap">
     <div class="feat-copy">
       <span class="eyebrow">For apps</span>
-      <h2>Attributed agents, one check, no sign-up.</h2>
+      <h2>Know who signed in — and who sent them.</h2>
       <p class="body">One verification call tells you who signed in — and when it’s an agent, exactly who it acts for and what its principal allowed here. Rate-limit per agent, audit per human, reject what was never authorized. No portal, no approval, no secrets to manage.</p>
       <div class="chips">
         <span class="chip on">Agent + principal, verified</span>
@@ -456,7 +455,7 @@ who.agent?.scopes <span class="cm">// <span class="str">["post", "read"]</span> 
 <section class="band" id="why">
   <div class="wrap">
     <span class="eyebrow">Why it’s different</span>
-    <p class="lede muted">Not a login button you rent. An open protocol that works with any email.</p>
+    <p class="lede muted">An open protocol, not a platform. It works with any email, and no one sits between you and your users.</p>
     <div class="pillars">
       <div class="pillar">
         <div class="pk">// universal</div>
@@ -505,7 +504,7 @@ who.agent?.scopes <span class="cm">// <span class="str">["post", "read"]</span> 
 
 <footer>
   <div class="wrap">
-    <span>browserid-ng — attributable agent identity on the DNSSEC-rooted heir to Mozilla’s BrowserID.</span>
+    <span>browserid-ng — identity for agents and the humans behind them. Descended from Mozilla Persona.</span>
     <span>Open protocol · MPL-2.0</span>
   </div>
 </footer>

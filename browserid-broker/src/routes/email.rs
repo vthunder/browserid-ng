@@ -31,6 +31,10 @@ pub struct ListEmailsResponse {
     /// parent (mingo-cm8z). Session-gated own-account only, same privacy scope as
     /// `parent_of`; lets the chooser label derived identities ("signs in via …").
     pub derived: Vec<DerivedIdentity>,
+    /// The subset of `emails` that are agent identities (EmailType::Agent) —
+    /// derived (cm8z) subordinates are NOT agents, so consumers must not
+    /// infer agent-ness from `derived` alone.
+    pub agents: Vec<String>,
 }
 
 /// GET /wsapi/list_emails
@@ -58,10 +62,17 @@ where
         })
         .collect();
 
+    let agents = emails
+        .iter()
+        .filter(|e| e.email_type == EmailType::Agent)
+        .map(|e| e.email.clone())
+        .collect();
+
     Ok(Json(ListEmailsResponse {
         success: true,
         emails: emails.into_iter().map(|e| e.email).collect(),
         derived,
+        agents,
     }))
 }
 

@@ -4,50 +4,70 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>browserid.me — your identities</title>
+  <!-- Styled to match the sign-in dialog (dialog.css look): white cards on
+       #f5f5f5, 4a90d9 primary, same list rows the chooser uses. -->
   <style>
-    :root { color-scheme: light dark; }
-    body { font: 16px/1.6 system-ui, -apple-system, sans-serif; max-width: 44rem;
-      margin: 4rem auto; padding: 0 1.25rem; color: #1a1a1a; }
-    @media (prefers-color-scheme: dark) { body { color: #e8e8e8; background: #161616; } }
-    h1 { font-size: 1.6rem; margin-bottom: .25rem; }
-    .muted { opacity: .65; }
-    code { font-family: ui-monospace, monospace; background: rgba(127,127,127,.18);
-      padding: .12em .4em; border-radius: 5px; font-size: .9em; }
-    .card { border: 1px solid rgba(127,127,127,.3); border-radius: 12px;
-      padding: 1rem 1.25rem; margin-top: 1.5rem; }
-    button { font: inherit; padding: .5rem .9rem; border-radius: 9px;
-      border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
-    button.primary { background: #2b6cb0; color: #fff; border-color: #2b6cb0; }
-    button.small { padding: .2rem .6rem; font-size: .85em; }
-    button:disabled { opacity: .5; cursor: default; }
-    label { display: block; margin: .6rem 0 .2rem; font-weight: 600; font-size: .95em; }
-    input { font: inherit; padding: .45rem .6rem; border-radius: 8px; width: 100%;
-      box-sizing: border-box; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; }
-    table { width: 100%; border-collapse: collapse; margin-top: .5rem; font-size: .9em; }
-    th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid rgba(127,127,127,.2); vertical-align: top; }
-    .who { font-family: ui-monospace, monospace; }
-    .scope { display: inline-block; font-family: ui-monospace, monospace; font-size: .8em;
-      border: 1px solid rgba(127,127,127,.45); border-radius: 999px; padding: .05em .55em; margin: 0 .2em .2em 0; }
-    .badge { display: inline-block; font-size: .72em; text-transform: uppercase; letter-spacing: .06em;
-      border: 1px solid rgba(127,127,127,.5); border-radius: 999px; padding: .05em .55em; margin-left: .5em; opacity: .8; }
-    .warn { color: #b7791f; } .err { color: #c53030; } .ok { color: #2f855a; }
-    a { color: #2b6cb0; } @media (prefers-color-scheme: dark){ a{color:#7db3e8} }
-    .status { font-size: .9em; margin-top: .5rem; }
-    .idrow { padding: .45rem 0; border-bottom: 1px solid rgba(127,127,127,.15); }
-    .idrow:last-child { border-bottom: 0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 32px 16px 48px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 14px; line-height: 1.5; color: #333; background-color: #f5f5f5; }
+    .wrap { max-width: 420px; margin: 0 auto; }
+    .brand { text-align: center; margin-bottom: 20px; }
+    .brand a { color: #333; text-decoration: none; font-weight: 600; font-size: 16px; }
+    .brand .me { color: #4a90d9; }
+    .card { background: #fff; border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,.08);
+      padding: 24px; margin-bottom: 20px; }
+    h2 { margin: 0 0 4px 0; font-size: 18px; font-weight: 600; color: #1a1a1a; }
+    p { margin: 0 0 16px 0; color: #666; }
+    .sub { font-size: 13px; color: #888; margin-bottom: 12px; }
+    label { display: block; margin-bottom: 4px; font-size: 13px; font-weight: 500; color: #555; }
+    input { width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #ccc;
+      border-radius: 4px; outline: none; margin-bottom: 12px; }
+    input:focus { border-color: #4a90d9; box-shadow: 0 0 0 3px rgba(74,144,217,.2); }
+    button { padding: 10px 20px; font-size: 14px; font-weight: 500; border: none;
+      border-radius: 4px; cursor: pointer; background-color: #e9ecef; color: #495057; }
+    button:hover:not(:disabled) { background-color: #dee2e6; }
+    button.primary { background-color: #4a90d9; color: #fff; }
+    button.primary:hover:not(:disabled) { background-color: #357abd; }
+    button.small { padding: 4px 10px; font-size: 12px; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .idlist { list-style: none; padding: 0; margin: 0; border: 1px solid #ddd; border-radius: 4px; }
+    .idlist li { border-bottom: 1px solid #eee; }
+    .idlist li:last-child { border-bottom: none; }
+    .idlist .row { display: flex; align-items: center; padding: 12px; width: 100%;
+      background: none; border: none; text-align: left; font-size: 14px; border-radius: 0; }
+    .idlist .row:hover { background-color: #f8f9fa; }
+    .idlist .email-text { flex: 1; color: #333; word-break: break-all; }
+    .idlist .email-sub { display: block; margin-top: 2px; font-size: 12px; color: #888; }
+    .idlist .chev { color: #bbb; margin-left: 8px; }
+    .idlist .add .email-text { color: #4a90d9; font-weight: 500; }
+    a { color: #4a90d9; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .status { font-size: 13px; margin-top: 8px; }
+    .muted { color: #888; } .err { color: #dc3545; } .ok { color: #2f855a; } .warn { color: #b7791f; }
+    .scope { display: inline-block; font-family: ui-monospace, monospace; font-size: 11px;
+      border: 1px solid #ccc; border-radius: 999px; padding: 1px 8px; margin: 0 3px 3px 0; color: #555; }
+    .wtable { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .wtable td { padding: 8px 6px; border-bottom: 1px solid #eee; vertical-align: top; }
+    .wtable tr:last-child td { border-bottom: none; }
+    .aud { font-family: ui-monospace, monospace; word-break: break-all; }
+    .footer-links { text-align: center; font-size: 13px; color: #888; }
+    .footer-links a { margin: 0 8px; }
+    #detail-back { margin-bottom: 12px; }
+    .kv { font-size: 13px; color: #555; margin-bottom: 16px; }
+    .kv b { color: #333; }
   </style>
 </head>
 <body>
-  <h1>Your browserid</h1>
-  <p class="muted">The identities this broker holds for you, the agents acting for them,
-  and the warrants you've signed. Your keys live in this browser — the broker vouches,
-  it doesn't hold them.</p>
+<div class="wrap">
+  <div class="brand"><a href="/">browserid<span class="me">.me</span></a></div>
 
-  <div id="gate" class="card"><p>Checking your session…</p></div>
+  <div id="gate" class="card"><p style="margin:0">Checking your session…</p></div>
 
-  <!-- Sign-in (shown when no session) -->
+  <!-- Sign-in -->
   <div id="signin" class="card" hidden>
-    <strong>Sign in</strong>
+    <h2>Sign in</h2>
+    <p class="sub">Manage your identities and the agents acting for them.</p>
     <form id="signin-form">
       <label for="si-email">Email</label>
       <input id="si-email" type="email" autocomplete="username" required>
@@ -61,58 +81,66 @@
         <label for="si-newpass">New password</label>
         <input id="si-newpass" type="password" autocomplete="new-password" minlength="8" maxlength="80">
       </div>
-      <p style="margin-top:.9rem">
-        <button type="submit" class="primary" id="si-btn">Continue</button>
-        <button type="button" id="si-code-btn" hidden>Email me a code instead</button>
-      </p>
+      <button type="submit" class="primary" id="si-btn">Continue</button>
+      <button type="button" id="si-code-btn" hidden>Email me a code instead</button>
       <p class="status" id="si-status"></p>
     </form>
-    <p class="muted" style="font-size:.85em">New here? Accounts are created when you first
-    sign in to an app that uses browserid — try the <a href="https://mingo.place" rel="noopener">demo</a>.</p>
   </div>
 
-  <!-- Signed-in view -->
+  <!-- Main: two lists -->
   <div id="app" hidden>
     <div class="card">
-      <strong>Identities</strong>
-      <div id="identities"><p class="muted">Loading…</p></div>
+      <h2>Your identities</h2>
+      <p class="sub">Emails you sign in with.</p>
+      <ul class="idlist" id="user-ids"></ul>
+      <div id="add-email-form" hidden style="margin-top:12px">
+        <label for="ae-email">New email</label>
+        <input id="ae-email" type="email" placeholder="you@example.com">
+        <div id="ae-code-block" hidden>
+          <label for="ae-code">6-digit code (check that inbox)</label>
+          <input id="ae-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000">
+        </div>
+        <button class="primary small" id="ae-btn">Send code</button>
+        <button class="small" id="ae-cancel">Cancel</button>
+        <p class="status" id="ae-status"></p>
+      </div>
     </div>
 
     <div class="card">
-      <strong>Agents</strong>
-      <p class="muted" style="margin:.4rem 0;font-size:.92em">Programs acting with your
-      identities — each with its own key and certificate naming you as the principal.</p>
-      <p>
-        <a href="/agents">Manage agent keys →</a><br>
-        <a href="/consent">Pending consent requests →</a>
-      </p>
+      <h2>Agent identities</h2>
+      <p class="sub">Programs acting for you — each with its own key and certificate.
+        Click one for details and warrants.</p>
+      <ul class="idlist" id="agent-ids"></ul>
+      <p class="status"><a href="/consent">Pending consent requests →</a></p>
     </div>
 
     <div class="card">
-      <strong>Warrants signed in this browser</strong>
-      <p class="muted" style="margin:.4rem 0;font-size:.92em">Every warrant is a grant you
-      signed for one agent at one site. This list is <em>local to this browser</em> — by
-      design the broker keeps no record of where your agents act. To cut an agent off
-      everywhere, revoke its key on the <a href="/agents">agent keys</a> page (it stops
-      working within a day). Reissue signs a fresh copy for the same grant.</p>
-      <div id="warrants"><p class="muted">Loading…</p></div>
-      <p class="status" id="w-status"></p>
-    </div>
-
-    <div class="card">
-      <strong>Session &amp; cache</strong>
-      <p class="muted" style="margin:.4rem 0;font-size:.92em">Sign out ends your broker
-      session and clears this browser's cached certificates; clearing the cache alone
-      keeps you signed in but drops stale certs and per-site grants.</p>
-      <p>
-        <button id="signout">Sign out</button>
-        <button id="reset">Clear cached certificates</button>
-      </p>
+      <h2>Session</h2>
+      <p class="sub">Signing out also clears this browser's cached certificates.</p>
+      <button id="signout">Sign out</button>
+      <button id="reset">Clear cached certificates</button>
       <p class="status" id="out"></p>
     </div>
   </div>
 
-  <p class="muted" style="margin-top:2rem"><a href="/">← browserid.me</a></p>
+  <!-- Agent detail -->
+  <div id="detail" hidden>
+    <div class="card">
+      <button id="detail-back" class="small">← Back</button>
+      <h2 id="d-email" style="word-break:break-all"></h2>
+      <p class="kv">Acts for <b id="d-parent"></b></p>
+      <p class="sub">Warrants signed for this agent in this browser. The agent may hold
+        others approved elsewhere. To cut this agent off everywhere, revoke its
+        <a href="/agents">agent key</a> — it stops working within a day.</p>
+      <div id="d-warrants"></div>
+      <p class="status" id="d-status"></p>
+    </div>
+  </div>
+
+  <p class="footer-links">
+    <a href="/agents">Agent keys</a> · <a href="/consent">Consent</a> · <a href="/">browserid.me</a>
+  </p>
+</div>
 
 <script src="/common/js/lib/jwcrypto-compat.js"></script>
 <script type="module">
@@ -134,7 +162,9 @@ const post = (path, body) => api(path, {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 });
 
-// ---------- sign-in (password, or emailed code for password-less accounts) ----------
+let account = { emails: [], agents: [], parentOf: {} };
+
+// ---------- sign-in ----------
 let codeMode = false;
 $('si-code-btn').onclick = async () => {
   const email = $('si-email').value.trim();
@@ -159,8 +189,6 @@ $('signin-form').onsubmit = async (e) => {
   const status = $('si-status');
   status.className = 'status muted';
   if (!email) return;
-
-  // First step: reveal the password field (and code option).
   if ($('pw-block').hidden && !codeMode) {
     $('pw-block').hidden = false;
     $('si-code-btn').hidden = false;
@@ -168,32 +196,87 @@ $('signin-form').onsubmit = async (e) => {
     $('si-pass').focus();
     return;
   }
-
   status.textContent = 'Signing in…';
   try {
     if (codeMode) {
-      const code = $('si-code').value.trim();
-      const pass = $('si-newpass').value;
-      await post('/wsapi/complete_reset', { token: code, pass });
-      await post('/wsapi/authenticate_user', { email, pass, ephemeral: false });
+      await post('/wsapi/complete_reset', { token: $('si-code').value.trim(), pass: $('si-newpass').value });
+      await post('/wsapi/authenticate_user', { email, pass: $('si-newpass').value, ephemeral: false });
     } else {
       await post('/wsapi/authenticate_user', { email, pass: $('si-pass').value, ephemeral: false });
     }
     location.reload();
   } catch (e) {
     status.className = 'status err';
-    status.textContent = e.message +
-      (codeMode ? '' : ' — no password? Use "Email me a code instead".');
+    status.textContent = e.message + (codeMode ? '' : ' — no password? Use "Email me a code instead".');
   }
 };
 
-// ---------- signed-in view ----------
+// ---------- identity lists ----------
+function renderLists() {
+  const userRows = account.emails
+    .filter(e => !account.agents.includes(e))
+    .map(email => {
+      const via = account.parentOf[email];
+      return `<li><div class="row"><span class="email-text">${escapeHtml(email)}
+        ${via ? `<span class="email-sub">signs in via ${escapeHtml(via)}</span>` : ''}
+      </span></div></li>`;
+    }).join('');
+  $('user-ids').innerHTML = userRows +
+    `<li class="add"><button class="row" id="add-email"><span class="email-text">+ Add an email</span></button></li>`;
+  $('add-email').onclick = () => { $('add-email-form').hidden = false; $('ae-email').focus(); };
+
+  const agentRows = account.agents.map(email => `
+    <li><button class="row agent-row" data-email="${escapeHtml(email)}">
+      <span class="email-text">${escapeHtml(email)}
+        <span class="email-sub">acts for ${escapeHtml(account.parentOf[email] || '')}</span></span>
+      <span class="chev">›</span>
+    </button></li>`).join('');
+  $('agent-ids').innerHTML = agentRows +
+    `<li class="add"><button class="row" onclick="location.href='/agents'">
+      <span class="email-text">+ Create an agent key</span></button></li>` ||
+    '<li><div class="row"><span class="email-text muted">None yet.</span></div></li>';
+  for (const b of document.querySelectorAll('.agent-row')) {
+    b.onclick = () => showDetail(b.dataset.email);
+  }
+}
+
+// ---------- add email (stage → code → complete) ----------
+let aeStaged = false;
+$('ae-cancel').onclick = () => { $('add-email-form').hidden = true; };
+$('ae-btn').onclick = async () => {
+  const status = $('ae-status');
+  status.className = 'status muted';
+  try {
+    if (!aeStaged) {
+      const email = $('ae-email').value.trim();
+      if (!email) return;
+      status.textContent = 'Sending code…';
+      await post('/wsapi/stage_email', { email });
+      aeStaged = true;
+      $('ae-code-block').hidden = false;
+      $('ae-btn').textContent = 'Verify';
+      status.textContent = 'Code sent — check that inbox.';
+    } else {
+      status.textContent = 'Verifying…';
+      await post('/wsapi/complete_email_addition', { token: $('ae-code').value.trim() });
+      location.reload();
+    }
+  } catch (e) {
+    status.className = 'status err';
+    status.textContent = e.message;
+  }
+};
+
+// ---------- agent detail + warrants ----------
+function warrantLog() {
+  try { return JSON.parse(localStorage.warrant_log || '[]'); } catch { return []; }
+}
 function localIdentity(email) {
   let store = {};
   try { store = JSON.parse(localStorage.emails || '{}'); } catch {}
   for (const issuerKey of Object.keys(store)) {
     for (const [addr, rec] of Object.entries(store[issuerKey] || {})) {
-      if (addr.toLowerCase() === email.toLowerCase() && rec?.priv && rec?.cert) {
+      if (addr.toLowerCase() === (email || '').toLowerCase() && rec?.priv && rec?.cert) {
         return { email: addr, cert: rec.cert, priv: rec.priv };
       }
     }
@@ -201,69 +284,63 @@ function localIdentity(email) {
   return null;
 }
 
-async function renderIdentities() {
-  const { emails, derived } = await api('/wsapi/list_emails');
-  const parentOf = Object.fromEntries((derived || []).map(d => [d.email, d.parent_email]));
-  const rows = (emails || []).map(email => {
-    const parent = parentOf[email];
-    const local = !!localIdentity(email);
-    return `<div class="idrow"><span class="who">${escapeHtml(email)}</span>` +
-      (parent ? `<span class="badge">agent · for ${escapeHtml(parent)}</span>` : '') +
-      (local || parent ? '' : '<span class="badge" title="No signing key cached in this browser">key not in this browser</span>') +
-      `</div>`;
-  }).join('');
-  $('identities').innerHTML = rows || '<p class="muted">No identities yet.</p>';
+function showDetail(agentEmail) {
+  $('app').hidden = true;
+  $('detail').hidden = false;
+  $('d-email').textContent = agentEmail;
+  $('d-parent').textContent = account.parentOf[agentEmail] || 'unknown';
+  renderDetailWarrants(agentEmail);
 }
+$('detail-back').onclick = () => { $('detail').hidden = true; $('app').hidden = false; };
 
-function warrantLog() {
-  try { return JSON.parse(localStorage.warrant_log || '[]'); } catch { return []; }
-}
-
-function renderWarrants() {
-  const log = warrantLog();
-  if (!log.length) {
-    $('warrants').innerHTML = '<p class="muted">None signed in this browser yet. They appear ' +
-      'here when you approve an agent on the <a href="/consent">consent page</a> or sign one manually.</p>';
+function renderDetailWarrants(agentEmail) {
+  const now = Math.floor(Date.now() / 1000);
+  const entries = warrantLog()
+    .map((w, i) => ({ ...w, i }))
+    .filter(w => (w.agent || '').toLowerCase() === agentEmail.toLowerCase());
+  if (!entries.length) {
+    $('d-warrants').innerHTML = `<p class="muted" style="font-size:13px">No warrants signed
+      in this browser. Approve requests on the <a href="/consent">consent page</a>, or sign
+      one manually on the <a href="/agents">agent keys</a> page.</p>`;
     return;
   }
-  const now = Math.floor(Date.now() / 1000);
-  $('warrants').innerHTML = `<table><thead><tr><th>Agent</th><th>At</th><th>Scopes</th><th>Expires</th><th></th></tr></thead><tbody>` +
-    log.map((w, i) => `
-      <tr>
-        <td class="who">${escapeHtml(w.agent)}<br><span class="muted" style="font-size:.85em">by ${escapeHtml(w.delegator || '')}</span></td>
-        <td class="who" style="word-break:break-all">${escapeHtml(w.aud)}</td>
-        <td>${(w.scopes || []).length ? w.scopes.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') : '<span class="muted">—</span>'}</td>
-        <td>${w.exp ? (w.exp < now ? '<span class="warn">expired</span>' : new Date(w.exp * 1000).toLocaleDateString()) : '?'}</td>
-        <td style="white-space:nowrap">
-          ${w.jws ? `<button class="small copy" data-i="${i}">Copy</button>` : ''}
-          <button class="small reissue" data-i="${i}">Reissue</button>
-          <button class="small forget" data-i="${i}">Forget</button>
-        </td>
-      </tr>`).join('') + '</tbody></table>';
+  $('d-warrants').innerHTML = `<table class="wtable">` + entries.map(w => `
+    <tr>
+      <td><span class="aud">${escapeHtml(w.aud)}</span><br>
+        ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}
+      </td>
+      <td style="white-space:nowrap;text-align:right">
+        <span class="${w.exp && w.exp < now ? 'warn' : 'muted'}" style="font-size:12px">
+          ${w.exp ? (w.exp < now ? 'expired' : 'until ' + new Date(w.exp * 1000).toLocaleDateString()) : ''}</span><br>
+        ${w.jws ? `<button class="small w-copy" data-i="${w.i}">Copy</button>` : ''}
+        <button class="small w-reissue" data-i="${w.i}">Reissue</button>
+        <button class="small w-forget" data-i="${w.i}">Forget</button>
+      </td>
+    </tr>`).join('') + '</table>';
 
-  for (const b of $('warrants').querySelectorAll('.copy')) {
+  for (const b of $('d-warrants').querySelectorAll('.w-copy')) {
     b.onclick = async () => {
       await navigator.clipboard.writeText(warrantLog()[b.dataset.i].jws);
-      $('w-status').className = 'status ok';
-      $('w-status').textContent = 'Copied — paste into the agent (add_warrant).';
+      $('d-status').className = 'status ok';
+      $('d-status').textContent = 'Copied — paste into the agent (add_warrant).';
     };
   }
-  for (const b of $('warrants').querySelectorAll('.forget')) {
+  for (const b of $('d-warrants').querySelectorAll('.w-forget')) {
     b.onclick = () => {
       const log = warrantLog();
       log.splice(Number(b.dataset.i), 1);
       localStorage.warrant_log = JSON.stringify(log);
-      renderWarrants();
-      $('w-status').className = 'status muted';
-      $('w-status').textContent = 'Removed from this list. (The signed warrant the agent ' +
-        'holds stays valid until it expires — revoke the agent key to cut it off.)';
+      renderDetailWarrants(agentEmail);
+      $('d-status').className = 'status muted';
+      $('d-status').textContent = 'Removed from this list. The copy the agent holds stays ' +
+        'valid until it expires — revoke the agent key to cut it off.';
     };
   }
-  for (const b of $('warrants').querySelectorAll('.reissue')) {
+  for (const b of $('d-warrants').querySelectorAll('.w-reissue')) {
     b.onclick = async () => {
       const w = warrantLog()[b.dataset.i];
-      const status = $('w-status');
-      const id = localIdentity(w.delegator || '');
+      const status = $('d-status');
+      const id = localIdentity(w.delegator);
       if (!id) {
         status.className = 'status err';
         status.textContent = `The identity key for ${w.delegator} isn't in this browser — sign in with it first.`;
@@ -283,9 +360,10 @@ function renderWarrants() {
         const jws = `${header}.${payload}.${sig}`;
         const log = warrantLog();
         log.unshift({ ...w, exp: claims.exp, jws, signed_at: now });
+        delete log[0].i;
         localStorage.warrant_log = JSON.stringify(log.slice(0, 200));
         await navigator.clipboard.writeText(jws);
-        renderWarrants();
+        renderDetailWarrants(agentEmail);
         status.className = 'status ok';
         status.textContent = 'Reissued (fresh 90-day expiry) and copied — paste into the agent.';
       } catch (e) {
@@ -296,15 +374,14 @@ function renderWarrants() {
   }
 }
 
+// ---------- session tools ----------
 function clearLocal() {
   localStorage.removeItem('emails');
   localStorage.removeItem('siteInfo');
 }
 $('signout').onclick = async () => {
   $('out').textContent = 'Signing out…';
-  try {
-    await fetch('/wsapi/logout', { method: 'POST', credentials: 'same-origin' });
-  } catch {}
+  try { await fetch('/wsapi/logout', { method: 'POST', credentials: 'same-origin' }); } catch {}
   clearLocal();
   location.reload();
 };
@@ -313,6 +390,7 @@ $('reset').onclick = () => {
   $('out').textContent = '✓ Cached certificates cleared (still signed in).';
 };
 
+// ---------- boot ----------
 async function boot() {
   let ctx;
   try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
@@ -321,13 +399,18 @@ async function boot() {
     $('signin').hidden = false;
     return;
   }
+  const resp = await api('/wsapi/list_emails');
+  account = {
+    emails: resp.emails || [],
+    agents: resp.agents || [],
+    parentOf: Object.fromEntries((resp.derived || []).map(d => [d.email, d.parent_email])),
+  };
   $('app').hidden = false;
-  await renderIdentities();
-  renderWarrants();
+  renderLists();
 }
 boot().catch(e => {
   $('gate').hidden = false;
-  $('gate').innerHTML = `<p class="err">Error: ${escapeHtml(e.message)}</p>`;
+  $('gate').innerHTML = `<p class="err" style="margin:0">Error: ${escapeHtml(e.message)}</p>`;
 });
 </script>
 </body>
