@@ -10,9 +10,10 @@
 > [`browserid-ng-divergence-analysis.md`](./browserid-ng-divergence-analysis.md).
 >
 > Section status is marked inline: **[SETTLED]** sections describe shipped,
-> stable behavior; **[PENDING]** sections state the *decided design* but await
-> the implementation on branch `feat/dnssec-required` (bean `browserid-ng-28uc`)
-> before their wording is final.
+> stable behavior. The DNSSEC trust root and unified verifier (§3, §6.2) shipped
+> on branch `feat/dnssec-required` (bean `browserid-ng-28uc` Phase 1). The one
+> remaining **[PENDING]** item is the optional host certificate (§4.2), awaiting
+> 28uc Phase 2.
 >
 > Layered on this core: [agent provisioning & grant exchange](./agent-provisioning-and-grant-api.md)
 > (this repo), and SBO on-chain attribution (in the **sbo** repo, built on §6.3).
@@ -62,9 +63,10 @@ are deliberate departures.
 
 Reference: `browserid-core/src/keys.rs`.
 
-## 3. Discovery & the trust root  **[PENDING — bean 28uc]**
+## 3. Discovery & the trust root  **[SETTLED]**
 
-> Decided design (implementation on `feat/dnssec-required`):
+> Implemented on `feat/dnssec-required` (28uc Phase 1): a single DNSSEC-rooted
+> verifier path.
 
 **The authenticated `_browserid` DNSSEC record is the required, sole trust root
 for an IdP's identity key.**
@@ -79,8 +81,11 @@ for an IdP's identity key.**
   bit set — and accepted only when the resolver's **AD** flag is set. `SERVFAIL`
   is treated as **Bogus → hard reject** (a broken DNSSEC chain is an attack
   signal, not a fall-through). An **insecure** (AD-unset) result means the
-  domain is not a primary → the identity is handled via the broker (§8).
-  Reference: `browserid-core/src/dns.rs`, `browserid-broker/src/dns_fetcher.rs`.
+  domain is not a primary → the identity is handled via the broker (§8). The
+  broker's *own* key is likewise DNSSEC-resolved, so **no path — primary or
+  fallback — trusts a `.well-known` key**; a broker without DNSSEC is a hard
+  error. Reference: `browserid-core/src/dns.rs`, `browserid-broker/src/dns_fetcher.rs`,
+  `browserid-broker/src/fallback_fetcher.rs`.
 
 - **A key presented only via `.well-known/browserid` is NOT trusted.** There is
   no dual path: accepting either DNSSEC or Web-PKI trust would reduce security
@@ -174,15 +179,18 @@ Reference: `browserid-core/src/assertion.rs`.
 returns the verified identity (email) on success, mirroring the BrowserID
 verifier contract. Reference: `browserid-broker/src/routes/verify.rs`.
 
-### 6.2 Verification algorithm  **[PENDING — bean 28uc]**
+### 6.2 Verification algorithm  **[SETTLED]**
 
-> Decided design (unified DNSSEC-rooted path):
+> Implemented on `feat/dnssec-required` (28uc Phase 1). The verifier is generic
+> over a `Discoverer` (native RPITIT), so it is unit-testable with a mock;
+> production discovery resolves the key via DNSSEC (`FallbackFetcher`).
 
 1. Parse the backed assertion into its cert chain + assertion.
 2. Resolve the issuer (`iss`) IdP key **via the authenticated DNSSEC record**
    (§3). No `.well-known` key trust; no dual path.
 3. Verify the cert chain: each cert signed by the previous key; the root cert
-   signed by `K_dns` (directly, or via a §4.2 host cert also signed by `K_dns`).
+   signed by `K_dns` directly. *(The optional host-cert intermediate — §4.2,
+   Phase 2 — is not yet in the verifier; when added it hooks in at this step.)*
 4. Verify the assertion signature against the leaf certificate's subject key,
    and that `aud` matches the RP and nothing is expired.
 5. Return the certified email.
@@ -252,6 +260,6 @@ attribution-aware broker occupying the same role.
 
 ---
 
-*Open drafting notes:* §3, §4.2, §6.2 finalize once `feat/dnssec-required`
-(28uc Phase 1) and the host-cert work (28uc Phase 2) land; verify wording
-against the shipped verifier then.
+*Open drafting notes:* §3 and §6.2 are finalized against the shipped verifier
+(`feat/dnssec-required`, commit `85021d2`). §4.2 (optional host certificates)
+remains the only PENDING section, awaiting 28uc Phase 2.
