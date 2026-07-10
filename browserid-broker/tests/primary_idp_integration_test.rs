@@ -15,7 +15,7 @@ use browserid_broker::{
     routes, AppState, EmailType, InMemorySessionStore, InMemoryUserStore, SessionStore, UserStore,
 };
 use browserid_core::KeyPair;
-use common::MockEmailSender;
+use common::{get_csrf, MockEmailSender};
 use serde_json::{json, Value};
 
 /// Create a test server with access to underlying stores
@@ -153,12 +153,14 @@ async fn test_set_password_success() {
     let session = session_store.create(user_id).unwrap();
 
     // Call set_password with session cookie
+    let csrf = get_csrf(&server, &session.id.0).await;
     let response = server
         .post("/wsapi/set_password")
         .add_cookie(cookie::Cookie::new("browserid_session", session.id.0.clone()))
         .json(&json!({
             "email": "primaryuser@example.com",
-            "pass": "newpassword123"
+            "pass": "newpassword123",
+            "csrf": csrf
         }))
         .await;
 
@@ -204,6 +206,7 @@ async fn test_set_password_rejects_wrong_user() {
     let session_a = session_store.create(user_a_id).unwrap();
 
     // Try to set password for user B's email while logged in as user A
+    let csrf = get_csrf(&server, &session_a.id.0).await;
     let response = server
         .post("/wsapi/set_password")
         .add_cookie(cookie::Cookie::new(
@@ -212,7 +215,8 @@ async fn test_set_password_rejects_wrong_user() {
         ))
         .json(&json!({
             "email": "userb@example.com",
-            "pass": "newpassword123"
+            "pass": "newpassword123",
+            "csrf": csrf
         }))
         .await;
 
@@ -237,12 +241,14 @@ async fn test_set_password_rejects_already_has_password() {
     let session = session_store.create(user_id).unwrap();
 
     // Try to call set_password (should fail because user already has password)
+    let csrf = get_csrf(&server, &session.id.0).await;
     let response = server
         .post("/wsapi/set_password")
         .add_cookie(cookie::Cookie::new("browserid_session", session.id.0.clone()))
         .json(&json!({
             "email": "haspassword@example.com",
-            "pass": "newpassword123"
+            "pass": "newpassword123",
+            "csrf": csrf
         }))
         .await;
 
@@ -267,12 +273,14 @@ async fn test_set_password_password_too_short() {
     let session = session_store.create(user_id).unwrap();
 
     // Try to set a password that's too short
+    let csrf = get_csrf(&server, &session.id.0).await;
     let response = server
         .post("/wsapi/set_password")
         .add_cookie(cookie::Cookie::new("browserid_session", session.id.0.clone()))
         .json(&json!({
             "email": "shortpass@example.com",
-            "pass": "short"
+            "pass": "short",
+            "csrf": csrf
         }))
         .await;
 
@@ -302,12 +310,14 @@ async fn test_set_password_password_too_long() {
 
     // Try to set a password that's too long (> 80 chars)
     let long_password = "a".repeat(81);
+    let csrf = get_csrf(&server, &session.id.0).await;
     let response = server
         .post("/wsapi/set_password")
         .add_cookie(cookie::Cookie::new("browserid_session", session.id.0.clone()))
         .json(&json!({
             "email": "longpass@example.com",
-            "pass": long_password
+            "pass": long_password,
+            "csrf": csrf
         }))
         .await;
 
@@ -336,12 +346,14 @@ async fn test_set_password_email_not_found() {
     let session = session_store.create(user_id).unwrap();
 
     // Try to set password for a non-existent email
+    let csrf = get_csrf(&server, &session.id.0).await;
     let response = server
         .post("/wsapi/set_password")
         .add_cookie(cookie::Cookie::new("browserid_session", session.id.0.clone()))
         .json(&json!({
             "email": "nonexistent@example.com",
-            "pass": "validpassword123"
+            "pass": "validpassword123",
+            "csrf": csrf
         }))
         .await;
 
@@ -391,12 +403,14 @@ async fn test_set_password_updates_last_used_as() {
 
     // Create session and set password
     let session = session_store.create(user_id).unwrap();
+    let csrf = get_csrf(&server, &session.id.0).await;
     let response = server
         .post("/wsapi/set_password")
         .add_cookie(cookie::Cookie::new("browserid_session", session.id.0.clone()))
         .json(&json!({
             "email": "updatetype@example.com",
-            "pass": "newpassword123"
+            "pass": "newpassword123",
+            "csrf": csrf
         }))
         .await;
 
@@ -427,12 +441,14 @@ async fn test_address_info_after_set_password() {
 
     // Create session and set password
     let session = session_store.create(user_id).unwrap();
+    let csrf = get_csrf(&server, &session.id.0).await;
     let response = server
         .post("/wsapi/set_password")
         .add_cookie(cookie::Cookie::new("browserid_session", session.id.0.clone()))
         .json(&json!({
             "email": "transition@example.com",
-            "pass": "newpassword123"
+            "pass": "newpassword123",
+            "csrf": csrf
         }))
         .await;
     assert_eq!(response.status_code(), 200);

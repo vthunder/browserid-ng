@@ -139,7 +139,11 @@ where
 
     // Create session
     let session = state.session_store.create(user_id)?;
-    super::session::set_session_cookie(&cookies, &session.id.0);
+    super::session::set_session_cookie(
+        &cookies,
+        &session.id.0,
+        super::session::cookie_secure(&state.domain),
+    );
 
     Ok(Json(CompleteUserCreationResponse {
         success: true,
@@ -151,6 +155,8 @@ where
 pub struct AccountCancelRequest {
     pub email: String,
     pub pass: String,
+    #[serde(default)]
+    pub csrf: String,
 }
 
 #[derive(Serialize)]
@@ -175,6 +181,7 @@ where
     // Require authentication
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
+    super::session::require_csrf(&session, &req.csrf)?;
 
     // Verify the provided email belongs to this user
     let emails = state.user_store.list_emails(session.user_id)?;

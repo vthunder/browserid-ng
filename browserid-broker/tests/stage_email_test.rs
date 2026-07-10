@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{create_test_server, create_user};
+use common::{create_test_server, create_user, get_csrf};
 use serde_json::json;
 
 /// Test: stage_email requires authentication
@@ -32,10 +32,11 @@ async fn test_cannot_add_existing_email() {
     let session = create_user(&server, &email_sender, email2, "password2").await;
 
     // Try to add first user's email to second user
+    let csrf = get_csrf(&server, &session).await;
     let response = server
         .post("/wsapi/stage_email")
         .add_cookie(cookie::Cookie::new("browserid_session", session))
-        .json(&json!({ "email": email1 }))
+        .json(&json!({ "email": email1, "csrf": csrf }))
         .await;
 
     assert_eq!(response.status_code(), 409);

@@ -167,9 +167,7 @@ where
 {
     require_enabled(&state)?;
     let session = require_session(&state, &cookies)?;
-    if session.csrf_token != req.csrf {
-        return Err(BrokerError::InvalidCsrf);
-    }
+    super::session::require_csrf(&session, &req.csrf)?;
 
     let label = req.label.trim();
     if label.is_empty() || label.len() > 64 {
@@ -277,9 +275,7 @@ where
 {
     require_enabled(&state)?;
     let session = require_session(&state, &cookies)?;
-    if session.csrf_token != req.csrf {
-        return Err(BrokerError::InvalidCsrf);
-    }
+    super::session::require_csrf(&session, &req.csrf)?;
     // Look the cert up first (list is small) so we can also flip status bits
     // for the agent identities it covers — "revoke the key" should mean the
     // agents stop working in minutes, not within a cert TTL.

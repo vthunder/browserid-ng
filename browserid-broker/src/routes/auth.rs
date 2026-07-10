@@ -60,7 +60,11 @@ where
 
     // Create session
     let session = state.session_store.create(user.id)?;
-    super::session::set_session_cookie(&cookies, &session.id.0);
+    super::session::set_session_cookie(
+        &cookies,
+        &session.id.0,
+        super::session::cookie_secure(&state.domain),
+    );
 
     Ok(Json(AuthenticateResponse {
         success: true,
@@ -74,30 +78,40 @@ pub struct LogoutResponse {
     pub success: bool,
 }
 
+#[derive(Deserialize, Default)]
+pub struct LogoutRequest {
+    #[serde(default)]
+    pub csrf: String,
+}
+
 /// POST /wsapi/logout
 pub async fn logout<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
-) -> Json<LogoutResponse>
+    req: Option<Json<LogoutRequest>>,
+) -> Result<Json<LogoutResponse>, BrokerError>
 where
     U: UserStore,
     S: SessionStore,
     E: EmailSender,
 {
-    // Get and delete session
+    // Get and delete session (CSRF-gated: forced logout is a nuisance vector)
     if let Some(session) = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref()) {
+        super::session::require_csrf(&session, &req.unwrap_or_default().csrf)?;
         let _ = state.session_store.delete(&session.id);
     }
 
     super::session::clear_session_cookie(&cookies);
 
-    Json(LogoutResponse { success: true })
+    Ok(Json(LogoutResponse { success: true }))
 }
 
 #[derive(Deserialize)]
 pub struct UpdatePasswordRequest {
     pub oldpass: String,
     pub newpass: String,
+    #[serde(default)]
+    pub csrf: String,
 }
 
 #[derive(Serialize)]
@@ -122,6 +136,7 @@ where
     // Require authentication
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
+    super::session::require_csrf(&session, &req.csrf)?;
 
     // Validate new password length
     if req.newpass.len() < MIN_PASSWORD_LENGTH {

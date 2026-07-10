@@ -110,6 +110,7 @@ pub async fn make_credential(base: &str) -> (AgentCredential, KeyPair, String) {
         .post(format!("{base}/wsapi/cert_key"))
         .header("cookie", &session_cookie)
         .json(&json!({
+            "csrf": csrf,
             "email": email,
             "pubkey": { "algorithm": "Ed25519", "publicKey": user_kp.public_key().to_base64() },
             "ephemeral": false

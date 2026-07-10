@@ -24,6 +24,8 @@ pub struct CertKeyRequest {
     pub pubkey: PublicKeyJson,
     #[serde(default)]
     pub ephemeral: bool,
+    #[serde(default)]
+    pub csrf: String,
 }
 
 #[derive(Deserialize)]
@@ -149,6 +151,7 @@ where
     // Verify authenticated
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
+    super::session::require_csrf(&session, &req.csrf)?;
 
     // Verify user owns this email (case-insensitive)
     let normalized_email = req.email.to_lowercase();

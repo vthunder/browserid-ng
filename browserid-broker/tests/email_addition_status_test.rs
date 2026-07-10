@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{create_test_server, create_user};
+use common::{create_test_server, create_user, get_csrf};
 use serde_json::{json, Value};
 
 /// Test: email_addition_status returns "failed" for email not being added
@@ -30,10 +30,11 @@ async fn test_status_pending_after_staging() {
     let session = create_user(&server, &email_sender, first_email, "testpassword").await;
 
     // Stage a second email
+    let csrf = get_csrf(&server, &session).await;
     let response = server
         .post("/wsapi/stage_email")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "email": second_email }))
+        .json(&json!({ "email": second_email, "csrf": csrf }))
         .await;
     assert_eq!(response.status_code(), 200);
 
@@ -58,10 +59,11 @@ async fn test_status_complete_after_verification() {
     let session = create_user(&server, &email_sender, first_email, "testpassword").await;
 
     // Stage a second email
+    let csrf = get_csrf(&server, &session).await;
     server
         .post("/wsapi/stage_email")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "email": second_email }))
+        .json(&json!({ "email": second_email, "csrf": csrf }))
         .await;
 
     // Get verification code

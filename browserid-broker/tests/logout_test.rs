@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{create_test_server, create_user};
+use common::{create_test_server, create_user, get_csrf};
 use serde_json::{json, Value};
 
 /// Test: logout when authenticated succeeds
@@ -24,9 +24,11 @@ async fn test_logout_when_authenticated() {
     assert_eq!(body["authenticated"], true);
 
     // Logout
+    let csrf = get_csrf(&server, &session_cookie).await;
     let response = server
         .post("/wsapi/logout")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
+        .json(&json!({"csrf": csrf}))
         .await;
 
     assert_eq!(response.status_code(), 200);
@@ -45,9 +47,11 @@ async fn test_unauthenticated_after_logout() {
     let session_cookie = create_user(&server, &email_sender, email, password).await;
 
     // Logout
+    let csrf = get_csrf(&server, &session_cookie).await;
     server
         .post("/wsapi/logout")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
+        .json(&json!({"csrf": csrf}))
         .await;
 
     // Check session context with old cookie - should be unauthenticated
@@ -70,9 +74,11 @@ async fn test_can_relogin_after_logout() {
     let session_cookie = create_user(&server, &email_sender, email, password).await;
 
     // Logout
+    let csrf = get_csrf(&server, &session_cookie).await;
     server
         .post("/wsapi/logout")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie))
+        .json(&json!({"csrf": csrf}))
         .await;
 
     // Re-authenticate

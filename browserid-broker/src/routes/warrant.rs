@@ -158,7 +158,14 @@ where
     }
     let mut seen_auds: Vec<&str> = Vec::new();
     for g in &grants {
-        if g.aud.is_empty() || g.aud.contains('*') || g.aud.len() > 512 {
+        // No wildcards, and no whitespace/control characters: the audience
+        // is rendered verbatim on the consent page, where padding or
+        // invisible characters could disguise what is being approved.
+        if g.aud.is_empty()
+            || g.aud.contains('*')
+            || g.aud.len() > 512
+            || g.aud.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
             return Err(BrokerError::InvalidProvisioningRequest(
                 "each grant audience must be one exact identifier".into(),
             ));
@@ -394,9 +401,7 @@ where
     }
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
-    if session.csrf_token != req.csrf {
-        return Err(BrokerError::InvalidCsrf);
-    }
+    super::session::require_csrf(&session, &req.csrf)?;
 
     let rec = state
         .user_store
@@ -573,9 +578,7 @@ where
     }
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
-    if session.csrf_token != req.csrf {
-        return Err(BrokerError::InvalidCsrf);
-    }
+    super::session::require_csrf(&session, &req.csrf)?;
     let warrant = Warrant::parse(&req.warrant)
         .map_err(|e| BrokerError::ValidationError(format!("bad warrant: {e}")))?;
     let owns = state
@@ -618,9 +621,7 @@ where
     }
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
-    if session.csrf_token != req.csrf {
-        return Err(BrokerError::InvalidCsrf);
-    }
+    super::session::require_csrf(&session, &req.csrf)?;
     state.user_store.delete_warrant(session.user_id, req.id)?;
     Ok(Json(RespondResponse { success: true }))
 }
@@ -657,10 +658,12 @@ where
     }
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
-    if session.csrf_token != req.csrf {
-        return Err(BrokerError::InvalidCsrf);
-    }
-    if req.audience.is_empty() || req.audience.contains('*') || req.audience.len() > 512 {
+    super::session::require_csrf(&session, &req.csrf)?;
+    if req.audience.is_empty()
+        || req.audience.contains('*')
+        || req.audience.len() > 512
+        || req.audience.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
         return Err(BrokerError::ValidationError("bad audience".into()));
     }
     let idx = state.user_store.get_or_allocate_status(
@@ -699,9 +702,7 @@ where
     }
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
-    if session.csrf_token != req.csrf {
-        return Err(BrokerError::InvalidCsrf);
-    }
+    super::session::require_csrf(&session, &req.csrf)?;
     let record = state
         .user_store
         .list_warrants(session.user_id)?

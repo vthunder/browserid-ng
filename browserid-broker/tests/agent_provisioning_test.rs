@@ -52,10 +52,12 @@ async fn get_csrf(server: &TestServer, session: &str) -> String {
 /// authorizes it). This is exactly how the browser page gets the identity cert
 /// it will delegate from.
 async fn issue_user_cert(server: &TestServer, session: &str, email: &str, user_kp: &KeyPair) -> Certificate {
+    let csrf = get_csrf(server, session).await;
     let body: Value = server
         .post("/wsapi/cert_key")
         .add_cookie(cookie::Cookie::new("browserid_session", session.to_string()))
         .json(&json!({
+            "csrf": csrf,
             "email": email,
             "pubkey": { "algorithm": "Ed25519", "publicKey": user_kp.public_key().to_base64() },
             "ephemeral": false

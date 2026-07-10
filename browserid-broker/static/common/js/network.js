@@ -148,7 +148,9 @@ BrowserID.Network = (function() {
           ephemeral: !storage.usersComputer.confirmed(email),
           allowUnverified: allowUnverified
         },
-        success: onComplete,
+        // A successful login rotates the session (and its CSRF token) —
+        // drop the cached context so the next call refetches it.
+        success: function(result) { clearContext(); complete(onComplete, result); },
         error: onFailure
       });
     },
@@ -169,7 +171,8 @@ BrowserID.Network = (function() {
           assertion: assertion,
           ephemeral: !storage.usersComputer.confirmed(email)
         },
-        success: onComplete,
+        // Session (and CSRF token) rotates on assertion auth too.
+        success: function(result) { clearContext(); complete(onComplete, result); },
         error: onFailure
       });
     },

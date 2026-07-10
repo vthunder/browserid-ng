@@ -136,6 +136,11 @@ where
         .route_service("/", ServeFile::new(format!("{}/index.html", static_path)))
         // Serve static files (dialog, CSS, JS)
         .nest_service("/dialog", ServeDir::new(static_path))
+        // Deny framing everywhere except the surfaces RPs legitimately embed
+        // (communication_iframe + winchan relay). The consent page especially
+        // must never render in an iframe: its one-click Approve signs a
+        // warrant, a classic clickjacking target.
+        .layer(axum::middleware::from_fn(deny_framing))
         .layer(CookieManagerLayer::new())
         .layer(
             CorsLayer::new()
@@ -152,6 +157,27 @@ where
             HeaderValue::from_static("no-cache"),
         ))
         .with_state(state)
+}
+
+/// Anti-clickjacking: `X-Frame-Options: DENY` + `frame-ancestors 'none'` on
+/// every response except the RP-embeddable surfaces.
+async fn deny_framing(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = req.uri().path();
+    let embeddable =
+        path.starts_with("/communication_iframe") || path.starts_with("/relay");
+    let mut resp = next.run(req).await;
+    if !embeddable {
+        let headers = resp.headers_mut();
+        headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("frame-ancestors 'none'"),
+        );
+    }
+    resp
 }
 
 /// `GET /sign_in` — the primary-IdP auth-return handler. After the IdP

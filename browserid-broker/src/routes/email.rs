@@ -118,6 +118,8 @@ where
 pub struct SetParentRequest {
     pub email: String,
     pub parent_email: String,
+    #[serde(default)]
+    pub csrf: String,
 }
 
 #[derive(Serialize)]
@@ -143,6 +145,7 @@ where
 {
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
+    super::session::require_csrf(&session, &req.csrf)?;
 
     if req.email.eq_ignore_ascii_case(&req.parent_email) {
         return Err(BrokerError::ValidationError(
@@ -173,6 +176,8 @@ where
 #[derive(Deserialize)]
 pub struct StageEmailRequest {
     pub email: String,
+    #[serde(default)]
+    pub csrf: String,
 }
 
 #[derive(Serialize)]
@@ -195,6 +200,7 @@ where
 {
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
+    super::session::require_csrf(&session, &req.csrf)?;
 
     // Check if email already exists
     if state.user_store.get_user_by_email(&req.email)?.is_some() {
@@ -288,6 +294,8 @@ where
 #[derive(Deserialize)]
 pub struct RemoveEmailRequest {
     pub email: String,
+    #[serde(default)]
+    pub csrf: String,
 }
 
 #[derive(Serialize)]
@@ -308,6 +316,7 @@ where
 {
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
+    super::session::require_csrf(&session, &req.csrf)?;
 
     // Ensure user has at least one other email
     let emails = state.user_store.list_emails(session.user_id)?;

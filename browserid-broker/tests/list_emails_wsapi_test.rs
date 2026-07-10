@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{create_test_server, create_user};
+use common::{create_test_server, create_user, get_csrf};
 use serde_json::{json, Value};
 
 /// Test: list_emails requires authentication
@@ -52,12 +52,13 @@ async fn test_list_emails_multiple() {
 
     // Create user with first email
     let session_cookie = create_user(&server, &email_sender, email1, password).await;
+    let csrf = get_csrf(&server, &session_cookie).await;
 
     // Stage second email
     let response = server
         .post("/wsapi/stage_email")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
-        .json(&json!({ "email": email2 }))
+        .json(&json!({ "email": email2, "csrf": csrf }))
         .await;
     assert_eq!(response.status_code(), 200);
 
@@ -108,11 +109,12 @@ async fn test_list_emails_reports_derived() {
 
     // Create the account with the parent email, then add the child email.
     let session_cookie = create_user(&server, &email_sender, parent, password).await;
+    let csrf = get_csrf(&server, &session_cookie).await;
 
     let response = server
         .post("/wsapi/stage_email")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
-        .json(&json!({ "email": child }))
+        .json(&json!({ "email": child, "csrf": csrf }))
         .await;
     assert_eq!(response.status_code(), 200);
     let code = email_sender.get_code(child).expect("No code for child email");
@@ -127,7 +129,7 @@ async fn test_list_emails_reports_derived() {
     let response = server
         .post("/wsapi/set_parent")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
-        .json(&json!({ "email": child, "parent_email": parent }))
+        .json(&json!({ "email": child, "parent_email": parent, "csrf": csrf }))
         .await;
     assert_eq!(response.status_code(), 200);
 

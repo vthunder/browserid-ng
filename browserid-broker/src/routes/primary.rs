@@ -142,7 +142,11 @@ where
     if !reuse {
         let session = state.session_store.create(user_id)?;
         if !req.ephemeral {
-            super::session::set_session_cookie(&cookies, &session.id.0);
+            super::session::set_session_cookie(
+                &cookies,
+                &session.id.0,
+                super::session::cookie_secure(&state.domain),
+            );
         }
     }
 
@@ -156,6 +160,8 @@ where
 pub struct SetPasswordRequest {
     pub email: String,
     pub pass: String,
+    #[serde(default)]
+    pub csrf: String,
 }
 
 #[derive(Serialize)]
@@ -179,6 +185,7 @@ where
     // Require authentication
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
+    super::session::require_csrf(&session, &req.csrf)?;
 
     // Validate password length
     if req.pass.len() < 8 {

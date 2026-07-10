@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{create_test_server, create_user};
+use common::{create_test_server, create_user, get_csrf};
 use serde_json::{json, Value};
 
 /// Test: update_password requires authentication
@@ -30,12 +30,14 @@ async fn test_update_password_wrong_old_password() {
 
     let session = create_user(&server, &email_sender, email, password).await;
 
+    let csrf = get_csrf(&server, &session).await;
     let response = server
         .post("/wsapi/update_password")
         .add_cookie(cookie::Cookie::new("browserid_session", session))
         .json(&json!({
             "oldpass": "wrongpassword",
-            "newpass": "newpassword"
+            "newpass": "newpassword",
+            "csrf": csrf
         }))
         .await;
 
@@ -53,12 +55,14 @@ async fn test_update_password_short_new_password() {
 
     let session = create_user(&server, &email_sender, email, password).await;
 
+    let csrf = get_csrf(&server, &session).await;
     let response = server
         .post("/wsapi/update_password")
         .add_cookie(cookie::Cookie::new("browserid_session", session))
         .json(&json!({
             "oldpass": password,
-            "newpass": "short"  // too short
+            "newpass": "short",  // too short
+            "csrf": csrf
         }))
         .await;
 
@@ -77,12 +81,14 @@ async fn test_update_password_success() {
 
     let session = create_user(&server, &email_sender, email, old_password).await;
 
+    let csrf = get_csrf(&server, &session).await;
     let response = server
         .post("/wsapi/update_password")
         .add_cookie(cookie::Cookie::new("browserid_session", session))
         .json(&json!({
             "oldpass": old_password,
-            "newpass": new_password
+            "newpass": new_password,
+            "csrf": csrf
         }))
         .await;
 
@@ -102,12 +108,14 @@ async fn test_old_password_fails_after_update() {
     let session = create_user(&server, &email_sender, email, old_password).await;
 
     // Update password
+    let csrf = get_csrf(&server, &session).await;
     server
         .post("/wsapi/update_password")
         .add_cookie(cookie::Cookie::new("browserid_session", session))
         .json(&json!({
             "oldpass": old_password,
-            "newpass": new_password
+            "newpass": new_password,
+            "csrf": csrf
         }))
         .await;
 
@@ -136,12 +144,14 @@ async fn test_new_password_works_after_update() {
     let session = create_user(&server, &email_sender, email, old_password).await;
 
     // Update password
+    let csrf = get_csrf(&server, &session).await;
     server
         .post("/wsapi/update_password")
         .add_cookie(cookie::Cookie::new("browserid_session", session))
         .json(&json!({
             "oldpass": old_password,
-            "newpass": new_password
+            "newpass": new_password,
+            "csrf": csrf
         }))
         .await;
 
@@ -170,6 +180,7 @@ async fn test_can_update_password_twice() {
     let password3 = "password3abc";
 
     let session = create_user(&server, &email_sender, email, password1).await;
+    let csrf = get_csrf(&server, &session).await;
 
     // First update
     let response = server
@@ -177,7 +188,8 @@ async fn test_can_update_password_twice() {
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .json(&json!({
             "oldpass": password1,
-            "newpass": password2
+            "newpass": password2,
+            "csrf": csrf
         }))
         .await;
     assert_eq!(response.status_code(), 200);
@@ -188,7 +200,8 @@ async fn test_can_update_password_twice() {
         .add_cookie(cookie::Cookie::new("browserid_session", session))
         .json(&json!({
             "oldpass": password2,
-            "newpass": password3
+            "newpass": password3,
+            "csrf": csrf
         }))
         .await;
     assert_eq!(response.status_code(), 200);
@@ -229,12 +242,13 @@ async fn test_update_password_with_multiple_emails() {
 
     // Create user with first email
     let session = create_user(&server, &email_sender, email1, old_password).await;
+    let csrf = get_csrf(&server, &session).await;
 
     // Add second email
     server
         .post("/wsapi/stage_email")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "email": email2 }))
+        .json(&json!({ "email": email2, "csrf": csrf }))
         .await;
 
     let code = email_sender.get_code(email2).unwrap();
@@ -251,7 +265,8 @@ async fn test_update_password_with_multiple_emails() {
         .add_cookie(cookie::Cookie::new("browserid_session", session))
         .json(&json!({
             "oldpass": old_password,
-            "newpass": new_password
+            "newpass": new_password,
+            "csrf": csrf
         }))
         .await;
 

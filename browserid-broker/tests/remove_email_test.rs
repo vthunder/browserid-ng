@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{create_test_server, create_user};
+use common::{create_test_server, create_user, get_csrf};
 use serde_json::{json, Value};
 
 /// Test: cannot remove last email
@@ -14,12 +14,13 @@ async fn test_cannot_remove_last_email() {
 
     // Create user
     let session_cookie = create_user(&server, &email_sender, email, password).await;
+    let csrf = get_csrf(&server, &session_cookie).await;
 
     // Try to remove the only email
     let response = server
         .post("/wsapi/remove_email")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie))
-        .json(&json!({ "email": email }))
+        .json(&json!({ "email": email, "csrf": csrf }))
         .await;
 
     // Should fail
@@ -36,12 +37,13 @@ async fn test_can_remove_second_email() {
 
     // Create user with first email
     let session_cookie = create_user(&server, &email_sender, email1, password).await;
+    let csrf = get_csrf(&server, &session_cookie).await;
 
     // Add second email
     server
         .post("/wsapi/stage_email")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
-        .json(&json!({ "email": email2 }))
+        .json(&json!({ "email": email2, "csrf": csrf }))
         .await;
 
     let code = email_sender.get_code(email2).unwrap();
@@ -64,7 +66,7 @@ async fn test_can_remove_second_email() {
     let response = server
         .post("/wsapi/remove_email")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
-        .json(&json!({ "email": email2 }))
+        .json(&json!({ "email": email2, "csrf": csrf }))
         .await;
 
     assert_eq!(response.status_code(), 200);
@@ -93,12 +95,13 @@ async fn test_cannot_remove_nonexistent_email() {
 
     // Create user with first email, add second so we can try to remove
     let session_cookie = create_user(&server, &email_sender, email1, password).await;
+    let csrf = get_csrf(&server, &session_cookie).await;
 
     // Add second email
     server
         .post("/wsapi/stage_email")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
-        .json(&json!({ "email": email2 }))
+        .json(&json!({ "email": email2, "csrf": csrf }))
         .await;
 
     let code = email_sender.get_code(email2).unwrap();
@@ -112,7 +115,7 @@ async fn test_cannot_remove_nonexistent_email() {
     let response = server
         .post("/wsapi/remove_email")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie))
-        .json(&json!({ "email": "notmine@example.com" }))
+        .json(&json!({ "email": "notmine@example.com", "csrf": csrf }))
         .await;
 
     assert_eq!(response.status_code(), 404);

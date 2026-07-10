@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{create_test_server, create_user};
+use common::{create_test_server, create_user, get_csrf};
 use serde_json::{json, Value};
 
 /// Test: account_cancel requires authentication
@@ -29,11 +29,13 @@ async fn test_account_cancel_wrong_password() {
     let password = "testpassword";
 
     let session = create_user(&server, &email_sender, email, password).await;
+    let csrf = get_csrf(&server, &session).await;
 
     let response = server
         .post("/wsapi/account_cancel")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .json(&json!({
+            "csrf": csrf,
             "email": email,
             "pass": "wrongpassword"
         }))
@@ -50,11 +52,13 @@ async fn test_account_cancel_wrong_email() {
     let password = "testpassword";
 
     let session = create_user(&server, &email_sender, email, password).await;
+    let csrf = get_csrf(&server, &session).await;
 
     let response = server
         .post("/wsapi/account_cancel")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .json(&json!({
+            "csrf": csrf,
             "email": "other@example.com",
             "pass": password
         }))
@@ -71,11 +75,13 @@ async fn test_account_cancel_success() {
     let password = "testpassword";
 
     let session = create_user(&server, &email_sender, email, password).await;
+    let csrf = get_csrf(&server, &session).await;
 
     let response = server
         .post("/wsapi/account_cancel")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .json(&json!({
+            "csrf": csrf,
             "email": email,
             "pass": password
         }))
@@ -94,6 +100,7 @@ async fn test_email_unknown_after_cancel() {
     let password = "testpassword";
 
     let session = create_user(&server, &email_sender, email, password).await;
+    let csrf = get_csrf(&server, &session).await;
 
     // Verify email is known before cancel
     let response = server
@@ -107,6 +114,7 @@ async fn test_email_unknown_after_cancel() {
         .post("/wsapi/account_cancel")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .json(&json!({
+            "csrf": csrf,
             "email": email,
             "pass": password
         }))
@@ -129,12 +137,14 @@ async fn test_session_invalid_after_cancel() {
     let password = "testpassword";
 
     let session = create_user(&server, &email_sender, email, password).await;
+    let csrf = get_csrf(&server, &session).await;
 
     // Cancel account
     server
         .post("/wsapi/account_cancel")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .json(&json!({
+            "csrf": csrf,
             "email": email,
             "pass": password
         }))
@@ -158,12 +168,14 @@ async fn test_cannot_auth_after_cancel() {
     let password = "testpassword";
 
     let session = create_user(&server, &email_sender, email, password).await;
+    let csrf = get_csrf(&server, &session).await;
 
     // Cancel account
     server
         .post("/wsapi/account_cancel")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .json(&json!({
+            "csrf": csrf,
             "email": email,
             "pass": password
         }))
@@ -189,12 +201,14 @@ async fn test_can_reregister_after_cancel() {
     let password = "testpassword";
 
     let session = create_user(&server, &email_sender, email, password).await;
+    let csrf = get_csrf(&server, &session).await;
 
     // Cancel account
     server
         .post("/wsapi/account_cancel")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .json(&json!({
+            "csrf": csrf,
             "email": email,
             "pass": password
         }))

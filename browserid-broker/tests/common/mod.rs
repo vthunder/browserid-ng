@@ -130,3 +130,15 @@ pub async fn create_user(
         .value()
         .to_string()
 }
+
+/// Fetch the session's CSRF token — required on state-changing wsapi posts.
+pub async fn get_csrf(server: &TestServer, session: &str) -> String {
+    let response = server
+        .get("/wsapi/session_context")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.to_string()))
+        .await;
+    response.json::<serde_json::Value>()["csrf_token"]
+        .as_str()
+        .expect("session_context returned no csrf_token")
+        .to_string()
+}

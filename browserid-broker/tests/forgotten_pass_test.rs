@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{create_test_server, create_user};
+use common::{create_test_server, create_user, get_csrf};
 use serde_json::{json, Value};
 
 /// Test: password_reset_status returns 'complete' before any reset is started
@@ -346,10 +346,11 @@ async fn test_reset_affects_all_emails() {
     let session = create_user(&server, &email_sender, email1, old_password).await;
 
     // Add second email
+    let csrf = get_csrf(&server, &session).await;
     server
         .post("/wsapi/stage_email")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "email": email2 }))
+        .json(&json!({ "email": email2, "csrf": csrf }))
         .await;
 
     let code = email_sender.get_code(email2).unwrap();

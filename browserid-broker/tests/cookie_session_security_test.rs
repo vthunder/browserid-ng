@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{create_test_server, create_user};
+use common::{create_test_server, create_user, get_csrf};
 use serde_json::Value;
 
 /// Test: session_context response includes session info
@@ -100,9 +100,11 @@ async fn test_logout_clears_session() {
     assert_eq!(body["authenticated"], true);
 
     // Logout
+    let csrf = get_csrf(&server, &session).await;
     server
         .post("/wsapi/logout")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&serde_json::json!({ "csrf": csrf }))
         .await;
 
     // Session should no longer be valid

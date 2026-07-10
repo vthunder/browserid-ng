@@ -215,8 +215,10 @@ async function api(path, opts = {}) {
   if (!r.ok || body.success === false) throw new Error(body.reason || body.error || `HTTP ${r.status}`);
   return body;
 }
+// Every state-changing wsapi call must carry the session's CSRF token.
 const post = (path, body) => api(path, {
-  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ csrf: account.csrf, ...body }),
 });
 
 let account = { emails: [], agents: [], parentOf: {}, warrants: [], certs: [], csrf: null };
@@ -624,7 +626,7 @@ $('w-create').onclick = async () => {
 
 // -------- session --------
 function clearLocal() { localStorage.removeItem('emails'); localStorage.removeItem('siteInfo'); }
-$('signout').onclick = async () => { $('out').textContent = 'Signing out…'; try { await fetch('/wsapi/logout', { method: 'POST', credentials: 'same-origin' }); } catch {} clearLocal(); location.reload(); };
+$('signout').onclick = async () => { $('out').textContent = 'Signing out…'; try { await post('/wsapi/logout', {}); } catch {} clearLocal(); location.reload(); };
 $('reset').onclick = () => { clearLocal(); renderUserIdentities(); renderAgents(); $('out').textContent = '✓ Cached certificates cleared (still signed in).'; };
 
 // -------- boot --------

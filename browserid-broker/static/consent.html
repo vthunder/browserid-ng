@@ -34,13 +34,14 @@
   <p class="muted">An agent acting for you is asking to sign in somewhere new. Approving
   signs a <strong>warrant</strong> with your identity's own key (held in this browser) —
   one per place shown, each valid <em>only there</em>, with <em>only the scopes shown</em>,
-  revocable by revoking the agent. Nothing is shared with any other site.</p>
+  for <strong>90 days</strong>, revocable at any time from your account page. Nothing is
+  shared with any other site.</p>
 
   <div id="auth-gate" class="card"><p>Checking your session…</p></div>
   <div id="list" hidden></div>
 
   <p class="muted" style="margin-top:2rem">
-    <a href="/agents">Manage agent keys</a> · <a href="/">← browserid.me</a></p>
+    <a href="/account">Manage agents &amp; warrants</a> · <a href="/">← browserid.me</a></p>
 
 <script src="/common/js/lib/jwcrypto-compat.js"></script>
 <script type="module">
@@ -99,6 +100,7 @@ async function freshIdentity(email) {
         email: id.email,
         pubkey: { algorithm: 'Ed25519', publicKey: id.priv.x },
         ephemeral: false,
+        csrf,
       }),
     });
     const store = JSON.parse(localStorage.emails || '{}');
@@ -141,8 +143,21 @@ function render(requests) {
   }
   // Every grant in a batch is rendered with equal prominence — approval
   // covers exactly the set shown, nothing folded away.
+  //
+  // The audience is an attacker-supplied string. If it isn't a plain https
+  // origin, say so out loud rather than letting a URL-shaped string pass as
+  // one at a glance.
+  const audienceNote = (aud) => {
+    try {
+      const u = new URL(aud);
+      if (u.protocol === 'https:' && u.origin === aud) return '';
+      if (u.protocol === 'http:' && u.origin === aud)
+        return '<span class="warn"> ⚠ not an https site</span>';
+    } catch {}
+    return '<span class="warn"> ⚠ not a standard web origin — approve only if you recognize this exact identifier</span>';
+  };
   const grantBlock = (g) => `
-      <p class="origin" style="margin-bottom:.15rem">${escapeHtml(g.audience)}</p>
+      <p class="origin" style="margin-bottom:.15rem">${escapeHtml(g.audience)}${audienceNote(g.audience)}</p>
       <p style="margin-top:0">${(g.scopes || []).length
           ? 'with scopes: ' + g.scopes.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')
           : '<span class="muted">no specific scopes requested (site-level access)</span>'}</p>`;
@@ -154,9 +169,9 @@ function render(requests) {
         wants to act for you at${(r.grants || []).length > 1 ? ' each of' : ''}</p>
       ${(r.grants || []).map(grantBlock).join('')}
       <p>
-        <button class="approve" data-code="${escapeHtml(r.code)}">Approve${(r.grants || []).length > 1 ? ' all ' + r.grants.length : ''}</button>
+        <button class="approve" data-code="${escapeHtml(r.code)}" disabled>Approve${(r.grants || []).length > 1 ? ' all ' + r.grants.length : ''}</button>
         <button class="deny" data-code="${escapeHtml(r.code)}">Deny</button>
-        <span class="muted" style="font-size:.85em">expires ${new Date(r.expires_at).toLocaleTimeString()}</span>
+        <span class="muted" style="font-size:.85em">warrant lasts 90 days · request expires ${new Date(r.expires_at).toLocaleTimeString()}</span>
       </p>
       <p class="row-status" id="status-${escapeHtml(r.code)}"></p>
     </div>`).join('');
@@ -164,6 +179,9 @@ function render(requests) {
   const byCode = Object.fromEntries(requests.map(r => [r.code, r]));
   for (const b of list.querySelectorAll('button.approve')) {
     b.onclick = () => resolve(byCode[b.dataset.code], true);
+    // Brief arming delay: no reflex-click or scripted-focus approval the
+    // instant the page paints (complements the frame-ancestors denial).
+    setTimeout(() => { b.disabled = false; }, 800);
   }
   for (const b of list.querySelectorAll('button.deny')) {
     b.onclick = () => resolve(byCode[b.dataset.code], false);

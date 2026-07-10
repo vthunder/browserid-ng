@@ -91,6 +91,15 @@
     };
 
     if (body) {
+      // State-changing wsapi endpoints require the session's CSRF token.
+      // Fetched fresh per call: cheap for a login dialog, never stale
+      // across the auth transitions that rotate the session.
+      if (method === 'POST' && !('csrf' in body)) {
+        try {
+          const ctx = await (await fetch(API.sessionContext, { credentials: 'include' })).json();
+          if (ctx.csrf_token) body = { ...body, csrf: ctx.csrf_token };
+        } catch {}
+      }
       options.headers['Content-Type'] = 'application/json';
       options.body = JSON.stringify(body);
     }

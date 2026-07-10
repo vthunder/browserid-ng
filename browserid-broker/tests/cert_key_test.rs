@@ -3,7 +3,7 @@
 mod common;
 
 use chrono::{Duration, Utc};
-use common::{create_test_context, create_test_server, create_user};
+use common::{create_test_context, create_test_server, create_user, get_csrf};
 use browserid_core::KeyPair;
 use serde_json::{json, Value};
 
@@ -42,10 +42,12 @@ async fn test_cert_key_success() {
     let user_keypair = KeyPair::generate();
 
     // Request certificate
+    let csrf = get_csrf(&server, &session_cookie).await;
     let response = server
         .post("/wsapi/cert_key")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie))
         .json(&json!({
+            "csrf": csrf,
             "email": email,
             "pubkey": {
                 "algorithm": "Ed25519",
@@ -80,10 +82,12 @@ async fn test_cert_key_wrong_email() {
     let user_keypair = KeyPair::generate();
 
     // Request certificate for different email
+    let csrf = get_csrf(&server, &session_cookie).await;
     let response = server
         .post("/wsapi/cert_key")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie))
         .json(&json!({
+            "csrf": csrf,
             "email": "notmyemail@example.com",
             "pubkey": {
                 "algorithm": "Ed25519",
@@ -112,10 +116,12 @@ async fn test_cert_key_ephemeral() {
     let user_keypair = KeyPair::generate();
 
     // Request ephemeral certificate
+    let csrf = get_csrf(&server, &session_cookie).await;
     let response = server
         .post("/wsapi/cert_key")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie))
         .json(&json!({
+            "csrf": csrf,
             "email": email,
             "pubkey": {
                 "algorithm": "Ed25519",
@@ -165,10 +171,12 @@ async fn test_cert_key_24_hour_validity() {
     let user_keypair = KeyPair::generate();
 
     // Request normal (non-ephemeral) certificate
+    let csrf = get_csrf(&server, &session_cookie).await;
     let response = server
         .post("/wsapi/cert_key")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie))
         .json(&json!({
+            "csrf": csrf,
             "email": email,
             "pubkey": {
                 "algorithm": "Ed25519",
@@ -220,11 +228,13 @@ async fn test_cert_key_within_90_day_window() {
     let user_keypair = KeyPair::generate();
 
     // Request certificate - should succeed
+    let csrf = get_csrf(&ctx.server, &session_cookie).await;
     let response = ctx
         .server
         .post("/wsapi/cert_key")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie))
         .json(&json!({
+            "csrf": csrf,
             "email": email,
             "pubkey": {
                 "algorithm": "Ed25519",
@@ -258,11 +268,13 @@ async fn test_cert_key_expired_verification() {
     let user_keypair = KeyPair::generate();
 
     // Request certificate - should fail
+    let csrf = get_csrf(&ctx.server, &session_cookie).await;
     let response = ctx
         .server
         .post("/wsapi/cert_key")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie))
         .json(&json!({
+            "csrf": csrf,
             "email": email,
             "pubkey": {
                 "algorithm": "Ed25519",
@@ -279,4 +291,32 @@ async fn test_cert_key_expired_verification() {
         .as_str()
         .unwrap()
         .contains("verification expired"));
+}
+
+/// Test: cert_key with a session cookie but no CSRF token is rejected (403)
+#[tokio::test]
+async fn test_cert_key_missing_csrf() {
+    let (server, email_sender) = create_test_server();
+    let email = "nocsrf@example.com";
+    let password = "testpassword";
+
+    let session_cookie = create_user(&server, &email_sender, email, password).await;
+    let user_keypair = KeyPair::generate();
+
+    let response = server
+        .post("/wsapi/cert_key")
+        .add_cookie(cookie::Cookie::new("browserid_session", session_cookie))
+        .json(&json!({
+            "email": email,
+            "pubkey": {
+                "algorithm": "Ed25519",
+                "publicKey": user_keypair.public_key().to_base64()
+            },
+            "ephemeral": false
+        }))
+        .await;
+
+    assert_eq!(response.status_code(), 403);
+    let body: Value = response.json();
+    assert_eq!(body["reason"], "Invalid CSRF token");
 }
