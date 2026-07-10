@@ -1,482 +1,378 @@
-//! Tests for assertion verification with fallback broker support
+//! Tests for assertion verification — DNSSEC-rooted (browserid-ng-28uc).
+//!
+//! The issuer's identity key is resolved SOLELY via DNSSEC (modeled here by
+//! `MockDiscoverer`). There is no `.well-known`-only key-trust path, so a domain
+//! is a primary IdP only if it publishes an authenticated `_browserid` record;
+//! otherwise the only acceptable issuer is the trusted broker.
 
-use browserid_broker::verifier::verify_assertion;
+use browserid_broker::error::BrokerError;
+use browserid_broker::fallback_fetcher::{Discoverer, FallbackResult};
+use browserid_broker::verifier::verify_assertion_with_dns;
 use browserid_core::{
-    discovery::{SupportDocument, SupportDocumentFetcher},
-    Assertion, BackedAssertion, Certificate, Error as CoreError, KeyPair, Result as CoreResult,
+    discovery::SupportDocument, Assertion, BackedAssertion, Certificate, KeyPair, PublicKey,
 };
 use chrono::Duration;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-struct MockFetcher {
-    documents: HashMap<String, SupportDocument>,
+const BROKER: &str = "broker.example.com";
+const RP: &str = "https://relying-party.com";
+
+/// Mock DNSSEC-first discovery. Domains registered as `primaries` resolve to a
+/// primary IdP carrying the given DNSSEC-validated key; `bogus` domains
+/// hard-error (DNSSEC validation failure); every other domain falls back to the
+/// broker, whose key is itself DNSSEC-rooted.
+struct MockDiscoverer {
+    primaries: HashMap<String, PublicKey>,
+    bogus: HashSet<String>,
+    broker_key: PublicKey,
 }
 
-impl SupportDocumentFetcher for MockFetcher {
-    fn fetch(&self, domain: &str) -> CoreResult<SupportDocument> {
-        self.documents.get(domain).cloned().ok_or_else(|| CoreError::DiscoveryFailed {
-            domain: domain.to_string(),
-            reason: "not found".into(),
-        })
+impl MockDiscoverer {
+    fn new(broker_key: PublicKey) -> Self {
+        Self {
+            primaries: HashMap::new(),
+            bogus: HashSet::new(),
+            broker_key,
+        }
+    }
+
+    fn with_primary(mut self, domain: &str, key: PublicKey) -> Self {
+        self.primaries.insert(domain.to_string(), key);
+        self
+    }
+
+    fn with_bogus(mut self, domain: &str) -> Self {
+        self.bogus.insert(domain.to_string());
+        self
+    }
+
+    fn resolve(&self, domain: &str) -> Result<FallbackResult, BrokerError> {
+        if self.bogus.contains(domain) {
+            return Err(BrokerError::DnssecValidationFailed {
+                domain: domain.to_string(),
+            });
+        }
+        if let Some(key) = self.primaries.get(domain) {
+            Ok(FallbackResult {
+                document: SupportDocument::new(key.clone()),
+                authoritative_domain: domain.to_string(),
+                is_primary: true,
+            })
+        } else {
+            Ok(FallbackResult {
+                document: SupportDocument::new(self.broker_key.clone()),
+                authoritative_domain: BROKER.to_string(),
+                is_primary: false,
+            })
+        }
     }
 }
 
-#[test]
-fn test_verify_assertion_success() {
-    let domain_key = KeyPair::generate();
-    let user_key = KeyPair::generate();
+impl Discoverer for MockDiscoverer {
+    fn discover(
+        &self,
+        domain: &str,
+    ) -> impl std::future::Future<Output = Result<FallbackResult, BrokerError>> + Send {
+        let res = self.resolve(domain);
+        async move { res }
+    }
+}
 
-    // Create certificate
+/// Build an encoded backed assertion.
+#[allow(clippy::too_many_arguments)]
+fn backed(
+    issuer: &str,
+    email: &str,
+    audience: &str,
+    cert_dur: Duration,
+    assert_dur: Duration,
+    cert_signer: &KeyPair,
+    assertion_signer: &KeyPair,
+    cert_subject: &KeyPair,
+) -> String {
     let cert = Certificate::create(
-        "example.com",
-        "alice@example.com",
-        &user_key.public_key(),
-        Duration::hours(1),
-        &domain_key,
+        issuer,
+        email,
+        &cert_subject.public_key(),
+        cert_dur,
+        cert_signer,
     )
     .unwrap();
+    let assertion = Assertion::create(audience, assert_dur, assertion_signer).unwrap();
+    BackedAssertion::new(cert, assertion).encode()
+}
 
-    // Create assertion
-    let assertion =
-        Assertion::create("https://relying-party.com", Duration::minutes(5), &user_key).unwrap();
+/// The common well-formed case: cert signed by `signer` for `user`.
+fn ok_backed(issuer: &str, email: &str, audience: &str, signer: &KeyPair, user: &KeyPair) -> String {
+    backed(
+        issuer,
+        email,
+        audience,
+        Duration::hours(1),
+        Duration::minutes(5),
+        signer,
+        user,
+        user,
+    )
+}
 
-    // Bundle into backed assertion
-    let backed = BackedAssertion::new(cert, assertion);
-    let encoded = backed.encode();
+// --- happy paths ---------------------------------------------------------
 
-    // Set up mock fetcher
-    let mut fetcher = MockFetcher {
-        documents: HashMap::new(),
-    };
-    fetcher.documents.insert(
-        "example.com".to_string(),
-        SupportDocument::new(domain_key.public_key()),
-    );
+#[tokio::test]
+async fn primary_verifies_via_dnssec() {
+    let domain_key = KeyPair::generate();
+    let user = KeyPair::generate();
+    let broker_key = KeyPair::generate();
+    let disc = MockDiscoverer::new(broker_key.public_key())
+        .with_primary("example.com", domain_key.public_key());
 
-    // Verify (trusted_broker doesn't matter here since issuer == email domain)
-    let result = verify_assertion(&encoded, "https://relying-party.com", "broker.example.com", &fetcher);
+    let enc = ok_backed("example.com", "alice@example.com", RP, &domain_key, &user);
+    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
 
-    assert_eq!(result.status, "okay");
+    assert_eq!(result.status, "okay", "reason: {:?}", result.reason);
     assert_eq!(result.email.unwrap(), "alice@example.com");
     assert_eq!(result.issuer.unwrap(), "example.com");
 }
 
-#[test]
-fn test_verify_assertion_wrong_audience() {
-    let domain_key = KeyPair::generate();
-    let user_key = KeyPair::generate();
+#[tokio::test]
+async fn broker_fallback_verifies() {
+    // external.com has no DNSSEC record → broker fallback. Cert issued by broker.
+    let broker_key = KeyPair::generate();
+    let user = KeyPair::generate();
+    let disc = MockDiscoverer::new(broker_key.public_key());
 
-    let cert = Certificate::create(
-        "example.com",
-        "alice@example.com",
-        &user_key.public_key(),
-        Duration::hours(1),
-        &domain_key,
-    )
-    .unwrap();
+    let enc = ok_backed(BROKER, "alice@external.com", RP, &broker_key, &user);
+    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
 
-    let assertion =
-        Assertion::create("https://correct-audience.com", Duration::minutes(5), &user_key).unwrap();
-
-    let backed = BackedAssertion::new(cert, assertion);
-    let encoded = backed.encode();
-
-    let mut fetcher = MockFetcher {
-        documents: HashMap::new(),
-    };
-    fetcher.documents.insert(
-        "example.com".to_string(),
-        SupportDocument::new(domain_key.public_key()),
-    );
-
-    let result = verify_assertion(&encoded, "https://wrong-audience.com", "broker.example.com", &fetcher);
-
-    assert_eq!(result.status, "failure");
-    assert!(result.reason.unwrap().contains("audience"));
+    assert_eq!(result.status, "okay", "reason: {:?}", result.reason);
+    assert_eq!(result.email.unwrap(), "alice@external.com");
+    assert_eq!(result.issuer.unwrap(), BROKER);
 }
 
-#[test]
-fn test_verify_assertion_invalid_format() {
-    let fetcher = MockFetcher {
-        documents: HashMap::new(),
-    };
+// --- the downgrade closure (the point of 28uc) ---------------------------
 
-    let result = verify_assertion("not-a-valid-assertion", "https://example.com", "broker.example.com", &fetcher);
+#[tokio::test]
+async fn non_dnssec_domain_cannot_be_primary() {
+    // example.com does NOT publish a DNSSEC record (not in `primaries`), so it
+    // resolves to broker fallback. A cert claiming issuer == example.com must be
+    // rejected — there is no `.well-known`-only path to be trusted as a primary.
+    let some_key = KeyPair::generate();
+    let user = KeyPair::generate();
+    let broker_key = KeyPair::generate();
+    let disc = MockDiscoverer::new(broker_key.public_key()); // no primaries
 
+    let enc = ok_backed("example.com", "alice@example.com", RP, &some_key, &user);
+    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+
+    assert_eq!(result.status, "failure");
+    assert!(
+        result.reason.as_ref().unwrap().contains("not authorized"),
+        "reason: {:?}",
+        result.reason
+    );
+}
+
+#[tokio::test]
+async fn bogus_dnssec_is_rejected() {
+    let user = KeyPair::generate();
+    let signer = KeyPair::generate();
+    let broker_key = KeyPair::generate();
+    let disc = MockDiscoverer::new(broker_key.public_key()).with_bogus("bogus.com");
+
+    let enc = ok_backed("bogus.com", "alice@bogus.com", RP, &signer, &user);
+    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+
+    assert_eq!(result.status, "failure");
+    assert!(
+        result.reason.as_ref().unwrap().to_lowercase().contains("discovery"),
+        "reason: {:?}",
+        result.reason
+    );
+}
+
+#[tokio::test]
+async fn untrusted_issuer_rejected() {
+    // Cert from evil.com for an external (broker-served) email → not the broker.
+    let evil = KeyPair::generate();
+    let user = KeyPair::generate();
+    let broker_key = KeyPair::generate();
+    let disc = MockDiscoverer::new(broker_key.public_key());
+
+    let enc = ok_backed("evil.com", "alice@external.com", RP, &evil, &user);
+    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+
+    assert_eq!(result.status, "failure");
+    assert!(result.reason.unwrap().contains("not authorized"));
+}
+
+#[tokio::test]
+async fn primary_cannot_speak_for_other_domain() {
+    // example.domain is a valid primary but may not issue for otherdomain.com,
+    // which is itself a primary.
+    let primary_key = KeyPair::generate();
+    let other_key = KeyPair::generate();
+    let user = KeyPair::generate();
+    let broker_key = KeyPair::generate();
+    let disc = MockDiscoverer::new(broker_key.public_key())
+        .with_primary("example.domain", primary_key.public_key())
+        .with_primary("otherdomain.com", other_key.public_key());
+
+    let enc = ok_backed(
+        "example.domain",
+        "alice@otherdomain.com",
+        RP,
+        &primary_key,
+        &user,
+    );
+    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+
+    assert_eq!(result.status, "failure");
+    assert!(result.reason.unwrap().contains("not authorized"));
+}
+
+// --- crypto / format failures --------------------------------------------
+
+#[tokio::test]
+async fn wrong_audience_rejected() {
+    let domain_key = KeyPair::generate();
+    let user = KeyPair::generate();
+    let disc = MockDiscoverer::new(KeyPair::generate().public_key())
+        .with_primary("example.com", domain_key.public_key());
+
+    let enc = ok_backed(
+        "example.com",
+        "alice@example.com",
+        "https://correct.com",
+        &domain_key,
+        &user,
+    );
+    let result = verify_assertion_with_dns(&enc, "https://wrong.com", &disc, BROKER).await;
+
+    assert_eq!(result.status, "failure");
+    assert!(result.reason.unwrap().to_lowercase().contains("audience"));
+}
+
+#[tokio::test]
+async fn wrong_port_or_scheme_rejected() {
+    let domain_key = KeyPair::generate();
+    let user = KeyPair::generate();
+    let disc = MockDiscoverer::new(KeyPair::generate().public_key())
+        .with_primary("example.com", domain_key.public_key());
+
+    let enc = ok_backed(
+        "example.com",
+        "alice@example.com",
+        "http://fakesite.com:8080",
+        &domain_key,
+        &user,
+    );
+    // wrong port
+    let r1 = verify_assertion_with_dns(&enc, "http://fakesite.com:8888", &disc, BROKER).await;
+    assert_eq!(r1.status, "failure");
+    assert!(r1.reason.unwrap().to_lowercase().contains("audience"));
+    // wrong scheme
+    let r2 = verify_assertion_with_dns(&enc, "https://fakesite.com:8080", &disc, BROKER).await;
+    assert_eq!(r2.status, "failure");
+    assert!(r2.reason.unwrap().to_lowercase().contains("audience"));
+}
+
+#[tokio::test]
+async fn expired_assertion_rejected() {
+    let domain_key = KeyPair::generate();
+    let user = KeyPair::generate();
+    let disc = MockDiscoverer::new(KeyPair::generate().public_key())
+        .with_primary("example.com", domain_key.public_key());
+
+    let enc = backed(
+        "example.com",
+        "alice@example.com",
+        RP,
+        Duration::hours(1),
+        Duration::milliseconds(-10),
+        &domain_key,
+        &user,
+        &user,
+    );
+    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    assert_eq!(result.status, "failure");
+    assert!(result.reason.unwrap().to_lowercase().contains("expired"));
+}
+
+#[tokio::test]
+async fn expired_certificate_rejected() {
+    let domain_key = KeyPair::generate();
+    let user = KeyPair::generate();
+    let disc = MockDiscoverer::new(KeyPair::generate().public_key())
+        .with_primary("example.com", domain_key.public_key());
+
+    let enc = backed(
+        "example.com",
+        "alice@example.com",
+        RP,
+        Duration::milliseconds(-10),
+        Duration::minutes(5),
+        &domain_key,
+        &user,
+        &user,
+    );
+    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    assert_eq!(result.status, "failure");
+    assert!(result.reason.unwrap().to_lowercase().contains("expired"));
+}
+
+#[tokio::test]
+async fn bad_certificate_signature_rejected() {
+    // Domain publishes domain_key (via DNSSEC), but the cert was signed by wrong_key.
+    let domain_key = KeyPair::generate();
+    let wrong_key = KeyPair::generate();
+    let user = KeyPair::generate();
+    let disc = MockDiscoverer::new(KeyPair::generate().public_key())
+        .with_primary("example.com", domain_key.public_key());
+
+    let enc = ok_backed("example.com", "alice@example.com", RP, &wrong_key, &user);
+    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    assert_eq!(result.status, "failure");
+    assert!(result.reason.unwrap().to_lowercase().contains("signature"));
+}
+
+#[tokio::test]
+async fn bad_assertion_signature_rejected() {
+    // Cert binds user's key, but the assertion is signed by a different key.
+    let domain_key = KeyPair::generate();
+    let user = KeyPair::generate();
+    let wrong_user = KeyPair::generate();
+    let disc = MockDiscoverer::new(KeyPair::generate().public_key())
+        .with_primary("example.com", domain_key.public_key());
+
+    let enc = backed(
+        "example.com",
+        "alice@example.com",
+        RP,
+        Duration::hours(1),
+        Duration::minutes(5),
+        &domain_key,
+        &wrong_user, // assertion signer != cert subject
+        &user,
+    );
+    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    assert_eq!(result.status, "failure");
+    assert!(result.reason.unwrap().to_lowercase().contains("signature"));
+}
+
+#[tokio::test]
+async fn invalid_format_rejected() {
+    let disc = MockDiscoverer::new(KeyPair::generate().public_key());
+    let result = verify_assertion_with_dns("not-a-valid-assertion", RP, &disc, BROKER).await;
     assert_eq!(result.status, "failure");
     assert!(result.reason.is_some());
 }
 
-#[test]
-fn test_verify_assertion_fallback_broker() {
-    // Broker keypair (the fallback IdP)
-    let broker_key = KeyPair::generate();
-    let user_key = KeyPair::generate();
-
-    // Certificate issued by broker for user@external.com
-    // (external.com has no native BrowserID support)
-    let cert = Certificate::create(
-        "broker.example.com", // issuer is the broker, not email domain
-        "alice@external.com",
-        &user_key.public_key(),
-        Duration::hours(1),
-        &broker_key,
-    )
-    .unwrap();
-
-    let assertion =
-        Assertion::create("https://relying-party.com", Duration::minutes(5), &user_key).unwrap();
-
-    let backed = BackedAssertion::new(cert, assertion);
-    let encoded = backed.encode();
-
-    // Set up fetcher: broker has support doc, external.com does not
-    let mut fetcher = MockFetcher {
-        documents: HashMap::new(),
-    };
-    // Only broker has a support document
-    fetcher.documents.insert(
-        "broker.example.com".to_string(),
-        SupportDocument::new(broker_key.public_key()),
-    );
-    // external.com has no entry - discovery will fail
-
-    // Verify should succeed because issuer == trusted_broker
-    let result = verify_assertion(&encoded, "https://relying-party.com", "broker.example.com", &fetcher);
-
-    assert_eq!(result.status, "okay");
-    assert_eq!(result.email.unwrap(), "alice@external.com");
-    assert_eq!(result.issuer.unwrap(), "broker.example.com");
-}
-
-#[test]
-fn test_verify_assertion_untrusted_issuer_rejected() {
-    // Evil broker tries to issue certs for external.com emails
-    let evil_key = KeyPair::generate();
-    let user_key = KeyPair::generate();
-
-    let cert = Certificate::create(
-        "evil.com", // untrusted issuer
-        "alice@external.com",
-        &user_key.public_key(),
-        Duration::hours(1),
-        &evil_key,
-    )
-    .unwrap();
-
-    let assertion =
-        Assertion::create("https://relying-party.com", Duration::minutes(5), &user_key).unwrap();
-
-    let backed = BackedAssertion::new(cert, assertion);
-    let encoded = backed.encode();
-
-    let mut fetcher = MockFetcher {
-        documents: HashMap::new(),
-    };
-    // evil.com has a valid support document
-    fetcher.documents.insert(
-        "evil.com".to_string(),
-        SupportDocument::new(evil_key.public_key()),
-    );
-    // external.com has no entry
-
-    // Should FAIL because evil.com is not the trusted broker
-    let result = verify_assertion(&encoded, "https://relying-party.com", "broker.example.com", &fetcher);
-
+#[tokio::test]
+async fn no_certificate_rejected() {
+    let disc = MockDiscoverer::new(KeyPair::generate().public_key());
+    // A bare JWT with no `~`-joined certificate bundle.
+    let raw = "eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiSldUIn0.eyJhdWQiOiJodHRwczovL2V4YW1wbGUuY29tIiwiZXhwIjoxNzM1MjUwMDAwfQ.signature";
+    let result = verify_assertion_with_dns(raw, RP, &disc, BROKER).await;
     assert_eq!(result.status, "failure");
-    assert!(result.reason.unwrap().contains("not authorized"));
-}
-
-#[test]
-fn test_verify_assertion_primary_cannot_speak_for_other_domain() {
-    // Mirrors browserid verifier-test.js lines 946-981:
-    // A valid primary (example.domain) cannot issue certs for emails
-    // from a different domain (somedomain.com)
-    let primary_key = KeyPair::generate();
-    let user_key = KeyPair::generate();
-
-    // example.domain tries to issue cert for alice@otherdomain.com
-    let cert = Certificate::create(
-        "example.domain",
-        "alice@otherdomain.com", // wrong domain!
-        &user_key.public_key(),
-        Duration::hours(1),
-        &primary_key,
-    )
-    .unwrap();
-
-    let assertion =
-        Assertion::create("https://relying-party.com", Duration::minutes(5), &user_key).unwrap();
-
-    let backed = BackedAssertion::new(cert, assertion);
-    let encoded = backed.encode();
-
-    let mut fetcher = MockFetcher {
-        documents: HashMap::new(),
-    };
-    // example.domain is a valid primary with BrowserID support
-    fetcher.documents.insert(
-        "example.domain".to_string(),
-        SupportDocument::new(primary_key.public_key()),
-    );
-    // otherdomain.com also has BrowserID support (so fallback doesn't apply)
-    let other_key = KeyPair::generate();
-    fetcher.documents.insert(
-        "otherdomain.com".to_string(),
-        SupportDocument::new(other_key.public_key()),
-    );
-
-    // Should FAIL: example.domain may not speak for emails from otherdomain.com
-    let result = verify_assertion(&encoded, "https://relying-party.com", "broker.example.com", &fetcher);
-
-    assert_eq!(result.status, "failure");
-    assert!(result.reason.unwrap().contains("not authorized"));
-}
-
-#[test]
-fn test_verify_assertion_expired() {
-    // Mirrors browserid verifier-test.js lines 783-805:
-    // An assertion that expired should fail
-    let domain_key = KeyPair::generate();
-    let user_key = KeyPair::generate();
-
-    let cert = Certificate::create(
-        "example.com",
-        "alice@example.com",
-        &user_key.public_key(),
-        Duration::hours(1),
-        &domain_key,
-    )
-    .unwrap();
-
-    // Create an assertion that's already expired (negative duration)
-    let assertion =
-        Assertion::create("https://relying-party.com", Duration::milliseconds(-10), &user_key)
-            .unwrap();
-
-    let backed = BackedAssertion::new(cert, assertion);
-    let encoded = backed.encode();
-
-    let mut fetcher = MockFetcher {
-        documents: HashMap::new(),
-    };
-    fetcher.documents.insert(
-        "example.com".to_string(),
-        SupportDocument::new(domain_key.public_key()),
-    );
-
-    let result = verify_assertion(&encoded, "https://relying-party.com", "broker.example.com", &fetcher);
-
-    assert_eq!(result.status, "failure");
-    assert!(result.reason.unwrap().to_lowercase().contains("expired"));
-}
-
-#[test]
-fn test_verify_assertion_bad_certificate_signature() {
-    // Mirrors browserid verifier-test.js lines 626-669:
-    // A certificate signed by the wrong key should fail
-    let domain_key = KeyPair::generate();
-    let wrong_key = KeyPair::generate(); // Different from domain_key
-    let user_key = KeyPair::generate();
-
-    // Certificate signed by wrong_key, but we'll claim domain_key in .well-known
-    let cert = Certificate::create(
-        "example.com",
-        "alice@example.com",
-        &user_key.public_key(),
-        Duration::hours(1),
-        &wrong_key, // Signed with wrong key!
-    )
-    .unwrap();
-
-    let assertion =
-        Assertion::create("https://relying-party.com", Duration::minutes(5), &user_key).unwrap();
-
-    let backed = BackedAssertion::new(cert, assertion);
-    let encoded = backed.encode();
-
-    let mut fetcher = MockFetcher {
-        documents: HashMap::new(),
-    };
-    // Domain advertises domain_key, but cert was signed with wrong_key
-    fetcher.documents.insert(
-        "example.com".to_string(),
-        SupportDocument::new(domain_key.public_key()),
-    );
-
-    let result = verify_assertion(&encoded, "https://relying-party.com", "broker.example.com", &fetcher);
-
-    assert_eq!(result.status, "failure");
-    assert!(result.reason.unwrap().to_lowercase().contains("signature"));
-}
-
-#[test]
-fn test_verify_assertion_bad_assertion_signature() {
-    // Assertion signed by wrong key (not matching certificate's public key)
-    let domain_key = KeyPair::generate();
-    let user_key = KeyPair::generate();
-    let wrong_user_key = KeyPair::generate();
-
-    let cert = Certificate::create(
-        "example.com",
-        "alice@example.com",
-        &user_key.public_key(), // Certificate contains user_key
-        Duration::hours(1),
-        &domain_key,
-    )
-    .unwrap();
-
-    // Assertion signed with wrong_user_key instead of user_key
-    let assertion =
-        Assertion::create("https://relying-party.com", Duration::minutes(5), &wrong_user_key)
-            .unwrap();
-
-    let backed = BackedAssertion::new(cert, assertion);
-    let encoded = backed.encode();
-
-    let mut fetcher = MockFetcher {
-        documents: HashMap::new(),
-    };
-    fetcher.documents.insert(
-        "example.com".to_string(),
-        SupportDocument::new(domain_key.public_key()),
-    );
-
-    let result = verify_assertion(&encoded, "https://relying-party.com", "broker.example.com", &fetcher);
-
-    assert_eq!(result.status, "failure");
-    assert!(result.reason.unwrap().to_lowercase().contains("signature"));
-}
-
-#[test]
-fn test_verify_assertion_expired_certificate() {
-    // Certificate that's already expired
-    let domain_key = KeyPair::generate();
-    let user_key = KeyPair::generate();
-
-    // Create certificate with negative duration (already expired)
-    let cert = Certificate::create(
-        "example.com",
-        "alice@example.com",
-        &user_key.public_key(),
-        Duration::milliseconds(-10), // Expired!
-        &domain_key,
-    )
-    .unwrap();
-
-    let assertion =
-        Assertion::create("https://relying-party.com", Duration::minutes(5), &user_key).unwrap();
-
-    let backed = BackedAssertion::new(cert, assertion);
-    let encoded = backed.encode();
-
-    let mut fetcher = MockFetcher {
-        documents: HashMap::new(),
-    };
-    fetcher.documents.insert(
-        "example.com".to_string(),
-        SupportDocument::new(domain_key.public_key()),
-    );
-
-    let result = verify_assertion(&encoded, "https://relying-party.com", "broker.example.com", &fetcher);
-
-    assert_eq!(result.status, "failure");
-    assert!(result.reason.unwrap().to_lowercase().contains("expired"));
-}
-
-#[test]
-fn test_verify_assertion_wrong_port() {
-    // Mirrors browserid verifier-test.js lines 231-242:
-    // Audience with wrong port should fail
-    let domain_key = KeyPair::generate();
-    let user_key = KeyPair::generate();
-
-    let cert = Certificate::create(
-        "example.com",
-        "alice@example.com",
-        &user_key.public_key(),
-        Duration::hours(1),
-        &domain_key,
-    )
-    .unwrap();
-
-    // Assertion for port 8080
-    let assertion =
-        Assertion::create("http://fakesite.com:8080", Duration::minutes(5), &user_key).unwrap();
-
-    let backed = BackedAssertion::new(cert, assertion);
-    let encoded = backed.encode();
-
-    let mut fetcher = MockFetcher {
-        documents: HashMap::new(),
-    };
-    fetcher.documents.insert(
-        "example.com".to_string(),
-        SupportDocument::new(domain_key.public_key()),
-    );
-
-    // Verify with different port (8888)
-    let result = verify_assertion(&encoded, "http://fakesite.com:8888", "broker.example.com", &fetcher);
-
-    assert_eq!(result.status, "failure");
-    assert!(result.reason.unwrap().to_lowercase().contains("audience"));
-}
-
-#[test]
-fn test_verify_assertion_wrong_scheme() {
-    // Mirrors browserid verifier-test.js lines 244-255:
-    // Audience with wrong scheme should fail
-    let domain_key = KeyPair::generate();
-    let user_key = KeyPair::generate();
-
-    let cert = Certificate::create(
-        "example.com",
-        "alice@example.com",
-        &user_key.public_key(),
-        Duration::hours(1),
-        &domain_key,
-    )
-    .unwrap();
-
-    // Assertion for http
-    let assertion =
-        Assertion::create("http://fakesite.com:8080", Duration::minutes(5), &user_key).unwrap();
-
-    let backed = BackedAssertion::new(cert, assertion);
-    let encoded = backed.encode();
-
-    let mut fetcher = MockFetcher {
-        documents: HashMap::new(),
-    };
-    fetcher.documents.insert(
-        "example.com".to_string(),
-        SupportDocument::new(domain_key.public_key()),
-    );
-
-    // Verify with https instead of http
-    let result = verify_assertion(&encoded, "https://fakesite.com:8080", "broker.example.com", &fetcher);
-
-    assert_eq!(result.status, "failure");
-    assert!(result.reason.unwrap().to_lowercase().contains("audience"));
-}
-
-#[test]
-fn test_verify_assertion_no_certificates() {
-    // Mirrors browserid verifier-test.js lines 830-852:
-    // An assertion with no certificate should fail
-    let fetcher = MockFetcher {
-        documents: HashMap::new(),
-    };
-
-    // Just a raw assertion without certificate bundle (missing the ~ separator)
-    let result = verify_assertion(
-        "eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiSldUIn0.eyJhdWQiOiJodHRwczovL2V4YW1wbGUuY29tIiwiZXhwIjoxNzM1MjUwMDAwfQ.signature",
-        "https://example.com",
-        "broker.example.com",
-        &fetcher
-    );
-
-    assert_eq!(result.status, "failure");
-    // Should indicate missing certificate or invalid format
     assert!(result.reason.is_some());
 }

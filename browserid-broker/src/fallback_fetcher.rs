@@ -27,6 +27,7 @@ async fn fetch_blocking(host: &str) -> Result<SupportDocument, BrokerError> {
 }
 
 /// Discovery result including the authoritative domain
+#[derive(Clone)]
 pub struct FallbackResult {
     /// The support document
     pub document: SupportDocument,
@@ -34,6 +35,18 @@ pub struct FallbackResult {
     pub authoritative_domain: String,
     /// Whether this is a primary IdP (via DNS) or fallback broker
     pub is_primary: bool,
+}
+
+/// Resolves the authoritative BrowserID support for an email domain.
+///
+/// Abstracted so the verifier can be exercised with a mock in tests without a
+/// live DNS/HTTP round-trip. Production uses [`FallbackFetcher`].
+pub trait Discoverer {
+    /// Discover the authoritative support document for `domain`.
+    fn discover(
+        &self,
+        domain: &str,
+    ) -> impl std::future::Future<Output = Result<FallbackResult, BrokerError>> + Send;
 }
 
 /// Fetcher that tries DNS first, falls back to broker
@@ -59,27 +72,26 @@ impl FallbackFetcher {
         }
     }
 
-    /// Discover BrowserID support for a domain
+    /// Discover BrowserID support for a domain.
     ///
-    /// 1. Query DNS for _browserid.<domain> with DNSSEC
-    /// 2. If DNSSEC-validated record found: use as primary IdP
-    /// 3. If insecure/not found: fall back to broker
-    /// 4. If BOGUS: reject (DNSSEC validation failure)
+    /// 1. Query DNS for _browserid.<domain> with DNSSEC.
+    /// 2. If a DNSSEC-validated record is found: use as primary IdP, taking the
+    ///    identity key from the DNSSEC record (never from `.well-known`).
+    /// 3. If insecure/not found: fall back to the broker — whose key is ALSO
+    ///    resolved via DNSSEC (the broker must publish an authenticated record).
+    /// 4. If BOGUS: reject (DNSSEC validation failure).
+    ///
+    /// `.well-known` is fetched only for endpoint discovery (auth/provision
+    /// paths); the trusted key is always the DNSSEC-validated one. There is no
+    /// path by which a key served solely via `.well-known` is trusted.
     pub async fn discover(&self, domain: &str) -> Result<FallbackResult, BrokerError> {
         let dns_result = self.dns_fetcher.lookup(domain).await;
 
         match dns_result.dnssec_status {
             DnssecStatus::Secure => {
                 if let Some(record) = dns_result.record {
-                    // Primary IdP mode - use DNS public key
-                    let host = record.well_known_host(domain);
-
-                    // Fetch .well-known for auth/provision endpoints (via blocking task)
-                    let mut doc = fetch_blocking(host).await?;
-
-                    // Override public key with DNSSEC-validated key
-                    doc.public_key = Some(record.public_key);
-
+                    // Primary IdP: identity key comes from the DNSSEC record.
+                    let doc = resolve_with_dnssec_key(domain, record).await?;
                     Ok(FallbackResult {
                         document: doc,
                         authoritative_domain: domain.to_string(),
@@ -103,13 +115,55 @@ impl FallbackFetcher {
         }
     }
 
+    /// Fall back to the trusted broker. The broker's identity key is resolved
+    /// via DNSSEC too — the broker MUST publish an authenticated `_browserid`
+    /// record (browserid.me does). A broker without a DNSSEC-validated record
+    /// is a hard error, never a well-known downgrade.
     async fn fallback_to_broker(&self) -> Result<FallbackResult, BrokerError> {
-        let doc = fetch_blocking(&self.trusted_broker).await?;
+        let broker = self.trusted_broker.clone();
+        let dns_result = self.dns_fetcher.lookup(&broker).await;
 
-        Ok(FallbackResult {
-            document: doc,
-            authoritative_domain: self.trusted_broker.clone(),
-            is_primary: false,
-        })
+        match dns_result.dnssec_status {
+            DnssecStatus::Secure => match dns_result.record {
+                Some(record) => {
+                    let doc = resolve_with_dnssec_key(&broker, record).await?;
+                    Ok(FallbackResult {
+                        document: doc,
+                        authoritative_domain: broker,
+                        is_primary: false,
+                    })
+                }
+                None => Err(BrokerError::Discovery(format!(
+                    "trusted broker '{}' publishes no DNSSEC _browserid record",
+                    broker
+                ))),
+            },
+            DnssecStatus::Insecure => Err(BrokerError::Discovery(format!(
+                "trusted broker '{}' discovery is not DNSSEC-authenticated",
+                broker
+            ))),
+            DnssecStatus::Bogus => Err(BrokerError::DnssecValidationFailed { domain: broker }),
+        }
+    }
+}
+
+/// Fetch `.well-known/browserid` for endpoints, then override the identity key
+/// with the DNSSEC-validated one so trust is always rooted in DNSSEC.
+async fn resolve_with_dnssec_key(
+    domain: &str,
+    record: browserid_core::DnsRecord,
+) -> Result<SupportDocument, BrokerError> {
+    let host = record.well_known_host(domain);
+    let mut doc = fetch_blocking(host).await?;
+    doc.public_key = Some(record.public_key);
+    Ok(doc)
+}
+
+impl Discoverer for FallbackFetcher {
+    fn discover(
+        &self,
+        domain: &str,
+    ) -> impl std::future::Future<Output = Result<FallbackResult, BrokerError>> + Send {
+        FallbackFetcher::discover(self, domain)
     }
 }

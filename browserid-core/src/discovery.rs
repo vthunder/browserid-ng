@@ -1,6 +1,11 @@
 //! Domain discovery for BrowserID-NG
 //!
-//! Discovers domain support by fetching `/.well-known/browserid`
+//! A domain's identity key is discovered from its authenticated `_browserid`
+//! DNSSEC record — the sole root of trust (browserid-ng-28uc). The
+//! `/.well-known/browserid` support document is still fetched, but only for
+//! endpoint discovery (authentication/provisioning paths); it is never a source
+//! of trusted keys. This module models the support-document shape and parsing;
+//! DNSSEC lookup + key resolution live in the broker's DNS/fallback fetchers.
 
 use serde::{Deserialize, Serialize};
 

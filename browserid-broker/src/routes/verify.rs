@@ -50,7 +50,7 @@ where
     let result = verify_assertion_with_dns(
         &req.assertion,
         &req.audience,
-        &fallback_fetcher,
+        fallback_fetcher.as_ref(),
         &state.domain,
     )
     .await;

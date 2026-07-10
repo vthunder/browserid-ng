@@ -49,7 +49,7 @@ where
     let result = verify_assertion_with_dns(
         &req.assertion,
         &format!("https://{}", state.domain),
-        &fallback_fetcher,
+        fallback_fetcher.as_ref(),
         &state.domain,
     )
     .await;
