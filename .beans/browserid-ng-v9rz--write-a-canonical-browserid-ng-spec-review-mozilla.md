@@ -1,11 +1,13 @@
 ---
 # browserid-ng-v9rz
 title: 'Write a canonical browserid-ng spec: review Mozilla id-specs, document our divergences, decide keep/revert, author our own'
-status: in-progress
+status: todo
 type: feature
 priority: high
 created_at: 2026-07-10T08:50:20Z
-updated_at: 2026-07-10T10:03:57Z
+updated_at: 2026-07-10T23:26:34Z
+blocked_by:
+    - browserid-ng-dff5
 ---
 
 ## Motivation
@@ -18,31 +20,31 @@ A canonical **browserid-ng protocol spec** (in `docs/specs/`) that accurately de
 
 ## Phase 1 — Review the Mozilla originals
 
-- [ ] Enumerate the documents in https://github.com/mozilla/id-specs (BrowserID protocol overview, the `.well-known/browserid` support-document format, certificate + backed-assertion formats, the Primary IdP provisioning/authentication API, the fallback IdP / Persona model, verification). Catalog each with a one-line summary.
-- [ ] Note their status/vintage (JWT/JWS crypto choices, RSA/DSA, the `login.persona.org` fallback, the shimmed browser API) so we compare against the right baseline.
+- [x] Enumerate the documents in https://github.com/mozilla/id-specs (BrowserID protocol overview, the `.well-known/browserid` support-document format, certificate + backed-assertion formats, the Primary IdP provisioning/authentication API, the fallback IdP / Persona model, verification). Catalog each with a one-line summary.
+- [x] Note their status/vintage (JWT/JWS crypto choices, RSA/DSA, the `login.persona.org` fallback, the shimmed browser API) so we compare against the right baseline.
 
 ## Phase 2 — Document how our implementation diverges
 
 For each protocol surface, compare Mozilla spec ↔ our code and record the delta. Known divergences to seed the analysis (verify + expand against the code):
 
-- [ ] **Discovery.** We authenticate discovery via a DNSSEC `_browserid` DNS TXT record (RFC 9102) in addition to / preferring `/.well-known/browserid`; Mozilla used well-known only. (See `browserid-core/src/dns.rs`, `browserid-broker/src/dns_fetcher.rs`; beans browserid-ng-28uc, l7q1.)
-- [ ] **Crypto.** Ed25519 keys throughout (Mozilla: RSA/DSA). JWK/JWT shapes, `public-key` TXT format.
-- [ ] **Support document.** Our `.well-known/browserid` fields (`public-key`, `authentication`, `provisioning`) vs Mozilla's `{public-key, authentication, provisioning}` — confirm parity/changes.
-- [ ] **Certificate & assertion formats.** Cert issuer semantics, backed-assertion structure, audience/expiry, our verification path (`browserid-broker/src/verify*`, `verifier.rs`).
-- [ ] **Primary IdP model + sovereignty.** Our primary-IdP support and identity/sovereignty records (mingo-sux8 family) — new relative to Mozilla's primary API.
-- [ ] **Fallback / broker.** browserid.me as SMTP-verifying broker vs Mozilla's `login.persona.org` fallback; the `_browserid` broker-key + broker trust model.
-- [ ] **Agent-native provisioning.** The delegation-chain provisioning + grant API — entirely new; fold the existing `agent-provisioning-and-grant-api.md` in as a component.
-- [ ] **On-chain attribution (SBO).** Attribution of a browserid identity to an on-chain key (email-rooted / broker-path, DNSSEC proof objects) — new; keep coherent but clearly layered/optional.
-- [ ] **Browser/JS surface.** What we kept for compat (`include.js`, `communication_iframe`, wsapi endpoints) vs dropped (the shimmed navigator.id API, dialog flows).
+- [x] **Discovery.** We authenticate discovery via a DNSSEC `_browserid` DNS TXT record (RFC 9102) in addition to / preferring `/.well-known/browserid`; Mozilla used well-known only. (See `browserid-core/src/dns.rs`, `browserid-broker/src/dns_fetcher.rs`; beans browserid-ng-28uc, l7q1.)
+- [x] **Crypto.** Ed25519 keys throughout (Mozilla: RSA/DSA). JWK/JWT shapes, `public-key` TXT format.
+- [x] **Support document.** Our `.well-known/browserid` fields (`public-key`, `authentication`, `provisioning`) vs Mozilla's `{public-key, authentication, provisioning}` — confirm parity/changes.
+- [x] **Certificate & assertion formats.** Cert issuer semantics, backed-assertion structure, audience/expiry, our verification path (`browserid-broker/src/verify*`, `verifier.rs`).
+- [x] **Primary IdP model + sovereignty.** Our primary-IdP support and identity/sovereignty records (mingo-sux8 family) — new relative to Mozilla's primary API.
+- [x] **Fallback / broker.** browserid.me as SMTP-verifying broker vs Mozilla's `login.persona.org` fallback; the `_browserid` broker-key + broker trust model.
+- [x] **Agent-native provisioning.** The delegation-chain provisioning + grant API — entirely new; fold the existing `agent-provisioning-and-grant-api.md` in as a component.
+- [x] **On-chain attribution (SBO).** Attribution of a browserid identity to an on-chain key (email-rooted / broker-path, DNSSEC proof objects) — new; keep coherent but clearly layered/optional.
+- [x] **Browser/JS surface.** What we kept for compat (`include.js`, `communication_iframe`, wsapi endpoints) vs dropped (the shimmed navigator.id API, dialog flows).
 
 ## Phase 3 — Decide keep vs. reconcile
 
-- [ ] For each divergence: mark **deliberate (keep)** with rationale, or **accidental drift** to reconcile. Flag anything that diverged without a clear reason for a decision.
+- [x] For each divergence: mark **deliberate (keep)** with rationale, or **accidental drift** to reconcile. Flag anything that diverged without a clear reason for a decision.
 
 ## Phase 4 — Author the browserid-ng spec
 
-- [ ] Write `docs/specs/browserid-ng-protocol.md` (+ split docs as needed) describing the protocol as implemented, noting inheritance from and intentional departures from Mozilla BrowserID. Reference the agent-provisioning spec as a module.
-- [ ] Repoint the landing page "Spec" (and possibly "Docs") links from the agent-provisioning slice to the new canonical spec.
+- [x] Write `docs/specs/browserid-ng-protocol.md` (+ split docs as needed) describing the protocol as implemented, noting inheritance from and intentional departures from Mozilla BrowserID. Reference the agent-provisioning spec as a module.
+- [x] Repoint the landing page "Spec" (and possibly "Docs") links from the agent-provisioning slice to the new canonical spec.
 
 ## Deliverables
 
@@ -98,3 +100,7 @@ Confirmed all active primaries DNSSEC-validate (AD=true via Google + Cloudflare/
 
 ## Spec suite merged + pushed (2026-07-10)
 browserid-ng spec suite (divergence analysis + core protocol with settled sections) merged to main, pushed to origin (cdb13c4). SBO Attribution Specification merged to sbo main and pushed (vthunder/sbo 0c4f1f2). Worktrees/branches cleaned up. Remaining: protocol section 4.2 (host certs) finalizes with 28uc Phase 2.
+
+## Status note (2026-07-11)
+
+All phases complete and merged; landing-page Spec link points at docs/specs. Sole remainder: protocol §4.2 (host certs) finalizes when browserid-ng-dff5 (DNSSEC-signed host certificates) lands — bean marked blocked-by dff5. Close this when §4.2 flips to SETTLED.

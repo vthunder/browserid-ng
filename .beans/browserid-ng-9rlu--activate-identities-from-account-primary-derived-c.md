@@ -5,7 +5,9 @@ status: draft
 type: feature
 priority: normal
 created_at: 2026-07-10T20:51:10Z
-updated_at: 2026-07-10T21:09:44Z
+updated_at: 2026-07-10T23:25:49Z
+blocked_by:
+    - browserid-ng-pn5n
 ---
 
 From /account UX review (2026-07-10). Identities show active/needs-sign-in status; "activate" should get a fresh cert without leaving the page. Straightforward for some, murky for others:
