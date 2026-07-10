@@ -652,3 +652,17 @@ async fn reserve_reports_taken_names() {
     let body: Value = resp.json();
     assert_eq!(body["taken"], json!(["shared"]), "only the taken name is reported");
 }
+
+/// The consent page must serve at both the bare path and the deep link —
+/// regression: axum 0.7 param syntax is `/:code`, and `/{code}` silently
+/// registers a literal segment (agents hand out deep links; a 404 there
+/// strands the principal).
+#[tokio::test]
+async fn consent_page_serves_bare_and_deep_link() {
+    let (server, _, _) = create_agent_server(5);
+    for path in ["/consent", "/consent/wrq_someopaquecode"] {
+        let resp = server.get(path).await;
+        assert_eq!(resp.status_code(), 200, "GET {path}");
+        assert!(resp.text().contains("Agent consent"), "GET {path} must serve the consent page");
+    }
+}

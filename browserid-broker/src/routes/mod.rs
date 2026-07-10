@@ -119,7 +119,9 @@ where
         // Warrant consent surface (spec §6.3) — approve/deny agent requests.
         // The {code} deep link and the bare list are the same page.
         .route_service("/consent", ServeFile::new(format!("{}/consent.html", static_path)))
-        .route_service("/consent/{code}", ServeFile::new(format!("{}/consent.html", static_path)))
+        // axum 0.7 param syntax (`:code`, not 0.8's `{code}`) — the code is
+        // read client-side from the path; the route just serves the page.
+        .route_service("/consent/:code", ServeFile::new(format!("{}/consent.html", static_path)))
         // Broker account utilities (sign out / clear cached certs / agent keys),
         // moved off the root when the marketing landing page took `/`.
         .route_service("/account", ServeFile::new(format!("{}/account.html", static_path)))
