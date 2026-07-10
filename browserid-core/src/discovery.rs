@@ -12,8 +12,10 @@ use crate::{PublicKey, Result};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SupportDocument {
     /// The domain's public key for verifying certificates
-    #[serde(rename = "public-key")]
-    pub public_key: PublicKey,
+    ///
+    /// `None` for a delegation document, which carries no key of its own.
+    #[serde(rename = "public-key", skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<PublicKey>,
 
     /// Path to the authentication page
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -26,21 +28,16 @@ pub struct SupportDocument {
     /// Delegation to another domain
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authority: Option<String>,
-
-    /// Whether this domain has explicitly disabled BrowserID support
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub disabled: bool,
 }
 
 impl SupportDocument {
     /// Create a new support document with just a public key
     pub fn new(public_key: PublicKey) -> Self {
         Self {
-            public_key,
+            public_key: Some(public_key),
             authentication: None,
             provisioning: None,
             authority: None,
-            disabled: false,
         }
     }
 
@@ -59,28 +56,11 @@ impl SupportDocument {
     /// Create a delegation document
     pub fn delegate(authority: impl Into<String>) -> Self {
         Self {
-            public_key: PublicKey::from_bytes(&[0u8; 32]).unwrap(), // placeholder
+            public_key: None,
             authentication: None,
             provisioning: None,
             authority: Some(authority.into()),
-            disabled: false,
         }
-    }
-
-    /// Create a disabled support document
-    pub fn disabled() -> Self {
-        Self {
-            public_key: PublicKey::from_bytes(&[0u8; 32]).unwrap(), // placeholder
-            authentication: None,
-            provisioning: None,
-            authority: None,
-            disabled: true,
-        }
-    }
-
-    /// Check if this domain has disabled BrowserID support
-    pub fn is_disabled(&self) -> bool {
-        self.disabled
     }
 
     /// Check if this is a delegation
@@ -148,14 +128,6 @@ pub fn discover<F: SupportDocumentFetcher>(
 
     for _ in 0..config.max_delegation_depth {
         let doc = fetcher.fetch(&current_domain)?;
-
-        // Check if domain has disabled BrowserID support
-        if doc.disabled {
-            return Err(crate::Error::DiscoveryFailed {
-                domain: domain.to_string(),
-                reason: format!("{} has disabled BrowserID support", current_domain),
-            });
-        }
 
         if let Some(ref authority) = doc.authority {
             // Check for self-delegation

@@ -261,7 +261,15 @@ fn verify_signatures(
 
     // Fetch the issuer's (fallback broker's) public key
     let issuer_key = match browserid_core::discovery::discover(issuer, fetcher, config) {
-        Ok(result) => result.document.public_key,
+        Ok(result) => match result.document.public_key {
+            Some(key) => key,
+            None => {
+                return VerificationResult::failure(format!(
+                    "Issuer {} published no public key",
+                    issuer
+                ))
+            }
+        },
         Err(e) => {
             return VerificationResult::failure(format!(
                 "Failed to discover issuer {}: {}",
@@ -387,7 +395,16 @@ fn verify_signatures_with_doc(
     }
 
     // Verify certificate signature with issuer's key (from discovery)
-    if let Err(e) = cert.verify(&doc.public_key) {
+    let issuer_key = match &doc.public_key {
+        Some(key) => key,
+        None => {
+            return VerificationResult::failure(format!(
+                "Issuer {} published no public key",
+                issuer
+            ))
+        }
+    };
+    if let Err(e) = cert.verify(issuer_key) {
         return VerificationResult::failure(format!("Certificate signature invalid: {}", e));
     }
 

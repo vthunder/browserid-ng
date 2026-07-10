@@ -78,7 +78,7 @@ impl FallbackFetcher {
                     let mut doc = fetch_blocking(host).await?;
 
                     // Override public key with DNSSEC-validated key
-                    doc.public_key = record.public_key;
+                    doc.public_key = Some(record.public_key);
 
                     Ok(FallbackResult {
                         document: doc,

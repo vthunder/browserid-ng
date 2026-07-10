@@ -9,7 +9,6 @@
 //! - We should not follow an infinite series of delegations of authority
 //! - A domain delegating to itself is hozed
 //! - if the authority key is malformed -> support is disabled
-//! - if `disabled: true` is present -> support is disabled
 
 use browserid_core::discovery::{
     discover, DiscoveryConfig, SupportDocument, SupportDocumentFetcher,
@@ -77,7 +76,7 @@ mod public_key_retrieval {
 
         // Original test verified keysize and algorithm
         // Our Ed25519 keys are 32 bytes (256 bits)
-        assert_eq!(result.document.public_key.as_bytes().len(), 32);
+        assert_eq!(result.document.public_key.unwrap().as_bytes().len(), 32);
     }
 
     /// Test: Retrieving a public key should follow authority delegation
@@ -105,7 +104,7 @@ mod public_key_retrieval {
 
         // Should have followed delegation to get the key from example.domain
         assert_eq!(result.domain, "example.domain");
-        assert_eq!(result.document.public_key.as_bytes().len(), 32);
+        assert_eq!(result.document.public_key.unwrap().as_bytes().len(), 32);
     }
 }
 
@@ -287,90 +286,6 @@ mod malformed_authority {
     }
 }
 
-// =============================================================================
-// Disabled Domain Tests
-// Ported from: well-known-test.js lines 150-161
-// =============================================================================
-
-mod disabled_domain {
-    use super::*;
-
-    /// Test: if `disabled: true` is present, support is disabled
-    /// Original: "if `disabled: true` is present" -> "support is disabled"
-    #[test]
-    fn test_disabled_domain_returns_disabled() {
-        let mut fetcher = MockFetcher::new();
-
-        fetcher.add_domain("disabled.domain", SupportDocument::disabled());
-
-        let config = DiscoveryConfig::default();
-        let result = discover("disabled.domain", &fetcher, &config);
-
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        let err_str = err.to_string();
-
-        assert!(
-            err_str.contains("disabled"),
-            "Error should indicate domain is disabled: {}",
-            err_str
-        );
-    }
-
-    /// Test: disabled field serializes correctly in JSON
-    #[test]
-    fn test_disabled_field_serialization() {
-        let key = KeyPair::generate();
-
-        // Enabled document should not include disabled field (default false)
-        let enabled_doc = SupportDocument::new(key.public_key());
-        let json = serde_json::to_string(&enabled_doc).unwrap();
-        assert!(
-            !json.contains("disabled"),
-            "Enabled document should not include disabled field"
-        );
-
-        // Disabled document should include disabled: true
-        let disabled_doc = SupportDocument::disabled();
-        let json = serde_json::to_string(&disabled_doc).unwrap();
-        assert!(json.contains(r#""disabled":true"#), "Disabled document should include disabled: true");
-    }
-
-    /// Test: disabled field deserializes correctly from JSON
-    #[test]
-    fn test_disabled_field_deserialization() {
-        // Use the correct public key format: algorithm + publicKey (base64)
-        let disabled_json = r#"{
-            "disabled": true,
-            "provisioning": "/provision.html",
-            "authentication": "/sign_in.html",
-            "public-key": {
-                "algorithm": "Ed25519",
-                "publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-            }
-        }"#;
-
-        let doc: SupportDocument = serde_json::from_str(disabled_json).unwrap();
-        assert!(doc.is_disabled(), "Document should be marked as disabled");
-    }
-
-    /// Test: missing disabled field defaults to false
-    #[test]
-    fn test_missing_disabled_field_defaults_to_false() {
-        // Use the correct public key format: algorithm + publicKey (base64)
-        let enabled_json = r#"{
-            "provisioning": "/provision.html",
-            "authentication": "/sign_in.html",
-            "public-key": {
-                "algorithm": "Ed25519",
-                "publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-            }
-        }"#;
-
-        let doc: SupportDocument = serde_json::from_str(enabled_json).unwrap();
-        assert!(!doc.is_disabled(), "Document should default to enabled");
-    }
-}
 
 // =============================================================================
 // Support Document Format Tests

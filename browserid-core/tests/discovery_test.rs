@@ -80,7 +80,7 @@ mod primary_idp_discovery {
         assert_eq!(doc.authentication, Some("/sign_in.html".to_string()));
         assert_eq!(doc.provisioning, Some("/provision.html".to_string()));
         // public-key should be present
-        assert_eq!(&doc.public_key, &domain_key.public_key());
+        assert_eq!(doc.public_key.as_ref(), Some(&domain_key.public_key()));
     }
 }
 

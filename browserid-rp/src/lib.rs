@@ -146,7 +146,10 @@ impl Verifier {
             )));
         }
 
-        Ok(self.trust_issuer(domain, doc.public_key))
+        let public_key = doc.public_key.ok_or_else(|| {
+            RpError::WellKnown(format!("{idp_base} published no public key"))
+        })?;
+        Ok(self.trust_issuer(domain, public_key))
     }
 
     /// The audience this verifier (and its challenge) is bound to
