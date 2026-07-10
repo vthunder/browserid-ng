@@ -9,11 +9,8 @@
 > (`mozilla/id-specs`, archived 2022) with deliberate departures — see
 > [`browserid-ng-divergence-analysis.md`](./browserid-ng-divergence-analysis.md).
 >
-> Section status is marked inline: **[SETTLED]** sections describe shipped,
-> stable behavior. The DNSSEC trust root and unified verifier (§3, §6.2) shipped
-> on branch `feat/dnssec-required` (bean `browserid-ng-28uc` Phase 1). The one
-> remaining **[PENDING]** item is the optional host certificate (§4.2), awaiting
-> 28uc Phase 2.
+> Everything described here is implemented and deployed, except **§4.2 (optional
+> host certificates)**, a planned extension (bean `browserid-ng-dff5`).
 >
 > Layered on this core: [agent provisioning & grant exchange](./agent-provisioning-and-grant-api.md)
 > (this repo), and SBO on-chain attribution (in the **sbo** repo, built on §6.3).
@@ -50,7 +47,7 @@ model is familiar and the assertion chain is unchanged. The **trust root**
 integration** (first-party pages + postMessage vs the shimmed `navigator.id`)
 are deliberate departures.
 
-## 2. Cryptography & key formats  **[SETTLED]**
+## 2. Cryptography & key formats
 
 - All signatures are **Ed25519 (EdDSA)**. JWTs use `"alg": "EdDSA"`.
   *(Departure from BrowserID's RSA/RS256.)*
@@ -63,10 +60,7 @@ are deliberate departures.
 
 Reference: `browserid-core/src/keys.rs`.
 
-## 3. Discovery & the trust root  **[SETTLED]**
-
-> Implemented on `feat/dnssec-required` (28uc Phase 1): a single DNSSEC-rooted
-> verifier path.
+## 3. Discovery & the trust root
 
 **The authenticated `_browserid` DNSSEC record is the required, sole trust root
 for an IdP's identity key.**
@@ -96,7 +90,7 @@ for an IdP's identity key.**
   to deliver an optional host certificate (§4.2). It is not a trust root; every
   key it references chains back to the DNSSEC record.
 
-### 3.1 Support document  **[SETTLED, minus trust role]**
+### 3.1 Support document
 
 `GET https://<domain>/.well-known/browserid` returns JSON:
 
@@ -114,7 +108,7 @@ trust source.)* Reference: `browserid-core/src/discovery.rs`,
 
 ## 4. Certificates
 
-### 4.1 User certificate  **[SETTLED format; trust per §3]**
+### 4.1 User certificate
 
 A certificate is a JWT signed by an IdP key, binding a subject key to an
 identity:
@@ -128,9 +122,10 @@ identity:
 
 Reference: `browserid-core/src/certificate.rs`.
 
-### 4.2 Host certificate (optional intermediate)  **[PENDING — 28uc Phase 2]**
+### 4.2 Host certificate (optional intermediate)
 
-> Decided design (host principal reinstated; not yet implemented):
+> **Planned extension — not yet implemented** (bean `browserid-ng-dff5`). The
+> design is settled; this section specifies the target.
 
 A **host certificate** carries `principal = { "host": "<domain>" }` and asserts
 that a key `K_host` is authoritative to issue user certs for `<domain>`. A host
@@ -148,7 +143,7 @@ operational key by issuing a new host cert **without a DNS change**. Simple
 deployments omit it and sign user certs directly with `K_dns`. Host certs carry
 **no endpoints** (endpoints stay in the support document, §3.1).
 
-## 5. Assertions & backed assertions  **[SETTLED]**
+## 5. Assertions & backed assertions
 
 - **Assertion** — a short-lived JWT signed by the *subject* key from a
   certificate, claims:
@@ -173,24 +168,20 @@ Reference: `browserid-core/src/assertion.rs`.
 
 ## 6. Verification
 
-### 6.1 Verifier API  **[SETTLED shape; trust resolution per §3]**
+### 6.1 Verifier API
 
 `POST /verify` with `{ "assertion": <backed-assertion>, "audience": <origin> }`
 returns the verified identity (email) on success, mirroring the BrowserID
 verifier contract. Reference: `browserid-broker/src/routes/verify.rs`.
 
-### 6.2 Verification algorithm  **[SETTLED]**
-
-> Implemented on `feat/dnssec-required` (28uc Phase 1). The verifier is generic
-> over a `Discoverer` (native RPITIT), so it is unit-testable with a mock;
-> production discovery resolves the key via DNSSEC (`FallbackFetcher`).
+### 6.2 Verification algorithm
 
 1. Parse the backed assertion into its cert chain + assertion.
 2. Resolve the issuer (`iss`) IdP key **via the authenticated DNSSEC record**
    (§3). No `.well-known` key trust; no dual path.
 3. Verify the cert chain: each cert signed by the previous key; the root cert
-   signed by `K_dns` directly. *(The optional host-cert intermediate — §4.2,
-   Phase 2 — is not yet in the verifier; when added it hooks in at this step.)*
+   signed by `K_dns` directly. *(The optional host-cert intermediate (§4.2) is
+   not yet implemented; when added it hooks in at this step.)*
 4. Verify the assertion signature against the leaf certificate's subject key,
    and that `aud` matches the RP and nothing is expired.
 5. Return the certified email.
@@ -198,7 +189,7 @@ verifier contract. Reference: `browserid-broker/src/routes/verify.rs`.
 This collapses the former well-known-vs-DNSSEC branching into one path
 (`verifier.rs`).
 
-### 6.3 Offline verification with detached DNSSEC proofs  **[SETTLED]**
+### 6.3 Offline verification with detached DNSSEC proofs
 
 Because the trust root is DNSSEC (§3), a certificate or backed assertion can be
 verified **with no live network fetch** when it is accompanied by a **detached
@@ -219,7 +210,7 @@ scope for the core protocol. The on-chain consumer is specified separately — s
 **SBO Attribution Specification** in the sbo repo, which layers ledger-specific
 identity rooting and trust anchors on this primitive.
 
-## 7. Primary IdP & browser integration  **[SETTLED overview]**
+## 7. Primary IdP & browser integration
 
 browserid-ng does **not** use the shimmed `navigator.id` API. Instead:
 
@@ -233,7 +224,7 @@ browserid-ng does **not** use the shimmed `navigator.id` API. Instead:
 
 Reference: `browserid-broker/src/routes/mod.rs`.
 
-## 8. Fallback broker  **[SETTLED]**
+## 8. Fallback broker
 
 Domains (and their users) without a primary IdP are served by the **broker**,
 `browserid.me`:
@@ -258,8 +249,3 @@ attribution-aware broker occupying the same role.
   its concepts (`/sys/dnssec` objects, controller rooting, `/sys/trust/brokers`)
   are ledger-specific, and sbo depends on browserid-ng, not the reverse.
 
----
-
-*Open drafting notes:* §3 and §6.2 are finalized against the shipped verifier
-(`feat/dnssec-required`, commit `85021d2`). §4.2 (optional host certificates)
-remains the only PENDING section, awaiting 28uc Phase 2.

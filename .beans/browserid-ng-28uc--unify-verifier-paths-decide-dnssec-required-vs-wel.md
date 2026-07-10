@@ -1,11 +1,11 @@
 ---
 # browserid-ng-28uc
 title: Unify verifier paths / decide DNSSEC-required vs .well-known primary support
-status: in-progress
+status: completed
 type: task
 priority: high
 created_at: 2026-07-08T06:13:39Z
-updated_at: 2026-07-10T09:50:54Z
+updated_at: 2026-07-10T11:17:13Z
 parent: browserid-ng-8u60
 blocked_by:
     - browserid-ng-l7q1
@@ -59,3 +59,9 @@ Unified the verifier to a single DNSSEC-rooted path. Removed the dead sync verif
 Production impact (intentional): all active primaries publish DNSSEC (mingo.place ok, sandmill.org has record+RRSIG - CONFIRM AD=true before deploy; browserid.me ok). Broker now MUST have DNSSEC -> any dev/local non-DNSSEC broker (localhost) hard-errors on fallback.
 Phase 2 hook (host certs): inserts at the final cert check in verify_signatures_with_doc - if user cert not signed by K_dns directly, verify a K_dns-signed host cert authorizing the signer, then verify user cert against the host key.
 Remaining: Phase 2 (optional DNSSEC-signed host certs); C doc-comment fixed as part of Phase 1.
+
+## Merged + pushed (2026-07-10)
+Phase 1 (feat/dnssec-required incl. fix/discovery-cleanup B+D) merged to main and pushed to GitHub (origin cdb13c4). Verifier tests 14/14 green post-merge. Deploying to browserid.me (dokku id) now. All active primaries confirmed AD=true (sandmill.org, mingo.place, browserid.me) so no prod breakage. Merged branches deleted. Remaining: Phase 2 (optional DNSSEC-signed host certs).
+
+## Completed (2026-07-10)
+Phase 1 (DNSSEC required + sole root, unified verifier, closed the primary AND broker well-known downgrade) shipped to browserid.me and merged to main (cdb13c4). Phase 2 (optional DNSSEC-signed host certs) split into its own bean. Summary of Changes: removed dual-path key trust; DNSSEC is the sole root; .well-known retained for endpoints only; verifier unified over a Discoverer trait; B+D cleanup folded in.

@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-07-10T08:50:20Z
-updated_at: 2026-07-10T09:55:44Z
+updated_at: 2026-07-10T10:03:57Z
 ---
 
 ## Motivation
@@ -95,3 +95,6 @@ Per dependency boundary (sbo depends on browserid-ng, not the reverse): removed 
 
 ## Spec §3/§6.2 finalized (2026-07-10)
 Confirmed all active primaries DNSSEC-validate (AD=true via Google + Cloudflare/1.1.1.1): sandmill.org, mingo.place, browserid.me. So no production breakage from the DNSSEC-required change. Flipped browserid-ng-protocol.md §3 (discovery/trust-root) and §6.2 (verification algorithm) from PENDING to SETTLED against shipped verifier 85021d2; folded in broker-key-also-DNSSEC. §4.2 host certs remain the only PENDING section (28uc Phase 2). docs/spec-suite now has the finalized core.
+
+## Spec suite merged + pushed (2026-07-10)
+browserid-ng spec suite (divergence analysis + core protocol with settled sections) merged to main, pushed to origin (cdb13c4). SBO Attribution Specification merged to sbo main and pushed (vthunder/sbo 0c4f1f2). Worktrees/branches cleaned up. Remaining: protocol section 4.2 (host certs) finalizes with 28uc Phase 2.
