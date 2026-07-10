@@ -109,24 +109,22 @@ async fn run(
             println!("{}", agent.email());
         }
         "grant" => {
-            let audiences: Vec<&str> = args[2..].iter().map(String::as_str).collect();
-            if audiences.is_empty() {
-                usage();
-            }
+            // grant <aud> [scope ...] — the audience is the first arg; any
+            // remaining args (typically "dim:value") are scopes on that grant.
+            let aud = args.get(2).map(String::as_str).unwrap_or_else(|| usage());
+            let scopes: Vec<String> = args[3..].iter().cloned().collect();
             let mut agent = load_or_provision(&credential, credential_path, None).await?;
-            let grants = audiences
-                .iter()
-                .map(|a| browserid_core::WarrantGrant { aud: a.to_string(), scopes: None })
-                .collect();
+            let grant = browserid_core::WarrantGrant {
+                aud: aud.to_string(),
+                scopes: (!scopes.is_empty()).then_some(scopes),
+            };
             agent
-                .obtain_warrants(grants, |handle| {
+                .obtain_warrants(vec![grant], |handle| {
                     eprintln!("\n  ==> approve at: {}\n", handle.verification_uri);
                 })
                 .await?;
             agent.save(&ipath)?;
-            for a in audiences {
-                eprintln!("warrant held for {a}");
-            }
+            eprintln!("warrant held for {aud}");
         }
         "assert" => {
             let audience = args.get(2).map(String::as_str).unwrap_or_else(|| usage());
