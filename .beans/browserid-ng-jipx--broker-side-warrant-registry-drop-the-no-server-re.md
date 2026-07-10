@@ -1,10 +1,11 @@
 ---
 # browserid-ng-jipx
 title: Broker-side warrant registry — drop the no-server-record rule (§6.4)
-status: todo
+status: in-progress
 type: feature
+priority: normal
 created_at: 2026-07-10T18:05:49Z
-updated_at: 2026-07-10T18:05:49Z
+updated_at: 2026-07-10T19:13:37Z
 ---
 
 Design change (vthunder, 2026-07-10): there should be no expectation of privacy *from the broker* — it already mediates logins for broker-rooted identities and serves the key-custody surface, so hiding warrant metadata from it buys little and costs real UX. The broker SHOULD keep a per-identity list of warrants.

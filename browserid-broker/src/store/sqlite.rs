@@ -8,13 +8,13 @@ use uuid::Uuid;
 
 use super::{
     Email, EmailType, PendingVerification, ProvisioningCertRecord, Session, SessionId,
-    SessionStore, StoreResult, User, UserId, UserStore, VerificationType, WarrantRequestRecord,
-    WarrantRequestStatus,
+    SessionStore, StoreResult, User, UserId, UserStore, VerificationType, WarrantRecord,
+    WarrantRequestRecord, WarrantRequestStatus,
 };
 use crate::error::BrokerError;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 7;
+const SCHEMA_VERSION: i32 = 8;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -82,6 +82,9 @@ impl SqliteStore {
             }
             if current_version < 7 {
                 Self::migrate_v7(conn)?;
+            }
+            if current_version < 8 {
+                Self::migrate_v8(conn)?;
             }
 
             // Update schema version
@@ -295,7 +298,58 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v8(conn: &Connection) -> Result<(), BrokerError> {
+        // Warrant registry (jipx): the delegator's own record of issued
+        // warrants — reviewable cross-browser, upserted per
+        // (user, agent, audience) so reissues replace their predecessor.
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS warrants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                delegator_email TEXT NOT NULL,
+                agent_email TEXT NOT NULL,
+                audience TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                warrant TEXT NOT NULL,
+                signed_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                UNIQUE(user_id, agent_email, audience)
+            );
+            CREATE INDEX IF NOT EXISTS idx_warrants_user ON warrants(user_id);
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
+
+// Row → WarrantRecord mapping (jipx registry)
+fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantRecord> {
+    let parse_ts = |s: String| {
+        DateTime::parse_from_rfc3339(&s)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now())
+    };
+    let id: i64 = row.get(0)?;
+    let user_id: i64 = row.get(1)?;
+    let scopes_json: String = row.get(5)?;
+    Ok(WarrantRecord {
+        id: id as u64,
+        user_id: UserId(user_id as u64),
+        delegator_email: row.get(2)?,
+        agent_email: row.get(3)?,
+        audience: row.get(4)?,
+        scopes: serde_json::from_str(&scopes_json).unwrap_or_default(),
+        warrant: row.get(6)?,
+        signed_at: parse_ts(row.get(7)?),
+        expires_at: parse_ts(row.get(8)?),
+    })
+}
+
+const WARRANT_COLUMNS: &str =
+    "id, user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at";
 
 // Row → WarrantRequestRecord mapping
 fn warrant_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantRequestRecord> {
@@ -1054,6 +1108,61 @@ impl UserStore for SqliteStore {
         Ok(rows as u64)
     }
 
+    fn upsert_warrant(&self, record: WarrantRecord) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO warrants (user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(user_id, agent_email, audience) DO UPDATE SET
+               delegator_email = excluded.delegator_email,
+               scopes = excluded.scopes,
+               warrant = excluded.warrant,
+               signed_at = excluded.signed_at,
+               expires_at = excluded.expires_at",
+            params![
+                record.user_id.0 as i64,
+                record.delegator_email,
+                record.agent_email,
+                record.audience,
+                serde_json::to_string(&record.scopes).unwrap_or_else(|_| "[]".into()),
+                record.warrant,
+                record.signed_at.to_rfc3339(),
+                record.expires_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_warrants(&self, user_id: UserId) -> StoreResult<Vec<WarrantRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {WARRANT_COLUMNS} FROM warrants WHERE user_id = ?1 ORDER BY signed_at DESC"
+            ))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let records = stmt
+            .query_map(params![user_id.0 as i64], warrant_record_from_row)
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(records)
+    }
+
+    fn delete_warrant(&self, user_id: UserId, warrant_id: u64) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "DELETE FROM warrants WHERE id = ?1 AND user_id = ?2",
+                params![warrant_id as i64, user_id.0 as i64],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::WarrantRequestNotFound);
+        }
+        Ok(())
+    }
+
     fn touch_provisioning_cert(&self, cert_id: u64) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
@@ -1304,6 +1413,18 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn cleanup_expired_warrant_requests(&self) -> StoreResult<u64> {
         (**self).cleanup_expired_warrant_requests()
+    }
+
+    fn upsert_warrant(&self, record: WarrantRecord) -> StoreResult<()> {
+        (**self).upsert_warrant(record)
+    }
+
+    fn list_warrants(&self, user_id: UserId) -> StoreResult<Vec<WarrantRecord>> {
+        (**self).list_warrants(user_id)
+    }
+
+    fn delete_warrant(&self, user_id: UserId, warrant_id: u64) -> StoreResult<()> {
+        (**self).delete_warrant(user_id, warrant_id)
     }
 }
 

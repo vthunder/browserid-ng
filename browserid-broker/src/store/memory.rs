@@ -8,7 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    Email, EmailType, PendingVerification, ProvisioningCertRecord, Session, SessionId, WarrantRequestRecord, WarrantRequestStatus,
+    Email, EmailType, PendingVerification, ProvisioningCertRecord, Session, SessionId, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, User, UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
@@ -20,6 +20,8 @@ pub struct InMemoryUserStore {
     pending: RwLock<HashMap<String, PendingVerification>>,
     prov_certs: RwLock<HashMap<u64, ProvisioningCertRecord>>,
     warrant_requests: RwLock<HashMap<String, WarrantRequestRecord>>,
+    warrant_records: RwLock<HashMap<u64, WarrantRecord>>,
+    next_warrant_id: AtomicU64,
     next_user_id: AtomicU64,
     next_prov_cert_id: AtomicU64,
 }
@@ -32,6 +34,8 @@ impl InMemoryUserStore {
             pending: RwLock::new(HashMap::new()),
             prov_certs: RwLock::new(HashMap::new()),
             warrant_requests: RwLock::new(HashMap::new()),
+            warrant_records: RwLock::new(HashMap::new()),
+            next_warrant_id: AtomicU64::new(1),
             next_user_id: AtomicU64::new(1),
             next_prov_cert_id: AtomicU64::new(1),
         }
@@ -455,6 +459,38 @@ impl UserStore for InMemoryUserStore {
         let before = reqs.len();
         reqs.retain(|_, r| !r.is_expired());
         Ok((before - reqs.len()) as u64)
+    }
+
+    fn upsert_warrant(&self, mut record: WarrantRecord) -> StoreResult<()> {
+        let mut records = self.warrant_records.write().unwrap();
+        // Replace any existing row for the same (user, agent, audience).
+        records.retain(|_, r| {
+            !(r.user_id == record.user_id
+                && r.agent_email == record.agent_email
+                && r.audience == record.audience)
+        });
+        record.id = self.next_warrant_id.fetch_add(1, Ordering::SeqCst);
+        records.insert(record.id, record);
+        Ok(())
+    }
+
+    fn list_warrants(&self, user_id: UserId) -> StoreResult<Vec<WarrantRecord>> {
+        let records = self.warrant_records.read().unwrap();
+        let mut out: Vec<WarrantRecord> =
+            records.values().filter(|r| r.user_id == user_id).cloned().collect();
+        out.sort_by(|a, b| b.signed_at.cmp(&a.signed_at));
+        Ok(out)
+    }
+
+    fn delete_warrant(&self, user_id: UserId, warrant_id: u64) -> StoreResult<()> {
+        let mut records = self.warrant_records.write().unwrap();
+        match records.get(&warrant_id) {
+            Some(r) if r.user_id == user_id => {
+                records.remove(&warrant_id);
+                Ok(())
+            }
+            _ => Err(BrokerError::WarrantRequestNotFound),
+        }
     }
 }
 

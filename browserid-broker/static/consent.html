@@ -108,16 +108,6 @@ async function freshIdentity(email) {
 }
 
 
-/// Origin-local log of warrants signed in this browser — the user's own
-/// record (the broker deliberately keeps none, spec §6.4). Read by /account.
-function logWarrant(entry) {
-  try {
-    const log = JSON.parse(localStorage.warrant_log || '[]');
-    log.unshift({ ...entry, signed_at: Math.floor(Date.now() / 1000) });
-    localStorage.warrant_log = JSON.stringify(log.slice(0, 200));
-  } catch {}
-}
-
 /// Sign the §5.2 warrant with the delegator's identity key.
 async function signWarrant(id, agentEmail, audience, scopes) {
   const userKey = window.jwcrypto.loadSecretKeyFromObject(id.priv);
@@ -193,13 +183,11 @@ async function resolve(r, approve) {
       if (!id) throw new Error(
         `the identity key for ${r.delegator_email} is not available in this browser — ` +
         `sign in to an app with that identity here first, then retry`);
+      // The broker records each approved warrant in the account's registry
+      // (jipx) — reviewable later on /account, from any browser.
       warrants = [];
       for (const g of (r.grants || [])) {
-        const jws = await signWarrant(id, r.agent_email, g.audience, g.scopes);
-        warrants.push(jws);
-        logWarrant({ delegator: r.delegator_email, agent: r.agent_email,
-                     aud: g.audience, scopes: g.scopes || [],
-                     exp: Math.floor(Date.now() / 1000) + 90 * 24 * 3600, jws });
+        warrants.push(await signWarrant(id, r.agent_email, g.audience, g.scopes));
       }
     }
     await api('/wsapi/warrant_respond', {

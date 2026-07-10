@@ -202,16 +202,6 @@ async function boot() {
 }
 
 
-/// Origin-local log of warrants signed in this browser — the user's own
-/// record (the broker deliberately keeps none, spec §6.4). Read by /account.
-function logWarrant(entry) {
-  try {
-    const log = JSON.parse(localStorage.warrant_log || '[]');
-    log.unshift({ ...entry, signed_at: Math.floor(Date.now() / 1000) });
-    localStorage.warrant_log = JSON.stringify(log.slice(0, 200));
-  } catch {}
-}
-
 // ---- Manual warrant signing (spec §5.2; the MVP fallback for the consent flow) ----
 $('w-create').onclick = async () => {
   const id = localIdentities().find(i => i.email === $('w-identity').value);
@@ -244,8 +234,13 @@ $('w-create').onclick = async () => {
     const payload = b64urlJson(claims);
     const sig = await sign(userKey, `${header}.${payload}`);
     const warrantJws = `${header}.${payload}.${sig}`;
-    logWarrant({ delegator: id.email, agent: agentEmail, aud: audience,
-                 scopes, exp: claims.exp, jws: warrantJws });
+    // Record it in the account's warrant registry (reviewable on /account).
+    try {
+      await api('/wsapi/register_warrant', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ csrf, warrant: warrantJws }),
+      });
+    } catch (e) { console.warn('warrant registry:', e.message); }
     $('w-out').textContent = warrantJws;
     $('w-out').hidden = false;
     status.className = 'ok';

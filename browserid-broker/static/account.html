@@ -129,8 +129,8 @@
       <button id="detail-back" class="small">← Back</button>
       <h2 id="d-email" style="word-break:break-all"></h2>
       <p class="kv">Acts for <b id="d-parent"></b></p>
-      <p class="sub">Warrants signed for this agent in this browser. The agent may hold
-        others approved elsewhere. To cut this agent off everywhere, revoke its
+      <p class="sub">Every warrant on record for this agent — approved on any browser's
+        consent page or signed manually. To cut this agent off everywhere, revoke its
         <a href="/agents">agent key</a> — it stops working within a day.</p>
       <div id="d-warrants"></div>
       <p class="status" id="d-status"></p>
@@ -162,7 +162,7 @@ const post = (path, body) => api(path, {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 });
 
-let account = { emails: [], agents: [], parentOf: {} };
+let account = { emails: [], agents: [], parentOf: {}, warrants: [], csrf: null };
 
 // ---------- sign-in ----------
 let codeMode = false;
@@ -267,10 +267,7 @@ $('ae-btn').onclick = async () => {
   }
 };
 
-// ---------- agent detail + warrants ----------
-function warrantLog() {
-  try { return JSON.parse(localStorage.warrant_log || '[]'); } catch { return []; }
-}
+// ---------- agent detail + warrants (server registry, jipx) ----------
 function localIdentity(email) {
   let store = {};
   try { store = JSON.parse(localStorage.emails || '{}'); } catch {}
@@ -294,78 +291,84 @@ function showDetail(agentEmail) {
 $('detail-back').onclick = () => { $('detail').hidden = true; $('app').hidden = false; };
 
 function renderDetailWarrants(agentEmail) {
-  const now = Math.floor(Date.now() / 1000);
-  const entries = warrantLog()
-    .map((w, i) => ({ ...w, i }))
-    .filter(w => (w.agent || '').toLowerCase() === agentEmail.toLowerCase());
+  const now = Date.now();
+  const entries = account.warrants
+    .filter(w => (w.agent_email || '').toLowerCase() === agentEmail.toLowerCase());
   if (!entries.length) {
-    $('d-warrants').innerHTML = `<p class="muted" style="font-size:13px">No warrants signed
-      in this browser. Approve requests on the <a href="/consent">consent page</a>, or sign
-      one manually on the <a href="/agents">agent keys</a> page.</p>`;
+    $('d-warrants').innerHTML = `<p class="muted" style="font-size:13px">No warrants on
+      record. Approve requests on the <a href="/consent">consent page</a>, or sign one
+      manually on the <a href="/agents">agent keys</a> page.</p>`;
     return;
   }
-  $('d-warrants').innerHTML = `<table class="wtable">` + entries.map(w => `
+  const byId = Object.fromEntries(entries.map(w => [w.id, w]));
+  $('d-warrants').innerHTML = `<table class="wtable">` + entries.map(w => {
+    const exp = Date.parse(w.expires_at);
+    return `
     <tr>
-      <td><span class="aud">${escapeHtml(w.aud)}</span><br>
+      <td><span class="aud">${escapeHtml(w.audience)}</span><br>
         ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}
       </td>
       <td style="white-space:nowrap;text-align:right">
-        <span class="${w.exp && w.exp < now ? 'warn' : 'muted'}" style="font-size:12px">
-          ${w.exp ? (w.exp < now ? 'expired' : 'until ' + new Date(w.exp * 1000).toLocaleDateString()) : ''}</span><br>
-        ${w.jws ? `<button class="small w-copy" data-i="${w.i}">Copy</button>` : ''}
-        <button class="small w-reissue" data-i="${w.i}">Reissue</button>
-        <button class="small w-forget" data-i="${w.i}">Forget</button>
+        <span class="${exp && exp < now ? 'warn' : 'muted'}" style="font-size:12px">
+          ${exp ? (exp < now ? 'expired' : 'until ' + new Date(exp).toLocaleDateString()) : ''}</span><br>
+        <button class="small w-copy" data-i="${w.id}">Copy</button>
+        <button class="small w-reissue" data-i="${w.id}">Reissue</button>
+        <button class="small w-forget" data-i="${w.id}">Forget</button>
       </td>
-    </tr>`).join('') + '</table>';
+    </tr>`;
+  }).join('') + '</table>';
 
   for (const b of $('d-warrants').querySelectorAll('.w-copy')) {
     b.onclick = async () => {
-      await navigator.clipboard.writeText(warrantLog()[b.dataset.i].jws);
+      await navigator.clipboard.writeText(byId[b.dataset.i].warrant);
       $('d-status').className = 'status ok';
       $('d-status').textContent = 'Copied — paste into the agent (add_warrant).';
     };
   }
   for (const b of $('d-warrants').querySelectorAll('.w-forget')) {
-    b.onclick = () => {
-      const log = warrantLog();
-      log.splice(Number(b.dataset.i), 1);
-      localStorage.warrant_log = JSON.stringify(log);
-      renderDetailWarrants(agentEmail);
-      $('d-status').className = 'status muted';
-      $('d-status').textContent = 'Removed from this list. The copy the agent holds stays ' +
-        'valid until it expires — revoke the agent key to cut it off.';
+    b.onclick = async () => {
+      const status = $('d-status');
+      try {
+        await post('/wsapi/forget_warrant', { csrf: account.csrf, id: Number(b.dataset.i) });
+        await refreshWarrants();
+        renderDetailWarrants(agentEmail);
+        status.className = 'status muted';
+        status.textContent = 'Removed from the registry. The copy the agent holds stays ' +
+          'valid until it expires — revoke the agent key to cut it off.';
+      } catch (e) {
+        status.className = 'status err';
+        status.textContent = 'Forget failed: ' + e.message;
+      }
     };
   }
   for (const b of $('d-warrants').querySelectorAll('.w-reissue')) {
     b.onclick = async () => {
-      const w = warrantLog()[b.dataset.i];
+      const w = byId[b.dataset.i];
       const status = $('d-status');
-      const id = localIdentity(w.delegator);
+      const id = localIdentity(w.delegator_email);
       if (!id) {
         status.className = 'status err';
-        status.textContent = `The identity key for ${w.delegator} isn't in this browser — sign in with it first.`;
+        status.textContent = `The identity key for ${w.delegator_email} isn't in this browser — sign in with it first.`;
         return;
       }
       try {
-        const now = Math.floor(Date.now() / 1000);
+        const nowS = Math.floor(Date.now() / 1000);
         const claims = {
           typ: 'browserid-agent-warrant-v1',
-          iss: id.email, agent: w.agent, aud: w.aud,
-          'parent-cert': id.cert, iat: now, exp: now + 90 * 24 * 3600,
+          iss: id.email, agent: w.agent_email, aud: w.audience,
+          'parent-cert': id.cert, iat: nowS, exp: nowS + 90 * 24 * 3600,
         };
         if ((w.scopes || []).length) claims.scopes = w.scopes;
         const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
         const payload = b64urlJson(claims);
         const sig = await sign(window.jwcrypto.loadSecretKeyFromObject(id.priv), `${header}.${payload}`);
         const jws = `${header}.${payload}.${sig}`;
-        const log = warrantLog();
-        log.unshift({ ...w, exp: claims.exp, jws, signed_at: now });
-        delete log[0].i;
-        localStorage.warrant_log = JSON.stringify(log.slice(0, 200));
+        await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws });
         await navigator.clipboard.writeText(jws);
+        await refreshWarrants();
         renderDetailWarrants(agentEmail);
         status.className = 'status ok';
-        status.textContent = 'Reissued (fresh 90-day expiry) and copied — paste into the agent.';
+        status.textContent = 'Reissued (fresh 90-day expiry), registered, and copied — paste into the agent.';
       } catch (e) {
         status.className = 'status err';
         status.textContent = 'Reissue failed: ' + e.message;
@@ -400,13 +403,21 @@ async function boot() {
     return;
   }
   const resp = await api('/wsapi/list_emails');
+  let warrants = [];
+  try { warrants = (await api('/wsapi/warrants')).warrants || []; } catch {}
   account = {
     emails: resp.emails || [],
     agents: resp.agents || [],
     parentOf: Object.fromEntries((resp.derived || []).map(d => [d.email, d.parent_email])),
+    warrants,
+    csrf: ctx.csrf_token,
   };
   $('app').hidden = false;
   renderLists();
+}
+
+async function refreshWarrants() {
+  try { account.warrants = (await api('/wsapi/warrants')).warrants || []; } catch {}
 }
 boot().catch(e => {
   $('gate').hidden = false;

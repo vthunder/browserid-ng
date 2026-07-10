@@ -126,11 +126,10 @@ impl ProvisioningCertRecord {
 
 /// A pending warrant consent request (agent spec §6, v0.4). Created by an
 /// agent's `warrant` request against a registered provisioning cert; resolved
-/// by the delegator on the consent page, which signs the warrant client-side
-/// with the identity key (the broker never holds it). The audience and scopes
-/// live here only while the request is open — the record is deleted on
-/// delivery, so the registrar retains no record of where warrants apply
-/// (§6.4 privacy rule).
+/// by the delegator on the consent page, which signs the warrants client-side
+/// with the identity key (the broker never holds it). The row is the poll
+/// *code* — single delivery, deleted on handover. The issued warrants
+/// themselves persist in [`WarrantRecord`]s (jipx).
 #[derive(Debug, Clone)]
 pub struct WarrantRequestRecord {
     /// High-entropy opaque code — the poll credential (single delivery)
@@ -193,6 +192,25 @@ impl WarrantRequestRecord {
     pub fn is_expired(&self) -> bool {
         Utc::now() > self.expires_at
     }
+}
+
+/// A registered warrant (jipx): the delegator's own record of a grant they
+/// signed — one agent at one audience. Kept per account (shown only to the
+/// delegator's session), upserted on (user, agent, audience) so a reissue
+/// replaces its predecessor. The substrate for per-warrant revocation once
+/// status lists (egr7) land.
+#[derive(Debug, Clone)]
+pub struct WarrantRecord {
+    pub id: u64,
+    pub user_id: UserId,
+    pub delegator_email: String,
+    pub agent_email: String,
+    pub audience: String,
+    pub scopes: Vec<String>,
+    /// The signed warrant JWS
+    pub warrant: String,
+    pub signed_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
 }
 
 /// A user session

@@ -6,9 +6,10 @@
 //! warrant client-side with the identity key held in this origin — and the
 //! agent polls the result (RFC 8628 shape).
 //!
-//! Privacy (§6.4): the audience and scopes live only in the pending request;
-//! the row is deleted on delivery (or denial), so the broker retains no
-//! record of where warrants apply.
+//! The pending request (the poll code) is single-delivery and deleted on
+//! handover; the issued warrants are retained in the per-delegator warrant
+//! registry (§6.4 as revised by jipx) — the delegator's own reviewable
+//! record, and the substrate for per-warrant revocation (egr7).
 
 use std::sync::Arc;
 
@@ -29,7 +30,8 @@ use crate::email::EmailSender;
 use crate::error::BrokerError;
 use crate::state::AppState;
 use crate::store::{
-    SessionStore, UserStore, WarrantGrantItem, WarrantRequestRecord, WarrantRequestStatus,
+    SessionStore, UserStore, WarrantGrantItem, WarrantRecord, WarrantRequestRecord,
+    WarrantRequestStatus,
 };
 
 /// Pending consent requests expire unapproved after this long
@@ -398,6 +400,7 @@ where
             warrant_jwss.len()
         )));
     }
+    let mut records = Vec::with_capacity(warrant_jwss.len());
     for (jws, grant) in warrant_jwss.iter().zip(&rec.grants) {
         let warrant = Warrant::parse(jws)
             .map_err(|e| BrokerError::ValidationError(format!("bad warrant: {e}")))?;
@@ -416,12 +419,170 @@ where
                 "warrant delegator does not match the request".into(),
             ));
         }
+        records.push(warrant_to_record(session.user_id, &warrant, jws));
     }
 
     state
         .user_store
         .respond_warrant_request(session.user_id, &req.code, Some(warrant_jwss))?;
+    // Registry (jipx): the delegator's own reviewable record of each grant.
+    for record in records {
+        state.user_store.upsert_warrant(record)?;
+    }
     tracing::info!(delegator = %rec.delegator_email, grants = rec.grants.len(),
         "warrant consent approved");
+    Ok(Json(RespondResponse { success: true }))
+}
+
+// ===========================================================================
+// Warrant registry (jipx): the delegator's own record of issued warrants
+// ===========================================================================
+
+fn warrant_to_record(
+    user_id: crate::store::UserId,
+    warrant: &Warrant,
+    jws: &str,
+) -> WarrantRecord {
+    let claims = warrant.claims();
+    let ts = |secs: i64| DateTime::from_timestamp(secs, 0).unwrap_or_else(Utc::now);
+    WarrantRecord {
+        id: 0, // assigned by the store
+        user_id,
+        delegator_email: warrant.delegator().to_string(),
+        agent_email: warrant.agent().to_string(),
+        audience: warrant.audience().to_string(),
+        scopes: claims.scopes.clone().unwrap_or_default(),
+        warrant: jws.to_string(),
+        signed_at: ts(claims.iat),
+        expires_at: ts(claims.exp),
+    }
+}
+
+#[derive(Serialize)]
+pub struct WarrantInfo {
+    pub id: u64,
+    pub delegator_email: String,
+    pub agent_email: String,
+    pub audience: String,
+    pub scopes: Vec<String>,
+    /// The signed JWS — the delegator's own copy (paste into an agent)
+    pub warrant: String,
+    pub signed_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+pub struct ListWarrantsResponse {
+    pub success: bool,
+    pub warrants: Vec<WarrantInfo>,
+}
+
+/// GET /wsapi/warrants — the signed-in user's registered warrants
+pub async fn list_warrants<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+) -> Result<Json<ListWarrantsResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    if !state.agent_provisioning_enabled {
+        return Err(BrokerError::AgentProvisioningDisabled);
+    }
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    let warrants = state
+        .user_store
+        .list_warrants(session.user_id)?
+        .into_iter()
+        .map(|r| WarrantInfo {
+            id: r.id,
+            delegator_email: r.delegator_email,
+            agent_email: r.agent_email,
+            audience: r.audience,
+            scopes: r.scopes,
+            warrant: r.warrant,
+            signed_at: r.signed_at,
+            expires_at: r.expires_at,
+        })
+        .collect();
+    Ok(Json(ListWarrantsResponse { success: true, warrants }))
+}
+
+#[derive(Deserialize)]
+pub struct RegisterWarrantBody {
+    pub csrf: String,
+    /// A warrant JWS signed client-side (manual card / reissue)
+    pub warrant: String,
+}
+
+/// POST /wsapi/register_warrant — record a warrant signed outside the
+/// consent flow (manual signing, reissue). The delegator must be a verified
+/// email on this account; the JWS itself is the user-signed authorization.
+pub async fn register_warrant<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<RegisterWarrantBody>,
+) -> Result<Json<RespondResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    if !state.agent_provisioning_enabled {
+        return Err(BrokerError::AgentProvisioningDisabled);
+    }
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    if session.csrf_token != req.csrf {
+        return Err(BrokerError::InvalidCsrf);
+    }
+    let warrant = Warrant::parse(&req.warrant)
+        .map_err(|e| BrokerError::ValidationError(format!("bad warrant: {e}")))?;
+    let owns = state
+        .user_store
+        .list_emails(session.user_id)?
+        .iter()
+        .any(|e| e.email.eq_ignore_ascii_case(warrant.delegator()) && e.verified);
+    if !owns {
+        return Err(BrokerError::ValidationError(
+            "the warrant's delegator is not a verified email on this account".into(),
+        ));
+    }
+    state
+        .user_store
+        .upsert_warrant(warrant_to_record(session.user_id, &warrant, &req.warrant))?;
+    Ok(Json(RespondResponse { success: true }))
+}
+
+#[derive(Deserialize)]
+pub struct ForgetWarrantBody {
+    pub csrf: String,
+    pub id: u64,
+}
+
+/// POST /wsapi/forget_warrant — drop a registry row. The signed warrant the
+/// agent holds stays valid until it expires; per-warrant revocation arrives
+/// with certificate status lists (egr7).
+pub async fn forget_warrant<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<ForgetWarrantBody>,
+) -> Result<Json<RespondResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    if !state.agent_provisioning_enabled {
+        return Err(BrokerError::AgentProvisioningDisabled);
+    }
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    if session.csrf_token != req.csrf {
+        return Err(BrokerError::InvalidCsrf);
+    }
+    state.user_store.delete_warrant(session.user_id, req.id)?;
     Ok(Json(RespondResponse { success: true }))
 }

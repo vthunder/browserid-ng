@@ -168,6 +168,19 @@ pub trait UserStore: Send + Sync {
 
     /// Drop expired warrant requests
     fn cleanup_expired_warrant_requests(&self) -> StoreResult<u64>;
+
+    // --- Warrant registry (jipx) ---
+
+    /// Record (or replace — upsert on user/agent/audience) an issued warrant
+    fn upsert_warrant(&self, record: WarrantRecord) -> StoreResult<()>;
+
+    /// The account's registered warrants, newest first
+    fn list_warrants(&self, user_id: UserId) -> StoreResult<Vec<WarrantRecord>>;
+
+    /// Remove a warrant record (the signed JWS an agent holds stays valid
+    /// until expiry — this only forgets the registry row). Scoped to the
+    /// owning user; errors with `WarrantRequestNotFound` if absent.
+    fn delete_warrant(&self, user_id: UserId, warrant_id: u64) -> StoreResult<()>;
 }
 
 /// Trait for session storage

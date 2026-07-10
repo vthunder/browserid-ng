@@ -131,12 +131,14 @@ Key words MUST/SHOULD/MAY are RFC 2119.
   additionally consult its own issuance records for `U_pub`.
 - **Audience confinement is user-signed and RP-enforced.** Certificates
   carry no audiences and no scopes. A warrant confines the agent to one
-  audience; scopes within it are opaque to the IdP and registrar and are
-  interpreted only by the RP (§7.3). Neither the IdP nor the registrar
-  learns which audiences a delegator has authorized: warrants never transit
-  either party (the §6 consent flow issues them user-side, at the registrar
-  *origin*, without persisting audience data server-side beyond the pending
-  request; see §6.4).
+  audience; scopes within it are opaque to the registrar and are
+  interpreted only by the RP (§7.3). An RP sees only warrants addressed to
+  it — no artifact an RP receives ever carries the delegator's roster of
+  other audiences. The **registrar** (which hosts the consent surface and
+  key custody, and already mediates the identities it roots) MAY retain
+  warrant records — agent, audience, scopes, expiry, the signed JWS — for
+  the delegator's own account view and future revocation tooling; a
+  self-hosted registrar holds only its own users' records.
 - **Revocation is layered** (see core §6.4 and bean `browserid-ng-egr7`):
   agent certificates MUST be short-lived (reference: 24 h, 1 h ephemeral);
   every mint — including routine re-mints — requires a fresh endorsement,
@@ -573,11 +575,15 @@ Request: `{ "code": "<code>" }`. Responses:
 | 429 | — | Polling faster than `interval` |
 
 `code` is a short-lived, single-delivery bearer; its entropy MUST be ≥ 128
-bits. On delivery the registrar MUST delete the pending request, including
-the audience and scopes — the registrar retains no record of *where* the
-warrant applies (§3 audience-privacy rule). Registrars MAY retain the fact
-that a warrant was issued for a given agent (count, timestamp) for quota
-purposes.
+bits. On delivery the registrar MUST delete the **pending request** (the
+code becomes indistinguishable from expired). The issued warrants
+themselves SHOULD be retained in the registrar's **warrant registry** (§3):
+per-delegator records of agent, audience, scopes, expiry, and the signed
+JWS, shown only to the delegator's own authenticated session — this is what
+makes an account's grants reviewable across browsers, and it is the
+substrate for per-warrant revocation once certificate status lists (core
+§6.4) land. Warrants signed outside the consent flow (a registrar's manual
+signing surface) SHOULD be registered the same way.
 
 MVP fallback (non-normative): the key-management UI MAY offer manual
 warrant creation with a typed audience. The request flow above is the

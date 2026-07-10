@@ -224,3 +224,82 @@ async fn batch_consent_two_audiences_one_approval() {
         .await
         .unwrap();
 }
+
+/// jipx: approvals populate the account's warrant registry (reviewable via
+/// /wsapi/warrants); manual registration and forget round-trip; forget is
+/// registry-only (the JWS the agent holds keeps verifying).
+#[tokio::test]
+async fn warrant_registry_records_and_forgets() {
+    let (base, _) = start_broker().await;
+    let (credential, user_kp, session) = make_credential(&base).await;
+    let mut agent = AgentIdentity::provision(&credential, Some("attestor")).await.unwrap();
+    let (u, _) = credential.delegation.split_once('~').unwrap();
+    let parent_cert = Certificate::parse(u).unwrap();
+    let http = reqwest::Client::new();
+    let csrf = http
+        .get(format!("{base}/wsapi/session_context"))
+        .header("cookie", &session)
+        .send().await.unwrap()
+        .json::<Value>().await.unwrap()["csrf_token"].as_str().unwrap().to_string();
+
+    // Consent approval lands in the registry.
+    let handle = agent
+        .request_warrants(vec![
+            WarrantGrant { aud: "https://one.example".into(), scopes: Some(vec!["post".into()]) },
+            WarrantGrant { aud: "sbo://two.example".into(), scopes: None },
+        ])
+        .await
+        .unwrap();
+    approve_pending(&base, &session, &user_kp, &parent_cert, true).await;
+    tokio::time::sleep(std::time::Duration::from_secs(handle.interval as u64)).await;
+    assert!(agent.poll_warrant(&handle).await.unwrap());
+
+    let listed: Value = http
+        .get(format!("{base}/wsapi/warrants"))
+        .header("cookie", &session)
+        .send().await.unwrap().json().await.unwrap();
+    let warrants = listed["warrants"].as_array().unwrap();
+    assert_eq!(warrants.len(), 2, "registry after approval: {listed}");
+    let auds: Vec<&str> = warrants.iter().map(|w| w["audience"].as_str().unwrap()).collect();
+    assert!(auds.contains(&"https://one.example") && auds.contains(&"sbo://two.example"));
+    assert!(warrants.iter().all(|w| w["agent_email"] == agent.email()));
+
+    // Manual registration upserts (same agent+audience replaces the row).
+    let manual = Warrant::create(
+        &parent_cert,
+        agent.email(),
+        "https://one.example",
+        Some(vec!["read".into()]),
+        Duration::days(10),
+        &user_kp,
+    )
+    .unwrap();
+    let resp: Value = http
+        .post(format!("{base}/wsapi/register_warrant"))
+        .header("cookie", &session)
+        .json(&json!({ "csrf": csrf, "warrant": manual.encoded() }))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(resp["success"], true, "register: {resp}");
+    let listed: Value = http
+        .get(format!("{base}/wsapi/warrants"))
+        .header("cookie", &session)
+        .send().await.unwrap().json().await.unwrap();
+    let warrants = listed["warrants"].as_array().unwrap();
+    assert_eq!(warrants.len(), 2, "upsert must replace, not add: {listed}");
+    let one = warrants.iter().find(|w| w["audience"] == "https://one.example").unwrap();
+    assert_eq!(one["scopes"][0], "read", "upsert keeps the newest signing");
+
+    // Forget removes the row (scoped to the owner).
+    let id = one["id"].as_u64().unwrap();
+    let resp: Value = http
+        .post(format!("{base}/wsapi/forget_warrant"))
+        .header("cookie", &session)
+        .json(&json!({ "csrf": csrf, "id": id }))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(resp["success"], true);
+    let listed: Value = http
+        .get(format!("{base}/wsapi/warrants"))
+        .header("cookie", &session)
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(listed["warrants"].as_array().unwrap().len(), 1);
+}
