@@ -298,6 +298,25 @@
     }
   }
 
+  /// A password-less account (created via a primary identity) signing in
+  /// with a broker-verified email. Setting a password requires proof of
+  /// control: signed in, the session is the proof (set it directly); signed
+  /// out, the reset flow IS that proof — emailed code, then the password.
+  /// Never show a bare set-password form to a signed-out visitor (the server
+  /// would 401 it anyway).
+  async function handleNoPasswordTransition(email) {
+    state.email = email;
+    document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+    let authenticated = false;
+    try { authenticated = (await apiCall(API.sessionContext)).authenticated; } catch {}
+    if (authenticated) {
+      showScreen('setPassword');
+      return;
+    }
+    await apiCall(API.stageReset, 'POST', { email });
+    showScreen('resetPassword');
+  }
+
   async function handleEmailChosen(email, _substituted) {
     showScreen('loading');
 
@@ -337,10 +356,9 @@
       }
 
       if (addressInfo.state === 'transition_no_password') {
-        // Primary user without password - need to set one (state.js:449-450)
-        state.email = email;
-        document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
-        showScreen('setPassword');
+        // Account without a password (ex-primary email, or a secondary on a
+        // primary-created account) — prove control, then set one.
+        await handleNoPasswordTransition(email);
         return;
       }
 
@@ -767,7 +785,7 @@
             showScreen('password');
           } else if (addressInfo.state === 'transition_no_password') {
             // Was primary, now secondary without password - need to set one
-            showScreen('setPassword');
+            await handleNoPasswordTransition(email);
           } else {
             // Normal primary flow (known or unknown)
             await handlePrimaryIdP(email, addressInfo);
@@ -782,8 +800,8 @@
             // Existing account (was primary) — authenticate with password
             showScreen('password');
           } else if (addressInfo.state === 'transition_no_password') {
-            // Existing account without a password — set one
-            showScreen('setPassword');
+            // Existing account without a password — prove control, set one
+            await handleNoPasswordTransition(email);
           } else if (addressInfo.state === 'transition_to_primary' && addressInfo.prov) {
             // Was secondary, now primary - show transition info screen
             const domain = email.split('@')[1];
