@@ -36,8 +36,9 @@ deployed. v0.2 replaced v0.1's bearer API keys with a user-signed
    the registrar for identities it roots and MAY be configured as an
    external registrar by other IdPs; it is no longer a mandatory party in
    federated agent flows.
-6. Certificates MAY carry a **`status`** claim for fast revocation via a
-   signed status list (core spec §6.4).
+6. Certificates and warrants MAY carry a **`status`** claim for fast
+   revocation via a signed status list (core spec §6.4) — implemented:
+   per-identity indices on certificates, per-grant indices on warrants.
 
 ## 1. Purpose and scope
 
@@ -438,6 +439,10 @@ audience:
   self-contained. Signing-time semantics apply (§3): `W.iat` MUST fall
   within `parent-cert`'s validity window; `parent-cert` need not be
   currently unexpired; the warrant itself MUST be unexpired.
+- `status` — OPTIONAL `{uri, idx}` (core §6.4): the registrar allocates one
+  stable index per grant (returned with the consent request's grants and by
+  its allocation endpoint), the signing surface embeds it, and the delegator
+  can then revoke **this one grant** without touching the agent's others.
 - Reference validity: 90 days (matching `P_cert`).
 
 Privacy properties (by construction): one warrant names one audience, so no

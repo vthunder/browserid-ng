@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::Engine;
 use browserid_core::provisioning::Action;
-use browserid_core::Warrant;
+use browserid_core::{StatusList, StatusListToken, Warrant};
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -39,7 +39,17 @@ const REQUEST_VALIDITY_SECONDS: i64 = 900;
 /// Minimum seconds between polls of one code
 const POLL_INTERVAL_SECONDS: i64 = 5;
 
-fn public_origin(domain: &str) -> String {
+/// The broker's published status list URI (core §6.4)
+pub(crate) fn status_list_uri(domain: &str) -> String {
+    format!("{}/.well-known/browserid-status", public_origin(domain))
+}
+
+/// The composite status subject for one warrant grant
+pub(crate) fn warrant_status_subject(user_id: crate::store::UserId, agent: &str, aud: &str) -> String {
+    format!("{}|{}|{}", user_id.0, agent, aud)
+}
+
+pub(crate) fn public_origin(domain: &str) -> String {
     if domain.starts_with("localhost") || domain.starts_with("127.") {
         format!("http://{domain}")
     } else {
@@ -181,19 +191,27 @@ where
 
     let code = new_code();
     let now = Utc::now();
+    // One stable status index per grant (egr7): the consent page embeds it,
+    // so each single warrant is revocable on its own.
+    let mut grant_items = Vec::with_capacity(grants.len());
+    for g in grants {
+        let idx = state.user_store.get_or_allocate_status(
+            "warrant",
+            &warrant_status_subject(rec.user_id, &agent_email, &g.aud),
+        )?;
+        grant_items.push(WarrantGrantItem {
+            audience: g.aud,
+            scopes: g.scopes.unwrap_or_default(),
+            status_idx: Some(idx),
+        });
+    }
     state.user_store.create_warrant_request(WarrantRequestRecord {
         code: code.clone(),
         user_id: rec.user_id,
         delegator_email: rec.delegator_email.clone(),
         agent_email,
         label: rec.label.clone(),
-        grants: grants
-            .into_iter()
-            .map(|g| WarrantGrantItem {
-                audience: g.aud,
-                scopes: g.scopes.unwrap_or_default(),
-            })
-            .collect(),
+        grants: grant_items,
         status: WarrantRequestStatus::Pending,
         warrants: None,
         created_at: now,
@@ -299,6 +317,9 @@ pub struct PendingRequestInfo {
 #[derive(Serialize)]
 pub struct ListRequestsResponse {
     pub success: bool,
+    /// The broker's status list URI — pages embed it (with each grant's
+    /// `status_idx`) into the warrants they sign
+    pub status_uri: String,
     pub requests: Vec<PendingRequestInfo>,
 }
 
@@ -331,7 +352,11 @@ where
             expires_at: r.expires_at,
         })
         .collect();
-    Ok(Json(ListRequestsResponse { success: true, requests }))
+    Ok(Json(ListRequestsResponse {
+        success: true,
+        status_uri: status_list_uri(&state.domain),
+        requests,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -453,6 +478,7 @@ fn warrant_to_record(
         audience: warrant.audience().to_string(),
         scopes: claims.scopes.clone().unwrap_or_default(),
         warrant: jws.to_string(),
+        status_idx: warrant.status().map(|s| s.idx),
         signed_at: ts(claims.iat),
         expires_at: ts(claims.exp),
     }
@@ -467,6 +493,8 @@ pub struct WarrantInfo {
     pub scopes: Vec<String>,
     /// The signed JWS — the delegator's own copy (paste into an agent)
     pub warrant: String,
+    /// Present iff the warrant carries a status claim (revocable per-grant)
+    pub status_idx: Option<u64>,
     pub signed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -503,6 +531,7 @@ where
             audience: r.audience,
             scopes: r.scopes,
             warrant: r.warrant,
+            status_idx: r.status_idx,
             signed_at: r.signed_at,
             expires_at: r.expires_at,
         })
@@ -585,4 +614,121 @@ where
     }
     state.user_store.delete_warrant(session.user_id, req.id)?;
     Ok(Json(RespondResponse { success: true }))
+}
+
+#[derive(Deserialize)]
+pub struct AllocateStatusBody {
+    pub csrf: String,
+    pub agent_email: String,
+    pub audience: String,
+}
+
+#[derive(Serialize)]
+pub struct AllocateStatusResponse {
+    pub success: bool,
+    pub uri: String,
+    pub idx: u64,
+}
+
+/// POST /wsapi/allocate_warrant_status — the manual-signing/reissue surfaces
+/// fetch (or re-fetch — stable per grant) the status index to embed before
+/// signing.
+pub async fn allocate_warrant_status<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<AllocateStatusBody>,
+) -> Result<Json<AllocateStatusResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    if !state.agent_provisioning_enabled {
+        return Err(BrokerError::AgentProvisioningDisabled);
+    }
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    if session.csrf_token != req.csrf {
+        return Err(BrokerError::InvalidCsrf);
+    }
+    if req.audience.is_empty() || req.audience.contains('*') || req.audience.len() > 512 {
+        return Err(BrokerError::ValidationError("bad audience".into()));
+    }
+    let idx = state.user_store.get_or_allocate_status(
+        "warrant",
+        &warrant_status_subject(session.user_id, &req.agent_email, &req.audience),
+    )?;
+    Ok(Json(AllocateStatusResponse {
+        success: true,
+        uri: status_list_uri(&state.domain),
+        idx,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct RevokeWarrantBody {
+    pub csrf: String,
+    pub id: u64,
+}
+
+/// POST /wsapi/revoke_warrant — set the grant's status bit: the warrant (and
+/// any reissue sharing its index) dies at status-checking verifiers within
+/// one cache window, leaving the agent's other grants intact. The registry
+/// row is kept (marked by its bit) so the account view still shows it.
+pub async fn revoke_warrant<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<RevokeWarrantBody>,
+) -> Result<Json<RespondResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    if !state.agent_provisioning_enabled {
+        return Err(BrokerError::AgentProvisioningDisabled);
+    }
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    if session.csrf_token != req.csrf {
+        return Err(BrokerError::InvalidCsrf);
+    }
+    let record = state
+        .user_store
+        .list_warrants(session.user_id)?
+        .into_iter()
+        .find(|r| r.id == req.id)
+        .ok_or(BrokerError::WarrantRequestNotFound)?;
+    let idx = record.status_idx.ok_or_else(|| {
+        BrokerError::ValidationError(
+            "this warrant predates status lists — reissue it (which replaces it) or revoke the agent key".into(),
+        )
+    })?;
+    state.user_store.set_status_revoked_idx(idx)?;
+    tracing::info!(delegator = %record.delegator_email, audience = %record.audience,
+        "warrant revoked (status bit set)");
+    Ok(Json(RespondResponse { success: true }))
+}
+
+/// GET /.well-known/browserid-status — the broker's signed status list
+/// (core §6.4). Rebuilt per request: the bitmap is tiny and Ed25519 signing
+/// is cheap; `iat` is always fresh and consumers cache per `ttl`.
+pub async fn status_list<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+) -> Result<String, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let (revoked, max) = state.user_store.revoked_status_indices()?;
+    let list = StatusList::from_revoked(revoked, max);
+    let token = StatusListToken::create(
+        &state.domain,
+        &status_list_uri(&state.domain),
+        &list,
+        &state.keypair,
+    )
+    .map_err(|e| BrokerError::Internal(format!("status list sign: {e}")))?;
+    Ok(token.encoded().to_string())
 }

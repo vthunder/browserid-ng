@@ -22,6 +22,9 @@ pub struct InMemoryUserStore {
     warrant_requests: RwLock<HashMap<String, WarrantRequestRecord>>,
     warrant_records: RwLock<HashMap<u64, WarrantRecord>>,
     next_warrant_id: AtomicU64,
+    /// (kind, subject) -> (idx, revoked)
+    status_entries: RwLock<HashMap<(String, String), (u64, bool)>>,
+    next_status_idx: AtomicU64,
     next_user_id: AtomicU64,
     next_prov_cert_id: AtomicU64,
 }
@@ -36,6 +39,8 @@ impl InMemoryUserStore {
             warrant_requests: RwLock::new(HashMap::new()),
             warrant_records: RwLock::new(HashMap::new()),
             next_warrant_id: AtomicU64::new(1),
+            status_entries: RwLock::new(HashMap::new()),
+            next_status_idx: AtomicU64::new(1),
             next_user_id: AtomicU64::new(1),
             next_prov_cert_id: AtomicU64::new(1),
         }
@@ -491,6 +496,55 @@ impl UserStore for InMemoryUserStore {
             }
             _ => Err(BrokerError::WarrantRequestNotFound),
         }
+    }
+
+    fn get_or_allocate_status(&self, kind: &str, subject: &str) -> StoreResult<u64> {
+        let mut entries = self.status_entries.write().unwrap();
+        let key = (kind.to_string(), subject.to_string());
+        if let Some((idx, _)) = entries.get(&key) {
+            return Ok(*idx);
+        }
+        let idx = self.next_status_idx.fetch_add(1, Ordering::SeqCst);
+        entries.insert(key, (idx, false));
+        Ok(idx)
+    }
+
+    fn set_status_revoked(&self, kind: &str, subject: &str) -> StoreResult<bool> {
+        let mut entries = self.status_entries.write().unwrap();
+        match entries.get_mut(&(kind.to_string(), subject.to_string())) {
+            Some(e) => {
+                e.1 = true;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    fn set_status_revoked_idx(&self, idx: u64) -> StoreResult<bool> {
+        let mut entries = self.status_entries.write().unwrap();
+        for e in entries.values_mut() {
+            if e.0 == idx {
+                e.1 = true;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn is_status_revoked_idx(&self, idx: u64) -> StoreResult<bool> {
+        Ok(self
+            .status_entries
+            .read()
+            .unwrap()
+            .values()
+            .any(|(i, revoked)| *i == idx && *revoked))
+    }
+
+    fn revoked_status_indices(&self) -> StoreResult<(Vec<u64>, u64)> {
+        let entries = self.status_entries.read().unwrap();
+        let revoked = entries.values().filter(|(_, r)| *r).map(|(i, _)| *i).collect();
+        let max = entries.values().map(|(i, _)| *i).max().unwrap_or(0);
+        Ok((revoked, max))
     }
 }
 

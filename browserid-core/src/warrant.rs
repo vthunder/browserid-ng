@@ -22,6 +22,7 @@ use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::provisioning::{expired, jws_decode, jws_sign, jws_verify};
+use crate::status::StatusRef;
 use crate::{Certificate, Error, KeyPair, Result};
 
 /// Claim-level `typ` of a warrant
@@ -54,6 +55,11 @@ pub struct WarrantClaims {
     /// The delegator's `U_cert`, embedded so verification is self-contained
     #[serde(rename = "parent-cert")]
     pub parent_cert: String,
+    /// Fast-revocation hook (core §6.4): one index per grant, allocated by
+    /// the registrar, so a single warrant can be revoked without touching
+    /// the agent's other grants
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<StatusRef>,
     pub iat: i64,
     pub exp: i64,
 }
@@ -78,6 +84,21 @@ impl Warrant {
         validity: Duration,
         identity_key: &KeyPair,
     ) -> Result<Self> {
+        Self::create_with_status(
+            parent_cert, agent_email, audience, scopes, validity, identity_key, None,
+        )
+    }
+
+    /// [`Warrant::create`] with a status-list reference (core §6.4)
+    pub fn create_with_status(
+        parent_cert: &Certificate,
+        agent_email: &str,
+        audience: &str,
+        scopes: Option<Vec<String>>,
+        validity: Duration,
+        identity_key: &KeyPair,
+        status: Option<StatusRef>,
+    ) -> Result<Self> {
         if parent_cert.is_agent() {
             return Err(invalid("an agent identity cannot be a delegator"));
         }
@@ -96,6 +117,7 @@ impl Warrant {
             aud: audience.to_string(),
             scopes,
             parent_cert: parent_cert.encoded().to_string(),
+            status,
             iat: now.timestamp(),
             exp: (now + validity).timestamp(),
         };
@@ -241,6 +263,11 @@ impl Warrant {
 
     pub fn is_expired(&self) -> bool {
         expired(self.claims.exp)
+    }
+
+    /// The status-list reference, if this warrant carries one
+    pub fn status(&self) -> Option<&StatusRef> {
+        self.claims.status.as_ref()
     }
 
     pub fn encoded(&self) -> &str {

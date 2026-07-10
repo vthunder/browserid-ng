@@ -181,6 +181,25 @@ pub trait UserStore: Send + Sync {
     /// until expiry — this only forgets the registry row). Scoped to the
     /// owning user; errors with `WarrantRequestNotFound` if absent.
     fn delete_warrant(&self, user_id: UserId, warrant_id: u64) -> StoreResult<()>;
+
+    // --- Status entries (egr7): the revocation bitmap's index space ---
+
+    /// Get (or allocate) the status index for `(kind, subject)` — e.g.
+    /// ("identity", email) or ("warrant", composite grant key). Stable across
+    /// re-mints/reissues so one bit covers every outstanding credential.
+    fn get_or_allocate_status(&self, kind: &str, subject: &str) -> StoreResult<u64>;
+
+    /// Flip the revocation bit for `(kind, subject)`. Ok(false) if no entry.
+    fn set_status_revoked(&self, kind: &str, subject: &str) -> StoreResult<bool>;
+
+    /// Flip the revocation bit by index. Ok(false) if no entry.
+    fn set_status_revoked_idx(&self, idx: u64) -> StoreResult<bool>;
+
+    /// Whether an index is revoked (issuer-local authoritative check)
+    fn is_status_revoked_idx(&self, idx: u64) -> StoreResult<bool>;
+
+    /// All revoked indices plus the current max index (bitmap capacity)
+    fn revoked_status_indices(&self) -> StoreResult<(Vec<u64>, u64)>;
 }
 
 /// Trait for session storage

@@ -55,5 +55,40 @@ where
     )
     .await;
 
+    // Status check (core §6.4): for credentials whose status list is OUR
+    // list, the DB is the authoritative source — no fetch, no cache window.
+    // Foreign-issuer lists would need an HTTP fetch + cache; not yet needed
+    // (no federated IdP issues status claims today).
+    if result.status == "okay" {
+        let own_uri = super::warrant::status_list_uri(&state.domain);
+        if let Ok(backed) = browserid_core::BackedAssertion::parse(&req.assertion) {
+            let mut refs: Vec<browserid_core::StatusRef> = backed
+                .certificates()
+                .iter()
+                .filter_map(|c| c.status().cloned())
+                .collect();
+            if let Some(w) = backed.warrant() {
+                if let Some(r) = w.status() {
+                    refs.push(r.clone());
+                }
+            }
+            for r in refs {
+                if r.uri == own_uri {
+                    match state.user_store.is_status_revoked_idx(r.idx) {
+                        Ok(true) => {
+                            return Json(VerifyResponse(VerificationResult::failure(
+                                "Credential revoked (status list)".to_string(),
+                            )));
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            tracing::warn!("status check failed: {e}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Json(VerifyResponse(result))
 }

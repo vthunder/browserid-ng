@@ -6,6 +6,7 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::status::StatusRef;
 use crate::{Error, KeyPair, PublicKey, Result};
 
 /// Claim-level `typ` of an agent certificate (spec §5.1). A plain user
@@ -82,6 +83,12 @@ pub struct CertificateClaims {
     /// Agent attribution block — present iff `typ` is [`TYP_AGENT_CERT`]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentClaims>,
+
+    /// Fast-revocation hook (core §6.4): where this credential's status bit
+    /// lives. Issuers allocate one index per *identity*, so revoking an
+    /// identity kills every outstanding cert for it at once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<StatusRef>,
 }
 
 /// An identity certificate binding a public key to an email address
@@ -109,6 +116,18 @@ impl Certificate {
         validity: Duration,
         issuer_key: &KeyPair,
     ) -> Result<Self> {
+        Self::create_with_status(issuer, email, user_public_key, validity, issuer_key, None)
+    }
+
+    /// [`Certificate::create`] with a status-list reference (core §6.4)
+    pub fn create_with_status(
+        issuer: &str,
+        email: &str,
+        user_public_key: &PublicKey,
+        validity: Duration,
+        issuer_key: &KeyPair,
+        status: Option<StatusRef>,
+    ) -> Result<Self> {
         let now = Utc::now();
         let exp = now + validity;
 
@@ -120,6 +139,7 @@ impl Certificate {
             public_key: user_public_key.clone(),
             principal: Principal::email(email),
             agent: None,
+            status,
         };
 
         let encoded = Self::encode_and_sign(&claims, issuer_key)?;
@@ -139,6 +159,21 @@ impl Certificate {
         validity: Duration,
         issuer_key: &KeyPair,
     ) -> Result<Self> {
+        Self::create_agent_with_status(
+            issuer, agent_email, parent, agent_public_key, validity, issuer_key, None,
+        )
+    }
+
+    /// [`Certificate::create_agent`] with a status-list reference (core §6.4)
+    pub fn create_agent_with_status(
+        issuer: &str,
+        agent_email: &str,
+        parent: &str,
+        agent_public_key: &PublicKey,
+        validity: Duration,
+        issuer_key: &KeyPair,
+        status: Option<StatusRef>,
+    ) -> Result<Self> {
         let now = Utc::now();
         let claims = CertificateClaims {
             typ: Some(TYP_AGENT_CERT.to_string()),
@@ -150,11 +185,17 @@ impl Certificate {
             agent: Some(AgentClaims {
                 parent: parent.to_string(),
             }),
+            status,
         };
 
         let encoded = Self::encode_and_sign(&claims, issuer_key)?;
 
         Ok(Self { encoded, claims })
+    }
+
+    /// The status-list reference, if this credential carries one
+    pub fn status(&self) -> Option<&StatusRef> {
+        self.claims.status.as_ref()
     }
 
     /// Parse a certificate from its encoded form (does not verify signature).

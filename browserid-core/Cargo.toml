@@ -15,6 +15,8 @@ serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
+# Status list compression (core §6.4, IETF token-status-list shape)
+flate2 = "1"
 
 [dev-dependencies]
 anyhow.workspace = true

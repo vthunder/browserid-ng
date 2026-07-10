@@ -10,7 +10,7 @@ mod reset;
 mod session;
 mod test;
 mod verify;
-mod warrant;
+pub(crate) mod warrant;
 mod well_known;
 
 use std::sync::Arc;
@@ -89,6 +89,10 @@ where
         .route("/wsapi/warrants", get(warrant::list_warrants))
         .route("/wsapi/register_warrant", post(warrant::register_warrant))
         .route("/wsapi/forget_warrant", post(warrant::forget_warrant))
+        .route("/wsapi/revoke_warrant", post(warrant::revoke_warrant))
+        .route("/wsapi/allocate_warrant_status", post(warrant::allocate_warrant_status))
+        // Signed revocation status list (core §6.4)
+        .route("/.well-known/browserid-status", get(warrant::status_list))
         .route("/wsapi/account_cancel", post(account::account_cancel))
         .route("/wsapi/stage_reset", post(reset::stage_reset))
         .route("/wsapi/complete_reset", post(reset::complete_reset))

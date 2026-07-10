@@ -36,7 +36,8 @@
   identities — signing in to apps and services on your behalf — without a browser.
   You authorize it here by signing a short delegation with your identity's own key
   (held in this browser); the program keeps a private key, and browser­id vouches for
-  each use under your policy. Revoke any time; agents stop working within a day.</p>
+  each use under your policy. Revoke any time — agents stop working within minutes at
+  services that check revocation, and within a day everywhere else.</p>
 
   <div id="auth-gate" class="card"><p>Checking your session…</p></div>
 
@@ -218,6 +219,16 @@ $('w-create').onclick = async () => {
   }
   status.className = 'muted'; status.textContent = 'Signing…';
   try {
+    // Status index first (stable per grant), so this warrant is revocable.
+    let statusRef = null;
+    try {
+      const alloc = await api('/wsapi/allocate_warrant_status', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ csrf, agent_email: agentEmail, audience }),
+      });
+      statusRef = { uri: alloc.uri, idx: alloc.idx };
+    } catch (e) { console.warn('status allocation:', e.message); }
+
     const userKey = window.jwcrypto.loadSecretKeyFromObject(id.priv);
     const now = Math.floor(Date.now() / 1000);
     const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
@@ -231,6 +242,7 @@ $('w-create').onclick = async () => {
       exp: now + 90 * 24 * 3600,
     };
     if (scopes.length) claims.scopes = scopes;
+    if (statusRef) claims.status = statusRef;
     const payload = b64urlJson(claims);
     const sig = await sign(userKey, `${header}.${payload}`);
     const warrantJws = `${header}.${payload}.${sig}`;

@@ -10,9 +10,7 @@
 > [`browserid-ng-divergence-analysis.md`](./browserid-ng-divergence-analysis.md).
 >
 > Everything described here is implemented and deployed, except **§4.2 (optional
-> host certificates)**, a planned extension (bean `browserid-ng-dff5`), and the
-> **certificate `typ`/`status` rules (§4.1, §6.2, §6.4)** added for the agent
-> module's v0.4 (epic `browserid-ng-gsnm`).
+> host certificates)**, a planned extension (bean `browserid-ng-dff5`).
 >
 > Layered on this core: [agent provisioning & grant exchange](./agent-provisioning-and-grant-api.md)
 > (this repo), and SBO on-chain attribution (in the **sbo** repo, built on §6.3).
@@ -227,9 +225,11 @@ identity rooting and trust anchors on this primitive.
 
 ### 6.4 Certificate status (fast revocation)
 
-> **Planned extension — not yet implemented** (bean `browserid-ng-egr7`; design:
-> `docs/plans/2026-07-10-agent-identity-v3-and-gtm-plan.md` §5). This section
-> specifies the target.
+> **Implemented** (bean `browserid-ng-egr7`): the broker allocates indices,
+> publishes `/.well-known/browserid-status`, and checks its own credentials
+> authoritatively at `/verify`; `browserid-rp` ships a cached checker
+> (`StatusCache`). Federated IdPs adopt it by allocating indices at issuance
+> and publishing their own list.
 
 Certificates are offline, self-contained credentials, so absent anything else
 a certificate is valid until `exp` — revocation latency equals the TTL. For
@@ -240,9 +240,14 @@ sub-TTL revocation, a certificate MAY carry:
 ```
 
 - `uri` names a **signed status list** published by the issuing IdP; `idx` is
-  the certificate's position in it. The list format follows the **IETF OAuth
-  Token Status List** mechanism (a compact, issuer-signed bitmap) rather than
-  a bespoke format.
+  the credential's position in it. Issuers allocate **one index per
+  identity** (stable across re-mints, so one bit kills every outstanding
+  certificate for that identity) and, for the agent module, **one per
+  warrant grant** (stable across reissues). The list format follows the
+  **IETF OAuth Token Status List** mechanism in shape — 1 bit per entry,
+  LSB-first, zlib-compressed, base64url — carried in this protocol's usual
+  claim-level-`typ` JWS (`browserid-status-list-v1`, claims `iss`/`sub` (the
+  list URI)/`iat`/`ttl`/`status_list{bits,lst}`).
 - Verifiers SHOULD fetch and cache the list (reference cache: 5 minutes) and
   treat a set bit as **revoked → reject**. Fetching the whole list reveals
   nothing about which subject is being checked (no OCSP-style privacy leak).

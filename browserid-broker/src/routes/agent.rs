@@ -280,9 +280,40 @@ where
     if session.csrf_token != req.csrf {
         return Err(BrokerError::InvalidCsrf);
     }
+    // Look the cert up first (list is small) so we can also flip status bits
+    // for the agent identities it covers — "revoke the key" should mean the
+    // agents stop working in minutes, not within a cert TTL.
+    let cert_rec = state
+        .user_store
+        .list_provisioning_certs(session.user_id)?
+        .into_iter()
+        .find(|c| c.id == req.id);
     state
         .user_store
         .revoke_provisioning_cert(session.user_id, req.id)?;
+    if let Some(cert_rec) = cert_rec {
+        let constraint = cert_rec
+            .bundle
+            .split_once('~')
+            .and_then(|(_, p)| ProvisioningCert::parse(p).ok())
+            .map(|p| p.constraint().clone())
+            .unwrap_or_default();
+        for email in state.user_store.list_emails(session.user_id)? {
+            if email.email_type != EmailType::Agent {
+                continue;
+            }
+            if email.parent_email.as_deref() != Some(cert_rec.delegator_email.as_str()) {
+                continue;
+            }
+            let local = email.email.split('@').next().unwrap_or_default();
+            if constraint.authorizes(local) {
+                state
+                    .user_store
+                    .set_status_revoked("identity", &email.email.to_lowercase())?;
+                tracing::info!(email = %email.email, "status bit set (key revoked)");
+            }
+        }
+    }
     Ok(Json(SuccessResponse { success: true }))
 }
 
@@ -471,6 +502,7 @@ where
     let cert = issue_certificate(
         &state.domain,
         &state.keypair,
+        state.user_store.as_ref(),
         &record,
         &agent_pubkey_json(agent_pub),
         ephemeral,
@@ -659,6 +691,11 @@ where
         .ok_or(BrokerError::EmailNotFound)?;
 
     state.user_store.unverify_email(&record.email)?;
+    // Status bit (egr7): outstanding certs for this identity die at
+    // status-checking verifiers within one cache window, not one TTL.
+    state
+        .user_store
+        .set_status_revoked("identity", &record.email.to_lowercase())?;
     tracing::info!(email = %record.email, "revoked agent identity (delegation chain)");
     Ok(Json(SuccessResponse { success: true }))
 }

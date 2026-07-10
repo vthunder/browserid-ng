@@ -53,6 +53,7 @@ const sign = (key, msg) => new Promise((res, rej) =>
   key.sign(msg, (err, sig) => err ? rej(err) : res(sig)));
 
 let csrf = null;
+let statusUri = null;
 // Deep-linked code from /consent/<code>, if any.
 const linkedCode = location.pathname.match(/^\/consent\/(.+)$/)?.[1] || null;
 
@@ -108,8 +109,9 @@ async function freshIdentity(email) {
 }
 
 
-/// Sign the §5.2 warrant with the delegator's identity key.
-async function signWarrant(id, agentEmail, audience, scopes) {
+/// Sign the §5.2 warrant with the delegator's identity key. `status`
+/// ({uri, idx}, broker-allocated) makes this single grant revocable.
+async function signWarrant(id, agentEmail, audience, scopes, status) {
   const userKey = window.jwcrypto.loadSecretKeyFromObject(id.priv);
   const now = Math.floor(Date.now() / 1000);
   const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
@@ -123,6 +125,7 @@ async function signWarrant(id, agentEmail, audience, scopes) {
     exp: now + 90 * 24 * 3600,
   };
   if (scopes && scopes.length) claims.scopes = scopes;
+  if (status) claims.status = status;
   const payload = b64urlJson(claims);
   const sig = await sign(userKey, `${header}.${payload}`);
   return `${header}.${payload}.${sig}`;
@@ -187,7 +190,9 @@ async function resolve(r, approve) {
       // (jipx) — reviewable later on /account, from any browser.
       warrants = [];
       for (const g of (r.grants || [])) {
-        warrants.push(await signWarrant(id, r.agent_email, g.audience, g.scopes));
+        const status = (g.status_idx != null && statusUri)
+          ? { uri: statusUri, idx: g.status_idx } : null;
+        warrants.push(await signWarrant(id, r.agent_email, g.audience, g.scopes, status));
       }
     }
     await api('/wsapi/warrant_respond', {
@@ -219,8 +224,9 @@ async function boot() {
   }
   csrf = ctx.csrf_token;
   $('auth-gate').hidden = true;
-  const { requests } = await api('/wsapi/warrant_requests');
-  render(requests);
+  const resp = await api('/wsapi/warrant_requests');
+  statusUri = resp.status_uri || null;
+  render(resp.requests);
 }
 
 boot().catch(e => { $('auth-gate').innerHTML = `<p class="err">Error: ${escapeHtml(e.message)}</p>`; });

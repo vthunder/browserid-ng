@@ -1,11 +1,11 @@
 ---
 # browserid-ng-egr7
 title: Credential revocation — agent credentials and identities in general
-status: todo
+status: in-progress
 type: feature
 priority: high
 created_at: 2026-07-10T08:09:05Z
-updated_at: 2026-07-10T15:34:37Z
+updated_at: 2026-07-10T19:32:59Z
 parent: browserid-ng-gsnm
 ---
 

@@ -160,6 +160,10 @@ pub struct WarrantGrantItem {
     pub audience: String,
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// Status index allocated for this grant (egr7) — the consent page
+    /// embeds it in the warrant it signs
+    #[serde(default)]
+    pub status_idx: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +213,8 @@ pub struct WarrantRecord {
     pub scopes: Vec<String>,
     /// The signed warrant JWS
     pub warrant: String,
+    /// The warrant's status index (from its `status` claim), when it has one
+    pub status_idx: Option<u64>,
     pub signed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }

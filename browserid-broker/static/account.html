@@ -130,8 +130,9 @@
       <h2 id="d-email" style="word-break:break-all"></h2>
       <p class="kv">Acts for <b id="d-parent"></b></p>
       <p class="sub">Every warrant on record for this agent — approved on any browser's
-        consent page or signed manually. To cut this agent off everywhere, revoke its
-        <a href="/agents">agent key</a> — it stops working within a day.</p>
+        consent page or signed manually. <strong>Revoke</strong> kills a single grant
+        within minutes at services that check revocation. To cut this agent off
+        everywhere, revoke its <a href="/agents">agent key</a>.</p>
       <div id="d-warrants"></div>
       <p class="status" id="d-status"></p>
     </div>
@@ -313,7 +314,9 @@ function renderDetailWarrants(agentEmail) {
           ${exp ? (exp < now ? 'expired' : 'until ' + new Date(exp).toLocaleDateString()) : ''}</span><br>
         <button class="small w-copy" data-i="${w.id}">Copy</button>
         <button class="small w-reissue" data-i="${w.id}">Reissue</button>
-        <button class="small w-forget" data-i="${w.id}">Forget</button>
+        ${w.status_idx != null
+          ? `<button class="small w-revoke" data-i="${w.id}" style="color:#c53030">Revoke</button>`
+          : `<button class="small w-forget" data-i="${w.id}">Forget</button>`}
       </td>
     </tr>`;
   }).join('') + '</table>';
@@ -333,11 +336,30 @@ function renderDetailWarrants(agentEmail) {
         await refreshWarrants();
         renderDetailWarrants(agentEmail);
         status.className = 'status muted';
-        status.textContent = 'Removed from the registry. The copy the agent holds stays ' +
-          'valid until it expires — revoke the agent key to cut it off.';
+        status.textContent = 'Removed from the registry. This warrant predates revocation ' +
+          'support, so the copy the agent holds stays valid until it expires — revoke the ' +
+          'agent key to cut it off.';
       } catch (e) {
         status.className = 'status err';
         status.textContent = 'Forget failed: ' + e.message;
+      }
+    };
+  }
+  for (const b of $('d-warrants').querySelectorAll('.w-revoke')) {
+    b.onclick = async () => {
+      const status = $('d-status');
+      const w = byId[b.dataset.i];
+      if (!confirm(`Revoke this agent's access to ${w.audience}? It stops working there within minutes at services that check revocation.`)) return;
+      try {
+        await post('/wsapi/revoke_warrant', { csrf: account.csrf, id: Number(b.dataset.i) });
+        await refreshWarrants();
+        renderDetailWarrants(agentEmail);
+        status.className = 'status ok';
+        status.textContent = `Revoked — ${w.audience} rejects this grant within minutes ` +
+          '(services that skip revocation checks honor it until it expires).';
+      } catch (e) {
+        status.className = 'status err';
+        status.textContent = 'Revoke failed: ' + e.message;
       }
     };
   }
@@ -352,6 +374,13 @@ function renderDetailWarrants(agentEmail) {
         return;
       }
       try {
+        // Status index (stable per grant) so the reissue stays revocable.
+        let statusRef = null;
+        try {
+          const alloc = await post('/wsapi/allocate_warrant_status',
+            { csrf: account.csrf, agent_email: w.agent_email, audience: w.audience });
+          statusRef = { uri: alloc.uri, idx: alloc.idx };
+        } catch {}
         const nowS = Math.floor(Date.now() / 1000);
         const claims = {
           typ: 'browserid-agent-warrant-v1',
@@ -359,6 +388,7 @@ function renderDetailWarrants(agentEmail) {
           'parent-cert': id.cert, iat: nowS, exp: nowS + 90 * 24 * 3600,
         };
         if ((w.scopes || []).length) claims.scopes = w.scopes;
+        if (statusRef) claims.status = statusRef;
         const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
         const payload = b64urlJson(claims);
         const sig = await sign(window.jwcrypto.loadSecretKeyFromObject(id.priv), `${header}.${payload}`);

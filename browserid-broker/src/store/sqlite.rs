@@ -14,7 +14,7 @@ use super::{
 use crate::error::BrokerError;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 8;
+const SCHEMA_VERSION: i32 = 9;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -85,6 +85,9 @@ impl SqliteStore {
             }
             if current_version < 8 {
                 Self::migrate_v8(conn)?;
+            }
+            if current_version < 9 {
+                Self::migrate_v9(conn)?;
             }
 
             // Update schema version
@@ -323,6 +326,27 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v9(conn: &Connection) -> Result<(), BrokerError> {
+        // Status entries (egr7): the revocation bitmap's index space. One
+        // stable index per (kind, subject) — identity emails and warrant
+        // grants — so a single bit covers every outstanding credential for
+        // its subject. Also: warrants learn their status index.
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS status_entries (
+                idx INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                revoked_at TEXT,
+                UNIQUE(kind, subject)
+            );
+            ALTER TABLE warrants ADD COLUMN status_idx INTEGER;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → WarrantRecord mapping (jipx registry)
@@ -335,6 +359,7 @@ fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantR
     let id: i64 = row.get(0)?;
     let user_id: i64 = row.get(1)?;
     let scopes_json: String = row.get(5)?;
+    let status_idx: Option<i64> = row.get(9)?;
     Ok(WarrantRecord {
         id: id as u64,
         user_id: UserId(user_id as u64),
@@ -343,13 +368,14 @@ fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantR
         audience: row.get(4)?,
         scopes: serde_json::from_str(&scopes_json).unwrap_or_default(),
         warrant: row.get(6)?,
+        status_idx: status_idx.map(|i| i as u64),
         signed_at: parse_ts(row.get(7)?),
         expires_at: parse_ts(row.get(8)?),
     })
 }
 
 const WARRANT_COLUMNS: &str =
-    "id, user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at";
+    "id, user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at, status_idx";
 
 // Row → WarrantRequestRecord mapping
 fn warrant_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantRequestRecord> {
@@ -1111,14 +1137,15 @@ impl UserStore for SqliteStore {
     fn upsert_warrant(&self, record: WarrantRecord) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO warrants (user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO warrants (user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at, status_idx)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(user_id, agent_email, audience) DO UPDATE SET
                delegator_email = excluded.delegator_email,
                scopes = excluded.scopes,
                warrant = excluded.warrant,
                signed_at = excluded.signed_at,
-               expires_at = excluded.expires_at",
+               expires_at = excluded.expires_at,
+               status_idx = excluded.status_idx",
             params![
                 record.user_id.0 as i64,
                 record.delegator_email,
@@ -1128,6 +1155,7 @@ impl UserStore for SqliteStore {
                 record.warrant,
                 record.signed_at.to_rfc3339(),
                 record.expires_at.to_rfc3339(),
+                record.status_idx.map(|i| i as i64),
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -1161,6 +1189,77 @@ impl UserStore for SqliteStore {
             return Err(BrokerError::WarrantRequestNotFound);
         }
         Ok(())
+    }
+
+    fn get_or_allocate_status(&self, kind: &str, subject: &str) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO status_entries (kind, subject) VALUES (?1, ?2)",
+            params![kind, subject],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let idx: i64 = conn
+            .query_row(
+                "SELECT idx FROM status_entries WHERE kind = ?1 AND subject = ?2",
+                params![kind, subject],
+                |r| r.get(0),
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(idx as u64)
+    }
+
+    fn set_status_revoked(&self, kind: &str, subject: &str) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1) WHERE kind = ?2 AND subject = ?3",
+                params![Utc::now().to_rfc3339(), kind, subject],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows > 0)
+    }
+
+    fn set_status_revoked_idx(&self, idx: u64) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1) WHERE idx = ?2",
+                params![Utc::now().to_rfc3339(), idx as i64],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows > 0)
+    }
+
+    fn is_status_revoked_idx(&self, idx: u64) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let revoked: Option<Option<String>> = conn
+            .query_row(
+                "SELECT revoked_at FROM status_entries WHERE idx = ?1",
+                params![idx as i64],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(matches!(revoked, Some(Some(_))))
+    }
+
+    fn revoked_status_indices(&self) -> StoreResult<(Vec<u64>, u64)> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT idx FROM status_entries WHERE revoked_at IS NOT NULL")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let revoked = stmt
+            .query_map([], |r| r.get::<_, i64>(0))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .into_iter()
+            .map(|i| i as u64)
+            .collect();
+        let max: i64 = conn
+            .query_row("SELECT COALESCE(MAX(idx), 0) FROM status_entries", [], |r| r.get(0))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok((revoked, max as u64))
     }
 
     fn touch_provisioning_cert(&self, cert_id: u64) -> StoreResult<()> {
@@ -1425,6 +1524,26 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn delete_warrant(&self, user_id: UserId, warrant_id: u64) -> StoreResult<()> {
         (**self).delete_warrant(user_id, warrant_id)
+    }
+
+    fn get_or_allocate_status(&self, kind: &str, subject: &str) -> StoreResult<u64> {
+        (**self).get_or_allocate_status(kind, subject)
+    }
+
+    fn set_status_revoked(&self, kind: &str, subject: &str) -> StoreResult<bool> {
+        (**self).set_status_revoked(kind, subject)
+    }
+
+    fn set_status_revoked_idx(&self, idx: u64) -> StoreResult<bool> {
+        (**self).set_status_revoked_idx(idx)
+    }
+
+    fn is_status_revoked_idx(&self, idx: u64) -> StoreResult<bool> {
+        (**self).is_status_revoked_idx(idx)
+    }
+
+    fn revoked_status_indices(&self) -> StoreResult<(Vec<u64>, u64)> {
+        (**self).revoked_status_indices()
     }
 }
 

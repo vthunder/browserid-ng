@@ -50,7 +50,8 @@ use rand::RngCore;
 
 use browserid_core::rp_auth::{TokenAgent, TokenErrorResponse, GRANT_TYPE_ASSERTION};
 use browserid_core::{
-    AgentAttribution, BackedAssertion, PublicKey, RpChallenge, TokenRequest, TokenResponse,
+    AgentAttribution, BackedAssertion, PublicKey, RpChallenge, StatusListToken, StatusRef,
+    TokenRequest, TokenResponse,
 };
 
 pub use browserid_core::rp_auth;
@@ -119,6 +120,9 @@ pub struct Verifier {
     /// The RP's own scope vocabulary — advertised in the challenge, and the
     /// upper bound on what an agent token is granted
     scopes: Vec<String>,
+    /// Revocation status cache (core §6.4); when set, presented credentials
+    /// carrying `status` claims are checked against it
+    status_cache: Option<std::sync::Arc<StatusCache>>,
 }
 
 impl Verifier {
@@ -129,7 +133,16 @@ impl Verifier {
             audience: audience.into(),
             issuer_keys: HashMap::new(),
             scopes: Vec::new(),
+            status_cache: None,
         }
+    }
+
+    /// Check presented credentials against a revocation status cache
+    /// (core §6.4). Refresh the cache out of band (`StatusCache::refresh`);
+    /// verification itself stays synchronous.
+    pub fn with_status_cache(mut self, cache: std::sync::Arc<StatusCache>) -> Self {
+        self.status_cache = Some(cache);
+        self
     }
 
     /// Declare the RP's scope vocabulary (spec §7.2). Advertised in the
@@ -211,6 +224,36 @@ impl Verifier {
             .last()
             .map(|c| c.issuer().to_string())
             .unwrap_or_default();
+
+        // Revocation status (core §6.4): revoked → reject; unknown/stale is
+        // policy — fail-open by default (degrades to TTL semantics),
+        // fail-closed when the cache says so.
+        if let Some(cache) = &self.status_cache {
+            let mut refs: Vec<StatusRef> = backed
+                .certificates()
+                .iter()
+                .filter_map(|c| c.status().cloned())
+                .collect();
+            if let Some(r) = backed.warrant().and_then(|w| w.status().cloned()) {
+                refs.push(r);
+            }
+            for r in &refs {
+                match cache.check(r) {
+                    StatusVerdict::Revoked => {
+                        return Err(ExchangeError::InvalidAssertion(
+                            "credential revoked (status list)".into(),
+                        ));
+                    }
+                    StatusVerdict::Valid => {}
+                    StatusVerdict::Unknown if cache.is_fail_closed() => {
+                        return Err(ExchangeError::InvalidAssertion(
+                            "credential status unavailable (fail-closed policy)".into(),
+                        ));
+                    }
+                    StatusVerdict::Unknown => {}
+                }
+            }
+        }
 
         Ok(VerifiedIdentity {
             email: verified.email,
@@ -385,6 +428,96 @@ pub fn oauth_metadata(issuer: &str, token_endpoint: &str) -> serde_json::Value {
         // Required by RFC 8414 even though the assertion grant never uses it
         "response_types_supported": [],
     })
+}
+
+/// A status-check verdict (core §6.4)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusVerdict {
+    /// The bit is set — the credential is revoked
+    Revoked,
+    /// A fresh list covers this index and the bit is clear
+    Valid,
+    /// No list, a stale list, or a signature/URI mismatch — the check could
+    /// not be made; policy decides (fail-open degrades to TTL semantics)
+    Unknown,
+}
+
+/// A cache of issuer-signed status lists (core §6.4). Refresh out of band —
+/// on a timer, or opportunistically when [`StatusCache::check`] returns
+/// `Unknown` — and verification stays synchronous:
+///
+/// ```no_run
+/// # async fn demo(issuer_key: browserid_core::PublicKey) -> Result<(), browserid_rp::RpError> {
+/// let cache = std::sync::Arc::new(browserid_rp::StatusCache::new());
+/// cache.refresh("https://browserid.me/.well-known/browserid-status", &issuer_key).await?;
+/// // Verifier::new(...).with_status_cache(cache.clone())
+/// # Ok(()) }
+/// ```
+pub struct StatusCache {
+    lists: RwLock<HashMap<String, StatusListToken>>,
+    fail_closed: bool,
+    /// Extra seconds a list stays usable past its advertised `ttl`
+    grace_seconds: i64,
+}
+
+impl Default for StatusCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StatusCache {
+    pub fn new() -> Self {
+        Self {
+            lists: RwLock::new(HashMap::new()),
+            fail_closed: false,
+            // Reference default: a short fail-open grace beyond ttl before
+            // entries go Unknown (then policy applies).
+            grace_seconds: 600,
+        }
+    }
+
+    /// Treat `Unknown` (missing/stale list) as a rejection
+    pub fn fail_closed(mut self) -> Self {
+        self.fail_closed = true;
+        self
+    }
+
+    pub fn is_fail_closed(&self) -> bool {
+        self.fail_closed
+    }
+
+    /// Fetch `uri`, verify the token against `issuer_key` (and that it is
+    /// for `uri`), and cache it.
+    pub async fn refresh(&self, uri: &str, issuer_key: &PublicKey) -> Result<(), RpError> {
+        let body = reqwest::get(uri).await?.error_for_status()?.text().await?;
+        let token = StatusListToken::parse(body.trim())
+            .map_err(|e| RpError::WellKnown(format!("status list: {e}")))?;
+        token
+            .verify(issuer_key, uri)
+            .map_err(|e| RpError::WellKnown(format!("status list: {e}")))?;
+        self.lists.write().unwrap().insert(uri.to_string(), token);
+        Ok(())
+    }
+
+    /// Insert an already-verified token (tests, detached snapshots)
+    pub fn insert(&self, uri: &str, token: StatusListToken) {
+        self.lists.write().unwrap().insert(uri.to_string(), token);
+    }
+
+    pub fn check(&self, r: &StatusRef) -> StatusVerdict {
+        let lists = self.lists.read().unwrap();
+        match lists.get(&r.uri) {
+            Some(token) if token.is_fresh(self.grace_seconds) => {
+                if token.is_revoked(r.idx) {
+                    StatusVerdict::Revoked
+                } else {
+                    StatusVerdict::Valid
+                }
+            }
+            _ => StatusVerdict::Unknown,
+        }
+    }
 }
 
 /// RFC 8414 metadata including the RP's scope vocabulary

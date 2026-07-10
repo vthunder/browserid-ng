@@ -60,4 +60,10 @@ pub enum Error {
 
     #[error("Agent certificate requires a warrant for this audience")]
     WarrantRequired,
+
+    #[error("Invalid status list: {0}")]
+    InvalidStatusList(String),
+
+    #[error("Credential revoked (status list)")]
+    Revoked,
 }

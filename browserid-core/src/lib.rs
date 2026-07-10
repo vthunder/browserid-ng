@@ -13,6 +13,7 @@ pub mod dns;
 pub mod error;
 pub mod provisioning;
 pub mod rp_auth;
+pub mod status;
 pub mod warrant;
 
 pub use keys::{KeyPair, PublicKey};
@@ -25,6 +26,7 @@ pub use provisioning::{
     VerifiedRequest, WarrantGrant, MAX_WARRANT_GRANTS,
 };
 pub use rp_auth::{RpChallenge, TokenRequest, TokenResponse};
+pub use status::{StatusList, StatusListToken, StatusRef, TYP_STATUS_LIST};
 pub use warrant::{Warrant, TYP_AGENT_WARRANT, WARRANT_VALIDITY_DAYS};
 
 /// Result type for browserid-core operations

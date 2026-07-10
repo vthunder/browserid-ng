@@ -1,11 +1,11 @@
 ---
 # browserid-ng-jipx
 title: Broker-side warrant registry — drop the no-server-record rule (§6.4)
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-07-10T18:05:49Z
-updated_at: 2026-07-10T19:13:37Z
+updated_at: 2026-07-10T19:22:08Z
 ---
 
 Design change (vthunder, 2026-07-10): there should be no expectation of privacy *from the broker* — it already mediates logins for broker-rooted identities and serves the key-custody surface, so hiding warrant metadata from it buys little and costs real UX. The broker SHOULD keep a per-identity list of warrants.
@@ -20,3 +20,7 @@ Design change (vthunder, 2026-07-10): there should be no expectation of privacy 
 
 - Landing copy currently doesn't promise registrar-blindness — verify before shipping and adjust the spec's privacy-properties list (§5.2) which does.
 - /account currently ships a localStorage-only warrant log (2026-07-10) — that becomes the offline cache.
+
+## Summary of Changes
+
+Shipped 2026-07-10. Spec §3 + §6.4 revised (registrar MAY/SHOULD retain warrant records; RP-side and federated-registrar properties preserved). Broker: warrants table (v8, upsert on user/agent/audience), persistence at consent approval, GET /wsapi/warrants + register_warrant + forget_warrant. /account agent detail is server-fed (cross-browser); localStorage log removed. Covered by warrant_registry_records_and_forgets e2e. Note: warrants issued before this deploy predate the registry — they appear on next reissue/approval. Per-warrant revocation still gated on egr7.

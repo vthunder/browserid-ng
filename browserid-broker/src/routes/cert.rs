@@ -8,7 +8,7 @@ use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use tower_cookies::Cookies;
 
-use browserid_core::{Certificate, KeyPair, PublicKey};
+use browserid_core::{Certificate, KeyPair, PublicKey, StatusRef};
 
 /// Duration for which a verified email can have certificates reissued without re-verification
 const VERIFICATION_VALIDITY_DAYS: i64 = 90;
@@ -47,9 +47,10 @@ pub struct CertKeyResponse {
 /// authentication and proving the account owns `email_record` — this is the
 /// single code path behind both the browser (`/wsapi/cert_key`) and headless
 /// agent (`/agent/*`) front doors.
-pub(crate) fn issue_certificate(
+pub(crate) fn issue_certificate<U: UserStore>(
     domain: &str,
     keypair: &KeyPair,
+    user_store: &U,
     email_record: &Email,
     pubkey: &PublicKeyJson,
     ephemeral: bool,
@@ -90,6 +91,15 @@ pub(crate) fn issue_certificate(
         Duration::hours(24)
     };
 
+    // Every cert carries a status ref (core §6.4): one stable index per
+    // *identity*, so revoking the identity kills all outstanding re-mints at
+    // once, within a verifier cache window.
+    let status = Some(StatusRef {
+        uri: super::warrant::status_list_uri(domain),
+        idx: user_store
+            .get_or_allocate_status("identity", &email_record.email.to_lowercase())?,
+    });
+
     // Agent identities get an agent certificate (spec §5.1): distinct typ +
     // issuer-set `agent.parent` attribution from the account record. Their
     // credentials are only usable with a user-signed warrant (spec §5.3).
@@ -100,16 +110,24 @@ pub(crate) fn issue_certificate(
                 email_record.email
             ))
         })?;
-        Certificate::create_agent(
+        Certificate::create_agent_with_status(
             domain,
             &email_record.email,
             parent,
             &user_pubkey,
             validity,
             keypair,
+            status,
         )
     } else {
-        Certificate::create(domain, &email_record.email, &user_pubkey, validity, keypair)
+        Certificate::create_with_status(
+            domain,
+            &email_record.email,
+            &user_pubkey,
+            validity,
+            keypair,
+            status,
+        )
     }
     .map_err(|e| BrokerError::Internal(format!("Failed to create certificate: {}", e)))?;
 
@@ -143,6 +161,7 @@ where
     let cert = issue_certificate(
         &state.domain,
         &state.keypair,
+        state.user_store.as_ref(),
         email_record,
         &req.pubkey,
         req.ephemeral,
