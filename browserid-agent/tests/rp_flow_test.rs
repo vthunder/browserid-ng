@@ -21,7 +21,8 @@ use axum::{Json, Router};
 
 use browserid_agent::{AgentError, AgentIdentity};
 use browserid_core::rp_auth::GRANT_TYPE_ASSERTION;
-use browserid_core::TokenRequest;
+use browserid_core::{Certificate, TokenRequest, Warrant};
+use chrono::Duration;
 use browserid_rp::{oauth_metadata, TokenStore, Verifier};
 use common::{make_credential, start_broker};
 use serde_json::{json, Value};
@@ -106,16 +107,38 @@ async fn start_rp(broker_base: &str) -> String {
 #[tokio::test]
 async fn agent_authenticates_to_cold_rp() {
     let (broker, _) = start_broker().await;
-    let credential = make_credential(&broker).await;
+    let (credential, user_kp) = make_credential(&broker).await;
     let rp = start_rp(&broker).await;
 
     let mut agent = AgentIdentity::provision(&credential, Some("worker")).await.unwrap();
+
+    // v0.4: the RP names its own audience in the challenge; the "browser
+    // side" (the delegator's key) signs a warrant for it — the manual
+    // stand-in for the consent flow.
+    let challenge = agent.discover_challenge(&format!("{rp}/data")).await.unwrap();
+    let (u, _) = credential.delegation.split_once('~').unwrap();
+    let parent_cert = Certificate::parse(u).unwrap();
+    let warrant = Warrant::create(
+        &parent_cert,
+        agent.email(),
+        &challenge.audience,
+        None,
+        Duration::days(30),
+        &user_kp,
+    )
+    .unwrap();
+    agent.add_warrant(warrant.encoded()).unwrap();
 
     // Cold hit: discover the challenge, exchange an assertion, get a token
     let grant = agent.token_for(&format!("{rp}/data")).await.unwrap();
     assert_eq!(grant.token_type, "Bearer");
     assert!(grant.access_token.starts_with("bidt_"));
     assert_eq!(grant.email.as_deref(), Some(agent.email()));
+    assert_eq!(
+        grant.agent.as_ref().map(|a| a.parent.as_str()),
+        Some("human@example.com"),
+        "token response carries the attribution"
+    );
 
     // The RP's own bearer token now works like any other
     let body: Value = reqwest::Client::new()
@@ -150,7 +173,7 @@ async fn rp_advertises_oauth_metadata() {
 #[tokio::test]
 async fn no_challenge_and_bad_assertion_are_clean_errors() {
     let (broker, _) = start_broker().await;
-    let credential = make_credential(&broker).await;
+    let (credential, _) = make_credential(&broker).await;
     let rp = start_rp(&broker).await;
 
     let mut agent = AgentIdentity::provision(&credential, None).await.unwrap();

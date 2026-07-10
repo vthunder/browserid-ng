@@ -39,15 +39,16 @@ pub const PROVISIONING_CERT_VALIDITY_DAYS: i64 = 90;
 /// Recommended validity for requests and endorsements (spec: ≤ 10 min)
 pub const REQUEST_VALIDITY_MINUTES: i64 = 10;
 
-fn invalid(what: &str, msg: impl std::fmt::Display) -> Error {
+pub(crate) fn invalid(what: &str, msg: impl std::fmt::Display) -> Error {
     Error::InvalidProvisioning(format!("{what}: {msg}"))
 }
 
 // --------------------------------------------------------------------------
 // Shared minimal JWS (same idiom as certificate.rs: EdDSA, three b64url parts)
+// — pub(crate): warrant.rs signs/verifies the same shape.
 // --------------------------------------------------------------------------
 
-fn jws_sign<C: Serialize>(claims: &C, key: &KeyPair) -> Result<String> {
+pub(crate) fn jws_sign<C: Serialize>(claims: &C, key: &KeyPair) -> Result<String> {
     let header_b64 = URL_SAFE_NO_PAD.encode(r#"{"alg":"EdDSA","typ":"JWT"}"#);
     let claims_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(claims)?);
     let message = format!("{}.{}", header_b64, claims_b64);
@@ -55,7 +56,7 @@ fn jws_sign<C: Serialize>(claims: &C, key: &KeyPair) -> Result<String> {
     Ok(format!("{}.{}", message, sig_b64))
 }
 
-fn jws_decode<C: DeserializeOwned>(encoded: &str, what: &str) -> Result<C> {
+pub(crate) fn jws_decode<C: DeserializeOwned>(encoded: &str, what: &str) -> Result<C> {
     let parts: Vec<&str> = encoded.split('.').collect();
     if parts.len() != 3 {
         return Err(invalid(what, "expected 3 JWT parts"));
@@ -64,7 +65,7 @@ fn jws_decode<C: DeserializeOwned>(encoded: &str, what: &str) -> Result<C> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-fn jws_verify(encoded: &str, key: &PublicKey, what: &str) -> Result<()> {
+pub(crate) fn jws_verify(encoded: &str, key: &PublicKey, what: &str) -> Result<()> {
     let parts: Vec<&str> = encoded.split('.').collect();
     if parts.len() != 3 {
         return Err(invalid(what, "expected 3 JWT parts"));
@@ -74,7 +75,7 @@ fn jws_verify(encoded: &str, key: &PublicKey, what: &str) -> Result<()> {
     key.verify(message.as_bytes(), &signature)
 }
 
-fn expired(exp: i64) -> bool {
+pub(crate) fn expired(exp: i64) -> bool {
     Utc::now().timestamp() > exp
 }
 

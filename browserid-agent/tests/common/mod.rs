@@ -46,9 +46,10 @@ pub async fn start_broker() -> (String, PublicKey) {
 /// Create an account + verified email, get a broker U_cert for a fresh
 /// identity key, sign a P_cert delegating to a new provisioning key, and
 /// register it — returning an `AgentCredential` where broker == idp (the
-/// fallback / broker-rooted case). This mirrors exactly what the browser
-/// key-management page does.
-pub async fn make_credential(base: &str) -> AgentCredential {
+/// fallback / broker-rooted case), plus the user identity keypair (the
+/// "browser side" that signs warrants). This mirrors exactly what the
+/// browser key-management page does.
+pub async fn make_credential(base: &str) -> (AgentCredential, KeyPair) {
     let http = reqwest::Client::new();
     let email = "human@example.com";
 
@@ -149,13 +150,16 @@ pub async fn make_credential(base: &str) -> AgentCredential {
         .unwrap();
     assert_eq!(reg["success"], true, "register failed: {reg}");
 
-    AgentCredential {
-        secret_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(provisioning_kp.secret_bytes()),
-        delegation,
-        broker: base.to_string(),
-        idp: base.to_string(),
-    }
+    (
+        AgentCredential {
+            secret_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(provisioning_kp.secret_bytes()),
+            delegation,
+            broker: base.to_string(),
+            idp: base.to_string(),
+        },
+        user_kp,
+    )
 }
 
 use base64::Engine as _;

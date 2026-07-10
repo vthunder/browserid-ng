@@ -8,6 +8,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, KeyPair, PublicKey, Result};
 
+/// Claim-level `typ` of an agent certificate (spec §5.1). A plain user
+/// certificate carries no claim-level `typ`; a verifier MUST reject any
+/// certificate whose `typ` it does not recognize (core §4.1/§6.2), which is
+/// what makes agent credentials fail-closed at verifiers that predate them.
+pub const TYP_AGENT_CERT: &str = "browserid-agent-cert-v1";
+
+/// The `agent` claims block on an agent certificate: issuer-set attribution.
+/// Presence of this block (with [`TYP_AGENT_CERT`]) is what makes an identity
+/// protocol-visible as an agent. The agent's handle is the local part of the
+/// certificate's `principal.email`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentClaims {
+    /// The delegator this agent acts for — set by the IdP from the verified
+    /// provisioning chain, never by the agent.
+    pub parent: String,
+}
+
 /// Principal identifier in a certificate
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
@@ -40,6 +57,11 @@ impl Principal {
 /// Claims in an identity certificate
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CertificateClaims {
+    /// Claim-level type. Absent on a plain user certificate; [`TYP_AGENT_CERT`]
+    /// on an agent certificate. Any other value is rejected at parse.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typ: Option<String>,
+
     /// Issuer (the domain that signed this certificate)
     pub iss: String,
 
@@ -56,6 +78,10 @@ pub struct CertificateClaims {
 
     /// The principal (email address)
     pub principal: Principal,
+
+    /// Agent attribution block — present iff `typ` is [`TYP_AGENT_CERT`]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentClaims>,
 }
 
 /// An identity certificate binding a public key to an email address
@@ -87,11 +113,13 @@ impl Certificate {
         let exp = now + validity;
 
         let claims = CertificateClaims {
+            typ: None,
             iss: issuer.to_string(),
             exp: exp.timestamp(),
             iat: Some(now.timestamp()),
             public_key: user_public_key.clone(),
             principal: Principal::email(email),
+            agent: None,
         };
 
         let encoded = Self::encode_and_sign(&claims, issuer_key)?;
@@ -99,13 +127,78 @@ impl Certificate {
         Ok(Self { encoded, claims })
     }
 
-    /// Parse a certificate from its encoded form (does not verify signature)
+    /// Create and sign an **agent certificate** (spec §5.1): a user
+    /// certificate carrying `typ` [`TYP_AGENT_CERT`] and an `agent` block
+    /// attributing it to `parent` (the delegator, from the verified
+    /// provisioning chain).
+    pub fn create_agent(
+        issuer: &str,
+        agent_email: &str,
+        parent: &str,
+        agent_public_key: &PublicKey,
+        validity: Duration,
+        issuer_key: &KeyPair,
+    ) -> Result<Self> {
+        let now = Utc::now();
+        let claims = CertificateClaims {
+            typ: Some(TYP_AGENT_CERT.to_string()),
+            iss: issuer.to_string(),
+            exp: (now + validity).timestamp(),
+            iat: Some(now.timestamp()),
+            public_key: agent_public_key.clone(),
+            principal: Principal::email(agent_email),
+            agent: Some(AgentClaims {
+                parent: parent.to_string(),
+            }),
+        };
+
+        let encoded = Self::encode_and_sign(&claims, issuer_key)?;
+
+        Ok(Self { encoded, claims })
+    }
+
+    /// Parse a certificate from its encoded form (does not verify signature).
+    ///
+    /// Fail-closed on type (core §4.1): a plain certificate carries no
+    /// claim-level `typ` and no `agent` block; an agent certificate carries
+    /// both. Any other combination — an unrecognized `typ`, a `typ` without
+    /// its block, or an `agent` block on an untyped certificate — is
+    /// rejected.
     pub fn parse(encoded: &str) -> Result<Self> {
         let claims = Self::decode_claims(encoded)?;
+        match (claims.typ.as_deref(), claims.agent.is_some()) {
+            (None, false) => {}
+            (Some(TYP_AGENT_CERT), true) => {}
+            (Some(TYP_AGENT_CERT), false) => {
+                return Err(Error::InvalidCertificate(
+                    "agent certificate missing its agent block".into(),
+                ));
+            }
+            (Some(typ), _) => {
+                return Err(Error::InvalidCertificate(format!(
+                    "unrecognized certificate typ '{typ}'"
+                )));
+            }
+            (None, true) => {
+                return Err(Error::InvalidCertificate(
+                    "agent block on a certificate without the agent typ".into(),
+                ));
+            }
+        }
         Ok(Self {
             encoded: encoded.to_string(),
             claims,
         })
+    }
+
+    /// Whether this is an agent certificate (`typ` == [`TYP_AGENT_CERT`])
+    pub fn is_agent(&self) -> bool {
+        self.claims.typ.as_deref() == Some(TYP_AGENT_CERT)
+    }
+
+    /// The delegator this agent certificate is attributed to, if any
+    pub fn agent_parent(&self) -> Option<&str> {
+        self.claims.agent.as_ref().map(|a| a.parent.as_str())
     }
 
     /// Verify the certificate signature against a public key
@@ -247,6 +340,95 @@ mod tests {
         parsed.verify(&domain_key.public_key()).unwrap();
 
         assert_eq!(parsed.email(), Some("alice@example.com"));
+    }
+
+    #[test]
+    fn agent_certificate_create_parse_and_accessors() {
+        let domain_key = KeyPair::generate();
+        let agent_key = KeyPair::generate();
+
+        let cert = Certificate::create_agent(
+            "example.com",
+            "researcher@example.com",
+            "alice@example.com",
+            &agent_key.public_key(),
+            Duration::hours(24),
+            &domain_key,
+        )
+        .unwrap();
+
+        assert!(cert.is_agent());
+        assert_eq!(cert.agent_parent(), Some("alice@example.com"));
+        assert_eq!(cert.email(), Some("researcher@example.com"));
+
+        let parsed = Certificate::parse(cert.encoded()).unwrap();
+        parsed.verify(&domain_key.public_key()).unwrap();
+        assert!(parsed.is_agent());
+        assert_eq!(parsed.agent_parent(), Some("alice@example.com"));
+
+        // A plain cert is not an agent.
+        let user_key = KeyPair::generate();
+        let plain = Certificate::create(
+            "example.com",
+            "alice@example.com",
+            &user_key.public_key(),
+            Duration::hours(1),
+            &domain_key,
+        )
+        .unwrap();
+        assert!(!plain.is_agent());
+        assert_eq!(plain.agent_parent(), None);
+    }
+
+    #[test]
+    fn malformed_typ_combinations_rejected() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let domain_key = KeyPair::generate();
+        let user_key = KeyPair::generate();
+        let cert = Certificate::create(
+            "example.com",
+            "alice@example.com",
+            &user_key.public_key(),
+            Duration::hours(1),
+            &domain_key,
+        )
+        .unwrap();
+
+        let requal = |mutate: &dyn Fn(&mut serde_json::Value)| {
+            let mut claims: serde_json::Value = serde_json::from_slice(
+                &URL_SAFE_NO_PAD
+                    .decode(cert.encoded().split('.').nth(1).unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            mutate(&mut claims);
+            format!(
+                "{}.{}.{}",
+                cert.encoded().split('.').next().unwrap(),
+                URL_SAFE_NO_PAD.encode(claims.to_string()),
+                cert.encoded().split('.').nth(2).unwrap()
+            )
+        };
+
+        // Unrecognized typ → rejected (fail-closed for future modules).
+        let e = Certificate::parse(&requal(&|c| c["typ"] = "browserid-host-cert-v1".into()))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("unrecognized certificate typ"), "{e}");
+
+        // Agent typ without the agent block → rejected.
+        let e = Certificate::parse(&requal(&|c| c["typ"] = TYP_AGENT_CERT.into()))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("missing its agent block"), "{e}");
+
+        // Agent block without the typ → rejected.
+        let e = Certificate::parse(&requal(&|c| {
+            c["agent"] = serde_json::json!({"parent": "alice@example.com"})
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("without the agent typ"), "{e}");
     }
 
     #[test]

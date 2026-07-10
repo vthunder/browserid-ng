@@ -95,6 +95,16 @@ impl SupportDocumentFetcher for HttpFetcher {
     }
 }
 
+/// Agent attribution in a verification result (spec §5.3 step 5)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentResult {
+    /// The delegator this agent acts for
+    pub parent: String,
+    /// Scopes the delegator's warrant grants at this audience
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+}
+
 /// Result of assertion verification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationResult {
@@ -113,6 +123,11 @@ pub struct VerificationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires: Option<i64>,
 
+    /// Agent attribution — present iff the presentation was an agent's
+    /// (agent certificate + verified warrant)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentResult>,
+
     /// Error reason (if failed)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -126,8 +141,15 @@ impl VerificationResult {
             email: Some(email),
             issuer: Some(issuer),
             expires: Some(expires),
+            agent: None,
             reason: None,
         }
+    }
+
+    /// Attach agent attribution to a successful result
+    pub fn with_agent(mut self, parent: String, scopes: Vec<String>) -> Self {
+        self.agent = Some(AgentResult { parent, scopes });
+        self
     }
 
     /// Create a failed verification result
@@ -137,6 +159,7 @@ impl VerificationResult {
             email: None,
             issuer: None,
             expires: None,
+            agent: None,
             reason: Some(reason),
         }
     }
@@ -272,6 +295,29 @@ fn verify_signatures_with_doc(
     };
     if let Err(e) = cert.verify(issuer_key) {
         return VerificationResult::failure(format!("Certificate signature invalid: {}", e));
+    }
+
+    // Agent presentation (spec §5.3): the warrant is load-bearing. Parse
+    // already rejects an agent cert without one; verify it against the same
+    // issuer key (delegator and agent share one IdP — identity-domain rule)
+    // and surface the attribution.
+    if cert.is_agent() {
+        let warrant = match backed.warrant() {
+            Some(w) => w,
+            None => {
+                return VerificationResult::failure(
+                    "Agent certificate requires a warrant".to_string(),
+                )
+            }
+        };
+        return match warrant.verify_for(cert, audience, issuer_key) {
+            Ok(scopes) => {
+                let parent = cert.agent_parent().unwrap_or_default().to_string();
+                VerificationResult::success(email.to_string(), issuer.to_string(), expires)
+                    .with_agent(parent, scopes)
+            }
+            Err(e) => VerificationResult::failure(format!("Warrant invalid: {}", e)),
+        };
     }
 
     VerificationResult::success(email.to_string(), issuer.to_string(), expires)

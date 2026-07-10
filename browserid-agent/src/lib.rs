@@ -29,7 +29,7 @@ use browserid_core::provisioning::{ProvisioningRequest, RequestBundle};
 use browserid_core::rp_auth::TokenErrorResponse;
 use browserid_core::{
     Assertion, BackedAssertion, Certificate, KeyPair, ProvisioningCert, RpChallenge, TokenRequest,
-    TokenResponse,
+    TokenResponse, Warrant,
 };
 
 /// Default validity for assertions minted by [`AgentIdentity::assertion_for`]
@@ -61,6 +61,12 @@ pub enum AgentError {
 
     #[error("no BrowserID challenge at {url} (status {status})")]
     NoChallenge { url: String, status: u16 },
+
+    #[error("no warrant for audience {audience} — ask your principal to approve one (spec §6)")]
+    NoWarrant { audience: String },
+
+    #[error("invalid warrant: {0}")]
+    InvalidWarrant(String),
 
     #[error("token exchange refused ({status}): {error}")]
     Exchange { status: u16, error: String },
@@ -143,6 +149,9 @@ pub struct AgentIdentity {
     keypair: KeyPair,
     email: String,
     cert: Certificate,
+    /// User-signed warrants, one per RP audience (spec §5.2). Required to
+    /// present anywhere once the cert is an agent certificate.
+    warrants: std::collections::HashMap<String, Warrant>,
 }
 
 impl std::fmt::Debug for AgentIdentity {
@@ -162,6 +171,9 @@ pub struct StoredIdentity {
     pub secret_key: String,
     pub email: String,
     pub cert: String,
+    /// Encoded warrants (one per audience); absent in pre-v0.4 files
+    #[serde(default)]
+    pub warrants: Vec<String>,
 }
 
 impl AgentIdentity {
@@ -206,7 +218,36 @@ impl AgentIdentity {
             keypair,
             email,
             cert,
+            warrants: std::collections::HashMap::new(),
         })
+    }
+
+    /// Store a user-signed warrant (obtained from the principal via the
+    /// registrar UI or the consent flow). Returns the audience it is for.
+    /// Rejects warrants naming a different agent identity.
+    pub fn add_warrant(&mut self, encoded: &str) -> Result<String> {
+        let warrant = Warrant::parse(encoded)
+            .map_err(|e| AgentError::InvalidWarrant(e.to_string()))?;
+        if warrant.agent() != self.email {
+            return Err(AgentError::InvalidWarrant(format!(
+                "warrant is for '{}', this identity is '{}'",
+                warrant.agent(),
+                self.email
+            )));
+        }
+        let audience = warrant.audience().to_string();
+        self.warrants.insert(audience.clone(), warrant);
+        Ok(audience)
+    }
+
+    /// The warrant held for `audience`, if any
+    pub fn warrant_for(&self, audience: &str) -> Option<&Warrant> {
+        self.warrants.get(audience)
+    }
+
+    /// Audiences this agent currently holds warrants for
+    pub fn warranted_audiences(&self) -> Vec<&str> {
+        self.warrants.keys().map(String::as_str).collect()
     }
 
     pub fn email(&self) -> &str {
@@ -217,9 +258,12 @@ impl AgentIdentity {
         &self.cert
     }
 
-    /// Backed assertion (`cert~assertion`) for `audience`, valid for
+    /// Backed assertion for `audience`, valid for
     /// [`ASSERTION_VALIDITY_MINUTES`]. Signing is local; the cert is re-minted
-    /// (endorse→mint) first if stale.
+    /// (endorse→mint) first if stale. When the cert is an agent certificate
+    /// (spec §5.1), the presentation is `agent_cert~warrant~assertion` — a
+    /// user-signed warrant for `audience` must be held ([`Self::add_warrant`])
+    /// or this fails with [`AgentError::NoWarrant`].
     pub async fn assertion_for(&mut self, audience: &str) -> Result<String> {
         self.ensure_fresh_cert().await?;
         let assertion = Assertion::create(
@@ -227,7 +271,14 @@ impl AgentIdentity {
             Duration::minutes(ASSERTION_VALIDITY_MINUTES),
             &self.keypair,
         )?;
-        Ok(BackedAssertion::new(self.cert.clone(), assertion).encode())
+        if self.cert.is_agent() {
+            let warrant = self.warrants.get(audience).ok_or_else(|| {
+                AgentError::NoWarrant { audience: audience.to_string() }
+            })?;
+            Ok(BackedAssertion::new_agent(self.cert.clone(), warrant.clone(), assertion).encode())
+        } else {
+            Ok(BackedAssertion::new(self.cert.clone(), assertion).encode())
+        }
     }
 
     /// Sign arbitrary bytes with the certified agent key — the typed-payload
@@ -304,13 +355,7 @@ impl AgentIdentity {
     }
 
     pub async fn exchange_for_token(&mut self, challenge: &RpChallenge) -> Result<TokenResponse> {
-        self.ensure_fresh_cert().await?;
-        let assertion = Assertion::create(
-            &challenge.audience,
-            Duration::minutes(ASSERTION_VALIDITY_MINUTES),
-            &self.keypair,
-        )?;
-        let backed = BackedAssertion::new(self.cert.clone(), assertion).encode();
+        let backed = self.assertion_for(&challenge.audience).await?;
 
         let response = self
             .http
@@ -347,6 +392,7 @@ impl AgentIdentity {
                 .encode(self.keypair.secret_bytes()),
             email: self.email.clone(),
             cert: self.cert.encoded().to_string(),
+            warrants: self.warrants.values().map(|w| w.encoded().to_string()).collect(),
         }
     }
 
@@ -358,6 +404,12 @@ impl AgentIdentity {
             .map_err(|e| AgentError::InvalidStored(format!("bad secret_key: {e}")))?;
         let keypair = KeyPair::from_seed(&seed)?;
         let cert = Certificate::parse(&stored.cert)?;
+        let mut warrants = std::collections::HashMap::new();
+        for encoded in &stored.warrants {
+            let warrant = Warrant::parse(encoded)
+                .map_err(|e| AgentError::InvalidStored(format!("bad warrant: {e}")))?;
+            warrants.insert(warrant.audience().to_string(), warrant);
+        }
         Ok(Self {
             http: reqwest::Client::new(),
             idp_domain: url_host(&credential.idp).to_string(),
@@ -365,6 +417,7 @@ impl AgentIdentity {
             keypair,
             email: stored.email,
             cert,
+            warrants,
         })
     }
 
@@ -548,6 +601,7 @@ mod tests {
             keypair: agent_kp,
             email: "bot@mingo.place".into(),
             cert,
+            warrants: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&identity.to_stored()).unwrap();
         assert!(json.contains("bot@mingo.place"));
@@ -559,6 +613,74 @@ mod tests {
         )
         .unwrap();
         assert_eq!(restored.email(), "bot@mingo.place");
+    }
+
+    #[test]
+    fn warrants_store_and_persist() {
+        let idp = KeyPair::generate();
+        let user = KeyPair::generate();
+        let agent_kp = KeyPair::generate();
+        let parent_cert = Certificate::create(
+            "mingo.place",
+            "dan@mingo.place",
+            &user.public_key(),
+            Duration::hours(24),
+            &idp,
+        )
+        .unwrap();
+        let cert = Certificate::create_agent(
+            "mingo.place",
+            "bot@mingo.place",
+            "dan@mingo.place",
+            &agent_kp.public_key(),
+            Duration::hours(24),
+            &idp,
+        )
+        .unwrap();
+        let (cred, _) = credential();
+        let mut identity = AgentIdentity {
+            http: reqwest::Client::new(),
+            idp_domain: "mingo.place".into(),
+            credential: cred.clone(),
+            keypair: agent_kp,
+            email: "bot@mingo.place".into(),
+            cert,
+            warrants: std::collections::HashMap::new(),
+        };
+
+        let warrant = Warrant::create(
+            &parent_cert,
+            "bot@mingo.place",
+            "https://api.example.com",
+            Some(vec!["post".into()]),
+            Duration::days(30),
+            &user,
+        )
+        .unwrap();
+        let aud = identity.add_warrant(warrant.encoded()).unwrap();
+        assert_eq!(aud, "https://api.example.com");
+        assert!(identity.warrant_for("https://api.example.com").is_some());
+
+        // A warrant for a different agent is refused.
+        let other = Warrant::create(
+            &parent_cert,
+            "other@mingo.place",
+            "https://api.example.com",
+            None,
+            Duration::days(30),
+            &user,
+        )
+        .unwrap();
+        assert!(identity.add_warrant(other.encoded()).is_err());
+
+        // Warrants survive the store/load roundtrip.
+        let restored = AgentIdentity::from_stored(
+            serde_json::from_str(&serde_json::to_string(&identity.to_stored()).unwrap()).unwrap(),
+            &cred,
+        )
+        .unwrap();
+        assert!(restored.warrant_for("https://api.example.com").is_some());
+        assert_eq!(restored.warranted_audiences().len(), 1);
     }
 
     #[test]

@@ -11,7 +11,7 @@ use axum_test::TestServer;
 use browserid_broker::{routes, AppState, InMemorySessionStore, InMemoryUserStore};
 use browserid_core::provisioning::{Constraint, ProvisioningCert, ProvisioningRequest, RequestBundle};
 use browserid_core::{
-    Assertion, BackedAssertion, Certificate, Endorsement, KeyPair, PublicKey,
+    Assertion, BackedAssertion, Certificate, Endorsement, KeyPair, PublicKey, Warrant,
 };
 use chrono::Duration;
 use common::{create_user, MockEmailSender};
@@ -150,12 +150,35 @@ fn mint_bundle(delegation: &str, provisioning_kp: &KeyPair, name: &str, agent_kp
     .to_string()
 }
 
+/// v0.4 presentation helper: issue a fresh broker U_cert for the delegator
+/// (session-authorized, exactly as the consent page would) and sign a warrant
+/// for `agent_email` at `audience`.
+async fn sign_warrant(
+    server: &TestServer,
+    session: &str,
+    delegator: &str,
+    agent_email: &str,
+    audience: &str,
+) -> Warrant {
+    let warrant_kp = KeyPair::generate();
+    let parent_cert = issue_user_cert(server, session, delegator, &warrant_kp).await;
+    Warrant::create(
+        &parent_cert,
+        agent_email,
+        audience,
+        Some(vec!["post".into()]),
+        Duration::days(30),
+        &warrant_kp,
+    )
+    .unwrap()
+}
+
 /// The flagship round-trip: register a delegation → endorse a mint → mint at
 /// the broker (as target IdP) → sign an assertion locally → verify offline.
 #[tokio::test]
 async fn delegation_mint_assert_verify_roundtrip() {
     let (server, email_sender, broker_pub) = create_agent_server(5);
-    let (delegation, prov_kp, _session) =
+    let (delegation, prov_kp, session) =
         register_agent_key(&server, &email_sender, "human@example.com").await;
 
     let agent_kp = KeyPair::generate();
@@ -170,13 +193,28 @@ async fn delegation_mint_assert_verify_roundtrip() {
     assert_eq!(body["success"], true, "mint failed: {body}");
     assert_eq!(body["email"], "attestor@localhost:3000");
 
-    // Local assertion → offline chain verification against the broker key.
+    // The minted cert is an agent certificate (v0.4): typed + attributed.
     let cert = Certificate::parse(body["cert"].as_str().unwrap()).unwrap();
+    assert!(cert.is_agent());
+    assert_eq!(cert.agent_parent(), Some("human@example.com"));
+
+    // Bare cert~assertion is fail-closed: an agent cert needs a warrant.
     let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &agent_kp).unwrap();
-    let email = BackedAssertion::new(cert, assertion)
+    let bare = format!("{}~{}", cert.encoded(), assertion.encoded());
+    assert!(BackedAssertion::parse(&bare).is_err());
+
+    // With a user-signed warrant, the presentation verifies offline and
+    // carries the attribution.
+    let warrant =
+        sign_warrant(&server, &session, "human@example.com", "attestor@localhost:3000", AUDIENCE)
+            .await;
+    let verified = BackedAssertion::new_agent(cert, warrant, assertion)
         .verify(AUDIENCE, |_| Ok(broker_pub.clone()))
         .unwrap();
-    assert_eq!(email, "attestor@localhost:3000");
+    assert_eq!(verified.email, "attestor@localhost:3000");
+    let attribution = verified.agent.expect("agent attribution");
+    assert_eq!(attribution.parent, "human@example.com");
+    assert_eq!(attribution.scopes, vec!["post"]);
 
     // Attribution recorded: agent → human@example.com.
     let list_req = {
@@ -334,7 +372,7 @@ async fn quota_enforced() {
 #[tokio::test]
 async fn remint_rotated_agent_key() {
     let (server, email_sender, broker_pub) = create_agent_server(5);
-    let (delegation, prov_kp, _s) =
+    let (delegation, prov_kp, session) =
         register_agent_key(&server, &email_sender, "human@example.com").await;
 
     let bundle = mint_bundle(&delegation, &prov_kp, "bot", &KeyPair::generate());
@@ -357,10 +395,13 @@ async fn remint_rotated_agent_key() {
     assert_eq!(body["success"], true);
     let cert = Certificate::parse(body["cert"].as_str().unwrap()).unwrap();
     let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &rotated).unwrap();
-    let email = BackedAssertion::new(cert, assertion)
+    // The warrant binds by identity, so it survives agent-key rotation.
+    let warrant =
+        sign_warrant(&server, &session, "human@example.com", "bot@localhost:3000", AUDIENCE).await;
+    let verified = BackedAssertion::new_agent(cert, warrant, assertion)
         .verify(AUDIENCE, |_| Ok(broker_pub.clone()))
         .unwrap();
-    assert_eq!(email, "bot@localhost:3000");
+    assert_eq!(verified.email, "bot@localhost:3000");
 }
 
 /// Revocation of an identity sticks: re-mint fails, and the name isn't revived.
@@ -492,7 +533,7 @@ async fn constraint_enforced_on_mint() {
 #[tokio::test]
 async fn reserve_then_mint() {
     let (server, email_sender, broker_pub) = create_agent_server(5);
-    let (delegation, prov_kp, _s) = register_agent_key_with(
+    let (delegation, prov_kp, session) = register_agent_key_with(
         &server,
         &email_sender,
         "human@example.com",
@@ -528,10 +569,13 @@ async fn reserve_then_mint() {
     assert_eq!(body["success"], true, "mint of reserved name failed: {body}");
     let cert = Certificate::parse(body["cert"].as_str().unwrap()).unwrap();
     let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &agent_kp).unwrap();
-    let email = BackedAssertion::new(cert, assertion)
+    let warrant =
+        sign_warrant(&server, &session, "human@example.com", "alpha@localhost:3000", AUDIENCE)
+            .await;
+    let verified = BackedAssertion::new_agent(cert, warrant, assertion)
         .verify(AUDIENCE, |_| Ok(broker_pub.clone()))
         .unwrap();
-    assert_eq!(email, "alpha@localhost:3000");
+    assert_eq!(verified.email, "alpha@localhost:3000");
 }
 
 /// Registration rejects an empty (unconstrained) provisioning cert.

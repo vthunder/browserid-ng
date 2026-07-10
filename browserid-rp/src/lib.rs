@@ -3,7 +3,12 @@
 //! The one opt-in an API RP makes to accept agents: verify a browserid
 //! assertion once at a token-exchange endpoint, mint its **own** bearer
 //! token, and keep every other piece of its session machinery unchanged.
-//! The RP learns just "an email" — no delegation-awareness, no agent flag.
+//! The RP learns a verified email — plus, for agent presentations (spec
+//! §5.3, v0.4), the attribution the protocol now carries: which delegator
+//! the agent acts for and which scopes their warrant grants here. Warrant
+//! enforcement is unconditional and fail-closed (it happens inside the core
+//! chain verification — an agent certificate without a warrant for this
+//! audience never verifies).
 //!
 //! Three pieces, composable with any HTTP framework:
 //!
@@ -43,8 +48,10 @@ use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
 
-use browserid_core::rp_auth::{TokenErrorResponse, GRANT_TYPE_ASSERTION};
-use browserid_core::{BackedAssertion, PublicKey, RpChallenge, TokenRequest, TokenResponse};
+use browserid_core::rp_auth::{TokenAgent, TokenErrorResponse, GRANT_TYPE_ASSERTION};
+use browserid_core::{
+    AgentAttribution, BackedAssertion, PublicKey, RpChallenge, TokenRequest, TokenResponse,
+};
 
 pub use browserid_core::rp_auth;
 
@@ -95,6 +102,11 @@ pub struct VerifiedIdentity {
     pub email: String,
     /// Domain that signed the certificate
     pub issuer: String,
+    /// Agent attribution — `Some` iff the presentation was an agent's
+    /// (agent certificate + verified warrant for this audience). `scopes`
+    /// are the warrant's, verbatim; [`exchange`] applies the RP scope
+    /// policy (intersection) when issuing a token.
+    pub agent: Option<AgentAttribution>,
 }
 
 /// Assertion verifier for one RP audience, trusting an explicit set of
@@ -104,6 +116,9 @@ pub struct VerifiedIdentity {
 pub struct Verifier {
     audience: String,
     issuer_keys: HashMap<String, PublicKey>,
+    /// The RP's own scope vocabulary — advertised in the challenge, and the
+    /// upper bound on what an agent token is granted
+    scopes: Vec<String>,
 }
 
 impl Verifier {
@@ -113,7 +128,21 @@ impl Verifier {
         Self {
             audience: audience.into(),
             issuer_keys: HashMap::new(),
+            scopes: Vec::new(),
         }
+    }
+
+    /// Declare the RP's scope vocabulary (spec §7.2). Advertised in the
+    /// challenge; agent tokens are bounded by the intersection of these with
+    /// the warrant's scopes.
+    pub fn with_scopes(mut self, scopes: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.scopes = scopes.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// The RP's declared scope vocabulary
+    pub fn scopes(&self) -> &[String] {
+        &self.scopes
     }
 
     /// Trust `domain` assertions signed by `key` (pinned)
@@ -157,13 +186,15 @@ impl Verifier {
         &self.audience
     }
 
-    /// Verify a backed assertion (`cert~assertion`): audience, expiry,
-    /// signature chain, and issuer trust
+    /// Verify a backed assertion (`cert~assertion`, or the agent form
+    /// `agent_cert~warrant~assertion`): audience, expiry, signature chain,
+    /// issuer trust — and, for agents, the user-signed warrant for this
+    /// audience (fail-closed; enforced inside core verification)
     pub fn verify(&self, backed_assertion: &str) -> Result<VerifiedIdentity, ExchangeError> {
         let backed = BackedAssertion::parse(backed_assertion)
             .map_err(|e| ExchangeError::InvalidAssertion(e.to_string()))?;
 
-        let email = backed
+        let verified = backed
             .verify(&self.audience, |domain| {
                 self.issuer_keys
                     .get(domain)
@@ -181,18 +212,39 @@ impl Verifier {
             .map(|c| c.issuer().to_string())
             .unwrap_or_default();
 
-        Ok(VerifiedIdentity { email, issuer })
+        Ok(VerifiedIdentity {
+            email: verified.email,
+            issuer,
+            agent: verified.agent,
+        })
     }
 
     /// The 401 `WWW-Authenticate` challenge advertising this RP's auth API
+    /// (including its scope vocabulary, if declared)
     pub fn challenge(&self, token_endpoint: impl Into<String>) -> RpChallenge {
-        RpChallenge::new(self.audience.clone(), token_endpoint)
+        let challenge = RpChallenge::new(self.audience.clone(), token_endpoint);
+        if self.scopes.is_empty() {
+            challenge
+        } else {
+            challenge.with_scopes(self.scopes.iter().cloned())
+        }
     }
 }
 
 struct TokenRecord {
     email: String,
+    /// Granted agent attribution (post-intersection scopes); `None` for
+    /// human tokens
+    agent: Option<AgentAttribution>,
     expires_at: DateTime<Utc>,
+}
+
+/// What a bearer token resolves to
+#[derive(Debug, Clone)]
+pub struct TokenGrant {
+    pub email: String,
+    /// Granted agent attribution; `None` for human tokens
+    pub agent: Option<AgentAttribution>,
 }
 
 /// Minimal in-memory bearer-token store: `issue` at the token endpoint,
@@ -211,8 +263,15 @@ impl TokenStore {
         }
     }
 
-    /// Mint a bearer token for a verified email
+    /// Mint a bearer token for a verified email (human presentations)
     pub fn issue(&self, email: &str) -> TokenResponse {
+        self.issue_with(email, None)
+    }
+
+    /// Mint a bearer token, recording granted agent attribution. The token
+    /// is bounded server-side by `agent.scopes` — resolve them via
+    /// [`TokenStore::grant`] in protected handlers.
+    pub fn issue_with(&self, email: &str, agent: Option<AgentAttribution>) -> TokenResponse {
         let mut bytes = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut bytes);
         let token = format!(
@@ -224,6 +283,7 @@ impl TokenStore {
             token.clone(),
             TokenRecord {
                 email: email.to_string(),
+                agent: agent.clone(),
                 expires_at: Utc::now() + self.ttl,
             },
         );
@@ -232,17 +292,30 @@ impl TokenStore {
             token_type: "Bearer".to_string(),
             expires_in: self.ttl.num_seconds(),
             email: Some(email.to_string()),
+            agent: agent.as_ref().map(|a| TokenAgent {
+                parent: a.parent.clone(),
+            }),
+            scopes: agent.map(|a| a.scopes),
         }
     }
 
     /// Resolve a bearer token to its email; `None` if unknown or expired
     pub fn authenticate(&self, token: &str) -> Option<String> {
+        self.grant(token).map(|g| g.email)
+    }
+
+    /// Resolve a bearer token to its full grant (email + agent attribution
+    /// and granted scopes); `None` if unknown or expired
+    pub fn grant(&self, token: &str) -> Option<TokenGrant> {
         let tokens = self.tokens.read().unwrap();
         let record = tokens.get(token)?;
         if record.expires_at < Utc::now() {
             return None;
         }
-        Some(record.email.clone())
+        Some(TokenGrant {
+            email: record.email.clone(),
+            agent: record.agent.clone(),
+        })
     }
 
     /// Revoke a token immediately
@@ -263,6 +336,11 @@ impl TokenStore {
 /// The token-endpoint core: check the grant type, verify the assertion,
 /// issue a token. Wire it to POST `/token` in any framework; on `Err`, serve
 /// `err.to_response()` with HTTP 400.
+///
+/// Agent scope policy (spec §7.3): the issued token is bounded by the
+/// intersection of the warrant's scopes with the RP's declared vocabulary.
+/// A scope-unqualified warrant grants the RP's full declared set
+/// (audience-level authorization) — declare an empty set to grant none.
 pub fn exchange(
     verifier: &Verifier,
     tokens: &TokenStore,
@@ -274,7 +352,25 @@ pub fn exchange(
         ));
     }
     let identity = verifier.verify(&request.assertion)?;
-    Ok(tokens.issue(&identity.email))
+    let granted = identity.agent.map(|a| AgentAttribution {
+        parent: a.parent,
+        scopes: grant_scopes(&a.scopes, verifier.scopes()),
+    });
+    Ok(tokens.issue_with(&identity.email, granted))
+}
+
+/// Intersection of warrant scopes with the RP's declared vocabulary; an
+/// unqualified (empty) warrant scope set grants the full declared set.
+fn grant_scopes(warrant_scopes: &[String], rp_scopes: &[String]) -> Vec<String> {
+    if warrant_scopes.is_empty() {
+        rp_scopes.to_vec()
+    } else {
+        warrant_scopes
+            .iter()
+            .filter(|s| rp_scopes.contains(s))
+            .cloned()
+            .collect()
+    }
 }
 
 /// RFC 8414 authorization-server metadata for out-of-band discovery. Serve
@@ -289,6 +385,17 @@ pub fn oauth_metadata(issuer: &str, token_endpoint: &str) -> serde_json::Value {
         // Required by RFC 8414 even though the assertion grant never uses it
         "response_types_supported": [],
     })
+}
+
+/// RFC 8414 metadata including the RP's scope vocabulary
+pub fn oauth_metadata_with_scopes(
+    issuer: &str,
+    token_endpoint: &str,
+    scopes: &[String],
+) -> serde_json::Value {
+    let mut metadata = oauth_metadata(issuer, token_endpoint);
+    metadata["scopes_supported"] = serde_json::json!(scopes);
+    metadata
 }
 
 #[cfg(test)]
@@ -361,6 +468,123 @@ mod tests {
         let request = TokenRequest::new(backed_assertion(&rogue_kp, AUDIENCE));
         let err = exchange(&verifier, &tokens, &request).unwrap_err();
         assert_eq!(err.oauth_error(), "invalid_grant");
+    }
+
+    // ---- agent presentations (spec §5.3 / §7.3) ----
+
+    fn agent_assertion(
+        issuer_kp: &KeyPair,
+        audience: &str,
+        warrant_audience: &str,
+        warrant_scopes: Option<Vec<String>>,
+        with_warrant: bool,
+    ) -> String {
+        let user_kp = KeyPair::generate();
+        let agent_kp = KeyPair::generate();
+        let parent_cert = Certificate::create(
+            ISSUER,
+            &format!("alice@{ISSUER}"),
+            &user_kp.public_key(),
+            Duration::hours(24),
+            issuer_kp,
+        )
+        .unwrap();
+        let agent_cert = Certificate::create_agent(
+            ISSUER,
+            &format!("bot@{ISSUER}"),
+            &format!("alice@{ISSUER}"),
+            &agent_kp.public_key(),
+            Duration::hours(1),
+            issuer_kp,
+        )
+        .unwrap();
+        let assertion = Assertion::create(audience, Duration::minutes(5), &agent_kp).unwrap();
+        if with_warrant {
+            let warrant = browserid_core::Warrant::create(
+                &parent_cert,
+                &format!("bot@{ISSUER}"),
+                warrant_audience,
+                warrant_scopes,
+                Duration::days(30),
+                &user_kp,
+            )
+            .unwrap();
+            BackedAssertion::new_agent(agent_cert, warrant, assertion).encode()
+        } else {
+            format!("{}~{}", agent_cert.encoded(), assertion.encoded())
+        }
+    }
+
+    #[test]
+    fn agent_exchange_intersects_scopes() {
+        let issuer_kp = KeyPair::generate();
+        let verifier = Verifier::new(AUDIENCE)
+            .trust_issuer(ISSUER, issuer_kp.public_key())
+            .with_scopes(["post", "read", "admin"]);
+        let tokens = TokenStore::new(Duration::hours(1));
+
+        // Warrant grants post+delete; RP offers post+read+admin → token gets post.
+        let request = TokenRequest::new(agent_assertion(
+            &issuer_kp,
+            AUDIENCE,
+            AUDIENCE,
+            Some(vec!["post".into(), "delete".into()]),
+            true,
+        ));
+        let response = exchange(&verifier, &tokens, &request).unwrap();
+        assert_eq!(response.email.as_deref(), Some("bot@agents.example.com"));
+        assert_eq!(
+            response.agent.as_ref().map(|a| a.parent.as_str()),
+            Some("alice@agents.example.com")
+        );
+        assert_eq!(response.scopes, Some(vec!["post".to_string()]));
+
+        // Server-side grant carries the same bound.
+        let grant = tokens.grant(&response.access_token).unwrap();
+        assert_eq!(grant.agent.unwrap().scopes, vec!["post"]);
+
+        // Scope-unqualified warrant → full declared set.
+        let request =
+            TokenRequest::new(agent_assertion(&issuer_kp, AUDIENCE, AUDIENCE, None, true));
+        let response = exchange(&verifier, &tokens, &request).unwrap();
+        assert_eq!(
+            response.scopes,
+            Some(vec!["post".to_string(), "read".to_string(), "admin".to_string()])
+        );
+    }
+
+    #[test]
+    fn agent_without_warrant_rejected() {
+        let issuer_kp = KeyPair::generate();
+        let verifier = Verifier::new(AUDIENCE).trust_issuer(ISSUER, issuer_kp.public_key());
+        let tokens = TokenStore::new(Duration::hours(1));
+
+        // Leaked cert+key without a warrant: fail-closed at parse.
+        let request =
+            TokenRequest::new(agent_assertion(&issuer_kp, AUDIENCE, AUDIENCE, None, false));
+        let err = exchange(&verifier, &tokens, &request).unwrap_err();
+        assert_eq!(err.oauth_error(), "invalid_grant");
+
+        // Warrant for a different audience: rejected even though the
+        // assertion targets us.
+        let request = TokenRequest::new(agent_assertion(
+            &issuer_kp,
+            AUDIENCE,
+            "https://other.example.com",
+            None,
+            true,
+        ));
+        let err = exchange(&verifier, &tokens, &request).unwrap_err();
+        assert_eq!(err.oauth_error(), "invalid_grant");
+    }
+
+    #[test]
+    fn challenge_advertises_scopes() {
+        let verifier = Verifier::new(AUDIENCE).with_scopes(["post", "read"]);
+        let header = verifier.challenge("https://api.example.com/token").to_header_value();
+        assert!(header.contains("scopes=\"post read\""), "{header}");
+        let parsed = browserid_core::RpChallenge::parse(&header).unwrap();
+        assert_eq!(parsed.scopes, vec!["post", "read"]);
     }
 
     #[test]

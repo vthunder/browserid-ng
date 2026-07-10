@@ -54,4 +54,10 @@ pub enum Error {
 
     #[error("Invalid provisioning material: {0}")]
     InvalidProvisioning(String),
+
+    #[error("Invalid warrant: {0}")]
+    InvalidWarrant(String),
+
+    #[error("Agent certificate requires a warrant for this audience")]
+    WarrantRequired,
 }

@@ -38,6 +38,9 @@ pub struct RpChallenge {
     pub audience: String,
     /// Absolute URL of the RP's token-exchange endpoint
     pub token_endpoint: String,
+    /// Scope strings the RP requests, in its own vocabulary (spec §7.2,
+    /// v0.4). Consent pages prefill these; empty = none advertised.
+    pub scopes: Vec<String>,
 }
 
 impl RpChallenge {
@@ -46,11 +49,17 @@ impl RpChallenge {
             realm: None,
             audience: audience.into(),
             token_endpoint: token_endpoint.into(),
+            scopes: Vec::new(),
         }
     }
 
     pub fn with_realm(mut self, realm: impl Into<String>) -> Self {
         self.realm = Some(realm.into());
+        self
+    }
+
+    pub fn with_scopes(mut self, scopes: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.scopes = scopes.into_iter().map(Into::into).collect();
         self
     }
 
@@ -62,6 +71,9 @@ impl RpChallenge {
         }
         parts.push(format!("audience=\"{}\"", self.audience));
         parts.push(format!("token_endpoint=\"{}\"", self.token_endpoint));
+        if !self.scopes.is_empty() {
+            parts.push(format!("scopes=\"{}\"", self.scopes.join(" ")));
+        }
         format!("{} {}", CHALLENGE_SCHEME, parts.join(", "))
     }
 
@@ -78,6 +90,7 @@ impl RpChallenge {
         let mut realm = None;
         let mut audience = None;
         let mut token_endpoint = None;
+        let mut scopes = Vec::new();
 
         for param in split_params(rest) {
             let (key, value) = param.split_once('=')?;
@@ -86,6 +99,7 @@ impl RpChallenge {
                 "realm" => realm = Some(value),
                 "audience" => audience = Some(value),
                 "token_endpoint" => token_endpoint = Some(value),
+                "scopes" => scopes = value.split_whitespace().map(str::to_string).collect(),
                 _ => {} // ignore unknown params (forward compatibility)
             }
         }
@@ -94,6 +108,7 @@ impl RpChallenge {
             realm,
             audience: audience?,
             token_endpoint: token_endpoint?,
+            scopes,
         })
     }
 }
@@ -135,6 +150,13 @@ impl TokenRequest {
     }
 }
 
+/// Agent attribution in a token response (spec §7.3, v0.4)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenAgent {
+    /// The delegator the agent acts for
+    pub parent: String,
+}
+
 /// Successful token-exchange response (OAuth-shaped)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenResponse {
@@ -146,6 +168,13 @@ pub struct TokenResponse {
     /// The verified email — extra response member; RPs may omit it
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// Agent attribution — present iff the presentation was an agent's
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<TokenAgent>,
+    /// Scopes granted to this token (intersection of the warrant's scopes
+    /// with the RP's own) — present only for agent tokens
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
 }
 
 /// OAuth-shaped error response from a token endpoint

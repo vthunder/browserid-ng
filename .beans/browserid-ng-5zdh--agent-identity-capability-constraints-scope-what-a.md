@@ -1,11 +1,11 @@
 ---
 # browserid-ng-5zdh
 title: Agent identity capability constraints — scope what a delegated agent can do
-status: todo
+status: in-progress
 type: feature
 priority: high
 created_at: 2026-07-10T08:09:05Z
-updated_at: 2026-07-10T15:34:37Z
+updated_at: 2026-07-10T16:02:26Z
 parent: browserid-ng-gsnm
 ---
 
@@ -51,7 +51,11 @@ Design converged; canonical write-up: `docs/plans/2026-07-10-agent-identity-v3-a
 ### Todo
 - [x] Spec v0.4: agent claims block + cert typ (core §4, §6.2)
 - [x] Spec v0.4: warrant format + chain framing (agent module — §5, incl. warrant binding by agent identity email with embedded parent-cert)
-- [ ] browserid-core: warrant type, chain parsing, typ enforcement
-- [ ] browserid-rp: fail-closed verification + scope intersection at token endpoint
-- [ ] browserid-agent: warrant storage + presentation
+- [x] browserid-core: warrant type, chain parsing, typ enforcement (warrant.rs; agent typ/block in certificate.rs; warrant-in-chain + VerifiedPresentation in assertion.rs)
+- [x] browserid-rp: fail-closed verification + scope intersection at token endpoint (with_scopes, TokenGrant, challenge scopes param)
+- [x] browserid-agent: warrant storage + presentation (add_warrant, NoWarrant fail-closed, persisted warrants)
 - [ ] Registrar UI: manual warrant creation (MVP fallback; JIT flow is sibling bean)
+
+## Implementation notes (2026-07-10)
+
+Core/broker/rp/agent shipped; all workspace tests green. Broker mints agent certs (typ + parent) via issue_certificate for EmailType::Agent; /verify returns agent{parent,scopes}. **Breaking by design**: once an agent re-mints (≤24h), warrant-less presentations are rejected everywhere — mingo RPs must move to the warrant flow (browserid-rp handles it transparently; agents need add_warrant). Remaining here: registrar UI manual warrant creation. mingo-idp adoption tracked under 1pnf.

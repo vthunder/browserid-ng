@@ -90,8 +90,28 @@ pub(crate) fn issue_certificate(
         Duration::hours(24)
     };
 
-    let cert = Certificate::create(domain, &email_record.email, &user_pubkey, validity, keypair)
-        .map_err(|e| BrokerError::Internal(format!("Failed to create certificate: {}", e)))?;
+    // Agent identities get an agent certificate (spec §5.1): distinct typ +
+    // issuer-set `agent.parent` attribution from the account record. Their
+    // credentials are only usable with a user-signed warrant (spec §5.3).
+    let cert = if email_record.email_type == EmailType::Agent {
+        let parent = email_record.parent_email.as_deref().ok_or_else(|| {
+            BrokerError::Internal(format!(
+                "agent identity {} has no parent_email",
+                email_record.email
+            ))
+        })?;
+        Certificate::create_agent(
+            domain,
+            &email_record.email,
+            parent,
+            &user_pubkey,
+            validity,
+            keypair,
+        )
+    } else {
+        Certificate::create(domain, &email_record.email, &user_pubkey, validity, keypair)
+    }
+    .map_err(|e| BrokerError::Internal(format!("Failed to create certificate: {}", e)))?;
 
     Ok(cert.encoded().to_string())
 }
