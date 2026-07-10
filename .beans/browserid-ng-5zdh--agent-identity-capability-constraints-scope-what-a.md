@@ -1,11 +1,12 @@
 ---
 # browserid-ng-5zdh
 title: Agent identity capability constraints — scope what a delegated agent can do
-status: draft
+status: todo
 type: feature
 priority: high
 created_at: 2026-07-10T08:09:05Z
-updated_at: 2026-07-10T08:09:05Z
+updated_at: 2026-07-10T15:23:38Z
+parent: browserid-ng-gsnm
 ---
 
 ## Problem
@@ -36,3 +37,21 @@ Because assertions are offline and self-contained, **the IdP is not in the loop 
 ## Related
 - Sibling: credential revocation bean (agents + general). cm8z (label derived identities). The delegation-chain provisioning spec: docs/specs/agent-provisioning-and-grant-api.md.
 - Surfaced while building the browserid landing page — the page has been pulled back to claim only isolation until this lands.
+
+## Resolution (2026-07-10) — warrant model
+
+Design converged; canonical write-up: `docs/plans/2026-07-10-agent-identity-v3-and-gtm-plan.md` (§2–3). Supersedes the open questions above.
+
+- **Distinguishability**: IdP-minted agent cert carries `agent: {parent, name}` block; parent disclosure default-on; invisible-agent mode removed entirely. Reverses the v2 "never protocol-visible" rule.
+- **Audience + scopes live in warrants, not the cert**: user's identity key signs one warrant per audience — `{typ: browserid-agent-warrant-v1, agent, aud (exact origin, no wildcards), scopes (opaque RP-vocabulary strings), iat, exp}` — verified via the same `U_cert` signing-time semantics as `P_cert`. Preserves the Persona privacy property structurally: IdP/registrar never see warrants; RP X sees only its own; no artifact ever holds the full audience list (hashing rejected: top-sites brute force).
+- **Fail-closed by construction**: agent certs get their own `typ` (`browserid-agent-cert-v1`; core §6.2 rejects unrecognized typ) and the warrant rides *inside* the tilde chain (`agent_cert~warrant~assertion`) so a verifier cannot skip it. Cert+key leak without warrants is useless everywhere.
+- **Enforcement layers**: warrant `aud` — any verifier; `scopes` — RP token endpoint at grant exchange (§5.3) intersects with its own vocabulary; SDK ships fail-closed defaults.
+- **Rejected for v3**: caveat/attenuation tokens (Biscuit-style), purpose strings in cert, agent-side downscoping (delegation-time-only scoping is policy).
+
+### Todo
+- [ ] Spec v0.4: agent claims block + cert typ (core §4, §6.2)
+- [ ] Spec v0.4: warrant format + chain framing (agent module)
+- [ ] browserid-core: warrant type, chain parsing, typ enforcement
+- [ ] browserid-rp: fail-closed verification + scope intersection at token endpoint
+- [ ] browserid-agent: warrant storage + presentation
+- [ ] Registrar UI: manual warrant creation (MVP fallback; JIT flow is sibling bean)

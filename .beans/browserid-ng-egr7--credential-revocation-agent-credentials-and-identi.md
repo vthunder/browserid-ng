@@ -1,11 +1,12 @@
 ---
 # browserid-ng-egr7
 title: Credential revocation — agent credentials and identities in general
-status: draft
+status: todo
 type: feature
 priority: high
 created_at: 2026-07-10T08:09:05Z
-updated_at: 2026-07-10T08:09:05Z
+updated_at: 2026-07-10T15:23:47Z
+parent: browserid-ng-gsnm
 ---
 
 ## Problem
@@ -37,3 +38,24 @@ Likely answer is a **layered** one: short TTL + delegation-root revocation for a
 
 ## Related
 - Sibling: agent capability-constraints bean. Delegation-chain spec: docs/specs/agent-provisioning-and-grant-api.md. Surfaced while building the browserid landing page.
+
+## Resolution (2026-07-10) — layered stack
+
+Design converged; canonical write-up: `docs/plans/2026-07-10-agent-identity-v3-and-gtm-plan.md` (§5). The "layered" hunch above is confirmed, concretely:
+
+1. **Short TTL floor** (24h / 1h ephemeral) — unchanged. Do NOT shorten TTLs to fake fast revocation: every re-mint is a registrar round trip and short TTLs make the registrar HA-critical.
+2. **Delegation-root revocation** (already shipped): registry revoke starves endorsements → no re-mint. The "kill this agent" primitive.
+3. **Signed status list**: certs carry `status: {uri, index}`; IdP publishes a compact signed bitmap; RPs fetch + cache ~5 min. **Adopt IETF OAuth Token Status List format** — do not invent one. Privacy-good (fetching the list reveals nothing about the subject checked). Soft online dependency: unreachable list → TTL semantics; fail-open/closed is RP policy (SDK default TBD, see open questions).
+4. **User-key compromise**: user certs get status entries too; epoch bump stays the nuclear option.
+5. **Offline/on-chain (sbo)**: detached status-list snapshot with freshness window composes with core §6.3 detached DNSSEC proofs.
+
+Warrants need no separate revocation: they're only meaningful alongside a live agent cert (see sibling 5zdh).
+
+Resulting story: instant for new sign-ins at status-checking RPs; ≤ cache window for live sessions there; ≤ TTL at naive RPs.
+
+### Todo
+- [ ] Spec v0.4: status claim in certs + list format/endpoint (IETF token-status-list)
+- [ ] Broker/IdP: status list publication + revocation wiring to registry switch
+- [ ] browserid-rp: status check with cache, fail-open/closed policy knob
+- [ ] Decide SDK default: fail-open grace window vs hard fail-closed
+- [ ] sbo path: detached snapshot semantics
