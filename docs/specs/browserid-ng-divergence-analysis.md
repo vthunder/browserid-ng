@@ -123,5 +123,9 @@ Phase 3 decisions above for final resolutions.)*
 
 ## Spec structure (Phase 4)
 Suite: `browserid-ng-protocol.md` (core), with `agent-provisioning-and-grant-api.md`
-and `sbo-attribution.md` as linked modules. Each core section notes *inherited
-from BrowserID* vs *deliberate departure*.
+as a linked module in this repo. The general **offline-verification** capability
+(detached DNSSEC proofs) lives in the core (§6.3); the **SBO on-chain
+attribution** application of it lives in the **sbo** repo
+(`specs/SBO Attribution Specification.md`), since sbo depends on browserid-ng,
+not the reverse. Each core section notes *inherited from BrowserID* vs
+*deliberate departure*.

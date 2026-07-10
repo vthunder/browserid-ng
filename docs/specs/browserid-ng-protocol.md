@@ -14,9 +14,9 @@
 > the implementation on branch `feat/dnssec-required` (bean `browserid-ng-28uc`)
 > before their wording is final.
 >
-> Modules layered on this core: [agent provisioning & grant exchange](./agent-provisioning-and-grant-api.md)
-> and [SBO on-chain attribution](./sbo-attribution.md). A plain relying party
-> needs neither.
+> Layered on this core: [agent provisioning & grant exchange](./agent-provisioning-and-grant-api.md)
+> (this repo), and SBO on-chain attribution (in the **sbo** repo, built on §6.3).
+> A plain relying party needs neither.
 
 ## 1. Overview
 
@@ -190,6 +190,27 @@ verifier contract. Reference: `browserid-broker/src/routes/verify.rs`.
 This collapses the former well-known-vs-DNSSEC branching into one path
 (`verifier.rs`).
 
+### 6.3 Offline verification with detached DNSSEC proofs  **[SETTLED]**
+
+Because the trust root is DNSSEC (§3), a certificate or backed assertion can be
+verified **with no live network fetch** when it is accompanied by a **detached
+DNSSEC proof**: an RFC 9102 proof for the issuer's `_browserid` record, carrying
+the published key and its RRSIG validity window. The verifier validates the
+proof against the IANA root, extracts the issuer key, and proceeds as in §6.2
+using that key in place of a live DNS lookup.
+
+This is the capability Web-PKI discovery cannot provide — a `.well-known` fetch
+is a live TLS transaction, not a portable artifact — and it is the reason
+browserid-ng roots trust in DNSSEC. It enables verification in archives, audits,
+and ledger/trustless contexts where the IdP is not reachable at verification
+time.
+
+The proof is a self-contained blob; how a consumer transports, caches, or
+refreshes it, and how it roots identities in its own trust model, is out of
+scope for the core protocol. The on-chain consumer is specified separately — see
+**SBO Attribution Specification** in the sbo repo, which layers ledger-specific
+identity rooting and trust anchors on this primitive.
+
 ## 7. Primary IdP & browser integration  **[SETTLED overview]**
 
 browserid-ng does **not** use the shimmed `navigator.id` API. Instead:
@@ -223,9 +244,11 @@ attribution-aware broker occupying the same role.
 - **[Agent provisioning & grant exchange](./agent-provisioning-and-grant-api.md)** —
   how an agent obtains its own delegated identity from a principal's, with a
   broker-endorsed provisioning chain.
-- **[SBO on-chain attribution](./sbo-attribution.md)** — attributing an email
-  identity to an `ed25519:` key on-chain via DNSSEC-proof objects, for trustless
-  contexts.
+- **SBO on-chain attribution** — attributing an email identity to an `ed25519:`
+  key on a ledger, built on the offline-verification primitive (§6.3). Specified
+  in the **sbo** repo (`specs/SBO Attribution Specification.md`), not here:
+  its concepts (`/sys/dnssec` objects, controller rooting, `/sys/trust/brokers`)
+  are ledger-specific, and sbo depends on browserid-ng, not the reverse.
 
 ---
 
