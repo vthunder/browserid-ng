@@ -292,6 +292,12 @@ $('signin-form').onsubmit = async (e) => {
 function idpUrlFor(domain) {
   return /^(localhost|127\.)/.test(domain) ? `http://${domain}` : `https://${domain}`;
 }
+/// address_info returns `auth` as an absolute URL; only synthesize one when
+/// it's missing or relative.
+function authUrlFrom(info, domain) {
+  if (info.auth && /^https?:\/\//.test(info.auth)) return info.auth;
+  return idpUrlFor(domain) + (info.auth || '/');
+}
 
 function renderUserIdentities() {
   const rows = account.emails
@@ -364,7 +370,7 @@ async function activate(email, btn) {
   // Primary identities are provisioned by their own IdP — link there.
   if (info.type === 'primary') {
     const domain = email.split('@')[1];
-    btn.outerHTML = `<a class="small rowbtn" href="${idpUrlFor(domain)}${info.auth || '/'}"
+    btn.outerHTML = `<a class="small rowbtn" href="${escapeHtml(authUrlFrom(info, domain))}"
       target="_blank" rel="noopener">Sign in at ${escapeHtml(domain)} ↗</a>`;
     return;
   }
@@ -402,7 +408,7 @@ $('ae-btn').onclick = async () => {
         const domain = email.split('@')[1];
         status.className = 'status muted';
         status.innerHTML = `${escapeHtml(email)} is managed by its own provider. ` +
-          `<a href="${idpUrlFor(domain)}${info.auth || '/'}" target="_blank" rel="noopener">Sign in at ${escapeHtml(domain)} ↗</a> ` +
+          `<a href="${escapeHtml(authUrlFrom(info, domain))}" target="_blank" rel="noopener">Sign in at ${escapeHtml(domain)} ↗</a> ` +
           `to add it (no code needed).`;
         return;
       }
