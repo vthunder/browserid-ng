@@ -495,6 +495,8 @@ pub struct WarrantInfo {
     pub warrant: String,
     /// Present iff the warrant carries a status claim (revocable per-grant)
     pub status_idx: Option<u64>,
+    /// Whether this warrant's status bit is set (revoked, egr7)
+    pub revoked: bool,
     pub signed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -524,16 +526,23 @@ where
         .user_store
         .list_warrants(session.user_id)?
         .into_iter()
-        .map(|r| WarrantInfo {
-            id: r.id,
-            delegator_email: r.delegator_email,
-            agent_email: r.agent_email,
-            audience: r.audience,
-            scopes: r.scopes,
-            warrant: r.warrant,
-            status_idx: r.status_idx,
-            signed_at: r.signed_at,
-            expires_at: r.expires_at,
+        .map(|r| {
+            let revoked = r
+                .status_idx
+                .map(|i| state.user_store.is_status_revoked_idx(i).unwrap_or(false))
+                .unwrap_or(false);
+            WarrantInfo {
+                id: r.id,
+                delegator_email: r.delegator_email,
+                agent_email: r.agent_email,
+                audience: r.audience,
+                scopes: r.scopes,
+                warrant: r.warrant,
+                status_idx: r.status_idx,
+                revoked,
+                signed_at: r.signed_at,
+                expires_at: r.expires_at,
+            }
         })
         .collect();
     Ok(Json(ListWarrantsResponse { success: true, warrants }))

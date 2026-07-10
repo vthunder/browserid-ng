@@ -1,11 +1,11 @@
 ---
 # browserid-ng-egr7
 title: Credential revocation — agent credentials and identities in general
-status: in-progress
+status: completed
 type: feature
 priority: high
 created_at: 2026-07-10T08:09:05Z
-updated_at: 2026-07-10T19:32:59Z
+updated_at: 2026-07-10T20:06:18Z
 parent: browserid-ng-gsnm
 ---
 
@@ -55,7 +55,11 @@ Resulting story: instant for new sign-ins at status-checking RPs; ≤ cache wind
 
 ### Todo
 - [x] Spec v0.4: status claim in certs + list format/endpoint (IETF token-status-list) — core §6.4
-- [ ] Broker/IdP: status list publication + revocation wiring to registry switch
-- [ ] browserid-rp: status check with cache, fail-open/closed policy knob
-- [ ] Decide SDK default: fail-open grace window vs hard fail-closed
-- [ ] sbo path: detached snapshot semantics
+- [x] Broker/IdP: status list publication + revocation wiring (identity revoke, key revoke → covered identities, per-warrant revoke)
+- [x] browserid-rp: StatusCache (async refresh, sync check; fail-open default, .fail_closed())
+- [x] SDK default decided: fail-open with 600s grace past ttl, then Unknown → policy (fail-open unless .fail_closed())
+- [x] sbo path: StatusListToken is a portable JWS artifact; StatusCache::insert accepts detached snapshots; consumption in sbo tracked with sbo-8t4b
+
+## Summary of Changes
+
+Shipped + prod-verified 2026-07-10. Core status module (1-bit LSB bitmap, zlib+b64url, claim-typed JWS, IETF shape); StatusRef claims on certs (per-identity index) and warrants (per-grant); broker migration v9, allocation at mint/consent/manual-sign, GET /.well-known/browserid-status, revocation wiring (identity, key→covered identities, per-warrant via /account Revoke), /verify authoritative own-DB check; rp StatusCache. Prod test: warrant idx 1 verified okay → user clicked Revoke on /account → same assertion instantly rejected (Credential revoked); public list bit confirmed set; sibling mingo.place grant unaffected. mingo-idp adoption (own list) deferred to 1pnf-adjacent work.

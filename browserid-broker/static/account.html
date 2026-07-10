@@ -11,7 +11,7 @@
     body { margin: 0; padding: 32px 16px 48px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       font-size: 14px; line-height: 1.5; color: #333; background-color: #f5f5f5; }
-    .wrap { max-width: 420px; margin: 0 auto; }
+    .wrap { max-width: 440px; margin: 0 auto; }
     .brand { text-align: center; margin-bottom: 20px; }
     .brand a { color: #333; text-decoration: none; font-weight: 600; font-size: 16px; }
     .brand .me { color: #4a90d9; }
@@ -21,9 +21,9 @@
     p { margin: 0 0 16px 0; color: #666; }
     .sub { font-size: 13px; color: #888; margin-bottom: 12px; }
     label { display: block; margin-bottom: 4px; font-size: 13px; font-weight: 500; color: #555; }
-    input { width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #ccc;
-      border-radius: 4px; outline: none; margin-bottom: 12px; }
-    input:focus { border-color: #4a90d9; box-shadow: 0 0 0 3px rgba(74,144,217,.2); }
+    input, select { width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #ccc;
+      border-radius: 4px; outline: none; margin-bottom: 12px; background: #fff; color: #333; }
+    input:focus, select:focus { border-color: #4a90d9; box-shadow: 0 0 0 3px rgba(74,144,217,.2); }
     button { padding: 10px 20px; font-size: 14px; font-weight: 500; border: none;
       border-radius: 4px; cursor: pointer; background-color: #e9ecef; color: #495057; }
     button:hover:not(:disabled) { background-color: #dee2e6; }
@@ -36,11 +36,19 @@
     .idlist li:last-child { border-bottom: none; }
     .idlist .row { display: flex; align-items: center; padding: 12px; width: 100%;
       background: none; border: none; text-align: left; font-size: 14px; border-radius: 0; }
+    button.row { font-family: inherit; }
     .idlist .row:hover { background-color: #f8f9fa; }
     .idlist .email-text { flex: 1; color: #333; word-break: break-all; }
     .idlist .email-sub { display: block; margin-top: 2px; font-size: 12px; color: #888; }
     .idlist .chev { color: #bbb; margin-left: 8px; }
     .idlist .add .email-text { color: #4a90d9; font-weight: 500; }
+    .badge { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+      margin-left: 6px; vertical-align: middle; }
+    .badge.active { background: #e6f4ea; color: #2f855a; }
+    .badge.inactive { background: #fdeaea; color: #b7791f; }
+    .badge.info { background: #eef2f7; color: #55607a; }
+    .badge.revoked { background: #fdeaea; color: #c53030; }
+    .rowbtn { margin-left: 8px; }
     a { color: #4a90d9; text-decoration: none; }
     a:hover { text-decoration: underline; }
     .status { font-size: 13px; margin-top: 8px; }
@@ -56,6 +64,10 @@
     #detail-back { margin-bottom: 12px; }
     .kv { font-size: 13px; color: #555; margin-bottom: 16px; }
     .kv b { color: #333; }
+    .disclose { font-size: 13px; color: #4a90d9; cursor: pointer; user-select: none; }
+    pre { background: #f5f7fa; padding: 12px; border-radius: 6px; overflow-x: auto;
+      font-size: 12px; white-space: pre-wrap; word-break: break-all; font-family: ui-monospace, monospace; }
+    .inline-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid #eee; }
   </style>
 </head>
 <body>
@@ -87,31 +99,62 @@
     </form>
   </div>
 
-  <!-- Main: two lists -->
+  <!-- Main -->
   <div id="app" hidden>
     <div class="card">
       <h2>Your identities</h2>
-      <p class="sub">Emails you sign in with.</p>
+      <p class="sub">Emails you sign in with. <span class="badge active">active</span> can sign
+        right now in this browser; <span class="badge inactive">needs sign-in</span> is on your
+        account but has no key here.</p>
       <ul class="idlist" id="user-ids"></ul>
-      <div id="add-email-form" hidden style="margin-top:12px">
+      <div id="add-email-form" class="inline-form" hidden>
         <label for="ae-email">New email</label>
         <input id="ae-email" type="email" placeholder="you@example.com">
         <div id="ae-code-block" hidden>
           <label for="ae-code">6-digit code (check that inbox)</label>
           <input id="ae-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000">
         </div>
-        <button class="primary small" id="ae-btn">Send code</button>
+        <button class="primary small" id="ae-btn">Add</button>
         <button class="small" id="ae-cancel">Cancel</button>
         <p class="status" id="ae-status"></p>
       </div>
     </div>
 
     <div class="card">
-      <h2>Agent identities</h2>
-      <p class="sub">Programs acting for you — each with its own key and certificate.
-        Click one for details and warrants.</p>
+      <h2>Agents</h2>
+      <p class="sub">Programs acting for you — each its own key and identity. Click one for its
+        details and warrants.</p>
       <ul class="idlist" id="agent-ids"></ul>
-      <p class="status"><a href="/consent">Pending consent requests →</a></p>
+      <p class="status" style="margin-top:12px"><a href="/consent">Pending consent requests →</a></p>
+
+      <div id="add-agent-form" class="inline-form" hidden>
+        <label for="ag-identity">Delegate from</label>
+        <select id="ag-identity"></select>
+        <p id="ag-note" class="sub" style="margin:0 0 12px"></p>
+        <label for="ag-handle">Agent handle</label>
+        <input id="ag-handle" placeholder="e.g. researcher" maxlength="64">
+        <p class="sub" style="margin:0 0 12px">Will be <code id="ag-preview">…</code>.</p>
+        <p class="disclose" id="ag-adv-toggle">Advanced: multiple handles / patterns ▸</p>
+        <div id="ag-adv" hidden style="border-left:2px solid #eee;padding-left:12px;margin-bottom:12px">
+          <label for="ag-extra">Extra handles (comma-separated)</label>
+          <input id="ag-extra" placeholder="worker, batch">
+          <label for="ag-patterns">Subaddress patterns (&lt;handle&gt;+*)</label>
+          <input id="ag-patterns" placeholder="worker+*">
+        </div>
+        <label for="ag-label">Label</label>
+        <input id="ag-label" placeholder="e.g. ci-bot" maxlength="64">
+        <button class="primary small" id="ag-create">Create agent</button>
+        <button class="small" id="ag-cancel">Cancel</button>
+        <p class="status" id="ag-status"></p>
+        <div id="ag-cred" hidden>
+          <p class="warn" style="margin:12px 0 4px"><b>Copy this now — shown only once.</b></p>
+          <p class="sub">The agent credential (contains a private key that never left this page).
+            Save it as the agent's <code>agent-credential.json</code>.</p>
+          <pre id="ag-cred-json"></pre>
+          <button class="small" id="ag-download">Download JSON</button>
+          <button class="small" id="ag-done">Done</button>
+        </div>
+      </div>
     </div>
 
     <div class="card">
@@ -120,6 +163,20 @@
       <button id="signout">Sign out</button>
       <button id="reset">Clear cached certificates</button>
       <p class="status" id="out"></p>
+      <p style="margin:14px 0 0"><span class="disclose" id="dbg-toggle">Advanced / debug ▸</span></p>
+      <div id="dbg" hidden style="margin-top:12px;border-top:1px solid #eee;padding-top:12px">
+        <label for="w-identity">Sign a warrant manually (identity)</label>
+        <select id="w-identity"></select>
+        <label for="w-agent">Agent identity</label>
+        <input id="w-agent" placeholder="attestor@browserid.me">
+        <label for="w-audience">Audience (exact value the app advertises)</label>
+        <input id="w-audience" placeholder="https://api.example.com or sbo://ledger">
+        <label for="w-scopes">Scopes (space-separated, optional)</label>
+        <input id="w-scopes" placeholder="post read">
+        <button class="small primary" id="w-create">Sign warrant</button>
+        <span class="status" id="w-status"></span>
+        <pre id="w-out" hidden></pre>
+      </div>
     </div>
   </div>
 
@@ -128,19 +185,16 @@
     <div class="card">
       <button id="detail-back" class="small">← Back</button>
       <h2 id="d-email" style="word-break:break-all"></h2>
-      <p class="kv">Acts for <b id="d-parent"></b></p>
-      <p class="sub">Every warrant on record for this agent — approved on any browser's
-        consent page or signed manually. <strong>Revoke</strong> kills a single grant
-        within minutes at services that check revocation. To cut this agent off
-        everywhere, revoke its <a href="/agents">agent key</a>.</p>
+      <p class="kv">Acts for <b id="d-parent"></b> <span id="d-badges"></span></p>
+      <p class="sub">Every warrant on record for this agent. <strong>Revoke</strong> kills one grant
+        within minutes at services that check revocation. To cut this agent off everywhere, revoke
+        its key (Advanced / debug).</p>
       <div id="d-warrants"></div>
       <p class="status" id="d-status"></p>
     </div>
   </div>
 
-  <p class="footer-links">
-    <a href="/agents">Agent keys</a> · <a href="/consent">Consent</a> · <a href="/">browserid.me</a>
-  </p>
+  <p class="footer-links"><a href="/consent">Consent</a> · <a href="/">browserid.me</a></p>
 </div>
 
 <script src="/common/js/lib/jwcrypto-compat.js"></script>
@@ -150,8 +204,10 @@ const enc = new TextEncoder();
 const b64urlJson = (obj) => btoa(String.fromCharCode(...enc.encode(JSON.stringify(obj))))
   .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const escapeHtml = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const sign = (key, msg) => new Promise((res, rej) =>
-  key.sign(msg, (err, sig) => err ? rej(err) : res(sig)));
+const sign = (key, msg) => new Promise((res, rej) => key.sign(msg, (e, s) => e ? rej(e) : res(s)));
+const genKeypair = () => new Promise((res, rej) =>
+  window.jwcrypto.generateKeypair({ algorithm: 'Ed25519' }, (e, kp) => e ? rej(e) : res(kp)));
+const nowS = () => Math.floor(Date.now() / 1000);
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { credentials: 'same-origin', ...opts });
@@ -163,39 +219,59 @@ const post = (path, body) => api(path, {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 });
 
-let account = { emails: [], agents: [], parentOf: {}, warrants: [], csrf: null };
+let account = { emails: [], agents: [], parentOf: {}, warrants: [], certs: [], csrf: null };
 
-// ---------- sign-in ----------
+// -------- local identities (this browser's cached certs+keys) --------
+function localStore() { try { return JSON.parse(localStorage.emails || '{}'); } catch { return {}; } }
+function localIdentity(email) {
+  const store = localStore();
+  for (const ik of Object.keys(store)) {
+    for (const [addr, rec] of Object.entries(store[ik] || {})) {
+      if (addr.toLowerCase() === (email || '').toLowerCase() && rec?.priv && rec?.cert) {
+        const p = certPayload(rec.cert);
+        return { email: addr, cert: rec.cert, priv: rec.priv, issuer: p?.iss, exp: p?.exp || 0, issuerKey: ik };
+      }
+    }
+  }
+  return null;
+}
+function localIdentities() {
+  const store = localStore(), out = [];
+  for (const ik of Object.keys(store)) {
+    for (const [email, rec] of Object.entries(store[ik] || {})) {
+      if (!rec?.priv || !rec?.cert) continue;
+      const p = certPayload(rec.cert);
+      out.push({ email, cert: rec.cert, priv: rec.priv, issuer: p?.iss, exp: p?.exp || 0, issuerKey: ik });
+    }
+  }
+  return out;
+}
+function certPayload(cert) {
+  try { return JSON.parse(atob(cert.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); } catch { return null; }
+}
+/// active = a cached cert with at least a minute of life left
+function isActive(email) { const id = localIdentity(email); return !!id && id.exp > nowS() + 60; }
+
+// -------- sign-in --------
 let codeMode = false;
 $('si-code-btn').onclick = async () => {
   const email = $('si-email').value.trim();
   if (!email) return;
-  $('si-status').className = 'status muted';
-  $('si-status').textContent = 'Sending code…';
+  $('si-status').className = 'status muted'; $('si-status').textContent = 'Sending code…';
   try {
     await post('/wsapi/stage_reset', { email });
-    codeMode = true;
-    $('pw-block').hidden = true;
-    $('code-block').hidden = false;
-    $('si-btn').textContent = 'Sign in';
-    $('si-status').textContent = 'Code sent — check your email.';
-  } catch (e) {
-    $('si-status').className = 'status err';
-    $('si-status').textContent = e.message;
-  }
+    codeMode = true; $('pw-block').hidden = true; $('code-block').hidden = false;
+    $('si-btn').textContent = 'Sign in'; $('si-status').textContent = 'Code sent — check your email.';
+  } catch (e) { $('si-status').className = 'status err'; $('si-status').textContent = e.message; }
 };
 $('signin-form').onsubmit = async (e) => {
   e.preventDefault();
-  const email = $('si-email').value.trim();
-  const status = $('si-status');
+  const email = $('si-email').value.trim(), status = $('si-status');
   status.className = 'status muted';
   if (!email) return;
   if ($('pw-block').hidden && !codeMode) {
-    $('pw-block').hidden = false;
-    $('si-code-btn').hidden = false;
-    $('si-btn').textContent = 'Sign in';
-    $('si-pass').focus();
-    return;
+    $('pw-block').hidden = false; $('si-code-btn').hidden = false;
+    $('si-btn').textContent = 'Sign in'; $('si-pass').focus(); return;
   }
   status.textContent = 'Signing in…';
   try {
@@ -212,247 +288,364 @@ $('signin-form').onsubmit = async (e) => {
   }
 };
 
-// ---------- identity lists ----------
-function renderLists() {
-  const userRows = account.emails
+// -------- identity + agent lists --------
+function idpUrlFor(domain) {
+  return /^(localhost|127\.)/.test(domain) ? `http://${domain}` : `https://${domain}`;
+}
+
+function renderUserIdentities() {
+  const rows = account.emails
     .filter(e => !account.agents.includes(e))
     .map(email => {
       const via = account.parentOf[email];
-      return `<li><div class="row"><span class="email-text">${escapeHtml(email)}
+      const active = isActive(email);
+      const badge = active
+        ? '<span class="badge active">active</span>'
+        : '<span class="badge inactive">needs sign-in</span>';
+      const act = active ? '' :
+        `<button class="small rowbtn activate" data-email="${escapeHtml(email)}">Activate</button>`;
+      return `<li><div class="row"><span class="email-text">${escapeHtml(email)}${badge}
         ${via ? `<span class="email-sub">signs in via ${escapeHtml(via)}</span>` : ''}
-      </span></div></li>`;
+      </span>${act}</div></li>`;
     }).join('');
-  $('user-ids').innerHTML = userRows +
+  $('user-ids').innerHTML = rows +
     `<li class="add"><button class="row" id="add-email"><span class="email-text">+ Add an email</span></button></li>`;
   $('add-email').onclick = () => { $('add-email-form').hidden = false; $('ae-email').focus(); };
+  for (const b of $('user-ids').querySelectorAll('.activate')) b.onclick = () => activate(b.dataset.email, b);
+}
 
-  const agentRows = account.agents.map(email => `
-    <li><button class="row agent-row" data-email="${escapeHtml(email)}">
-      <span class="email-text">${escapeHtml(email)}
-        <span class="email-sub">acts for ${escapeHtml(account.parentOf[email] || '')}</span></span>
-      <span class="chev">›</span>
-    </button></li>`).join('');
-  $('agent-ids').innerHTML = agentRows +
-    `<li class="add"><button class="row" onclick="location.href='/agents'">
-      <span class="email-text">+ Create an agent key</span></button></li>` ||
-    '<li><div class="row"><span class="email-text muted">None yet.</span></div></li>';
-  for (const b of document.querySelectorAll('.agent-row')) {
-    b.onclick = () => showDetail(b.dataset.email);
+/// A minted agent's parent (from the derived map) or, for a not-yet-minted
+/// reserved handle, the provisioning cert's delegator.
+function agentEntries() {
+  const byEmail = new Map();
+  // Reserved handles from provisioning certs (may not be minted yet).
+  for (const c of account.certs) {
+    if (c.revoked) continue;
+    for (const name of (c.names || [])) {
+      const email = `${name}@${c.domain}`;
+      byEmail.set(email, { email, parent: c.delegator_email, minted: false, keyId: c.id, keyLabel: c.label });
+    }
+  }
+  // Minted agent identities.
+  for (const email of account.agents) {
+    const cur = byEmail.get(email) || { email, parent: account.parentOf[email], keyId: null };
+    cur.minted = true;
+    if (!cur.parent) cur.parent = account.parentOf[email];
+    byEmail.set(email, cur);
+  }
+  return [...byEmail.values()].sort((a, b) => a.email.localeCompare(b.email));
+}
+
+function renderAgents() {
+  const entries = agentEntries();
+  const rows = entries.map(a => {
+    const badge = a.minted
+      ? '<span class="badge active">active</span>'
+      : '<span class="badge info">reserved</span>';
+    return `<li><button class="row agent-row" data-email="${escapeHtml(a.email)}">
+      <span class="email-text">${escapeHtml(a.email)}${badge}
+        <span class="email-sub">acts for ${escapeHtml(a.parent || '—')}</span></span>
+      <span class="chev">›</span></button></li>`;
+  }).join('');
+  $('agent-ids').innerHTML = rows +
+    `<li class="add"><button class="row" id="add-agent"><span class="email-text">+ Add an agent</span></button></li>`;
+  $('add-agent').onclick = openAddAgent;
+  for (const b of $('agent-ids').querySelectorAll('.agent-row')) {
+    const a = entries.find(e => e.email === b.dataset.email);
+    b.onclick = () => showDetail(a);
   }
 }
 
-// ---------- add email (stage → code → complete) ----------
+// -------- activate a secondary identity (issue + cache a cert) --------
+async function activate(email, btn) {
+  btn.disabled = true;
+  let info;
+  try { info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`); } catch { info = {}; }
+  // Primary identities are provisioned by their own IdP — link there.
+  if (info.type === 'primary') {
+    const domain = email.split('@')[1];
+    btn.outerHTML = `<a class="small rowbtn" href="${idpUrlFor(domain)}${info.auth || '/'}"
+      target="_blank" rel="noopener">Sign in at ${escapeHtml(domain)} ↗</a>`;
+    return;
+  }
+  // Secondary (broker-verified): generate a key here, get a broker cert, cache it.
+  try {
+    const kp = await genKeypair();
+    const body = await post('/wsapi/cert_key', {
+      email, pubkey: { algorithm: 'Ed25519', publicKey: kp.publicKey._jwk.x }, ephemeral: false,
+    });
+    const store = localStore();
+    const issuer = certPayload(body.cert)?.iss || location.host;
+    store[issuer] = store[issuer] || {};
+    store[issuer][email] = { priv: { algorithm: 'Ed25519', d: kp.secretKey._jwk.d, x: kp.publicKey._jwk.x }, cert: body.cert };
+    localStorage.emails = JSON.stringify(store);
+    renderUserIdentities();
+    refreshAgentPickers();
+  } catch (e) {
+    btn.disabled = false;
+    alert('Activate failed: ' + e.message);
+  }
+}
+
+// -------- add email (Add → discover → code or primary) --------
 let aeStaged = false;
-$('ae-cancel').onclick = () => { $('add-email-form').hidden = true; };
+$('ae-cancel').onclick = () => { $('add-email-form').hidden = true; aeStaged = false; $('ae-btn').textContent = 'Add'; };
 $('ae-btn').onclick = async () => {
-  const status = $('ae-status');
-  status.className = 'status muted';
+  const status = $('ae-status'); status.className = 'status muted';
+  const email = $('ae-email').value.trim();
   try {
     if (!aeStaged) {
-      const email = $('ae-email').value.trim();
       if (!email) return;
+      status.textContent = 'Checking…';
+      let info; try { info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`); } catch { info = {}; }
+      if (info.type === 'primary') {
+        const domain = email.split('@')[1];
+        status.className = 'status muted';
+        status.innerHTML = `${escapeHtml(email)} is managed by its own provider. ` +
+          `<a href="${idpUrlFor(domain)}${info.auth || '/'}" target="_blank" rel="noopener">Sign in at ${escapeHtml(domain)} ↗</a> ` +
+          `to add it (no code needed).`;
+        return;
+      }
       status.textContent = 'Sending code…';
       await post('/wsapi/stage_email', { email });
-      aeStaged = true;
-      $('ae-code-block').hidden = false;
-      $('ae-btn').textContent = 'Verify';
+      aeStaged = true; $('ae-code-block').hidden = false; $('ae-btn').textContent = 'Verify';
       status.textContent = 'Code sent — check that inbox.';
     } else {
       status.textContent = 'Verifying…';
       await post('/wsapi/complete_email_addition', { token: $('ae-code').value.trim() });
       location.reload();
     }
-  } catch (e) {
-    status.className = 'status err';
-    status.textContent = e.message;
-  }
+  } catch (e) { status.className = 'status err'; status.textContent = e.message; }
 };
 
-// ---------- agent detail + warrants (server registry, jipx) ----------
-function localIdentity(email) {
-  let store = {};
-  try { store = JSON.parse(localStorage.emails || '{}'); } catch {}
-  for (const issuerKey of Object.keys(store)) {
-    for (const [addr, rec] of Object.entries(store[issuerKey] || {})) {
-      if (addr.toLowerCase() === (email || '').toLowerCase() && rec?.priv && rec?.cert) {
-        return { email: addr, cert: rec.cert, priv: rec.priv };
-      }
-    }
-  }
-  return null;
+// -------- add agent (ported creation flow) --------
+function refreshAgentPickers() {
+  const ids = localIdentities().filter(i => i.exp > nowS());
+  const opts = ids.map(i => `<option value="${escapeHtml(i.email)}">${escapeHtml(i.email)}</option>`).join('')
+    || '<option value="">(no active identity — activate one above)</option>';
+  $('ag-identity').innerHTML = opts;
+  $('w-identity').innerHTML = opts;
+  $('ag-create').disabled = !ids.length;
+  agNote();
 }
+function agNote() {
+  const id = localIdentities().find(i => i.email === $('ag-identity').value);
+  const dom = id?.issuer || location.host;
+  $('ag-note').textContent = id ? `Minted at ${dom}.` : '';
+  $('ag-preview').textContent = `${$('ag-handle').value.trim() || 'researcher'}@${dom}`;
+}
+function openAddAgent() {
+  $('add-agent-form').hidden = false;
+  refreshAgentPickers();
+  $('ag-handle').focus();
+}
+$('ag-identity').onchange = agNote;
+$('ag-handle').oninput = agNote;
+$('ag-cancel').onclick = () => { $('add-agent-form').hidden = true; };
+$('ag-adv-toggle').onclick = () => {
+  const a = $('ag-adv'); a.hidden = !a.hidden;
+  $('ag-adv-toggle').textContent = (a.hidden ? 'Advanced: multiple handles / patterns ▸' : 'Advanced: multiple handles / patterns ▾');
+};
 
-function showDetail(agentEmail) {
-  $('app').hidden = true;
-  $('detail').hidden = false;
-  $('d-email').textContent = agentEmail;
-  $('d-parent').textContent = account.parentOf[agentEmail] || 'unknown';
-  renderDetailWarrants(agentEmail);
+async function reserveNames(provKey, idpDomain, idpUrl, delegation) {
+  const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+  const payload = b64urlJson({ typ: 'browserid-provisioning-request-v1', iat: nowS(), exp: nowS() + 600, action: 'reserve', domain: idpDomain });
+  const provSk = window.jwcrypto.loadSecretKeyFromObject({ algorithm: 'Ed25519', d: provKey.secretKey._jwk.d, x: provKey.publicKey._jwk.x });
+  const sig = await sign(provSk, `${header}.${payload}`);
+  const bundle = `${delegation}~${header}.${payload}.${sig}`;
+  const { endorsement } = await post(`${location.origin}/provision/endorse`, { request_bundle: bundle });
+  const r = await fetch(`${idpUrl}/provision/reserve`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ request_bundle: bundle, endorsement }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok || body.success === false) {
+    if (Array.isArray(body.taken) && body.taken.length)
+      throw new Error(`already taken: ${body.taken.join(', ')} — choose different handles`);
+    throw new Error('reservation failed: ' + (body.reason || `HTTP ${r.status}`));
+  }
 }
-$('detail-back').onclick = () => { $('detail').hidden = true; $('app').hidden = false; };
+$('ag-create').onclick = async () => {
+  const id = localIdentities().find(i => i.email === $('ag-identity').value);
+  const status = $('ag-status'); status.className = 'status muted';
+  if (!id) { status.className = 'status err'; status.textContent = 'Activate an identity first.'; return; }
+  const split = (s) => s.split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+  const names = [$('ag-handle').value.trim().toLowerCase(), ...split($('ag-extra').value)].filter(Boolean);
+  const patterns = split($('ag-patterns').value);
+  if (!names.length && !patterns.length) { status.className = 'status err'; status.textContent = 'Enter a handle.'; return; }
+  for (const p of patterns) if (!/^[a-z0-9._-]+\+\*$/.test(p)) { status.className = 'status err'; status.textContent = `Pattern "${p}" must be <handle>+*`; return; }
+  $('ag-create').disabled = true; status.textContent = 'Creating…';
+  try {
+    const idpDomain = id.issuer || location.host, idpUrl = idpUrlFor(idpDomain);
+    const userKey = window.jwcrypto.loadSecretKeyFromObject(id.priv);
+    const provKey = await genKeypair();
+    const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+    const certClaims = { typ: 'browserid-provisioning-cert-v1', iss: id.email, iat: nowS(), exp: nowS() + 90*24*3600,
+      'public-key': { algorithm: 'Ed25519', publicKey: provKey.publicKey._jwk.x }, constraint: { names: [...new Set(names)], patterns: [...new Set(patterns)] } };
+    const payload = b64urlJson(certClaims);
+    const sig = await sign(userKey, `${header}.${payload}`);
+    const delegation = `${id.cert}~${header}.${payload}.${sig}`;
+    await post('/wsapi/register_provisioning_cert', { csrf: account.csrf, label: $('ag-label').value.trim() || 'agent key', bundle: delegation });
+    if (names.length) { status.textContent = 'Reserving…'; await reserveNames(provKey, idpDomain, idpUrl, delegation); }
+    const credential = { secret_key: provKey.secretKey._jwk.d, delegation, broker: location.origin, idp: idpUrl };
+    const json = JSON.stringify(credential, null, 2);
+    $('ag-cred-json').textContent = json;
+    $('ag-cred').hidden = false;
+    $('ag-download').onclick = () => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+      a.download = 'agent-credential.json'; a.click(); URL.revokeObjectURL(a.href);
+    };
+    $('ag-done').onclick = () => { $('ag-cred').hidden = true; $('add-agent-form').hidden = true; };
+    status.textContent = ''; $('ag-handle').value = ''; $('ag-extra').value = ''; $('ag-patterns').value = ''; $('ag-label').value = '';
+    await reloadAccount();
+    renderAgents();
+  } catch (e) { status.className = 'status err'; status.textContent = 'Failed: ' + e.message; }
+  finally { $('ag-create').disabled = false; }
+};
+
+// -------- agent detail + warrants --------
+function showDetail(a) {
+  $('app').hidden = true; $('detail').hidden = false;
+  $('d-email').textContent = a.email;
+  $('d-parent').textContent = a.parent || 'unknown';
+  $('d-badges').innerHTML = a.minted ? '<span class="badge active">active</span>' : '<span class="badge info">reserved (not yet minted)</span>';
+  renderDetailWarrants(a.email);
+  history.pushState({ view: 'detail', email: a.email }, '', '#' + encodeURIComponent(a.email));
+}
+function backToMain() { $('detail').hidden = true; $('app').hidden = false; }
+$('detail-back').onclick = () => history.back();
+window.addEventListener('popstate', (e) => {
+  if (e.state && e.state.view === 'detail') {
+    const a = agentEntries().find(x => x.email === e.state.email);
+    if (a) { showDetailNoPush(a); return; }
+  }
+  backToMain();
+});
+function showDetailNoPush(a) {
+  $('app').hidden = true; $('detail').hidden = false;
+  $('d-email').textContent = a.email; $('d-parent').textContent = a.parent || 'unknown';
+  $('d-badges').innerHTML = a.minted ? '<span class="badge active">active</span>' : '<span class="badge info">reserved</span>';
+  renderDetailWarrants(a.email);
+}
 
 function renderDetailWarrants(agentEmail) {
   const now = Date.now();
-  const entries = account.warrants
-    .filter(w => (w.agent_email || '').toLowerCase() === agentEmail.toLowerCase());
+  const entries = account.warrants.filter(w => (w.agent_email || '').toLowerCase() === agentEmail.toLowerCase());
   if (!entries.length) {
-    $('d-warrants').innerHTML = `<p class="muted" style="font-size:13px">No warrants on
-      record. Approve requests on the <a href="/consent">consent page</a>, or sign one
-      manually on the <a href="/agents">agent keys</a> page.</p>`;
+    $('d-warrants').innerHTML = `<p class="muted" style="font-size:13px">No warrants on record.
+      Approve requests on the <a href="/consent">consent page</a>, or sign one in Advanced / debug.</p>`;
     return;
   }
   const byId = Object.fromEntries(entries.map(w => [w.id, w]));
   $('d-warrants').innerHTML = `<table class="wtable">` + entries.map(w => {
     const exp = Date.parse(w.expires_at);
-    return `
-    <tr>
+    const state = w.revoked ? '<span class="badge revoked">revoked</span>'
+      : (exp && exp < now ? '<span class="warn" style="font-size:12px">expired</span>'
+        : `<span class="muted" style="font-size:12px">until ${new Date(exp).toLocaleDateString()}</span>`);
+    const actions = w.revoked
+      ? `<button class="small w-forget" data-i="${w.id}">Forget</button>`
+      : `<button class="small w-copy" data-i="${w.id}">Copy</button>
+         <button class="small w-reissue" data-i="${w.id}">Reissue</button>
+         ${w.status_idx != null
+           ? `<button class="small w-revoke" data-i="${w.id}" style="color:#c53030">Revoke</button>`
+           : `<button class="small w-forget" data-i="${w.id}">Forget</button>`}`;
+    return `<tr>
       <td><span class="aud">${escapeHtml(w.audience)}</span><br>
-        ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}
-      </td>
-      <td style="white-space:nowrap;text-align:right">
-        <span class="${exp && exp < now ? 'warn' : 'muted'}" style="font-size:12px">
-          ${exp ? (exp < now ? 'expired' : 'until ' + new Date(exp).toLocaleDateString()) : ''}</span><br>
-        <button class="small w-copy" data-i="${w.id}">Copy</button>
-        <button class="small w-reissue" data-i="${w.id}">Reissue</button>
-        ${w.status_idx != null
-          ? `<button class="small w-revoke" data-i="${w.id}" style="color:#c53030">Revoke</button>`
-          : `<button class="small w-forget" data-i="${w.id}">Forget</button>`}
-      </td>
-    </tr>`;
+        ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
+      <td style="white-space:nowrap;text-align:right">${state}<br>${actions}</td></tr>`;
   }).join('') + '</table>';
 
-  for (const b of $('d-warrants').querySelectorAll('.w-copy')) {
-    b.onclick = async () => {
-      await navigator.clipboard.writeText(byId[b.dataset.i].warrant);
-      $('d-status').className = 'status ok';
-      $('d-status').textContent = 'Copied — paste into the agent (add_warrant).';
-    };
-  }
-  for (const b of $('d-warrants').querySelectorAll('.w-forget')) {
-    b.onclick = async () => {
-      const status = $('d-status');
-      try {
-        await post('/wsapi/forget_warrant', { csrf: account.csrf, id: Number(b.dataset.i) });
-        await refreshWarrants();
-        renderDetailWarrants(agentEmail);
-        status.className = 'status muted';
-        status.textContent = 'Removed from the registry. This warrant predates revocation ' +
-          'support, so the copy the agent holds stays valid until it expires — revoke the ' +
-          'agent key to cut it off.';
-      } catch (e) {
-        status.className = 'status err';
-        status.textContent = 'Forget failed: ' + e.message;
-      }
-    };
-  }
-  for (const b of $('d-warrants').querySelectorAll('.w-revoke')) {
-    b.onclick = async () => {
-      const status = $('d-status');
-      const w = byId[b.dataset.i];
-      if (!confirm(`Revoke this agent's access to ${w.audience}? It stops working there within minutes at services that check revocation.`)) return;
-      try {
-        await post('/wsapi/revoke_warrant', { csrf: account.csrf, id: Number(b.dataset.i) });
-        await refreshWarrants();
-        renderDetailWarrants(agentEmail);
-        status.className = 'status ok';
-        status.textContent = `Revoked — ${w.audience} rejects this grant within minutes ` +
-          '(services that skip revocation checks honor it until it expires).';
-      } catch (e) {
-        status.className = 'status err';
-        status.textContent = 'Revoke failed: ' + e.message;
-      }
-    };
-  }
-  for (const b of $('d-warrants').querySelectorAll('.w-reissue')) {
-    b.onclick = async () => {
-      const w = byId[b.dataset.i];
-      const status = $('d-status');
-      const id = localIdentity(w.delegator_email);
-      if (!id) {
-        status.className = 'status err';
-        status.textContent = `The identity key for ${w.delegator_email} isn't in this browser — sign in with it first.`;
-        return;
-      }
-      try {
-        // Status index (stable per grant) so the reissue stays revocable.
-        let statusRef = null;
-        try {
-          const alloc = await post('/wsapi/allocate_warrant_status',
-            { csrf: account.csrf, agent_email: w.agent_email, audience: w.audience });
-          statusRef = { uri: alloc.uri, idx: alloc.idx };
-        } catch {}
-        const nowS = Math.floor(Date.now() / 1000);
-        const claims = {
-          typ: 'browserid-agent-warrant-v1',
-          iss: id.email, agent: w.agent_email, aud: w.audience,
-          'parent-cert': id.cert, iat: nowS, exp: nowS + 90 * 24 * 3600,
-        };
-        if ((w.scopes || []).length) claims.scopes = w.scopes;
-        if (statusRef) claims.status = statusRef;
-        const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
-        const payload = b64urlJson(claims);
-        const sig = await sign(window.jwcrypto.loadSecretKeyFromObject(id.priv), `${header}.${payload}`);
-        const jws = `${header}.${payload}.${sig}`;
-        await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws });
-        await navigator.clipboard.writeText(jws);
-        await refreshWarrants();
-        renderDetailWarrants(agentEmail);
-        status.className = 'status ok';
-        status.textContent = 'Reissued (fresh 90-day expiry), registered, and copied — paste into the agent.';
-      } catch (e) {
-        status.className = 'status err';
-        status.textContent = 'Reissue failed: ' + e.message;
-      }
-    };
-  }
-}
-
-// ---------- session tools ----------
-function clearLocal() {
-  localStorage.removeItem('emails');
-  localStorage.removeItem('siteInfo');
-}
-$('signout').onclick = async () => {
-  $('out').textContent = 'Signing out…';
-  try { await fetch('/wsapi/logout', { method: 'POST', credentials: 'same-origin' }); } catch {}
-  clearLocal();
-  location.reload();
-};
-$('reset').onclick = () => {
-  clearLocal();
-  $('out').textContent = '✓ Cached certificates cleared (still signed in).';
-};
-
-// ---------- boot ----------
-async function boot() {
-  let ctx;
-  try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
-  $('gate').hidden = true;
-  if (!ctx.authenticated) {
-    $('signin').hidden = false;
-    return;
-  }
-  const resp = await api('/wsapi/list_emails');
-  let warrants = [];
-  try { warrants = (await api('/wsapi/warrants')).warrants || []; } catch {}
-  account = {
-    emails: resp.emails || [],
-    agents: resp.agents || [],
-    parentOf: Object.fromEntries((resp.derived || []).map(d => [d.email, d.parent_email])),
-    warrants,
-    csrf: ctx.csrf_token,
+  const setStatus = (cls, msg) => { $('d-status').className = 'status ' + cls; $('d-status').textContent = msg; };
+  for (const b of $('d-warrants').querySelectorAll('.w-copy')) b.onclick = async () => {
+    await navigator.clipboard.writeText(byId[b.dataset.i].warrant); setStatus('ok', 'Copied — paste into the agent (add_warrant).');
   };
-  $('app').hidden = false;
-  renderLists();
+  for (const b of $('d-warrants').querySelectorAll('.w-forget')) b.onclick = async () => {
+    try { await post('/wsapi/forget_warrant', { csrf: account.csrf, id: Number(b.dataset.i) }); await reloadAccount(); renderDetailWarrants(agentEmail);
+      setStatus('muted', 'Removed from the registry.'); } catch (e) { setStatus('err', 'Forget failed: ' + e.message); }
+  };
+  for (const b of $('d-warrants').querySelectorAll('.w-revoke')) b.onclick = async () => {
+    const w = byId[b.dataset.i];
+    if (!confirm(`Revoke this agent's access to ${w.audience}? It stops working there within minutes at services that check revocation.`)) return;
+    try { await post('/wsapi/revoke_warrant', { csrf: account.csrf, id: Number(b.dataset.i) }); await reloadAccount(); renderDetailWarrants(agentEmail);
+      setStatus('ok', `Revoked — ${w.audience} rejects this grant within minutes.`); } catch (e) { setStatus('err', 'Revoke failed: ' + e.message); }
+  };
+  for (const b of $('d-warrants').querySelectorAll('.w-reissue')) b.onclick = async () => {
+    const w = byId[b.dataset.i], id = localIdentity(w.delegator_email);
+    if (!id) return setStatus('err', `The identity key for ${w.delegator_email} isn't in this browser — activate it first.`);
+    try {
+      let statusRef = null;
+      try { const alloc = await post('/wsapi/allocate_warrant_status', { csrf: account.csrf, agent_email: w.agent_email, audience: w.audience }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
+      const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+      const claims = { typ: 'browserid-agent-warrant-v1', iss: id.email, agent: w.agent_email, aud: w.audience, 'parent-cert': id.cert, iat: nowS(), exp: nowS() + 90*24*3600 };
+      if ((w.scopes || []).length) claims.scopes = w.scopes;
+      if (statusRef) claims.status = statusRef;
+      const payload = b64urlJson(claims);
+      const sig = await sign(window.jwcrypto.loadSecretKeyFromObject(id.priv), `${header}.${payload}`);
+      const jws = `${header}.${payload}.${sig}`;
+      await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws });
+      await navigator.clipboard.writeText(jws); await reloadAccount(); renderDetailWarrants(agentEmail);
+      setStatus('ok', 'Reissued (fresh 90-day expiry), registered, and copied — paste into the agent.');
+    } catch (e) { setStatus('err', 'Reissue failed: ' + e.message); }
+  };
 }
 
-async function refreshWarrants() {
-  try { account.warrants = (await api('/wsapi/warrants')).warrants || []; } catch {}
+// -------- advanced: manual warrant signing --------
+$('dbg-toggle').onclick = () => { const d = $('dbg'); d.hidden = !d.hidden; $('dbg-toggle').textContent = d.hidden ? 'Advanced / debug ▸' : 'Advanced / debug ▾'; };
+$('w-create').onclick = async () => {
+  const id = localIdentities().find(i => i.email === $('w-identity').value);
+  const agentEmail = $('w-agent').value.trim().toLowerCase(), audience = $('w-audience').value.trim();
+  const scopes = $('w-scopes').value.split(/\s+/).map(s => s.trim()).filter(Boolean);
+  const status = $('w-status'); const fail = (m) => { status.className = 'status err'; status.textContent = m; };
+  if (!id) return fail('Pick an active identity.');
+  if (!/^[^@\s]+@[^@\s]+$/.test(agentEmail)) return fail('Agent identity must be an email.');
+  if (!audience || audience.includes('*')) return fail('Audience must be one exact value (no wildcards).');
+  status.className = 'status muted'; status.textContent = 'Signing…';
+  try {
+    let statusRef = null;
+    try { const alloc = await post('/wsapi/allocate_warrant_status', { csrf: account.csrf, agent_email: agentEmail, audience }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
+    const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+    const claims = { typ: 'browserid-agent-warrant-v1', iss: id.email, agent: agentEmail, aud: audience, 'parent-cert': id.cert, iat: nowS(), exp: nowS() + 90*24*3600 };
+    if (scopes.length) claims.scopes = scopes;
+    if (statusRef) claims.status = statusRef;
+    const payload = b64urlJson(claims);
+    const sig = await sign(window.jwcrypto.loadSecretKeyFromObject(id.priv), `${header}.${payload}`);
+    const jws = `${header}.${payload}.${sig}`;
+    try { await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws }); } catch (e) { console.warn(e); }
+    $('w-out').textContent = jws; $('w-out').hidden = false;
+    status.className = 'status ok'; status.textContent = 'Signed & registered — paste into the agent.';
+    await reloadAccount();
+  } catch (e) { fail('Failed: ' + e.message); }
+};
+
+// -------- session --------
+function clearLocal() { localStorage.removeItem('emails'); localStorage.removeItem('siteInfo'); }
+$('signout').onclick = async () => { $('out').textContent = 'Signing out…'; try { await fetch('/wsapi/logout', { method: 'POST', credentials: 'same-origin' }); } catch {} clearLocal(); location.reload(); };
+$('reset').onclick = () => { clearLocal(); renderUserIdentities(); renderAgents(); $('out').textContent = '✓ Cached certificates cleared (still signed in).'; };
+
+// -------- boot --------
+async function reloadAccount() {
+  const resp = await api('/wsapi/list_emails');
+  let warrants = [], certs = [];
+  try { warrants = (await api('/wsapi/warrants')).warrants || []; } catch {}
+  try { certs = (await api('/wsapi/provisioning_certs')).certs || []; } catch {}
+  account.emails = resp.emails || [];
+  account.agents = resp.agents || [];
+  account.parentOf = Object.fromEntries((resp.derived || []).map(d => [d.email, d.parent_email]));
+  account.warrants = warrants;
+  account.certs = certs;
 }
-boot().catch(e => {
-  $('gate').hidden = false;
-  $('gate').innerHTML = `<p class="err" style="margin:0">Error: ${escapeHtml(e.message)}</p>`;
-});
+async function boot() {
+  let ctx; try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
+  $('gate').hidden = true;
+  if (!ctx.authenticated) { $('signin').hidden = false; return; }
+  account.csrf = ctx.csrf_token;
+  await reloadAccount();
+  $('app').hidden = false;
+  renderUserIdentities();
+  renderAgents();
+}
+boot().catch(e => { $('gate').hidden = false; $('gate').innerHTML = `<p class="err" style="margin:0">Error: ${escapeHtml(e.message)}</p>`; });
 </script>
 </body>
 </html>
