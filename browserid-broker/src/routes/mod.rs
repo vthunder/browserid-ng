@@ -10,6 +10,7 @@ mod reset;
 mod session;
 mod test;
 mod verify;
+mod warrant;
 mod well_known;
 
 use std::sync::Arc;
@@ -80,6 +81,11 @@ where
         .route("/provision/mint", post(agent::mint))
         .route("/provision/list", post(agent::list))
         .route("/provision/revoke", post(agent::revoke))
+        // Warrant consent flow (agent spec §6, v0.4)
+        .route("/warrant/request", post(warrant::request))
+        .route("/warrant/poll", post(warrant::poll))
+        .route("/wsapi/warrant_requests", get(warrant::list_requests))
+        .route("/wsapi/warrant_respond", post(warrant::respond))
         .route("/wsapi/account_cancel", post(account::account_cancel))
         .route("/wsapi/stage_reset", post(reset::stage_reset))
         .route("/wsapi/complete_reset", post(reset::complete_reset))
@@ -110,6 +116,10 @@ where
         .route_service("/sign", ServeFile::new(format!("{}/sign.html", static_path)))
         // Agent-key management UI (tdxf) — create/list/revoke provisioning certs
         .route_service("/agents", ServeFile::new(format!("{}/agents.html", static_path)))
+        // Warrant consent surface (spec §6.3) — approve/deny agent requests.
+        // The {code} deep link and the bare list are the same page.
+        .route_service("/consent", ServeFile::new(format!("{}/consent.html", static_path)))
+        .route_service("/consent/{code}", ServeFile::new(format!("{}/consent.html", static_path)))
         // Broker account utilities (sign out / clear cached certs / agent keys),
         // moved off the root when the marketing landing page took `/`.
         .route_service("/account", ServeFile::new(format!("{}/account.html", static_path)))

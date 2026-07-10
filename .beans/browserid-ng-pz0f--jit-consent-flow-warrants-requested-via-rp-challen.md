@@ -1,11 +1,11 @@
 ---
 # browserid-ng-pz0f
 title: JIT consent flow — warrants requested via RP challenge, approved at the registrar
-status: todo
+status: in-progress
 type: feature
 priority: high
 created_at: 2026-07-10T15:24:22Z
-updated_at: 2026-07-10T15:34:37Z
+updated_at: 2026-07-10T16:26:51Z
 parent: browserid-ng-gsnm
 blocked_by:
     - browserid-ng-5zdh
@@ -30,6 +30,10 @@ Nobody should ever type an audience string. The RP names its own audience author
 
 ### Todo
 - [x] Spec v0.4: scope param on WWW-Authenticate challenge; consent-request + pickup endpoints (RFC 8628 shape) — agent spec §6, §7.2
-- [ ] Registrar: consent request storage, notification/link, consent page + typed-signing warrant issuance
-- [ ] browserid-agent: challenge parse → consent request → poll → warrant store
+- [x] Registrar: consent request storage (store v6 migration, delete-on-delivery), /warrant/request + /warrant/poll, consent page at /consent[/code] with client-side warrant signing + stale-cert refresh. (Notification = verification_uri surfaced by the agent; broker-push notification not implemented.)
+- [x] browserid-agent: request_warrant / poll_warrant / obtain_warrant (RFC 8628 loop), auto add_warrant on approval; agent_cli example for prod smoke tests
 - [ ] Anti-phishing review of consent surface
+
+## Implementation notes (2026-07-10)
+
+Full flow shipped and covered by consent_flow_test.rs (approval roundtrip incl. single-delivery semantics, denial, registry gate). Poll rate limiting (5s/429), 900s request expiry, ≥128-bit codes, audience/scope data deleted on delivery per §6.4. Remaining: anti-phishing review of the consent surface.

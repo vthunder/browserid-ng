@@ -259,6 +259,10 @@ pub enum Action {
     /// can't be refused (spec v0.3). Acts on the P_cert's `constraint.names`;
     /// carries no `name` of its own.
     Reserve,
+    /// Raise a consent request for a warrant at the registrar (spec §6,
+    /// v0.4). Carries `name` plus `warrant-aud`/`warrant-scopes`; the user
+    /// approves (and signs the warrant) at the registrar's consent surface.
+    Warrant,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -278,6 +282,13 @@ pub struct ProvisioningRequestClaims {
     pub agent_key: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ephemeral: Option<bool>,
+    /// The RP audience a warrant is requested for (action=warrant only) —
+    /// copied verbatim from the RP's challenge, never typed by anyone
+    #[serde(rename = "warrant-aud", skip_serializing_if = "Option::is_none")]
+    pub warrant_aud: Option<String>,
+    /// The scopes the RP requested (action=warrant only; RP vocabulary)
+    #[serde(rename = "warrant-scopes", skip_serializing_if = "Option::is_none")]
+    pub warrant_scopes: Option<Vec<String>>,
 }
 
 /// A single provisioning operation, signed by `P_priv`. Short-lived.
@@ -304,6 +315,8 @@ impl ProvisioningRequest {
             name: None,
             agent_key: None,
             ephemeral: None,
+            warrant_aud: None,
+            warrant_scopes: None,
         }
     }
 
@@ -334,6 +347,29 @@ impl ProvisioningRequest {
     pub fn revoke(domain: &str, name: &str, provisioning_key: &KeyPair) -> Result<Self> {
         let mut claims = Self::base_claims(Action::Revoke, domain);
         claims.name = Some(name.to_string());
+        Self::create(claims, provisioning_key)
+    }
+
+    /// A consent request for a warrant at the registrar (spec §6.2):
+    /// `domain` is the **registrar's** domain; `audience`/`scopes` come from
+    /// the RP's challenge.
+    pub fn warrant(
+        domain: &str,
+        name: &str,
+        audience: &str,
+        scopes: Option<Vec<String>>,
+        provisioning_key: &KeyPair,
+    ) -> Result<Self> {
+        if audience.is_empty() || audience.contains('*') {
+            return Err(invalid(
+                "provisioning request",
+                "warrant audience must be one exact origin (no wildcards)",
+            ));
+        }
+        let mut claims = Self::base_claims(Action::Warrant, domain);
+        claims.name = Some(name.to_string());
+        claims.warrant_aud = Some(audience.to_string());
+        claims.warrant_scopes = scopes;
         Self::create(claims, provisioning_key)
     }
 

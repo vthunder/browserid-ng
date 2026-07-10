@@ -47,9 +47,10 @@ pub async fn start_broker() -> (String, PublicKey) {
 /// identity key, sign a P_cert delegating to a new provisioning key, and
 /// register it — returning an `AgentCredential` where broker == idp (the
 /// fallback / broker-rooted case), plus the user identity keypair (the
-/// "browser side" that signs warrants). This mirrors exactly what the
-/// browser key-management page does.
-pub async fn make_credential(base: &str) -> (AgentCredential, KeyPair) {
+/// "browser side" that signs warrants) and the session cookie (for tests
+/// that drive session-authenticated surfaces like the consent API). This
+/// mirrors exactly what the browser key-management page does.
+pub async fn make_credential(base: &str) -> (AgentCredential, KeyPair, String) {
     let http = reqwest::Client::new();
     let email = "human@example.com";
 
@@ -159,6 +160,7 @@ pub async fn make_credential(base: &str) -> (AgentCredential, KeyPair) {
             idp: base.to_string(),
         },
         user_kp,
+        session_cookie,
     )
 }
 

@@ -8,7 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    Email, EmailType, PendingVerification, ProvisioningCertRecord, Session, SessionId,
+    Email, EmailType, PendingVerification, ProvisioningCertRecord, Session, SessionId, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, User, UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
@@ -19,6 +19,7 @@ pub struct InMemoryUserStore {
     emails: RwLock<HashMap<String, Email>>,
     pending: RwLock<HashMap<String, PendingVerification>>,
     prov_certs: RwLock<HashMap<u64, ProvisioningCertRecord>>,
+    warrant_requests: RwLock<HashMap<String, WarrantRequestRecord>>,
     next_user_id: AtomicU64,
     next_prov_cert_id: AtomicU64,
 }
@@ -30,6 +31,7 @@ impl InMemoryUserStore {
             emails: RwLock::new(HashMap::new()),
             pending: RwLock::new(HashMap::new()),
             prov_certs: RwLock::new(HashMap::new()),
+            warrant_requests: RwLock::new(HashMap::new()),
             next_user_id: AtomicU64::new(1),
             next_prov_cert_id: AtomicU64::new(1),
         }
@@ -370,6 +372,89 @@ impl UserStore for InMemoryUserStore {
             }
             None => Err(BrokerError::ProvisioningCertNotFound),
         }
+    }
+
+    fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {
+        self.warrant_requests
+            .write()
+            .unwrap()
+            .insert(req.code.clone(), req);
+        Ok(())
+    }
+
+    fn get_warrant_request(&self, code: &str) -> StoreResult<Option<WarrantRequestRecord>> {
+        Ok(self.warrant_requests.read().unwrap().get(code).cloned())
+    }
+
+    fn list_pending_warrant_requests(
+        &self,
+        user_id: UserId,
+    ) -> StoreResult<Vec<WarrantRequestRecord>> {
+        let reqs = self.warrant_requests.read().unwrap();
+        let mut result: Vec<WarrantRequestRecord> = reqs
+            .values()
+            .filter(|r| {
+                r.user_id == user_id
+                    && r.status == WarrantRequestStatus::Pending
+                    && !r.is_expired()
+            })
+            .cloned()
+            .collect();
+        result.sort_by_key(|r| r.created_at);
+        Ok(result)
+    }
+
+    fn respond_warrant_request(
+        &self,
+        user_id: UserId,
+        code: &str,
+        warrant: Option<&str>,
+    ) -> StoreResult<()> {
+        let mut reqs = self.warrant_requests.write().unwrap();
+        match reqs.get_mut(code) {
+            Some(r)
+                if r.user_id == user_id
+                    && r.status == WarrantRequestStatus::Pending
+                    && !r.is_expired() =>
+            {
+                match warrant {
+                    Some(w) => {
+                        r.status = WarrantRequestStatus::Approved;
+                        r.warrant = Some(w.to_string());
+                    }
+                    None => r.status = WarrantRequestStatus::Denied,
+                }
+                Ok(())
+            }
+            _ => Err(BrokerError::WarrantRequestNotFound),
+        }
+    }
+
+    fn touch_warrant_poll(
+        &self,
+        code: &str,
+    ) -> StoreResult<Option<chrono::DateTime<Utc>>> {
+        let mut reqs = self.warrant_requests.write().unwrap();
+        match reqs.get_mut(code) {
+            Some(r) => {
+                let prev = r.last_polled_at;
+                r.last_polled_at = Some(Utc::now());
+                Ok(prev)
+            }
+            None => Err(BrokerError::WarrantRequestNotFound),
+        }
+    }
+
+    fn delete_warrant_request(&self, code: &str) -> StoreResult<()> {
+        self.warrant_requests.write().unwrap().remove(code);
+        Ok(())
+    }
+
+    fn cleanup_expired_warrant_requests(&self) -> StoreResult<u64> {
+        let mut reqs = self.warrant_requests.write().unwrap();
+        let before = reqs.len();
+        reqs.retain(|_, r| !r.is_expired());
+        Ok((before - reqs.len()) as u64)
     }
 }
 

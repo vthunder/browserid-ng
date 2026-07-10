@@ -133,6 +133,40 @@ pub trait UserStore: Send + Sync {
 
     /// Update a cert's last_endorsed_at to now (audit trail)
     fn touch_provisioning_cert(&self, cert_id: u64) -> StoreResult<()>;
+
+    // --- Warrant consent requests (agent spec §6, v0.4) ---
+
+    /// Store a new pending warrant consent request
+    fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()>;
+
+    /// Look up a warrant request by its poll code
+    fn get_warrant_request(&self, code: &str) -> StoreResult<Option<WarrantRequestRecord>>;
+
+    /// List a user's open (pending, unexpired) warrant requests, for the
+    /// consent page
+    fn list_pending_warrant_requests(&self, user_id: UserId)
+        -> StoreResult<Vec<WarrantRequestRecord>>;
+
+    /// Resolve a pending request: approve with the signed warrant JWS, or
+    /// deny with `None`. Scoped to the owning user; errors with
+    /// `WarrantRequestNotFound` if absent, another user's, or not pending.
+    fn respond_warrant_request(
+        &self,
+        user_id: UserId,
+        code: &str,
+        warrant: Option<&str>,
+    ) -> StoreResult<()>;
+
+    /// Record a poll (rate-limiting input), returning the previous
+    /// last_polled_at
+    fn touch_warrant_poll(&self, code: &str) -> StoreResult<Option<chrono::DateTime<chrono::Utc>>>;
+
+    /// Delete a warrant request (single delivery / cleanup) — removes the
+    /// audience and scope data entirely
+    fn delete_warrant_request(&self, code: &str) -> StoreResult<()>;
+
+    /// Drop expired warrant requests
+    fn cleanup_expired_warrant_requests(&self) -> StoreResult<u64>;
 }
 
 /// Trait for session storage

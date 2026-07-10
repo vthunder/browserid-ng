@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>browserid.me — agent consent</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 16px/1.6 system-ui, -apple-system, sans-serif; max-width: 44rem;
+      margin: 4rem auto; padding: 0 1.25rem; color: #1a1a1a; }
+    @media (prefers-color-scheme: dark) { body { color: #e8e8e8; background: #161616; } }
+    h1 { font-size: 1.6rem; margin-bottom: .25rem; }
+    .muted { opacity: .65; }
+    code { font-family: ui-monospace, monospace; background: rgba(127,127,127,.18);
+      padding: .12em .4em; border-radius: 5px; font-size: .9em; }
+    .card { border: 1px solid rgba(127,127,127,.3); border-radius: 12px;
+      padding: 1rem 1.25rem; margin-top: 1.5rem; }
+    .card.hot { border-color: #2b6cb0; box-shadow: 0 0 0 2px rgba(43,108,176,.25); }
+    button { font: inherit; padding: .5rem .9rem; border-radius: 9px;
+      border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
+    button.approve { background: #2f855a; color: #fff; border-color: #2f855a; }
+    button:disabled { opacity: .5; cursor: default; }
+    .origin { font-family: ui-monospace, monospace; font-weight: 700; font-size: 1.05em;
+      word-break: break-all; }
+    .scope { display: inline-block; font-family: ui-monospace, monospace; font-size: .82em;
+      border: 1px solid rgba(127,127,127,.45); border-radius: 999px; padding: .1em .6em; margin: 0 .25em .25em 0; }
+    .who { font-family: ui-monospace, monospace; }
+    .warn { color: #b7791f; } .err { color: #c53030; } .ok { color: #2f855a; }
+    .row-status { font-size: .9em; margin-top: .5rem; }
+  </style>
+</head>
+<body>
+  <h1>Agent consent</h1>
+  <p class="muted">An agent acting for you is asking to sign in somewhere new. Approving
+  signs a <strong>warrant</strong> with your identity's own key (held in this browser):
+  a grant valid <em>only at the site shown</em>, with <em>only the scopes shown</em>,
+  revocable by revoking the agent. Nothing is shared with any other site.</p>
+
+  <div id="auth-gate" class="card"><p>Checking your session…</p></div>
+  <div id="list" hidden></div>
+
+  <p class="muted" style="margin-top:2rem">
+    <a href="/agents">Manage agent keys</a> · <a href="/">← browserid.me</a></p>
+
+<script src="/common/js/lib/jwcrypto-compat.js"></script>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const enc = new TextEncoder();
+const b64urlJson = (obj) => btoa(String.fromCharCode(...enc.encode(JSON.stringify(obj))))
+  .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const escapeHtml = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const sign = (key, msg) => new Promise((res, rej) =>
+  key.sign(msg, (err, sig) => err ? rej(err) : res(sig)));
+
+let csrf = null;
+// Deep-linked code from /consent/<code>, if any.
+const linkedCode = location.pathname.match(/^\/consent\/(.+)$/)?.[1] || null;
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { credentials: 'same-origin', ...opts });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok || body.success === false) throw new Error(body.reason || body.error || `HTTP ${r.status}`);
+  return body;
+}
+
+/// Locally-held identities: {email, cert, priv, issuer, exp} — same origin
+/// store the dialog / agents page use. The identity key never leaves here.
+function localIdentity(email) {
+  let store = {};
+  try { store = JSON.parse(localStorage.emails || '{}'); } catch {}
+  for (const issuerKey of Object.keys(store)) {
+    for (const [addr, rec] of Object.entries(store[issuerKey] || {})) {
+      if (addr.toLowerCase() !== email.toLowerCase() || !rec?.priv || !rec?.cert) continue;
+      let exp = 0, issuer = null;
+      try {
+        const p = JSON.parse(atob(rec.cert.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+        exp = p.exp; issuer = p.iss;
+      } catch {}
+      return { email: addr, cert: rec.cert, priv: rec.priv, issuer, exp, issuerKey };
+    }
+  }
+  return null;
+}
+
+/// A warrant must be signed while the parent (identity) cert is valid. If
+/// the cached cert is stale and it's ours to reissue (broker-issued for a
+/// session-owned email), silently refresh it via /wsapi/cert_key.
+async function freshIdentity(email) {
+  const id = localIdentity(email);
+  if (!id) return null;
+  const now = Math.floor(Date.now() / 1000);
+  if (id.exp && id.exp > now + 60) return id;
+  if (!id.priv?.x) return null;
+  try {
+    const body = await api('/wsapi/cert_key', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        email: id.email,
+        pubkey: { algorithm: 'Ed25519', publicKey: id.priv.x },
+        ephemeral: false,
+      }),
+    });
+    const store = JSON.parse(localStorage.emails || '{}');
+    store[id.issuerKey][id.email].cert = body.cert;
+    localStorage.emails = JSON.stringify(store);
+    return localIdentity(email);
+  } catch { return null; }
+}
+
+/// Sign the §5.2 warrant with the delegator's identity key.
+async function signWarrant(id, agentEmail, audience, scopes) {
+  const userKey = window.jwcrypto.loadSecretKeyFromObject(id.priv);
+  const now = Math.floor(Date.now() / 1000);
+  const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+  const claims = {
+    typ: 'browserid-agent-warrant-v1',
+    iss: id.email,
+    agent: agentEmail,
+    aud: audience,
+    'parent-cert': id.cert,
+    iat: now,
+    exp: now + 90 * 24 * 3600,
+  };
+  if (scopes && scopes.length) claims.scopes = scopes;
+  const payload = b64urlJson(claims);
+  const sig = await sign(userKey, `${header}.${payload}`);
+  return `${header}.${payload}.${sig}`;
+}
+
+function render(requests) {
+  const list = $('list');
+  list.hidden = false;
+  if (!requests.length) {
+    list.innerHTML = `<div class="card"><p class="muted">No pending requests. When an agent
+      asks to sign in somewhere new, it appears here.</p></div>`;
+    return;
+  }
+  list.innerHTML = requests.map(r => `
+    <div class="card ${r.code === linkedCode ? 'hot' : ''}" id="req-${escapeHtml(r.code)}">
+      <p style="margin-top:0"><span class="who">${escapeHtml(r.agent_email)}</span>
+        <span class="muted">(${escapeHtml(r.label)}, acting for
+        <span class="who">${escapeHtml(r.delegator_email)}</span>)</span><br>
+        wants to act for you at</p>
+      <p class="origin">${escapeHtml(r.audience)}</p>
+      <p>${(r.scopes || []).length
+          ? 'with scopes: ' + r.scopes.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')
+          : '<span class="muted">no specific scopes requested (site-level access)</span>'}</p>
+      <p>
+        <button class="approve" data-code="${escapeHtml(r.code)}">Approve</button>
+        <button class="deny" data-code="${escapeHtml(r.code)}">Deny</button>
+        <span class="muted" style="font-size:.85em">expires ${new Date(r.expires_at).toLocaleTimeString()}</span>
+      </p>
+      <p class="row-status" id="status-${escapeHtml(r.code)}"></p>
+    </div>`).join('');
+
+  const byCode = Object.fromEntries(requests.map(r => [r.code, r]));
+  for (const b of list.querySelectorAll('button.approve')) {
+    b.onclick = () => resolve(byCode[b.dataset.code], true);
+  }
+  for (const b of list.querySelectorAll('button.deny')) {
+    b.onclick = () => resolve(byCode[b.dataset.code], false);
+  }
+  if (linkedCode && byCode[linkedCode]) {
+    document.getElementById(`req-${linkedCode}`)?.scrollIntoView({ behavior: 'smooth' });
+  }
+}
+
+async function resolve(r, approve) {
+  const status = $(`status-${r.code}`);
+  const card = document.getElementById(`req-${r.code}`);
+  for (const b of card.querySelectorAll('button')) b.disabled = true;
+  try {
+    let warrant = null;
+    if (approve) {
+      status.className = 'row-status muted';
+      status.textContent = 'Signing warrant…';
+      const id = await freshIdentity(r.delegator_email);
+      if (!id) throw new Error(
+        `the identity key for ${r.delegator_email} is not available in this browser — ` +
+        `sign in to an app with that identity here first, then retry`);
+      warrant = await signWarrant(id, r.agent_email, r.audience, r.scopes);
+    }
+    await api('/wsapi/warrant_respond', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ csrf, code: r.code, approve, warrant }),
+    });
+    status.className = approve ? 'row-status ok' : 'row-status muted';
+    status.textContent = approve
+      ? 'Approved — the agent will pick this up within a few seconds.'
+      : 'Denied.';
+  } catch (e) {
+    status.className = 'row-status err';
+    status.textContent = 'Failed: ' + e.message;
+    for (const b of card.querySelectorAll('button')) b.disabled = false;
+  }
+}
+
+async function boot() {
+  let ctx;
+  try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
+  if (!ctx.authenticated) {
+    $('auth-gate').innerHTML = `<p>You are not signed in. Consent requests are approved from
+      your browser­id session — sign in through any app's login dialog first, then reload.</p>`;
+    return;
+  }
+  if (!window.jwcrypto || !window.crypto?.subtle) {
+    $('auth-gate').innerHTML = `<p class="err">This browser lacks the crypto needed to sign warrants.</p>`;
+    return;
+  }
+  csrf = ctx.csrf_token;
+  $('auth-gate').hidden = true;
+  const { requests } = await api('/wsapi/warrant_requests');
+  render(requests);
+}
+
+boot().catch(e => { $('auth-gate').innerHTML = `<p class="err">Error: ${escapeHtml(e.message)}</p>`; });
+</script>
+</body>
+</html>

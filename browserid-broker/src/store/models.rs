@@ -21,9 +21,10 @@ pub enum EmailType {
     Primary,
     /// Email verified through the broker (secondary flow)
     Secondary,
-    /// Agent identity minted headlessly via an API key (l8lw). Attribution to
-    /// the human lives in `parent_email`; agent-ness is issuer-side metadata
-    /// only, never protocol-visible.
+    /// Agent identity minted via the delegation chain. Attribution to the
+    /// human lives in `parent_email` and — since spec v0.4 — is also
+    /// protocol-visible: these identities get typed agent certificates with
+    /// an `agent.parent` claim.
     Agent,
 }
 
@@ -120,6 +121,68 @@ pub struct ProvisioningCertRecord {
 impl ProvisioningCertRecord {
     pub fn is_active(&self) -> bool {
         self.revoked_at.is_none()
+    }
+}
+
+/// A pending warrant consent request (agent spec §6, v0.4). Created by an
+/// agent's `warrant` request against a registered provisioning cert; resolved
+/// by the delegator on the consent page, which signs the warrant client-side
+/// with the identity key (the broker never holds it). The audience and scopes
+/// live here only while the request is open — the record is deleted on
+/// delivery, so the registrar retains no record of where warrants apply
+/// (§6.4 privacy rule).
+#[derive(Debug, Clone)]
+pub struct WarrantRequestRecord {
+    /// High-entropy opaque code — the poll credential (single delivery)
+    pub code: String,
+    /// The delegator's account
+    pub user_id: UserId,
+    pub delegator_email: String,
+    /// The agent identity the warrant is for (`<name>@<idp-domain>`)
+    pub agent_email: String,
+    /// Label of the provisioning cert that raised the request (display)
+    pub label: String,
+    /// The RP audience, verbatim from the RP's challenge
+    pub audience: String,
+    /// Scopes the RP requested (RP vocabulary)
+    pub scopes: Vec<String>,
+    pub status: WarrantRequestStatus,
+    /// The signed warrant JWS, present once approved
+    pub warrant: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub last_polled_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarrantRequestStatus {
+    Pending,
+    Approved,
+    Denied,
+}
+
+impl WarrantRequestStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WarrantRequestStatus::Pending => "pending",
+            WarrantRequestStatus::Approved => "approved",
+            WarrantRequestStatus::Denied => "denied",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "pending" => Some(WarrantRequestStatus::Pending),
+            "approved" => Some(WarrantRequestStatus::Approved),
+            "denied" => Some(WarrantRequestStatus::Denied),
+            _ => None,
+        }
+    }
+}
+
+impl WarrantRequestRecord {
+    pub fn is_expired(&self) -> bool {
+        Utc::now() > self.expires_at
     }
 }
 

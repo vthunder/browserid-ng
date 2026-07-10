@@ -86,6 +86,27 @@
       <strong>Your agent keys</strong>
       <div id="list"><p class="muted">Loading…</p></div>
     </div>
+
+    <div class="card">
+      <strong>Sign a warrant manually</strong>
+      <p class="muted" style="font-size:.9em;margin:.3rem 0 0">An agent normally requests
+      access itself and you approve it on the <a href="/consent">consent page</a>. This is
+      the manual path: sign a warrant here and paste it into the agent yourself. The
+      audience must be the exact value the site advertises.</p>
+      <label for="w-identity">Your identity (signs the warrant)</label>
+      <select id="w-identity"></select>
+      <label for="w-agent">Agent identity</label>
+      <input id="w-agent" placeholder="e.g. attestor@browserid.me">
+      <label for="w-audience">Audience (exact origin)</label>
+      <input id="w-audience" placeholder="e.g. https://api.example.com">
+      <label for="w-scopes">Scopes (space-separated, optional)</label>
+      <input id="w-scopes" placeholder="e.g. post read">
+      <p style="margin-top:.9rem">
+        <button id="w-create" class="primary">Sign warrant</button>
+        <span id="w-status" class="muted"></span>
+      </p>
+      <pre id="w-out" hidden></pre>
+    </div>
   </div>
 
   <p class="muted" style="margin-top:2rem"><a href="/">← back to browserid.me</a></p>
@@ -171,8 +192,54 @@ async function boot() {
     sel.onchange = showIdentityNote;
     showIdentityNote();
   }
+
+  // Manual-warrant identity picker mirrors the delegation picker.
+  const wsel = $('w-identity');
+  wsel.innerHTML = sel.innerHTML;
+  $('w-create').disabled = !ids.length;
+
   await refreshList();
 }
+
+// ---- Manual warrant signing (spec §5.2; the MVP fallback for the consent flow) ----
+$('w-create').onclick = async () => {
+  const id = localIdentities().find(i => i.email === $('w-identity').value);
+  const agentEmail = $('w-agent').value.trim().toLowerCase();
+  const audience = $('w-audience').value.trim();
+  const scopes = $('w-scopes').value.split(/\s+/).map(s => s.trim()).filter(Boolean);
+  const status = $('w-status');
+  const fail = (m) => { status.className = 'err'; status.textContent = m; };
+  if (!id) return fail('Pick an identity.');
+  if (!/^[^@\s]+@[^@\s]+$/.test(agentEmail)) return fail('Agent identity must be an email form.');
+  if (!audience || audience.includes('*')) return fail('Audience must be one exact origin (no wildcards).');
+  if (id.exp && id.exp < Math.floor(Date.now() / 1000)) {
+    return fail('This identity\'s cached certificate has expired — sign in again first.');
+  }
+  status.className = 'muted'; status.textContent = 'Signing…';
+  try {
+    const userKey = window.jwcrypto.loadSecretKeyFromObject(id.priv);
+    const now = Math.floor(Date.now() / 1000);
+    const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+    const claims = {
+      typ: 'browserid-agent-warrant-v1',
+      iss: id.email,
+      agent: agentEmail,
+      aud: audience,
+      'parent-cert': id.cert,
+      iat: now,
+      exp: now + 90 * 24 * 3600,
+    };
+    if (scopes.length) claims.scopes = scopes;
+    const payload = b64urlJson(claims);
+    const sig = await sign(userKey, `${header}.${payload}`);
+    $('w-out').textContent = `${header}.${payload}.${sig}`;
+    $('w-out').hidden = false;
+    status.className = 'ok';
+    status.textContent = 'Signed — give this warrant to your agent (AgentIdentity::add_warrant).';
+  } catch (e) {
+    fail('Failed: ' + e.message);
+  }
+};
 
 /// Whether an IdP speaks the agent-provisioning API. Probe its
 /// /provision/reserve: a participating IdP (broker or e.g. mingo.place)

@@ -83,6 +83,12 @@ pub enum BrokerError {
 
     #[error("Agent provisioning is not enabled")]
     AgentProvisioningDisabled,
+
+    #[error("Warrant request not found")]
+    WarrantRequestNotFound,
+
+    #[error("Polling too fast")]
+    PollTooFast,
 }
 
 impl IntoResponse for BrokerError {
@@ -148,6 +154,10 @@ impl IntoResponse for BrokerError {
             BrokerError::AgentProvisioningDisabled => {
                 (StatusCode::NOT_FOUND, "Agent provisioning is not enabled")
             }
+            BrokerError::WarrantRequestNotFound => {
+                (StatusCode::NOT_FOUND, "Warrant request not found")
+            }
+            BrokerError::PollTooFast => (StatusCode::TOO_MANY_REQUESTS, "Polling too fast"),
         };
 
         let body = json!({ "success": false, "reason": message });

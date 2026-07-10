@@ -68,6 +68,15 @@ pub enum AgentError {
     #[error("invalid warrant: {0}")]
     InvalidWarrant(String),
 
+    #[error("warrant request denied by the principal")]
+    WarrantDenied,
+
+    #[error("warrant request expired before the principal responded")]
+    WarrantExpired,
+
+    #[error("warrant request failed ({status}): {reason}")]
+    WarrantRequest { status: u16, reason: String },
+
     #[error("token exchange refused ({status}): {error}")]
     Exchange { status: u16, error: String },
 
@@ -163,6 +172,17 @@ impl std::fmt::Debug for AgentIdentity {
     }
 }
 
+/// A pending consent request at the registrar (spec §6.2). Surface
+/// `verification_uri` to the principal; poll with the `code`.
+#[derive(Debug, Clone)]
+pub struct WarrantRequestHandle {
+    pub audience: String,
+    pub code: String,
+    pub verification_uri: String,
+    pub expires_in: i64,
+    pub interval: i64,
+}
+
 /// Serializable identity: the agent key seed, email, and last cert. Excludes
 /// the credential — that is re-supplied on [`AgentIdentity::load`].
 #[derive(Serialize, Deserialize)]
@@ -248,6 +268,113 @@ impl AgentIdentity {
     /// Audiences this agent currently holds warrants for
     pub fn warranted_audiences(&self) -> Vec<&str> {
         self.warrants.keys().map(String::as_str).collect()
+    }
+
+    /// Raise a **consent request** at the registrar (spec §6.2): ask the
+    /// principal to approve a warrant for `audience` with `scopes`. Returns a
+    /// handle whose `verification_uri` must reach the principal (print it,
+    /// message it — whatever channel exists); they approve on the registrar's
+    /// consent page.
+    pub async fn request_warrant(
+        &self,
+        audience: &str,
+        scopes: Option<Vec<String>>,
+    ) -> Result<WarrantRequestHandle> {
+        let name = self
+            .email
+            .split('@')
+            .next()
+            .ok_or_else(|| AgentError::InvalidStored("email has no local part".into()))?;
+        let registrar_domain = url_host(&self.credential.broker).to_string();
+        let key = self.credential.provisioning_key()?;
+        let request =
+            ProvisioningRequest::warrant(&registrar_domain, name, audience, scopes, &key)?;
+        let bundle = build_bundle(&self.credential, request)?;
+
+        let response = self
+            .http
+            .post(format!(
+                "{}/warrant/request",
+                self.credential.broker.trim_end_matches('/')
+            ))
+            .json(&serde_json::json!({ "request_bundle": bundle.encoded() }))
+            .send()
+            .await?;
+        let status = response.status();
+        let value: serde_json::Value = response.json().await.unwrap_or_default();
+        if !status.is_success() || value["success"] != serde_json::Value::Bool(true) {
+            return Err(AgentError::WarrantRequest {
+                status: status.as_u16(),
+                reason: value["reason"].as_str().unwrap_or("no reason given").to_string(),
+            });
+        }
+        Ok(WarrantRequestHandle {
+            audience: audience.to_string(),
+            code: value["code"].as_str().unwrap_or_default().to_string(),
+            verification_uri: value["verification_uri"].as_str().unwrap_or_default().to_string(),
+            expires_in: value["expires_in"].as_i64().unwrap_or(900),
+            interval: value["interval"].as_i64().unwrap_or(5).max(1),
+        })
+    }
+
+    /// Poll a pending consent request once. On approval the warrant is
+    /// validated and stored ([`Self::add_warrant`]) and `Ok(true)` returned;
+    /// `Ok(false)` means still pending; denial/expiry are errors.
+    pub async fn poll_warrant(&mut self, handle: &WarrantRequestHandle) -> Result<bool> {
+        let response = self
+            .http
+            .post(format!(
+                "{}/warrant/poll",
+                self.credential.broker.trim_end_matches('/')
+            ))
+            .json(&serde_json::json!({ "code": handle.code }))
+            .send()
+            .await?;
+        if response.status().as_u16() == 410 {
+            return Err(AgentError::WarrantExpired);
+        }
+        if response.status().as_u16() == 429 {
+            return Ok(false); // polled too fast; caller waits out the interval
+        }
+        let value: serde_json::Value = response.json().await.unwrap_or_default();
+        match value["status"].as_str() {
+            Some("pending") => Ok(false),
+            Some("denied") => Err(AgentError::WarrantDenied),
+            Some("approved") => {
+                let warrant = value["warrant"].as_str().ok_or_else(|| {
+                    AgentError::InvalidWarrant("approved response missing warrant".into())
+                })?;
+                self.add_warrant(warrant)?;
+                Ok(true)
+            }
+            Some("expired") | None | Some(_) => Err(AgentError::WarrantExpired),
+        }
+    }
+
+    /// The whole consent loop: request, surface the verification URI via
+    /// `notify`, poll until the principal responds (or the request expires).
+    pub async fn obtain_warrant(
+        &mut self,
+        audience: &str,
+        scopes: Option<Vec<String>>,
+        notify: impl FnOnce(&WarrantRequestHandle),
+    ) -> Result<()> {
+        if self.warrants.contains_key(audience) {
+            return Ok(());
+        }
+        let handle = self.request_warrant(audience, scopes).await?;
+        notify(&handle);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(handle.expires_in.max(0) as u64);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(handle.interval as u64)).await;
+            if self.poll_warrant(&handle).await? {
+                return Ok(());
+            }
+            if std::time::Instant::now() > deadline {
+                return Err(AgentError::WarrantExpired);
+            }
+        }
     }
 
     pub fn email(&self) -> &str {

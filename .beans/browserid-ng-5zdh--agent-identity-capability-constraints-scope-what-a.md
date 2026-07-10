@@ -1,11 +1,11 @@
 ---
 # browserid-ng-5zdh
 title: Agent identity capability constraints — scope what a delegated agent can do
-status: in-progress
+status: completed
 type: feature
 priority: high
 created_at: 2026-07-10T08:09:05Z
-updated_at: 2026-07-10T16:02:26Z
+updated_at: 2026-07-10T16:26:51Z
 parent: browserid-ng-gsnm
 ---
 
@@ -54,8 +54,12 @@ Design converged; canonical write-up: `docs/plans/2026-07-10-agent-identity-v3-a
 - [x] browserid-core: warrant type, chain parsing, typ enforcement (warrant.rs; agent typ/block in certificate.rs; warrant-in-chain + VerifiedPresentation in assertion.rs)
 - [x] browserid-rp: fail-closed verification + scope intersection at token endpoint (with_scopes, TokenGrant, challenge scopes param)
 - [x] browserid-agent: warrant storage + presentation (add_warrant, NoWarrant fail-closed, persisted warrants)
-- [ ] Registrar UI: manual warrant creation (MVP fallback; JIT flow is sibling bean)
+- [x] Registrar UI: manual warrant creation (MVP fallback; JIT flow is sibling bean) — card on /agents
 
 ## Implementation notes (2026-07-10)
 
 Core/broker/rp/agent shipped; all workspace tests green. Broker mints agent certs (typ + parent) via issue_certificate for EmailType::Agent; /verify returns agent{parent,scopes}. **Breaking by design**: once an agent re-mints (≤24h), warrant-less presentations are rejected everywhere — mingo RPs must move to the warrant flow (browserid-rp handles it transparently; agents need add_warrant). Remaining here: registrar UI manual warrant creation. mingo-idp adoption tracked under 1pnf.
+
+## Summary of Changes
+
+Shipped end-to-end. Spec v0.4 (agent claims block, cert typ, warrants, chain framing); browserid-core (warrant module, fail-closed chain parse/verify, VerifiedPresentation); broker (agent-cert minting, /verify attribution); browserid-rp (scope intersection, challenge scopes); browserid-agent (warrant storage + presentation, NoWarrant fail-closed); manual warrant signing card on /agents. All workspace tests green. JIT consent flow continued in sibling pz0f.

@@ -8,12 +8,13 @@ use uuid::Uuid;
 
 use super::{
     Email, EmailType, PendingVerification, ProvisioningCertRecord, Session, SessionId,
-    SessionStore, StoreResult, User, UserId, UserStore, VerificationType,
+    SessionStore, StoreResult, User, UserId, UserStore, VerificationType, WarrantRequestRecord,
+    WarrantRequestStatus,
 };
 use crate::error::BrokerError;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -75,6 +76,9 @@ impl SqliteStore {
 
             if current_version < 5 {
                 Self::migrate_v5(conn)?;
+            }
+            if current_version < 6 {
+                Self::migrate_v6(conn)?;
             }
 
             // Update schema version
@@ -233,7 +237,71 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v6(conn: &Connection) -> Result<(), BrokerError> {
+        // Warrant consent requests (agent spec §6, v0.4). Short-lived rows:
+        // deleted on delivery (privacy: the broker keeps no record of where
+        // warrants apply) and swept when expired. Scopes stored as a JSON
+        // array string.
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS warrant_requests (
+                code TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                delegator_email TEXT NOT NULL,
+                agent_email TEXT NOT NULL,
+                label TEXT NOT NULL,
+                audience TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                status TEXT NOT NULL,
+                warrant TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                last_polled_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_warrant_requests_user ON warrant_requests(user_id);
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
+
+// Row → WarrantRequestRecord mapping
+fn warrant_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantRequestRecord> {
+    let parse_ts_opt = |s: Option<String>| {
+        s.and_then(|s| {
+            DateTime::parse_from_rfc3339(&s)
+                .map(|dt| dt.with_timezone(&Utc))
+                .ok()
+        })
+    };
+    let parse_ts = |s: String| {
+        DateTime::parse_from_rfc3339(&s)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now())
+    };
+    let user_id: i64 = row.get(1)?;
+    let scopes_json: String = row.get(6)?;
+    let status_str: String = row.get(7)?;
+    Ok(WarrantRequestRecord {
+        code: row.get(0)?,
+        user_id: UserId(user_id as u64),
+        delegator_email: row.get(2)?,
+        agent_email: row.get(3)?,
+        label: row.get(4)?,
+        audience: row.get(5)?,
+        scopes: serde_json::from_str(&scopes_json).unwrap_or_default(),
+        status: WarrantRequestStatus::from_str(&status_str)
+            .unwrap_or(WarrantRequestStatus::Pending),
+        warrant: row.get(8)?,
+        created_at: parse_ts(row.get(9)?),
+        expires_at: parse_ts(row.get(10)?),
+        last_polled_at: parse_ts_opt(row.get(11)?),
+    })
+}
+
+const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, audience, scopes, status, warrant, created_at, expires_at, last_polled_at";
 
 // Row → ProvisioningCertRecord mapping shared by the registry queries
 fn prov_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProvisioningCertRecord> {
@@ -830,6 +898,130 @@ impl UserStore for SqliteStore {
         Ok(())
     }
 
+    fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO warrant_requests (code, user_id, delegator_email, agent_email, label, audience, scopes, status, warrant, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                req.code,
+                req.user_id.0 as i64,
+                req.delegator_email,
+                req.agent_email,
+                req.label,
+                req.audience,
+                serde_json::to_string(&req.scopes).unwrap_or_else(|_| "[]".into()),
+                req.status.as_str(),
+                req.warrant,
+                req.created_at.to_rfc3339(),
+                req.expires_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn get_warrant_request(&self, code: &str) -> StoreResult<Option<WarrantRequestRecord>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            &format!("SELECT {WARRANT_REQ_COLUMNS} FROM warrant_requests WHERE code = ?1"),
+            params![code],
+            warrant_request_from_row,
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn list_pending_warrant_requests(
+        &self,
+        user_id: UserId,
+    ) -> StoreResult<Vec<WarrantRequestRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {WARRANT_REQ_COLUMNS} FROM warrant_requests
+                 WHERE user_id = ?1 AND status = 'pending' AND expires_at > ?2
+                 ORDER BY created_at"
+            ))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let reqs = stmt
+            .query_map(
+                params![user_id.0 as i64, Utc::now().to_rfc3339()],
+                warrant_request_from_row,
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(reqs)
+    }
+
+    fn respond_warrant_request(
+        &self,
+        user_id: UserId,
+        code: &str,
+        warrant: Option<&str>,
+    ) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let (status, warrant_val) = match warrant {
+            Some(w) => ("approved", Some(w.to_string())),
+            None => ("denied", None),
+        };
+        let rows = conn
+            .execute(
+                "UPDATE warrant_requests SET status = ?1, warrant = ?2
+                 WHERE code = ?3 AND user_id = ?4 AND status = 'pending' AND expires_at > ?5",
+                params![status, warrant_val, code, user_id.0 as i64, Utc::now().to_rfc3339()],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::WarrantRequestNotFound);
+        }
+        Ok(())
+    }
+
+    fn touch_warrant_poll(&self, code: &str) -> StoreResult<Option<DateTime<Utc>>> {
+        let conn = self.conn.lock().unwrap();
+        let prev: Option<Option<String>> = conn
+            .query_row(
+                "SELECT last_polled_at FROM warrant_requests WHERE code = ?1",
+                params![code],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let Some(prev) = prev else {
+            return Err(BrokerError::WarrantRequestNotFound);
+        };
+        conn.execute(
+            "UPDATE warrant_requests SET last_polled_at = ?1 WHERE code = ?2",
+            params![Utc::now().to_rfc3339(), code],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(prev.and_then(|s| {
+            DateTime::parse_from_rfc3339(&s)
+                .map(|dt| dt.with_timezone(&Utc))
+                .ok()
+        }))
+    }
+
+    fn delete_warrant_request(&self, code: &str) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM warrant_requests WHERE code = ?1", params![code])
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn cleanup_expired_warrant_requests(&self) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "DELETE FROM warrant_requests WHERE expires_at <= ?1",
+                params![Utc::now().to_rfc3339()],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows as u64)
+    }
+
     fn touch_provisioning_cert(&self, cert_id: u64) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
@@ -1044,6 +1236,42 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn touch_provisioning_cert(&self, cert_id: u64) -> StoreResult<()> {
         (**self).touch_provisioning_cert(cert_id)
+    }
+
+    fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {
+        (**self).create_warrant_request(req)
+    }
+
+    fn get_warrant_request(&self, code: &str) -> StoreResult<Option<WarrantRequestRecord>> {
+        (**self).get_warrant_request(code)
+    }
+
+    fn list_pending_warrant_requests(
+        &self,
+        user_id: UserId,
+    ) -> StoreResult<Vec<WarrantRequestRecord>> {
+        (**self).list_pending_warrant_requests(user_id)
+    }
+
+    fn respond_warrant_request(
+        &self,
+        user_id: UserId,
+        code: &str,
+        warrant: Option<&str>,
+    ) -> StoreResult<()> {
+        (**self).respond_warrant_request(user_id, code, warrant)
+    }
+
+    fn touch_warrant_poll(&self, code: &str) -> StoreResult<Option<DateTime<Utc>>> {
+        (**self).touch_warrant_poll(code)
+    }
+
+    fn delete_warrant_request(&self, code: &str) -> StoreResult<()> {
+        (**self).delete_warrant_request(code)
+    }
+
+    fn cleanup_expired_warrant_requests(&self) -> StoreResult<u64> {
+        (**self).cleanup_expired_warrant_requests()
     }
 }
 

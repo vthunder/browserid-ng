@@ -107,7 +107,7 @@ async fn start_rp(broker_base: &str) -> String {
 #[tokio::test]
 async fn agent_authenticates_to_cold_rp() {
     let (broker, _) = start_broker().await;
-    let (credential, user_kp) = make_credential(&broker).await;
+    let (credential, user_kp, _session) = make_credential(&broker).await;
     let rp = start_rp(&broker).await;
 
     let mut agent = AgentIdentity::provision(&credential, Some("worker")).await.unwrap();
@@ -173,7 +173,7 @@ async fn rp_advertises_oauth_metadata() {
 #[tokio::test]
 async fn no_challenge_and_bad_assertion_are_clean_errors() {
     let (broker, _) = start_broker().await;
-    let (credential, _) = make_credential(&broker).await;
+    let (credential, _, _) = make_credential(&broker).await;
     let rp = start_rp(&broker).await;
 
     let mut agent = AgentIdentity::provision(&credential, None).await.unwrap();

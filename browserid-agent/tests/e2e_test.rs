@@ -15,7 +15,7 @@ const AUDIENCE: &str = "https://api.example.com";
 #[tokio::test]
 async fn sdk_provision_assert_verify_persist_revoke() {
     let (base, broker_pubkey) = start_broker().await;
-    let (credential, user_kp) = make_credential(&base).await;
+    let (credential, user_kp, _session) = make_credential(&base).await;
 
     // Provision: SDK generates+keeps the agent keypair; endorse→mint yields a cert.
     let mut agent = AgentIdentity::provision(&credential, Some("attestor")).await.unwrap();
@@ -89,7 +89,7 @@ async fn sdk_unregistered_credential_is_rejected() {
     // delegation. The broker refuses to endorse (404), surfaced as an Endorse
     // error.
     let (other_base, _) = start_broker().await;
-    let (credential, _) = make_credential(&other_base).await; // registered at a DIFFERENT broker
+    let (credential, _, _) = make_credential(&other_base).await; // registered at a DIFFERENT broker
     let credential = browserid_agent::AgentCredential {
         broker: base.clone(), // point endorsement at a broker that doesn't know it
         idp: base,
