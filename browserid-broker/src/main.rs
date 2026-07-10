@@ -99,6 +99,15 @@ async fn main() -> Result<()> {
 
     let state = Arc::new(state);
 
+    // Warm the DNS fallback fetcher at startup: auth_with_assertion uses the
+    // non-initializing accessor, so a cold start otherwise fails the first
+    // primary login with "DNS discovery not configured" until /verify has
+    // initialized it (bean 888v).
+    match state.fallback_fetcher().await {
+        Ok(_) => tracing::info!("DNS fallback fetcher initialized"),
+        Err(e) => tracing::warn!("DNS fallback fetcher init failed (primary login degraded): {e}"),
+    }
+
     // Determine static files path (relative to workspace root or package root)
     let static_path = if std::path::Path::new("browserid-broker/static").exists() {
         "browserid-broker/static"
