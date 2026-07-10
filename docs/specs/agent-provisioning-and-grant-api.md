@@ -425,8 +425,11 @@ audience:
   `P_pub`: the provisioning key never appears in an RP-facing presentation,
   and identity binding survives free agent-key rotation under §4.3's
   idempotent mint.)*
-- `aud` — **exactly one** RP audience, exact origin, same normalization as
-  assertion `aud` (core §5). Wildcards/patterns MUST be rejected.
+- `aud` — **exactly one** RP audience: an opaque, exact-match identifier,
+  same normalization as assertion `aud` (core §5). For web RPs this is the
+  https origin; non-web consumers MAY use scheme-specific URIs (e.g.
+  `sbo://<ledger>`) — verifiers compare the exact string and never
+  interpret it. Wildcards/patterns MUST be rejected.
 - `scopes` — OPTIONAL array of opaque strings. Meaningful only to the RP
   (§7.3); the IdP and registrar never interpret (or see) them.
 - `parent-cert` — the delegator's `U_cert`, embedded so the presentation is
@@ -593,7 +596,8 @@ WWW-Authenticate: BrowserID realm="api",
 
 `audience` (REQUIRED) — the exact audience assertions and warrants must
 name; the RP is the sole authority for this value (agents and consent pages
-copy it verbatim, closing the "which origin do I type" problem).
+copy it verbatim, closing the "which origin do I type" problem). Usually the
+API origin, but any exact-match URI is valid (see §5.2).
 `token_endpoint` (REQUIRED) — absolute URL. `scopes` (OPTIONAL, *new in
 v0.4*) — space-separated scope strings the RP requests, in its own
 vocabulary. `realm` OPTIONAL; unknown parameters MUST be ignored.

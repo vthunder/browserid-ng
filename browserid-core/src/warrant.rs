@@ -43,8 +43,9 @@ pub struct WarrantClaims {
     pub iss: String,
     /// The agent's full identity email this warrant authorizes
     pub agent: String,
-    /// Exactly one RP audience (exact origin — no wildcards), same
-    /// normalization as assertion `aud`
+    /// Exactly one RP audience: an opaque exact-match identifier (https
+    /// origin for web RPs; scheme-specific URIs like `sbo://…` allowed —
+    /// no wildcards), same normalization as assertion `aud`
     pub aud: String,
     /// Opaque scope strings, meaningful only to the RP. Absent means
     /// audience-authorized but scope-unqualified.

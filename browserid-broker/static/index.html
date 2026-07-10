@@ -282,10 +282,11 @@
     <div class="brand"><span class="mark"></span><span class="brand-word">browserid<span class="brand-ng">.me</span></span></div>
     <nav class="topnav">
       <a href="#rp">For apps</a>
-      <a href="#people">For people</a>
       <a href="#agents">For agents</a>
+      <a href="#people">For people</a>
       <a href="#why">Why</a>
       <a href="#start">Get started</a>
+      <a href="/account" style="color: var(--accent); font-weight: 600;">Sign in</a>
       <button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle color theme">theme</button>
     </nav>
   </div>
@@ -295,14 +296,14 @@
   <div class="wrap">
     <div class="hero-copy">
       <span class="eyebrow">Open identity protocol</span>
-      <h1>Web identity for <span class="hl-human">humans</span> and <span class="hl-agent">agents</span></h1>
+      <h1>Identity for <span class="hl-agent">agents</span>, answerable to <span class="hl-human">humans</span></h1>
 
       <div class="aud-toggle" role="group" aria-label="Choose your view">
         <button type="button" data-aud="rp" aria-pressed="true">I'm building an app</button>
         <button type="button" data-aud="user" aria-pressed="false">I just want to use it</button>
       </div>
 
-      <p class="hero-sub" id="heroSub">Add sign-in for people <em>and their agents</em> in a few lines — no developer portal, no approval, and it works with any email, on any domain.</p>
+      <p class="hero-sub" id="heroSub">Know exactly which agent is acting, for whom, and with what permission — every grant signed by the human behind it, revocable by them. Human sign-in included, with the email they already use.</p>
 
       <div class="hero-actions">
         <a class="btn btn-primary" id="heroCta" href="#rp">Add to your app</a>
@@ -348,19 +349,19 @@
 <section class="band problem">
   <div class="wrap">
     <span class="eyebrow">The problem</span>
-    <p class="lede">Signing in is still a chore — a new password for every app, a setup gauntlet for every developer, and no safe path at all for the agents people now run.</p>
+    <p class="lede">Agents act everywhere now — and they sign in by borrowing passwords, scraping sessions, and holding master keys nobody can take back.</p>
     <div class="prob-grid">
       <div class="prob">
-        <h3>Passwords</h3>
-        <p>A new one for every app. They get reused, phished, and breached.</p>
+        <h3>No identity of their own</h3>
+        <p>An agent logging in as its human is indistinguishable from its human — no attribution, no audit trail, no per-agent limits.</p>
       </div>
       <div class="prob">
-        <h3>“Sign in with…”</h3>
-        <p>Register with a provider, wait for approval, and tie your users to one platform’s account.</p>
+        <h3>No boundaries</h3>
+        <p>A borrowed credential works everywhere its owner can go. There’s no “only this site, only these actions.”</p>
       </div>
       <div class="prob">
-        <h3>Agents</h3>
-        <p>The agents people now run have no safe way to log in — so they get handed passwords and master keys.</p>
+        <h3>No kill switch</h3>
+        <p>Cutting an agent off means rotating the human’s own password or key — and hoping nothing else breaks.</p>
       </div>
     </div>
   </div>
@@ -370,13 +371,13 @@
   <div class="wrap">
     <div class="feat-copy">
       <span class="eyebrow">For apps</span>
-      <h2>Add it in minutes. No sign-up required.</h2>
-      <p class="body">No portal to register in, no approval to wait for, no secrets to manage. Drop in one simple check and your app accepts anyone — whatever email they use, on any domain — plus the agents acting for them.</p>
+      <h2>Attributed agents, one check, no sign-up.</h2>
+      <p class="body">One verification call tells you who signed in — and when it’s an agent, exactly who it acts for and what its principal allowed here. Rate-limit per agent, audit per human, reject what was never authorized. No portal, no approval, no secrets to manage.</p>
       <div class="chips">
+        <span class="chip on">Agent + principal, verified</span>
+        <span class="chip on">User-signed scopes</span>
         <span class="chip">No registration</span>
-        <span class="chip">No approval</span>
         <span class="chip">Any email, any domain</span>
-        <span class="chip on">Agents included</span>
       </div>
     </div>
     <div class="feat-art">
@@ -385,22 +386,51 @@
 <pre><span class="cm">// One call — a verified identity for whoever signs in</span>
 <span class="kw">const</span> who = <span class="kw">await</span> browseridng.<span class="fn">check</span>(request)
 
-who.email   <span class="cm">// <span class="str">"alice@gmail.com"</span>  — verified, nothing to store</span>
+who.email         <span class="cm">// <span class="str">"researcher@browserid.me"</span></span>
+who.agent?.parent <span class="cm">// <span class="str">"alice@gmail.com"</span> — who it acts for</span>
+who.agent?.scopes <span class="cm">// <span class="str">["post", "read"]</span> — what Alice allowed here</span>
 
-<span class="cm">// people and the agents acting for them sign in the same way —</span>
-<span class="cm">// each with its own identity, never a shared password.</span></pre>
+<span class="cm">// humans sign in the same way — then who.agent is absent.</span></pre>
       </div>
     </div>
   </div>
 </section>
 
-<section class="band feat rev" id="people">
+<section class="band feat rev" id="agents">
+  <div class="wrap">
+    <div class="feat-copy">
+      <span class="eyebrow eyebrow-agent">For agents</span>
+      <h2>Acting for someone? Get an identity of your own.</h2>
+      <p class="body">You don’t need your principal’s password or a borrowed API key. Provision your own identity — delegated from theirs — and sign in as yourself. New site? Ask once: your principal approves a <strong>warrant</strong> naming exactly that site and those scopes, signed with their own key. That’s all you can present, anywhere.</p>
+      <div class="chips">
+        <span class="chip on">Your own key</span>
+        <span class="chip on">Per-site, user-signed warrants</span>
+        <span class="chip on">Revocable by your principal</span>
+      </div>
+    </div>
+    <div class="feat-art">
+      <div class="code code-agent">
+        <div class="code-bar"><i></i><i></i><i></i> agent.ts <span>agent</span></div>
+<pre><span class="cm">// Provision your own identity — delegated from your principal</span>
+<span class="kw">const</span> me = <span class="kw">await</span> browseridng.<span class="fn">provision</span>({ as: <span class="str">"researcher"</span> })
+
+<span class="cm">// New site? Your principal approves a warrant for it — once.</span>
+<span class="kw">await</span> me.<span class="fn">obtainWarrant</span>(site.audience)  <span class="cm">// they click “Approve”</span>
+
+<span class="cm">// Then sign in there as yourself — never their password.</span>
+<span class="kw">const</span> token = <span class="kw">await</span> me.<span class="fn">assert</span>(site.audience)</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band feat" id="people">
   <div class="wrap">
     <div class="feat-copy">
       <span class="eyebrow">For everyone</span>
       <h2>Use the email you already have.</h2>
-      <p class="body">No new password to invent, no new account to create. Sign in with the email you already use — personal, work, whatever you like — on any app that supports browserid-ng.</p>
-      <p class="body">Running agents? Each one gets its own identity, delegated from yours — so it can act on your behalf without ever holding your password or a master key.</p>
+      <p class="body">Running agents? Each one gets its own identity, delegated from yours. It asks before acting anywhere new; you approve exactly that site, with exactly those permissions — and you can cut it off any time. Your password never leaves you, because it was never shared.</p>
+      <p class="body">And for yourself: sign in with the email you already use — personal, work, whatever you like — on any app that supports browserid-ng. No new password, no new account.</p>
       <div class="hero-actions">
         <a class="btn btn-primary" href="https://mingo.place" target="_blank" rel="noopener">Try it on mingo.place</a>
       </div>
@@ -418,32 +448,6 @@ who.email   <span class="cm">// <span class="str">"alice@gmail.com"</span>  — 
           <span class="ac">its own identity</span>
         </div>
         <div class="agent-note">Each agent signs in with its own identity, delegated from yours — never your password.</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="band feat" id="agents">
-  <div class="wrap">
-    <div class="feat-copy">
-      <span class="eyebrow eyebrow-agent">For agents</span>
-      <h2>Acting for someone? Get an identity of your own.</h2>
-      <p class="body">You don’t need your principal’s password or a borrowed API key. Provision your own identity — delegated from theirs — and sign in to any browserid-ng app as yourself. It’s the sanctioned way in: your own key, distinct from the human you act for.</p>
-      <div class="chips">
-        <span class="chip on">Your own key</span>
-        <span class="chip on">Delegated, not borrowed</span>
-        <span class="chip on">Any browserid-ng app</span>
-      </div>
-    </div>
-    <div class="feat-art">
-      <div class="code code-agent">
-        <div class="code-bar"><i></i><i></i><i></i> agent.ts <span>agent</span></div>
-<pre><span class="cm">// Provision your own identity — delegated from your principal</span>
-<span class="kw">const</span> me = <span class="kw">await</span> browseridng.<span class="fn">provision</span>({ as: <span class="str">"researcher"</span> })
-
-<span class="cm">// Then sign in anywhere — as yourself, not your principal's</span>
-<span class="cm">// password and not a scraped session.</span>
-<span class="kw">const</span> token = <span class="kw">await</span> me.<span class="fn">assert</span>(audience)</pre>
       </div>
     </div>
   </div>
@@ -467,7 +471,7 @@ who.email   <span class="cm">// <span class="str">"alice@gmail.com"</span>  — 
       <div class="pillar">
         <div class="pk">// verifiable</div>
         <h3>Cryptographically provable</h3>
-        <p>Identities — and the agents acting for them — are verifiable end to end, even on-chain, with no one needing to vouch.</p>
+        <p>Every claim checks out offline: the agent’s identity, who it acts for, and the human-signed warrant behind each grant — even on-chain, with no one needing to vouch.</p>
       </div>
     </div>
   </div>
@@ -495,14 +499,13 @@ who.email   <span class="cm">// <span class="str">"alice@gmail.com"</span>  — 
       <a href="https://github.com/vthunder/browserid-ng/blob/main/README.md">Docs</a>
       <a href="https://github.com/vthunder/browserid-ng/tree/main/docs/specs">Spec</a>
       <a href="https://github.com/vthunder/browserid-ng">GitHub</a>
-      <a href="/account">Account</a>
     </div>
   </div>
 </section>
 
 <footer>
   <div class="wrap">
-    <span>browserid-ng — the DNSSEC-rooted, agent-native heir to Mozilla’s BrowserID (Persona).</span>
+    <span>browserid-ng — attributable agent identity on the DNSSEC-rooted heir to Mozilla’s BrowserID.</span>
     <span>Open protocol · MPL-2.0</span>
   </div>
 </footer>
@@ -523,11 +526,11 @@ who.email   <span class="cm">// <span class="str">"alice@gmail.com"</span>  — 
     // Audience toggle — swaps the pitch + primary CTA per audience.
     var copy = {
       rp: {
-        sub: "Add sign-in for people <em>and their agents</em> in a few lines — no developer portal, no approval, and it works with any email, on any domain.",
+        sub: "Know exactly which agent is acting, for whom, and with what permission — every grant signed by the human behind it, revocable by them. Human sign-in included, with the email they already use.",
         cta: "Add to your app", href: "#rp"
       },
       user: {
-        sub: "Sign in to apps with the email you already use — no new password, no new account. And give the agents you run their own separate identities, delegated from yours.",
+        sub: "Give the agents you run their own identities, delegated from yours — you approve where each one may act, and can cut it off any time. And sign in to apps yourself with the email you already use.",
         cta: "Try the demo", href: "https://mingo.place"
       }
     };

@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>browserid.me — account</title>
+  <title>browserid.me — your identities</title>
   <style>
     :root { color-scheme: light dark; }
-    body { font: 16px/1.6 system-ui, -apple-system, sans-serif; max-width: 40rem;
-      margin: 5rem auto; padding: 0 1.25rem; color: #1a1a1a; }
+    body { font: 16px/1.6 system-ui, -apple-system, sans-serif; max-width: 44rem;
+      margin: 4rem auto; padding: 0 1.25rem; color: #1a1a1a; }
     @media (prefers-color-scheme: dark) { body { color: #e8e8e8; background: #161616; } }
     h1 { font-size: 1.6rem; margin-bottom: .25rem; }
     .muted { opacity: .65; }
@@ -17,76 +17,318 @@
       padding: 1rem 1.25rem; margin-top: 1.5rem; }
     button { font: inherit; padding: .5rem .9rem; border-radius: 9px;
       border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
+    button.primary { background: #2b6cb0; color: #fff; border-color: #2b6cb0; }
+    button.small { padding: .2rem .6rem; font-size: .85em; }
+    button:disabled { opacity: .5; cursor: default; }
+    label { display: block; margin: .6rem 0 .2rem; font-weight: 600; font-size: .95em; }
+    input { font: inherit; padding: .45rem .6rem; border-radius: 8px; width: 100%;
+      box-sizing: border-box; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; }
+    table { width: 100%; border-collapse: collapse; margin-top: .5rem; font-size: .9em; }
+    th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid rgba(127,127,127,.2); vertical-align: top; }
+    .who { font-family: ui-monospace, monospace; }
+    .scope { display: inline-block; font-family: ui-monospace, monospace; font-size: .8em;
+      border: 1px solid rgba(127,127,127,.45); border-radius: 999px; padding: .05em .55em; margin: 0 .2em .2em 0; }
+    .badge { display: inline-block; font-size: .72em; text-transform: uppercase; letter-spacing: .06em;
+      border: 1px solid rgba(127,127,127,.5); border-radius: 999px; padding: .05em .55em; margin-left: .5em; opacity: .8; }
+    .warn { color: #b7791f; } .err { color: #c53030; } .ok { color: #2f855a; }
     a { color: #2b6cb0; } @media (prefers-color-scheme: dark){ a{color:#7db3e8} }
-    #out { margin-top: .75rem; font-size: .9em; }
+    .status { font-size: .9em; margin-top: .5rem; }
+    .idrow { padding: .45rem 0; border-bottom: 1px solid rgba(127,127,127,.15); }
+    .idrow:last-child { border-bottom: 0; }
   </style>
 </head>
 <body>
-  <h1>browserid.me</h1>
-  <p class="muted">A BrowserID identity broker — it custodies your signing keys and
-  brokers logins for relying-party apps. There's nothing to do here directly;
-  apps invoke the login dialog and signer for you.</p>
+  <h1>Your browserid</h1>
+  <p class="muted">The identities this broker holds for you, the agents acting for them,
+  and the warrants you've signed. Your keys live in this browser — the broker vouches,
+  it doesn't hold them.</p>
 
-  <div class="card">
-    <strong>Sign out of browserid</strong>
-    <p class="muted" style="margin:.4rem 0">Ends your broker <em>session</em> and clears
-    this browser's cached certificates. After this the login dialog will show no
-    identities until you sign in again. (Your accounts aren't deleted — they
-    reappear when you next authenticate.)</p>
-    <button id="signout">Sign out</button>
-    <div id="out"></div>
+  <div id="gate" class="card"><p>Checking your session…</p></div>
+
+  <!-- Sign-in (shown when no session) -->
+  <div id="signin" class="card" hidden>
+    <strong>Sign in</strong>
+    <form id="signin-form">
+      <label for="si-email">Email</label>
+      <input id="si-email" type="email" autocomplete="username" required>
+      <div id="pw-block" hidden>
+        <label for="si-pass">Password</label>
+        <input id="si-pass" type="password" autocomplete="current-password">
+      </div>
+      <div id="code-block" hidden>
+        <label for="si-code">6-digit code (check your email)</label>
+        <input id="si-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000">
+        <label for="si-newpass">New password</label>
+        <input id="si-newpass" type="password" autocomplete="new-password" minlength="8" maxlength="80">
+      </div>
+      <p style="margin-top:.9rem">
+        <button type="submit" class="primary" id="si-btn">Continue</button>
+        <button type="button" id="si-code-btn" hidden>Email me a code instead</button>
+      </p>
+      <p class="status" id="si-status"></p>
+    </form>
+    <p class="muted" style="font-size:.85em">New here? Accounts are created when you first
+    sign in to an app that uses browserid — try the <a href="https://mingo.place" rel="noopener">demo</a>.</p>
   </div>
 
-  <div class="card">
-    <strong>Clear cached certificates only</strong>
-    <p class="muted" style="margin:.4rem 0">Drops just this browser's cached
-    certificates and per-site grants (the <code>emails</code> and <code>siteInfo</code>
-    localStorage stores) — <em>without</em> ending your session, so the dialog still
-    lists your account's identities. Use this if a sign-in is reusing a stale cert.</p>
-    <button id="reset">Clear cached certificates</button>
-    <div id="out2"></div>
+  <!-- Signed-in view -->
+  <div id="app" hidden>
+    <div class="card">
+      <strong>Identities</strong>
+      <div id="identities"><p class="muted">Loading…</p></div>
+    </div>
+
+    <div class="card">
+      <strong>Agents</strong>
+      <p class="muted" style="margin:.4rem 0;font-size:.92em">Programs acting with your
+      identities — each with its own key and certificate naming you as the principal.</p>
+      <p>
+        <a href="/agents">Manage agent keys →</a><br>
+        <a href="/consent">Pending consent requests →</a>
+      </p>
+    </div>
+
+    <div class="card">
+      <strong>Warrants signed in this browser</strong>
+      <p class="muted" style="margin:.4rem 0;font-size:.92em">Every warrant is a grant you
+      signed for one agent at one site. This list is <em>local to this browser</em> — by
+      design the broker keeps no record of where your agents act. To cut an agent off
+      everywhere, revoke its key on the <a href="/agents">agent keys</a> page (it stops
+      working within a day). Reissue signs a fresh copy for the same grant.</p>
+      <div id="warrants"><p class="muted">Loading…</p></div>
+      <p class="status" id="w-status"></p>
+    </div>
+
+    <div class="card">
+      <strong>Session &amp; cache</strong>
+      <p class="muted" style="margin:.4rem 0;font-size:.92em">Sign out ends your broker
+      session and clears this browser's cached certificates; clearing the cache alone
+      keeps you signed in but drops stale certs and per-site grants.</p>
+      <p>
+        <button id="signout">Sign out</button>
+        <button id="reset">Clear cached certificates</button>
+      </p>
+      <p class="status" id="out"></p>
+    </div>
   </div>
 
-  <div class="card">
-    <strong>Agent keys</strong>
-    <p class="muted" style="margin:.4rem 0">Authorize a program to act with one of your
-    identities — headless sign-in for CI jobs, agents, and services — without sharing a
-    password or a browser session. Create and revoke agent keys here.</p>
-    <p><a href="/agents">Manage agent keys →</a></p>
-  </div>
+  <p class="muted" style="margin-top:2rem"><a href="/">← browserid.me</a></p>
 
-  <script>
-    function clearLocal() {
-      localStorage.removeItem('emails');
-      localStorage.removeItem('siteInfo');
+<script src="/common/js/lib/jwcrypto-compat.js"></script>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const enc = new TextEncoder();
+const b64urlJson = (obj) => btoa(String.fromCharCode(...enc.encode(JSON.stringify(obj))))
+  .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const escapeHtml = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const sign = (key, msg) => new Promise((res, rej) =>
+  key.sign(msg, (err, sig) => err ? rej(err) : res(sig)));
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { credentials: 'same-origin', ...opts });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok || body.success === false) throw new Error(body.reason || body.error || `HTTP ${r.status}`);
+  return body;
+}
+const post = (path, body) => api(path, {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+});
+
+// ---------- sign-in (password, or emailed code for password-less accounts) ----------
+let codeMode = false;
+$('si-code-btn').onclick = async () => {
+  const email = $('si-email').value.trim();
+  if (!email) return;
+  $('si-status').className = 'status muted';
+  $('si-status').textContent = 'Sending code…';
+  try {
+    await post('/wsapi/stage_reset', { email });
+    codeMode = true;
+    $('pw-block').hidden = true;
+    $('code-block').hidden = false;
+    $('si-btn').textContent = 'Sign in';
+    $('si-status').textContent = 'Code sent — check your email.';
+  } catch (e) {
+    $('si-status').className = 'status err';
+    $('si-status').textContent = e.message;
+  }
+};
+$('signin-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const email = $('si-email').value.trim();
+  const status = $('si-status');
+  status.className = 'status muted';
+  if (!email) return;
+
+  // First step: reveal the password field (and code option).
+  if ($('pw-block').hidden && !codeMode) {
+    $('pw-block').hidden = false;
+    $('si-code-btn').hidden = false;
+    $('si-btn').textContent = 'Sign in';
+    $('si-pass').focus();
+    return;
+  }
+
+  status.textContent = 'Signing in…';
+  try {
+    if (codeMode) {
+      const code = $('si-code').value.trim();
+      const pass = $('si-newpass').value;
+      await post('/wsapi/complete_reset', { token: code, pass });
+      await post('/wsapi/authenticate_user', { email, pass, ephemeral: false });
+    } else {
+      await post('/wsapi/authenticate_user', { email, pass: $('si-pass').value, ephemeral: false });
     }
+    location.reload();
+  } catch (e) {
+    status.className = 'status err';
+    status.textContent = e.message +
+      (codeMode ? '' : ' — no password? Use "Email me a code instead".');
+  }
+};
 
-    document.getElementById('signout').onclick = async function () {
-      const out = document.getElementById('out');
-      out.textContent = 'Signing out…';
+// ---------- signed-in view ----------
+function localIdentity(email) {
+  let store = {};
+  try { store = JSON.parse(localStorage.emails || '{}'); } catch {}
+  for (const issuerKey of Object.keys(store)) {
+    for (const [addr, rec] of Object.entries(store[issuerKey] || {})) {
+      if (addr.toLowerCase() === email.toLowerCase() && rec?.priv && rec?.cert) {
+        return { email: addr, cert: rec.cert, priv: rec.priv };
+      }
+    }
+  }
+  return null;
+}
+
+async function renderIdentities() {
+  const { emails, derived } = await api('/wsapi/list_emails');
+  const parentOf = Object.fromEntries((derived || []).map(d => [d.email, d.parent_email]));
+  const rows = (emails || []).map(email => {
+    const parent = parentOf[email];
+    const local = !!localIdentity(email);
+    return `<div class="idrow"><span class="who">${escapeHtml(email)}</span>` +
+      (parent ? `<span class="badge">agent · for ${escapeHtml(parent)}</span>` : '') +
+      (local || parent ? '' : '<span class="badge" title="No signing key cached in this browser">key not in this browser</span>') +
+      `</div>`;
+  }).join('');
+  $('identities').innerHTML = rows || '<p class="muted">No identities yet.</p>';
+}
+
+function warrantLog() {
+  try { return JSON.parse(localStorage.warrant_log || '[]'); } catch { return []; }
+}
+
+function renderWarrants() {
+  const log = warrantLog();
+  if (!log.length) {
+    $('warrants').innerHTML = '<p class="muted">None signed in this browser yet. They appear ' +
+      'here when you approve an agent on the <a href="/consent">consent page</a> or sign one manually.</p>';
+    return;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  $('warrants').innerHTML = `<table><thead><tr><th>Agent</th><th>At</th><th>Scopes</th><th>Expires</th><th></th></tr></thead><tbody>` +
+    log.map((w, i) => `
+      <tr>
+        <td class="who">${escapeHtml(w.agent)}<br><span class="muted" style="font-size:.85em">by ${escapeHtml(w.delegator || '')}</span></td>
+        <td class="who" style="word-break:break-all">${escapeHtml(w.aud)}</td>
+        <td>${(w.scopes || []).length ? w.scopes.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') : '<span class="muted">—</span>'}</td>
+        <td>${w.exp ? (w.exp < now ? '<span class="warn">expired</span>' : new Date(w.exp * 1000).toLocaleDateString()) : '?'}</td>
+        <td style="white-space:nowrap">
+          ${w.jws ? `<button class="small copy" data-i="${i}">Copy</button>` : ''}
+          <button class="small reissue" data-i="${i}">Reissue</button>
+          <button class="small forget" data-i="${i}">Forget</button>
+        </td>
+      </tr>`).join('') + '</tbody></table>';
+
+  for (const b of $('warrants').querySelectorAll('.copy')) {
+    b.onclick = async () => {
+      await navigator.clipboard.writeText(warrantLog()[b.dataset.i].jws);
+      $('w-status').className = 'status ok';
+      $('w-status').textContent = 'Copied — paste into the agent (add_warrant).';
+    };
+  }
+  for (const b of $('warrants').querySelectorAll('.forget')) {
+    b.onclick = () => {
+      const log = warrantLog();
+      log.splice(Number(b.dataset.i), 1);
+      localStorage.warrant_log = JSON.stringify(log);
+      renderWarrants();
+      $('w-status').className = 'status muted';
+      $('w-status').textContent = 'Removed from this list. (The signed warrant the agent ' +
+        'holds stays valid until it expires — revoke the agent key to cut it off.)';
+    };
+  }
+  for (const b of $('warrants').querySelectorAll('.reissue')) {
+    b.onclick = async () => {
+      const w = warrantLog()[b.dataset.i];
+      const status = $('w-status');
+      const id = localIdentity(w.delegator || '');
+      if (!id) {
+        status.className = 'status err';
+        status.textContent = `The identity key for ${w.delegator} isn't in this browser — sign in with it first.`;
+        return;
+      }
       try {
-        // End the broker session (deletes it server-side + clears the cookie),
-        // then drop the local cert cache so nothing is left to auto-complete a login.
-        const r = await fetch('/wsapi/logout', { method: 'POST', credentials: 'same-origin' });
-        clearLocal();
-        out.textContent = r.ok
-          ? '✓ Signed out. The login dialog will now be empty until you sign in.'
-          : 'Session end returned ' + r.status + ' (local cache cleared anyway).';
+        const now = Math.floor(Date.now() / 1000);
+        const claims = {
+          typ: 'browserid-agent-warrant-v1',
+          iss: id.email, agent: w.agent, aud: w.aud,
+          'parent-cert': id.cert, iat: now, exp: now + 90 * 24 * 3600,
+        };
+        if ((w.scopes || []).length) claims.scopes = w.scopes;
+        const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+        const payload = b64urlJson(claims);
+        const sig = await sign(window.jwcrypto.loadSecretKeyFromObject(id.priv), `${header}.${payload}`);
+        const jws = `${header}.${payload}.${sig}`;
+        const log = warrantLog();
+        log.unshift({ ...w, exp: claims.exp, jws, signed_at: now });
+        localStorage.warrant_log = JSON.stringify(log.slice(0, 200));
+        await navigator.clipboard.writeText(jws);
+        renderWarrants();
+        status.className = 'status ok';
+        status.textContent = 'Reissued (fresh 90-day expiry) and copied — paste into the agent.';
       } catch (e) {
-        try { clearLocal(); } catch (_) {}
-        out.textContent = 'Could not reach the broker: ' + e.message + ' (local cache cleared).';
+        status.className = 'status err';
+        status.textContent = 'Reissue failed: ' + e.message;
       }
     };
+  }
+}
 
-    document.getElementById('reset').onclick = function () {
-      const out = document.getElementById('out2');
-      try {
-        clearLocal();
-        out.textContent = '✓ Cached certificates cleared. (Still signed in — use “Sign out” to empty the dialog.)';
-      } catch (e) {
-        out.textContent = 'Could not clear: ' + e.message;
-      }
-    };
-  </script>
+function clearLocal() {
+  localStorage.removeItem('emails');
+  localStorage.removeItem('siteInfo');
+}
+$('signout').onclick = async () => {
+  $('out').textContent = 'Signing out…';
+  try {
+    await fetch('/wsapi/logout', { method: 'POST', credentials: 'same-origin' });
+  } catch {}
+  clearLocal();
+  location.reload();
+};
+$('reset').onclick = () => {
+  clearLocal();
+  $('out').textContent = '✓ Cached certificates cleared (still signed in).';
+};
+
+async function boot() {
+  let ctx;
+  try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
+  $('gate').hidden = true;
+  if (!ctx.authenticated) {
+    $('signin').hidden = false;
+    return;
+  }
+  $('app').hidden = false;
+  await renderIdentities();
+  renderWarrants();
+}
+boot().catch(e => {
+  $('gate').hidden = false;
+  $('gate').innerHTML = `<p class="err">Error: ${escapeHtml(e.message)}</p>`;
+});
+</script>
 </body>
 </html>

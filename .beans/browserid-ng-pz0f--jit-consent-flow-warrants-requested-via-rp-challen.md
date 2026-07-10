@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-07-10T15:24:22Z
-updated_at: 2026-07-10T16:26:51Z
+updated_at: 2026-07-10T17:23:54Z
 parent: browserid-ng-gsnm
 blocked_by:
     - browserid-ng-5zdh
@@ -37,3 +37,5 @@ Nobody should ever type an audience string. The RP names its own audience author
 ## Implementation notes (2026-07-10)
 
 Full flow shipped and covered by consent_flow_test.rs (approval roundtrip incl. single-delivery semantics, denial, registry gate). Poll rate limiting (5s/429), 900s request expiry, ≥128-bit codes, audience/scope data deleted on delivery per §6.4. Remaining: anti-phishing review of the consent surface.
+
+**Prod-validated 2026-07-10**: full flow exercised against live browserid.me — provision (typed cert, parent=vthunder@gmail.com) → /warrant/request → consent approval at /consent → poll pickup → warrant-backed assertion verified at /verify with agent{parent} attribution. Negative checks passed live: warrant-less presentation rejected, wrong-audience replay rejected, request row (audience data) deleted on delivery.

@@ -97,8 +97,8 @@
       <select id="w-identity"></select>
       <label for="w-agent">Agent identity</label>
       <input id="w-agent" placeholder="e.g. attestor@browserid.me">
-      <label for="w-audience">Audience (exact origin)</label>
-      <input id="w-audience" placeholder="e.g. https://api.example.com">
+      <label for="w-audience">Audience (the exact value the app advertises)</label>
+      <input id="w-audience" placeholder="e.g. https://api.example.com or sbo://ledger">
       <label for="w-scopes">Scopes (space-separated, optional)</label>
       <input id="w-scopes" placeholder="e.g. post read">
       <p style="margin-top:.9rem">
@@ -201,6 +201,17 @@ async function boot() {
   await refreshList();
 }
 
+
+/// Origin-local log of warrants signed in this browser — the user's own
+/// record (the broker deliberately keeps none, spec §6.4). Read by /account.
+function logWarrant(entry) {
+  try {
+    const log = JSON.parse(localStorage.warrant_log || '[]');
+    log.unshift({ ...entry, signed_at: Math.floor(Date.now() / 1000) });
+    localStorage.warrant_log = JSON.stringify(log.slice(0, 200));
+  } catch {}
+}
+
 // ---- Manual warrant signing (spec §5.2; the MVP fallback for the consent flow) ----
 $('w-create').onclick = async () => {
   const id = localIdentities().find(i => i.email === $('w-identity').value);
@@ -232,7 +243,10 @@ $('w-create').onclick = async () => {
     if (scopes.length) claims.scopes = scopes;
     const payload = b64urlJson(claims);
     const sig = await sign(userKey, `${header}.${payload}`);
-    $('w-out').textContent = `${header}.${payload}.${sig}`;
+    const warrantJws = `${header}.${payload}.${sig}`;
+    logWarrant({ delegator: id.email, agent: agentEmail, aud: audience,
+                 scopes, exp: claims.exp, jws: warrantJws });
+    $('w-out').textContent = warrantJws;
     $('w-out').hidden = false;
     status.className = 'ok';
     status.textContent = 'Signed — give this warrant to your agent (AgentIdentity::add_warrant).';
