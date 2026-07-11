@@ -1,0 +1,134 @@
+// @browserid/verify — verify BrowserID-NG identity assertions.
+//
+// This is the zero-dependency path: it POSTs the assertion to a hosted /verify
+// service (default https://browserid.me/verify) which performs the DNSSEC-rooted
+// key resolution, signature checks, agent-warrant validation, and status-list
+// revocation check. You get back a small, typed result.
+//
+// It is FAIL-CLOSED by construction: any non-"okay" status, network error,
+// malformed response, or exception resolves to { ok: false, reason }. Callers
+// never have to remember to check a status string — a truthy `.ok` is the only
+// success signal.
+//
+// Trust note: using a hosted verifier means you trust that service to perform
+// verification honestly. That is the right tradeoff for many RPs (it is the same
+// party you already discover keys through), but if you need to verify without
+// trusting a third party, run your own /verify (the broker is open source) and
+// point `verifierUrl` at it, or wait for the native verifier libraries.
+
+const DEFAULT_VERIFIER = "https://browserid.me/verify";
+
+/**
+ * Create a verifier bound to a hosted /verify endpoint.
+ * @param {object} [opts]
+ * @param {string} [opts.verifierUrl] hosted /verify URL (default browserid.me)
+ * @param {string[]} [opts.acceptedFallbacks] default fallback-IdP issuer domains
+ *   accepted for emails with no primary IdP (spec §8.1). Primaries are always
+ *   accepted. Omit for the verifier's default ({that broker}).
+ * @param {number} [opts.timeoutMs] request timeout (default 10000)
+ * @param {typeof fetch} [opts.fetch] fetch implementation (default global fetch)
+ */
+export function createVerifier(opts = {}) {
+  const verifierUrl = opts.verifierUrl || DEFAULT_VERIFIER;
+  const defaultFallbacks = opts.acceptedFallbacks;
+  const timeoutMs = opts.timeoutMs ?? 10000;
+  const doFetch = opts.fetch || globalThis.fetch;
+  if (typeof doFetch !== "function") {
+    throw new Error("no fetch available — pass opts.fetch or use Node >=18");
+  }
+
+  /**
+   * Verify a backed assertion against an expected audience.
+   * @param {string} assertion the `certificate~assertion` string from the RP flow
+   * @param {string} audience the exact origin you expect (e.g. "https://app.example")
+   * @param {object} [callOpts]
+   * @param {string[]} [callOpts.acceptedFallbacks] override the default set
+   * @param {boolean} [callOpts.allowAgent] if false (default), an agent
+   *   presentation is REJECTED — set true to accept agents and read `.agent`
+   * @returns {Promise<VerifyResult>}
+   */
+  async function verify(assertion, audience, callOpts = {}) {
+    if (!assertion || typeof assertion !== "string") {
+      return fail("no assertion provided");
+    }
+    if (!audience || typeof audience !== "string") {
+      return fail("no audience provided");
+    }
+    const acceptedFallbacks = callOpts.acceptedFallbacks ?? defaultFallbacks;
+    const allowAgent = callOpts.allowAgent === true;
+
+    const body = { assertion, audience };
+    if (acceptedFallbacks) body.accepted_fallbacks = acceptedFallbacks;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res, json;
+    try {
+      res = await doFetch(verifierUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      return fail(`verifier request failed: ${(e && e.message) || e}`);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!res.ok) return fail(`verifier returned HTTP ${res.status}`);
+    try {
+      json = await res.json();
+    } catch {
+      return fail("verifier returned a non-JSON response");
+    }
+
+    // Fail closed on anything that isn't an explicit success.
+    if (!json || json.status !== "okay" || !json.email) {
+      return fail((json && json.reason) || "verification failed");
+    }
+
+    const result = {
+      ok: true,
+      email: json.email,
+      issuer: json.issuer,
+      expires: json.expires,
+      agent: json.agent
+        ? { parent: json.agent.parent, scopes: json.agent.scopes || [] }
+        : null,
+    };
+
+    // Default posture: an agent may not stand in for a human login. The caller
+    // must opt in, at which point it is responsible for checking `.agent`.
+    if (result.agent && !allowAgent) {
+      return fail(
+        `assertion is an agent presentation (acting for ${result.agent.parent}); ` +
+          `pass allowAgent:true to accept it`
+      );
+    }
+    return result;
+  }
+
+  return { verify, verifierUrl };
+}
+
+function fail(reason) {
+  return { ok: false, reason };
+}
+
+/**
+ * One-shot convenience wrapper.
+ * @param {string} assertion
+ * @param {string} audience
+ * @param {object} [opts] merges createVerifier + verify options
+ * @returns {Promise<VerifyResult>}
+ */
+export function verifyAssertion(assertion, audience, opts = {}) {
+  return createVerifier(opts).verify(assertion, audience, opts);
+}
+
+/**
+ * @typedef {{ok: true, email: string, issuer?: string, expires?: number,
+ *   agent: {parent: string, scopes: string[]} | null}
+ *   | {ok: false, reason: string}} VerifyResult
+ */
