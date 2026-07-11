@@ -359,6 +359,7 @@ impl SqliteStore {
         // them), backfilling existing rows.
         conn.execute_batch(
             r#"
+            BEGIN IMMEDIATE;
             ALTER TABLE warrants RENAME TO warrants_v9;
             CREATE TABLE warrants (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -378,6 +379,7 @@ impl SqliteStore {
                 SELECT id, user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at, status_idx FROM warrants_v9;
             DROP TABLE warrants_v9;
             CREATE INDEX IF NOT EXISTS idx_warrants_user ON warrants(user_id);
+            COMMIT;
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
