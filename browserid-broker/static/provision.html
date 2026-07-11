@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>fallback IdP — provisioning</title>
+</head>
+<body>
+  <!-- Loaded by the mediator's dialog in a hidden iframe. Silently mints a
+       short-lived cert for the SMTP-verified email if the fallback cookie is
+       valid; otherwise raises a provisioning failure so the dialog opens the
+       interactive /auth page. (apgv) -->
+  <script src="/provisioning_api.js"></script>
+  <script src="/provision.js"></script>
+</body>
+</html>

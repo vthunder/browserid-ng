@@ -5,6 +5,7 @@ mod agent;
 mod auth;
 mod cert;
 mod email;
+mod fallback_idp;
 mod primary;
 mod reset;
 pub(crate) mod session;
@@ -103,6 +104,14 @@ where
         .route("/wsapi/set_password", post(primary::set_password))
         // Verification endpoint
         .route("/verify", post(verify::verify))
+        // Fallback-IdP surface (apgv): the broker implements the primary-IdP
+        // interface (auth+provision pages driven by the dialog) with SMTP auth,
+        // so it can vouch for emails whose domain it doesn't own for any RP
+        // that lists it in acceptedFallbacks.
+        .route("/auth/send", post(fallback_idp::auth_send))
+        .route("/auth/verify", post(fallback_idp::auth_verify))
+        .route("/whoami", get(fallback_idp::whoami))
+        .route("/cert_key", post(fallback_idp::cert_key))
         // Test endpoints (should only be enabled in dev/test)
         .route("/wsapi/test/pending_verification", get(test::get_pending_verification))
         .route("/wsapi/test/set_mock_primary_idp", post(test::set_mock_primary_idp))
@@ -122,6 +131,11 @@ where
         .route_service("/communication_iframe/start.js", ServeFile::new(format!("{}/communication_iframe/start.js", static_path)))
         // SBO signer popup (first-party broker window for cross-site typed signing)
         .route_service("/sign", ServeFile::new(format!("{}/sign.html", static_path)))
+        // Fallback-IdP primary interface pages (apgv)
+        .route_service("/auth", ServeFile::new(format!("{}/auth.html", static_path)))
+        .route_service("/auth.js", ServeFile::new(format!("{}/auth.js", static_path)))
+        .route_service("/provision", ServeFile::new(format!("{}/provision.html", static_path)))
+        .route_service("/provision.js", ServeFile::new(format!("{}/provision.js", static_path)))
         // Agent-key management UI (tdxf) — create/list/revoke provisioning certs
         .route_service("/agents", ServeFile::new(format!("{}/agents.html", static_path)))
         // Warrant consent surface (spec §6.3) — approve/deny agent requests.
@@ -170,8 +184,12 @@ async fn deny_framing(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let path = req.uri().path();
-    let embeddable =
-        path.starts_with("/communication_iframe") || path.starts_with("/relay");
+    let embeddable = path.starts_with("/communication_iframe")
+        || path.starts_with("/relay")
+        // The fallback-IdP provisioning page is framed cross-origin by the
+        // mediator's dialog (apgv), exactly like a primary IdP's provision page.
+        || path == "/provision"
+        || path == "/provision.js";
     let mut resp = next.run(req).await;
     if !embeddable {
         let headers = resp.headers_mut();
