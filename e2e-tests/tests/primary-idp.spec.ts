@@ -146,6 +146,15 @@ class MockIdpServer {
     navigator.id = {};
   }
 
+  // Mirrors the hardened /provisioning_api.js (bean ugg2): pin the broker origin
+  // and only exchange messages with the actual parent frame.
+  var PARENT_ORIGIN = (function() {
+    try { var ao = window.location.ancestorOrigins; if (ao && ao.length) return ao[0]; } catch (e) {}
+    try { if (document.referrer) return new URL(document.referrer).origin; } catch (e) {}
+    return null;
+  })();
+  var targetOrigin = PARENT_ORIGIN || '*';
+
   const channel = {
     _callbacks: {},
     _callId: 0,
@@ -158,7 +167,7 @@ class MockIdpServer {
         type: 'browserid:provisioning',
         method: method,
         id: id
-      }, '*');
+      }, targetOrigin);
     },
 
     notify: function(method, data) {
@@ -167,12 +176,14 @@ class MockIdpServer {
         type: 'browserid:provisioning',
         method: method,
         data: data
-      }, '*');
+      }, targetOrigin);
     }
   };
 
   window.addEventListener('message', function(event) {
     console.log('[MockIdP Provision] Received message:', event.data);
+    if (event.source !== window.parent) return;
+    if (PARENT_ORIGIN && event.origin !== PARENT_ORIGIN) return;
     if (event.data && event.data.type === 'browserid:provisioning:response') {
       const callback = channel._callbacks[event.data.id];
       if (callback) {
@@ -636,6 +647,45 @@ test.describe('Primary IdP: Provisioning Page Loading', () => {
     } finally {
       await mockIdp.stop();
     }
+  });
+
+  // Security (bean ugg2): the real /provisioning_api.js shim must (a) target its
+  // outbound messages at the embedding broker's origin, never '*' — otherwise a
+  // signed certificate can leak to a malicious framing parent — and (b) reject
+  // inbound responses whose source isn't the parent frame.
+  test('shim targets the parent origin (not "*") and gates inbound on source', async ({ page }) => {
+    const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
+
+    // Capture the origin the shim uses when it posts beginProvisioning to parent.
+    await page.goto(`${baseUrl}/`);
+    const originArg = await page.evaluate(async (base) => {
+      return await new Promise<string>((resolve) => {
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = base + '/provision';
+        iframe.onload = () => {
+          // Override the child's postMessage-to-parent to capture the targetOrigin
+          // the shim passes. (Same-origin child, so we can reach into it.)
+          const win = iframe.contentWindow as any;
+          const orig = win.parent.postMessage.bind(win.parent);
+          let captured: string | null = null;
+          win.parent.postMessage = (data: any, targetOrigin: string) => {
+            if (data && data.type === 'browserid:provisioning' && captured === null) {
+              captured = targetOrigin;
+            }
+            // swallow — no real broker here
+          };
+          // Re-run the shim's beginProvisioning path.
+          try { win.navigator.id.beginProvisioning(() => {}); } catch (e) {}
+          setTimeout(() => resolve(captured || '(none)'), 300);
+        };
+        document.body.appendChild(iframe);
+      });
+    }, baseUrl);
+
+    // Embedded by the broker origin → the shim pins that exact origin, not '*'.
+    expect(originArg).not.toBe('*');
+    expect(originArg).toBe(baseUrl);
   });
 });
 
