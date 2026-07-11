@@ -2,59 +2,104 @@
    - License, v. 2.0. If a copy of the MPL was not distributed with this
    - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
 
-# BrowserID-NG
+# browserid-ng
 
-A modern Rust implementation of the [BrowserID protocol][], derived from Mozilla's [Persona][].
+**Identity for agents, answerable to humans** — an open, DNS-rooted protocol that
+gives AI agents their own cryptographic identity, delegated from a human, scoped
+to exactly where and what the human approved, and revocable at any time. Human
+passwordless sign-in comes along for free.
 
-BrowserID is a decentralized identity protocol that allows users to authenticate to websites using their email address, with cryptographic proof of ownership.
+Live at **[browserid.me](https://browserid.me)**. Descended from Mozilla
+[Persona] / the [BrowserID protocol][], rebuilt in Rust and re-centered on agents.
 
 [BrowserID protocol]: https://github.com/mozilla/id-specs
 [Persona]: https://github.com/mozilla/persona
 
-## Repository Contents
+## Why
 
-This repository contains:
+Agents act everywhere now — and they sign in by borrowing passwords, scraping
+sessions, and holding master keys nobody can take back. browserid-ng gives an
+agent an identity of its own:
 
-* **browserid-core**: Core cryptography and protocol primitives
-  - Ed25519 keypair generation and signing
-  - JWT/JWS creation and verification
-  - Certificate and assertion handling
-  - Identity provider discovery via `.well-known/browserid`
+- **Attributable** — every action traces to a specific agent *and* the human it
+  acts for. No more "was that Alice, or Alice's bot?"
+- **Bounded** — a human signs a **warrant** naming one audience and a set of
+  scopes. That is all the agent can present, there and nowhere else.
+- **Revocable** — cut an agent off instantly via signed status lists, without
+  rotating the human's own key or password.
 
-* **browserid-broker**: Fallback Identity Provider (IdP)
-  - Full authentication flow (signup, signin, password reset)
-  - Email verification with 6-digit codes
-  - Certificate issuance for authenticated users
-  - SQLite storage for users and sessions
-  - Compatible `navigator.id` API via `include.js`
+Everything verifies **offline against DNS signatures** — no company sits between
+you and your users, and nothing breaks if browserid.me disappears.
 
-* **e2e-tests**: Playwright end-to-end tests
-  - 60 tests covering all authentication flows
+## For app developers: verify in one call
 
-## Getting Started
+Your users (and their agents) sign in; your backend POSTs the assertion to a
+`/verify` service and gets back who signed in — and, for an agent, who it acts
+for and what it may do here.
+
+```js
+import { createVerifier } from "@browserid/verify";
+const verifier = createVerifier();               // hosted verifier, or point at your own
+
+const r = await verifier.verify(assertion, "https://app.example.com");
+if (r.ok) {
+  session.user = r.email;                         // verified identity
+  // r.agent?.parent  → the human an agent acts for
+  // r.agent?.scopes  → what that human authorized at this audience
+} else {
+  reject(r.reason);                               // fail-closed on anything else
+}
+```
+
+- **JS/TS wrapper:** [`sdk/js`](./sdk/js) (`@browserid/verify`) — thin, typed, fail-closed.
+- **Any language:** [`docs/verify-quickstart.md`](./docs/verify-quickstart.md) — the
+  `/verify` HTTP contract with Python / Go / curl examples.
+- No registration, no client IDs, no secrets to manage.
+
+## Repository layout
+
+| Crate / dir | What it is |
+|---|---|
+| **browserid-core** | Protocol primitives — Ed25519 keys, JWT/JWS, certificates, assertions, warrants, status lists, DNSSEC-first discovery |
+| **browserid-broker** | The identity broker: human auth (passwordless email), certificate issuance, agent-consent + warrant registry, revocation, and the hosted `/verify` endpoint |
+| **browserid-registrar** | The user's own delegation authority — consent, warrant issuance, status-list authoring (unbundled from the IdP role) |
+| **browserid-agent** | Agent-side library + CLI — provision a delegated identity, request warrants, present assertions |
+| **browserid-rp** | Relying-party helpers — fail-closed verification with scope enforcement |
+| **sdk/js** | `@browserid/verify` — the zero-dependency hosted-verify client |
+| **e2e-tests** | Playwright end-to-end suite (90+ tests) |
+| **docs/** | Design plans and the verification quickstart |
+
+## The agent model in one picture
+
+```
+DNS  _browserid.acme.com  (Ed25519, DNSSEC)          ← trust root
+  └─ alice@acme.com        identity cert              ← the human
+       └─ warrant: agent=researcher, aud=api.example.com, scopes=[post,read]
+            └─ researcher@acme.com  agent cert + assertion   ← what the agent presents
+```
+
+A relying party verifying the agent's assertion learns the agent's identity, its
+principal (`alice@acme.com`), and the scopes Alice signed **for that audience** —
+and rejects anything outside them. See
+[`docs/verify-quickstart.md`](./docs/verify-quickstart.md) and the design plans
+under [`docs/plans`](./docs/plans).
+
+## Getting started (run the broker)
 
 ### Prerequisites
-
-- Rust 1.70+ (install via [rustup](https://rustup.rs/))
-- Node.js 18+ (for E2E tests only)
-
-### Running the Broker
+- Rust 1.70+ (via [rustup](https://rustup.rs/))
+- Node.js 18+ (for the e2e tests / JS SDK only)
 
 ```bash
-# Clone and build
-git clone https://github.com/nicksandmill/browserid-ng.git
+git clone https://github.com/vthunder/browserid-ng.git
 cd browserid-ng
-cargo build --release
-
-# Run the broker (creates browserid.db for storage)
 cargo run -p browserid-broker
 ```
 
-The broker will start on `http://localhost:3000`. Verification codes are printed to the terminal (production would use a real email sender).
+The broker starts on `http://localhost:3000`. Email verification codes are
+printed to the terminal (production wires up a real email sender).
 
 ### Configuration
-
-Environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -63,118 +108,72 @@ Environment variables:
 | `BROKER_KEY_FILE` | `broker-key.json` | Ed25519 keypair file |
 | `DATABASE_PATH` | `browserid.db` | SQLite database file |
 
-### Integrating with Your Site
+### Human sign-in (the supporting feature)
 
-Include the shim on your page:
+Any app can accept passwordless email sign-in with the browser shim:
 
 ```html
 <script src="http://localhost:3000/include.js"></script>
 ```
-
-Then use the `navigator.id` API:
-
 ```javascript
 navigator.id.watch({
   loggedInUser: null,
-  onlogin: function(assertion) {
-    // Send assertion to your server for verification
-    console.log('Got assertion:', assertion);
-  },
-  onlogout: function() {
-    console.log('User logged out');
-  }
+  onlogin: (assertion) => { /* POST to your server → /verify */ },
+  onlogout: () => {},
 });
-
-// Trigger login popup
-document.getElementById('login').addEventListener('click', function() {
-  navigator.id.request();
-});
+document.getElementById('login').onclick = () => navigator.id.request();
 ```
+
+The server verifies the returned `certificate~assertion` exactly as in the
+one-call example above.
 
 ## Testing
 
-### Unit Tests
-
 ```bash
-cargo test
+cargo test                 # Rust unit/integration tests
+cd e2e-tests && npm install && npx playwright test   # end-to-end
+cd sdk/js && node --test   # JS verifier client
 ```
 
-### End-to-End Tests
+## Protocol notes
 
-```bash
-cd e2e-tests
-npm install
-npx playwright test
-```
-
-## Architecture
-
-### Protocol Flow
-
-1. User clicks "Sign in with BrowserID" on a website
-2. Dialog opens, user enters email and authenticates with broker
-3. Broker issues a certificate binding user's email to a browser-generated public key
-4. Browser signs an assertion for the target website
-5. Website receives `certificate~assertion` and verifies:
-   - Certificate is signed by the broker
-   - Assertion is signed by the key in the certificate
-   - Audience matches the website's origin
-
-### Backed Identity Assertion Format
+### Backed assertion format
 
 ```
-<certificate>~<assertion>
+<certificate>~<assertion>[~<warrant>]
 ```
+- **Certificate** — signed by the issuer, binds an email (or agent) to a public key.
+- **Assertion** — signed by that key, contains `{aud, exp}`.
+- **Warrant** *(agent presentations)* — signed by the delegator's identity key,
+  binds `{agent, aud, scopes}`. Load-bearing: an agent cert without a valid
+  warrant is rejected.
 
-Where both are JWTs:
-- **Certificate**: Signed by broker, contains `{principal: {email}, public-key, iat, exp}`
-- **Assertion**: Signed by user's key, contains `{aud, exp}`
+### DNS-based key discovery (divergence from original BrowserID)
 
-## Differences from Original Persona
+Keys are discovered from **DNS TXT records with DNSSEC validation**, not
+`.well-known` HTTP. `.well-known` is still consulted — but only for endpoint
+discovery, never as a source of trusted keys (no downgrade).
 
-- Written in Rust instead of Node.js
-- Uses Ed25519 instead of RSA/DSA
-- SQLite storage instead of MySQL
-- Simplified codebase focused on core protocol
-- DNS-based primary IdP discovery (see below)
-
-### DNS-Based Key Discovery (Spec Divergence)
-
-BrowserID-NG diverges from the original BrowserID specification by using **DNS TXT records with DNSSEC validation** for primary IdP key discovery, instead of the `.well-known/browserid` HTTP approach.
-
-| Aspect | Original Spec | BrowserID-NG |
-|--------|---------------|--------------|
-| Key Location | `https://<domain>/.well-known/browserid` | `_browserid.<domain>` TXT record |
-| Trust Anchor | HTTPS/TLS certificate | DNSSEC |
-| Fallback | None | Broker as fallback IdP |
-
-**DNS Record Format:**
 ```
 _browserid.example.com TXT "v=browserid1; public-key-algorithm=Ed25519; public-key=<base64url>; host=idp.example.com"
 ```
-- `v` - Version (required)
-- `public-key-algorithm` - Algorithm for the public key, e.g., `Ed25519` (required)
-- `public-key` - Public key, base64url-encoded (required)
-- `host` - Host for `.well-known/browserid` lookup to get auth/provision endpoints (optional, defaults to email domain)
 
-**Why the change:**
-- DNS is more fundamental infrastructure than HTTP endpoints
-- DNSSEC provides cryptographic authentication independent of TLS PKI
-- Simpler deployment for domain operators (DNS record vs. hosted file)
-- Domains without DNSSEC automatically fall back to broker
+| Aspect | Original spec | browserid-ng |
+|--------|---------------|--------------|
+| Key location | `https://<domain>/.well-known/browserid` | `_browserid.<domain>` TXT record |
+| Trust anchor | HTTPS/TLS certificate | DNSSEC |
+| No-primary email | (n/a) | Broker / RP-selected fallback IdP |
 
-**Fallback behavior:**
-- If domain has DNSSEC-validated `_browserid` TXT record → Domain acts as primary IdP
-- If domain has no DNSSEC or no record → Broker acts as fallback IdP
-- If DNSSEC validation fails (BOGUS) → Verification rejected (security error)
+- DNSSEC-validated `_browserid` record → the domain is its own **primary IdP**.
+- No record / no DNSSEC → a **fallback IdP** (the broker, or an RP-selected one) vouches.
+- DNSSEC validation failure (BOGUS) → verification rejected.
 
-See `docs/plans/2025-12-28-dns-discovery-design.md` for full implementation details.
+See `docs/plans/2025-12-28-dns-discovery-design.md` for details.
 
-## LICENSE
+## License
 
-All source code here is available under the [MPL 2.0][] license, unless otherwise indicated.
-
-This project is derived from [Mozilla Persona][], which is also licensed under MPL 2.0.
+All source here is available under the [MPL 2.0][] license unless otherwise
+indicated. Derived from [Mozilla Persona][], also MPL 2.0.
 
 [MPL 2.0]: https://mozilla.org/MPL/2.0/
 [Mozilla Persona]: https://github.com/mozilla/persona
