@@ -33,7 +33,7 @@
         .then(function (r) {
           if (r.status === 401 || r.status === 403) {
             // No valid SMTP session for this email — drop to interactive /auth.
-            return fail("no verified session; interactive auth required");
+            return fail("authentication required");
           }
           if (!r.ok) {
             return r.text().then(function (t) {
