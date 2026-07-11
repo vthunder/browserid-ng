@@ -181,6 +181,13 @@ Reference: `browserid-core/src/assertion.rs`.
 returns the verified identity (email) on success, mirroring the BrowserID
 verifier contract. Reference: `browserid-broker/src/routes/verify.rs`.
 
+An RP's verifier holds a **trusted-issuer set** — the primaries and fallback
+IdPs (§8.1) it accepts — and MUST reject an assertion whose `iss` is not in it
+(the reference `Verifier` does this: `trust_issuer` /
+`trust_issuer_from_well_known`, rejecting an untrusted issuer). This is the
+authoritative enforcement of an RP's accepted-fallbacks policy; the client-side
+`acceptedFallbacks` argument (§8.1) is only a routing hint and grants nothing.
+
 ### 6.2 Verification algorithm
 
 1. Parse the backed assertion into its cert chain + assertion. Reject any
@@ -275,21 +282,67 @@ browserid-ng does **not** use the shimmed `navigator.id` API. Instead:
 - `wsapi/*` endpoints for account/session/cert operations.
 - `include.js` + `communication_iframe` retained only for RP compatibility.
 
+The RP's login invocation carries an optional **`acceptedFallbacks`** argument
+(§8.1) — the fallback IdPs the RP will accept for no-primary emails — which the
+mediator uses to route email verification and to fail fast when it can't. This
+is a call argument (mirroring a browser federated-login API), not an RP
+`.well-known`.
+
 Reference: `browserid-broker/src/routes/mod.rs`.
 
-## 8. Fallback broker
+## 8. Fallback IdPs
 
-Domains (and their users) without a primary IdP are served by the **broker**,
-`browserid.me`:
+An email whose domain has no primary IdP (§7) is vouched for by a **fallback
+IdP** — a party that verifies control of the email (e.g. by SMTP challenge)
+and issues a cert with its own `iss`, published under its own `_browserid`
+DNSSEC key, so the cert verifies through the same DNSSEC-rooted path (§3) as
+any primary. `browserid.me` is the reference fallback and occupies the role
+BrowserID's central `login.persona.org` once did — but it is **not a mandatory
+party.**
 
-- SMTP-verifies control of an email, then issues certs with `iss=browserid.me`.
-- **Publishes its own `_browserid` DNSSEC key**, so broker-issued certs verify
-  through the same DNSSEC-rooted path (§3) as any primary.
-- Is a pinned **broker trust anchor** for on-chain attribution (see the
-  attribution module; `/sys/trust/brokers`).
+### 8.1 RP-selected fallbacks
 
-This replaces BrowserID's central `login.persona.org` with a DNSSEC-rooted,
-attribution-aware broker occupying the same role.
+A fallback IdP that can verify an email can issue a login-capable cert for it,
+so accepting a fallback is a trust decision — and it is **the RP's** to make,
+not one browserid.me imposes:
+
+- An RP declares the set of **fallback IdPs it accepts** (by issuer domain).
+  A cert on the no-primary path is acceptable to that RP only if its `iss` is
+  in the set. This is what lets an RP adopt browserid-ng **without being forced
+  to trust `browserid.me`** as an identity authority.
+- **Primaries are always accepted.** A domain's primary is DNSSEC-authoritative
+  for its own users (§3, §7); the accepted-fallbacks set governs only the
+  no-primary path. (v1 has no knob to restrict primaries.)
+- **Declaration is a call argument, not discovery.** The RP passes
+  `acceptedFallbacks: [<issuer-domain>, …]` when it invokes the login flow
+  (§7) — the same shape a browser's native federated-login API consumes, so
+  the mediator/polyfill and a future native implementation read one argument.
+  It is **not** fetched from an RP `.well-known`.
+- **The argument is advisory; enforcement is at verify (§6.1).** Its purpose is
+  to route the user to a fallback the RP will accept and to fail fast otherwise
+  (rather than verify-then-reject). A wrong or spoofed argument can only cause a
+  *failed* login — never an accepted one — because the RP's verifier
+  independently rejects any `iss` outside its trusted set. The RP MUST derive
+  the client argument and the verifier's trusted-issuer set from one config so
+  they cannot drift.
+- **Default.** Absent the argument, the accepted set is `{browserid.me}` —
+  today's behavior, and no new trust (an RP invoking browserid.me's `include.js`
+  already trusts it). An explicit empty set means primaries only. An RP that
+  wants other fallbacks but not browserid.me passes a list without it.
+- **Cross-RP cert reuse is issuer-gated.** A cached fallback cert is reused only
+  at RPs that accept its `iss`; otherwise the mediator re-verifies the email
+  through an accepted fallback (cached per `(email, iss)`). Primaries reuse
+  freely.
+
+`browserid.me` remains a pinned **broker trust anchor** for on-chain
+attribution (see the attribution module; `/sys/trust/brokers`) independent of
+any RP's accepted-fallbacks choice.
+
+> **v1 scope.** Only `browserid.me` is deployed as a fallback today, so v1's
+> concrete effect is that an RP may *decline* it (leaving only primary logins
+> there) while the protocol — accepted-set argument, verifier enforcement,
+> issuer-carried certs, reuse gating — lets anyone stand up another fallback
+> with no further protocol change.
 
 ## 9. Layered modules
 
