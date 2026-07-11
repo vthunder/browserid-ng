@@ -208,7 +208,7 @@
     // Generate Ed25519 keypair
     const keyPair = await crypto.subtle.generateKey(
       { name: 'Ed25519' },
-      true,
+      false, // non-extractable (e2fi)
       ['sign', 'verify']
     );
 
@@ -280,16 +280,14 @@
 
   // Get stored email keypair and certificate
   // Returns { pub, priv, cert } or null if not found
-  function getStoredEmailKeypair(email) {
+  async function getStoredEmailKeypair(email) {
     try {
-      const allEmails = JSON.parse(localStorage.getItem('emails') || '{}');
-      // Across all issuer buckets, return a fresh cert whose issuer THIS RP
-      // accepts (spec §8.1) — so the right issuer's cert is reused per RP and
-      // certs from multiple issuers for one email coexist (apgv).
-      for (const issuer of Object.keys(allEmails)) {
-        const rec = (allEmails[issuer] || {})[email];
-        if (rec && rec.priv && rec.cert && !isCertExpired(rec.cert) && storedCertAcceptable(email, rec.cert)) {
-          return rec;
+      // Non-extractable keys live in IndexedDB (e2fi). Return a fresh cert
+      // whose issuer THIS RP accepts (§8.1); multiple issuers coexist (apgv).
+      const recs = await Keystore.forEmail(email);
+      for (const rec of recs) {
+        if (rec.privateKey && rec.cert && !isCertExpired(rec.cert) && storedCertAcceptable(email, rec.cert)) {
+          return rec; // { issuer, email, publicKeyX, privateKey: CryptoKey, cert }
         }
       }
       return null;
@@ -351,24 +349,10 @@
       const audience = state.origin;
       const expiresAt = Date.now() + (5 * 60 * 1000); // 5 minutes
 
-      // Import the private key from stored JWK format
-      const privateKeyJwk = {
-        kty: 'OKP',
-        crv: 'Ed25519',
-        d: stored.priv.d,
-        x: stored.priv.x
-      };
-      const privateKey = await crypto.subtle.importKey(
-        'jwk',
-        privateKeyJwk,
-        { name: 'Ed25519' },
-        false,
-        ['sign']
-      );
-
-      // Create assertion using stored certificate
+      // Sign with the non-extractable private key handle straight from the
+      // keystore (e2fi) — no JWK, no import.
       const assertion = await createAssertionFromPrimary(
-        privateKey,
+        stored.privateKey,
         stored.cert,
         audience,
         expiresAt
@@ -447,8 +431,8 @@
       //    Reuse a cached cert only if its issuer is acceptable to this RP
       //    (spec §8.1): a primary cert (iss == email domain) always is; a
       //    broker/fallback cert only if the RP accepts this broker.
-      const stored = getStoredEmailKeypair(email);
-      if (stored && stored.priv && stored.cert && !isCertExpired(stored.cert)) {
+      const stored = await getStoredEmailKeypair(email);
+      if (stored && stored.privateKey && stored.cert && !isCertExpired(stored.cert)) {
         if (storedCertAcceptable(email, stored.cert)) {
           return await createAssertionFromStored(email, stored);
         }
@@ -522,34 +506,16 @@
   // This mirrors what BrowserID.Storage.addEmail does
   async function storeEmailKeypair(email, publicKey, privateKey, certificate) {
     try {
-      // Export keys to JWK format
+      // Store the NON-EXTRACTABLE private key handle in IndexedDB (e2fi). Only
+      // the public key is exported (for reference); the private bytes never
+      // touch JS. Keyed by the cert's issuer so multiple issuers coexist (apgv).
       const pubJwk = await crypto.subtle.exportKey('jwk', publicKey);
-      const privJwk = await crypto.subtle.exportKey('jwk', privateKey);
-
-      // Format keys for BrowserID storage format
-      // jwcrypto-compat.js expects: pub.x for public key, priv.d and priv.x for secret key
-      const pubObj = {
-        algorithm: 'Ed25519',
-        x: pubJwk.x
-      };
-      const privObj = {
-        algorithm: 'Ed25519',
-        d: privJwk.d,
-        x: privJwk.x  // Need x for the full keypair when signing
-      };
-
-      // Key by the cert's issuer so certs from different issuers for the same
-      // email coexist (apgv: e.g. browserid.me + fallback.sandmill.org), each
-      // reused at the RPs that accept that issuer.
       const issuer = certIssuer(certificate) || 'default';
-      const allEmails = JSON.parse(localStorage.getItem('emails') || '{}');
-      allEmails[issuer] = allEmails[issuer] || {};
-      allEmails[issuer][email] = {
-        pub: pubObj,
-        priv: privObj,
+      await Keystore.put(issuer, email, {
+        privateKey: privateKey,
+        publicKeyX: pubJwk.x,
         cert: certificate
-      };
-      localStorage.setItem('emails', JSON.stringify(allEmails));
+      });
     } catch (e) {
       console.warn('Failed to store email keypair:', e);
     }
@@ -1381,6 +1347,8 @@
 
   // Initialize
   async function init() {
+    // Migrate any legacy localStorage keys into non-extractable IndexedDB (e2fi).
+    try { await Keystore.migrateFromLocalStorage(); } catch (e) { console.warn('keystore migrate:', e); }
     // Learn this broker's own issuer domain (its fallback-IdP identity) so the
     // acceptedFallbacks gate (spec §8.1) works on every entry path, including
     // the provisionEmail fast-path below.

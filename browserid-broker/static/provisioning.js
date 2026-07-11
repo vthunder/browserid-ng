@@ -133,14 +133,14 @@
      * Generate Ed25519 keypair
      */
     _generateKeyPair: async function() {
+      // Non-extractable private key (e2fi): JS never sees the raw bytes.
       const keyPair = await crypto.subtle.generateKey(
         { name: 'Ed25519' },
-        true,
+        false,
         ['sign', 'verify']
       );
 
       const publicKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
-      const privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
 
       return {
         publicKey: keyPair.publicKey,
@@ -149,8 +149,7 @@
           algorithm: 'Ed25519',
           publicKey: publicKeyJwk.x
         }),
-        publicKeyJwk: publicKeyJwk,
-        privateKeyJwk: privateKeyJwk
+        publicKeyJwk: publicKeyJwk
       };
     },
 

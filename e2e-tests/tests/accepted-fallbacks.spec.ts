@@ -36,11 +36,14 @@ async function stubSecondaryKnown(page, email: string) {
 }
 
 test.describe('acceptedFallbacks gate (8t8h)', () => {
-  test('secondary email blocked when the RP does not accept this broker', async ({ page }) => {
+  test('secondary email routes to an accepted external fallback (not this broker)', async ({ page }) => {
     const email = `nofallback-${Date.now()}@secondary-example.test`;
     await stubSecondaryKnown(page, email);
 
-    // acceptedFallbacks lists a fallback that is NOT this broker's domain.
+    // acceptedFallbacks lists a fallback that is NOT this broker's domain, so
+    // the dialog routes verification THROUGH that fallback (apgv), rather than
+    // blocking or using this broker. The fallback here is fake, so it fails at
+    // fetch — but the error naming it proves routing kicked in.
     await page.goto(
       `${BASE_URL}/dialog/dialog.html?origin=http://example.com` +
       `&accepted_fallbacks=some-other-fallback.example`);
@@ -49,9 +52,8 @@ test.describe('acceptedFallbacks gate (8t8h)', () => {
     await page.fill('#email', email);
     await page.click('#email-form button[type="submit"]');
 
-    // Fail-fast: the error screen explains the RP declined this broker.
     await expect(page.locator('#error-screen')).toHaveClass(/active/, { timeout: 10000 });
-    await expect(page.locator('.error-message')).toContainText('accept email sign-in via');
+    await expect(page.locator('.error-message')).toContainText('some-other-fallback.example');
   });
 
   test('secondary email proceeds when no acceptedFallbacks is passed (default)', async ({ page }) => {
