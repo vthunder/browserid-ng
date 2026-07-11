@@ -1,0 +1,12 @@
+{
+  "name": "browserid-mcp-agent-auth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reference MCP server that authenticates agents via browserid-ng identity + warrant.",
+  "scripts": { "test": "node test.mjs" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@browserid/verify": "file:../../sdk/js"
+  }
+}
