@@ -48,6 +48,7 @@ mod store;
 
 pub use error::RegistrarError;
 pub use host::{AgentIdentity, AuthedUser, RegistrarHost};
+pub use consent::scope_fingerprint;
 pub use registry::valid_agent_name;
 pub use store::{RegistrarStore, StoreResult};
 

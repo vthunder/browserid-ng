@@ -271,7 +271,8 @@ async fn warrant_registry_records_and_forgets() {
     assert!(auds.contains(&"https://one.example") && auds.contains(&"sbo://two.example"));
     assert!(warrants.iter().all(|w| w["agent_email"] == agent.email()));
 
-    // Manual registration upserts (same agent+audience replaces the row).
+    // A grant's identity is (audience, scopes) — e85i. Registering a warrant
+    // at a known audience with DIFFERENT scopes is a new grant and coexists…
     let manual = Warrant::create(
         &parent_cert,
         agent.email(),
@@ -292,9 +293,35 @@ async fn warrant_registry_records_and_forgets() {
         .header("cookie", &session)
         .send().await.unwrap().json().await.unwrap();
     let warrants = listed["warrants"].as_array().unwrap();
-    assert_eq!(warrants.len(), 2, "upsert must replace, not add: {listed}");
-    let one = warrants.iter().find(|w| w["audience"] == "https://one.example").unwrap();
-    assert_eq!(one["scopes"][0], "read", "upsert keeps the newest signing");
+    assert_eq!(warrants.len(), 3, "different scopes at one audience coexist: {listed}");
+
+    // …while re-registering with the SAME scopes replaces that row (reissue).
+    let reissue = Warrant::create(
+        &parent_cert,
+        agent.email(),
+        "https://one.example",
+        Some(vec!["read".into()]),
+        Duration::days(20),
+        &user_kp,
+    )
+    .unwrap();
+    let resp: Value = http
+        .post(format!("{base}/wsapi/register_warrant"))
+        .header("cookie", &session)
+        .json(&json!({ "csrf": csrf, "warrant": reissue.encoded() }))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(resp["success"], true, "reissue: {resp}");
+    let listed: Value = http
+        .get(format!("{base}/wsapi/warrants"))
+        .header("cookie", &session)
+        .send().await.unwrap().json().await.unwrap();
+    let warrants = listed["warrants"].as_array().unwrap();
+    assert_eq!(warrants.len(), 3, "same-scope reissue replaces, not adds: {listed}");
+    let one = warrants.iter()
+        .find(|w| w["audience"] == "https://one.example" && w["scopes"][0] == "read")
+        .unwrap();
+    assert_eq!(one["warrant"], Value::String(reissue.encoded().to_string()),
+        "reissue keeps the newest signing");
 
     // Forget removes the row (scoped to the owner).
     let id = one["id"].as_u64().unwrap();
@@ -308,7 +335,7 @@ async fn warrant_registry_records_and_forgets() {
         .get(format!("{base}/wsapi/warrants"))
         .header("cookie", &session)
         .send().await.unwrap().json().await.unwrap();
-    assert_eq!(listed["warrants"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["warrants"].as_array().unwrap().len(), 2);
 }
 
 /// egr7 end to end: certs and warrants carry status refs; the published

@@ -581,7 +581,7 @@ function renderDetailWarrants(agentEmail) {
     if (!id) return setStatus('err', `The identity key for ${w.delegator_email} isn't in this browser — activate it first.`);
     try {
       let statusRef = null;
-      try { const alloc = await post('/wsapi/allocate_warrant_status', { csrf: account.csrf, agent_email: w.agent_email, audience: w.audience }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
+      try { const alloc = await post('/wsapi/allocate_warrant_status', { csrf: account.csrf, agent_email: w.agent_email, audience: w.audience, scopes: w.scopes || [] }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
       const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
       const claims = { typ: 'browserid-agent-warrant-v1', iss: id.email, agent: w.agent_email, aud: w.audience, 'parent-cert': id.cert, iat: nowS(), exp: nowS() + 90*24*3600 };
       if ((w.scopes || []).length) claims.scopes = w.scopes;
@@ -609,7 +609,7 @@ $('w-create').onclick = async () => {
   status.className = 'status muted'; status.textContent = 'Signing…';
   try {
     let statusRef = null;
-    try { const alloc = await post('/wsapi/allocate_warrant_status', { csrf: account.csrf, agent_email: agentEmail, audience }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
+    try { const alloc = await post('/wsapi/allocate_warrant_status', { csrf: account.csrf, agent_email: agentEmail, audience, scopes }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
     const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
     const claims = { typ: 'browserid-agent-warrant-v1', iss: id.email, agent: agentEmail, aud: audience, 'parent-cert': id.cert, iat: nowS(), exp: nowS() + 90*24*3600 };
     if (scopes.length) claims.scopes = scopes;

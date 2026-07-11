@@ -44,9 +44,27 @@ pub fn status_list_uri(domain: &str) -> String {
     format!("{}/.well-known/browserid-status", public_origin(domain))
 }
 
-/// The composite status subject for one warrant grant
-pub fn warrant_status_subject(user_id: u64, agent: &str, aud: &str) -> String {
-    format!("{}|{}|{}", user_id, agent, aud)
+/// The composite status subject for one warrant grant. A grant's identity
+/// is (audience, scopes) — two warrants may share an audience and differ
+/// only in scopes (e85i) — so the subject carries the scope fingerprint.
+pub fn warrant_status_subject(user_id: u64, agent: &str, aud: &str, scopes: &[String]) -> String {
+    format!("{}|{}|{}|{}", user_id, agent, aud, scope_fingerprint(scopes))
+}
+
+/// Order-insensitive fingerprint of an opaque scope list (e85i). The
+/// registrar never interprets scopes — it hashes them for keying: grant
+/// identity, registry upserts, status subjects. Empty scopes hash too, so
+/// "no scopes" is one stable identity.
+pub fn scope_fingerprint(scopes: &[String]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut sorted: Vec<&str> = scopes.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    let mut h = Sha256::new();
+    for s in &sorted {
+        h.update(s.as_bytes());
+        h.update([0]);
+    }
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&h.finalize()[..16])
 }
 
 pub fn public_origin(domain: &str) -> String {
@@ -149,7 +167,7 @@ pub async fn request(
             browserid_core::MAX_WARRANT_GRANTS
         )));
     }
-    let mut seen_auds: Vec<&str> = Vec::new();
+    let mut seen: Vec<(String, String)> = Vec::new();
     for g in &grants {
         // No wildcards, and no whitespace/control characters: the audience
         // is rendered verbatim on the consent page, where padding or
@@ -163,18 +181,22 @@ pub async fn request(
                 "each grant audience must be one exact identifier".into(),
             ));
         }
-        if seen_auds.contains(&g.aud.as_str()) {
-            return Err(RegistrarError::InvalidProvisioningRequest(
-                "duplicate grant audiences".into(),
-            ));
-        }
-        seen_auds.push(&g.aud);
         let scopes = g.scopes.as_deref().unwrap_or_default();
         if scopes.len() > 32 || scopes.iter().any(|s| s.len() > 64) {
             return Err(RegistrarError::InvalidProvisioningRequest(
                 "too many / too long scopes".into(),
             ));
         }
+        // A grant's identity is (audience, scopes) — same audience with
+        // different scopes is a legitimate pair of grants (e85i); an exact
+        // duplicate is a malformed batch.
+        let key = (g.aud.clone(), scope_fingerprint(scopes));
+        if seen.contains(&key) {
+            return Err(RegistrarError::InvalidProvisioningRequest(
+                "duplicate grants (same audience and scopes)".into(),
+            ));
+        }
+        seen.push(key);
     }
 
     // The agent's identity domain is the domain of the IdP that roots the
@@ -197,7 +219,12 @@ pub async fn request(
     for g in grants {
         let idx = state.store.get_or_allocate_status(
             "warrant",
-            &warrant_status_subject(rec.user_id, &agent_email, &g.aud),
+            &warrant_status_subject(
+                rec.user_id,
+                &agent_email,
+                &g.aud,
+                g.scopes.as_deref().unwrap_or_default(),
+            ),
         )?;
         grant_items.push(WarrantGrantItem {
             audience: g.aud,
@@ -573,6 +600,9 @@ pub struct AllocateStatusBody {
     pub csrf: String,
     pub agent_email: String,
     pub audience: String,
+    /// The grant's scopes — part of its identity (e85i)
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -602,7 +632,7 @@ pub async fn allocate_warrant_status(
     }
     let idx = state.store.get_or_allocate_status(
         "warrant",
-        &warrant_status_subject(user.user_id, &req.agent_email, &req.audience),
+        &warrant_status_subject(user.user_id, &req.agent_email, &req.audience, &req.scopes),
     )?;
     Ok(Json(AllocateStatusResponse {
         success: true,
@@ -662,4 +692,30 @@ pub async fn status_list(
     )
     .map_err(|e| RegistrarError::Internal(format!("status list sign: {e}")))?;
     Ok(token.encoded().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scope_fingerprint_is_order_insensitive_and_distinct() {
+        let a = scope_fingerprint(&["post".into(), "read".into()]);
+        let b = scope_fingerprint(&["read".into(), "post".into()]);
+        assert_eq!(a, b, "scope order must not matter");
+        assert_ne!(a, scope_fingerprint(&["read".into()]));
+        assert_ne!(scope_fingerprint(&[]), scope_fingerprint(&["read".into()]));
+        // Concatenation must not collide with a differently-split list.
+        assert_ne!(
+            scope_fingerprint(&["ab".into(), "c".into()]),
+            scope_fingerprint(&["a".into(), "bc".into()])
+        );
+    }
+
+    #[test]
+    fn status_subject_carries_the_grant_identity() {
+        let base = warrant_status_subject(7, "a@x", "https://rp", &[]);
+        let scoped = warrant_status_subject(7, "a@x", "https://rp", &["post".into()]);
+        assert_ne!(base, scoped, "same audience, different scopes = different grant");
+    }
 }

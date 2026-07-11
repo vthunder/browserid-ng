@@ -468,11 +468,15 @@ impl UserStore for InMemoryUserStore {
 
     fn upsert_warrant(&self, mut record: WarrantRecord) -> StoreResult<()> {
         let mut records = self.warrant_records.write().unwrap();
-        // Replace any existing row for the same (user, agent, audience).
+        // Replace any existing row for the same grant identity —
+        // (user, agent, audience, scopes): same-audience grants that differ
+        // only in scopes coexist (e85i).
+        let fp = browserid_registrar::scope_fingerprint(&record.scopes);
         records.retain(|_, r| {
             !(r.user_id == record.user_id
                 && r.agent_email == record.agent_email
-                && r.audience == record.audience)
+                && r.audience == record.audience
+                && browserid_registrar::scope_fingerprint(&r.scopes) == fp)
         });
         record.id = self.next_warrant_id.fetch_add(1, Ordering::SeqCst);
         records.insert(record.id, record);

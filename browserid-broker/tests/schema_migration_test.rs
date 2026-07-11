@@ -213,3 +213,39 @@ fn test_update_email_last_used_not_found() {
     let result = store.update_email_last_used("nonexistent@example.com", EmailType::Primary);
     assert!(result.is_err());
 }
+
+/// e85i: a grant's identity is (audience, scopes) — same-audience warrants
+/// with different scopes coexist; a reissue with identical scopes replaces.
+#[test]
+fn test_warrant_upsert_keys_on_audience_and_scopes() {
+    use browserid_broker::store::{UserId, WarrantRecord};
+    use chrono::Utc;
+
+    let (store, _dir) = create_test_store();
+    let user_id = store.create_user("hash").unwrap();
+
+    let warrant = |scopes: &[&str], jws: &str| WarrantRecord {
+        id: 0,
+        user_id: UserId(user_id.0),
+        delegator_email: "dan@example.com".into(),
+        agent_email: "bot@example.com".into(),
+        audience: "https://rp.example".into(),
+        scopes: scopes.iter().map(|s| s.to_string()).collect(),
+        warrant: jws.into(),
+        status_idx: None,
+        signed_at: Utc::now(),
+        expires_at: Utc::now(),
+    };
+
+    store.upsert_warrant(warrant(&["path:/shared/*"], "jws-shared")).unwrap();
+    store.upsert_warrant(warrant(&["as:you", "path:/u/you/*"], "jws-onbehalf")).unwrap();
+    let listed = store.list_warrants(user_id).unwrap();
+    assert_eq!(listed.len(), 2, "different scopes at one audience must coexist");
+
+    // Identical scopes (any order) replace, not duplicate.
+    store.upsert_warrant(warrant(&["path:/u/you/*", "as:you"], "jws-onbehalf-2")).unwrap();
+    let listed = store.list_warrants(user_id).unwrap();
+    assert_eq!(listed.len(), 2, "same-scope reissue replaces its predecessor");
+    assert!(listed.iter().any(|w| w.warrant == "jws-onbehalf-2"));
+    assert!(!listed.iter().any(|w| w.warrant == "jws-onbehalf"));
+}

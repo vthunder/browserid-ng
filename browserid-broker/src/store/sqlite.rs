@@ -14,7 +14,7 @@ use super::{
 use crate::error::BrokerError;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 9;
+const SCHEMA_VERSION: i32 = 10;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -88,6 +88,9 @@ impl SqliteStore {
             }
             if current_version < 9 {
                 Self::migrate_v9(conn)?;
+            }
+            if current_version < 10 {
+                Self::migrate_v10(conn)?;
             }
 
             // Update schema version
@@ -345,6 +348,58 @@ impl SqliteStore {
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v10(conn: &Connection) -> Result<(), BrokerError> {
+        // e85i: a grant's identity is (audience, scopes), not audience alone
+        // — the same agent may hold two warrants at one audience differing
+        // only in scopes. Rebuild the warrants UNIQUE key with an opaque
+        // scope fingerprint (the broker hashes scopes, never interprets
+        // them), backfilling existing rows.
+        conn.execute_batch(
+            r#"
+            ALTER TABLE warrants RENAME TO warrants_v9;
+            CREATE TABLE warrants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                delegator_email TEXT NOT NULL,
+                agent_email TEXT NOT NULL,
+                audience TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                scope_hash TEXT NOT NULL DEFAULT '',
+                warrant TEXT NOT NULL,
+                signed_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                status_idx INTEGER,
+                UNIQUE(user_id, agent_email, audience, scope_hash)
+            );
+            INSERT INTO warrants (id, user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at, status_idx)
+                SELECT id, user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at, status_idx FROM warrants_v9;
+            DROP TABLE warrants_v9;
+            CREATE INDEX IF NOT EXISTS idx_warrants_user ON warrants(user_id);
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+
+        // Backfill the fingerprint from each row's scopes JSON.
+        let mut stmt = conn
+            .prepare("SELECT id, scopes FROM warrants")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        drop(stmt);
+        for (id, scopes_json) in rows {
+            let scopes: Vec<String> = serde_json::from_str(&scopes_json).unwrap_or_default();
+            conn.execute(
+                "UPDATE warrants SET scope_hash = ?1 WHERE id = ?2",
+                params![browserid_registrar::scope_fingerprint(&scopes), id],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        }
         Ok(())
     }
 }
@@ -1137,9 +1192,9 @@ impl UserStore for SqliteStore {
     fn upsert_warrant(&self, record: WarrantRecord) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO warrants (user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at, status_idx)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(user_id, agent_email, audience) DO UPDATE SET
+            "INSERT INTO warrants (user_id, delegator_email, agent_email, audience, scopes, scope_hash, warrant, signed_at, expires_at, status_idx)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(user_id, agent_email, audience, scope_hash) DO UPDATE SET
                delegator_email = excluded.delegator_email,
                scopes = excluded.scopes,
                warrant = excluded.warrant,
@@ -1152,6 +1207,7 @@ impl UserStore for SqliteStore {
                 record.agent_email,
                 record.audience,
                 serde_json::to_string(&record.scopes).unwrap_or_else(|_| "[]".into()),
+                browserid_registrar::scope_fingerprint(&record.scopes),
                 record.warrant,
                 record.signed_at.to_rfc3339(),
                 record.expires_at.to_rfc3339(),
