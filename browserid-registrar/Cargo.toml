@@ -1,0 +1,20 @@
+[package]
+name = "browserid-registrar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reusable registrar component: provisioning-cert registry, endorsement signing, warrant consent flow + registry, revocation status list (1pnf)"
+
+[dependencies]
+browserid-core = { path = "../browserid-core" }
+
+axum = { workspace = true }
+tower-cookies = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

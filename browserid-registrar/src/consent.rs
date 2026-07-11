@@ -1,4 +1,6 @@
-//! Warrant consent flow (agent spec §6, v0.4).
+//! Warrant consent flow (agent spec §6, v0.4) + warrant registry (jipx) +
+//! signed revocation status list (core §6.4). Unbundled from the broker per
+//! 1pnf — this is the registrar's consent surface API.
 //!
 //! Warrants are requested, not configured: an agent that hits an RP's
 //! `WWW-Authenticate` challenge raises a **consent request** here (its
@@ -26,30 +28,28 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tower_cookies::Cookies;
 
-use crate::email::EmailSender;
-use crate::error::BrokerError;
-use crate::state::AppState;
-use crate::store::{
-    SessionStore, UserStore, WarrantGrantItem, WarrantRecord, WarrantRequestRecord,
-    WarrantRequestStatus,
-};
+use crate::error::RegistrarError;
+use crate::host::require_csrf;
+use crate::models::{WarrantGrantItem, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus};
+use crate::registry::{require_enabled, require_session};
+use crate::RegistrarState;
 
 /// Pending consent requests expire unapproved after this long
 const REQUEST_VALIDITY_SECONDS: i64 = 900;
 /// Minimum seconds between polls of one code
 const POLL_INTERVAL_SECONDS: i64 = 5;
 
-/// The broker's published status list URI (core §6.4)
-pub(crate) fn status_list_uri(domain: &str) -> String {
+/// The registrar's published status list URI (core §6.4)
+pub fn status_list_uri(domain: &str) -> String {
     format!("{}/.well-known/browserid-status", public_origin(domain))
 }
 
 /// The composite status subject for one warrant grant
-pub(crate) fn warrant_status_subject(user_id: crate::store::UserId, agent: &str, aud: &str) -> String {
-    format!("{}|{}|{}", user_id.0, agent, aud)
+pub fn warrant_status_subject(user_id: u64, agent: &str, aud: &str) -> String {
+    format!("{}|{}|{}", user_id, agent, aud)
 }
 
-pub(crate) fn public_origin(domain: &str) -> String {
+pub fn public_origin(domain: &str) -> String {
     if domain.starts_with("localhost") || domain.starts_with("127.") {
         format!("http://{domain}")
     } else {
@@ -89,33 +89,26 @@ pub struct WarrantRequestResponse {
 /// credential) asks its delegator to approve a warrant for one RP audience.
 /// Verified exactly like `/provision/endorse`: the signed bundle against the
 /// registry; the registry is the gate.
-pub async fn request<U, S, E>(
-    State(state): State<Arc<AppState<U, S, E>>>,
+pub async fn request(
+    State(state): State<Arc<RegistrarState>>,
     Json(req): Json<WarrantRequestBody>,
-) -> Result<Json<WarrantRequestResponse>, BrokerError>
-where
-    U: UserStore,
-    S: SessionStore,
-    E: EmailSender,
-{
-    if !state.agent_provisioning_enabled {
-        return Err(BrokerError::AgentProvisioningDisabled);
-    }
+) -> Result<Json<WarrantRequestResponse>, RegistrarError> {
+    require_enabled(&state)?;
     // Opportunistic sweep so expired rows don't accumulate.
-    let _ = state.user_store.cleanup_expired_warrant_requests();
+    let _ = state.store.cleanup_expired_warrant_requests();
 
     let bundle = browserid_core::RequestBundle::parse(&req.request_bundle)
-        .map_err(|e| BrokerError::InvalidProvisioningRequest(e.to_string()))?;
+        .map_err(|e| RegistrarError::InvalidProvisioningRequest(e.to_string()))?;
 
     // Registry gate (same as endorse): registered + unrevoked, request signed
     // by P_priv and fresh.
     let p_pub = bundle.provisioning_cert().public_key().to_base64();
     let rec = state
-        .user_store
+        .store
         .get_provisioning_cert_by_pub(&p_pub)?
-        .ok_or(BrokerError::ProvisioningCertNotFound)?;
+        .ok_or(RegistrarError::ProvisioningCertNotFound)?;
     if !rec.is_active() {
-        return Err(BrokerError::PolicyRefused(
+        return Err(RegistrarError::PolicyRefused(
             "provisioning certificate revoked".into(),
         ));
     }
@@ -123,35 +116,35 @@ where
     request
         .verify(bundle.provisioning_cert().public_key())
         .map_err(|e| {
-            BrokerError::InvalidProvisioningRequest(format!("bad request signature: {e}"))
+            RegistrarError::InvalidProvisioningRequest(format!("bad request signature: {e}"))
         })?;
     if request.is_expired() {
-        return Err(BrokerError::InvalidProvisioningRequest(
+        return Err(RegistrarError::InvalidProvisioningRequest(
             "request expired".into(),
         ));
     }
     let claims = request.claims();
     if claims.action != Action::Warrant {
-        return Err(BrokerError::InvalidProvisioningRequest(
+        return Err(RegistrarError::InvalidProvisioningRequest(
             "request action must be 'warrant'".into(),
         ));
     }
     if claims.domain != state.domain {
-        return Err(BrokerError::InvalidProvisioningRequest(
+        return Err(RegistrarError::InvalidProvisioningRequest(
             "request domain does not target this registrar".into(),
         ));
     }
     let name = claims.name.as_deref().ok_or_else(|| {
-        BrokerError::InvalidProvisioningRequest("warrant request requires a name".into())
+        RegistrarError::InvalidProvisioningRequest("warrant request requires a name".into())
     })?;
     if !bundle.provisioning_cert().constraint().authorizes(name) {
-        return Err(BrokerError::PolicyRefused(format!(
+        return Err(RegistrarError::PolicyRefused(format!(
             "'{name}' is not authorized by this key's constraint"
         )));
     }
     let grants = claims.warrant_grants.clone().unwrap_or_default();
     if grants.is_empty() || grants.len() > browserid_core::MAX_WARRANT_GRANTS {
-        return Err(BrokerError::InvalidProvisioningRequest(format!(
+        return Err(RegistrarError::InvalidProvisioningRequest(format!(
             "warrant request must carry 1..={} grants",
             browserid_core::MAX_WARRANT_GRANTS
         )));
@@ -166,19 +159,19 @@ where
             || g.aud.len() > 512
             || g.aud.chars().any(|c| c.is_whitespace() || c.is_control())
         {
-            return Err(BrokerError::InvalidProvisioningRequest(
+            return Err(RegistrarError::InvalidProvisioningRequest(
                 "each grant audience must be one exact identifier".into(),
             ));
         }
         if seen_auds.contains(&g.aud.as_str()) {
-            return Err(BrokerError::InvalidProvisioningRequest(
+            return Err(RegistrarError::InvalidProvisioningRequest(
                 "duplicate grant audiences".into(),
             ));
         }
         seen_auds.push(&g.aud);
         let scopes = g.scopes.as_deref().unwrap_or_default();
         if scopes.len() > 32 || scopes.iter().any(|s| s.len() > 64) {
-            return Err(BrokerError::InvalidProvisioningRequest(
+            return Err(RegistrarError::InvalidProvisioningRequest(
                 "too many / too long scopes".into(),
             ));
         }
@@ -193,7 +186,7 @@ where
         .split_once('~')
         .and_then(|(u, _)| browserid_core::Certificate::parse(u).ok())
         .map(|u| u.issuer().to_string())
-        .ok_or_else(|| BrokerError::Internal("registered bundle has no parseable U_cert".into()))?;
+        .ok_or_else(|| RegistrarError::Internal("registered bundle has no parseable U_cert".into()))?;
     let agent_email = format!("{name}@{idp_domain}");
 
     let code = new_code();
@@ -202,7 +195,7 @@ where
     // so each single warrant is revocable on its own.
     let mut grant_items = Vec::with_capacity(grants.len());
     for g in grants {
-        let idx = state.user_store.get_or_allocate_status(
+        let idx = state.store.get_or_allocate_status(
             "warrant",
             &warrant_status_subject(rec.user_id, &agent_email, &g.aud),
         )?;
@@ -212,7 +205,7 @@ where
             status_idx: Some(idx),
         });
     }
-    state.user_store.create_warrant_request(WarrantRequestRecord {
+    state.store.create_warrant_request(WarrantRequestRecord {
         code: code.clone(),
         user_id: rec.user_id,
         delegator_email: rec.delegator_email.clone(),
@@ -244,17 +237,12 @@ pub struct PollBody {
 /// POST /warrant/poll — the agent's pickup. Single delivery: the row (and
 /// with it the audience/scope data) is deleted the moment the warrant — or
 /// the denial — is handed over.
-pub async fn poll<U, S, E>(
-    State(state): State<Arc<AppState<U, S, E>>>,
+pub async fn poll(
+    State(state): State<Arc<RegistrarState>>,
     Json(req): Json<PollBody>,
-) -> Response
-where
-    U: UserStore,
-    S: SessionStore,
-    E: EmailSender,
-{
-    if !state.agent_provisioning_enabled {
-        return BrokerError::AgentProvisioningDisabled.into_response();
+) -> Response {
+    if let Err(e) = require_enabled(&state) {
+        return e.into_response();
     }
 
     let expired = || {
@@ -265,7 +253,7 @@ where
             .into_response()
     };
 
-    let rec = match state.user_store.get_warrant_request(&req.code) {
+    let rec = match state.store.get_warrant_request(&req.code) {
         Ok(Some(rec)) => rec,
         // Unknown == expired == already delivered: indistinguishable.
         Ok(None) => return expired(),
@@ -273,14 +261,14 @@ where
     };
 
     if rec.is_expired() {
-        let _ = state.user_store.delete_warrant_request(&req.code);
+        let _ = state.store.delete_warrant_request(&req.code);
         return expired();
     }
 
     // Rate limit per code.
-    match state.user_store.touch_warrant_poll(&req.code) {
+    match state.store.touch_warrant_poll(&req.code) {
         Ok(Some(prev)) if Utc::now() - prev < Duration::seconds(POLL_INTERVAL_SECONDS) => {
-            return BrokerError::PollTooFast.into_response();
+            return RegistrarError::PollTooFast.into_response();
         }
         Err(e) => return e.into_response(),
         _ => {}
@@ -292,14 +280,14 @@ where
         }
         WarrantRequestStatus::Approved => {
             let warrants = rec.warrants.clone().unwrap_or_default();
-            let _ = state.user_store.delete_warrant_request(&req.code);
+            let _ = state.store.delete_warrant_request(&req.code);
             // `warrant` (singular) kept for single-grant compat.
             let single = (warrants.len() == 1).then(|| warrants[0].clone());
             Json(json!({ "status": "approved", "warrants": warrants, "warrant": single }))
                 .into_response()
         }
         WarrantRequestStatus::Denied => {
-            let _ = state.user_store.delete_warrant_request(&req.code);
+            let _ = state.store.delete_warrant_request(&req.code);
             Json(json!({ "status": "denied" })).into_response()
         }
     }
@@ -324,30 +312,22 @@ pub struct PendingRequestInfo {
 #[derive(Serialize)]
 pub struct ListRequestsResponse {
     pub success: bool,
-    /// The broker's status list URI — pages embed it (with each grant's
+    /// The registrar's status list URI — pages embed it (with each grant's
     /// `status_idx`) into the warrants they sign
     pub status_uri: String,
     pub requests: Vec<PendingRequestInfo>,
 }
 
 /// GET /wsapi/warrant_requests — the signed-in user's open consent requests
-pub async fn list_requests<U, S, E>(
-    State(state): State<Arc<AppState<U, S, E>>>,
+pub async fn list_requests(
+    State(state): State<Arc<RegistrarState>>,
     cookies: Cookies,
-) -> Result<Json<ListRequestsResponse>, BrokerError>
-where
-    U: UserStore,
-    S: SessionStore,
-    E: EmailSender,
-{
-    if !state.agent_provisioning_enabled {
-        return Err(BrokerError::AgentProvisioningDisabled);
-    }
-    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
-        .ok_or(BrokerError::NotAuthenticated)?;
+) -> Result<Json<ListRequestsResponse>, RegistrarError> {
+    require_enabled(&state)?;
+    let user = require_session(&state, &cookies)?;
     let requests = state
-        .user_store
-        .list_pending_warrant_requests(session.user_id)?
+        .store
+        .list_pending_warrant_requests(user.user_id)?
         .into_iter()
         .map(|r| PendingRequestInfo {
             code: r.code,
@@ -383,48 +363,40 @@ pub struct RespondResponse {
 
 /// POST /wsapi/warrant_respond — resolve a pending request. On approve, the
 /// page has already signed the warrant with the identity key held in this
-/// origin; the broker validates it against the pending request (right agent,
-/// right audience, right delegator — no swapped-in grants) and stores it for
-/// the single pickup.
-pub async fn respond<U, S, E>(
-    State(state): State<Arc<AppState<U, S, E>>>,
+/// origin; the registrar validates it against the pending request (right
+/// agent, right audience, right delegator — no swapped-in grants) and stores
+/// it for the single pickup.
+pub async fn respond(
+    State(state): State<Arc<RegistrarState>>,
     cookies: Cookies,
     Json(req): Json<RespondBody>,
-) -> Result<Json<RespondResponse>, BrokerError>
-where
-    U: UserStore,
-    S: SessionStore,
-    E: EmailSender,
-{
-    if !state.agent_provisioning_enabled {
-        return Err(BrokerError::AgentProvisioningDisabled);
-    }
-    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
-        .ok_or(BrokerError::NotAuthenticated)?;
-    super::session::require_csrf(&session, &req.csrf)?;
+) -> Result<Json<RespondResponse>, RegistrarError> {
+    require_enabled(&state)?;
+    let user = require_session(&state, &cookies)?;
+    require_csrf(&user, &req.csrf)?;
 
     let rec = state
-        .user_store
+        .store
         .get_warrant_request(&req.code)?
-        .ok_or(BrokerError::WarrantRequestNotFound)?;
-    if rec.user_id != session.user_id {
-        return Err(BrokerError::WarrantRequestNotFound);
+        .ok_or(RegistrarError::WarrantRequestNotFound)?;
+    if rec.user_id != user.user_id {
+        return Err(RegistrarError::WarrantRequestNotFound);
     }
 
     if !req.approve {
         state
-            .user_store
-            .respond_warrant_request(session.user_id, &req.code, None)?;
+            .store
+            .respond_warrant_request(user.user_id, &req.code, None)?;
         return Ok(Json(RespondResponse { success: true }));
     }
 
     // All-or-nothing: exactly one signed warrant per requested grant, in
     // grant order, each validated against its grant — no swapped-in grants.
     let warrant_jwss = req.warrants.as_deref().ok_or_else(|| {
-        BrokerError::ValidationError("approve requires the signed warrants".into())
+        RegistrarError::ValidationError("approve requires the signed warrants".into())
     })?;
     if warrant_jwss.len() != rec.grants.len() {
-        return Err(BrokerError::ValidationError(format!(
+        return Err(RegistrarError::ValidationError(format!(
             "expected {} warrants (one per grant), got {}",
             rec.grants.len(),
             warrant_jwss.len()
@@ -433,31 +405,31 @@ where
     let mut records = Vec::with_capacity(warrant_jwss.len());
     for (jws, grant) in warrant_jwss.iter().zip(&rec.grants) {
         let warrant = Warrant::parse(jws)
-            .map_err(|e| BrokerError::ValidationError(format!("bad warrant: {e}")))?;
+            .map_err(|e| RegistrarError::ValidationError(format!("bad warrant: {e}")))?;
         if warrant.audience() != grant.audience {
-            return Err(BrokerError::ValidationError(
+            return Err(RegistrarError::ValidationError(
                 "warrant audience does not match its grant".into(),
             ));
         }
         if warrant.agent() != rec.agent_email {
-            return Err(BrokerError::ValidationError(
+            return Err(RegistrarError::ValidationError(
                 "warrant agent does not match the request".into(),
             ));
         }
         if !warrant.delegator().eq_ignore_ascii_case(&rec.delegator_email) {
-            return Err(BrokerError::ValidationError(
+            return Err(RegistrarError::ValidationError(
                 "warrant delegator does not match the request".into(),
             ));
         }
-        records.push(warrant_to_record(session.user_id, &warrant, jws));
+        records.push(warrant_to_record(user.user_id, &warrant, jws));
     }
 
     state
-        .user_store
-        .respond_warrant_request(session.user_id, &req.code, Some(warrant_jwss))?;
+        .store
+        .respond_warrant_request(user.user_id, &req.code, Some(warrant_jwss))?;
     // Registry (jipx): the delegator's own reviewable record of each grant.
     for record in records {
-        state.user_store.upsert_warrant(record)?;
+        state.store.upsert_warrant(record)?;
     }
     tracing::info!(delegator = %rec.delegator_email, grants = rec.grants.len(),
         "warrant consent approved");
@@ -468,11 +440,7 @@ where
 // Warrant registry (jipx): the delegator's own record of issued warrants
 // ===========================================================================
 
-fn warrant_to_record(
-    user_id: crate::store::UserId,
-    warrant: &Warrant,
-    jws: &str,
-) -> WarrantRecord {
+fn warrant_to_record(user_id: u64, warrant: &Warrant, jws: &str) -> WarrantRecord {
     let claims = warrant.claims();
     let ts = |secs: i64| DateTime::from_timestamp(secs, 0).unwrap_or_else(Utc::now);
     WarrantRecord {
@@ -513,28 +481,20 @@ pub struct ListWarrantsResponse {
 }
 
 /// GET /wsapi/warrants — the signed-in user's registered warrants
-pub async fn list_warrants<U, S, E>(
-    State(state): State<Arc<AppState<U, S, E>>>,
+pub async fn list_warrants(
+    State(state): State<Arc<RegistrarState>>,
     cookies: Cookies,
-) -> Result<Json<ListWarrantsResponse>, BrokerError>
-where
-    U: UserStore,
-    S: SessionStore,
-    E: EmailSender,
-{
-    if !state.agent_provisioning_enabled {
-        return Err(BrokerError::AgentProvisioningDisabled);
-    }
-    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
-        .ok_or(BrokerError::NotAuthenticated)?;
+) -> Result<Json<ListWarrantsResponse>, RegistrarError> {
+    require_enabled(&state)?;
+    let user = require_session(&state, &cookies)?;
     let warrants = state
-        .user_store
-        .list_warrants(session.user_id)?
+        .store
+        .list_warrants(user.user_id)?
         .into_iter()
         .map(|r| {
             let revoked = r
                 .status_idx
-                .map(|i| state.user_store.is_status_revoked_idx(i).unwrap_or(false))
+                .map(|i| state.store.is_status_revoked_idx(i).unwrap_or(false))
                 .unwrap_or(false);
             WarrantInfo {
                 id: r.id,
@@ -563,37 +523,27 @@ pub struct RegisterWarrantBody {
 /// POST /wsapi/register_warrant — record a warrant signed outside the
 /// consent flow (manual signing, reissue). The delegator must be a verified
 /// email on this account; the JWS itself is the user-signed authorization.
-pub async fn register_warrant<U, S, E>(
-    State(state): State<Arc<AppState<U, S, E>>>,
+pub async fn register_warrant(
+    State(state): State<Arc<RegistrarState>>,
     cookies: Cookies,
     Json(req): Json<RegisterWarrantBody>,
-) -> Result<Json<RespondResponse>, BrokerError>
-where
-    U: UserStore,
-    S: SessionStore,
-    E: EmailSender,
-{
-    if !state.agent_provisioning_enabled {
-        return Err(BrokerError::AgentProvisioningDisabled);
-    }
-    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
-        .ok_or(BrokerError::NotAuthenticated)?;
-    super::session::require_csrf(&session, &req.csrf)?;
+) -> Result<Json<RespondResponse>, RegistrarError> {
+    require_enabled(&state)?;
+    let user = require_session(&state, &cookies)?;
+    require_csrf(&user, &req.csrf)?;
     let warrant = Warrant::parse(&req.warrant)
-        .map_err(|e| BrokerError::ValidationError(format!("bad warrant: {e}")))?;
-    let owns = state
-        .user_store
-        .list_emails(session.user_id)?
-        .iter()
-        .any(|e| e.email.eq_ignore_ascii_case(warrant.delegator()) && e.verified);
-    if !owns {
-        return Err(BrokerError::ValidationError(
+        .map_err(|e| RegistrarError::ValidationError(format!("bad warrant: {e}")))?;
+    if !state
+        .host
+        .owns_verified_email(user.user_id, warrant.delegator())?
+    {
+        return Err(RegistrarError::ValidationError(
             "the warrant's delegator is not a verified email on this account".into(),
         ));
     }
     state
-        .user_store
-        .upsert_warrant(warrant_to_record(session.user_id, &warrant, &req.warrant))?;
+        .store
+        .upsert_warrant(warrant_to_record(user.user_id, &warrant, &req.warrant))?;
     Ok(Json(RespondResponse { success: true }))
 }
 
@@ -604,25 +554,17 @@ pub struct ForgetWarrantBody {
 }
 
 /// POST /wsapi/forget_warrant — drop a registry row. The signed warrant the
-/// agent holds stays valid until it expires; per-warrant revocation arrives
-/// with certificate status lists (egr7).
-pub async fn forget_warrant<U, S, E>(
-    State(state): State<Arc<AppState<U, S, E>>>,
+/// agent holds stays valid until it expires; per-warrant revocation is
+/// `revoke_warrant` (status bit).
+pub async fn forget_warrant(
+    State(state): State<Arc<RegistrarState>>,
     cookies: Cookies,
     Json(req): Json<ForgetWarrantBody>,
-) -> Result<Json<RespondResponse>, BrokerError>
-where
-    U: UserStore,
-    S: SessionStore,
-    E: EmailSender,
-{
-    if !state.agent_provisioning_enabled {
-        return Err(BrokerError::AgentProvisioningDisabled);
-    }
-    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
-        .ok_or(BrokerError::NotAuthenticated)?;
-    super::session::require_csrf(&session, &req.csrf)?;
-    state.user_store.delete_warrant(session.user_id, req.id)?;
+) -> Result<Json<RespondResponse>, RegistrarError> {
+    require_enabled(&state)?;
+    let user = require_session(&state, &cookies)?;
+    require_csrf(&user, &req.csrf)?;
+    state.store.delete_warrant(user.user_id, req.id)?;
     Ok(Json(RespondResponse { success: true }))
 }
 
@@ -643,32 +585,24 @@ pub struct AllocateStatusResponse {
 /// POST /wsapi/allocate_warrant_status — the manual-signing/reissue surfaces
 /// fetch (or re-fetch — stable per grant) the status index to embed before
 /// signing.
-pub async fn allocate_warrant_status<U, S, E>(
-    State(state): State<Arc<AppState<U, S, E>>>,
+pub async fn allocate_warrant_status(
+    State(state): State<Arc<RegistrarState>>,
     cookies: Cookies,
     Json(req): Json<AllocateStatusBody>,
-) -> Result<Json<AllocateStatusResponse>, BrokerError>
-where
-    U: UserStore,
-    S: SessionStore,
-    E: EmailSender,
-{
-    if !state.agent_provisioning_enabled {
-        return Err(BrokerError::AgentProvisioningDisabled);
-    }
-    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
-        .ok_or(BrokerError::NotAuthenticated)?;
-    super::session::require_csrf(&session, &req.csrf)?;
+) -> Result<Json<AllocateStatusResponse>, RegistrarError> {
+    require_enabled(&state)?;
+    let user = require_session(&state, &cookies)?;
+    require_csrf(&user, &req.csrf)?;
     if req.audience.is_empty()
         || req.audience.contains('*')
         || req.audience.len() > 512
         || req.audience.chars().any(|c| c.is_whitespace() || c.is_control())
     {
-        return Err(BrokerError::ValidationError("bad audience".into()));
+        return Err(RegistrarError::ValidationError("bad audience".into()));
     }
-    let idx = state.user_store.get_or_allocate_status(
+    let idx = state.store.get_or_allocate_status(
         "warrant",
-        &warrant_status_subject(session.user_id, &req.agent_email, &req.audience),
+        &warrant_status_subject(user.user_id, &req.agent_email, &req.audience),
     )?;
     Ok(Json(AllocateStatusResponse {
         success: true,
@@ -687,51 +621,38 @@ pub struct RevokeWarrantBody {
 /// any reissue sharing its index) dies at status-checking verifiers within
 /// one cache window, leaving the agent's other grants intact. The registry
 /// row is kept (marked by its bit) so the account view still shows it.
-pub async fn revoke_warrant<U, S, E>(
-    State(state): State<Arc<AppState<U, S, E>>>,
+pub async fn revoke_warrant(
+    State(state): State<Arc<RegistrarState>>,
     cookies: Cookies,
     Json(req): Json<RevokeWarrantBody>,
-) -> Result<Json<RespondResponse>, BrokerError>
-where
-    U: UserStore,
-    S: SessionStore,
-    E: EmailSender,
-{
-    if !state.agent_provisioning_enabled {
-        return Err(BrokerError::AgentProvisioningDisabled);
-    }
-    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
-        .ok_or(BrokerError::NotAuthenticated)?;
-    super::session::require_csrf(&session, &req.csrf)?;
+) -> Result<Json<RespondResponse>, RegistrarError> {
+    require_enabled(&state)?;
+    let user = require_session(&state, &cookies)?;
+    require_csrf(&user, &req.csrf)?;
     let record = state
-        .user_store
-        .list_warrants(session.user_id)?
+        .store
+        .list_warrants(user.user_id)?
         .into_iter()
         .find(|r| r.id == req.id)
-        .ok_or(BrokerError::WarrantRequestNotFound)?;
+        .ok_or(RegistrarError::WarrantRequestNotFound)?;
     let idx = record.status_idx.ok_or_else(|| {
-        BrokerError::ValidationError(
+        RegistrarError::ValidationError(
             "this warrant predates status lists — reissue it (which replaces it) or revoke the agent key".into(),
         )
     })?;
-    state.user_store.set_status_revoked_idx(idx)?;
+    state.store.set_status_revoked_idx(idx)?;
     tracing::info!(delegator = %record.delegator_email, audience = %record.audience,
         "warrant revoked (status bit set)");
     Ok(Json(RespondResponse { success: true }))
 }
 
-/// GET /.well-known/browserid-status — the broker's signed status list
+/// GET /.well-known/browserid-status — the registrar's signed status list
 /// (core §6.4). Rebuilt per request: the bitmap is tiny and Ed25519 signing
 /// is cheap; `iat` is always fresh and consumers cache per `ttl`.
-pub async fn status_list<U, S, E>(
-    State(state): State<Arc<AppState<U, S, E>>>,
-) -> Result<String, BrokerError>
-where
-    U: UserStore,
-    S: SessionStore,
-    E: EmailSender,
-{
-    let (revoked, max) = state.user_store.revoked_status_indices()?;
+pub async fn status_list(
+    State(state): State<Arc<RegistrarState>>,
+) -> Result<String, RegistrarError> {
+    let (revoked, max) = state.store.revoked_status_indices()?;
     let list = StatusList::from_revoked(revoked, max);
     let token = StatusListToken::create(
         &state.domain,
@@ -739,6 +660,6 @@ where
         &list,
         &state.keypair,
     )
-    .map_err(|e| BrokerError::Internal(format!("status list sign: {e}")))?;
+    .map_err(|e| RegistrarError::Internal(format!("status list sign: {e}")))?;
     Ok(token.encoded().to_string())
 }

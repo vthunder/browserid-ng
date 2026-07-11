@@ -97,7 +97,7 @@ pub(crate) fn issue_certificate<U: UserStore>(
     // *identity*, so revoking the identity kills all outstanding re-mints at
     // once, within a verifier cache window.
     let status = Some(StatusRef {
-        uri: super::warrant::status_list_uri(domain),
+        uri: browserid_registrar::consent::status_list_uri(domain),
         idx: user_store
             .get_or_allocate_status("identity", &email_record.email.to_lowercase())?,
     });

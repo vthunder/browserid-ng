@@ -60,7 +60,7 @@ where
     // Foreign-issuer lists would need an HTTP fetch + cache; not yet needed
     // (no federated IdP issues status claims today).
     if result.status == "okay" {
-        let own_uri = super::warrant::status_list_uri(&state.domain);
+        let own_uri = browserid_registrar::consent::status_list_uri(&state.domain);
         if let Ok(backed) = browserid_core::BackedAssertion::parse(&req.assertion) {
             let mut refs: Vec<browserid_core::StatusRef> = backed
                 .certificates()

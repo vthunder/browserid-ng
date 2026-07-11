@@ -9,6 +9,7 @@ pub mod dns_fetcher;
 pub mod email;
 pub mod error;
 pub mod fallback_fetcher;
+pub mod registrar_glue;
 pub mod routes;
 pub mod state;
 pub mod store;

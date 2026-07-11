@@ -7,10 +7,9 @@ mod cert;
 mod email;
 mod primary;
 mod reset;
-mod session;
+pub(crate) mod session;
 mod test;
 mod verify;
-pub(crate) mod warrant;
 mod well_known;
 
 use std::sync::Arc;
@@ -48,6 +47,25 @@ where
     S: SessionStore + 'static,
     E: EmailSender + 'static,
 {
+    // The registrar component (1pnf): provisioning-cert registry,
+    // endorsement signing, warrant consent flow + registry, status list.
+    // The broker is IdP + registrar in one process; a federated IdP
+    // self-hosts this same component (or points at a managed one).
+    let registrar = browserid_registrar::router(Arc::new(
+        browserid_registrar::RegistrarState {
+            domain: state.domain.clone(),
+            keypair: state.keypair.clone(),
+            enabled: state.agent_provisioning_enabled,
+            store: Arc::new(crate::registrar_glue::BrokerRegistrarStore {
+                user_store: state.user_store.clone(),
+            }),
+            host: Arc::new(crate::registrar_glue::BrokerRegistrarHost {
+                user_store: state.user_store.clone(),
+                session_store: state.session_store.clone(),
+            }),
+        },
+    ));
+
     Router::new()
         .route("/.well-known/browserid", get(well_known::get_support_document))
         .route("/wsapi/session_context", get(session::get_session_context))
@@ -68,31 +86,14 @@ where
         .route("/wsapi/parent_of", get(email::parent_of))
         .route("/wsapi/email_addition_status", get(email::email_addition_status))
         .route("/wsapi/cert_key", post(cert::cert_key))
-        // Agent provisioning (tdxf, delegation chain) — 404 unless
-        // state.agent_provisioning_enabled is set.
-        // Browser-side registry management (session + CSRF):
-        .route("/wsapi/provisioning_certs", get(agent::list_provisioning_certs))
-        .route("/wsapi/register_provisioning_cert", post(agent::register_provisioning_cert))
-        .route("/wsapi/revoke_provisioning_cert", post(agent::revoke_provisioning_cert))
-        // Broker-as-endorser:
-        .route("/provision/endorse", post(agent::endorse))
-        // Broker-as-target-IdP (for @<broker-domain> agents):
+        // Broker-as-target-IdP (tdxf, delegation chain) — 404 unless
+        // state.agent_provisioning_enabled is set. The registrar half
+        // (registry, endorse, consent flow, warrant registry, status list)
+        // is the extracted browserid-registrar component, merged below.
         .route("/provision/reserve", post(agent::reserve))
         .route("/provision/mint", post(agent::mint))
         .route("/provision/list", post(agent::list))
         .route("/provision/revoke", post(agent::revoke))
-        // Warrant consent flow (agent spec §6, v0.4)
-        .route("/warrant/request", post(warrant::request))
-        .route("/warrant/poll", post(warrant::poll))
-        .route("/wsapi/warrant_requests", get(warrant::list_requests))
-        .route("/wsapi/warrant_respond", post(warrant::respond))
-        .route("/wsapi/warrants", get(warrant::list_warrants))
-        .route("/wsapi/register_warrant", post(warrant::register_warrant))
-        .route("/wsapi/forget_warrant", post(warrant::forget_warrant))
-        .route("/wsapi/revoke_warrant", post(warrant::revoke_warrant))
-        .route("/wsapi/allocate_warrant_status", post(warrant::allocate_warrant_status))
-        // Signed revocation status list (core §6.4)
-        .route("/.well-known/browserid-status", get(warrant::status_list))
         .route("/wsapi/account_cancel", post(account::account_cancel))
         .route("/wsapi/stage_reset", post(reset::stage_reset))
         .route("/wsapi/complete_reset", post(reset::complete_reset))
@@ -136,6 +137,10 @@ where
         .route_service("/", ServeFile::new(format!("{}/index.html", static_path)))
         // Serve static files (dialog, CSS, JS)
         .nest_service("/dialog", ServeDir::new(static_path))
+        .with_state(state)
+        // Registrar routes join here (already stateful); the shared layers
+        // below — frame denial, cookies, CORS, cache-control — cover both.
+        .merge(registrar)
         // Deny framing everywhere except the surfaces RPs legitimately embed
         // (communication_iframe + winchan relay). The consent page especially
         // must never render in an iframe: its one-click Approve signs a
@@ -156,7 +161,6 @@ where
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-cache"),
         ))
-        .with_state(state)
 }
 
 /// Anti-clickjacking: `X-Frame-Options: DENY` + `frame-ancestors 'none'` on

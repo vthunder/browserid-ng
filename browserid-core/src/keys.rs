@@ -100,7 +100,7 @@ impl<'de> Deserialize<'de> for PublicKey {
 }
 
 /// A keypair that can sign and verify
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KeyPair {
     signing_key: SigningKey,
 }
