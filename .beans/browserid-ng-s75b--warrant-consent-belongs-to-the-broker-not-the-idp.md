@@ -1,11 +1,11 @@
 ---
 # browserid-ng-s75b
 title: Warrant consent belongs to the broker, not the IdP — corrected registrar role decomposition
-status: todo
+status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-11T08:51:02Z
-updated_at: 2026-07-11T08:51:29Z
+updated_at: 2026-07-11T09:20:52Z
 blocking:
     - browserid-ng-0efn
 ---
@@ -50,3 +50,13 @@ Registrar-as-relay: because signing is client-side, the consent UI can render au
 ## Related
 
 Supersedes the role model in browserid-ng-1pnf (kept closed; extraction was still useful groundwork). Related: egr7 (revocation/status list), e85i (grant identity), e2fi (non-extractable custody), and the sibling login-path decentralization bean (polyfill-selectable broker).
+
+## Build progress (2026-07-11)
+
+Decisions locked: broker-declared registrar (endorser = registrar); strict verification (no carve-out — dev mode, existing warrants killed); crate split deferred.
+
+- [x] Phase 0 spec — v0.5: registrar is the user's broker, `registrar` cert claim, warrant status pinned to it
+- [x] Phase 1 core — `registrar` cert claim + strict warrant verify (status required + origin == cert registrar)
+- [x] Phase 2 broker/registrar — endorsement carries the registrar; broker mints with its own origin; 366 workspace tests green
+- [x] Phase 3 mingo-idp — bump core rev a39b5ea; copy endorsement registrar into the minted cert; 12 tests green
+- [ ] Phase 4 deploy + smoke test — broker + mingo to prod; re-provision, warrant, verify; tamper rejected
