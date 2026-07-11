@@ -113,13 +113,26 @@ an explicit in-preimage domain tag.)
 - **No raw-key access, ever:** the response returns a signature + cert, never the
   private key (as with assertions today).
 
-### Custody hardening (improves browserid-ng regardless)
+### Custody hardening (implemented — bean e2fi)
 
-Switch the agent's key handling from **extractable JWK in `localStorage`** to a
+Key handling moved from **extractable JWK in `localStorage`** to a
 **non-extractable `CryptoKey`** (`generateKey(..., extractable: false)`), persisted
-via IndexedDB `CryptoKey` storage. Then even broker-origin XSS cannot exfiltrate
-the raw key — it can only request signatures while resident. This benefits
-assertions too; the typed-signing extension simply assumes it.
+via IndexedDB `CryptoKey` storage. Even broker-origin XSS can no longer exfiltrate
+the raw key — it can only request signatures while resident. This covers both
+assertion and SBO signing:
+
+- `common/js/keystore.js` (`window.Keystore`) is the shared IndexedDB store,
+  keyed by `issuer + email`, holding `{ publicKeyX, privateKey (CryptoKey), cert }`.
+- The dialog, consent page, `/account`, and the SBO signer popup (`sbo-signer.js`)
+  all generate/load keys through it and sign via `crypto.subtle` on the handle.
+  `sbo-sign.js`'s `signEnvelope` takes a `CryptoKey` directly.
+- Provisioning keys an agent exports stay extractable — they must leave the browser.
+- A one-time `migrateFromLocalStorage()` re-imports legacy `emails` JWKs as
+  non-extractable keys, then wipes the plaintext blob.
+
+Residual: the legacy Persona `communication_iframe` SBO binding (`start.js`) still
+reads the pre-migration `storage.getEmail` path; it is not the live SBO channel
+(the popup is) and is unreachable under storage partitioning.
 
 ## Threat model
 
