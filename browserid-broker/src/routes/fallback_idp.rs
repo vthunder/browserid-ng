@@ -49,6 +49,58 @@ const CERT_HOURS: i64 = 24;
 static AUTH_CODES: LazyLock<Mutex<HashMap<String, (String, DateTime<Utc>)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+// --- rate limiting (o92d) --------------------------------------------------
+// `/auth/send` is a public, directly-reachable endpoint, so cap it to prevent
+// mailbombing a victim's inbox and burning the mail quota/reputation. The
+// email template is fixed (no attacker content), so this is about *volume*.
+/// Rolling window for both caps.
+const RATE_WINDOW_MINUTES: i64 = 60;
+/// Max codes to one recipient address per window.
+const MAX_SENDS_PER_EMAIL: usize = 5;
+/// Max codes across all recipients per window (protects mail quota/reputation).
+const MAX_SENDS_GLOBAL: usize = 300;
+
+/// Wrong-code attempts before a code is burned (anti brute-force on the
+/// 6-digit code within its 15-min window).
+const MAX_VERIFY_ATTEMPTS: u32 = 5;
+/// email -> wrong-attempt count for the current code.
+static VERIFY_ATTEMPTS: LazyLock<Mutex<HashMap<String, u32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// email -> send timestamps within the window.
+static SEND_LOG: LazyLock<Mutex<HashMap<String, Vec<DateTime<Utc>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// All send timestamps within the window (global cap).
+static SEND_LOG_GLOBAL: LazyLock<Mutex<Vec<DateTime<Utc>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Returns Ok(()) if a send to `email` is within limits and records it, else
+/// Err with a reason.
+fn check_and_record_send(email: &str) -> Result<(), &'static str> {
+    let now = Utc::now();
+    let cutoff = now - Duration::minutes(RATE_WINDOW_MINUTES);
+
+    {
+        let mut global = SEND_LOG_GLOBAL.lock().unwrap();
+        global.retain(|t| *t > cutoff);
+        if global.len() >= MAX_SENDS_GLOBAL {
+            return Err("service is busy, try again shortly");
+        }
+        // recorded below only if the per-email check also passes
+    }
+    {
+        let mut per = SEND_LOG.lock().unwrap();
+        let entry = per.entry(email.to_string()).or_default();
+        entry.retain(|t| *t > cutoff);
+        if entry.len() >= MAX_SENDS_PER_EMAIL {
+            return Err("too many codes requested for this address; try again later");
+        }
+        entry.push(now);
+    }
+    SEND_LOG_GLOBAL.lock().unwrap().push(now);
+    Ok(())
+}
+
 fn normalize_email(email: &str) -> Option<String> {
     let e = email.trim().to_lowercase();
     let mut parts = e.split('@');
@@ -125,11 +177,16 @@ where
         Some(e) => e,
         None => return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "reason": "invalid email"}))),
     };
+    // Rate limit (o92d): mailbomb / quota-burn protection on this public endpoint.
+    if let Err(reason) = check_and_record_send(&email) {
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({"success": false, "reason": reason})));
+    }
     let code = gen_code();
     AUTH_CODES.lock().unwrap().insert(
         email.clone(),
         (code.clone(), Utc::now() + Duration::minutes(CODE_TTL_MINUTES)),
     );
+    VERIFY_ATTEMPTS.lock().unwrap().remove(&email); // fresh code, fresh attempts
     if let Err(e) = state.email_sender.send_verification(&email, &code) {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"success": false, "reason": e})));
     }
@@ -164,9 +221,21 @@ where
         match codes.get(&email) {
             Some((code, exp)) if code == req.code.trim() && Utc::now() < *exp => {
                 codes.remove(&email);
+                VERIFY_ATTEMPTS.lock().unwrap().remove(&email);
                 true
             }
-            _ => false,
+            _ => {
+                // Wrong/expired: burn the code after too many tries so the
+                // 6-digit space can't be walked within the 15-min window.
+                let mut attempts = VERIFY_ATTEMPTS.lock().unwrap();
+                let n = attempts.entry(email.clone()).or_insert(0);
+                *n += 1;
+                if *n >= MAX_VERIFY_ATTEMPTS {
+                    codes.remove(&email);
+                    attempts.remove(&email);
+                }
+                false
+            }
         }
     };
     if !ok {

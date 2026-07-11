@@ -61,3 +61,31 @@ async fn smtp_auth_then_cert_key_issues_a_cert() {
         .await;
     assert_eq!(r.status_code(), 401, "cookie must not vouch for a different email");
 }
+
+#[tokio::test]
+async fn auth_send_rate_limited_per_email() {
+    let (server, _e) = create_test_server();
+    let email = "flood-unique@example.com";
+    for _ in 0..5 {
+        let r = server.post("/auth/send").json(&json!({ "email": email })).await;
+        assert_eq!(r.status_code(), 200, "{:?}", r.text());
+    }
+    let r = server.post("/auth/send").json(&json!({ "email": email })).await;
+    assert_eq!(r.status_code(), 429, "6th send to one address must be capped");
+}
+
+#[tokio::test]
+async fn verify_code_brute_force_is_capped() {
+    let (server, email_sender) = create_test_server();
+    let email = "brute-unique@example.com";
+    server.post("/auth/send").json(&json!({ "email": email })).await;
+    let code = email_sender.get_code(email).unwrap();
+    // 5 wrong attempts burn the code.
+    for _ in 0..5 {
+        let r = server.post("/auth/verify").json(&json!({ "email": email, "code": "999998" })).await;
+        assert_eq!(r.status_code(), 401);
+    }
+    // Even the correct code now fails — it was burned.
+    let r = server.post("/auth/verify").json(&json!({ "email": email, "code": code })).await;
+    assert_eq!(r.status_code(), 401, "code must be burned after too many wrong attempts");
+}
