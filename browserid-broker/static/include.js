@@ -1272,6 +1272,9 @@
       if (options.siteName) displayOpts.siteName = options.siteName;
       if (options.siteLogo) displayOpts.siteLogo = options.siteLogo;
       if (options.backgroundColor) displayOpts.backgroundColor = options.backgroundColor;
+      // The RP's accepted fallback IdPs for no-primary emails (spec §8.1).
+      // A routing hint for the dialog; the RP's verifier enforces (§6.1).
+      if (options.acceptedFallbacks) displayOpts.acceptedFallbacks = options.acceptedFallbacks;
 
       _open_hidden_iframe();
     }
@@ -1328,11 +1331,12 @@
       if (options.siteName) warn("Please pass siteName to .watch() instead of .request()");
       if (options.backgroundColor) warn("Please pass backgroundColor to .watch() instead of .request()");
 
-      // Options passed to .watch() always win. 
+      // Options passed to .watch() always win.
       // Necessary for backwards compatibility between Goldilocks and Observer
       options.siteLogo = displayOpts.siteLogo || options.siteLogo;
       options.siteName = displayOpts.siteName || options.siteName;
       options.backgroundColor = displayOpts.backgroundColor || options.backgroundColor;
+      options.acceptedFallbacks = displayOpts.acceptedFallbacks || options.acceptedFallbacks;
 
       options.rp_api = getRPAPI();
       var couldDoRedirectIfNeeded = (!needsPopupFix || api_called === 'request' || api_called === 'auth');

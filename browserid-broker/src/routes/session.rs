@@ -42,6 +42,11 @@ pub struct SessionContext {
     /// Whether the client has cookies enabled
     /// The communication_iframe checks this to know if it can proceed
     pub cookies: bool,
+    /// This broker's own issuer domain — the fallback IdP identity it stamps
+    /// on secondary certs. The dialog checks it against the RP's
+    /// `acceptedFallbacks` (spec §8.1) to know whether email sign-in here is
+    /// acceptable to the RP.
+    pub domain: String,
 }
 
 /// GET /wsapi/session_context
@@ -71,6 +76,7 @@ where
             server_time,
             domain_key_creation_time,
             cookies: true,
+            domain: state.domain.clone(),
         }
     } else {
         SessionContext {
@@ -82,6 +88,7 @@ where
             server_time,
             domain_key_creation_time,
             cookies: true, // Assume cookies are enabled - the original checks for a test cookie
+            domain: state.domain.clone(),
         }
     };
 

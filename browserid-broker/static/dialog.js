@@ -26,6 +26,8 @@
     selectedEmail: null,
     newEmail: null,  // Email being added to account
     pendingAddressInfo: null,  // Stored addressInfo for transition flows
+    acceptedFallbacks: null,   // RP's accepted fallback IdPs (spec §8.1); null = default {this broker}
+    brokerDomain: null,        // this broker's own issuer domain (from session_context)
     sboSign: false,  // RP requested the SBO typed-signing capability
     pendingAssertion: null,  // Assertion held while showing the SBO consent screen
     provisionEmail: null  // RP asked to provision/sign in a SPECIFIC identity (skip the chooser)
@@ -112,6 +114,25 @@
     }
 
     return data;
+  }
+
+  // Normalize the RP's acceptedFallbacks argument (spec §8.1): null/absent →
+  // null (default policy applies); otherwise an array of lowercased issuer
+  // domains (an explicit empty array means "primaries only").
+  function normalizeAcceptedFallbacks(v) {
+    if (v == null) return null;
+    if (!Array.isArray(v)) v = [v];
+    return v.map(s => String(s).trim().toLowerCase()).filter(Boolean);
+  }
+
+  // Whether this broker's own fallback (its `domain`) is acceptable to the RP.
+  // Default (no argument) = {this broker}, so email sign-in works as today; an
+  // explicit list must name this broker's domain, else the RP declined it.
+  // Enforcement is still the RP's verifier (spec §6.1); this is fail-fast UX.
+  function brokerFallbackAccepted() {
+    if (!state.acceptedFallbacks) return true; // default {this broker}
+    const dom = (state.brokerDomain || location.hostname).toLowerCase();
+    return state.acceptedFallbacks.indexOf(dom) !== -1;
   }
 
   // Check email address info (type, state, primary IdP URLs)
@@ -217,6 +238,29 @@
 
   // Check if a certificate is expired
   // Certificate is JWT format: header.payload.signature
+  // The `iss` of a cert JWS, or null if unparseable.
+  function certIssuer(cert) {
+    try {
+      const parts = cert.split('.');
+      if (parts.length !== 3) return null;
+      return JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'))).iss || null;
+    } catch (e) { return null; }
+  }
+
+  // Whether a cached cert may be reused at this RP (spec §8.1): a primary cert
+  // (iss == the email's own domain) always; a fallback cert only if the RP
+  // accepts that issuer.
+  function storedCertAcceptable(email, cert) {
+    const iss = (certIssuer(cert) || '').toLowerCase();
+    if (!iss) return false;
+    const dom = (email.split('@')[1] || '').toLowerCase();
+    if (iss === dom) return true; // primary for its own domain
+    if (!state.acceptedFallbacks) {
+      return iss === (state.brokerDomain || location.hostname).toLowerCase();
+    }
+    return state.acceptedFallbacks.indexOf(iss) !== -1;
+  }
+
   function isCertExpired(cert) {
     try {
       const parts = cert.split('.');
@@ -337,10 +381,15 @@
       }
 
       // 1. Check for valid stored cert/key (like storedID.priv check in user.js:1338-1344)
+      //    Reuse a cached cert only if its issuer is acceptable to this RP
+      //    (spec §8.1): a primary cert (iss == email domain) always is; a
+      //    broker/fallback cert only if the RP accepts this broker.
       const stored = getStoredEmailKeypair(email);
       if (stored && stored.priv && stored.cert && !isCertExpired(stored.cert)) {
-        // Use stored cert/key to create assertion
-        return await createAssertionFromStored(email, stored);
+        if (storedCertAcceptable(email, stored.cert)) {
+          return await createAssertionFromStored(email, stored);
+        }
+        // Not acceptable here — fall through to re-verify via an accepted path.
       }
 
       // 2. No valid stored cert - get addressInfo from server (like user.js:1347)
@@ -353,7 +402,15 @@
         return await handlePrimaryIdP(email, addressInfo);
       }
 
-      // Everything below is secondary (state.js:436)
+      // Everything below is secondary — this broker acts as the fallback IdP.
+      // Fail fast if the RP didn't list this broker in acceptedFallbacks
+      // (spec §8.1), rather than verifying and getting rejected at the RP.
+      if (!brokerFallbackAccepted()) {
+        const dom = state.brokerDomain || location.hostname;
+        showError('This site doesn’t accept email sign-in via ' + dom +
+          '. Use an email whose domain is its own identity provider.');
+        return;
+      }
 
       if (addressInfo.state === 'transition_to_secondary') {
         // Was primary, now secondary - need password + verification (state.js:437-447)
@@ -803,6 +860,16 @@
           // Secondary flow — also covers a primary email transiently seen as secondary
           // (e.g. a discovery hiccup), whose existing record yields a transition_* state.
           // Mirror handleEmailChosen so an *existing* account never falls into create.
+          //
+          // Fail fast if the RP didn't accept this broker as a fallback IdP
+          // (spec §8.1). transition_to_primary is exempt — it routes to a
+          // primary, not the broker.
+          if (addressInfo.state !== 'transition_to_primary' && !brokerFallbackAccepted()) {
+            const dom = state.brokerDomain || location.hostname;
+            showError('This site doesn’t accept email sign-in via ' + dom +
+              '. Use an email whose domain is its own identity provider.');
+            return;
+          }
           if (addressInfo.state === 'known') {
             showScreen('password');
           } else if (addressInfo.state === 'transition_to_secondary') {
@@ -1184,6 +1251,7 @@
         state.origin = e.origin;
         state.sboSign = !!(e.data.params && e.data.params.sboSign);
         state.provisionEmail = (e.data.params && e.data.params.provisionEmail) || null;
+        state.acceptedFallbacks = normalizeAcceptedFallbacks(e.data.params && e.data.params.acceptedFallbacks);
         document.querySelectorAll('.rp-name').forEach(el => {
           el.textContent = new URL(e.origin).hostname;
         });
@@ -1232,6 +1300,11 @@
 
   // Initialize
   async function init() {
+    // Learn this broker's own issuer domain (its fallback-IdP identity) so the
+    // acceptedFallbacks gate (spec §8.1) works on every entry path, including
+    // the provisionEmail fast-path below.
+    try { state.brokerDomain = (await apiCall(API.sessionContext)).domain || state.brokerDomain; } catch {}
+
     // If the RP asked to provision/sign in a SPECIFIC identity, skip the chooser
     // entirely and drive that identity straight through (primary provisioning for
     // a primary email, normal sign-in otherwise).
@@ -1421,6 +1494,8 @@
       state.origin = origin;
       state.sboSign = params.get('sbo_sign') === '1';
       state.provisionEmail = params.get('provision_email');
+      state.acceptedFallbacks = normalizeAcceptedFallbacks(
+        params.get('accepted_fallbacks') ? params.get('accepted_fallbacks').split(',') : null);
       document.querySelectorAll('.rp-name').forEach(el => {
         el.textContent = new URL(origin).hostname;
       });
@@ -1436,6 +1511,7 @@
             state.origin = origin;
             state.sboSign = !!args.params.sboSign;
             state.provisionEmail = args.params.provisionEmail || null;
+            state.acceptedFallbacks = normalizeAcceptedFallbacks(args.params.acceptedFallbacks);
             state.winchanCallback = cb;
             document.querySelectorAll('.rp-name').forEach(el => {
               el.textContent = new URL(origin).hostname;
