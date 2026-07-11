@@ -56,6 +56,12 @@ if (r.ok) {
   `/verify` HTTP contract with Python / Go / curl examples.
 - No registration, no client IDs, no secrets to manage.
 
+**Runnable examples:**
+- [`examples/rp-quickstart`](./examples/rp-quickstart) — a complete relying party
+  in one file: passwordless human sign-in, verify → session.
+- [`examples/mcp-agent-auth`](./examples/mcp-agent-auth) — an MCP server whose
+  tools require an agent identity + human-signed warrant, gated per scope.
+
 ## Repository layout
 
 | Crate / dir | What it is |
