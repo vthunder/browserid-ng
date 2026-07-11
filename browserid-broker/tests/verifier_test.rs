@@ -127,7 +127,7 @@ async fn primary_verifies_via_dnssec() {
         .with_primary("example.com", domain_key.public_key());
 
     let enc = ok_backed("example.com", "alice@example.com", RP, &domain_key, &user);
-    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    let result = verify_assertion_with_dns(&enc, RP, &disc, &[BROKER.to_string()]).await;
 
     assert_eq!(result.status, "okay", "reason: {:?}", result.reason);
     assert_eq!(result.email.unwrap(), "alice@example.com");
@@ -142,7 +142,7 @@ async fn broker_fallback_verifies() {
     let disc = MockDiscoverer::new(broker_key.public_key());
 
     let enc = ok_backed(BROKER, "alice@external.com", RP, &broker_key, &user);
-    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    let result = verify_assertion_with_dns(&enc, RP, &disc, &[BROKER.to_string()]).await;
 
     assert_eq!(result.status, "okay", "reason: {:?}", result.reason);
     assert_eq!(result.email.unwrap(), "alice@external.com");
@@ -162,11 +162,11 @@ async fn non_dnssec_domain_cannot_be_primary() {
     let disc = MockDiscoverer::new(broker_key.public_key()); // no primaries
 
     let enc = ok_backed("example.com", "alice@example.com", RP, &some_key, &user);
-    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    let result = verify_assertion_with_dns(&enc, RP, &disc, &[BROKER.to_string()]).await;
 
     assert_eq!(result.status, "failure");
     assert!(
-        result.reason.as_ref().unwrap().contains("not authorized"),
+        result.reason.as_ref().unwrap().contains("not an accepted fallback"),
         "reason: {:?}",
         result.reason
     );
@@ -180,7 +180,7 @@ async fn bogus_dnssec_is_rejected() {
     let disc = MockDiscoverer::new(broker_key.public_key()).with_bogus("bogus.com");
 
     let enc = ok_backed("bogus.com", "alice@bogus.com", RP, &signer, &user);
-    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    let result = verify_assertion_with_dns(&enc, RP, &disc, &[BROKER.to_string()]).await;
 
     assert_eq!(result.status, "failure");
     assert!(
@@ -199,10 +199,36 @@ async fn untrusted_issuer_rejected() {
     let disc = MockDiscoverer::new(broker_key.public_key());
 
     let enc = ok_backed("evil.com", "alice@external.com", RP, &evil, &user);
-    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    let result = verify_assertion_with_dns(&enc, RP, &disc, &[BROKER.to_string()]).await;
 
     assert_eq!(result.status, "failure");
-    assert!(result.reason.unwrap().contains("not authorized"));
+    assert!(result.reason.unwrap().contains("not an accepted fallback"));
+}
+
+#[tokio::test]
+async fn accepted_external_fallback_is_authorized() {
+    // A cert from an external fallback (fallback.example) for a no-primary
+    // email verifies when the RP lists it in accepted_fallbacks (spec §8.1) —
+    // even though it is not this broker. The fallback publishes its own DNSSEC
+    // key (a "primary" for its own domain in the mock).
+    let fallback_key = KeyPair::generate();
+    let user = KeyPair::generate();
+    let broker_key = KeyPair::generate();
+    let disc = MockDiscoverer::new(broker_key.public_key())
+        .with_primary("fallback.example", fallback_key.public_key());
+
+    let enc = ok_backed("fallback.example", "alice@external.com", RP, &fallback_key, &user);
+
+    // Not accepted by default (only BROKER) → rejected.
+    let default = verify_assertion_with_dns(&enc, RP, &disc, &[BROKER.to_string()]).await;
+    assert_eq!(default.status, "failure", "reason: {:?}", default.reason);
+    assert!(default.reason.unwrap().contains("not an accepted fallback"));
+
+    // Accepted when the RP lists it → okay, issuer = the external fallback.
+    let ok = verify_assertion_with_dns(&enc, RP, &disc, &["fallback.example".to_string()]).await;
+    assert_eq!(ok.status, "okay", "reason: {:?}", ok.reason);
+    assert_eq!(ok.email.unwrap(), "alice@external.com");
+    assert_eq!(ok.issuer.unwrap(), "fallback.example");
 }
 
 #[tokio::test]
@@ -224,10 +250,10 @@ async fn primary_cannot_speak_for_other_domain() {
         &primary_key,
         &user,
     );
-    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    let result = verify_assertion_with_dns(&enc, RP, &disc, &[BROKER.to_string()]).await;
 
     assert_eq!(result.status, "failure");
-    assert!(result.reason.unwrap().contains("not authorized"));
+    assert!(result.reason.unwrap().contains("not authorized for primary domain"));
 }
 
 // --- crypto / format failures --------------------------------------------
@@ -246,7 +272,7 @@ async fn wrong_audience_rejected() {
         &domain_key,
         &user,
     );
-    let result = verify_assertion_with_dns(&enc, "https://wrong.com", &disc, BROKER).await;
+    let result = verify_assertion_with_dns(&enc, "https://wrong.com", &disc, &[BROKER.to_string()]).await;
 
     assert_eq!(result.status, "failure");
     assert!(result.reason.unwrap().to_lowercase().contains("audience"));
@@ -267,11 +293,11 @@ async fn wrong_port_or_scheme_rejected() {
         &user,
     );
     // wrong port
-    let r1 = verify_assertion_with_dns(&enc, "http://fakesite.com:8888", &disc, BROKER).await;
+    let r1 = verify_assertion_with_dns(&enc, "http://fakesite.com:8888", &disc, &[BROKER.to_string()]).await;
     assert_eq!(r1.status, "failure");
     assert!(r1.reason.unwrap().to_lowercase().contains("audience"));
     // wrong scheme
-    let r2 = verify_assertion_with_dns(&enc, "https://fakesite.com:8080", &disc, BROKER).await;
+    let r2 = verify_assertion_with_dns(&enc, "https://fakesite.com:8080", &disc, &[BROKER.to_string()]).await;
     assert_eq!(r2.status, "failure");
     assert!(r2.reason.unwrap().to_lowercase().contains("audience"));
 }
@@ -293,7 +319,7 @@ async fn expired_assertion_rejected() {
         &user,
         &user,
     );
-    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    let result = verify_assertion_with_dns(&enc, RP, &disc, &[BROKER.to_string()]).await;
     assert_eq!(result.status, "failure");
     assert!(result.reason.unwrap().to_lowercase().contains("expired"));
 }
@@ -315,7 +341,7 @@ async fn expired_certificate_rejected() {
         &user,
         &user,
     );
-    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    let result = verify_assertion_with_dns(&enc, RP, &disc, &[BROKER.to_string()]).await;
     assert_eq!(result.status, "failure");
     assert!(result.reason.unwrap().to_lowercase().contains("expired"));
 }
@@ -330,7 +356,7 @@ async fn bad_certificate_signature_rejected() {
         .with_primary("example.com", domain_key.public_key());
 
     let enc = ok_backed("example.com", "alice@example.com", RP, &wrong_key, &user);
-    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    let result = verify_assertion_with_dns(&enc, RP, &disc, &[BROKER.to_string()]).await;
     assert_eq!(result.status, "failure");
     assert!(result.reason.unwrap().to_lowercase().contains("signature"));
 }
@@ -354,7 +380,7 @@ async fn bad_assertion_signature_rejected() {
         &wrong_user, // assertion signer != cert subject
         &user,
     );
-    let result = verify_assertion_with_dns(&enc, RP, &disc, BROKER).await;
+    let result = verify_assertion_with_dns(&enc, RP, &disc, &[BROKER.to_string()]).await;
     assert_eq!(result.status, "failure");
     assert!(result.reason.unwrap().to_lowercase().contains("signature"));
 }
@@ -362,7 +388,7 @@ async fn bad_assertion_signature_rejected() {
 #[tokio::test]
 async fn invalid_format_rejected() {
     let disc = MockDiscoverer::new(KeyPair::generate().public_key());
-    let result = verify_assertion_with_dns("not-a-valid-assertion", RP, &disc, BROKER).await;
+    let result = verify_assertion_with_dns("not-a-valid-assertion", RP, &disc, &[BROKER.to_string()]).await;
     assert_eq!(result.status, "failure");
     assert!(result.reason.is_some());
 }
@@ -372,7 +398,7 @@ async fn no_certificate_rejected() {
     let disc = MockDiscoverer::new(KeyPair::generate().public_key());
     // A bare JWT with no `~`-joined certificate bundle.
     let raw = "eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiSldUIn0.eyJhdWQiOiJodHRwczovL2V4YW1wbGUuY29tIiwiZXhwIjoxNzM1MjUwMDAwfQ.signature";
-    let result = verify_assertion_with_dns(raw, RP, &disc, BROKER).await;
+    let result = verify_assertion_with_dns(raw, RP, &disc, &[BROKER.to_string()]).await;
     assert_eq!(result.status, "failure");
     assert!(result.reason.is_some());
 }

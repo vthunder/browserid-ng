@@ -18,6 +18,14 @@ pub struct VerifyRequest {
 
     /// The expected audience (relying party origin)
     pub audience: String,
+
+    /// The fallback IdPs this RP accepts for no-primary emails (spec §8.1),
+    /// by issuer domain. Absent → default `{this broker}` (today's behavior).
+    /// Primaries are always accepted regardless. This is how an RP uses the
+    /// hosted `/verify` as a *verification service* while trusting a fallback
+    /// that isn't this broker — without trusting this broker as an authority.
+    #[serde(default)]
+    pub accepted_fallbacks: Option<Vec<String>>,
 }
 
 /// Response from verification endpoint
@@ -46,12 +54,18 @@ where
         }
     };
 
+    // The accepted-fallbacks set: the RP's list, or default to {this broker}.
+    let accepted_fallbacks = req
+        .accepted_fallbacks
+        .clone()
+        .unwrap_or_else(|| vec![state.domain.clone()]);
+
     // Use DNS-first verification
     let result = verify_assertion_with_dns(
         &req.assertion,
         &req.audience,
         fallback_fetcher.as_ref(),
-        &state.domain,
+        &accepted_fallbacks,
     )
     .await;
 

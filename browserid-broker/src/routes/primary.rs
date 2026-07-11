@@ -45,12 +45,15 @@ where
         .get_fallback_fetcher()
         .ok_or_else(|| BrokerError::Internal("DNS discovery not configured".to_string()))?;
 
-    // Verify the assertion - audience is the broker itself
+    // Verify the assertion - audience is the broker itself. Accepted fallback:
+    // just this broker (a login here roots in a primary or this broker's own
+    // fallback).
+    let accepted = [state.domain.clone()];
     let result = verify_assertion_with_dns(
         &req.assertion,
         &format!("https://{}", state.domain),
         fallback_fetcher.as_ref(),
-        &state.domain,
+        &accepted,
     )
     .await;
 

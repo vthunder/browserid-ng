@@ -178,12 +178,14 @@ impl VerificationResult {
 /// * `assertion` - The backed assertion string (certificate~assertion)
 /// * `audience` - The expected audience (relying party origin)
 /// * `discoverer` - DNSSEC-first discovery (production: `FallbackFetcher`)
-/// * `trusted_broker` - The hostname of the trusted fallback broker
+/// * `accepted_fallbacks` - the fallback-IdP issuer domains the RP accepts for
+///   no-primary emails (spec §8.1). Primaries are always accepted regardless.
+///   Pass `&[<this broker's domain>]` for the default (broker-only) policy.
 pub async fn verify_assertion_with_dns(
     assertion: &str,
     audience: &str,
     discoverer: &impl Discoverer,
-    trusted_broker: &str,
+    accepted_fallbacks: &[String],
 ) -> VerificationResult {
     // Parse the backed assertion
     let backed = match BackedAssertion::parse(assertion) {
@@ -211,42 +213,51 @@ pub async fn verify_assertion_with_dns(
         None => return VerificationResult::failure("Invalid email format".to_string()),
     };
 
-    // Resolve the authoritative key via DNSSEC-first discovery.
-    let discovery_result = match discoverer.discover(&email_domain).await {
+    // Discover the email domain (DNSSEC-first) to decide primary vs fallback.
+    let email_disc = match discoverer.discover(&email_domain).await {
         Ok(r) => r,
         Err(e) => return VerificationResult::failure(format!("Discovery failed: {}", e)),
     };
 
-    // Check issuer authorization based on discovery result
-    let issuer_authorized = if discovery_result.is_primary {
-        // Primary IdP mode - issuer must match email domain
-        issuer == email_domain
+    // Authorize the issuer and resolve the key document to verify against.
+    let key_doc = if email_disc.is_primary {
+        // Primary domain: only its own primary may vouch for it — no fallback
+        // override. (Primaries are always accepted; §8.1's set is the no-primary
+        // path only.)
+        if issuer != email_domain {
+            return VerificationResult::failure(format!(
+                "Issuer '{}' is not authorized for primary domain '{}'",
+                issuer, email_domain
+            ));
+        }
+        email_disc.document
     } else {
-        // Fallback mode - issuer must be trusted broker
-        issuer == trusted_broker
+        // No primary: the issuer must be a fallback IdP the RP accepts (§8.1).
+        if !accepted_fallbacks.iter().any(|f| f == &issuer) {
+            return VerificationResult::failure(format!(
+                "Issuer '{}' is not an accepted fallback",
+                issuer
+            ));
+        }
+        // The accepted fallback's identity key is resolved via ITS OWN DNSSEC
+        // record — reusing the broker doc we already fetched when the issuer is
+        // that broker, else discovering the issuer directly.
+        if issuer == email_disc.authoritative_domain {
+            email_disc.document
+        } else {
+            match discoverer.discover(&issuer).await {
+                Ok(r) => r.document,
+                Err(e) => {
+                    return VerificationResult::failure(format!(
+                        "Discovery of accepted fallback '{}' failed: {}",
+                        issuer, e
+                    ))
+                }
+            }
+        }
     };
 
-    if !issuer_authorized {
-        let expected = if discovery_result.is_primary {
-            &email_domain
-        } else {
-            trusted_broker
-        };
-        return VerificationResult::failure(format!(
-            "Issuer '{}' is not authorized (expected '{}')",
-            issuer, expected
-        ));
-    }
-
-    // Verify signatures using discovery result's public key
-    verify_signatures_with_doc(
-        &backed,
-        audience,
-        &issuer,
-        &email,
-        expires,
-        &discovery_result.document,
-    )
+    verify_signatures_with_doc(&backed, audience, &issuer, &email, expires, &key_doc)
 }
 
 /// Verify signatures using a pre-fetched support document
