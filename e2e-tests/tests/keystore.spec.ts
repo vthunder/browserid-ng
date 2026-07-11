@@ -70,3 +70,35 @@ test('migration: legacy localStorage keys import as non-extractable, then the bl
   expect(r.extractable, 'migrated key is now non-extractable').toBe(false);
   expect(r.blobGone, 'legacy localStorage blob wiped').toBe(true);
 });
+
+test('SBO: signEnvelope signs with a non-extractable keystore handle', async ({ page }) => {
+  // /sign loads keystore.js + sbo-sign.js (window.SboSign). Exercise the e2fi
+  // CryptoKey branch of signEnvelope end-to-end with a mock sbo module.
+  await page.goto(`${BASE_URL}/sign`);
+  await page.waitForFunction(() => !!(window as any).Keystore && !!(window as any).SboSign, { timeout: 5000 });
+
+  const r = await page.evaluate(async () => {
+    const ks = (window as any).Keystore, SboSign = (window as any).SboSign;
+    const email = 'sbo-test-' + Date.now() + '@example.com';
+    const kp = await ks.generate(); // non-extractable handle
+
+    // Mock sbo: signingBytes is deterministic so we can verify the signature.
+    const canonical = new TextEncoder().encode('canonical-envelope-bytes');
+    const sbo = { signingBytes: () => canonical };
+    const identity = { email, pubkeyHex: SboSign.pubkeyHexFromJwkX(kp.publicKeyX), cert: 'aa.bb.cc' };
+    const spec = { owner: email, kind: 'test' };
+
+    const res = await SboSign.signEnvelope(sbo, spec, identity, kp.privateKey);
+
+    // Verify the returned hex signature against the public key.
+    const sigBytes = Uint8Array.from(res.signature.match(/../g).map((h: string) => parseInt(h, 16)));
+    const pub = await crypto.subtle.importKey('jwk',
+      { kty: 'OKP', crv: 'Ed25519', x: kp.publicKeyX }, { name: 'Ed25519' }, false, ['verify']);
+    const verified = await crypto.subtle.verify({ name: 'Ed25519' }, pub, sigBytes, canonical);
+    return { hasSig: !!res.signature, verified, certPassedThrough: res.cert === 'aa.bb.cc' };
+  });
+
+  expect(r.hasSig, 'signEnvelope returned a signature').toBe(true);
+  expect(r.verified, 'SBO signature from the handle verifies').toBe(true);
+  expect(r.certPassedThrough, 'identity cert passed through').toBe(true);
+});

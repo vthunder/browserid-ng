@@ -32,7 +32,10 @@
       SBO signer — you can leave this window open; it signs in the background.
     </div>
   </div>
-  <!-- sbo-sign.js (exposes window.SboSign) must load before sbo-signer.js -->
+  <!-- keystore.js (window.Keystore) holds the non-extractable identity key; it
+       must load before sbo-signer.js reads it. sbo-sign.js (window.SboSign)
+       must also load before sbo-signer.js. -->
+  <script src="/common/js/keystore.js"></script>
   <script src="/common/js/sbo-sign.js"></script>
   <script src="/common/js/sbo-signer.js"></script>
 </body>

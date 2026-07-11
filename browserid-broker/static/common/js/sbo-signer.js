@@ -48,16 +48,21 @@
     }
   }
 
-  // Read the stored cert-bound identity (the keypair JWK + Auth-Cert the dialog
-  // saved under emails[issuer][email]).
+  // Read the stored cert-bound identity from the non-extractable keystore (e2fi)
+  // — the dialog saved a { publicKeyX, privateKey (CryptoKey), cert } record in
+  // IndexedDB, shared first-party with this popup. Returns a Promise of the
+  // matching record (issuer-filtered when the request names one), or null.
   function identityFor(email, issuer) {
-    try {
-      var all = JSON.parse(localStorage.getItem("emails") || "{}");
-      var ns = all[issuer || "default"] || {};
-      return ns[email] || null;
-    } catch (e) {
+    if (!window.Keystore) return Promise.resolve(null);
+    return window.Keystore.forEmail(email).then(function (recs) {
+      for (var i = 0; i < recs.length; i++) {
+        var r = recs[i];
+        if (!r.privateKey || !r.cert) continue;
+        if (issuer && r.issuer !== issuer) continue;
+        return r;
+      }
       return null;
-    }
+    });
   }
 
   var sboPromise = null;
@@ -96,33 +101,40 @@
         message: "origin " + rpOrigin + " has not been granted SBO signing" });
       return;
     }
-    var rec = identityFor(d.email, d.issuer);
-    if (!rec || !rec.priv || !rec.cert) {
-      reply(rpOrigin, { type: "sbo:sign-error", id: id, error: "no_identity",
-        message: "no cert-bound key for " + d.email });
-      return;
-    }
-
     log("signing…");
-    var identity = {
-      email: d.email,
-      pubkeyHex: SboSign.pubkeyHexFromJwkX(rec.pub ? rec.pub.x : rec.priv.x),
-      cert: rec.cert
-    };
-
-    loadSbo().then(function (sbo) {
-      return SboSign.signEnvelope(sbo, d.envelope, identity, rec.priv);
-    }).then(function (res) {
-      reply(rpOrigin, { type: "sbo:signed", id: id,
-        signature: res.signature, cert: res.cert, pubkey: res.pubkey });
-      signedCount += 1;
-      log("ready — signed " + signedCount); // stay open for reuse
+    identityFor(d.email, d.issuer).then(function (rec) {
+      if (!rec) {
+        reply(rpOrigin, { type: "sbo:sign-error", id: id, error: "no_identity",
+          message: "no cert-bound key for " + d.email });
+        return;
+      }
+      var identity = {
+        email: d.email,
+        pubkeyHex: SboSign.pubkeyHexFromJwkX(rec.publicKeyX),
+        cert: rec.cert
+      };
+      return loadSbo().then(function (sbo) {
+        // Sign with the non-extractable CryptoKey handle (e2fi) — raw key bytes
+        // never enter JS.
+        return SboSign.signEnvelope(sbo, d.envelope, identity, rec.privateKey);
+      }).then(function (res) {
+        reply(rpOrigin, { type: "sbo:signed", id: id,
+          signature: res.signature, cert: res.cert, pubkey: res.pubkey });
+        signedCount += 1;
+        log("ready — signed " + signedCount); // stay open for reuse
+      });
     }).catch(function (err) {
       reply(rpOrigin, { type: "sbo:sign-error", id: id, error: "sign_failed",
         message: (err && err.message) || String(err) });
       log("error: " + ((err && err.message) || String(err)));
     });
   });
+
+  // If this popup is somehow the first page to touch storage this session,
+  // carry any legacy localStorage keys into the keystore before serving.
+  if (window.Keystore && window.Keystore.migrateFromLocalStorage) {
+    try { window.Keystore.migrateFromLocalStorage(); } catch (e) {}
+  }
 
   // Announce readiness. We don't yet know the opener's origin, so use "*" — the
   // message carries no secret; the actual request is validated by its origin and

@@ -100,24 +100,33 @@
    * @param {object} sbo        loaded sbo-wasm module (signingBytes/...)
    * @param {object} spec       caller-built EnvelopeSpec
    * @param {object} identity   { email, pubkeyHex, cert }
-   * @param {object} privJwk    { d, x } (Ed25519 private key JWK components)
+   * @param {CryptoKey|object} priv  a non-extractable Ed25519 private CryptoKey
+   *                            handle (e2fi, preferred) OR a legacy { d, x } JWK
    * @param {Crypto} [subtle]   crypto.subtle (defaults to global)
    * @returns {Promise<{signature:string, cert:string, pubkey:string, bound:object}>}
    */
-  async function signEnvelope(sbo, spec, identity, privJwk, subtle) {
+  async function signEnvelope(sbo, spec, identity, priv, subtle) {
     subtle = subtle || (typeof crypto !== "undefined" && crypto.subtle);
     if (!subtle) throw new Error("WebCrypto subtle unavailable");
 
     var bound = bindEnvelopeToIdentity(spec, identity);
     var signingBytes = sbo.signingBytes(bound); // Uint8Array of canonical content
 
-    var key = await subtle.importKey(
-      "jwk",
-      { kty: "OKP", crv: "Ed25519", d: privJwk.d, x: privJwk.x },
-      { name: "Ed25519" },
-      false, // non-extractable: imported only to sign, never re-exported
-      ["sign"]
-    );
+    // Preferred path: a non-extractable CryptoKey handle from the keystore —
+    // the raw private bytes never enter JS. Legacy path: import a JWK (also
+    // non-extractable, but the bytes were in the caller's hands).
+    var key;
+    if (priv && priv.type === "private" && priv.algorithm) {
+      key = priv;
+    } else {
+      key = await subtle.importKey(
+        "jwk",
+        { kty: "OKP", crv: "Ed25519", d: priv.d, x: priv.x },
+        { name: "Ed25519" },
+        false, // non-extractable: imported only to sign, never re-exported
+        ["sign"]
+      );
+    }
     var sig = await subtle.sign({ name: "Ed25519" }, key, signingBytes);
 
     return {
