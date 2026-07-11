@@ -339,11 +339,15 @@ pub async fn endorse(
     // Account-level policy would live here (rate limits, aggregate sybil
     // signals). The registry membership check above is the v1 gate.
 
+    // Name our own origin as the registrar (agent spec §4.2): the target IdP
+    // copies it into the minted cert's `registrar` claim, so the agent knows
+    // where to raise consent requests and an RP can pin revocation to it.
     let endorsement = Endorsement::create(
         &state.domain,
         &request.claims().domain,
         &bundle,
         &rec.delegator_email,
+        &crate::consent::public_origin(&state.domain),
         Duration::minutes(ENDORSEMENT_VALIDITY_MINUTES),
         &state.keypair,
     )

@@ -593,6 +593,12 @@ pub struct EndorsementClaims {
     pub sub: String,
     /// The delegator the broker verified from the chain
     pub delegator: String,
+    /// The registrar's origin (`scheme://host[:port]`) — where the agent
+    /// raises consent requests and where its warrant status list is
+    /// published (agent spec §4.2). The target IdP copies this verbatim into
+    /// the minted certificate's `registrar` claim (§5.1). The endorsing
+    /// registrar names its own endpoint here.
+    pub registrar: String,
     pub iat: i64,
     pub exp: i64,
 }
@@ -611,6 +617,7 @@ impl Endorsement {
         target_domain: &str,
         bundle: &RequestBundle,
         delegator: &str,
+        registrar: &str,
         validity: Duration,
         broker_key: &KeyPair,
     ) -> Result<Self> {
@@ -621,6 +628,7 @@ impl Endorsement {
             aud: target_domain.to_string(),
             sub: bundle.hash(),
             delegator: delegator.to_string(),
+            registrar: registrar.to_string(),
             iat: now.timestamp(),
             exp: (now + validity).timestamp(),
         };
@@ -660,6 +668,11 @@ impl Endorsement {
             return Err(invalid("endorsement", "does not match this request bundle"));
         }
         Ok(())
+    }
+
+    /// The registrar origin the IdP must stamp into the minted cert (§5.1)
+    pub fn registrar(&self) -> &str {
+        &self.claims.registrar
     }
 
     pub fn claims(&self) -> &EndorsementClaims {
@@ -874,6 +887,7 @@ mod tests {
             "mingo.place",
             &c.bundle,
             "dan@mingo.place",
+            "https://browserid.me",
             Duration::minutes(REQUEST_VALIDITY_MINUTES),
             &broker,
         )

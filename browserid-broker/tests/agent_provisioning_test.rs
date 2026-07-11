@@ -492,6 +492,7 @@ async fn foreign_endorsement_rejected() {
         DOMAIN,
         &bundle,
         "human@example.com",
+        &format!("http://{DOMAIN}"),
         Duration::minutes(10),
         &rogue,
     )
