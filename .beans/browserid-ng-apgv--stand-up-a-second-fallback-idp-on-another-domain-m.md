@@ -92,3 +92,23 @@ Landed: `BROKER_KEY_SECRET` env, `gen_broker_key` + `fallback_verify_demo` examp
 ## Remaining — Milestone 2 (pure code, no infra)
 
 Dialog routing: browserid.me's dialog drives verification THROUGH an RP-accepted external fallback (pubkey-in/cert-out; privkey stays in the browserid.me-origin keystore) and stores the returned cert. Multi-issuer keystore. Corner cases (new device, forgot password 2-roundtrips, RP1+RP2 two certs/one password). The external fallback needs a pubkey-in/SMTP-verify/cert-out endpoint (today it's a full broker; the dialog would drive its account/verify flow or a dedicated issuance endpoint).
+
+## Milestone 2 part 1 DONE — fallback implements the primary-IdP interface (SMTP auth)
+
+Per vthunder's design: the fallback IS a primary IdP, differing only in that it vouches for emails whose domain it doesn't own (SMTP-gated). Built into browser-broker (any deployment can be a fallback):
+
+- `/auth` + `/auth.js` (interactive SMTP): `/auth/send` emails a one-time code, `/auth/verify` sets a **30-day signed email cookie** (broker-key-signed {email,exp}; no account/password).
+- `/provision` + `/provision.js` (ported from mingo): dialog-driven `beginProvisioning → genKeyPair → POST /cert_key → registerCertificate`. The dialog holds the keypair; the fallback only sees the pubkey.
+- `/cert_key` (primary-style, cookie-gated): issues a **24h** cert (iss=broker domain, principal=verified email). 401 without the cookie → dialog drops to `/auth`.
+- `/whoami` probe. `/provision` exempt from frame-denial (framed cross-origin by the mediator).
+- Design: 24h cert + 30d cookie ride browserid's silent refresh — fresh certs mint against the cookie until it expires, then the SMTP dance repeats. No long certs needed (vthunder).
+
+Tested: fallback_idp_test (send→verify→cookie→cert, email-binding, 401 without cookie). Workspace 368 green. Deployed to fallback.sandmill.org (+ browserid.me, same code).
+
+## Milestone 2 part 2 REMAINING — dialog routing (needs live + real inbox to test)
+
+When an email has no primary AND the RP accepts an external fallback F (not this broker), the dialog must treat F as the primary IdP: fetch F's `.well-known` (auth/provision paths), run the primary provisioning flow pointed at F, store the cert, return the RP assertion. Intricate because it threads through the existing primary machinery (handlePrimaryIdP / redirectToPrimaryAuth / handleAuthReturn / retryProvisioningAfterAuth) which is primary-specific and does a `/wsapi/auth_with_assertion` browser-account step a fallback cert won't pass. Needs:
+- route no-primary+accepted-external-fallback through a fallback-aware primary flow (skip/adapt the browser-account step; use F's URLs; re-fetch-addressInfo retry path must know it's fallback F, not re-derive from the email domain).
+- keystore: cert keyed by (email, issuer); reuse gated by acceptedFallbacks (partly done in 8t8h).
+- Corner cases (new device, forgot password 2-roundtrips, RP1+RP2 two certs/one password), silent-refresh via comm-iframe.
+Best done interactively with a real inbox to complete the SMTP dance and observe the popup/return flow.
