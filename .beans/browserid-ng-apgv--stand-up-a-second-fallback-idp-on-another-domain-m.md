@@ -69,3 +69,12 @@ Then: enable Let's Encrypt TLS; verify a fallback.sandmill.org-issued cert valid
 Still to build (milestone 2): mediator routing — browserid.me's dialog driving verification *through* this fallback and storing the returned cert (today the dialog can only decline browserid.me, 8t8h). Plus the keystore/corner cases.
 
 Code landed this session: `BROKER_KEY_SECRET` env support + `gen_broker_key` example (committed).
+
+## Progress (2026-07-11) cont. — fallback live + /verify accepts external fallbacks
+
+- DNS live: A + DNSSEC-validated `_browserid` TXT for fallback.sandmill.org. TLS enabled (Let's Encrypt); app serves HTTPS.
+- **Design correction (vthunder):** the external fallback is an ISSUER only, NOT a verifier. The RP delegates verification to browserid.me's `/verify` (a verification *service*), passing its accepted fallbacks. So `/verify` (and `verify_assertion_with_dns`) now take `accepted_fallbacks`: a no-primary email's cert is authorized iff its issuer ∈ the set, and the issuer's key is resolved via ITS OWN DNSSEC record. Primaries always accepted; primary domains can't be fallback-overridden. Default (no list) = {this broker}. Deployed to browserid.me.
+- Nice datapoint: browserid.me/verify with the *default* list correctly REJECTS a fallback.sandmill.org cert ("not an accepted fallback"); it accepts only when the RP lists it — proving browserid.me isn't a universal root.
+- Tests: verifier_test accepted_external_fallback_is_authorized (rejected by default, accepted when listed); workspace 367 green.
+
+Next: live proof — POST to browserid.me/verify with accepted_fallbacks=["fallback.sandmill.org"] and a fallback-issued cert → okay. Then milestone 2 (dialog routing + keystore + corner cases).
