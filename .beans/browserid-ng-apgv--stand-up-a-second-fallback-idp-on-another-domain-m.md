@@ -78,3 +78,17 @@ Code landed this session: `BROKER_KEY_SECRET` env support + `gen_broker_key` exa
 - Tests: verifier_test accepted_external_fallback_is_authorized (rejected by default, accepted when listed); workspace 367 green.
 
 Next: live proof — POST to browserid.me/verify with accepted_fallbacks=["fallback.sandmill.org"] and a fallback-issued cert → okay. Then milestone 2 (dialog routing + keystore + corner cases).
+
+## Milestone 1 COMPLETE — proven live (2026-07-11)
+
+Live against production:
+- `/verify` default set → REJECTS a fallback.sandmill.org cert ("not an accepted fallback").
+- `/verify` with `accepted_fallbacks:["fallback.sandmill.org"]` → OKAY, email demo-user@example.com, issuer fallback.sandmill.org.
+
+So: independent fallback issuer (own DNSSEC key, TLS) + browserid.me as a stateless verification service enforcing the RP's accepted list + browserid.me not a trusted authority (rejects by default). An RP trusting only fallback.sandmill.org has browserid.me out of its trust chain.
+
+Landed: `BROKER_KEY_SECRET` env, `gen_broker_key` + `fallback_verify_demo` examples, `/verify` `accepted_fallbacks`. Deployed browserid.me (c6a2b7d) + fallback app.
+
+## Remaining — Milestone 2 (pure code, no infra)
+
+Dialog routing: browserid.me's dialog drives verification THROUGH an RP-accepted external fallback (pubkey-in/cert-out; privkey stays in the browserid.me-origin keystore) and stores the returned cert. Multi-issuer keystore. Corner cases (new device, forgot password 2-roundtrips, RP1+RP2 two certs/one password). The external fallback needs a pubkey-in/SMTP-verify/cert-out endpoint (today it's a full broker; the dialog would drive its account/verify flow or a dedicated issuance endpoint).
