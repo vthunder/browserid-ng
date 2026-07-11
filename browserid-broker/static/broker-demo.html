@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Broker Demo RP</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.6 system-ui, -apple-system, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1.25rem; color: #1a1a1a; }
+    @media (prefers-color-scheme: dark) { body { color: #e8e8e8; background: #161616; } }
+    h1 { font-size: 1.5rem; }
+    .muted { opacity: .7; }
+    button { font: inherit; padding: .55rem 1rem; border-radius: 9px; border: 1px solid rgba(127,127,127,.4); background: #2b6cb0; color: #fff; cursor: pointer; }
+    pre { background: rgba(127,127,127,.14); padding: 1rem; border-radius: 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+    code { background: rgba(127,127,127,.18); padding: .1em .4em; border-radius: 5px; }
+  </style>
+</head>
+<body>
+  <h1>Broker Demo RP</h1>
+  <p class="muted">This relying party trusts <strong>browserid.me</strong> as its fallback IdP (the default). Signing in with a no-primary email uses browserid.me's own account flow → a browserid.me-issued cert. Contrast with the fallback demo, which trusts only fallback.sandmill.org.</p>
+    <code>fallback.sandmill.org</code> as a fallback IdP — <em>not</em> browserid.me.
+    It passes <code>acceptedFallbacks: ["fallback.sandmill.org"]</code>, so signing
+    in with any email (no primary) routes through that fallback's SMTP verification,
+    and the assertion is verified against its DNSSEC key. browserid.me is only the
+    mediator + a stateless verification service.</p>
+
+  <p><button id="login">Sign in</button></p>
+  <h3>Result</h3>
+  <pre id="out" class="muted">(not signed in)</pre>
+
+  <script src="/include.js"></script>
+  <script>
+    var ACCEPTED = null; // default → {browserid.me}
+    var out = document.getElementById('out');
+    function show(o) { out.textContent = typeof o === 'string' ? o : JSON.stringify(o, null, 2); }
+
+    navigator.id.watch({
+      loggedInUser: null,
+      onlogin: function (assertion) {
+        show('Got assertion — verifying (default: browserid.me)…');
+        fetch('/verify', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(ACCEPTED
+            ? { assertion: assertion, audience: window.location.origin, accepted_fallbacks: ACCEPTED }
+            : { assertion: assertion, audience: window.location.origin })
+        }).then(function (r) { return r.json(); }).then(show).catch(function (e) { show('verify error: ' + e); });
+      },
+      onlogout: function () {}
+    });
+
+    document.getElementById('login').onclick = function () {
+      navigator.id.request(ACCEPTED ? { siteName: 'Broker Demo RP', acceptedFallbacks: ACCEPTED } : { siteName: 'Broker Demo RP' });
+    };
+  </script>
+</body>
+</html>

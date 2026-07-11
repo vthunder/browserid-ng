@@ -147,8 +147,9 @@ where
         // Broker account utilities (sign out / clear cached certs / agent keys),
         // moved off the root when the marketing landing page took `/`.
         .route_service("/account", ServeFile::new(format!("{}/account.html", static_path)))
-        // Fallback demo RP (apgv): trusts only an external fallback.
+        // Demo RPs (apgv): one trusts only an external fallback, one trusts browserid.me.
         .route_service("/fallback-demo", ServeFile::new(format!("{}/fallback-demo.html", static_path)))
+        .route_service("/broker-demo", ServeFile::new(format!("{}/broker-demo.html", static_path)))
         // Landing page at the root.
         .route_service("/", ServeFile::new(format!("{}/index.html", static_path)))
         // Serve static files (dialog, CSS, JS)

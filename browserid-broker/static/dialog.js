@@ -283,8 +283,16 @@
   function getStoredEmailKeypair(email) {
     try {
       const allEmails = JSON.parse(localStorage.getItem('emails') || '{}');
-      const defaultEmails = allEmails['default'] || {};
-      return defaultEmails[email] || null;
+      // Across all issuer buckets, return a fresh cert whose issuer THIS RP
+      // accepts (spec §8.1) — so the right issuer's cert is reused per RP and
+      // certs from multiple issuers for one email coexist (apgv).
+      for (const issuer of Object.keys(allEmails)) {
+        const rec = (allEmails[issuer] || {})[email];
+        if (rec && rec.priv && rec.cert && !isCertExpired(rec.cert) && storedCertAcceptable(email, rec.cert)) {
+          return rec;
+        }
+      }
+      return null;
     } catch (e) {
       console.warn('Failed to get stored email keypair:', e);
       return null;
@@ -530,10 +538,13 @@
         x: privJwk.x  // Need x for the full keypair when signing
       };
 
-      // Store in emails namespace (default issuer)
+      // Key by the cert's issuer so certs from different issuers for the same
+      // email coexist (apgv: e.g. browserid.me + fallback.sandmill.org), each
+      // reused at the RPs that accept that issuer.
+      const issuer = certIssuer(certificate) || 'default';
       const allEmails = JSON.parse(localStorage.getItem('emails') || '{}');
-      allEmails['default'] = allEmails['default'] || {};
-      allEmails['default'][email] = {
+      allEmails[issuer] = allEmails[issuer] || {};
+      allEmails[issuer][email] = {
         pub: pubObj,
         priv: privObj,
         cert: certificate
