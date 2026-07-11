@@ -43,15 +43,13 @@
   <p class="muted" style="margin-top:2rem">
     <a href="/account">Manage agents &amp; warrants</a> · <a href="/">← browserid.me</a></p>
 
-<script src="/common/js/lib/jwcrypto-compat.js"></script>
+<script src="/common/js/keystore.js"></script>
 <script type="module">
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
 const b64urlJson = (obj) => btoa(String.fromCharCode(...enc.encode(JSON.stringify(obj))))
   .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const escapeHtml = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const sign = (key, msg) => new Promise((res, rej) =>
-  key.sign(msg, (err, sig) => err ? rej(err) : res(sig)));
 
 let csrf = null;
 let statusUri = null;
@@ -67,19 +65,16 @@ async function api(path, opts = {}) {
 
 /// Locally-held identities: {email, cert, priv, issuer, exp} — same origin
 /// store the dialog / agents page use. The identity key never leaves here.
-function localIdentity(email) {
-  let store = {};
-  try { store = JSON.parse(localStorage.emails || '{}'); } catch {}
-  for (const issuerKey of Object.keys(store)) {
-    for (const [addr, rec] of Object.entries(store[issuerKey] || {})) {
-      if (addr.toLowerCase() !== email.toLowerCase() || !rec?.priv || !rec?.cert) continue;
-      let exp = 0, issuer = null;
-      try {
-        const p = JSON.parse(atob(rec.cert.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
-        exp = p.exp; issuer = p.iss;
-      } catch {}
-      return { email: addr, cert: rec.cert, priv: rec.priv, issuer, exp, issuerKey };
-    }
+async function localIdentity(email) {
+  const recs = await window.Keystore.forEmail(email);
+  for (const rec of recs) {
+    if (!rec.privateKey || !rec.cert) continue;
+    let exp = 0, issuer = null;
+    try {
+      const p = JSON.parse(atob(rec.cert.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+      exp = p.exp; issuer = p.iss;
+    } catch {}
+    return { email: rec.email, cert: rec.cert, privateKey: rec.privateKey, publicKeyX: rec.publicKeyX, issuer, exp };
   }
   return null;
 }
@@ -88,25 +83,25 @@ function localIdentity(email) {
 /// the cached cert is stale and it's ours to reissue (broker-issued for a
 /// session-owned email), silently refresh it via /wsapi/cert_key.
 async function freshIdentity(email) {
-  const id = localIdentity(email);
+  const id = await localIdentity(email);
   if (!id) return null;
   const now = Math.floor(Date.now() / 1000);
   if (id.exp && id.exp > now + 60) return id;
-  if (!id.priv?.x) return null;
+  if (!id.publicKeyX) return null;
   try {
     const body = await api('/wsapi/cert_key', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         email: id.email,
-        pubkey: { algorithm: 'Ed25519', publicKey: id.priv.x },
+        pubkey: { algorithm: 'Ed25519', publicKey: id.publicKeyX },
         ephemeral: false,
         csrf,
       }),
     });
-    const store = JSON.parse(localStorage.emails || '{}');
-    store[id.issuerKey][id.email].cert = body.cert;
-    localStorage.emails = JSON.stringify(store);
-    return localIdentity(email);
+    // Update just the cert on the existing non-extractable key handle (e2fi).
+    await window.Keystore.put(id.issuer, id.email,
+      { privateKey: id.privateKey, publicKeyX: id.publicKeyX, cert: body.cert });
+    return await localIdentity(email);
   } catch { return null; }
 }
 
@@ -114,7 +109,6 @@ async function freshIdentity(email) {
 /// Sign the §5.2 warrant with the delegator's identity key. `status`
 /// ({uri, idx}, broker-allocated) makes this single grant revocable.
 async function signWarrant(id, agentEmail, audience, scopes, status) {
-  const userKey = window.jwcrypto.loadSecretKeyFromObject(id.priv);
   const now = Math.floor(Date.now() / 1000);
   const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
   const claims = {
@@ -129,7 +123,7 @@ async function signWarrant(id, agentEmail, audience, scopes, status) {
   if (scopes && scopes.length) claims.scopes = scopes;
   if (status) claims.status = status;
   const payload = b64urlJson(claims);
-  const sig = await sign(userKey, `${header}.${payload}`);
+  const sig = await window.Keystore.sign(id.privateKey, `${header}.${payload}`);
   return `${header}.${payload}.${sig}`;
 }
 
@@ -236,7 +230,7 @@ async function boot() {
       your browser­id session — sign in through any app's login dialog first, then reload.</p>`;
     return;
   }
-  if (!window.jwcrypto || !window.crypto?.subtle) {
+  if (!window.Keystore || !window.crypto?.subtle) {
     $('auth-gate').innerHTML = `<p class="err">This browser lacks the crypto needed to sign warrants.</p>`;
     return;
   }

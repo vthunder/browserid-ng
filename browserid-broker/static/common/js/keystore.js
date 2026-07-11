@@ -77,6 +77,20 @@
   function del(issuer, email) {
     return tx("readwrite", function (store) { store.delete(key(issuer, email)); });
   }
+  // Every record in the keystore.
+  function all() {
+    return tx("readonly", function (store) {
+      var acc = [];
+      store.openCursor().onsuccess = function (e) {
+        var c = e.target.result;
+        if (!c) return;
+        acc.push(c.value);
+        c.continue();
+      };
+      return { get result() { return acc; } };
+    });
+  }
+
   // All records (across issuers) for one email.
   function forEmail(email) {
     var want = (email || "").toLowerCase();
@@ -118,6 +132,6 @@
 
   window.Keystore = {
     generate: generate, sign: sign, put: put, get: get, del: del,
-    forEmail: forEmail, migrateFromLocalStorage: migrateFromLocalStorage
+    forEmail: forEmail, all: all, migrateFromLocalStorage: migrateFromLocalStorage
   };
 })();

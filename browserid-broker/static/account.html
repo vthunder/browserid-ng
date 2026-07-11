@@ -198,6 +198,7 @@
 </div>
 
 <script src="/common/js/lib/jwcrypto-compat.js"></script>
+<script src="/common/js/keystore.js"></script>
 <script type="module">
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
@@ -222,32 +223,24 @@ const post = (path, body) => api(path, {
 });
 
 let account = { emails: [], agents: [], parentOf: {}, warrants: [], certs: [], csrf: null };
+let idCache = []; // in-memory snapshot of the non-extractable keystore (e2fi)
 
 // -------- local identities (this browser's cached certs+keys) --------
-function localStore() { try { return JSON.parse(localStorage.emails || '{}'); } catch { return {}; } }
+// Read from the in-memory snapshot of the non-extractable keystore (e2fi);
+// `privateKey` is a CryptoKey handle (crypto.subtle.sign), never raw bytes.
+function toId(rec) {
+  const p = certPayload(rec.cert);
+  return { email: rec.email, cert: rec.cert, privateKey: rec.privateKey,
+           publicKeyX: rec.publicKeyX, issuer: p?.iss, exp: p?.exp || 0 };
+}
 function localIdentity(email) {
-  const store = localStore();
-  for (const ik of Object.keys(store)) {
-    for (const [addr, rec] of Object.entries(store[ik] || {})) {
-      if (addr.toLowerCase() === (email || '').toLowerCase() && rec?.priv && rec?.cert) {
-        const p = certPayload(rec.cert);
-        return { email: addr, cert: rec.cert, priv: rec.priv, issuer: p?.iss, exp: p?.exp || 0, issuerKey: ik };
-      }
-    }
-  }
-  return null;
+  const rec = idCache.find(r => r.email === (email || '').toLowerCase() && r.privateKey && r.cert);
+  return rec ? toId(rec) : null;
 }
 function localIdentities() {
-  const store = localStore(), out = [];
-  for (const ik of Object.keys(store)) {
-    for (const [email, rec] of Object.entries(store[ik] || {})) {
-      if (!rec?.priv || !rec?.cert) continue;
-      const p = certPayload(rec.cert);
-      out.push({ email, cert: rec.cert, priv: rec.priv, issuer: p?.iss, exp: p?.exp || 0, issuerKey: ik });
-    }
-  }
-  return out;
+  return idCache.filter(r => r.privateKey && r.cert).map(toId);
 }
+async function refreshKeystore() { idCache = await window.Keystore.all(); }
 function certPayload(cert) {
   try { return JSON.parse(atob(cert.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); } catch { return null; }
 }
@@ -376,15 +369,13 @@ async function activate(email, btn) {
   }
   // Secondary (broker-verified): generate a key here, get a broker cert, cache it.
   try {
-    const kp = await genKeypair();
+    const kp = await window.Keystore.generate(); // non-extractable (e2fi)
     const body = await post('/wsapi/cert_key', {
-      email, pubkey: { algorithm: 'Ed25519', publicKey: kp.publicKey._jwk.x }, ephemeral: false,
+      email, pubkey: { algorithm: 'Ed25519', publicKey: kp.publicKeyX }, ephemeral: false,
     });
-    const store = localStore();
     const issuer = certPayload(body.cert)?.iss || location.host;
-    store[issuer] = store[issuer] || {};
-    store[issuer][email] = { priv: { algorithm: 'Ed25519', d: kp.secretKey._jwk.d, x: kp.publicKey._jwk.x }, cert: body.cert };
-    localStorage.emails = JSON.stringify(store);
+    await window.Keystore.put(issuer, email, { privateKey: kp.privateKey, publicKeyX: kp.publicKeyX, cert: body.cert });
+    await refreshKeystore();
     renderUserIdentities();
     refreshAgentPickers();
   } catch (e) {
@@ -483,13 +474,12 @@ $('ag-create').onclick = async () => {
   $('ag-create').disabled = true; status.textContent = 'Creating…';
   try {
     const idpDomain = id.issuer || location.host, idpUrl = idpUrlFor(idpDomain);
-    const userKey = window.jwcrypto.loadSecretKeyFromObject(id.priv);
-    const provKey = await genKeypair();
+    const provKey = await genKeypair(); // provisioning key stays extractable (exported to the agent)
     const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
     const certClaims = { typ: 'browserid-provisioning-cert-v1', iss: id.email, iat: nowS(), exp: nowS() + 90*24*3600,
       'public-key': { algorithm: 'Ed25519', publicKey: provKey.publicKey._jwk.x }, constraint: { names: [...new Set(names)], patterns: [...new Set(patterns)] } };
     const payload = b64urlJson(certClaims);
-    const sig = await sign(userKey, `${header}.${payload}`);
+    const sig = await window.Keystore.sign(id.privateKey, `${header}.${payload}`); // sign with the non-extractable identity key
     const delegation = `${id.cert}~${header}.${payload}.${sig}`;
     await post('/wsapi/register_provisioning_cert', { csrf: account.csrf, label: $('ag-label').value.trim() || 'agent key', bundle: delegation });
     if (names.length) { status.textContent = 'Reserving…'; await reserveNames(provKey, idpDomain, idpUrl, delegation); }
@@ -587,7 +577,7 @@ function renderDetailWarrants(agentEmail) {
       if ((w.scopes || []).length) claims.scopes = w.scopes;
       if (statusRef) claims.status = statusRef;
       const payload = b64urlJson(claims);
-      const sig = await sign(window.jwcrypto.loadSecretKeyFromObject(id.priv), `${header}.${payload}`);
+      const sig = await window.Keystore.sign(id.privateKey, `${header}.${payload}`);
       const jws = `${header}.${payload}.${sig}`;
       await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws });
       await navigator.clipboard.writeText(jws); await reloadAccount(); renderDetailWarrants(agentEmail);
@@ -615,7 +605,7 @@ $('w-create').onclick = async () => {
     if (scopes.length) claims.scopes = scopes;
     if (statusRef) claims.status = statusRef;
     const payload = b64urlJson(claims);
-    const sig = await sign(window.jwcrypto.loadSecretKeyFromObject(id.priv), `${header}.${payload}`);
+    const sig = await window.Keystore.sign(id.privateKey, `${header}.${payload}`);
     const jws = `${header}.${payload}.${sig}`;
     try { await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws }); } catch (e) { console.warn(e); }
     $('w-out').textContent = jws; $('w-out').hidden = false;
@@ -640,12 +630,14 @@ async function reloadAccount() {
   account.parentOf = Object.fromEntries((resp.derived || []).map(d => [d.email, d.parent_email]));
   account.warrants = warrants;
   account.certs = certs;
+  await refreshKeystore();
 }
 async function boot() {
   let ctx; try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
   $('gate').hidden = true;
   if (!ctx.authenticated) { $('signin').hidden = false; return; }
   account.csrf = ctx.csrf_token;
+  try { await window.Keystore.migrateFromLocalStorage(); } catch (e) { console.warn('keystore migrate:', e); }
   await reloadAccount();
   $('app').hidden = false;
   renderUserIdentities();
