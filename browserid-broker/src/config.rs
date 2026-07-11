@@ -63,8 +63,25 @@ struct StoredKeypair {
     secret_key: String,
 }
 
-/// Load or generate a keypair
+/// Load or generate a keypair. Precedence:
+/// 1. `BROKER_KEY_SECRET` env (base64url seed) — for platforms where a config
+///    var is easier than a mounted key file (e.g. a second dokku fallback app).
+/// 2. the key file at `path` if it exists.
+/// 3. otherwise generate one and save it to `path`.
 pub fn load_or_generate_keypair(path: &str) -> Result<KeyPair> {
+    if let Ok(secret) = std::env::var("BROKER_KEY_SECRET") {
+        let secret = secret.trim();
+        if !secret.is_empty() {
+            let seed = base64::Engine::decode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                secret,
+            )
+            .with_context(|| "Failed to decode BROKER_KEY_SECRET")?;
+            tracing::info!("Loaded signing key from BROKER_KEY_SECRET");
+            return KeyPair::from_seed(&seed)
+                .map_err(|e| anyhow::anyhow!("Failed to create keypair from BROKER_KEY_SECRET: {}", e));
+        }
+    }
     if Path::new(path).exists() {
         load_keypair(path)
     } else {
