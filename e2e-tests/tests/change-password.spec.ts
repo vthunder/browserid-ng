@@ -38,11 +38,12 @@ test.describe('Change Password Flow', () => {
 
     // Change password via API (using browser's fetch to maintain session)
     const updateResult = await page.evaluate(async ({ oldPass, newPass }) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       const response = await fetch('/wsapi/update_password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ oldpass: oldPass, newpass: newPass }),
+        body: JSON.stringify({ oldpass: oldPass, newpass: newPass, csrf: sc.csrf_token }),
       });
       return response.json();
     }, { oldPass: oldPassword, newPass: newPassword });
@@ -51,7 +52,13 @@ test.describe('Change Password Flow', () => {
 
     // Logout
     await page.evaluate(async () => {
-      await fetch('/wsapi/logout', { method: 'POST', credentials: 'include' });
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
+      await fetch('/wsapi/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ csrf: sc.csrf_token }),
+      });
     });
 
     // Sign in with new password should work
@@ -86,17 +93,24 @@ test.describe('Change Password Flow', () => {
     await dialogPage.waitForSuccess();
 
     await page.evaluate(async ({ oldPass, newPass }) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       await fetch('/wsapi/update_password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ oldpass: oldPass, newpass: newPass }),
+        body: JSON.stringify({ oldpass: oldPass, newpass: newPass, csrf: sc.csrf_token }),
       });
     }, { oldPass: oldPassword, newPass: newPassword });
 
     // Logout
     await page.evaluate(async () => {
-      await fetch('/wsapi/logout', { method: 'POST', credentials: 'include' });
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
+      await fetch('/wsapi/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ csrf: sc.csrf_token }),
+      });
     });
 
     // Try to sign in with old password - should fail
@@ -144,11 +158,12 @@ test.describe('Change Password Flow', () => {
 
     // Try to change password with wrong old password
     const updateResult = await page.evaluate(async ({ wrongOldPass, newPass }) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       const response = await fetch('/wsapi/update_password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ oldpass: wrongOldPass, newpass: newPass }),
+        body: JSON.stringify({ oldpass: wrongOldPass, newpass: newPass, csrf: sc.csrf_token }),
       });
       return { ok: response.ok, data: await response.json() };
     }, { wrongOldPass: 'WrongOldPassword!', newPass: 'NewPassword456!' });
@@ -183,11 +198,12 @@ test.describe('Change Password Flow', () => {
 
     // Try to change to a short password
     const updateResult = await page.evaluate(async ({ oldPass, shortPass }) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       const response = await fetch('/wsapi/update_password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ oldpass: oldPass, newpass: shortPass }),
+        body: JSON.stringify({ oldpass: oldPass, newpass: shortPass, csrf: sc.csrf_token }),
       });
       return { ok: response.ok, data: await response.json() };
     }, { oldPass: password, shortPass: 'short' });

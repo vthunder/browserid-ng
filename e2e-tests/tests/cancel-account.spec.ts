@@ -36,11 +36,12 @@ test.describe('Cancel Account Flow', () => {
 
     // Cancel account via API
     const cancelResult = await page.evaluate(async ({ email, pass }) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       const response = await fetch('/wsapi/account_cancel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email, pass }),
+        body: JSON.stringify({ email, pass, csrf: sc.csrf_token }),
       });
       return response.json();
     }, { email: testEmail, pass: password });
@@ -74,11 +75,12 @@ test.describe('Cancel Account Flow', () => {
 
     // Cancel account
     await page.evaluate(async ({ email, pass }) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       await fetch('/wsapi/account_cancel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email, pass }),
+        body: JSON.stringify({ email, pass, csrf: sc.csrf_token }),
       });
     }, { email: testEmail, pass: password });
 
@@ -116,11 +118,12 @@ test.describe('Cancel Account Flow', () => {
     await dialogPage.waitForSuccess();
 
     await page.evaluate(async ({ email, pass }) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       await fetch('/wsapi/account_cancel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email, pass }),
+        body: JSON.stringify({ email, pass, csrf: sc.csrf_token }),
       });
     }, { email: testEmail, pass: password });
 
@@ -165,11 +168,12 @@ test.describe('Cancel Account Flow', () => {
 
     // Try to cancel with wrong password
     const cancelResult = await page.evaluate(async (email) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       const response = await fetch('/wsapi/account_cancel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email, pass: 'WrongPassword!' }),
+        body: JSON.stringify({ email, pass: 'WrongPassword!', csrf: sc.csrf_token }),
       });
       return { ok: response.ok, data: await response.json() };
     }, testEmail);

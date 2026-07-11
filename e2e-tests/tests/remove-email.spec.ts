@@ -37,11 +37,12 @@ test.describe('Remove Email Flow', () => {
 
     // Add secondary email via API
     const stageEmailResult = await page.evaluate(async (email) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       const response = await fetch('/wsapi/stage_email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, csrf: sc.csrf_token }),
       });
       return response.json();
     }, secondaryEmail);
@@ -104,11 +105,12 @@ test.describe('Remove Email Flow', () => {
 
     // Add secondary email
     await page.evaluate(async (email) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       await fetch('/wsapi/stage_email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, csrf: sc.csrf_token }),
       });
     }, secondaryEmail);
 
@@ -128,11 +130,12 @@ test.describe('Remove Email Flow', () => {
 
     // Remove secondary email
     const removeResult = await page.evaluate(async (email) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       const response = await fetch('/wsapi/remove_email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, csrf: sc.csrf_token }),
       });
       return response.json();
     }, secondaryEmail);
@@ -176,11 +179,12 @@ test.describe('Remove Email Flow', () => {
 
     // Try to remove the only email
     const removeResult = await page.evaluate(async (email) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       const response = await fetch('/wsapi/remove_email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, csrf: sc.csrf_token }),
       });
       return { ok: response.ok, data: await response.json() };
     }, testEmail);
@@ -217,11 +221,12 @@ test.describe('Remove Email Flow', () => {
 
     // Add secondary email
     await page.evaluate(async (email) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       await fetch('/wsapi/stage_email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, csrf: sc.csrf_token }),
       });
     }, secondaryEmail);
 
@@ -241,17 +246,24 @@ test.describe('Remove Email Flow', () => {
 
     // Remove secondary email
     await page.evaluate(async (email) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       await fetch('/wsapi/remove_email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, csrf: sc.csrf_token }),
       });
     }, secondaryEmail);
 
     // Logout
     await page.evaluate(async () => {
-      await fetch('/wsapi/logout', { method: 'POST', credentials: 'include' });
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
+      await fetch('/wsapi/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ csrf: sc.csrf_token }),
+      });
     });
 
     // Try to use the removed email - should show create screen (unknown email)

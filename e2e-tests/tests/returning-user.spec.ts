@@ -118,7 +118,8 @@ test.describe('Returning User Flow', () => {
     await dialogPage.waitForSuccess();
 
     // Logout
-    await request.post(`${baseUrl}/wsapi/logout`);
+    const sc = await (await request.get(`${baseUrl}/wsapi/session_context`)).json();
+    await request.post(`${baseUrl}/wsapi/logout`, { data: { csrf: sc.csrf_token } });
 
     // Check session is cleared
     const sessionResponse = await request.get(`${baseUrl}/wsapi/session_context`);
@@ -151,7 +152,13 @@ test.describe('Returning User Flow', () => {
 
     // Logout via browser (using page's fetch to maintain cookies)
     await page.evaluate(async () => {
-      await fetch('/wsapi/logout', { method: 'POST', credentials: 'include' });
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
+      await fetch('/wsapi/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ csrf: sc.csrf_token }),
+      });
     });
 
     // Open dialog again - should show email screen

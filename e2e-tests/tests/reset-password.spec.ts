@@ -165,7 +165,13 @@ test.describe('Reset Password Flow', () => {
 
     // Logout and sign in with new password
     await dialogPage.page.evaluate(async () => {
-      await fetch('/wsapi/logout', { method: 'POST', credentials: 'include' });
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
+      await fetch('/wsapi/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ csrf: sc.csrf_token }),
+      });
     });
 
     const newPage = await context.newPage();
@@ -264,7 +270,13 @@ test.describe('Reset Password Flow', () => {
 
     // Logout
     await dialogPage.page.evaluate(async () => {
-      await fetch('/wsapi/logout', { method: 'POST', credentials: 'include' });
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
+      await fetch('/wsapi/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ csrf: sc.csrf_token }),
+      });
     });
 
     // Try old password - should fail

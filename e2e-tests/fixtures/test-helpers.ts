@@ -130,7 +130,10 @@ class BrokerApi {
    * Logout
    */
   async logout(): Promise<void> {
-    await this.request.post(`${this.baseUrl}/wsapi/logout`);
+    const sc = await this.getSessionContext();
+    await this.request.post(`${this.baseUrl}/wsapi/logout`, {
+      data: { csrf: sc.csrf_token },
+    });
   }
 }
 
