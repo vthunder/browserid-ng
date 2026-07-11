@@ -5,7 +5,9 @@ status: draft
 type: feature
 priority: low
 created_at: 2026-07-11T08:51:20Z
-updated_at: 2026-07-11T08:51:20Z
+updated_at: 2026-07-11T13:01:08Z
+blocked_by:
+    - browserid-ng-dcgm
 ---
 
 Decentralization idea for the **login (user-present) path**, sibling to the cert-baked registrar endpoint (which decentralizes the headless *agent* path). From vthunder (2026-07-11) — explore later.
