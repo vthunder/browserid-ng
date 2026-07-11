@@ -28,6 +28,7 @@
     pendingAddressInfo: null,  // Stored addressInfo for transition flows
     acceptedFallbacks: null,   // RP's accepted fallback IdPs (spec §8.1); null = default {this broker}
     brokerDomain: null,        // this broker's own issuer domain (from session_context)
+    externalFallback: null,    // the external fallback IdP we're routing through (apgv), if any
     sboSign: false,  // RP requested the SBO typed-signing capability
     pendingAssertion: null,  // Assertion held while showing the SBO consent screen
     provisionEmail: null  // RP asked to provision/sign in a SPECIFIC identity (skip the chooser)
@@ -133,6 +134,60 @@
     if (!state.acceptedFallbacks) return true; // default {this broker}
     const dom = (state.brokerDomain || location.hostname).toLowerCase();
     return state.acceptedFallbacks.indexOf(dom) !== -1;
+  }
+
+  // The first accepted fallback IdP that is an EXTERNAL service (not this
+  // broker) — the one to route email verification through (spec §8.1, apgv).
+  function firstExternalAcceptedFallback() {
+    if (!state.acceptedFallbacks) return null;
+    const dom = (state.brokerDomain || location.hostname).toLowerCase();
+    return state.acceptedFallbacks.find(f => f && f !== dom) || null;
+  }
+
+  // Route a no-primary email through an RP-accepted EXTERNAL fallback IdP
+  // (apgv). The fallback implements the primary-IdP interface, so we drive its
+  // /provision (+ interactive /auth SMTP) exactly like a primary and return the
+  // fallback-issued cert's assertion to the RP. This broker is only the
+  // mediator/keystore here — it never vouches for the email.
+  async function handleExternalFallback(email, fallbackDomain) {
+    state.externalFallback = fallbackDomain;
+    document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+    await fallbackProvisionAndReturn(email, fallbackDomain, true);
+  }
+
+  async function fallbackProvisionAndReturn(email, fallbackDomain, allowAuth) {
+    showScreen('loading');
+    try {
+      const base = 'https://' + fallbackDomain;
+      const doc = await (await fetch(base + '/.well-known/browserid')).json();
+      const provUrl = base + (doc.provisioning || '/provision');
+      const authUrl = base + (doc.authentication || '/auth');
+      let result;
+      try {
+        result = await tryPrimaryProvisioning(email, provUrl, authUrl);
+      } catch (e) {
+        if (e && e.needsAuth && allowAuth) {
+          // No email cookie at the fallback yet — run its interactive /auth
+          // (SMTP), then this same routine retries provisioning on return.
+          sessionStorage.setItem('browserid_pending_fallback', fallbackDomain);
+          redirectToPrimaryAuth(email, e.authUrl || authUrl);
+          return;
+        }
+        throw (e instanceof Error ? e : new Error((e && e.reason) || 'provisioning failed'));
+      }
+      // Fallback cert obtained. Cache it locally and return an RP assertion.
+      // No /wsapi/auth_with_assertion: this broker isn't the issuer, so it holds
+      // no account session for a fallback identity.
+      const expiresAt = Date.now() + (5 * 60 * 1000);
+      await storeEmailKeypair(email, result.keypair.publicKey, result.keypair.privateKey, result.certificate);
+      const rpAssertion = await createAssertionFromPrimary(
+        result.keypair.privateKey, result.certificate, state.origin, expiresAt);
+      storeLoggedInState(state.origin, email);
+      state.email = email;
+      returnAssertion(rpAssertion);
+    } catch (e) {
+      showError('Sign-in via ' + fallbackDomain + ' failed: ' + (e.message || e));
+    }
   }
 
   // Check email address info (type, state, primary IdP URLs)
@@ -406,6 +461,8 @@
       // Fail fast if the RP didn't list this broker in acceptedFallbacks
       // (spec §8.1), rather than verifying and getting rejected at the RP.
       if (!brokerFallbackAccepted()) {
+        const fb = firstExternalAcceptedFallback();
+        if (fb) return await handleExternalFallback(email, fb);
         const dom = state.brokerDomain || location.hostname;
         showError('This site doesn’t accept email sign-in via ' + dom +
           '. Use an email whose domain is its own identity provider.');
@@ -667,6 +724,17 @@
       sessionStorage.removeItem('browserid_pending_email');
       sessionStorage.removeItem('browserid_pending_origin');
 
+      // If this was an external-fallback login (apgv), retry provisioning at
+      // that fallback (its /auth SMTP dance just set the email cookie), not the
+      // primary retry (which would re-derive the IdP from the email domain).
+      const fb = state.externalFallback || sessionStorage.getItem('browserid_pending_fallback');
+      if (fb) {
+        sessionStorage.removeItem('browserid_pending_fallback');
+        state.externalFallback = fb;
+        fallbackProvisionAndReturn(email, fb, false);
+        return;
+      }
+
       // Retry provisioning now that user is authenticated with IdP
       retryProvisioningAfterAuth(email);
     }
@@ -865,6 +933,8 @@
           // (spec §8.1). transition_to_primary is exempt — it routes to a
           // primary, not the broker.
           if (addressInfo.state !== 'transition_to_primary' && !brokerFallbackAccepted()) {
+            const fb = firstExternalAcceptedFallback();
+            if (fb) return await handleExternalFallback(email, fb);
             const dom = state.brokerDomain || location.hostname;
             showError('This site doesn’t accept email sign-in via ' + dom +
               '. Use an email whose domain is its own identity provider.');
