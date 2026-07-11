@@ -21,7 +21,7 @@ use axum::{Json, Router};
 
 use browserid_agent::{AgentError, AgentIdentity};
 use browserid_core::rp_auth::GRANT_TYPE_ASSERTION;
-use browserid_core::{Certificate, TokenRequest, Warrant};
+use browserid_core::{Certificate, StatusRef, TokenRequest, Warrant};
 use chrono::Duration;
 use browserid_rp::{oauth_metadata, TokenStore, Verifier};
 use common::{make_credential, start_broker};
@@ -118,13 +118,18 @@ async fn agent_authenticates_to_cold_rp() {
     let challenge = agent.discover_challenge(&format!("{rp}/data")).await.unwrap();
     let (u, _) = credential.delegation.split_once('~').unwrap();
     let parent_cert = Certificate::parse(u).unwrap();
-    let warrant = Warrant::create(
+    let registrar = agent.certificate().registrar().expect("cert registrar").to_string();
+    let warrant = Warrant::create_with_status(
         &parent_cert,
         agent.email(),
         &challenge.audience,
         None,
         Duration::days(30),
         &user_kp,
+        Some(StatusRef {
+            uri: format!("{registrar}/.well-known/browserid-status"),
+            idx: 1,
+        }),
     )
     .unwrap();
     agent.add_warrant(warrant.encoded()).unwrap();

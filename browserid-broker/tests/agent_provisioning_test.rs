@@ -164,13 +164,19 @@ async fn sign_warrant(
 ) -> Warrant {
     let warrant_kp = KeyPair::generate();
     let parent_cert = issue_user_cert(server, session, delegator, &warrant_kp).await;
-    Warrant::create(
+    // v0.5: an agent warrant must carry a status ref pinned to the cert's
+    // registrar — which, for a broker-minted agent, is the broker's origin.
+    Warrant::create_with_status(
         &parent_cert,
         agent_email,
         audience,
         Some(vec!["post".into()]),
         Duration::days(30),
         &warrant_kp,
+        Some(browserid_core::StatusRef {
+            uri: format!("http://{DOMAIN}/.well-known/browserid-status"),
+            idx: 1,
+        }),
     )
     .unwrap()
 }

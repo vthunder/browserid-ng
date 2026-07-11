@@ -6,7 +6,7 @@
 mod common;
 
 use browserid_agent::{AgentError, AgentIdentity};
-use browserid_core::{BackedAssertion, Certificate, Warrant};
+use browserid_core::{BackedAssertion, Certificate, StatusRef, Warrant};
 use chrono::Duration;
 use common::{make_credential, start_broker};
 
@@ -29,13 +29,19 @@ async fn sdk_provision_assert_verify_persist_revoke() {
     }
     let (u, _) = credential.delegation.split_once('~').unwrap();
     let parent_cert = Certificate::parse(u).unwrap();
-    let warrant = Warrant::create(
+    // v0.5: pin the warrant's status to the cert's registrar (the broker).
+    let registrar = agent.certificate().registrar().expect("cert registrar").to_string();
+    let warrant = Warrant::create_with_status(
         &parent_cert,
         agent.email(),
         AUDIENCE,
         Some(vec!["post".into()]),
         Duration::days(30),
         &user_kp,
+        Some(StatusRef {
+            uri: format!("{registrar}/.well-known/browserid-status"),
+            idx: 1,
+        }),
     )
     .unwrap();
     agent.add_warrant(warrant.encoded()).unwrap();

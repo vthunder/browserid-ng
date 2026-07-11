@@ -802,6 +802,7 @@ mod tests {
             &agent_kp.public_key(),
             Duration::hours(24),
             &idp,
+            Some("https://browserid.me".to_string()),
         )
         .unwrap();
         let (cred, _) = credential();

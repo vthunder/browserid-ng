@@ -538,6 +538,7 @@ mod tests {
 
     const AUDIENCE: &str = "https://api.example.com";
     const ISSUER: &str = "agents.example.com";
+    const REGISTRAR: &str = "https://registrar.example";
 
     fn backed_assertion(issuer_kp: &KeyPair, audience: &str) -> String {
         let agent_kp = KeyPair::generate();
@@ -629,17 +630,22 @@ mod tests {
             &agent_kp.public_key(),
             Duration::hours(1),
             issuer_kp,
+            Some(REGISTRAR.to_string()),
         )
         .unwrap();
         let assertion = Assertion::create(audience, Duration::minutes(5), &agent_kp).unwrap();
         if with_warrant {
-            let warrant = browserid_core::Warrant::create(
+            let warrant = browserid_core::Warrant::create_with_status(
                 &parent_cert,
                 &format!("bot@{ISSUER}"),
                 warrant_audience,
                 warrant_scopes,
                 Duration::days(30),
                 &user_kp,
+                Some(StatusRef {
+                    uri: format!("{REGISTRAR}/.well-known/browserid-status"),
+                    idx: 3,
+                }),
             )
             .unwrap();
             BackedAssertion::new_agent(agent_cert, warrant, assertion).encode()
