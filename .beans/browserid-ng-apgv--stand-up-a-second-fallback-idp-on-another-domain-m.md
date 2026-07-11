@@ -55,3 +55,17 @@ DNSSEC-rooted, so `other.fallback.com` needs an A/CNAME → host and a **DNSSEC-
 ## Related
 
 Builds on / validates 8t8h (RP-selected fallbacks). Distinct from 0efn (user-chosen *broker*). The external-fallback service reuses the pubkey-in/cert-out idea from pn5n.
+
+## Progress (2026-07-11) — fallback issuer deployed
+
+Milestone 1 (the external fallback issuer) is up. `browserid-broker` deployed as dokku app `fallback` at `fallback.sandmill.org` (host 198.199.110.160), keyed via `BROKER_KEY_SECRET` (env-loaded seed; pubkey `wFa8FDEzhPB1gANJ22jKk5JxYxvD3jrZRtYX44TCkuc`), own `/data` SQLite volume, Resend SMTP reused (from `fallback@id.sandmill.org`), agent-provisioning off. Serving `/.well-known/browserid` with the matching key (verified via Host header pre-DNS).
+
+Waiting on the user's DNS (2 records on the DNSSEC-signed sandmill.org zone):
+- `fallback.sandmill.org A 198.199.110.160`
+- `_browserid.fallback.sandmill.org TXT "v=browserid1; public-key-algorithm=Ed25519; public-key=wFa8FDEzhPB1gANJ22jKk5JxYxvD3jrZRtYX44TCkuc; host=fallback.sandmill.org"`
+
+Then: enable Let's Encrypt TLS; verify a fallback.sandmill.org-issued cert validates via its DNSSEC key with browserid.me nowhere in the chain.
+
+Still to build (milestone 2): mediator routing — browserid.me's dialog driving verification *through* this fallback and storing the returned cert (today the dialog can only decline browserid.me, 8t8h). Plus the keystore/corner cases.
+
+Code landed this session: `BROKER_KEY_SECRET` env support + `gen_broker_key` example (committed).
