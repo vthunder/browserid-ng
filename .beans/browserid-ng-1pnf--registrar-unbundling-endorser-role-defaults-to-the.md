@@ -1,11 +1,11 @@
 ---
 # browserid-ng-1pnf
 title: Registrar unbundling — endorser role defaults to the IdP, hosted registrar becomes the product
-status: todo
+status: completed
 type: feature
 priority: high
 created_at: 2026-07-10T15:24:05Z
-updated_at: 2026-07-10T15:34:37Z
+updated_at: 2026-07-11T00:04:20Z
 parent: browserid-ng-gsnm
 ---
 
@@ -27,6 +27,15 @@ User story: **you manage your agents where your identity lives.**
 
 ### Todo
 - [x] Spec v0.4: registrar terminology + accepted-registrars default-self + external-registrar config
-- [ ] Extract registrar component (registry, endorsement signer, key-mgmt UI) from broker
-- [ ] mingo-idp: adopt registrar component (or external-registrar config path)
-- [ ] Reconcile with bean btmg scope
+- [x] Extract registrar component (registry, endorsement signer, consent/warrant API, status list) from broker — browserid-registrar crate; UI remains broker-served reference impl for now
+- [x] mingo-idp: external-registrar config path confirmed working (registrar-is-browserid.me, ddd7189); self-host adoption now unblocked by the crate — do when mingo wants it
+- [x] Reconcile with bean btmg scope — btmg (API-key mgmt UI) retargeted to /account; that UI is the registrar component's reference surface, packaged with the component later
+
+## Summary of Changes (2026-07-11)
+
+Registrar extracted into the browserid-registrar crate: RegistrarStore (registrar-owned tables, host persistence) + RegistrarHost (sessions, email ownership, agent-identity enumeration stay host-side) + router() serving the wire-stable paths. The broker mounts it via registrar_glue (UserStore-delegating adapters), running IdP + registrar in one process; routes/warrant.rs deleted, routes/agent.rs reduced to the target-IdP mint/reserve/list/revoke role. Wire compatibility proven by untouched integration suites (360 tests green).
+
+Deliberately deferred:
+- Packaging the consent/key-mgmt UI (consent.html + /account agent sections) with the component — broker pages remain the reference implementation; a self-hosting IdP needs equivalents of /wsapi/session_context + a cert-refresh endpoint for the consent page's client-side signing.
+- Actual mingo-idp self-host adoption (separate repo/deploy; external-registrar mode confirmed working and remains its configuration).
+- Spec: v0.4 already carries registrar terminology + accepted-registrars default-self; no further spec change needed here.
