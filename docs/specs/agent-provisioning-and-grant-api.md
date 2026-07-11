@@ -1,15 +1,15 @@
 # BrowserID Agent Provisioning, Warrants & Grant Exchange — API Specification
 
-**Version:** 0.4 (draft)
-**Date:** 2026-07-10
-**Status:** Design-complete; §5 (agent certificates & warrants), §6 (consent
-flow), the registrar-defaults-to-self rule (§3), and the `status` claim are
-**new in v0.4 and not yet implemented** in the reference stack — see plan
-`docs/plans/2026-07-10-agent-identity-v3-and-gtm-plan.md` and epic
-`browserid-ng-gsnm`. The v0.3 provisioning surface (§4) is implemented and
-deployed. v0.2 replaced v0.1's bearer API keys with a user-signed
-**delegation chain** plus per-request endorsement (design:
-`docs/plans/2026-07-09-agent-delegation-chain-design.md`).
+**Version:** 0.5 (draft)
+**Date:** 2026-07-11
+**Status:** §4 provisioning, §5 (agent certificates & warrants), §6 (consent
+flow), and the `status` claim are implemented and deployed. v0.5 corrects the
+registrar trust model (§2, §3): the registrar is the **user's chosen broker**,
+never the IdP, and its endpoint is **carried in the agent certificate** (§5.1)
+so a headless agent knows where to obtain warrants and an RP can pin a
+warrant's revocation authority to it (bean `browserid-ng-s75b`). v0.2 replaced
+v0.1's bearer API keys with a user-signed **delegation chain** plus per-request
+endorsement (design: `docs/plans/2026-07-09-agent-delegation-chain-design.md`).
 
 ### Changes in v0.4
 
@@ -20,8 +20,10 @@ deployed. v0.2 replaced v0.1's bearer API keys with a user-signed
 2. **Warrants** (§5.2) — per-audience, user-signed authorization objects
    carrying opaque scopes. Audience and scope restrictions live *only* in
    warrants, never in certificates, preserving the BrowserID privacy
-   property: the IdP and registrar never learn where an agent acts, and no
-   RP learns the roster of other RPs.
+   property: the **IdP** never learns where an agent acts, and no RP learns
+   the roster of other RPs. (The registrar — the user's own broker — does
+   host the consent surface and retain warrant records; that is the party the
+   user chose, not the IdP. See v0.5, §3.)
 3. **Warrant-in-chain presentation** (§5.3) — an agent's backed assertion is
    `agent_cert~warrant~assertion`. Combined with the distinct cert `typ`,
    verification is fail-closed by construction: a verifier that predates
@@ -32,13 +34,36 @@ deployed. v0.2 replaced v0.1's bearer API keys with a user-signed
    requested scopes; the user approves at their registrar. Nobody types an
    audience string.
 5. **Registrar** (§2, §3) — the endorser role is renamed from "broker" to
-   **registrar** and **defaults to the delegator's own IdP**. browserid.me is
-   the registrar for identities it roots and MAY be configured as an
-   external registrar by other IdPs; it is no longer a mandatory party in
-   federated agent flows.
+   **registrar**. The registrar is the party that hosts the consent surface,
+   is the origin the delegator's identity key signs under, and holds the
+   warrant registry and revocation status list.
 6. Certificates and warrants MAY carry a **`status`** claim for fast
    revocation via a signed status list (core spec §6.4) — implemented:
    per-identity indices on certificates, per-grant indices on warrants.
+
+### Changes in v0.5
+
+1. **The registrar is the user's broker, not the IdP** (§2, §3). v0.4 said
+   "every IdP is its own registrar by default." That is corrected: warrant
+   issuance is rooted in *user consent*, so the party that gates and hosts it
+   is the user-agent stand-in (the **broker**) the user chose — never the
+   IdP. The IdP mints identities and publishes a verification key; it MUST
+   NOT be the issuer, governor, or verifier of warrants, and never sees one.
+   The user chooses their registrar by choosing their broker; the agent
+   cannot choose it.
+2. **The registrar endpoint is carried in the agent certificate** (§5.1, new
+   `registrar` claim). The broker that endorses a provisioning request names
+   its registrar endpoint in the endorsement (§4.2); the IdP copies it
+   verbatim into the minted certificate (§4.3) and MAY refuse to sign but
+   MUST NOT alter it. This is how a headless agent — which has no live
+   browser to negotiate a broker — learns where to raise consent requests,
+   and how an RP pins a warrant's revocation authority (§5.3).
+3. **Agent warrants MUST carry a `status` ref, pinned to the certificate's
+   registrar** (§5.2, §5.3). A verifier MUST reject an agent warrant with no
+   `status` claim, and — when the agent certificate carries a `registrar`
+   claim — MUST reject a warrant whose `status.uri` origin is not that
+   registrar. This defeats a warrant that points revocation at an authority
+   the delegator's identity never committed to.
 
 ## 1. Purpose and scope
 
@@ -74,14 +99,20 @@ models. The registrar's key-management UI is described non-normatively
 
 - **IdP** — a BrowserID identity provider implementing §4. It is
   authoritative for identities under its own domain.
-- **Registrar** — the service that registers provisioning certificates,
-  applies account-level policy (sybil/quota/rate), endorses provisioning
-  requests, hosts the key-management UI, and hosts the consent surface
-  (§6). **Every IdP is its own registrar by default.** An IdP MAY instead
-  configure an external registrar it trusts. *(v0.3 called this role the
-  "broker"; a broker — a fallback IdP such as browserid.me — is simply the
-  registrar for the identities it roots, and may additionally serve as an
-  external registrar for other IdPs.)*
+- **Broker / Registrar** — the user-agent stand-in the user chose: the
+  service that registers provisioning certificates, applies account-level
+  policy (sybil/quota/rate), endorses provisioning requests, hosts the
+  key-management UI, and hosts the **consent surface** (§6) — the origin the
+  delegator's identity key signs under. It is **the user's broker, never the
+  IdP** (v0.5, §3): the user selects it by choosing their broker, and its
+  endpoint is stamped into every agent certificate the broker's endorsement
+  gates (§5.1). It holds the warrant registry and publishes the revocation
+  status list. *(v0.3 called the endorser the "broker"; the two terms name
+  the same party — the login-time mediator and the agent-time registrar are
+  one role, bound live for user-present logins and by the cert's `registrar`
+  claim for headless agents. browserid.me is the reference registrar and the
+  fallback registrar for identities rooted at IdPs that do not name their
+  own.)*
 - **Agent** — a headless client holding the provisioning private key and its
   own (separate) identity keypair.
 - **Delegator / parent identity** — the user identity (`a@b.c`) whose
@@ -113,12 +144,19 @@ Key words MUST/SHOULD/MAY are RFC 2119.
   Likewise, an RP MUST NOT accept an agent presentation without a valid
   **warrant** signed by the delegator's certified key (§5.3). Neither the
   IdP nor the registrar can fabricate either.
-- **Policy is registrar-signed.** An IdP MUST also require a fresh
-  endorsement from a registrar it accepts. **The accepted-registrars set
-  defaults to the IdP itself** — an IdP that runs its own registry needs no
-  external party. An IdP MAY accept an external registrar (e.g.
-  browserid.me) to outsource registry, policy, key-management UI, and the
-  consent surface.
+- **Policy is registrar-signed, and the registrar is the user's broker —
+  not the IdP.** An IdP MUST require a fresh endorsement from a registrar it
+  accepts. The registrar is the user-agent stand-in the user chose; warrant
+  issuance is rooted in *user consent*, so the IdP MUST NOT be the party that
+  gates or hosts it. The endorsing registrar names its own endpoint in the
+  endorsement; the IdP copies that endpoint into the minted certificate's
+  `registrar` claim (§5.1) verbatim. An IdP MAY refuse to sign a certificate
+  whose named registrar it distrusts (the endpoint is visible to it), but it
+  MUST NOT substitute its own. Consequently the **IdP never learns where an
+  agent acts**: it sees the registrar endpoint (a URL) at mint, and never a
+  warrant's audience or scopes. An IdP that also wishes to run a registrar
+  does so as a *distinct, user-selectable broker*, on the same footing as any
+  other — not as an implicit default.
 - **Identity-domain rule.** The agent's identity domain is the domain of the
   IdP that roots the delegator's identity. Consequently the `U_cert` an IdP
   verifies is always its own issuance; the delegator and the agent share one
@@ -262,6 +300,13 @@ re-verify `U_cert` here; apply account-level policy; then return
 verifies the whole chain at mint, §4.3 — so a registrar endorsement never
 substitutes for it.)
 
+The endorsement `E` MUST carry a **`registrar`** claim: the origin
+(scheme + host [+ port]) of this registrar's endpoints — where the agent
+raises consent requests (§6) and where its warrant status list is published.
+The IdP copies this value into the minted certificate (§4.3, §5.1). Because
+the registrar is the user's chosen broker (§3), the value is the endorser's
+own endpoint; the agent cannot influence it.
+
 Errors (shape `{"success": false, "reason": "…"}`):
 
 | Status | Meaning |
@@ -306,7 +351,10 @@ MAY rotate freely); revoked names are never recycled; new identities count
 against the delegator's quota.
 
 The minted certificate is an **agent certificate** per §5.1 (distinct
-`typ`, `agent` block naming the delegator).
+`typ`, `agent` block naming the delegator). The IdP MUST copy the
+endorsement's `registrar` claim (§4.2) verbatim into the certificate's
+`registrar` claim; it MUST NOT substitute its own value, but MAY refuse to
+mint if it distrusts the named registrar.
 
 Response: `{ "success": true, "email": "attestor2@mingo.place",
 "cert": "<JWS>" }`.
@@ -385,6 +433,7 @@ The certificate minted in §4.3 is a core-format user certificate (core
   "public-key": { "algorithm": "Ed25519", "publicKey": "<A_pub base64url>" },
   "principal": { "email": "attestor2@mingo.place" },
   "agent": { "parent": "a@b.c" },
+  "registrar": "https://browserid.me",
   "status": { "uri": "https://mingo.place/.well-known/browserid-status", "idx": 42 }
 }
 ```
@@ -398,9 +447,17 @@ The certificate minted in §4.3 is a core-format user certificate (core
   by the IdP from the verified chain. This is the attribution claim:
   issuer-signed, verifiable with no callback. *(The agent's handle is the
   local part of `principal.email`; it is not duplicated in the block.)*
+- **`registrar` (REQUIRED)**: the origin of the registrar the delegator's
+  broker chose — where the agent raises consent requests (§6) and where its
+  warrant status list is published. Set by the IdP from the endorsement
+  (§4.2, §4.3), never by the agent. An RP pins each warrant's revocation
+  authority to this value (§5.3). *(Transitional: a verifier encountering an
+  agent certificate with no `registrar` claim — minted before an IdP
+  adopted v0.5 — MUST still enforce the other agent rules but skips the
+  registrar pin; new mints MUST include it.)*
 - **`status` (OPTIONAL)**: fast-revocation hook, core §6.4.
-- Ordinary human certificates are unchanged and carry no `typ` and no
-  `agent` block.
+- Ordinary human certificates are unchanged and carry no `typ`, no
+  `agent` block, and no `registrar` claim.
 
 ### 5.2 Warrant
 
@@ -439,10 +496,16 @@ audience:
   self-contained. Signing-time semantics apply (§3): `W.iat` MUST fall
   within `parent-cert`'s validity window; `parent-cert` need not be
   currently unexpired; the warrant itself MUST be unexpired.
-- `status` — OPTIONAL `{uri, idx}` (core §6.4): the registrar allocates one
-  stable index per grant (returned with the consent request's grants and by
-  its allocation endpoint), the signing surface embeds it, and the delegator
-  can then revoke **this one grant** without touching the agent's others.
+- `status` — **REQUIRED** `{uri, idx}` (core §6.4): the registrar allocates
+  one stable index per grant (returned with the consent request's grants and
+  by its allocation endpoint), the signing surface embeds it, and the
+  delegator can then revoke **this one grant** without touching the agent's
+  others. `status.uri` MUST be under the agent certificate's `registrar`
+  origin (§5.1) — a warrant's revocation authority is the registrar the
+  delegator's identity committed to, not one the warrant names freely. A
+  verifier MUST reject an agent warrant that carries no `status`, and MUST
+  reject one whose `status.uri` origin is not the certificate's `registrar`
+  (when the certificate carries one).
 - Reference validity: 90 days (matching `P_cert`).
 
 Privacy properties (by construction): one warrant names one audience, so no
@@ -451,11 +514,12 @@ transit the IdP or registrar as data (§6 issues them client-side at the
 registrar origin); an RP sees only warrants addressed to it; `aud` pinning
 makes a warrant useless anywhere else.
 
-Warrants are not independently revocable: they are inert without a live
-agent certificate, so revoking the agent (§4.5, or the `status` claim)
-retires every warrant with it. A user who wants to withdraw a single
-audience grant before its `exp` revokes and re-creates the agent (or waits
-out the warrant); finer-grained warrant revocation is deliberately deferred.
+Warrants are revocable two ways: coarsely, by revoking the agent (§4.5, or
+the certificate's `status` claim), which retires every warrant with it since
+a warrant is inert without a live agent certificate; and per-grant, via the
+warrant's own required `status` index — the delegator revokes **this one
+audience grant** at the registrar without touching the agent's others (core
+§6.4, bean `browserid-ng-egr7`).
 
 ### 5.3 Presentation: the warrant-backed assertion
 
@@ -485,7 +549,13 @@ Verification (extends core §6.2; MUST run in this order):
    `W.iss` == `parent-cert.principal.email` == `agent_cert.agent.parent`;
    `W.agent` == `agent_cert.principal.email`; **`W.aud` == the verifying
    RP's own audience** (the same value checked against the assertion's
-   `aud`).
+   `aud`). The warrant MUST carry a `status` ref (§5.2); a warrant with none
+   MUST be rejected. If `agent_cert` carries a `registrar` claim (§5.1),
+   `W.status.uri`'s origin MUST equal that `registrar` origin, else the
+   warrant MUST be rejected — its revocation authority must be the one the
+   delegator's identity committed to. *(A certificate with no `registrar`
+   claim is a pre-v0.5 mint: the pin is skipped, the `status`-present rule
+   still applies.)*
 4. Verify the assertion under the agent certificate's subject key (`aud`,
    `exp`) as in core §6.2.
 5. Result: the agent's email, plus attribution metadata the RP SHOULD
