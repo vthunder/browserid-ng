@@ -1,11 +1,11 @@
 ---
 # browserid-ng-s75b
 title: Warrant consent belongs to the broker, not the IdP — corrected registrar role decomposition
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-07-11T08:51:02Z
-updated_at: 2026-07-11T09:20:52Z
+updated_at: 2026-07-11T10:18:23Z
 blocking:
     - browserid-ng-0efn
 ---
@@ -33,10 +33,10 @@ Together these mean the IdP is not the issuer, governor, or verifier of warrants
 
 ## Concrete changes to pursue
 
-- [ ] Default registrar != IdP; make the registrar an explicit, user-chosen endpoint.
-- [ ] **Bake the registrar endpoint into the agent cert** (a claim/link). Solves "which broker?" for a headless agent with no live browser to negotiate. Bonus: the RP can cross-check that a warrant's status-list URI matches the registrar the identity committed to — detects a phished "registrar that never revokes." (Currently the endpoint lives client-side in the agent credential file; moving it into the cert makes it authoritative + RP-visible.)
-- [ ] Split the **minting gate** (endorsement / P_cert registry / quota) from **warrant consent + registry + revocation** in the browserid-registrar crate — different trust requirements, possibly different hosts.
-- [ ] Decentralization path (agents): different broker -> bakes a different registrar endpoint into certs. (Login-path decentralization is the sibling polyfill bean.)
+- [x] Default registrar != IdP; make the registrar an explicit, user-chosen endpoint.
+- [x] **Bake the registrar endpoint into the agent cert** (a claim/link). Solves "which broker?" for a headless agent with no live browser to negotiate. Bonus: the RP can cross-check that a warrant's status-list URI matches the registrar the identity committed to — detects a phished "registrar that never revokes." (Currently the endpoint lives client-side in the agent credential file; moving it into the cert makes it authoritative + RP-visible.)
+- [x] (deferred) Split the **minting gate** (endorsement / P_cert registry / quota) from **warrant consent + registry + revocation** in the browserid-registrar crate — different trust requirements, possibly different hosts.
+- [x] Decentralization path (agents): different broker -> bakes a different registrar endpoint into certs. (Login-path decentralization is the sibling polyfill bean.)
 
 ## Accepted costs
 
@@ -59,4 +59,29 @@ Decisions locked: broker-declared registrar (endorser = registrar); strict verif
 - [x] Phase 1 core — `registrar` cert claim + strict warrant verify (status required + origin == cert registrar)
 - [x] Phase 2 broker/registrar — endorsement carries the registrar; broker mints with its own origin; 366 workspace tests green
 - [x] Phase 3 mingo-idp — bump core rev a39b5ea; copy endorsement registrar into the minted cert; 12 tests green
-- [ ] Phase 4 deploy + smoke test — broker + mingo to prod; re-provision, warrant, verify; tamper rejected
+- [x] Phase 4 deploy — broker (a39b5ea) + mingo-idp (6fcd5cc) live
+- [x] Phase 4 smoke test — see below
+
+
+## Summary of Changes (2026-07-11) — SHIPPED
+
+Corrected the registrar trust model per the three ratified principles: the registrar is the user's broker, never the IdP; the IdP mints + publishes a key and never sees a warrant.
+
+- **Spec v0.5** (agent-provisioning-and-grant-api.md): registrar = user's broker; new `registrar` cert claim carried from endorsement → cert; agent warrants MUST carry a status ref pinned to the cert's registrar origin.
+- **browserid-core**: `registrar` cert claim; endorsement carries the registrar origin; `Warrant::verify_for` strict — rejects a warrant with no status, a cert with no registrar, or a status URI whose origin ≠ the cert's registrar. No transitional leniency (dev-mode decision: existing warrants killed).
+- **broker/registrar crate**: `/provision/endorse` names its own origin as the registrar; broker-minted agents get the broker's own origin.
+- **mingo-idp** (separate repo, pinned to core a39b5ea): copies the endorsement's registrar into every minted agent cert.
+
+Decisions (via AskUserQuestion): broker-declared registrar (endorser=registrar); strict verification (no carve-out); crate split deferred (both roles stay broker-side, no adoption scenario needs them separated).
+
+**Live smoke test on browserid.me + mingo.place:**
+1. Fresh `tester@mingo.place` cert carries `registrar: https://browserid.me` (mingo copied it from the endorsement). ✓
+2. Consent-approved warrant's status ref = `https://browserid.me/.well-known/browserid-status`, pinned to the cert registrar. ✓
+3. Positive `/verify`: `okay`, `agent.parent=dan@mingo.place`, `scopes=[post,read]`. ✓
+4. Negative: pre-v0.5 cert (no registrar) rejected — "agent cert names no registrar". ✓
+5. Negative: wrong-audience replay rejected. ✓
+6. Status-origin-mismatch: covered by core unit test `warrant_status_not_at_cert_registrar_rejected` (can't forge live without the delegator's browser key).
+
+Tests: core 51, workspace 366, mingo-idp 12 — all green.
+
+Follow-ups: cert-baked endpoint currently equals the endorser (endorser=registrar); decoupling registrar from endorser is future work. Sibling login-path decentralization is [[polyfill-selectable-broker-endpoint-user-chosen-broker-for-the-login-path]] (0efn).
