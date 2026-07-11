@@ -1,11 +1,11 @@
 ---
 # browserid-ng-apgv
 title: RP-chosen external SMTP fallback — browserid.me routes to it, no trust on browserid.me
-status: todo
+status: completed
 type: feature
 priority: normal
 created_at: 2026-07-11T16:08:54Z
-updated_at: 2026-07-11T16:08:54Z
+updated_at: 2026-07-11T19:23:07Z
 ---
 
 Demonstrate — and build the flow for — an RP that trusts **only** an external SMTP verifier (`other.fallback.com`), never browserid.me, while **browserid.me stays the broker**. Validates 8t8h with a real second issuer and proves browserid.me need not be a trusted identity authority for an RP to use it.
@@ -112,3 +112,16 @@ When an email has no primary AND the RP accepts an external fallback F (not this
 - keystore: cert keyed by (email, issuer); reuse gated by acceptedFallbacks (partly done in 8t8h).
 - Corner cases (new device, forgot password 2-roundtrips, RP1+RP2 two certs/one password), silent-refresh via comm-iframe.
 Best done interactively with a real inbox to complete the SMTP dance and observe the popup/return flow.
+
+## COMPLETE — full flow + edge cases proven live (2026-07-11)
+
+Milestone 2 edge cases verified in a real browser (vthunder):
+- A: re-visit fallback-demo → instant reuse of the fallback.sandmill.org cert (no re-SMTP).
+- B: broker-demo (trusts browserid.me) with the same email → browserid.me's own flow → browserid.me cert (different issuer per RP).
+- C: back to fallback-demo → still instantly reuses the fallback cert; both certs coexist (issuer-keyed keystore).
+
+The whole apgv thesis is proven: an RP can trust ONLY an external SMTP fallback (fallback.sandmill.org) and log a user in, with browserid.me acting solely as mediator + stateless verification service — never vouching for the identity. The fallback implements the primary-IdP interface (SMTP /auth → 30d cookie; /provision + cookie-gated /cert_key → 24h cert). One email holds coexisting certs from different issuers, each reused at the RPs that accept it.
+
+Shipped: BROKER_KEY_SECRET env, gen_broker_key + fallback_verify_demo examples, /verify accepted_fallbacks, the fallback-IdP surface (/auth,/provision,/whoami,/cert_key + pages), dialog external-fallback routing, issuer-keyed keystore, /fallback-demo + /broker-demo RPs. Deployed: browserid.me + fallback.sandmill.org (new dokku app, own DNSSEC _browserid key).
+
+Not explicitly exercised (standard browserid machinery, would need a 24h wait or forced expiry): the silent re-provision of an expired 24h cert against the still-valid 30d cookie. Follow-ups if desired: browserid.me-account persistence of fallback identities (roster/cross-device), and the multi-fallback batch/UX polish.
