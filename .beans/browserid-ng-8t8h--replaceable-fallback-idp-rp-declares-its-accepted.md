@@ -1,11 +1,11 @@
 ---
 # browserid-ng-8t8h
 title: Replaceable fallback IdP — RP declares its accepted fallback IdPs
-status: in-progress
+status: completed
 type: feature
 priority: high
 created_at: 2026-07-11T13:00:32Z
-updated_at: 2026-07-11T13:00:32Z
+updated_at: 2026-07-11T13:38:47Z
 ---
 
 The higher-leverage half of login-path decentralization (from vthunder discussion, 2026-07-11). Lets an RP adopt browserid **without being forced to trust browserid.me as an identity authority** — the objection that keeps RPs out. Pure protocol/implementation; no browser-platform bet, no dependency on key custody or storage behavior. Do this before the broker-choice work.
