@@ -112,6 +112,9 @@ pub(crate) fn issue_certificate<U: UserStore>(
                 email_record.email
             ))
         })?;
+        // The broker is IdP + registrar in one process, so an agent it mints
+        // is registered here: the cert's registrar (spec §5.1) is the broker's
+        // own origin, matching the status list its consent flow publishes.
         Certificate::create_agent_with_status(
             domain,
             &email_record.email,
@@ -119,6 +122,7 @@ pub(crate) fn issue_certificate<U: UserStore>(
             &user_pubkey,
             validity,
             keypair,
+            Some(browserid_registrar::consent::public_origin(domain)),
             status,
         )
     } else {

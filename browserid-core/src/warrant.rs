@@ -35,6 +35,18 @@ fn invalid(msg: impl std::fmt::Display) -> Error {
     Error::InvalidWarrant(msg.to_string())
 }
 
+/// The origin (`scheme://host[:port]`) of a URL — the part before the path.
+/// Used to pin a warrant's `status.uri` to the certificate's `registrar`
+/// (spec §5.3). Returns `None` if there's no `scheme://host`.
+fn url_origin(u: &str) -> Option<String> {
+    let (scheme, rest) = u.split_once("://")?;
+    let host = rest.split('/').next().unwrap_or(rest);
+    if scheme.is_empty() || host.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{host}"))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WarrantClaims {
     /// MUST be [`TYP_AGENT_WARRANT`]
@@ -239,6 +251,29 @@ impl Warrant {
             });
         }
 
+        // 6. Revocation authority (agent spec §5.3, strict). An agent warrant
+        //    MUST carry a status ref, the agent cert MUST name a registrar,
+        //    and the ref's origin MUST be that registrar — so revocation is
+        //    pinned to the authority the delegator's identity committed to,
+        //    never one the warrant names freely.
+        let status = self
+            .claims
+            .status
+            .as_ref()
+            .ok_or_else(|| invalid("agent warrant carries no status ref (spec §5.2)"))?;
+        let registrar = agent_cert
+            .registrar()
+            .ok_or_else(|| invalid("agent cert names no registrar (spec §5.1)"))?;
+        let reg_origin = url_origin(registrar)
+            .ok_or_else(|| invalid("agent cert registrar is not a valid origin"))?;
+        let status_origin = url_origin(&status.uri)
+            .ok_or_else(|| invalid("warrant status.uri is not a valid origin"))?;
+        if status_origin != reg_origin {
+            return Err(invalid(format!(
+                "warrant status authority '{status_origin}' is not the certificate's registrar '{reg_origin}'"
+            )));
+        }
+
         Ok(self.claims.scopes.clone().unwrap_or_default())
     }
 
@@ -306,21 +341,31 @@ mod tests {
             &agent.public_key(),
             Duration::hours(24),
             &idp,
+            Some(REGISTRAR.to_string()),
         )
         .unwrap();
         Setup { idp, user, parent_cert, agent_cert }
     }
 
     const AUD: &str = "https://api.example.com";
+    const REGISTRAR: &str = "https://registrar.example";
+
+    fn status_ref() -> StatusRef {
+        StatusRef {
+            uri: format!("{REGISTRAR}/.well-known/browserid-status"),
+            idx: 7,
+        }
+    }
 
     fn warrant(s: &Setup) -> Warrant {
-        Warrant::create(
+        Warrant::create_with_status(
             &s.parent_cert,
             "attestor2@mingo.place",
             AUD,
             Some(vec!["post".into(), "read".into()]),
             Duration::days(WARRANT_VALIDITY_DAYS),
             &s.user,
+            Some(status_ref()),
         )
         .unwrap()
     }
@@ -341,6 +386,24 @@ mod tests {
     #[test]
     fn scopeless_warrant_grants_empty() {
         let s = setup(Duration::hours(24));
+        let w = Warrant::create_with_status(
+            &s.parent_cert,
+            "attestor2@mingo.place",
+            AUD,
+            None,
+            Duration::days(1),
+            &s.user,
+            Some(status_ref()),
+        )
+        .unwrap();
+        let scopes = w.verify_for(&s.agent_cert, AUD, &s.idp.public_key()).unwrap();
+        assert!(scopes.is_empty());
+    }
+
+    #[test]
+    fn warrant_without_status_rejected() {
+        // Strict (spec §5.3): an agent warrant MUST carry a status ref.
+        let s = setup(Duration::hours(24));
         let w = Warrant::create(
             &s.parent_cert,
             "attestor2@mingo.place",
@@ -350,8 +413,60 @@ mod tests {
             &s.user,
         )
         .unwrap();
-        let scopes = w.verify_for(&s.agent_cert, AUD, &s.idp.public_key()).unwrap();
-        assert!(scopes.is_empty());
+        let err = w
+            .verify_for(&s.agent_cert, AUD, &s.idp.public_key())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no status ref"), "{err}");
+    }
+
+    #[test]
+    fn warrant_status_not_at_cert_registrar_rejected() {
+        // Strict (spec §5.3): the warrant's status authority MUST be the
+        // registrar the cert names — a warrant can't point revocation
+        // elsewhere.
+        let s = setup(Duration::hours(24));
+        let w = Warrant::create_with_status(
+            &s.parent_cert,
+            "attestor2@mingo.place",
+            AUD,
+            None,
+            Duration::days(1),
+            &s.user,
+            Some(StatusRef {
+                uri: "https://evil.example/.well-known/browserid-status".into(),
+                idx: 7,
+            }),
+        )
+        .unwrap();
+        let err = w
+            .verify_for(&s.agent_cert, AUD, &s.idp.public_key())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is not the certificate's registrar"), "{err}");
+    }
+
+    #[test]
+    fn agent_cert_without_registrar_rejects_warrant() {
+        // Strict (spec §5.3): the cert MUST name a registrar.
+        let s = setup(Duration::hours(24));
+        let agent = KeyPair::generate();
+        let no_reg_cert = Certificate::create_agent(
+            "mingo.place",
+            "attestor2@mingo.place",
+            "dan@mingo.place",
+            &agent.public_key(),
+            Duration::hours(24),
+            &s.idp,
+            None,
+        )
+        .unwrap();
+        let w = warrant(&s);
+        let err = w
+            .verify_for(&no_reg_cert, AUD, &s.idp.public_key())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("names no registrar"), "{err}");
     }
 
     #[test]
@@ -451,6 +566,7 @@ mod tests {
             &agent.public_key(),
             Duration::hours(24),
             &s.idp,
+            Some(REGISTRAR.to_string()),
         )
         .unwrap();
         let w = warrant(&s);

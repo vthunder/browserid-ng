@@ -84,6 +84,15 @@ pub struct CertificateClaims {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentClaims>,
 
+    /// Agent spec §5.1: the origin of the registrar the delegator's broker
+    /// chose — where the agent raises consent requests and where its warrant
+    /// status list is published. Set by the IdP from the endorsement, never
+    /// by the agent. An RP pins each warrant's revocation authority to this
+    /// value (§5.3), which rejects any agent warrant whose cert lacks it.
+    /// Present only on agent certificates; `None` on plain user certs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registrar: Option<String>,
+
     /// Fast-revocation hook (core §6.4): where this credential's status bit
     /// lives. Issuers allocate one index per *identity*, so revoking an
     /// identity kills every outstanding cert for it at once.
@@ -139,6 +148,7 @@ impl Certificate {
             public_key: user_public_key.clone(),
             principal: Principal::email(email),
             agent: None,
+            registrar: None,
             status,
         };
 
@@ -158,9 +168,10 @@ impl Certificate {
         agent_public_key: &PublicKey,
         validity: Duration,
         issuer_key: &KeyPair,
+        registrar: Option<String>,
     ) -> Result<Self> {
         Self::create_agent_with_status(
-            issuer, agent_email, parent, agent_public_key, validity, issuer_key, None,
+            issuer, agent_email, parent, agent_public_key, validity, issuer_key, registrar, None,
         )
     }
 
@@ -172,6 +183,7 @@ impl Certificate {
         agent_public_key: &PublicKey,
         validity: Duration,
         issuer_key: &KeyPair,
+        registrar: Option<String>,
         status: Option<StatusRef>,
     ) -> Result<Self> {
         let now = Utc::now();
@@ -185,6 +197,7 @@ impl Certificate {
             agent: Some(AgentClaims {
                 parent: parent.to_string(),
             }),
+            registrar,
             status,
         };
 
@@ -238,6 +251,10 @@ impl Certificate {
     }
 
     /// The delegator this agent certificate is attributed to, if any
+    pub fn registrar(&self) -> Option<&str> {
+        self.claims.registrar.as_deref()
+    }
+
     pub fn agent_parent(&self) -> Option<&str> {
         self.claims.agent.as_ref().map(|a| a.parent.as_str())
     }
@@ -395,11 +412,13 @@ mod tests {
             &agent_key.public_key(),
             Duration::hours(24),
             &domain_key,
+            Some("https://registrar.example".to_string()),
         )
         .unwrap();
 
         assert!(cert.is_agent());
         assert_eq!(cert.agent_parent(), Some("alice@example.com"));
+        assert_eq!(cert.registrar(), Some("https://registrar.example"));
         assert_eq!(cert.email(), Some("researcher@example.com"));
 
         let parsed = Certificate::parse(cert.encoded()).unwrap();

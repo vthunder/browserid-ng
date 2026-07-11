@@ -507,6 +507,7 @@ mod tests {
     }
 
     const RP: &str = "https://relying-party.com";
+    const REGISTRAR: &str = "https://registrar.example";
 
     fn agent_setup() -> AgentSetup {
         let domain_key = KeyPair::generate();
@@ -527,19 +528,24 @@ mod tests {
             &agent_key.public_key(),
             Duration::hours(24),
             &domain_key,
+            Some(REGISTRAR.to_string()),
         )
         .unwrap();
         AgentSetup { domain_key, agent_key, user_key, parent_cert, agent_cert }
     }
 
     fn agent_warrant(s: &AgentSetup, audience: &str) -> Warrant {
-        Warrant::create(
+        Warrant::create_with_status(
             &s.parent_cert,
             "researcher@example.com",
             audience,
             Some(vec!["post".into()]),
             Duration::days(30),
             &s.user_key,
+            Some(crate::status::StatusRef {
+                uri: format!("{REGISTRAR}/.well-known/browserid-status"),
+                idx: 1,
+            }),
         )
         .unwrap()
     }

@@ -60,10 +60,10 @@ endorsement (design: `docs/plans/2026-07-09-agent-delegation-chain-design.md`).
    and how an RP pins a warrant's revocation authority (§5.3).
 3. **Agent warrants MUST carry a `status` ref, pinned to the certificate's
    registrar** (§5.2, §5.3). A verifier MUST reject an agent warrant with no
-   `status` claim, and — when the agent certificate carries a `registrar`
-   claim — MUST reject a warrant whose `status.uri` origin is not that
-   registrar. This defeats a warrant that points revocation at an authority
-   the delegator's identity never committed to.
+   `status` claim, an agent certificate with no `registrar` claim, or a
+   warrant whose `status.uri` origin is not the certificate's `registrar`.
+   This defeats a warrant that points revocation at an authority the
+   delegator's identity never committed to.
 
 ## 1. Purpose and scope
 
@@ -451,10 +451,8 @@ The certificate minted in §4.3 is a core-format user certificate (core
   broker chose — where the agent raises consent requests (§6) and where its
   warrant status list is published. Set by the IdP from the endorsement
   (§4.2, §4.3), never by the agent. An RP pins each warrant's revocation
-  authority to this value (§5.3). *(Transitional: a verifier encountering an
-  agent certificate with no `registrar` claim — minted before an IdP
-  adopted v0.5 — MUST still enforce the other agent rules but skips the
-  registrar pin; new mints MUST include it.)*
+  authority to this value (§5.3), and MUST reject an agent certificate that
+  lacks it.
 - **`status` (OPTIONAL)**: fast-revocation hook, core §6.4.
 - Ordinary human certificates are unchanged and carry no `typ`, no
   `agent` block, and no `registrar` claim.
@@ -549,13 +547,11 @@ Verification (extends core §6.2; MUST run in this order):
    `W.iss` == `parent-cert.principal.email` == `agent_cert.agent.parent`;
    `W.agent` == `agent_cert.principal.email`; **`W.aud` == the verifying
    RP's own audience** (the same value checked against the assertion's
-   `aud`). The warrant MUST carry a `status` ref (§5.2); a warrant with none
-   MUST be rejected. If `agent_cert` carries a `registrar` claim (§5.1),
-   `W.status.uri`'s origin MUST equal that `registrar` origin, else the
-   warrant MUST be rejected — its revocation authority must be the one the
-   delegator's identity committed to. *(A certificate with no `registrar`
-   claim is a pre-v0.5 mint: the pin is skipped, the `status`-present rule
-   still applies.)*
+   `aud`). The warrant MUST carry a `status` ref (§5.2) and `agent_cert` MUST
+   carry a `registrar` claim (§5.1); a warrant or certificate missing either
+   MUST be rejected. `W.status.uri`'s origin MUST equal the `registrar`
+   origin, else the warrant MUST be rejected — its revocation authority must
+   be the one the delegator's identity committed to.
 4. Verify the assertion under the agent certificate's subject key (`aud`,
    `exp`) as in core §6.2.
 5. Result: the agent's email, plus attribution metadata the RP SHOULD
