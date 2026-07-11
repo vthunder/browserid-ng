@@ -173,12 +173,16 @@ where
         return (StatusCode::UNAUTHORIZED, Json(json!({"success": false, "reason": "wrong or expired code"})));
     }
 
+    // SameSite=None (+ Secure): the provision page fetches /cert_key from a
+    // THIRD-PARTY iframe inside the mediator's dialog, so a Lax cookie would be
+    // withheld. (Where the browser blocks third-party cookies entirely, silent
+    // provisioning falls back to the top-level /auth flow.)
     let secure = crate::routes::session::cookie_secure(&state.domain);
     let cookie = Cookie::build((EMAIL_COOKIE, issue_email_token(state.as_ref(), &email)))
         .path("/")
         .http_only(true)
         .secure(secure)
-        .same_site(SameSite::Lax)
+        .same_site(SameSite::None)
         .max_age(tower_cookies::cookie::time::Duration::days(EMAIL_COOKIE_DAYS))
         .build();
     cookies.add(cookie);
