@@ -4,7 +4,7 @@
 // where the signature is raw Ed25519 over the UTF-8 bytes of the first two
 // segments joined by ".". (browserid-core/src/certificate.rs::encode_and_sign,
 // keys.rs — URL_SAFE_NO_PAD, SigningKey::sign over `header.payload`.)
-import { createPrivateKey, createPublicKey, sign as nodeSign, verify as nodeVerify } from "node:crypto";
+import { createPrivateKey, createPublicKey, sign as nodeSign, verify as nodeVerify, createHash } from "node:crypto";
 
 const ED_PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex"); // 32-byte seed follows
 const ED_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex"); // 32-byte pubkey follows
@@ -87,6 +87,14 @@ export class PublicKey {
 
 /** The browserid-core public-key embedding: {algorithm:"Ed25519", publicKey:"<b64url>"}. */
 export const publicKeyField = (publicKeyB64) => ({ algorithm: "Ed25519", publicKey: publicKeyB64 });
+
+/** A short, human-comparable fingerprint of a public key: first 3 bytes of
+ *  SHA-256(rawPubkey) as "4F-2A-9C". Deterministic — the broker computes the
+ *  same value to show on the pairing page for confirmation. */
+export function fingerprint(publicKeyB64) {
+  const h = createHash("sha256").update(Buffer.from(fromB64u(publicKeyB64))).digest();
+  return [...h.subarray(0, 3)].map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join("-");
+}
 
 /** Decode a JWS payload segment (no signature verification). */
 export function decodeJwtClaims(token) {

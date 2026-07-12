@@ -37,8 +37,38 @@ export class Credential {
   defaultIdentity(): ReservedIdentity["default"];
 }
 
+export interface BootstrapOptions {
+  /** Broker to pair with. Default: https://browserid.me */
+  broker?: string;
+  /** Handles to suggest to the human (they confirm/edit). */
+  requestedHandles?: { names?: string[]; patterns?: string[] };
+  /** Human-readable label shown on the pairing page. */
+  label?: string;
+  http?: typeof fetch;
+}
+
+export interface Pairing {
+  /** URL for the human to type `userCode` at (headless/cross-device). */
+  verificationUri: string;
+  /** URL with the code embedded — one click (desktop). */
+  verificationUriComplete: string;
+  /** Short typeable code. */
+  userCode: string;
+  /** Provisioning-key fingerprint for pairing confirmation. */
+  fingerprint: string;
+  /** Resolves to a provisioned Agent once the human approves; rejects on denial/expiry. */
+  ready: Promise<Agent>;
+}
+
 export class Agent {
-  /** Provision a fresh delegated identity (endorse → mint). */
+  /**
+   * Paired provisioning: generate a provisioning key locally, ask the broker to
+   * pair, and return entry points to show the human + a `ready` Agent. The
+   * provisioning private key never leaves this process; no credential file.
+   */
+  static bootstrap(opts?: BootstrapOptions): Promise<Pairing>;
+
+  /** Provision a fresh delegated identity (endorse → mint) from an existing credential. */
   static provision(credential: Credential, opts?: OpenOptions): Promise<Agent>;
   /** Load a persisted identity, or provision + save one if absent. */
   static open(

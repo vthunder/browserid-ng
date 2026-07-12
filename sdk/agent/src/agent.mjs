@@ -2,7 +2,7 @@
 // human consent), and mint warrant-backed assertions. Mirrors the Rust
 // browserid-agent AgentIdentity; see PORTING notes in protocol.mjs.
 import { readFile, writeFile } from "node:fs/promises";
-import { KeyPair, b64u, fromB64u } from "./crypto.mjs";
+import { KeyPair, b64u, fromB64u, publicKeyField, fingerprint } from "./crypto.mjs";
 import { Credential } from "./credential.mjs";
 import {
   mintRequest, revokeRequest, warrantRequest, bundle, assertion as makeAssertion,
@@ -71,6 +71,55 @@ export class Agent {
   identity() {
     const { names, patterns } = this.#cred.constraint();
     return { names, patterns, default: this.#cred.defaultIdentity() };
+  }
+
+  /**
+   * Paired provisioning (bean 74u1): generate a provisioning keypair locally and
+   * ask the broker to pair — the human authorizes at the returned URL, and this
+   * agent picks up the delegation and mints, all without a downloaded credential.
+   * Returns entry points to show the human + a `ready` promise that resolves to a
+   * provisioned Agent once they approve. The provisioning private key never leaves
+   * here.
+   */
+  static async bootstrap({ broker = "https://browserid.me", requestedHandles, label, http = fetch } = {}) {
+    const key = KeyPair.generate();
+    const body = { provisioning_pubkey: publicKeyField(key.publicKeyB64) };
+    if (requestedHandles) body.requested_handles = requestedHandles;
+    if (label) body.label = label;
+    const { res, json } = await postJson(http, `${trim(broker)}/agent-provision/request`, body);
+    if (!res.ok || json.success !== true) throw new RequestError("provision request", res.status, json.reason || "no reason given");
+
+    const code = json.code;
+    const interval = Math.max(1, json.interval ?? 5);
+    const deadline = Date.now() + (json.expires_in ?? 900) * 1000;
+
+    const ready = (async () => {
+      const url = `${trim(broker)}/agent-provision/poll`;
+      for (;;) {
+        await sleep(interval * 1000);
+        const r = await http(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
+        if (r.status === 410) throw new WarrantExpiredError();
+        if (r.status !== 429) {
+          const j = await r.json().catch(() => ({}));
+          if (j.status === "denied") throw new WarrantDeniedError();
+          if (j.status === "completed") {
+            const c = j.credential;
+            const credential = new Credential({ secret_key: b64u(key.seed), delegation: c.delegation, broker: c.broker, idp: c.idp });
+            return await Agent.provision(credential, { http }); // mints the agent cert under the reserved handle
+          }
+          if (j.status && j.status !== "pending") throw new WarrantExpiredError();
+        }
+        if (Date.now() > deadline) throw new WarrantExpiredError();
+      }
+    })();
+
+    return {
+      verificationUri: json.verification_uri,
+      verificationUriComplete: json.verification_uri_complete,
+      userCode: json.user_code,
+      fingerprint: json.fingerprint || fingerprint(key.publicKeyB64),
+      ready,
+    };
   }
 
   /** Provision a fresh agent identity (endorse → mint). */

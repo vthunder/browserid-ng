@@ -168,6 +168,54 @@ test("provision → request warrant → approve → assertion → revoke", async
   assert.ok(srv.calls.includes("/provision/revoke"));
 });
 
+test("bootstrap: pair → poll → provisioned Agent (no downloaded credential)", async () => {
+  const userKey = KeyPair.generate();   // delegator (human) identity key
+  const issuerKey = KeyPair.generate(); // IdP signing key
+  let suppliedPubkey = null, polls = 0;
+  const uCert = userKey.jws(HDR, { iss: "mingo.place", exp: nowS() + 99999, iat: nowS(),
+    "public-key": publicKeyField(userKey.publicKeyB64), principal: { email: "alice@mingo.place" } });
+
+  const http = async (url, init) => {
+    const path = new URL(url).pathname;
+    const body = JSON.parse(init.body);
+    const ok = (o) => new Response(JSON.stringify({ success: true, ...o }), { status: 200 });
+    if (path === "/agent-provision/request") {
+      suppliedPubkey = body.provisioning_pubkey.publicKey;  // the AGENT's key — never a server secret
+      assert.deepEqual(body.requested_handles, { names: ["researcher"] });
+      return ok({ code: "aprv_1", verification_uri: BROKER + "/link",
+        verification_uri_complete: BROKER + "/agent-provision/aprv_1", user_code: "WXYZ-1234",
+        fingerprint: "AA-BB-CC", expires_in: 900, interval: 1 });
+    }
+    if (path === "/agent-provision/poll") {
+      if (polls++ === 0) return ok({ status: "pending" });
+      // human approved: broker returns a delegation signed over the AGENT-supplied pubkey
+      const pCert = userKey.jws(HDR, { typ: "browserid-provisioning-cert-v1", iss: "alice@mingo.place",
+        iat: nowS(), exp: nowS() + 99999, "public-key": publicKeyField(suppliedPubkey),
+        constraint: { names: ["researcher"], patterns: [] } });
+      return ok({ status: "completed", credential: {
+        delegation: `${uCert}~${pCert}`, broker: BROKER, idp: IDP, names: ["researcher"], patterns: [] } });
+    }
+    if (path === "/provision/endorse") return ok({ endorsement: issuerKey.jws(HDR, { typ: "e", iat: nowS() }) });
+    if (path === "/provision/mint") {
+      const r = decodeJwtClaims(body.request_bundle.split("~").pop());
+      const email = `${r.name}@${IDP_DOMAIN}`;
+      return ok({ email, cert: issuerKey.jws(HDR, { typ: "browserid-agent-cert-v1", iss: IDP_DOMAIN,
+        iat: nowS(), exp: nowS() + 6 * 3600, "public-key": publicKeyField(r["agent-key"].publicKey),
+        principal: { email }, agent: { parent: "alice@mingo.place" }, registrar: BROKER,
+        status: { uri: BROKER + "/s", idx: 1 } }) });
+    }
+    throw new Error("unexpected " + path);
+  };
+
+  const pairing = await Agent.bootstrap({ broker: BROKER, requestedHandles: { names: ["researcher"] }, label: "my agent", http });
+  assert.equal(pairing.verificationUriComplete, BROKER + "/agent-provision/aprv_1");
+  assert.equal(pairing.userCode, "WXYZ-1234");
+  assert.ok(pairing.fingerprint);
+  const agent = await pairing.ready;   // resolves once the human approves
+  assert.equal(agent.email, "researcher@idp.test");
+  assert.equal(agent.identity().names[0], "researcher");
+});
+
 test("denied consent rejects the approved promise", async () => {
   const { cred, userKey } = makeCredential({ names: ["researcher"] });
   const agent = await Agent.provision(cred, { http: mockServer(userKey).fetch });
