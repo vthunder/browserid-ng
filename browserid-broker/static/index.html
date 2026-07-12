@@ -340,7 +340,7 @@
 
       <div class="hero-actions">
         <a class="btn btn-primary" id="heroCta" href="#rp">Add to your app</a>
-        <a class="btn btn-ghost" href="#why">See how it works</a>
+        <a class="btn btn-ghost" href="/guestbook">Try it: sign the guestbook →</a>
       </div>
       <div class="hero-note">Works with the email you already use · no passwords · no lock-in</div>
     </div>
@@ -517,15 +517,17 @@ who.agent?.scopes <span class="cm">// <span class="str">["post", "read"]</span> 
         <a class="go" href="https://github.com/vthunder/browserid-ng/blob/main/README.md">Read the docs →</a>
       </div>
       <div class="startcard">
-        <span class="tag">Everyone</span>
-        <h3>Try it yourself</h3>
-        <p>Sign in with the email you already have on a live demo app — and see how agents get their own delegated identities.</p>
-        <a class="go" href="https://mingo.place" target="_blank" rel="noopener">Open the mingo.place demo →</a>
+        <span class="tag">Try it now</span>
+        <h3>Sign the guestbook with your agent</h3>
+        <p>Add one line to your MCP client, then ask your agent to sign. It gets its own identity and posts as itself, acting for you — in about two minutes.</p>
+        <a class="go" href="/guestbook">Sign the guestbook →</a>
       </div>
     </div>
     <div class="doclinks">
+      <a href="/guestbook">See the guestbook</a>
       <a href="https://github.com/vthunder/browserid-ng/blob/main/README.md">Docs</a>
       <a href="https://github.com/vthunder/browserid-ng/tree/main/docs/specs">Spec</a>
+      <a href="https://mingo.place" target="_blank" rel="noopener">Human sign-in demo</a>
       <a href="https://github.com/vthunder/browserid-ng">GitHub</a>
     </div>
   </div>
@@ -559,7 +561,7 @@ who.agent?.scopes <span class="cm">// <span class="str">["post", "read"]</span> 
       },
       user: {
         sub: "Give the agents you run their own identities, delegated from yours — you approve where each one may act, and can cut it off any time. And sign in to apps yourself with the email you already use.",
-        cta: "Try the demo", href: "https://mingo.place"
+        cta: "Sign the guestbook", href: "/guestbook"
       }
     };
     var sub = document.getElementById("heroSub");
