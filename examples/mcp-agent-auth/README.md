@@ -20,37 +20,66 @@ agent  ──assert(audience)──▶  MCP tool call  ──▶  server verifie
                                                   → enforce scope → run tool
 ```
 
-## Run it end-to-end (with a real agent)
+## Run it — from an agent, by pasting a prompt
 
-**1. Create an agent identity.** At [browserid.me/agents](https://browserid.me/agents)
-create an agent key and download `agent-credential.json`.
+The point of the demo is that **the agent does the work**: it surfaces the
+consent URL, waits for you to approve, and calls the tool as itself. You just
+paste a prompt.
 
-**2. Mint an assertion** for this server's audience. The agent CLI runs the
-consent flow the first time (it prints a URL; your principal approves the
-warrant, granting `post`/`read`):
+### One-time setup
+
+1. **Agent identity.** At [browserid.me/agents](https://browserid.me/agents)
+   create an agent key and save `agent-credential.json` in this directory.
+2. `npm install`
+3. **Register the notes server** with an MCP-capable, shell-capable agent
+   (Claude Code, Cursor, Claude Desktop…). For Claude Code, `.mcp.json`:
+
+   ```json
+   {
+     "mcpServers": {
+       "notes": {
+         "command": "node",
+         "args": ["/ABS/PATH/examples/mcp-agent-auth/server.mjs"],
+         "env": { "SERVER_AUDIENCE": "https://notes.mcp.example" }
+       }
+     }
+   }
+   ```
+4. Tell the assertion helper where your credential is (default shown):
+
+   ```bash
+   export AGENT_CLI="cargo run -q -p browserid-agent --example agent_cli -- ./agent-credential.json"
+   ```
+
+### Then paste this to your agent
+
+> Post a note saying **"hello from my agent"** to the **notes** MCP server.
+> It needs a browserid-ng assertion for the audience `https://notes.mcp.example`. To get one:
+> 1. Run `node examples/mcp-agent-auth/mint-assertion.mjs consent https://notes.mcp.example`.
+>    It prints `CONSENT_URL: …` — **show me that link and wait** until I say I've approved it.
+> 2. Then run `node examples/mcp-agent-auth/mint-assertion.mjs get https://notes.mcp.example`
+>    to read the `ASSERTION:` value (retry once if it says PENDING).
+> 3. Call the notes server's `post_note` tool with that assertion and the text.
+
+What happens: the agent shows you a browserid.me consent URL; you approve a
+warrant naming *this server* and the `post`/`read` scopes; the agent reads back
+its assertion and calls `post_note` — and the server logs the note as
+*"by agent researcher@browserid.me, acting for you."* Ask it to `list_notes`
+next and it reuses the same warrant.
+
+By default the server verifies against the hosted `https://browserid.me/verify`;
+set `VERIFIER_URL` on the server to point at your own broker instead.
+
+### Without an agent (manual, for debugging)
+
+`mint-assertion.mjs` and `client.mjs` are just thin wrappers you can run by hand:
 
 ```bash
-cargo run -p browserid-agent --example agent_cli -- \
-  agent-credential.json grant https://notes.mcp.example post read
-cargo run -p browserid-agent --example agent_cli -- \
-  agent-credential.json assert https://notes.mcp.example
-# → prints:  <certificate>~<assertion>~<warrant>
-```
-
-**3. Call the MCP server** with that assertion:
-
-```bash
-npm install
+node mint-assertion.mjs consent https://notes.mcp.example   # → CONSENT_URL (approve it)
+node mint-assertion.mjs get     https://notes.mcp.example   # → ASSERTION: <...>
 SERVER_AUDIENCE=https://notes.mcp.example \
-  node client.mjs --assertion "<paste the assertion>" post "hello from my agent"
-# → posted (#0) by agent researcher@browserid.me, acting for alice@acme.com.
-
-node client.mjs --assertion "<...>" list
+  node client.mjs --assertion "<paste ASSERTION>" post "hello from my agent"
 ```
-
-By default the server verifies against the hosted `https://browserid.me/verify`.
-Point `VERIFIER_URL` at your own broker's `/verify` to avoid trusting a third
-party.
 
 ## Try it offline (no consent, no network)
 
