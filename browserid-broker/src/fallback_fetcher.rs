@@ -26,6 +26,16 @@ async fn fetch_blocking(host: &str) -> Result<SupportDocument, BrokerError> {
     result.map_err(|e| BrokerError::Discovery(format!("HTTP fetch failed: {}", e)))
 }
 
+/// Dev-only: fetch a support document allowing plain HTTP (for a localhost
+/// broker with no TLS/DNSSEC). Never used for a non-localhost domain.
+async fn fetch_blocking_http(host: &str) -> Result<SupportDocument, BrokerError> {
+    let host = host.to_string();
+    let result = tokio::task::spawn_blocking(move || HttpFetcher::allow_http().fetch(&host))
+        .await
+        .map_err(|e| BrokerError::Discovery(format!("Blocking task failed: {}", e)))?;
+    result.map_err(|e| BrokerError::Discovery(format!("HTTP fetch failed: {}", e)))
+}
+
 /// Discovery result including the authoritative domain
 #[derive(Clone)]
 pub struct FallbackResult {
@@ -53,6 +63,14 @@ pub trait Discoverer {
 pub struct FallbackFetcher {
     dns_fetcher: DnsFetcher,
     trusted_broker: String,
+    /// Dev only (auto-enabled for a localhost broker): when the broker's own
+    /// domain has no DNSSEC, trust the key it serves at `.well-known/browserid`.
+    /// Safe because it is scoped to localhost/127.* — never a real domain.
+    dev_local_broker: bool,
+}
+
+fn is_local(domain: &str) -> bool {
+    domain.starts_with("localhost") || domain.starts_with("127.")
 }
 
 impl FallbackFetcher {
@@ -60,6 +78,7 @@ impl FallbackFetcher {
     pub fn new(trusted_broker: String) -> Result<Self, String> {
         Ok(Self {
             dns_fetcher: DnsFetcher::new()?,
+            dev_local_broker: is_local(&trusted_broker),
             trusted_broker,
         })
     }
@@ -68,6 +87,7 @@ impl FallbackFetcher {
     pub fn with_dns_fetcher(dns_fetcher: DnsFetcher, trusted_broker: String) -> Self {
         Self {
             dns_fetcher,
+            dev_local_broker: is_local(&trusted_broker),
             trusted_broker,
         }
     }
@@ -138,10 +158,23 @@ impl FallbackFetcher {
                     broker
                 ))),
             },
-            DnssecStatus::Insecure => Err(BrokerError::Discovery(format!(
-                "trusted broker '{}' discovery is not DNSSEC-authenticated",
-                broker
-            ))),
+            DnssecStatus::Insecure => {
+                if self.dev_local_broker {
+                    // DEV (localhost): no DNSSEC/TLS locally — trust the broker's
+                    // own published key. Scoped to localhost, never a real domain.
+                    let doc = fetch_blocking_http(&broker).await?;
+                    Ok(FallbackResult {
+                        document: doc,
+                        authoritative_domain: broker,
+                        is_primary: false,
+                    })
+                } else {
+                    Err(BrokerError::Discovery(format!(
+                        "trusted broker '{}' discovery is not DNSSEC-authenticated",
+                        broker
+                    )))
+                }
+            }
             DnssecStatus::Bogus => Err(BrokerError::DnssecValidationFailed { domain: broker }),
         }
     }

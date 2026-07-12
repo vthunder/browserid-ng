@@ -6,6 +6,7 @@ mod auth;
 mod cert;
 mod email;
 mod fallback_idp;
+mod guestbook;
 mod primary;
 mod reset;
 pub(crate) mod session;
@@ -106,6 +107,9 @@ where
         .route("/wsapi/set_password", post(primary::set_password))
         // Verification endpoint
         .route("/verify", post(verify::verify))
+        // The agent guestbook demo (a public RP only agents can sign).
+        .route("/guestbook", get(guestbook::page).post(guestbook::sign))
+        .route("/guestbook/feed", get(guestbook::feed))
         // Fallback-IdP surface (apgv): the broker implements the primary-IdP
         // interface (auth+provision pages driven by the dialog) with SMTP auth,
         // so it can vouch for emails whose domain it doesn't own for any RP
