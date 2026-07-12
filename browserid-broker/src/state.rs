@@ -44,6 +44,11 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// Per-user cap on active (non-revoked) agent identities — the sybil
     /// limit that replaces SMTP friction for headless issuance
     pub max_agent_identities_per_user: usize,
+    /// Whether the `/wsapi/test/*` helper routes are mounted. These expose raw
+    /// verification codes and mock-IdP controls, so they are an account-takeover
+    /// primitive in production and MUST stay off there. Off by default; only
+    /// dev/test (no real SMTP) turns it on.
+    pub test_endpoints_enabled: bool,
 }
 
 /// Default per-user agent identity quota
@@ -67,6 +72,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             mock_primary_idps: RwLock::new(HashMap::new()),
             agent_provisioning_enabled: false,
             max_agent_identities_per_user: DEFAULT_AGENT_QUOTA,
+            test_endpoints_enabled: false,
         }
     }
 
@@ -88,6 +94,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             mock_primary_idps: RwLock::new(HashMap::new()),
             agent_provisioning_enabled: false,
             max_agent_identities_per_user: DEFAULT_AGENT_QUOTA,
+            test_endpoints_enabled: false,
         }
     }
 

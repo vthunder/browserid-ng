@@ -84,6 +84,13 @@ async fn main() -> Result<()> {
     state.agent_provisioning_enabled = std::env::var("AGENT_PROVISIONING")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    // The /wsapi/test/* helper routes (raw verification codes, mock IdP) are an
+    // account-takeover primitive — only ever mount them for local/dev (no real
+    // SMTP), NEVER in production.
+    state.test_endpoints_enabled = disable_smtp;
+    if state.test_endpoints_enabled {
+        tracing::warn!("test endpoints (/wsapi/test/*) ENABLED — dev only, never production");
+    }
     if let Some(quota) = std::env::var("AGENT_MAX_IDENTITIES")
         .ok()
         .and_then(|v| v.parse().ok())

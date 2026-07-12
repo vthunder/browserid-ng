@@ -70,7 +70,7 @@ where
         },
     ));
 
-    Router::new()
+    let mut app = Router::new()
         .route("/.well-known/browserid", get(well_known::get_support_document))
         .route("/wsapi/session_context", get(session::get_session_context))
         .route("/wsapi/stage_user", post(account::stage_user))
@@ -118,11 +118,6 @@ where
         .route("/auth/verify", post(fallback_idp::auth_verify))
         .route("/whoami", get(fallback_idp::whoami))
         .route("/cert_key", post(fallback_idp::cert_key))
-        // Test endpoints (should only be enabled in dev/test)
-        .route("/wsapi/test/pending_verification", get(test::get_pending_verification))
-        .route("/wsapi/test/set_mock_primary_idp", post(test::set_mock_primary_idp))
-        .route("/wsapi/test/clear_mock_primary_idps", post(test::clear_mock_primary_idps))
-        .route("/wsapi/test/remove_mock_primary_idp", post(test::remove_mock_primary_idp))
         // Compatibility routes for include.js
         .route("/sign_in", get(sign_in_return))
         .nest_service("/relay", ServeDir::new(format!("{}/relay", static_path)))
@@ -159,8 +154,21 @@ where
         // Landing page at the root.
         .route_service("/", ServeFile::new(format!("{}/index.html", static_path)))
         // Serve static files (dialog, CSS, JS)
-        .nest_service("/dialog", ServeDir::new(static_path))
-        .with_state(state)
+        .nest_service("/dialog", ServeDir::new(static_path));
+
+    // Test-only helper routes (raw verification codes, mock-IdP controls). They
+    // are an account-takeover primitive — anyone could read a victim's reset
+    // code — so they mount ONLY when explicitly enabled for dev/test, NEVER in
+    // production (guarded by AppState::test_endpoints_enabled).
+    if state.test_endpoints_enabled {
+        app = app
+            .route("/wsapi/test/pending_verification", get(test::get_pending_verification))
+            .route("/wsapi/test/set_mock_primary_idp", post(test::set_mock_primary_idp))
+            .route("/wsapi/test/clear_mock_primary_idps", post(test::clear_mock_primary_idps))
+            .route("/wsapi/test/remove_mock_primary_idp", post(test::remove_mock_primary_idp));
+    }
+
+    app.with_state(state)
         // Registrar routes join here (already stateful); the shared layers
         // below — frame denial, cookies, CORS, cache-control — cover both.
         .merge(registrar)

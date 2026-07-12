@@ -34,6 +34,7 @@ pub async fn start_broker() -> (String, PublicKey) {
         Arc::new(ConsoleEmailSender::new()),
     );
     state.agent_provisioning_enabled = true;
+    state.test_endpoints_enabled = true; // tests read codes via /wsapi/test/*
 
     let app = routes::create_router(Arc::new(state));
     tokio::spawn(async move {
