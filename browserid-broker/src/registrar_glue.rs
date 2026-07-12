@@ -374,3 +374,49 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod reserve_tests {
+    use super::*;
+    use crate::store::memory::{InMemorySessionStore, InMemoryUserStore};
+
+    fn host(max: usize) -> (BrokerRegistrarHost<InMemoryUserStore, InMemorySessionStore>, u64, u64) {
+        let us = Arc::new(InMemoryUserStore::new());
+        let u1 = us.create_user("x").unwrap().0;
+        let u2 = us.create_user("y").unwrap().0;
+        let h = BrokerRegistrarHost {
+            user_store: us,
+            session_store: Arc::new(InMemorySessionStore::new()),
+            domain: "browserid.me".into(),
+            max_agent_identities: max,
+        };
+        (h, u1, u2)
+    }
+
+    #[test]
+    fn reserve_creates_locks_and_is_idempotent() {
+        let (h, u1, u2) = host(10);
+        h.reserve_agent_names(u1, "alice@browserid.me", &["bot".into()]).unwrap();
+        // idempotent for the owner
+        h.reserve_agent_names(u1, "alice@browserid.me", &["bot".into()]).unwrap();
+        // the identity now exists, parented to the delegator
+        let rec = h.user_store.get_email("bot@browserid.me").unwrap().unwrap();
+        assert_eq!(rec.email_type, EmailType::Agent);
+        assert_eq!(rec.parent_email.as_deref(), Some("alice@browserid.me"));
+        // another account cannot take it
+        match h.reserve_agent_names(u2, "bob@browserid.me", &["bot".into()]) {
+            Err(RegistrarError::NamesTaken(v)) => assert_eq!(v, vec!["bot".to_string()]),
+            other => panic!("expected NamesTaken, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reserve_enforces_quota() {
+        let (h, u1, _) = host(1);
+        h.reserve_agent_names(u1, "alice@browserid.me", &["a".into()]).unwrap();
+        match h.reserve_agent_names(u1, "alice@browserid.me", &["b".into()]) {
+            Err(RegistrarError::PolicyRefused(_)) => {}
+            other => panic!("expected PolicyRefused, got {other:?}"),
+        }
+    }
+}
