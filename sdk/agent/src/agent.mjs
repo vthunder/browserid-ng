@@ -81,7 +81,7 @@ export class Agent {
    * provisioned Agent once they approve. The provisioning private key never leaves
    * here.
    */
-  static async bootstrap({ broker = "https://browserid.me", requestedHandles, label, http = fetch } = {}) {
+  static async bootstrap({ broker = "https://browserid.me", requestedHandles, label, name, http = fetch } = {}) {
     const key = KeyPair.generate();
     const body = { provisioning_pubkey: publicKeyField(key.publicKeyB64) };
     if (requestedHandles) body.requested_handles = requestedHandles;
@@ -106,7 +106,10 @@ export class Agent {
           if (j.status === "completed") {
             const c = j.credential;
             const credential = new Credential({ secret_key: b64u(key.seed), delegation: c.delegation, broker: c.broker, idp: c.idp });
-            return await Agent.provision(credential, { http }); // mints the agent cert under the reserved handle
+            // Mint under `name` if given; else the first reserved name (so a
+            // multi-name credential doesn't dead-end — act as the first).
+            const mintName = name || credential.constraint().names[0];
+            return await Agent.provision(credential, { name: mintName, http });
           }
           if (j.status && j.status !== "pending") throw new WarrantExpiredError();
         }

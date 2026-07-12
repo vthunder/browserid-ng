@@ -38,6 +38,10 @@ mkdirSync(HOME, { recursive: true });
 
 const text = (t) => ({ content: [{ type: "text", text: t }] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// How long a tool call waits for a pending approval before returning "still
+// pending" (so the human can approve while the agent's call is in flight). If a
+// client cuts the call short, a retry still works — the background poll persists.
+const APPROVAL_WAIT_MS = 90000;
 
 // A provisioning is a two-step handshake (start → human approves → pickup). The
 // tools must NEVER block waiting for the human — they return the approve URL and
@@ -60,8 +64,20 @@ const pendingWarrants = new Map(); // audience -> { approveUrl } while awaiting 
 // Never blocks: returns the ready agent, loads one from disk, or signals pending.
 async function loadAgent() {
   if (readyAgent) return readyAgent;
-  if (provisionError) { const e = provisionError; provisionError = null; throw e; }
-  if (pendingProvisionUrl) throw new PendingProvision(pendingProvisionUrl);
+  const throwProvErr = () => { const e = provisionError; provisionError = null; throw e; };
+  if (provisionError) throwProvErr();
+  if (pendingProvisionUrl) {
+    // Wait (bounded) for the human to approve, so the agent auto-proceeds.
+    const deadline = Date.now() + APPROVAL_WAIT_MS;
+    while (pendingProvisionUrl && Date.now() < deadline) {
+      await sleep(1500);
+      if (readyAgent) return readyAgent;
+      if (provisionError) throwProvErr();
+    }
+    if (readyAgent) return readyAgent;
+    if (provisionError) throwProvErr();
+    if (pendingProvisionUrl) throw new PendingProvision(pendingProvisionUrl);
+  }
   readyAgent = await Agent.open(CREDENTIAL, IDENTITY, { name: process.env.AGENT_NAME });
   return readyAgent;
 }
@@ -80,7 +96,10 @@ function explain(e) {
   if (e instanceof NeedCredentialError)
     return text("NEED_CREDENTIAL: no identity yet. Call the `provision` tool to pair one — the human approves a link, nothing to download.");
   if (e instanceof AmbiguousNameError)
-    return text(`AMBIGUOUS_NAME: pick one of [${e.names.join(", ")}] and restart with AGENT_NAME set.`);
+    return text(
+      `AMBIGUOUS_NAME: the credential reserves several names [${e.names.join(", ")}]. ` +
+        `Call provision again with a SINGLE handle, e.g. handles: ["${e.names[0]}"].`
+    );
   if (e instanceof WarrantDeniedError) return text("DENIED: the human declined.");
   if (e instanceof WarrantExpiredError) return text("EXPIRED: the request expired; try again.");
   return null;
@@ -92,7 +111,17 @@ function explain(e) {
 async function ensureWarrant(agent, audience, scopes) {
   if (agent.warrantCovers(audience, scopes)) return { ready: true };
   const inflight = pendingWarrants.get(audience);
-  if (inflight) return { pending: true, approveUrl: inflight.approveUrl };
+  if (inflight) {
+    // Wait (bounded) for the human to approve the warrant, so we auto-proceed.
+    const deadline = Date.now() + APPROVAL_WAIT_MS;
+    while (Date.now() < deadline) {
+      await sleep(1500);
+      if (agent.warrantCovers(audience, scopes)) return { ready: true };
+      if (!pendingWarrants.has(audience)) break; // settled (approved/denied/expired)
+    }
+    if (agent.warrantCovers(audience, scopes)) return { ready: true };
+    return { pending: true, approveUrl: inflight.approveUrl };
+  }
   const { approveUrl, approved } = await agent.requestWarrant(audience, scopes);
   if (!approveUrl) return { ready: true };
   pendingWarrants.set(audience, { approveUrl });
@@ -118,6 +147,7 @@ server.registerTool(
         broker: BROKER,
         requestedHandles: handles?.length ? { names: handles } : undefined,
         label: label || "agent",
+        name: process.env.AGENT_NAME || handles?.[0], // mint as this handle — no env-var dance
       });
       pendingProvisionUrl = pairing.verificationUriComplete;
       // Pick up the identity in the BACKGROUND when the human approves.
