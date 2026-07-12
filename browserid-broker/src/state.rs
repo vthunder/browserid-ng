@@ -47,7 +47,7 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
 }
 
 /// Default per-user agent identity quota
-pub const DEFAULT_AGENT_QUOTA: usize = 5;
+pub const DEFAULT_AGENT_QUOTA: usize = 50;
 
 impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
     pub fn new(

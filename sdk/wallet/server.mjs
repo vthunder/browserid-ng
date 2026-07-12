@@ -22,7 +22,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   Agent, NeedCredentialError, AmbiguousNameError, NoWarrantError,
-  WarrantDeniedError, WarrantExpiredError,
+  WarrantDeniedError, WarrantExpiredError, RequestError,
 } from "@browserid/agent";
 import { z } from "zod";
 import { homedir } from "node:os";
@@ -45,6 +45,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // call finds the identity ready.
 let readyAgent = null; // the resolved Agent, once available
 let pendingProvisionUrl = null; // set while a provision awaits approval
+let provisionError = null; // a failed background provision, surfaced on next call
 
 /** Raised (non-blocking) when a provision is started but not yet approved. */
 class PendingProvision extends Error {
@@ -59,6 +60,7 @@ const pendingWarrants = new Map(); // audience -> { approveUrl } while awaiting 
 // Never blocks: returns the ready agent, loads one from disk, or signals pending.
 async function loadAgent() {
   if (readyAgent) return readyAgent;
+  if (provisionError) { const e = provisionError; provisionError = null; throw e; }
   if (pendingProvisionUrl) throw new PendingProvision(pendingProvisionUrl);
   readyAgent = await Agent.open(CREDENTIAL, IDENTITY, { name: process.env.AGENT_NAME });
   return readyAgent;
@@ -68,6 +70,12 @@ function explain(e) {
   if (e instanceof PendingProvision)
     return text(
       `PENDING — the human hasn't approved provisioning yet. Show them this link and wait for them to approve, then try again:\n${e.url}`
+    );
+  if (e instanceof RequestError)
+    return text(
+      `PROVISIONING FAILED: ${e.reason}. ` +
+        (/quota/i.test(e.reason) ? "The human has too many agent identities — they can revoke old ones at https://browserid.me/account. " : "") +
+        "Fix that, then call provision again."
     );
   if (e instanceof NeedCredentialError)
     return text("NEED_CREDENTIAL: no identity yet. Call the `provision` tool to pair one — the human approves a link, nothing to download.");
@@ -113,13 +121,14 @@ server.registerTool(
       });
       pendingProvisionUrl = pairing.verificationUriComplete;
       // Pick up the identity in the BACKGROUND when the human approves.
+      provisionError = null;
       pairing.ready
         .then(async (agent) => {
           writeFileSync(CREDENTIAL, JSON.stringify(agent.credential.toJSON(), null, 2));
           await agent.save(IDENTITY);
           readyAgent = agent;
         })
-        .catch(() => {})
+        .catch((e) => { provisionError = e; })
         .finally(() => { pendingProvisionUrl = null; });
       return text(
         `APPROVE_URL: ${pairing.verificationUriComplete}\n` +

@@ -102,6 +102,7 @@ export class Agent {
         if (r.status !== 429) {
           const j = await r.json().catch(() => ({}));
           if (j.status === "denied") throw new WarrantDeniedError();
+          if (j.status === "failed") throw new RequestError("provisioning", 0, j.reason || "provisioning failed");
           if (j.status === "completed") {
             const c = j.credential;
             const credential = new Credential({ secret_key: b64u(key.seed), delegation: c.delegation, broker: c.broker, idp: c.idp });

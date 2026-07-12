@@ -41,6 +41,7 @@ enum Status {
     Pending,
     Completed,
     Denied,
+    Failed,
 }
 
 #[derive(Clone)]
@@ -51,6 +52,7 @@ struct Record {
     label: String,
     fingerprint: String,
     status: Status,
+    fail_reason: Option<String>,
     // filled on approval, derived from the signed delegation:
     delegation: Option<String>,
     idp: Option<String>,
@@ -199,6 +201,7 @@ pub async fn request(
         label: req.label.unwrap_or_default(),
         fingerprint: fp.clone(),
         status: Status::Pending,
+        fail_reason: None,
         delegation: None,
         idp: None,
         names: vec![],
@@ -252,6 +255,11 @@ pub async fn poll(State(state): State<Arc<RegistrarState>>, Json(req): Json<Poll
         Status::Denied => {
             m.remove(&req.code);
             Json(json!({ "status": "denied" })).into_response()
+        }
+        Status::Failed => {
+            let reason = rec.fail_reason.clone().unwrap_or_else(|| "provisioning failed".into());
+            m.remove(&req.code);
+            Json(json!({ "status": "failed", "reason": reason })).into_response()
         }
         Status::Completed => {
             m.remove(&req.code);
@@ -417,8 +425,15 @@ pub async fn complete(
     }
     // Reserve the handles NOW (session-authenticated) — locks them to this
     // account so the agent's later mint can't be refused (closes the race).
-    // NamesTaken/quota errors surface here, before anything is stored.
-    state.host.reserve_agent_names(user.user_id, &meta.delegator, &meta.names)?;
+    // NamesTaken/quota errors surface here; record them on the request so the
+    // agent's poll returns the reason instead of an endless "pending".
+    if let Err(e) = state.host.reserve_agent_names(user.user_id, &meta.delegator, &meta.names) {
+        if let Some(rec) = PROVISIONS.lock().unwrap().get_mut(&req.code) {
+            rec.status = Status::Failed;
+            rec.fail_reason = Some(e.to_string());
+        }
+        return Err(e);
+    }
 
     // Store the result for single-delivery pickup.
     let mut m = PROVISIONS.lock().unwrap();
