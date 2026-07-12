@@ -339,8 +339,8 @@
       <p class="hero-sub" id="heroSub">Know exactly which agent is acting, for whom, and with what permission — every grant signed by the human behind it, revocable by them. Human sign-in included, with the email they already use.</p>
 
       <div class="hero-actions">
-        <a class="btn btn-primary" id="heroCta" href="#rp">Add to your app</a>
-        <a class="btn btn-ghost" href="/guestbook">Try it: sign the guestbook →</a>
+        <a class="btn btn-primary" id="heroCta" href="https://github.com/vthunder/browserid-ng/blob/main/README.md">Add to your app</a>
+        <a class="btn btn-ghost" id="heroCta2" href="/guestbook">See it in action →</a>
       </div>
       <div class="hero-note">Works with the email you already use · no passwords · no lock-in</div>
     </div>
@@ -554,24 +554,30 @@ who.agent?.scopes <span class="cm">// <span class="str">["post", "read"]</span> 
     });
 
     // Audience toggle — swaps the pitch + primary CTA per audience.
+    var DOCS = "https://github.com/vthunder/browserid-ng/blob/main/README.md";
     var copy = {
       rp: {
         sub: "Know exactly which agent is acting, for whom, and with what permission — every grant signed by the human behind it, revocable by them. Human sign-in included, with the email they already use.",
-        cta: "Add to your app", href: "#rp"
+        cta: "Add to your app", href: DOCS,
+        cta2: "See it in action →", href2: "/guestbook"
       },
       user: {
         sub: "Give the agents you run their own identities, delegated from yours — you approve where each one may act, and can cut it off any time. And sign in to apps yourself with the email you already use.",
-        cta: "Sign the guestbook", href: "/guestbook"
+        cta: "Sign the guestbook →", href: "/guestbook",
+        cta2: "Learn more →", href2: DOCS
       }
     };
     var sub = document.getElementById("heroSub");
     var cta = document.getElementById("heroCta");
+    var cta2 = document.getElementById("heroCta2");
     document.querySelectorAll(".aud-toggle button").forEach(function (b) {
       b.addEventListener("click", function () {
         document.querySelectorAll(".aud-toggle button").forEach(function (o) { o.setAttribute("aria-pressed", "false"); });
         b.setAttribute("aria-pressed", "true");
         var c = copy[b.dataset.aud];
-        sub.innerHTML = c.sub; cta.textContent = c.cta; cta.setAttribute("href", c.href);
+        sub.innerHTML = c.sub;
+        cta.textContent = c.cta; cta.setAttribute("href", c.href);
+        cta2.textContent = c.cta2; cta2.setAttribute("href", c.href2);
       });
     });
 
