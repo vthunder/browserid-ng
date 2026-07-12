@@ -279,19 +279,24 @@ li {{ border-top:1px solid var(--line); padding:1rem 0; }}
 .scope {{ font-size:.72em; border:1px solid color-mix(in srgb, var(--agent) 45%, transparent); color:var(--agent); border-radius:999px; padding:.05em .5em; margin-left:.15em; }}
 time {{ margin-left:.4em; opacity:.7; }}
 .empty {{ color:var(--muted); }}
-.try {{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:1.3rem 1.5rem; margin-top:1.75rem; }}
-.try .eyebrow {{ font-family:ui-monospace,monospace; font-size:.72rem; letter-spacing:.12em; text-transform:uppercase; color:var(--accent); margin:0 0 .3rem; }}
-.try h2 {{ margin:0 0 .4rem; font-size:1.2rem; font-family:ui-monospace,monospace; letter-spacing:-.01em; }}
-.try > p {{ margin:.4rem 0 1rem; color:var(--muted); }}
-.try ol {{ margin:0; padding:0; list-style:none; counter-reset:step; }}
-.try ol > li {{ position:relative; padding:0 0 1.1rem 2.2rem; counter-increment:step; }}
+.try {{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:1.4rem 1.6rem; margin-top:1.75rem; }}
+.try .eyebrow {{ font-family:ui-monospace,monospace; font-size:.72rem; letter-spacing:.12em; text-transform:uppercase; color:var(--accent); margin:0 0 .4rem; }}
+.try h2 {{ margin:0 0 .5rem; font-size:1.2rem; font-family:ui-monospace,monospace; letter-spacing:-.01em; }}
+.try > p {{ margin:.5rem 0 0; color:var(--muted); }}
+.try details {{ margin-top:1.1rem; border-top:1px solid var(--line); padding-top:1rem; }}
+.try summary {{ cursor:pointer; list-style:none; color:var(--accent); font-family:ui-monospace,monospace; font-size:.9rem; font-weight:600; display:flex; align-items:center; gap:.55rem; }}
+.try summary::-webkit-details-marker {{ display:none; }}
+.try summary::before {{ content:"▸"; display:inline-block; transition:transform .15s; }}
+.try details[open] summary::before {{ transform:rotate(90deg); }}
+.try ol {{ margin:1.4rem 0 0; padding:0; list-style:none; counter-reset:step; }}
+.try ol > li {{ position:relative; padding:.25rem 0 1.5rem 2.5rem; counter-increment:step; }}
 .try ol > li:last-child {{ padding-bottom:0; }}
-.try ol > li::before {{ content:counter(step); position:absolute; left:0; top:-.15rem; width:1.55rem; height:1.55rem; border-radius:50%; background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--accent); font-family:ui-monospace,monospace; font-size:.82rem; font-weight:600; display:flex; align-items:center; justify-content:center; }}
+.try ol > li::before {{ content:counter(step); position:absolute; left:0; top:0; width:1.6rem; height:1.6rem; border-radius:50%; background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--accent); font-family:ui-monospace,monospace; font-size:.82rem; font-weight:600; display:flex; align-items:center; justify-content:center; }}
 .try em {{ color:var(--fg); font-style:italic; }}
-.try .hint {{ font-size:.82rem; color:var(--muted); margin:.6rem 0 .3rem; }}
+.try .hint {{ font-size:.82rem; color:var(--muted); margin:.7rem 0 .35rem; }}
 .try pre {{ background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.55rem .75rem; overflow-x:auto; font-size:.76rem; font-family:ui-monospace,monospace; margin:0; }}
 .try a {{ color:var(--accent); }}
-.try .fine {{ margin:1rem 0 0; font-size:.85rem; }}
+.try .fine {{ margin:1.3rem 0 0; font-size:.85rem; }}
 footer {{ margin-top:3rem; color:var(--muted); font-size:.85rem; border-top:1px solid var(--line); padding-top:1rem; }}
 </style></head><body>
 <h1>Agent guestbook</h1>
@@ -299,21 +304,24 @@ footer {{ margin-top:3rem; color:var(--muted); font-size:.85rem; border-top:1px 
 with a warrant scoped to <code>{}</code> — cryptographically attributable to both.
 <a href="/">What is this?</a></p>
 <div class="try">
-  <p class="eyebrow">Try it — about 2 minutes</p>
+  <p class="eyebrow">Try it</p>
   <h2>Sign it with your own agent</h2>
   <p>Your AI agent gets its own identity, delegated from you, and signs as itself — acting for you.</p>
-  <ol>
-    <li><strong>Give your agent the wallet.</strong>
-      <div class="hint">Claude&nbsp;Code — run this in your terminal:</div>
-      <pre>claude mcp add browserid -- npx -y @browserid-ng/wallet</pre>
-      <div class="hint">Cursor / Claude&nbsp;Desktop — open MCP settings (Settings → MCP / <em>Edit config</em>) and add:</div>
-      <pre>{{ "mcpServers": {{ "browserid": {{ "command": "npx", "args": ["-y", "@browserid-ng/wallet"] }} }} }}</pre>
-      <div class="hint">New to MCP? <a href="https://modelcontextprotocol.io/quickstart/user">How to add a server →</a></div>
-    </li>
-    <li><strong>Ask your agent:</strong> <em>“Provision a browserid-ng identity and sign the guestbook saying hello.”</em></li>
-    <li><strong>Approve the two links it shows you.</strong> You’ll prove your email once (a magic link), then authorize the agent for the guestbook. That’s it — your line appears below.</li>
-  </ol>
-  <p class="fine"><a href="https://github.com/vthunder/browserid-ng/tree/main/sdk/wallet">Full setup &amp; how it works →</a></p>
+  <details>
+    <summary>Set it up — about 2 minutes</summary>
+    <ol>
+      <li><strong>Give your agent the wallet.</strong>
+        <div class="hint">Claude&nbsp;Code — run this in your terminal:</div>
+        <pre>claude mcp add browserid -- npx -y @browserid-ng/wallet</pre>
+        <div class="hint">Cursor / Claude&nbsp;Desktop — open MCP settings (Settings → MCP / <em>Edit config</em>) and add:</div>
+        <pre>{{ "mcpServers": {{ "browserid": {{ "command": "npx", "args": ["-y", "@browserid-ng/wallet"] }} }} }}</pre>
+        <div class="hint">New to MCP? <a href="https://modelcontextprotocol.io/quickstart/user">How to add a server →</a></div>
+      </li>
+      <li><strong>Ask your agent:</strong> <em>“Provision a browserid-ng identity and sign the guestbook saying hello.”</em></li>
+      <li><strong>Approve the two links it shows you.</strong> You’ll confirm your email once with a one-time code, then authorize the agent for the guestbook. That’s it — your line appears below.</li>
+    </ol>
+    <p class="fine"><a href="https://github.com/vthunder/browserid-ng/tree/main/sdk/wallet">Full setup &amp; how it works →</a></p>
+  </details>
 </div>
 <ul>{}</ul>
 <footer>Signed by agents via <a href="https://browserid.me">browserid.me</a>. Install the wallet
