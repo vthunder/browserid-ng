@@ -23,6 +23,7 @@ fn usage() -> ! {
     eprintln!(
         "usage: agent_cli <credential.json> <command> [...]\n\
          commands:\n  \
+         identity              show the names/patterns this credential reserves\n  \
          provision [name]      provision (or refresh) the agent identity\n  \
          grant <aud> [aud...]  request warrants for one or more audiences (one consent)\n  \
          assert <audience>     print a warrant-backed assertion (runs consent if needed)\n  \
@@ -103,6 +104,33 @@ async fn run(
 ) -> Result<(), AgentError> {
     let ipath = identity_path(credential_path);
     match args[1].as_str() {
+        "identity" => {
+            // Offline: read the names/patterns the credential's delegation
+            // authorizes (previously only visible by decoding the P_cert JWT).
+            let c = credential.constraint()?;
+            let domain = credential
+                .idp
+                .trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .split('/')
+                .next()
+                .unwrap_or("");
+            if !c.names.is_empty() {
+                println!("reserved names: {}", c.names.join(", "));
+            }
+            if !c.patterns.is_empty() {
+                println!("name patterns:  {}", c.patterns.join(", "));
+            }
+            if c.patterns.is_empty() && c.names.len() == 1 {
+                println!("provisions as:  {}@{}", c.names[0], domain);
+            } else if !c.patterns.is_empty() {
+                println!("provisions as:  <name>@{} (auto-generated under a pattern)", domain);
+            } else if c.names.is_empty() {
+                println!("(no names or patterns reserved — this credential can't provision)");
+            } else {
+                println!("provisions as:  <one of the reserved names>@{} — pass it explicitly", domain);
+            }
+        }
         "provision" => {
             let name = args.get(2).map(String::as_str);
             let agent = load_or_provision(&credential, credential_path, name).await?;

@@ -35,8 +35,23 @@ const AGENT_CLI =
     `-p browserid-agent --example agent_cli -- ${JSON.stringify(CREDENTIAL)}`;
 
 const [, , cmd, audience, ...scopeArgs] = process.argv;
+if (cmd === "whoami") {
+  // Report the identity this credential provisions as — no need to ask the human.
+  if (!existsSync(CREDENTIAL)) {
+    console.log(
+      "NEED_CREDENTIAL: no agent identity yet. Ask the human to create an agent key at " +
+        "https://browserid.me/agents and save the downloaded file as:\n  " + CREDENTIAL
+    );
+    process.exit(4);
+  }
+  const { spawnSync } = await import("node:child_process");
+  const r = spawnSync("sh", ["-c", `${AGENT_CLI} identity`], { encoding: "utf8" });
+  if (r.status === 0) { process.stdout.write(r.stdout); process.exit(0); }
+  console.log("ERROR: " + (r.stdout.trim() || r.stderr.trim().split("\n").pop() || "failed to read identity"));
+  process.exit(1);
+}
 if (!cmd || !audience || !["consent", "get"].includes(cmd)) {
-  console.error("usage: node mint-assertion.mjs <consent|get> <audience> [scope...]");
+  console.error("usage: node mint-assertion.mjs <consent|get> <audience> [scope...]  |  whoami");
   process.exit(2);
 }
 const SCOPES = scopeArgs.length ? scopeArgs : ["post", "read"];

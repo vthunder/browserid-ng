@@ -6,31 +6,42 @@ acting for the human, within the scopes they approve. Follow these steps, and
 **guide the human** through the parts that need them. Run the commands from this
 directory (`examples/mcp-agent-auth`).
 
-## Step 1 — Request access (and make sure you have an identity)
+## Step 1 — Know who you'll act as
 
-Run:
+First, check your identity (this reads the credential; it never asks the human to
+guess a name):
+
+```bash
+node mint-assertion.mjs whoami
+```
+
+- **`NEED_CREDENTIAL: …`** — you have no agent identity yet. Tell the human:
+  *"Create an agent key at https://browserid.me/agents (sign in first), download
+  the credential file, and save it as `agent-credential.json` in this directory."*
+  When they confirm, run `whoami` again.
+- **`provisions as: <name>@…`** — a single identity. Tell the human *"I'll act as
+  `<name>@…`"* and continue to Step 2.
+- **`provisions as: <name>@… (auto-generated under a pattern)`** — a fresh random
+  identity will be created under that pattern. Mention that, and continue.
+- **`reserved names: a, b, c … pass it explicitly`** — the credential reserves
+  several identities. **Ask the human which one to use** (suggest the first if
+  they have no preference), then set `AGENT_NAME=<their choice>` for the next
+  commands.
+
+## Step 2 — Request access
 
 ```bash
 node mint-assertion.mjs consent https://notes.mcp.example
+# (prefix with AGENT_NAME=<name> if Step 1 said to pick one)
 ```
 
 This asks the human to grant you the `post` and `read` scopes at this server.
-Read the output:
 
-- **`CONSENT_URL: <url>`** — a warrant needs approval. Go to Step 2.
-- **`READY`** — you already hold a warrant covering these scopes. Skip to Step 3.
-- **`NEED_CREDENTIAL: …`** — you have no agent identity yet. Tell the human:
-  *"Create an agent key at https://browserid.me/agents (sign in first), download
-  the credential file, and save it as `agent-credential.json` in this directory —
-  then tell me the name you reserved."* When they confirm, run the command again.
-- **`ERROR: … reserved names …`** — the credential reserves more than one name.
-  Ask the human which reserved name to use, then run
-  `node mint-assertion.mjs consent https://notes.mcp.example` again after setting
-  `AGENT_NAME=<that-name>` — or just run
-  `cargo run -q -p browserid-agent --example agent_cli -- agent-credential.json provision <that-name>` once, then retry.
-- Any other **`ERROR: …`** — show it to the human; it's the real cause.
+- **`CONSENT_URL: <url>`** — a warrant needs approval. Go to Step 3.
+- **`READY`** — you already hold a warrant covering these scopes. Skip to Step 4.
+- Any **`ERROR: …`** — show it to the human; it's the real cause.
 
-## Step 2 — Get the human's approval
+## Step 3 — Get the human's approval
 
 Show the human the `CONSENT_URL` and say something like: *"I need your approval to
 act for you at `https://notes.mcp.example` with the `post` and `read` scopes.
@@ -40,7 +51,7 @@ This link is a browserid.me consent screen. The human signs a **warrant** with
 their own key naming exactly this server and these scopes. It's revocable anytime
 from their account.
 
-## Step 3 — Read your assertion
+## Step 4 — Read your assertion
 
 ```bash
 node mint-assertion.mjs get https://notes.mcp.example
@@ -55,10 +66,10 @@ it right after showing the link.
   link, then run `get` again.
 - **`ERROR: …`** — show it to the human.
 
-## Step 4 — Call the tool as yourself
+## Step 5 — Call the tool as yourself
 
 Call the **notes** MCP server's `post_note` tool with:
-- `assertion`: the `<value>` from Step 3
+- `assertion`: the `<value>` from Step 4
 - `text`: what the human asked you to post (default: `"hello from my agent"`)
 
 The server verifies your assertion and replies confirming the note was posted

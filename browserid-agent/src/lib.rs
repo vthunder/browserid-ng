@@ -771,6 +771,16 @@ mod tests {
     }
 
     #[test]
+    fn credential_exposes_reserved_names() {
+        // The `identity` CLI command reads this offline instead of decoding the
+        // P_cert JWT by hand.
+        let (cred, _) = credential();
+        let c = cred.constraint().unwrap();
+        assert_eq!(c.names, vec!["bot".to_string()]);
+        assert!(c.patterns.is_empty());
+    }
+
+    #[test]
     fn url_host_extraction() {
         assert_eq!(url_host("https://mingo.place"), "mingo.place");
         assert_eq!(url_host("http://127.0.0.1:7899/"), "127.0.0.1:7899");
