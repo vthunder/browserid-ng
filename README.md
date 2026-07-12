@@ -52,6 +52,8 @@ if (r.ok) {
 ```
 
 - **JS/TS wrapper:** [`sdk/js`](./sdk/js) (`@browserid/verify`) — thin, typed, fail-closed.
+- **Agent side (Node):** [`sdk/agent`](./sdk/agent) (`@browserid/agent`) — provision a
+  delegated identity, obtain warrants, mint assertions — for agents integrating in Node/TS.
 - **Any language:** [`docs/verify-quickstart.md`](./docs/verify-quickstart.md) — the
   `/verify` HTTP contract with Python / Go / curl examples.
 - No registration, no client IDs, no secrets to manage.
@@ -71,7 +73,8 @@ if (r.ok) {
 | **browserid-registrar** | The user's own delegation authority — consent, warrant issuance, status-list authoring (unbundled from the IdP role) |
 | **browserid-agent** | Agent-side library + CLI — provision a delegated identity, request warrants, present assertions |
 | **browserid-rp** | Relying-party helpers — fail-closed verification with scope enforcement |
-| **sdk/js** | `@browserid/verify` — the zero-dependency hosted-verify client |
+| **sdk/js** | `@browserid/verify` — the zero-dependency hosted-verify client (RP side) |
+| **sdk/agent** | `@browserid/agent` — the Node agent-side SDK (provision, warrants, assertions) |
 | **e2e-tests** | Playwright end-to-end suite (90+ tests) |
 | **docs/** | Design plans and the verification quickstart |
 
