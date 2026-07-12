@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-12T11:42:42Z
-updated_at: 2026-07-12T12:09:42Z
+updated_at: 2026-07-12T12:54:52Z
 ---
 
 Today the initial agent-credential handoff has no protocol: the user goes to browserid.me/agents, downloads a credential JSON (containing the provisioning PRIVATE key), and the wallet polls ~/Downloads to pick it up. Standardize it as a device-authorization-style pairing flow, mirroring the warrant consent flow (request -> verification_uri -> poll -> pickup).
@@ -51,3 +51,18 @@ docs/plans/2026-07-12-paired-agent-provisioning-design.md — full flow, endpoin
 - Q3: the verify page is a MODE of /account (reuse add-email/activate/create-agent), and MUST support new-user setup in-flow (add+verify+activate+delegate) — the common brand-new-user path, not an edge case.
 - Q4: idp from delegating identity's issuer; inherits 0phq later, no v1 action.
 Design doc updated accordingly.
+
+## Build progress (2026-07-12) — happy path deployed
+
+DONE + deployed to browserid.me:
+- Backend (browserid-registrar/src/agent_provision.rs): POST /agent-provision/{request,poll,info,resolve,complete}. In-process pending store (ephemeral, 15-min TTL). Binding: complete verifies the delegation certifies the agent-supplied pubkey; metadata (idp/names/patterns) derived from the signed certs. Fingerprint byte-identical to the SDK (65-B6-06 KAT). Unit-tested. SMOKE-TESTED LIVE (request→pending→info→resolve).
+- SDK Agent.bootstrap() (sdk/agent): generate provisioning key locally, request, return {verificationUri, verificationUriComplete, userCode, fingerprint, ready}; ready polls, assembles credential from the picked-up delegation, mints. Tested 7/7 incl. a full mock pair→mint. Credential.toJSON() for local persistence.
+- account.html: /account?provision=<code> renders the approval panel — pick identity, sign P_cert over the agent's pubkey (Keystore.sign), register, complete. Deployed + serves live.
+- wallet MCP:  tool (bootstrap + persist on approval); NEED_CREDENTIAL now points at it; AGENT_INSTRUCTIONS Step 1 updated. No downloaded file.
+
+REMAINING (follow-ups, not blocking the happy path):
+- Full human-approval loop verified only piecewise (endpoints + page serve live); end-to-end with a real session+identity not yet automated (manual test / Playwright e2e TODO).
+- Q3 new-user inline setup NOT built: the approval panel requires an already-activated identity ('activate one first'); brand-new-user add-email/activate-in-flow is the main gap vs the design.
+- Typed user_code entry UI (/link page) not built (resolve endpoint ready; one-click path works).
+- Reservation currently claimed at mint (seconds after approve), not at approval — acceptable for v1; hardening in the reservation bean.
+- No e2e test of the browser approval yet.
