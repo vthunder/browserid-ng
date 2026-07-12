@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-12T11:42:42Z
-updated_at: 2026-07-12T13:54:59Z
+updated_at: 2026-07-12T14:58:58Z
 ---
 
 Today the initial agent-credential handoff has no protocol: the user goes to browserid.me/agents, downloads a credential JSON (containing the provisioning PRIVATE key), and the wallet polls ~/Downloads to pick it up. Standardize it as a device-authorization-style pairing flow, mirroring the warrant consent flow (request -> verification_uri -> poll -> pickup).
@@ -74,3 +74,6 @@ Q1 (race closed): RegistrarHost::reserve_agent_names — session-authed reservat
 Q2 (new-user inline): approval panel is now a banner over the account app; lists ALL account identities and activates the chosen one on approve (ensureActive: key+cert). Brand-new users add an email in the app below; the picker auto-refreshes. Resume-after-sign-in already worked (sign-in reload preserves ?provision).
 
 Still remaining: end-to-end Playwright test of the browser approval loop; the typed user_code /link UI; primary cross-domain delegating identities (owns_verified_email assumes the delegator is a verified email on the browserid.me account — fine for secondary/browserid.me identities, edge case for external primaries).
+
+## E2E test added (2026-07-12)
+Playwright paired-provisioning.spec.ts drives the full loop end-to-end: Node SDK Agent.bootstrap (agent side) + real browser approval at /account?provision= (human side) -> agent picks up + mints; plus the deny path. Enabled AGENT_PROVISIONING=1 on the e2e web server. Full suite 92 passed. The 'no e2e of the browser approval loop' gap is closed. Remaining follow-ups: typed user_code /link UI; external-primary cross-domain delegation.
