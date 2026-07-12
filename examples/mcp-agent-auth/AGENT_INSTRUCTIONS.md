@@ -6,7 +6,7 @@ acting for the human, within the scopes they approve. Follow these steps, and
 **guide the human** through the parts that need them. Run the commands from this
 directory (`examples/mcp-agent-auth`).
 
-## Step 1 — Make sure you have an identity
+## Step 1 — Request access (and make sure you have an identity)
 
 Run:
 
@@ -14,12 +14,21 @@ Run:
 node mint-assertion.mjs consent https://notes.mcp.example
 ```
 
-- If it prints **`NEED_CREDENTIAL: …`**, you don't have an agent identity yet.
-  Tell the human: *"Create an agent key at https://browserid.me/agents (sign in
-  first), download the credential file, and save it as `agent-credential.json` in
-  this directory."* Wait until they confirm, then run the command again.
-- If it prints **`CONSENT_URL: <url>`**, go to Step 2.
-- If it prints **`READY`**, you already hold a warrant — skip to Step 3.
+This asks the human to grant you the `post` and `read` scopes at this server.
+Read the output:
+
+- **`CONSENT_URL: <url>`** — a warrant needs approval. Go to Step 2.
+- **`READY`** — you already hold a warrant covering these scopes. Skip to Step 3.
+- **`NEED_CREDENTIAL: …`** — you have no agent identity yet. Tell the human:
+  *"Create an agent key at https://browserid.me/agents (sign in first), download
+  the credential file, and save it as `agent-credential.json` in this directory —
+  then tell me the name you reserved."* When they confirm, run the command again.
+- **`ERROR: … reserved names …`** — the credential reserves more than one name.
+  Ask the human which reserved name to use, then run
+  `node mint-assertion.mjs consent https://notes.mcp.example` again after setting
+  `AGENT_NAME=<that-name>` — or just run
+  `cargo run -q -p browserid-agent --example agent_cli -- agent-credential.json provision <that-name>` once, then retry.
+- Any other **`ERROR: …`** — show it to the human; it's the real cause.
 
 ## Step 2 — Get the human's approval
 
@@ -29,7 +38,7 @@ Open this link, review it, and click Approve — then tell me when you're done."
 
 This link is a browserid.me consent screen. The human signs a **warrant** with
 their own key naming exactly this server and these scopes. It's revocable anytime
-from their account. Wait for them to confirm.
+from their account.
 
 ## Step 3 — Read your assertion
 
@@ -37,10 +46,14 @@ from their account. Wait for them to confirm.
 node mint-assertion.mjs get https://notes.mcp.example
 ```
 
+This **waits** (polls up to ~2½ minutes) for the human to approve, so you can run
+it right after showing the link.
+
 - **`ASSERTION: <value>`** — copy the `<value>` (a `certificate~assertion~warrant`
   string). That's your credential for the next step.
-- **`PENDING …`** — the human hasn't approved yet. Ask them to finish approving
-  the consent link, then run it again.
+- **`PENDING …`** — still not approved. Remind the human to finish approving the
+  link, then run `get` again.
+- **`ERROR: …`** — show it to the human.
 
 ## Step 4 — Call the tool as yourself
 

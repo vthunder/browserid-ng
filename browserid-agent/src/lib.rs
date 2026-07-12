@@ -208,25 +208,31 @@ impl AgentIdentity {
         let keypair = KeyPair::generate();
         let idp_domain = url_host(&credential.idp).to_string();
 
-        // Every name must be authorized by the credential's constraint. When
-        // the caller omits one, derive a random name under the first `<prefix>+*`
-        // pattern (`<prefix>+<hex>`) — a constraint with only fixed `names` has
-        // no room for a generated name, so the caller must pass one explicitly.
+        // Every name must be authorized by the credential's constraint. When the
+        // caller omits one: derive a random name under the first `<prefix>+*`
+        // pattern (`<prefix>+<hex>`); else, if the credential reserves exactly one
+        // fixed `name`, use it (the common single-identity credential). Only error
+        // when the name is genuinely ambiguous (several fixed names, no pattern).
         let name = match name {
             Some(n) => n.to_string(),
-            None => credential
-                .constraint()?
-                .patterns
-                .first()
-                .and_then(|p| browserid_core::Constraint::pattern_prefix(p))
-                .map(|prefix| format!("{}+{}", prefix, random_hex()))
-                .ok_or_else(|| {
-                    AgentError::InvalidCredential(
-                        "no name given and the credential has no `<prefix>+*` pattern to \
-                         generate one under; pass an explicit reserved name"
+            None => {
+                let c = credential.constraint()?;
+                if let Some(prefix) = c
+                    .patterns
+                    .first()
+                    .and_then(|p| browserid_core::Constraint::pattern_prefix(p))
+                {
+                    format!("{}+{}", prefix, random_hex())
+                } else if c.names.len() == 1 {
+                    c.names[0].clone()
+                } else {
+                    return Err(AgentError::InvalidCredential(
+                        "no name given: this credential reserves several fixed names (or none) \
+                         and no `<prefix>+*` pattern — pass one of its reserved names explicitly"
                             .into(),
-                    )
-                })?,
+                    ));
+                }
+            }
         };
 
         let (email, cert) =
@@ -264,6 +270,24 @@ impl AgentIdentity {
     /// The warrant held for `audience`, if any
     pub fn warrant_for(&self, audience: &str) -> Option<&Warrant> {
         self.warrants.get(audience)
+    }
+
+    /// Whether a held warrant satisfies a request for `audience` with `scopes`:
+    /// same audience, and (when scopes are requested) the held warrant grants at
+    /// least all of them. An unqualified request (no scopes) is covered by any
+    /// held warrant for the audience.
+    fn warrant_covers(&self, audience: &str, scopes: Option<&[String]>) -> bool {
+        match self.warrants.get(audience) {
+            None => false,
+            Some(w) => match scopes {
+                None => true,
+                Some(want) if want.is_empty() => true,
+                Some(want) => {
+                    let held = w.claims().scopes.clone().unwrap_or_default();
+                    want.iter().all(|s| held.contains(s))
+                }
+            },
+        }
     }
 
     /// Audiences this agent currently holds warrants for
@@ -395,9 +419,14 @@ impl AgentIdentity {
         grants: Vec<WarrantGrant>,
         notify: impl FnOnce(&WarrantRequestHandle),
     ) -> Result<()> {
+        // A grant is missing unless a held warrant COVERS it — same audience AND
+        // its scopes are a superset of the requested ones. Filtering on audience
+        // alone let a scope-less (or under-scoped) warrant permanently shadow a
+        // scoped re-request; a freshly granted warrant replaces the old one for
+        // that audience (`add_warrant` inserts by audience).
         let missing: Vec<WarrantGrant> = grants
             .into_iter()
-            .filter(|g| !self.warrants.contains_key(&g.aud))
+            .filter(|g| !self.warrant_covers(&g.aud, g.scopes.as_deref()))
             .collect();
         if missing.is_empty() {
             return Ok(());
@@ -849,6 +878,57 @@ mod tests {
         .unwrap();
         assert!(restored.warrant_for("https://api.example.com").is_some());
         assert_eq!(restored.warranted_audiences().len(), 1);
+    }
+
+    #[test]
+    fn warrant_coverage_respects_scopes() {
+        let idp = KeyPair::generate();
+        let user = KeyPair::generate();
+        let agent_kp = KeyPair::generate();
+        let parent_cert = Certificate::create(
+            "mingo.place", "dan@mingo.place", &user.public_key(), Duration::hours(24), &idp,
+        )
+        .unwrap();
+        let cert = Certificate::create_agent(
+            "mingo.place", "bot@mingo.place", "dan@mingo.place",
+            &agent_kp.public_key(), Duration::hours(24), &idp,
+            Some("https://browserid.me".to_string()),
+        )
+        .unwrap();
+        let (cred, _) = credential();
+        let mut identity = AgentIdentity {
+            http: reqwest::Client::new(), idp_domain: "mingo.place".into(),
+            credential: cred, keypair: agent_kp, email: "bot@mingo.place".into(),
+            cert, warrants: std::collections::HashMap::new(),
+        };
+        let aud = "https://api.example.com";
+        // No warrant yet: nothing is covered.
+        assert!(!identity.warrant_covers(aud, None));
+        assert!(!identity.warrant_covers(aud, Some(&["post".into()])));
+
+        // Hold a SCOPE-LESS warrant (the shape the old demo minted).
+        let scopeless = Warrant::create(
+            &parent_cert, "bot@mingo.place", aud, None, Duration::days(30), &user,
+        )
+        .unwrap();
+        identity.add_warrant(scopeless.encoded()).unwrap();
+        // It covers an unqualified request…
+        assert!(identity.warrant_covers(aud, None));
+        // …but NOT a scoped one — the bug was returning true here, letting the
+        // scope-less warrant shadow a `post read` re-request forever.
+        assert!(!identity.warrant_covers(aud, Some(&["post".into()])));
+
+        // Replace it with a scoped warrant (add_warrant inserts by audience).
+        let scoped = Warrant::create(
+            &parent_cert, "bot@mingo.place", aud,
+            Some(vec!["post".into(), "read".into()]), Duration::days(30), &user,
+        )
+        .unwrap();
+        identity.add_warrant(scoped.encoded()).unwrap();
+        assert!(identity.warrant_covers(aud, Some(&["post".into()])));
+        assert!(identity.warrant_covers(aud, Some(&["post".into(), "read".into()])));
+        // A scope it doesn't grant is still not covered.
+        assert!(!identity.warrant_covers(aud, Some(&["delete".into()])));
     }
 
     #[test]

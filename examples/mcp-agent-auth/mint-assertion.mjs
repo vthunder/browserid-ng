@@ -1,20 +1,23 @@
-// Agent-friendly, non-blocking front end to the browserid-agent CLI, so an LLM
-// agent can obtain an assertion in two quick tool calls instead of running a
-// command that blocks on human consent:
+// Agent-friendly front end to the browserid-agent CLI, so an LLM agent can
+// obtain a scoped, warrant-backed assertion in two quick tool calls:
 //
-//   node mint-assertion.mjs consent <audience>
-//       → prints  CONSENT_URL: <url>   (the human approves the warrant there)
-//         or       READY               (a warrant already existed)
+//   node mint-assertion.mjs consent <audience> [scope...]   (default: post read)
+//       → CONSENT_URL: <url>   the human approves the warrant there
+//         or  READY            a warrant already covering these scopes exists
+//         or  ERROR: <reason>  the CLI failed (surfaced, not buried)
 //       returns immediately; the CLI keeps running detached until approved.
 //
 //   node mint-assertion.mjs get <audience>
-//       → prints  ASSERTION: <certificate~assertion~warrant>   once approved
-//         or       PENDING              (approve the consent URL, then retry)
+//       → ASSERTION: <certificate~assertion~warrant>   (polls until approved)
+//         or  PENDING          not approved yet — approve the link, then retry
+//         or  ERROR: <reason>
 //
-// It shells to the agent CLI. Point AGENT_CLI at the command prefix that already
-// includes your credential, e.g.:
-//   export AGENT_CLI="cargo run -q -p browserid-agent --example agent_cli -- ./agent-credential.json"
-// (default assumes ./agent-credential.json in this directory).
+// It requests SCOPES via the CLI's `grant`, then reads the assertion via
+// `assert` — so the warrant the human approves actually carries those scopes.
+//
+// Zero config: the credential (agent-credential.json) and the agent CLI are
+// found relative to this file. Override with AGENT_CREDENTIAL / AGENT_CLI, and
+// set AGENT_NAME to provision a specific reserved name (multi-name credentials).
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -23,9 +26,6 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Everything resolves relative to THIS file, so it works from any cwd with no
-// env vars: the credential sits next to it, and the agent CLI is run against the
-// workspace two levels up.
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..", "..");
 const CREDENTIAL = process.env.AGENT_CREDENTIAL || join(HERE, "agent-credential.json");
@@ -34,14 +34,13 @@ const AGENT_CLI =
   `cargo run -q --manifest-path ${JSON.stringify(join(REPO, "Cargo.toml"))} ` +
     `-p browserid-agent --example agent_cli -- ${JSON.stringify(CREDENTIAL)}`;
 
-const [, , cmd, audience] = process.argv;
+const [, , cmd, audience, ...scopeArgs] = process.argv;
 if (!cmd || !audience || !["consent", "get"].includes(cmd)) {
-  console.error("usage: node mint-assertion.mjs <consent|get> <audience>");
+  console.error("usage: node mint-assertion.mjs <consent|get> <audience> [scope...]");
   process.exit(2);
 }
+const SCOPES = scopeArgs.length ? scopeArgs : ["post", "read"];
 
-// Preflight: without an agent identity there's nothing to mint. Tell the agent
-// exactly what to ask the human for.
 if (!existsSync(CREDENTIAL)) {
   console.log(
     "NEED_CREDENTIAL: no agent identity yet. Ask the human to create an agent key at " +
@@ -50,60 +49,85 @@ if (!existsSync(CREDENTIAL)) {
   process.exit(4);
 }
 
-// Stable per-audience temp files so `consent` and a later `get` (separate
-// processes) share state.
+// Per-audience temp files shared between the `consent` and `get` processes.
 const tag = createHash("sha1").update(audience).digest("hex").slice(0, 12);
 const dir = join(tmpdir(), "browserid-mint");
 mkdirSync(dir, { recursive: true });
 const outFile = join(dir, `${tag}.assertion`);
-const errFile = join(dir, `${tag}.log`);
+const logFile = join(dir, `${tag}.log`);
+const q = JSON.stringify;
 
-function readAssertion() {
+const readAssertion = () => {
   if (!existsSync(outFile)) return null;
   const s = readFileSync(outFile, "utf8").trim();
-  // The CLI prints exactly the assertion on stdout; a valid one has two '~'.
-  return s.includes("~") ? s.split("\n").pop().trim() : null;
+  return s.includes("~") ? s.split("\n").pop().trim() : null; // a valid one has '~'
+};
+const readLog = () => { try { return readFileSync(logFile, "utf8"); } catch { return ""; } };
+const failed = () => readLog().includes("MINT_FAILED");
+// Surface the CLI's own error line, skipping cargo build chatter.
+function reason() {
+  const lines = readLog().split("\n").map((l) => l.trim()).filter(Boolean)
+    .filter((l) => !/^(warning|compiling|finished|running|updating|\s*downloaded|\s*compiling)\b/i.test(l))
+    .filter((l) => l !== "MINT_FAILED");
+  const errLine = [...lines].reverse().find((l) => /^error[: ]/i.test(l));
+  return errLine || lines[lines.length - 1] || "unknown error (see the CLI output)";
 }
 
+// ---- get: poll until the assertion appears (the human is approving) --------
 if (cmd === "get") {
-  const a = readAssertion();
-  if (a) console.log("ASSERTION: " + a);
-  else console.log("PENDING — approve the consent URL, then retry `get`.");
-  process.exit(a ? 0 : 3);
+  const deadline = Date.now() + 150000;
+  const tick = () => {
+    const a = readAssertion();
+    if (a) { console.log("ASSERTION: " + a); process.exit(0); }
+    if (failed()) { console.log("ERROR: " + reason()); process.exit(1); }
+    if (Date.now() > deadline) {
+      console.log("PENDING — not approved yet. Approve the consent link, then run `get` again.");
+      process.exit(3);
+    }
+    setTimeout(tick, 2000);
+  };
+  tick();
 }
 
-// cmd === "consent": always mint fresh, so a stale/expired assertion from a
-// previous run is never handed back. Clear prior state before spawning.
-rmSync(outFile, { force: true });
-rmSync(errFile, { force: true });
+// ---- consent: request the scopes, return the approve URL -------------------
+if (cmd === "consent") {
+  rmSync(outFile, { force: true });
+  rmSync(logFile, { force: true });
 
-// Kick off `assert <audience>`, detached, redirecting its streams to files so it
-// survives this process exiting. It prints the approve URL to stderr, blocks
-// until the human approves, then writes the assertion to stdout (→ outFile).
-const sh = `${AGENT_CLI} assert ${JSON.stringify(audience)} >${JSON.stringify(outFile)} 2>${JSON.stringify(errFile)}`;
-const child = spawn("sh", ["-c", sh], { detached: true, stdio: "ignore" });
-child.unref();
+  // grant <aud> <scopes...> runs the consent flow (prints "approve at: <url>",
+  // then holds a warrant WITH the scopes); assert <aud> then emits the
+  // assertion. Detached + stream to files so this process can return the URL
+  // immediately while the CLI blocks on the human. A failure writes MINT_FAILED.
+  // If the human reserved a specific name (multi-name credential), provision it
+  // first; otherwise the CLI auto-provisions (single reserved name or pattern).
+  const provision = process.env.AGENT_NAME
+    ? `${AGENT_CLI} provision ${q(process.env.AGENT_NAME)} && `
+    : "";
+  const grant = `${AGENT_CLI} grant ${q(audience)} ${SCOPES.map(q).join(" ")}`;
+  const assert = `${AGENT_CLI} assert ${q(audience)} >${q(outFile)}`;
+  const sh = `( ${provision}${grant} && ${assert} ) 2>>${q(logFile)} || echo MINT_FAILED >>${q(logFile)}`;
+  spawn("sh", ["-c", sh], { detached: true, stdio: "ignore" }).unref();
 
-// Poll the log for the approve URL (or an early assertion if a warrant existed).
-const deadline = Date.now() + 30000;
-const timer = setInterval(() => {
-  if (readAssertion()) {
-    clearInterval(timer);
-    console.log("READY — a warrant already existed; call `get` to read the assertion.");
-    process.exit(0);
-  }
-  let log = "";
-  try { log = readFileSync(errFile, "utf8"); } catch {}
-  const m = log.match(/approve at:\s*(\S+)/i);
-  if (m) {
-    clearInterval(timer);
-    console.log("CONSENT_URL: " + m[1]);
-    console.log("(approve there, then call `get` for the assertion)");
-    process.exit(0);
-  }
-  if (Date.now() > deadline) {
-    clearInterval(timer);
-    console.error("timed out waiting for the CLI to emit a consent URL. Log:\n" + log);
-    process.exit(1);
-  }
-}, 400);
+  // Wait for one of: an approve URL, an early assertion (warrant already held),
+  // or a failure. Generous deadline: the CLI may compile on first run.
+  const deadline = Date.now() + 150000;
+  const tick = () => {
+    if (readAssertion()) {
+      console.log("READY — a warrant covering these scopes already exists; call `get`.");
+      process.exit(0);
+    }
+    const m = readLog().match(/approve at:\s*(\S+)/i);
+    if (m) {
+      console.log("CONSENT_URL: " + m[1]);
+      console.log("(show this to the human; when they approve, call `get`)");
+      process.exit(0);
+    }
+    if (failed()) { console.log("ERROR: " + reason()); process.exit(1); }
+    if (Date.now() > deadline) {
+      console.log("ERROR: timed out before the CLI produced a consent URL. Last output:\n" + reason());
+      process.exit(1);
+    }
+    setTimeout(tick, 400);
+  };
+  tick();
+}

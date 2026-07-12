@@ -56,14 +56,18 @@ set `VERIFIER_URL` on the server to point at your own broker instead.
 ### Under the hood / debugging by hand
 
 The agent just runs these — you can too. No env vars: the helper finds your
-credential (`agent-credential.json` here) and the CLI on its own.
+credential (`agent-credential.json` here) and the CLI on its own, requests the
+`post`/`read` scopes, and `get` waits for you to approve.
 
 ```bash
 node mint-assertion.mjs consent https://notes.mcp.example   # → CONSENT_URL (approve it)
-node mint-assertion.mjs get     https://notes.mcp.example   # → ASSERTION: <...>
+node mint-assertion.mjs get     https://notes.mcp.example   # → ASSERTION: <...> (polls until approved)
 SERVER_AUDIENCE=https://notes.mcp.example \
   node client.mjs --assertion "<paste ASSERTION>" post "hello from my agent"
 ```
+
+`consent` takes optional scopes (`… consent <aud> post read`, the default). For a
+credential that reserves several fixed names, set `AGENT_NAME=<reserved-name>`.
 
 ## Try it offline (no consent, no network)
 
