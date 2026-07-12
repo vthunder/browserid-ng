@@ -7,7 +7,7 @@ checks, agent-warrant validation, revocation) and returns the verified email.
 
 This is the **zero-dependency path** — it works from any language that can make
 an HTTP request. For JavaScript/TypeScript there is a thin typed wrapper,
-[`@browserid/verify`](../sdk/js). Native (in-process, no hosted call) verifier
+[`@browserid-ng/verify`](../sdk/js). Native (in-process, no hosted call) verifier
 libraries are planned; until then, the hosted endpoint is the supported path.
 
 > **Trust model.** A hosted verifier is a party you trust to verify honestly. The
@@ -69,7 +69,7 @@ Content-Type: application/json
 ### JavaScript / TypeScript (with the wrapper)
 
 ```js
-import { createVerifier } from "@browserid/verify";
+import { createVerifier } from "@browserid-ng/verify";
 const verifier = createVerifier();
 const r = await verifier.verify(assertion, "https://app.example.com");
 if (r.ok) login(r.email); else reject(r.reason);

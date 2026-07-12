@@ -1,4 +1,4 @@
-// Ed25519 + JWS primitives for @browserid/agent, matching browserid-core exactly:
+// Ed25519 + JWS primitives for @browserid-ng/agent, matching browserid-core exactly:
 // keys are raw 32-byte Ed25519, encoded base64url (no padding); a JWS is
 //   base64url(header) + "." + base64url(payload) + "." + base64url(sig)
 // where the signature is raw Ed25519 over the UTF-8 bytes of the first two

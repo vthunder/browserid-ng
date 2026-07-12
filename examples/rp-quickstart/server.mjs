@@ -13,7 +13,7 @@
 
 import { createServer } from "node:http";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { createVerifier } from "@browserid/verify";
+import { createVerifier } from "@browserid-ng/verify";
 
 const PORT = Number(process.env.PORT || 8080);
 const RP_ORIGIN = process.env.RP_ORIGIN || `http://localhost:${PORT}`;

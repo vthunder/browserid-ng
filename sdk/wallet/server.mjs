@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// @browserid/wallet — an MCP server that gives an agent a browserid-ng identity.
+// @browserid-ng/wallet — an MCP server that gives an agent a browserid-ng identity.
 //
 // Run it straight from npm, no checkout:
-//   npx -y @browserid/wallet
+//   npx -y @browserid-ng/wallet
 // and add it to your MCP client (Claude Code / Cursor / Claude Desktop):
-//   { "mcpServers": { "browserid": { "command": "npx", "args": ["-y", "@browserid/wallet"] } } }
+//   { "mcpServers": { "browserid": { "command": "npx", "args": ["-y", "@browserid-ng/wallet"] } } }
 //
 // Tools:
 //   identity                       who this agent acts as (or how to provision)
@@ -23,7 +23,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   Agent, NeedCredentialError, AmbiguousNameError, NoWarrantError,
   WarrantDeniedError, WarrantExpiredError, RequestError,
-} from "@browserid/agent";
+} from "@browserid-ng/agent";
 import { z } from "zod";
 import { homedir } from "node:os";
 import { join } from "node:path";

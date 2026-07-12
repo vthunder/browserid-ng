@@ -19,7 +19,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createVerifier } from "@browserid/verify";
+import { createVerifier } from "@browserid-ng/verify";
 import { z } from "zod";
 
 const SERVER_AUDIENCE = process.env.SERVER_AUDIENCE || "https://notes.mcp.example";

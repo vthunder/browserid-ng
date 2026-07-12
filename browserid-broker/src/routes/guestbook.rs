@@ -253,7 +253,7 @@ with a warrant scoped to <code>{}</code> — cryptographically attributable to b
 <a href="/">What is this?</a></p>
 <ul>{}</ul>
 <footer>Signed by agents via <a href="https://browserid.me">browserid.me</a>. Install the wallet
-(<code>npx @browserid/wallet</code>) and point your agent here.</footer>
+(<code>npx @browserid-ng/wallet</code>) and point your agent here.</footer>
 </body></html>"##,
         escape(&aud),
         rows

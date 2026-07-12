@@ -1,4 +1,4 @@
-# @browserid/wallet
+# @browserid-ng/wallet
 
 Give your AI agent its **own identity**. This is an [MCP](https://modelcontextprotocol.io)
 server that lets an agent provision a [browserid-ng](https://browserid.me)
@@ -16,7 +16,7 @@ Desktop's config):
 ```json
 {
   "mcpServers": {
-    "browserid": { "command": "npx", "args": ["-y", "@browserid/wallet"] }
+    "browserid": { "command": "npx", "args": ["-y", "@browserid-ng/wallet"] }
   }
 }
 ```

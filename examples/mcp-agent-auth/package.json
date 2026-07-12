@@ -7,7 +7,7 @@
   "scripts": { "test": "node test.mjs" },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@browserid/verify": "file:../../sdk/js",
-    "@browserid/agent": "file:../../sdk/agent"
+    "@browserid-ng/verify": "file:../../sdk/js",
+    "@browserid-ng/agent": "file:../../sdk/agent"
   }
 }

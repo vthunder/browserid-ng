@@ -1,5 +1,5 @@
 {
-  "name": "@browserid/verify",
+  "name": "@browserid-ng/verify",
   "version": "0.1.0",
   "description": "Verify BrowserID-NG identity assertions via the hosted /verify service. Zero-dependency, fail-closed.",
   "type": "module",

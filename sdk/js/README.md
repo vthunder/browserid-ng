@@ -1,4 +1,4 @@
-# @browserid/verify
+# @browserid-ng/verify
 
 Verify [BrowserID-NG](https://browserid.me) identity assertions from your relying
 party (RP) backend. Zero dependencies, **fail-closed**.
@@ -16,7 +16,7 @@ revocation (status-list) check. You get back a small typed result.
 ## Install
 
 ```
-npm install @browserid/verify
+npm install @browserid-ng/verify
 ```
 
 Requires Node 18+ (uses global `fetch`).
@@ -24,7 +24,7 @@ Requires Node 18+ (uses global `fetch`).
 ## Use
 
 ```js
-import { createVerifier } from "@browserid/verify";
+import { createVerifier } from "@browserid-ng/verify";
 
 const verifier = createVerifier({
   // verifierUrl: "https://browserid.me/verify",  // default

@@ -4,11 +4,11 @@ Two [MCP](https://modelcontextprotocol.io) servers that together show an AI agen
 signing in **as itself**, acting for a human, within scopes the human approved:
 
 - **wallet** — the agent's browserid-ng identity, built on
-  [`@browserid/agent`](../../sdk/agent): `identity`, `authorize(audience, scopes)`,
+  [`@browserid-ng/agent`](../../sdk/agent): `identity`, `authorize(audience, scopes)`,
   `get_assertion(audience)`. It provisions the identity, runs the consent flow,
   and mints assertions — all in-process.
 - **notes** — a target server whose tools require an agent assertion and enforce
-  scope, built on [`@browserid/verify`](../../sdk/js): `post_note` (needs `post`),
+  scope, built on [`@browserid-ng/verify`](../../sdk/js): `post_note` (needs `post`),
   `list_notes` (needs `read`).
 
 The agent calls `wallet.authorize` → shows you a consent link → `wallet.get_assertion`
@@ -100,5 +100,5 @@ Notes:
   verify once per session — the check itself is identical.
 - `SERVER_AUDIENCE` is your server's stable identifier; pin it, and it's what the
   agent targets when it calls `wallet.authorize` / `get_assertion`.
-- Uses [`@browserid/verify`](../../sdk/js); see also
+- Uses [`@browserid-ng/verify`](../../sdk/js); see also
   [`docs/verify-quickstart.md`](../../docs/verify-quickstart.md).

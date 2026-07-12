@@ -1,4 +1,4 @@
-// Type definitions for @browserid/agent
+// Type definitions for @browserid-ng/agent
 
 export interface ReservedIdentity {
   /** Fixed reserved names the credential authorizes. */

@@ -1,4 +1,4 @@
-// @browserid/verify — verify BrowserID-NG identity assertions.
+// @browserid-ng/verify — verify BrowserID-NG identity assertions.
 //
 // This is the zero-dependency path: it POSTs the assertion to a hosted /verify
 // service (default https://browserid.me/verify) which performs the DNSSEC-rooted

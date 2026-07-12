@@ -1,4 +1,4 @@
-// The agent's "wallet" — an MCP server built on @browserid/agent that lets an
+// The agent's "wallet" — an MCP server built on @browserid-ng/agent that lets an
 // agent obtain and present a browserid-ng identity entirely through MCP tool
 // calls. No shell, no Rust: this runs the whole provision → consent → assertion
 // flow in-process, so the demo works even in pure-MCP clients (Claude Desktop).
@@ -13,7 +13,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { Agent, NeedCredentialError, AmbiguousNameError, NoWarrantError, WarrantDeniedError, WarrantExpiredError } from "@browserid/agent";
+import { Agent, NeedCredentialError, AmbiguousNameError, NoWarrantError, WarrantDeniedError, WarrantExpiredError } from "@browserid-ng/agent";
 import { z } from "zod";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

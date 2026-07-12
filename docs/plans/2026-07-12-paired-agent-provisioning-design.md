@@ -166,7 +166,7 @@ Single-delivery: deleted when a `completed` poll hands the credential over.
 
 ## SDK + tooling
 
-`@browserid/agent`:
+`@browserid-ng/agent`:
 ```js
 const pairing = await Agent.bootstrap({
   broker: "https://browserid.me", requestedHandles: { names: ["researcher"] }, label: "my agent",
@@ -234,6 +234,6 @@ discovery hack** for the paired path (discovery stays only for the portable mode
 ## Sequencing
 
 Design (this) → broker endpoints + record store → `/agent-provision/<code>` page
-(reuse account signing) → `@browserid/agent` `bootstrap()` → wallet `provision`
+(reuse account signing) → `@browserid-ng/agent` `bootstrap()` → wallet `provision`
 tool → docs. Build the happy path first (single identity, no reissue edits), then
 the edit/reissue affordances.

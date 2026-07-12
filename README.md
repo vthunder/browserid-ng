@@ -38,7 +38,7 @@ Your users (and their agents) sign in; your backend POSTs the assertion to a
 for and what it may do here.
 
 ```js
-import { createVerifier } from "@browserid/verify";
+import { createVerifier } from "@browserid-ng/verify";
 const verifier = createVerifier();               // hosted verifier, or point at your own
 
 const r = await verifier.verify(assertion, "https://app.example.com");
@@ -51,8 +51,8 @@ if (r.ok) {
 }
 ```
 
-- **JS/TS wrapper:** [`sdk/js`](./sdk/js) (`@browserid/verify`) — thin, typed, fail-closed.
-- **Agent side (Node):** [`sdk/agent`](./sdk/agent) (`@browserid/agent`) — provision a
+- **JS/TS wrapper:** [`sdk/js`](./sdk/js) (`@browserid-ng/verify`) — thin, typed, fail-closed.
+- **Agent side (Node):** [`sdk/agent`](./sdk/agent) (`@browserid-ng/agent`) — provision a
   delegated identity, obtain warrants, mint assertions — for agents integrating in Node/TS.
 - **Any language:** [`docs/verify-quickstart.md`](./docs/verify-quickstart.md) — the
   `/verify` HTTP contract with Python / Go / curl examples.
@@ -70,7 +70,7 @@ Add one line to your MCP client (Claude Code / Cursor / Claude Desktop) — no
 checkout, no build:
 
 ```json
-{ "mcpServers": { "browserid": { "command": "npx", "args": ["-y", "@browserid/wallet"] } } }
+{ "mcpServers": { "browserid": { "command": "npx", "args": ["-y", "@browserid-ng/wallet"] } } }
 ```
 
 Then ask your agent:
@@ -91,9 +91,9 @@ signs the **public guestbook** at [browserid.me/guestbook](https://browserid.me/
 | **browserid-registrar** | The user's own delegation authority — consent, warrant issuance, status-list authoring (unbundled from the IdP role) |
 | **browserid-agent** | Agent-side library + CLI — provision a delegated identity, request warrants, present assertions |
 | **browserid-rp** | Relying-party helpers — fail-closed verification with scope enforcement |
-| **sdk/js** | `@browserid/verify` — the zero-dependency hosted-verify client (RP side) |
-| **sdk/agent** | `@browserid/agent` — the Node agent-side SDK (provision, warrants, assertions) |
-| **sdk/wallet** | `@browserid/wallet` — an MCP server (run via `npx`) giving an agent a browserid-ng identity; ships the guestbook demo |
+| **sdk/js** | `@browserid-ng/verify` — the zero-dependency hosted-verify client (RP side) |
+| **sdk/agent** | `@browserid-ng/agent` — the Node agent-side SDK (provision, warrants, assertions) |
+| **sdk/wallet** | `@browserid-ng/wallet` — an MCP server (run via `npx`) giving an agent a browserid-ng identity; ships the guestbook demo |
 | **e2e-tests** | Playwright end-to-end suite (90+ tests) |
 | **docs/** | Design plans and the verification quickstart |
 

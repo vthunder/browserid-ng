@@ -1,5 +1,5 @@
 {
-  "name": "@browserid/agent",
+  "name": "@browserid-ng/agent",
   "version": "0.1.0",
   "description": "Agent-side SDK for browserid-ng: provision a delegated identity, obtain human-approved warrants, and mint warrant-backed assertions.",
   "type": "module",

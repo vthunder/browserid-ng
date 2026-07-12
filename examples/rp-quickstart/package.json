@@ -5,5 +5,5 @@
   "type": "module",
   "description": "The 5-minute browserid-ng relying party: passwordless human sign-in.",
   "scripts": { "start": "node server.mjs", "test": "node --test" },
-  "dependencies": { "@browserid/verify": "file:../../sdk/js" }
+  "dependencies": { "@browserid-ng/verify": "file:../../sdk/js" }
 }

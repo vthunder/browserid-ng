@@ -1,4 +1,4 @@
-# @browserid/agent
+# @browserid-ng/agent
 
 The **agent** side of [browserid-ng](https://browserid.me), for Node. Provision a
 delegated agent identity, get human-approved **warrants**, and mint
@@ -13,7 +13,7 @@ Rust, no shelling out.
 ## Install
 
 ```
-npm install @browserid/agent
+npm install @browserid-ng/agent
 ```
 
 Node 18+. Ed25519 via `node:crypto`.
@@ -21,7 +21,7 @@ Node 18+. Ed25519 via `node:crypto`.
 ## Use
 
 ```js
-import { Agent } from "@browserid/agent";
+import { Agent } from "@browserid-ng/agent";
 
 // Load a persisted identity, or provision one from the credential the human
 // downloaded at https://browserid.me/agents.
@@ -44,7 +44,7 @@ const assertion = await agent.assertionFor(audience);
 await agent.save("agent.identity.json");       // persist key + cert + warrants
 ```
 
-The relying party verifies `assertion` with [`@browserid/verify`](../js) (or a
+The relying party verifies `assertion` with [`@browserid-ng/verify`](../js) (or a
 hosted `/verify`) and learns the agent, its principal, and the granted scopes.
 
 ## API

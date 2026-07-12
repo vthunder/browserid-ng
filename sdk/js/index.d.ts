@@ -1,4 +1,4 @@
-// Type definitions for @browserid/verify
+// Type definitions for @browserid-ng/verify
 
 export interface AgentAttribution {
   /** The delegator (human identity) the agent acts for. */
