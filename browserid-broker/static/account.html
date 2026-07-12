@@ -325,6 +325,7 @@ function renderUserIdentities() {
     `<li class="add"><button class="row" id="add-email"><span class="email-text">+ Add an email</span></button></li>`;
   $('add-email').onclick = () => { $('add-email-form').hidden = false; $('ae-email').focus(); };
   for (const b of $('user-ids').querySelectorAll('.activate')) b.onclick = () => activate(b.dataset.email, b);
+  refreshProvisionPicker(); // keep the provision approval picker in sync after add/activate
 }
 
 /// A minted agent's parent (from the derived map) or, for a not-yet-minted
@@ -672,6 +673,38 @@ async function reloadAccount() {
 // signs a delegation over the AGENT-supplied provisioning key with their
 // identity key, registers it, and hands it to the pending record; the agent
 // polls and picks it up. The provisioning private key stays with the agent.
+let provisionCtx = null; // { code, pubkey } while an approval is showing
+
+// Activate a secondary identity in this browser (key + cached cert) so it can
+// sign; returns the local identity. Primary identities activate via their IdP.
+async function ensureActive(email) {
+  const have = localIdentity(email);
+  if (have) return have;
+  let info; try { info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`); } catch { info = {}; }
+  if (info.type === 'primary')
+    throw new Error(`Sign in to an app with ${email} first — primary identities activate through their own IdP.`);
+  const kp = await window.Keystore.generate();
+  const body = await post('/wsapi/cert_key', { email, pubkey: { algorithm: 'Ed25519', publicKey: kp.publicKeyX }, ephemeral: false });
+  const issuer = certPayload(body.cert)?.iss || location.host;
+  await window.Keystore.put(issuer, email, { privateKey: kp.privateKey, publicKeyX: kp.publicKeyX, cert: body.cert });
+  await refreshKeystore();
+  return localIdentity(email);
+}
+
+// The panel lists ALL of the account's identities (not just already-active
+// ones) and activates the chosen one on approve — so a user who opened the link
+// in a fresh browser, or just added an email below, can proceed.
+function refreshProvisionPicker() {
+  const sel = $('pv-identity');
+  if (!sel || $('provision').hidden) return;
+  const ids = account.emails.filter(e => !account.agents.includes(e));
+  sel.innerHTML = ids.map(e =>
+    `<option value="${escapeHtml(e)}">${escapeHtml(e)}${isActive(e) ? '' : ' — will activate'}</option>`).join('');
+  const none = ids.length === 0;
+  $('pv-approve').disabled = none;
+  if (none) { $('pv-status').className = 'status muted'; $('pv-status').textContent = 'Add an email below, then pick it here to authorize the agent.'; }
+}
+
 async function showProvisionApproval(code) {
   let info;
   try {
@@ -679,25 +712,23 @@ async function showProvisionApproval(code) {
   } catch (e) {
     throw new Error('This pairing request is invalid or has expired — ask your agent to start again.');
   }
-  $('app').hidden = true;
+  provisionCtx = { code, pubkey: info.provisioning_pubkey };
   $('provision').hidden = false;
   $('pv-intro').textContent = (info.label ? `“${info.label}” ` : 'An agent ') +
     'wants its own identity, acting for you. Only approve if you just started setting up this agent.';
   $('pv-fp').textContent = 'Agent key fingerprint: ' + info.fingerprint + '  (confirm it matches what your agent shows)';
-  const ids = localIdentities();
-  $('pv-identity').innerHTML = ids.length
-    ? ids.map(i => `<option value="${escapeHtml(i.email)}">${escapeHtml(i.email)}</option>`).join('')
-    : '<option value="">— no active identity in this browser; activate one first —</option>';
   $('pv-handles').value = (info.requested_names || []).join(', ') || (info.requested_patterns || []).join(', ');
+  refreshProvisionPicker();
   $('pv-approve').onclick = () => approveProvision(code, info.provisioning_pubkey);
   $('pv-deny').onclick = () => denyProvision(code);
 }
 
 async function approveProvision(code, provPubkeyX) {
-  const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Signing…';
+  const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Activating identity…';
   try {
-    const id = localIdentity($('pv-identity').value);
-    if (!id) throw new Error('Activate an identity in this browser first, then retry.');
+    const id = await ensureActive($('pv-identity').value);
+    if (!id) throw new Error('Could not activate that identity — try another.');
+    status.textContent = 'Signing…';
     const names = $('pv-handles').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
     if (!names.length) throw new Error('Enter at least one handle.');
     // Sign a P_cert over the AGENT-supplied provisioning key (not one generated here).
@@ -736,16 +767,17 @@ async function boot() {
   account.csrf = ctx.csrf_token;
   try { await window.Keystore.migrateFromLocalStorage(); } catch (e) { console.warn('keystore migrate:', e); }
   await reloadAccount();
-  if (provisionCode) {
-    showProvisionApproval(provisionCode).catch(e => {
-      $('provision').hidden = false; $('app').hidden = true;
-      $('pv-status').className = 'status err'; $('pv-status').textContent = e.message;
-    });
-    return;
-  }
   $('app').hidden = false;
   renderUserIdentities();
   renderAgents();
+  // Paired provisioning banner sits above the account app so add-email/activate
+  // are right there for new users.
+  if (provisionCode) {
+    showProvisionApproval(provisionCode).catch(e => {
+      $('provision').hidden = false;
+      $('pv-status').className = 'status err'; $('pv-status').textContent = e.message;
+    });
+  }
 }
 boot().catch(e => { $('gate').hidden = false; $('gate').innerHTML = `<p class="err" style="margin:0">Error: ${escapeHtml(e.message)}</p>`; });
 </script>

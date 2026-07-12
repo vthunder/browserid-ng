@@ -63,6 +63,8 @@ where
             host: Arc::new(crate::registrar_glue::BrokerRegistrarHost {
                 user_store: state.user_store.clone(),
                 session_store: state.session_store.clone(),
+                domain: state.domain.clone(),
+                max_agent_identities: state.max_agent_identities_per_user,
             }),
         },
     ));

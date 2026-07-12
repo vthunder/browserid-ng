@@ -284,6 +284,10 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
 pub struct BrokerRegistrarHost<U, S> {
     pub user_store: Arc<U>,
     pub session_store: Arc<S>,
+    /// The domain agent handles are minted under (`<name>@<domain>`).
+    pub domain: String,
+    /// Per-account cap on agent identities.
+    pub max_agent_identities: usize,
 }
 
 impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> {
@@ -316,5 +320,57 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
                 parent_email: e.parent_email,
             })
             .collect())
+    }
+
+    fn reserve_agent_names(
+        &self,
+        user_id: u64,
+        delegator: &str,
+        names: &[String],
+    ) -> Result<(), RegistrarError> {
+        // Pre-scan: any handle owned by another account (or a non-agent) is taken.
+        let mut taken = Vec::new();
+        for name in names {
+            let email = format!("{}@{}", name, self.domain);
+            if let Some(rec) = self.user_store.get_email(&email).map_err(to_reg_err)? {
+                if rec.user_id.0 != user_id || rec.email_type != EmailType::Agent {
+                    taken.push(name.clone());
+                }
+            }
+        }
+        if !taken.is_empty() {
+            return Err(RegistrarError::NamesTaken(taken));
+        }
+        // Quota: count existing active agent identities + the new ones to create.
+        let existing = self.user_store.list_emails(UserId(user_id)).map_err(to_reg_err)?;
+        let active = existing
+            .iter()
+            .filter(|e| e.email_type == EmailType::Agent && e.verified)
+            .count();
+        let new_count = names
+            .iter()
+            .filter(|name| {
+                let email = format!("{}@{}", name, self.domain);
+                !existing.iter().any(|e| e.email.eq_ignore_ascii_case(&email))
+            })
+            .count();
+        if active + new_count > self.max_agent_identities {
+            return Err(RegistrarError::PolicyRefused(
+                "agent identity quota exceeded for this account".into(),
+            ));
+        }
+        // Create the handles that don't exist yet, parented to the delegator.
+        for name in names {
+            let email = format!("{}@{}", name, self.domain);
+            if self.user_store.get_email(&email).map_err(to_reg_err)?.is_none() {
+                self.user_store
+                    .add_email_with_type(UserId(user_id), &email, true, EmailType::Agent)
+                    .map_err(to_reg_err)?;
+                self.user_store
+                    .set_parent_email(&email, Some(delegator))
+                    .map_err(to_reg_err)?;
+            }
+        }
+        Ok(())
     }
 }

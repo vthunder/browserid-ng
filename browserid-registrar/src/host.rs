@@ -35,6 +35,19 @@ pub trait RegistrarHost: Send + Sync {
 
     /// The account's agent identities (for key-revocation status flips).
     fn agent_identities(&self, user_id: u64) -> Result<Vec<AgentIdentity>, RegistrarError>;
+
+    /// Reserve agent handles `<name>@<domain>` for `user_id`, parented to
+    /// `delegator` — the session-authenticated counterpart of the
+    /// provisioning-key `/provision/reserve`, used by paired provisioning to
+    /// lock handles at approval time (closing the approve→mint race). Errors
+    /// with `NamesTaken` if any handle belongs to another account, or
+    /// `PolicyRefused` on quota.
+    fn reserve_agent_names(
+        &self,
+        user_id: u64,
+        delegator: &str,
+        names: &[String],
+    ) -> Result<(), RegistrarError>;
 }
 
 /// Require that the caller presented the session's CSRF token.

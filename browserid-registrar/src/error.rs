@@ -44,6 +44,9 @@ pub enum RegistrarError {
 
     #[error("Provision request not found")]
     ProvisionRequestNotFound,
+
+    #[error("Handles already taken: {0:?}")]
+    NamesTaken(Vec<String>),
 }
 
 impl IntoResponse for RegistrarError {
@@ -73,6 +76,18 @@ impl IntoResponse for RegistrarError {
             RegistrarError::PollTooFast => (StatusCode::TOO_MANY_REQUESTS, "Polling too fast"),
             RegistrarError::ProvisionRequestNotFound => {
                 (StatusCode::NOT_FOUND, "Provision request not found or expired")
+            }
+            RegistrarError::NamesTaken(names) => {
+                return (
+                    StatusCode::CONFLICT,
+                    axum::Json(json!({
+                        "success": false,
+                        "error": "names_taken",
+                        "reason": format!("already taken: {}", names.join(", ")),
+                        "taken": names,
+                    })),
+                )
+                    .into_response();
             }
         };
 

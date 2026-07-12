@@ -97,16 +97,20 @@ fn jwt_claims(jwt: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&B64.decode(payload).ok()?).ok()
 }
 
-/// From a `U_cert~P_cert` delegation: the provisioning pubkey, constraint
-/// names/patterns, and the IdP issuer (from the U_cert). All from the signed
-/// certs — never trusted client metadata.
-fn delegation_meta(delegation: &str) -> Option<(String, Vec<String>, Vec<String>, String)> {
+/// Extracted from a `U_cert~P_cert` delegation — all from the signed certs,
+/// never trusted client metadata.
+struct DelegationMeta {
+    provisioning_pubkey: String,
+    names: Vec<String>,
+    patterns: Vec<String>,
+    idp_iss: String,   // U_cert issuer (the IdP domain)
+    delegator: String, // P_cert issuer (the delegating identity's email)
+}
+
+fn delegation_meta(delegation: &str) -> Option<DelegationMeta> {
     let mut parts = delegation.split('~');
-    let u_cert = parts.next()?;
-    let p_cert = parts.next()?;
-    let u = jwt_claims(u_cert)?;
-    let p = jwt_claims(p_cert)?;
-    let p_pub = p.get("public-key")?.get("publicKey")?.as_str()?.to_string();
+    let u = jwt_claims(parts.next()?)?;
+    let p = jwt_claims(parts.next()?)?;
     let arr = |v: &serde_json::Value, k| -> Vec<String> {
         v.get("constraint")
             .and_then(|c| c.get(k))
@@ -114,10 +118,13 @@ fn delegation_meta(delegation: &str) -> Option<(String, Vec<String>, Vec<String>
             .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
             .unwrap_or_default()
     };
-    let names = arr(&p, "names");
-    let patterns = arr(&p, "patterns");
-    let idp_iss = u.get("iss")?.as_str()?.to_string();
-    Some((p_pub, names, patterns, idp_iss))
+    Some(DelegationMeta {
+        provisioning_pubkey: p.get("public-key")?.get("publicKey")?.as_str()?.to_string(),
+        names: arr(&p, "names"),
+        patterns: arr(&p, "patterns"),
+        idp_iss: u.get("iss")?.as_str()?.to_string(),
+        delegator: p.get("iss")?.as_str()?.to_string(),
+    })
 }
 
 fn sweep() {
@@ -373,32 +380,56 @@ pub async fn complete(
     let user = require_session(&state, &cookies)?;
     require_csrf(&user, &req.csrf)?;
 
-    let mut m = PROVISIONS.lock().unwrap();
-    let rec = m
-        .get_mut(&req.code)
-        .filter(|r| !r.is_expired() && r.status == Status::Pending)
-        .ok_or(RegistrarError::ProvisionRequestNotFound)?;
+    // Snapshot the pending record's expected pubkey (drop the lock before DB work).
+    let expected_pubkey = {
+        let m = PROVISIONS.lock().unwrap();
+        let rec = m
+            .get(&req.code)
+            .filter(|r| !r.is_expired() && r.status == Status::Pending)
+            .ok_or(RegistrarError::ProvisionRequestNotFound)?;
+        rec.provisioning_pubkey.clone()
+    };
 
     if !req.approve {
-        rec.status = Status::Denied;
+        if let Some(rec) = PROVISIONS.lock().unwrap().get_mut(&req.code) {
+            rec.status = Status::Denied;
+        }
         return Ok(Json(CompleteResponse { success: true }));
     }
 
     let delegation = req
         .delegation
+        .clone()
         .ok_or_else(|| RegistrarError::ValidationError("delegation required to approve".into()))?;
-    let (p_pub, names, patterns, idp_iss) = delegation_meta(&delegation)
+    let meta = delegation_meta(&delegation)
         .ok_or_else(|| RegistrarError::ValidationError("malformed delegation".into()))?;
     // Binding: the delegation must certify the AGENT's provisioning pubkey.
-    if p_pub != rec.provisioning_pubkey {
+    if meta.provisioning_pubkey != expected_pubkey {
         return Err(RegistrarError::ValidationError(
             "delegation does not certify the requested provisioning key".into(),
         ));
     }
+    // The session must own the delegating identity.
+    if !state.host.owns_verified_email(user.user_id, &meta.delegator).unwrap_or(false) {
+        return Err(RegistrarError::PolicyRefused(
+            "you don't own the delegating identity".into(),
+        ));
+    }
+    // Reserve the handles NOW (session-authenticated) — locks them to this
+    // account so the agent's later mint can't be refused (closes the race).
+    // NamesTaken/quota errors surface here, before anything is stored.
+    state.host.reserve_agent_names(user.user_id, &meta.delegator, &meta.names)?;
+
+    // Store the result for single-delivery pickup.
+    let mut m = PROVISIONS.lock().unwrap();
+    let rec = m
+        .get_mut(&req.code)
+        .filter(|r| r.status == Status::Pending)
+        .ok_or(RegistrarError::ProvisionRequestNotFound)?;
     rec.delegation = Some(delegation);
-    rec.idp = Some(public_origin(&idp_iss));
-    rec.names = names;
-    rec.patterns = patterns;
+    rec.idp = Some(public_origin(&meta.idp_iss));
+    rec.names = meta.names;
+    rec.patterns = meta.patterns;
     rec.status = Status::Completed;
     Ok(Json(CompleteResponse { success: true }))
 }
@@ -424,15 +455,17 @@ mod tests {
         // aren't checked here — binding is by pubkey equality).
         let b64 = |v: &serde_json::Value| B64.encode(serde_json::to_vec(v).unwrap());
         let u = json!({ "iss": "mingo.place", "principal": { "email": "alice@mingo.place" } });
-        let p = json!({ "public-key": { "algorithm": "Ed25519", "publicKey": "PUBKEY123" },
+        let p = json!({ "iss": "alice@mingo.place",
+                        "public-key": { "algorithm": "Ed25519", "publicKey": "PUBKEY123" },
                         "constraint": { "names": ["researcher"], "patterns": ["svc+*"] } });
         let u_cert = format!("h.{}.s", b64(&u));
         let p_cert = format!("h.{}.s", b64(&p));
-        let (pubkey, names, patterns, idp) = delegation_meta(&format!("{u_cert}~{p_cert}")).unwrap();
-        assert_eq!(pubkey, "PUBKEY123");
-        assert_eq!(names, vec!["researcher"]);
-        assert_eq!(patterns, vec!["svc+*"]);
-        assert_eq!(idp, "mingo.place");
+        let m = delegation_meta(&format!("{u_cert}~{p_cert}")).unwrap();
+        assert_eq!(m.provisioning_pubkey, "PUBKEY123");
+        assert_eq!(m.names, vec!["researcher"]);
+        assert_eq!(m.patterns, vec!["svc+*"]);
+        assert_eq!(m.idp_iss, "mingo.place");
+        assert_eq!(m.delegator, "alice@mingo.place");
     }
 
     #[test]
