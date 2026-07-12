@@ -330,13 +330,25 @@ function renderUserIdentities() {
 
 /// A minted agent's parent (from the derived map) or, for a not-yet-minted
 /// reserved handle, the provisioning cert's delegator.
+// Mirror of the server's agent-identity email rule (browserid_registrar::
+// agent_identity_email): bare `<name>@<idp>` for primary-IdP owners, sub-address
+// `<local>+<name>@<domain>` (RFC 5233) for fallback owners. Must stay in sync.
+function agentIdentityEmail(delegator, idpDomain, name) {
+  const at = (delegator || '').lastIndexOf('@');
+  const domain = at >= 0 ? delegator.slice(at + 1) : '';
+  const local = at >= 0 ? delegator.slice(0, at) : (delegator || '');
+  return domain && domain.toLowerCase() !== (idpDomain || '').toLowerCase()
+    ? `${local}+${name}@${domain}`
+    : `${name}@${idpDomain}`;
+}
+
 function agentEntries() {
   const byEmail = new Map();
   // Reserved handles from provisioning certs (may not be minted yet).
   for (const c of account.certs) {
     if (c.revoked) continue;
     for (const name of (c.names || [])) {
-      const email = `${name}@${c.domain}`;
+      const email = agentIdentityEmail(c.delegator_email, c.domain, name);
       byEmail.set(email, { email, parent: c.delegator_email, minted: false, keyId: c.id, keyLabel: c.label });
     }
   }
@@ -511,7 +523,7 @@ $('ag-create').onclick = async () => {
     const json = JSON.stringify(credential, null, 2);
     $('ag-cred-json').textContent = json;
     const idText = uniqNames.length === 1 && !uniqPatterns.length
-      ? `Provisions as ${uniqNames[0]}@${idpDomain}`
+      ? `Provisions as ${agentIdentityEmail(id.email, idpDomain, uniqNames[0])}`
       : [uniqNames.length ? `names: ${uniqNames.join(', ')}` : '', uniqPatterns.length ? `patterns: ${uniqPatterns.join(', ')}` : '']
           .filter(Boolean).join(' · ');
     $('ag-cred-identity').textContent = idText + ` — at ${idpDomain}`;

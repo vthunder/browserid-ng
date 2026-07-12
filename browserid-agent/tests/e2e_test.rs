@@ -8,18 +8,24 @@ mod common;
 use browserid_agent::{AgentError, AgentIdentity};
 use browserid_core::{BackedAssertion, Certificate, StatusRef, Warrant};
 use chrono::Duration;
-use common::{make_credential, start_broker};
+use common::{make_credential, make_credential_email, start_broker};
 
 const AUDIENCE: &str = "https://api.example.com";
 
 #[tokio::test]
 async fn sdk_provision_assert_verify_persist_revoke() {
     let (base, broker_pubkey) = start_broker().await;
-    let (credential, user_kp, _session) = make_credential(&base).await;
+    // Offline chain verification is primary-only, so this roundtrip uses a
+    // PRIMARY human (email domain == the broker's issuer domain); the agent is
+    // then a bare `attestor@<broker-domain>` handle it can verify offline.
+    // (Fallback sub-addressing is covered by the reserve tests + guestbook e2e.)
+    let host = base.strip_prefix("http://").unwrap().to_string();
+    let human = format!("human@{host}");
+    let (credential, user_kp, _session) = make_credential_email(&base, &human).await;
 
     // Provision: SDK generates+keeps the agent keypair; endorse→mint yields a cert.
     let mut agent = AgentIdentity::provision(&credential, Some("attestor")).await.unwrap();
-    assert!(agent.email().starts_with("attestor@127.0.0.1:"));
+    assert_eq!(agent.email(), format!("attestor@{host}"));
 
     // v0.4: an agent cert only presents with a user-signed warrant (§5.3).
     // Un-warranted audiences fail closed at the SDK.
@@ -54,7 +60,7 @@ async fn sdk_provision_assert_verify_persist_revoke() {
         .unwrap();
     assert_eq!(verified.email, agent.email());
     let attribution = verified.agent.expect("agent attribution");
-    assert_eq!(attribution.parent, "human@example.com");
+    assert_eq!(attribution.parent, human);
     assert_eq!(attribution.scopes, vec!["post"]);
 
     // Explicit re-mint (endorse→mint again, keypair unchanged) still verifies.

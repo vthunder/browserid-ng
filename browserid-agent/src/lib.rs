@@ -157,6 +157,11 @@ pub struct AgentIdentity {
     idp_domain: String,
     keypair: KeyPair,
     email: String,
+    /// The agent handle (the constraint-authorized name), kept distinct from the
+    /// email: for a fallback (sub-addressed) identity the email is
+    /// `<human>+<handle>@<domain>`, and the handle can itself contain `+` (e.g. a
+    /// `svc+<hex>` pattern name), so it is NOT recoverable from the email.
+    handle: String,
     cert: Certificate,
     /// User-signed warrants, one per RP audience (spec §5.2). Required to
     /// present anywhere once the cert is an agent certificate.
@@ -192,6 +197,10 @@ pub struct StoredIdentity {
     pub secret_key: String,
     pub email: String,
     pub cert: String,
+    /// The agent handle. Absent in pre-sub-addressing files, where the email was
+    /// bare `<handle>@domain` so the local-part recovers it (see `from_stored`).
+    #[serde(default)]
+    pub handle: String,
     /// Encoded warrants (one per audience); absent in pre-v0.4 files
     #[serde(default)]
     pub warrants: Vec<String>,
@@ -244,6 +253,7 @@ impl AgentIdentity {
             idp_domain,
             keypair,
             email,
+            handle: name,
             cert,
             warrants: std::collections::HashMap::new(),
         })
@@ -316,11 +326,9 @@ impl AgentIdentity {
         grants: Vec<WarrantGrant>,
     ) -> Result<WarrantRequestHandle> {
         let audiences: Vec<String> = grants.iter().map(|g| g.aud.clone()).collect();
-        let name = self
-            .email
-            .split('@')
-            .next()
-            .ok_or_else(|| AgentError::InvalidStored("email has no local part".into()))?;
+        // The warrant request carries the constraint-authorized handle, not the
+        // email local-part (which for a sub-addressed identity is `<human>+<handle>`).
+        let name = self.handle.as_str();
         let registrar_domain = url_host(&self.credential.broker).to_string();
         let key = self.credential.provisioning_key()?;
         let request = ProvisioningRequest::warrant(&registrar_domain, name, grants, &key)?;
@@ -490,18 +498,11 @@ impl AgentIdentity {
     /// Re-mint the certificate now (endorse a fresh `mint` request → IdP),
     /// regardless of expiry. The agent keypair is unchanged.
     pub async fn remint(&mut self) -> Result<()> {
-        // Re-derive the local part from the minted email.
-        let name = self
-            .email
-            .split('@')
-            .next()
-            .ok_or_else(|| AgentError::InvalidStored("email has no local part".into()))?
-            .to_string();
         let (_email, cert) = mint(
             &self.http,
             &self.credential,
             &self.idp_domain,
-            &name,
+            &self.handle,
             &self.keypair,
         )
         .await?;
@@ -512,9 +513,8 @@ impl AgentIdentity {
     /// Revoke this identity at the IdP (endorsed `revoke` request): future
     /// mints fail and the outstanding cert ages out within its TTL.
     pub async fn revoke(self) -> Result<()> {
-        let name = self.email.split('@').next().unwrap_or_default().to_string();
         let key = self.credential.provisioning_key()?;
-        let request = ProvisioningRequest::revoke(&self.idp_domain, &name, &key)?;
+        let request = ProvisioningRequest::revoke(&self.idp_domain, &self.handle, &key)?;
         let bundle = build_bundle(&self.credential, request)?;
         let endorsement = endorse(&self.http, &self.credential.broker, &bundle).await?;
         idp_post(
@@ -588,6 +588,7 @@ impl AgentIdentity {
                 .encode(self.keypair.secret_bytes()),
             email: self.email.clone(),
             cert: self.cert.encoded().to_string(),
+            handle: self.handle.clone(),
             warrants: self.warrants.values().map(|w| w.encoded().to_string()).collect(),
         }
     }
@@ -600,6 +601,13 @@ impl AgentIdentity {
             .map_err(|e| AgentError::InvalidStored(format!("bad secret_key: {e}")))?;
         let keypair = KeyPair::from_seed(&seed)?;
         let cert = Certificate::parse(&stored.cert)?;
+        // Legacy files (no stored handle) had a bare `<handle>@domain` email, so
+        // the local-part is the handle. New files carry it explicitly.
+        let handle = if stored.handle.is_empty() {
+            stored.email.split('@').next().unwrap_or_default().to_string()
+        } else {
+            stored.handle.clone()
+        };
         let mut warrants = std::collections::HashMap::new();
         for encoded in &stored.warrants {
             let warrant = Warrant::parse(encoded)
@@ -612,6 +620,7 @@ impl AgentIdentity {
             credential: credential.clone(),
             keypair,
             email: stored.email,
+            handle,
             cert,
             warrants,
         })
@@ -806,6 +815,7 @@ mod tests {
             credential: cred.clone(),
             keypair: agent_kp,
             email: "bot@mingo.place".into(),
+            handle: "bot".into(),
             cert,
             warrants: std::collections::HashMap::new(),
         };
@@ -851,6 +861,7 @@ mod tests {
             credential: cred.clone(),
             keypair: agent_kp,
             email: "bot@mingo.place".into(),
+            handle: "bot".into(),
             cert,
             warrants: std::collections::HashMap::new(),
         };
@@ -909,7 +920,7 @@ mod tests {
         let mut identity = AgentIdentity {
             http: reqwest::Client::new(), idp_domain: "mingo.place".into(),
             credential: cred, keypair: agent_kp, email: "bot@mingo.place".into(),
-            cert, warrants: std::collections::HashMap::new(),
+            handle: "bot".into(), cert, warrants: std::collections::HashMap::new(),
         };
         let aud = "https://api.example.com";
         // No warrant yet: nothing is covered.

@@ -296,6 +296,11 @@ impl Warrant {
         &self.claims.aud
     }
 
+    /// The opaque scopes this warrant grants, if any.
+    pub fn scopes(&self) -> Option<&[String]> {
+        self.claims.scopes.as_deref()
+    }
+
     pub fn is_expired(&self) -> bool {
         expired(self.claims.exp)
     }

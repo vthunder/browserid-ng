@@ -51,8 +51,16 @@ pub async fn start_broker() -> (String, PublicKey) {
 /// that drive session-authenticated surfaces like the consent API). This
 /// mirrors exactly what the browser key-management page does.
 pub async fn make_credential(base: &str) -> (AgentCredential, KeyPair, String) {
+    make_credential_email(base, "human@example.com").await
+}
+
+/// Like [`make_credential`] but with an explicit human email. Pass a *primary*
+/// email (domain == the broker's issuer domain) when the test needs OFFLINE
+/// verification (rp::Verifier / core), which is primary-only; the default
+/// `human@example.com` exercises the fallback / broker-rooted case (agents are
+/// then sub-addressed and verify only via the DNS-aware hosted verifier).
+pub async fn make_credential_email(base: &str, email: &str) -> (AgentCredential, KeyPair, String) {
     let http = reqwest::Client::new();
-    let email = "human@example.com";
 
     // Account creation (stage → verify → complete).
     assert!(http

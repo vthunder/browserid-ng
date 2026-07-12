@@ -209,7 +209,9 @@ pub async fn request(
         .and_then(|(u, _)| browserid_core::Certificate::parse(u).ok())
         .map(|u| u.issuer().to_string())
         .ok_or_else(|| RegistrarError::Internal("registered bundle has no parseable U_cert".into()))?;
-    let agent_email = format!("{name}@{idp_domain}");
+    // Per-owner-scoped for fallback users (sub-address under their own email),
+    // bare for primary-IdP users. Must match the minted cert's subject exactly.
+    let agent_email = crate::agent_identity_email(&rec.delegator_email, &idp_domain, name);
 
     let code = new_code();
     let now = Utc::now();

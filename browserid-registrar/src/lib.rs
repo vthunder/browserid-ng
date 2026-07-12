@@ -53,6 +53,30 @@ pub use consent::scope_fingerprint;
 pub use registry::valid_agent_name;
 pub use store::{RegistrarStore, StoreResult};
 
+/// Construct an agent identity's email from its owner (the delegating human) and
+/// the IdP domain that roots them. This is the single source of truth for the
+/// agent-namespace shape — every mint/reserve/warrant site must agree, or the
+/// warrant's agent-email comparison fails at verify time.
+///
+/// - **Primary IdP** — the owner's email domain *is* the IdP domain: a bare
+///   handle, `<name>@<idp_domain>`. A global-unique namespace at that domain,
+///   kept deliberately as an incentive to use a primary-IdP email.
+/// - **Fallback** — the owner is broker-rooted (their email domain differs from
+///   the IdP/broker domain): sub-address the handle under the owner's own
+///   verified email, `<local>+<name>@<owner_domain>` (RFC 5233). Handles are
+///   then scoped per-owner by construction — cross-user squatting is impossible,
+///   because only the party who proved `<local>@<owner_domain>` can mint under
+///   it. The cert issuer stays the broker; verification uses the same fallback
+///   path as the human (the email domain need not equal the issuer).
+pub fn agent_identity_email(delegator_email: &str, idp_domain: &str, name: &str) -> String {
+    match delegator_email.rsplit_once('@') {
+        Some((local, domain)) if !domain.eq_ignore_ascii_case(idp_domain) => {
+            format!("{local}+{name}@{domain}")
+        }
+        _ => format!("{name}@{idp_domain}"),
+    }
+}
+
 /// Everything the registrar needs from its deployment.
 pub struct RegistrarState {
     /// The registrar's own domain (endorsement issuer, status-list subject,

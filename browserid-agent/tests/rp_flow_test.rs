@@ -24,7 +24,7 @@ use browserid_core::rp_auth::GRANT_TYPE_ASSERTION;
 use browserid_core::{Certificate, StatusRef, TokenRequest, Warrant};
 use chrono::Duration;
 use browserid_rp::{oauth_metadata, TokenStore, Verifier};
-use common::{make_credential, start_broker};
+use common::{make_credential, make_credential_email, start_broker};
 use serde_json::{json, Value};
 
 struct RpState {
@@ -107,7 +107,10 @@ async fn start_rp(broker_base: &str) -> String {
 #[tokio::test]
 async fn agent_authenticates_to_cold_rp() {
     let (broker, _) = start_broker().await;
-    let (credential, user_kp, _session) = make_credential(&broker).await;
+    // The RP verifies offline (rp::Verifier, primary-only), so use a PRIMARY
+    // human (email domain == the broker's issuer domain) → bare agent handle.
+    let human = format!("human@{}", broker.strip_prefix("http://").unwrap());
+    let (credential, user_kp, _session) = make_credential_email(&broker, &human).await;
     let rp = start_rp(&broker).await;
 
     let mut agent = AgentIdentity::provision(&credential, Some("worker")).await.unwrap();
@@ -141,7 +144,7 @@ async fn agent_authenticates_to_cold_rp() {
     assert_eq!(grant.email.as_deref(), Some(agent.email()));
     assert_eq!(
         grant.agent.as_ref().map(|a| a.parent.as_str()),
-        Some("human@example.com"),
+        Some(human.as_str()),
         "token response carries the attribution"
     );
 
