@@ -110,6 +110,9 @@
           <label for="si-newpass">Choose a password</label>
           <input id="si-newpass" type="password" autocomplete="new-password" minlength="8" maxlength="80">
         </div>
+        <p class="sub" id="si-resend-wrap" hidden style="margin:.4rem 0 0">
+          Didn't get it? Check spam, or <a href="#" id="si-resend">resend the code</a><span id="si-resend-timer"></span>.
+        </p>
       </div>
       <button type="submit" class="primary" id="si-btn">Continue</button>
       <button type="button" id="si-back" hidden>Use a different email</button>
@@ -284,6 +287,7 @@ function siShow(mode, opts) {
   $('si-pass-block').hidden   = !(mode === 'login' || mode === 'create');
   $('si-code-block').hidden   = !(mode === 'create-code' || mode === 'reset-code');
   $('si-newpass-wrap').hidden = (mode !== 'reset-code');
+  $('si-resend-wrap').hidden  = !(mode === 'create-code' || mode === 'reset-code');
   $('si-email').readOnly = (mode !== 'email');
   $('si-back').hidden = (mode === 'email');
   $('si-pass').autocomplete = (mode === 'create') ? 'new-password' : 'current-password';
@@ -300,6 +304,40 @@ function siShow(mode, opts) {
 function siMuted(m) { $('si-status').className = 'status muted'; $('si-status').textContent = m; }
 function siErr(m)   { $('si-status').className = 'status err';   $('si-status').textContent = m; }
 
+// Resend the emailed code, throttled to one per 5 minutes. The button is
+// disabled with a live countdown; the initial send starts the cooldown too.
+const SI_RESEND_COOLDOWN_MS = 5 * 60 * 1000;
+let siResendReadyAt = 0, siResendTimer = null;
+function siTickResend() {
+  const link = $('si-resend'), timer = $('si-resend-timer');
+  const remain = Math.ceil((siResendReadyAt - Date.now()) / 1000);
+  if (remain > 0) {
+    link.style.pointerEvents = 'none'; link.style.opacity = '.5';
+    timer.textContent = ` (again in ${Math.floor(remain / 60)}:${String(remain % 60).padStart(2, '0')})`;
+  } else {
+    link.style.pointerEvents = ''; link.style.opacity = ''; timer.textContent = '';
+    if (siResendTimer) { clearInterval(siResendTimer); siResendTimer = null; }
+  }
+}
+function siStartResendCooldown() {
+  siResendReadyAt = Date.now() + SI_RESEND_COOLDOWN_MS;
+  siTickResend();
+  if (siResendTimer) clearInterval(siResendTimer);
+  siResendTimer = setInterval(siTickResend, 1000);
+}
+$('si-resend').onclick = async (ev) => {
+  ev.preventDefault();
+  if (Date.now() < siResendReadyAt) return;
+  const email = $('si-email').value.trim();
+  try {
+    if (siMode === 'create-code')      await post('/wsapi/stage_user', { email, pass: siPendingPass });
+    else if (siMode === 'reset-code')  await post('/wsapi/stage_reset', { email });
+    else return;
+    siMuted('Code resent — check your email (and spam).');
+    siStartResendCooldown();
+  } catch (e) { siErr(e.message); }
+};
+
 $('si-back').onclick = () => {
   $('si-pass').value = ''; $('si-code').value = ''; $('si-newpass').value = ''; siPendingPass = '';
   siShow('email', { lead: "Enter your email — we'll sign you in or set you up.", btn: 'Continue' });
@@ -309,6 +347,7 @@ async function siSendResetCode(email, lead) {
   siMuted('Emailing a code…');
   await post('/wsapi/stage_reset', { email });
   siShow('reset-code', { lead: `${lead} — we emailed a code to ${email}.`, btn: 'Sign in' });
+  siStartResendCooldown();
 }
 
 async function siDiscover(email) {
@@ -352,6 +391,7 @@ $('signin-form').onsubmit = async (e) => {
       await post('/wsapi/stage_user', { email, pass });
       siPendingPass = pass;
       siShow('create-code', { lead: `Almost there — enter the code we emailed to ${email}.`, btn: 'Confirm & sign in' });
+      siStartResendCooldown();
       return;
     }
     if (siMode === 'create-code') {
