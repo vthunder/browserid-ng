@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-12T11:42:42Z
-updated_at: 2026-07-12T12:54:52Z
+updated_at: 2026-07-12T13:54:59Z
 ---
 
 Today the initial agent-credential handoff has no protocol: the user goes to browserid.me/agents, downloads a credential JSON (containing the provisioning PRIVATE key), and the wallet polls ~/Downloads to pick it up. Standardize it as a device-authorization-style pairing flow, mirroring the warrant consent flow (request -> verification_uri -> poll -> pickup).
@@ -66,3 +66,11 @@ REMAINING (follow-ups, not blocking the happy path):
 - Typed user_code entry UI (/link page) not built (resolve endpoint ready; one-click path works).
 - Reservation currently claimed at mint (seconds after approve), not at approval — acceptable for v1; hardening in the reservation bean.
 - No e2e test of the browser approval yet.
+
+## Q1 + Q2 done (2026-07-12)
+
+Q1 (race closed): RegistrarHost::reserve_agent_names — session-authed reservation mirroring ensure_agent_identity (collision scan, quota, parented to delegator). /agent-provision/complete verifies session owns the delegating identity, then reserves handles BEFORE storing the delegation, so approved handles are locked to the account and the agent's mint can't be refused. NamesTaken -> 409, surfaced before storing. Registrar+broker integration tests green.
+
+Q2 (new-user inline): approval panel is now a banner over the account app; lists ALL account identities and activates the chosen one on approve (ensureActive: key+cert). Brand-new users add an email in the app below; the picker auto-refreshes. Resume-after-sign-in already worked (sign-in reload preserves ?provision).
+
+Still remaining: end-to-end Playwright test of the browser approval loop; the typed user_code /link UI; primary cross-domain delegating identities (owns_verified_email assumes the delegator is a verified email on the browserid.me account — fine for secondary/browserid.me identities, edge case for external primaries).
