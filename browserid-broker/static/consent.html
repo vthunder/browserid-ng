@@ -144,9 +144,10 @@ function render(requests) {
   const audienceNote = (aud) => {
     try {
       const u = new URL(aud);
-      if (u.protocol === 'https:' && u.origin === aud) return '';
-      if (u.protocol === 'http:' && u.origin === aud)
-        return '<span class="warn"> ⚠ not an https site</span>';
+      // Any https URL is a normal web audience — a path (e.g. /guestbook) just
+      // scopes the grant more tightly than a bare origin, which is fine.
+      if (u.protocol === 'https:') return '';
+      if (u.protocol === 'http:') return '<span class="warn"> ⚠ not an https site</span>';
     } catch {}
     return '<span class="warn"> ⚠ not a standard web origin — approve only if you recognize this exact identifier</span>';
   };

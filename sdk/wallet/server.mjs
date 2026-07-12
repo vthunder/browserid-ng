@@ -39,9 +39,10 @@ mkdirSync(HOME, { recursive: true });
 const text = (t) => ({ content: [{ type: "text", text: t }] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // How long a tool call waits for a pending approval before returning "still
-// pending" (so the human can approve while the agent's call is in flight). If a
-// client cuts the call short, a retry still works — the background poll persists.
-const APPROVAL_WAIT_MS = 90000;
+// waiting" (so the human can approve while the agent's call is in flight). Kept
+// under the MCP client's default 60s request timeout; if the human is slower,
+// the agent just calls again (the background poll persists across calls).
+const APPROVAL_WAIT_MS = 45000;
 
 // A provisioning is a two-step handshake (start → human approves → pickup). The
 // tools must NEVER block waiting for the human — they return the approve URL and
@@ -85,7 +86,8 @@ async function loadAgent() {
 function explain(e) {
   if (e instanceof PendingProvision)
     return text(
-      `PENDING — the human hasn't approved provisioning yet. Show them this link and wait for them to approve, then try again:\n${e.url}`
+      `STILL WAITING for the human to approve — this is normal. Keep this link visible and call your ` +
+        `tool AGAIN to keep waiting (each call polls ~45s):\n${e.url}`
     );
   if (e instanceof RequestError)
     return text(
@@ -165,7 +167,8 @@ server.registerTool(
           `(or go to ${pairing.verificationUri} and enter code ${pairing.userCode})\n` +
           `Agent key fingerprint: ${pairing.fingerprint}\n\n` +
           `⚠ Show the human this APPROVE_URL and ask them to open it and approve. ` +
-          `Do NOT call other tools until they tell you they've approved — then call identity to confirm.`
+          `Then IMMEDIATELY call your next tool (e.g. sign_guestbook, or identity) — it waits for their ` +
+          `approval and continues automatically. Do NOT wait for the human to tell you; just call the next tool.`
       );
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);
@@ -205,7 +208,7 @@ server.registerTool(
       if (r.ready) return text(`READY — authorized for ${audience}. Call get_assertion.`);
       return text(
         `APPROVE_URL: ${r.approveUrl}\n⚠ Show the human this link and ask them to approve. ` +
-          `Wait for them to confirm, then call get_assertion (or authorize again to check).`
+          `Then IMMEDIATELY call get_assertion — it waits for their approval and continues. Do NOT wait for the human to tell you.`
       );
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);
@@ -248,7 +251,8 @@ server.registerTool(
       if (!w.ready)
         return text(
           `APPROVE_URL: ${w.approveUrl}\n⚠ Show the human this link and ask them to approve you signing ` +
-            `the guestbook. Wait for them to confirm, then call sign_guestbook again with the same message.`
+            `the guestbook. Then IMMEDIATELY call sign_guestbook again with the same message — it waits for ` +
+            `their approval and continues. Do NOT wait for the human to tell you.`
         );
 
       const assertion = await agent.assertionFor(GUESTBOOK_URL);
