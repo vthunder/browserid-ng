@@ -761,8 +761,12 @@ let provisionCtx = null; // { code, pubkey } while an approval is showing
 // Activate a secondary identity in this browser (key + cached cert) so it can
 // sign; returns the local identity. Primary identities activate via their IdP.
 async function ensureActive(email) {
+  // Reuse a cached cert only if it's still valid. A stale/expired one (e.g. left
+  // in this browser's keystore from before a server reset) must be re-minted —
+  // otherwise we'd sign a delegation with an expired U_cert and the agent's mint
+  // fails with a cert-expiry error.
   const have = localIdentity(email);
-  if (have) return have;
+  if (have && isActive(email)) return have;
   let info; try { info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`); } catch { info = {}; }
   if (info.type === 'primary')
     throw new Error(`Sign in to an app with ${email} first — primary identities activate through their own IdP.`);
@@ -772,6 +776,19 @@ async function ensureActive(email) {
   await window.Keystore.put(issuer, email, { privateKey: kp.privateKey, publicKeyX: kp.publicKeyX, cert: body.cert });
   await refreshKeystore();
   return localIdentity(email);
+}
+
+// After sign-in a broker-verified identity should be usable right away — not
+// left as "needs sign-in". Mint+cache a cert for each of the account's own
+// secondary emails that isn't active yet. Primary emails are skipped (they
+// activate through their own IdP, so ensureActive throws — we ignore it).
+async function autoActivateIdentities() {
+  const targets = account.emails.filter(e => !account.agents.includes(e) && !isActive(e));
+  let changed = false;
+  for (const email of targets) {
+    try { await ensureActive(email); changed = true; } catch { /* primary or transient */ }
+  }
+  if (changed) renderUserIdentities();
 }
 
 // The panel lists ALL of the account's identities (not just already-active
@@ -853,6 +870,7 @@ async function boot() {
   $('app').hidden = false;
   renderUserIdentities();
   renderAgents();
+  await autoActivateIdentities(); // make a just-verified identity usable now
   // Paired provisioning banner sits above the account app so add-email/activate
   // are right there for new users.
   if (provisionCode) {

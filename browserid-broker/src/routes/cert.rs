@@ -112,6 +112,25 @@ pub(crate) fn issue_certificate<U: UserStore>(
                 email_record.email
             ))
         })?;
+        // GUARDRAIL (defense in depth): never stamp an agent cert unless its
+        // email is a canonical derivation of a VERIFIED email this same account
+        // owns. Ownership/verification are already enforced at reservation, but
+        // this is the single issuance choke point — so the fallback IdP can
+        // never certify an address (e.g. a bare `victim@gmail.com`) that the
+        // owner has not proven they control.
+        let parent_rec = user_store
+            .get_email(parent)?
+            .ok_or_else(|| BrokerError::PolicyRefused("agent parent is not a known email".into()))?;
+        if parent_rec.user_id != email_record.user_id || !parent_rec.verified {
+            return Err(BrokerError::PolicyRefused(
+                "agent parent is not a verified email on this account".into(),
+            ));
+        }
+        if !browserid_registrar::is_canonical_agent_email(&email_record.email, parent, domain) {
+            return Err(BrokerError::PolicyRefused(
+                "agent email is not a canonical sub-address of its owner's verified email".into(),
+            ));
+        }
         // The broker is IdP + registrar in one process, so an agent it mints
         // is registered here: the cert's registrar (spec §5.1) is the broker's
         // own origin, matching the status list its consent flow publishes.

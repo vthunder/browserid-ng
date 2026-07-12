@@ -94,9 +94,19 @@ pub async fn list_provisioning_certs(
                 .and_then(|(_, p)| ProvisioningCert::parse(p).ok())
                 .map(|p| p.constraint().clone())
                 .unwrap_or_default();
+            // The IdP domain is the U_cert issuer, NOT the email's domain: for a
+            // fallback (broker-rooted) owner those differ, and the client uses
+            // this to reconstruct the sub-addressed agent email. Getting it from
+            // the email domain made the UI show a bare `<name>@<domain>`.
+            let idp_domain = c
+                .bundle
+                .split_once('~')
+                .and_then(|(u, _)| browserid_core::Certificate::parse(u).ok())
+                .map(|u| u.issuer().to_string())
+                .unwrap_or_else(|| idp_domain_of(&c.delegator_email).to_string());
             ProvisioningCertInfo {
                 id: c.id,
-                domain: idp_domain_of(&c.delegator_email).to_string(),
+                domain: idp_domain,
                 label: c.label,
                 delegator_email: c.delegator_email,
                 names: constraint.names,
