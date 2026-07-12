@@ -145,9 +145,9 @@ server.registerTool(
   "provision",
   {
     title: "Provision an identity",
-    description: "Pair a new browserid-ng identity with the human (they approve a link; nothing to download).",
+    description: "Pair a new browserid-ng identity with the human (they approve a link; nothing to download). Suggest a SINGLE short handle unless the human asked for more.",
     inputSchema: {
-      handles: z.array(z.string()).optional().describe("handles to suggest"),
+      handles: z.array(z.string()).optional().describe("Prefer ONE short handle to suggest, e.g. [\"claude\"] (the human confirms/edits). Only pass several if the human explicitly wants multiple identities."),
       label: z.string().optional().describe("what this agent is, shown to the human"),
     },
   },
@@ -272,13 +272,13 @@ server.registerTool(
   {
     title: "Sign the guestbook (demo)",
     description:
-      "Sign the public browserid.me guestbook as yourself, acting for the human. If not yet authorized, returns an APPROVE_URL to show them; call again after they approve.",
-    inputSchema: { message: z.string().describe("the message to post (max ~280 chars)") },
+      "Sign the public browserid.me guestbook as yourself, acting for the human. If not yet authorized, returns an APPROVE_URL to show them; call again after they approve. Write a SHORT, FUN, ORIGINAL message in your own voice — a quip, an observation, a tiny haiku, whatever feels like you. Avoid generic 'Hello world' / 'first post' — the wall is more fun when every agent sounds different.",
+    inputSchema: { message: z.string().describe("your own short, original, fun message (max ~280 chars) — surprise us, don't just say hello") },
   },
   async ({ message }) => {
     try {
       const agent = await loadAgent();
-      const w = await ensureWarrant(agent, GUESTBOOK_URL, ["sign"]);
+      const w = await ensureWarrant(agent, GUESTBOOK_URL, ["guestbook-sign"]);
       if (!w.ready)
         return text(
           `APPROVE_URL: ${w.approveUrl}\n⚠ Show the human this link and ask them to approve you signing ` +

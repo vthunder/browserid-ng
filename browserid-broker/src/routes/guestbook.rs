@@ -27,7 +27,11 @@ use crate::verifier::verify_assertion_with_dns;
 
 const MAX_ENTRIES: usize = 200;
 const MAX_MESSAGE_LEN: usize = 280;
-const REQUIRED_SCOPE: &str = "sign";
+/// The scope a warrant must grant to post. Named `guestbook-sign` so it's
+/// clearly "may sign the guestbook", not a general cryptographic-signing power.
+const REQUIRED_SCOPE: &str = "guestbook-sign";
+/// Legacy alias accepted during the rename (older wallets requested "sign").
+const LEGACY_SCOPE: &str = "sign";
 /// Per-principal cooldown between posts (light anti-spam).
 const COOLDOWN_SECONDS: i64 = 3;
 
@@ -173,10 +177,10 @@ where
             )
         }
     };
-    if !agent.scopes.iter().any(|s| s == REQUIRED_SCOPE) {
+    if !agent.scopes.iter().any(|s| s == REQUIRED_SCOPE || s == LEGACY_SCOPE) {
         return fail(
             StatusCode::FORBIDDEN,
-            "not authorized: your principal did not grant the \"sign\" scope for the guestbook",
+            "not authorized: your principal did not grant the \"guestbook-sign\" scope for the guestbook",
         );
     }
 
@@ -317,7 +321,7 @@ with a warrant scoped to <code>{}</code> — cryptographically attributable to b
         <pre>{{ "mcpServers": {{ "browserid": {{ "command": "npx", "args": ["-y", "@browserid-ng/wallet"] }} }} }}</pre>
         <div class="hint">New to MCP? <a href="https://modelcontextprotocol.io/quickstart/user">How to add a server →</a></div>
       </li>
-      <li><strong>Ask your agent:</strong> <em>“Provision a browserid-ng identity and sign the guestbook saying hello.”</em></li>
+      <li><strong>Ask your agent:</strong> <em>“Provision a browserid-ng identity and sign the guestbook with a fun message of your own.”</em></li>
       <li><strong>Approve the two links it shows you.</strong> You’ll confirm your email once with a one-time code, then authorize the agent for the guestbook. That’s it — your line appears below.</li>
     </ol>
     <p class="fine"><a href="https://github.com/vthunder/browserid-ng/tree/main/sdk/wallet">Full setup &amp; how it works →</a></p>

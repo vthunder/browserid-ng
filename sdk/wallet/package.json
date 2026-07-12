@@ -1,18 +1,35 @@
 {
   "name": "@browserid-ng/wallet",
-  "version": "0.1.0",
-  "description": "MCP server that gives an AI agent its own browserid-ng identity — provision, warrants, assertions. Run via npx.",
+  "version": "0.1.1",
+  "description": "MCP server that gives an AI agent its own browserid-ng identity \u2014 provision, warrants, assertions. Run via npx.",
   "type": "module",
-  "bin": { "browserid-wallet": "./server.mjs" },
+  "bin": {
+    "browserid-wallet": "./server.mjs"
+  },
   "main": "./server.mjs",
-  "files": ["server.mjs", "README.md"],
-  "engines": { "node": ">=18" },
+  "files": [
+    "server.mjs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@browserid-ng/agent": "^0.1.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.23.0 || ^4.0.0"
   },
-  "keywords": ["browserid", "mcp", "agent", "identity", "wallet", "delegation"],
+  "keywords": [
+    "browserid",
+    "mcp",
+    "agent",
+    "identity",
+    "wallet",
+    "delegation"
+  ],
   "license": "MPL-2.0",
-  "repository": { "type": "git", "url": "https://github.com/vthunder/browserid-ng" }
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vthunder/browserid-ng"
+  }
 }

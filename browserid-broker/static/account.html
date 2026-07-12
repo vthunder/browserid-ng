@@ -68,6 +68,15 @@
     pre { background: #f5f7fa; padding: 12px; border-radius: 6px; overflow-x: auto;
       font-size: 12px; white-space: pre-wrap; word-break: break-all; font-family: ui-monospace, monospace; }
     .inline-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid #eee; }
+    .handle-row { display: flex; align-items: stretch; }
+    .handle-prefix { display: flex; align-items: center; padding: 0 2px 0 12px; margin-bottom: 12px;
+      background: #eef2f7; border: 1px solid #ccc; border-right: none; border-radius: 4px 0 0 4px;
+      color: #555; font-family: ui-monospace, monospace; font-size: 14px; white-space: nowrap; }
+    .handle-row input { margin-bottom: 12px; border-radius: 0 4px 4px 0; }
+    .handle-prefix[hidden] + input { border-radius: 4px; }
+    .handle-preview { font-family: ui-monospace, monospace; font-size: 12px; color: #888; margin: -6px 0 8px; min-height: 14px; }
+    .linkish { background: none; border: none; color: #4a90d9; cursor: pointer; padding: 0; font-size: 13px; }
+    .linkish:hover { text-decoration: underline; background: none; }
   </style>
 </head>
 <body>
@@ -83,8 +92,17 @@
     <p class="sub" id="pv-fp" style="font-family:ui-monospace,monospace"></p>
     <label for="pv-identity">Which identity should it act for?</label>
     <select id="pv-identity"></select>
-    <label for="pv-handles" style="margin-top:10px;display:block">Handle(s) it may use (comma-separated)</label>
-    <input id="pv-handles" placeholder="researcher">
+    <label for="pv-handle" style="margin-top:10px;display:block">Handle it will use</label>
+    <div class="handle-row">
+      <span id="pv-prefix" class="handle-prefix" hidden></span>
+      <input id="pv-handle" placeholder="claude">
+    </div>
+    <p class="handle-preview" id="pv-preview"></p>
+    <button type="button" id="pv-adv-toggle" class="linkish">Advanced — multiple handles / patterns</button>
+    <div id="pv-adv" hidden style="margin-top:6px">
+      <input id="pv-handles" placeholder="claude, researcher, svc+*">
+      <p class="sub" style="margin:4px 0 0">Comma-separated. On a fallback account each becomes <code>&lt;you&gt;+&lt;name&gt;</code>.</p>
+    </div>
     <div style="margin-top:14px">
       <button class="primary" id="pv-approve">Approve</button>
       <button id="pv-deny" type="button">Deny</button>
@@ -852,6 +870,31 @@ async function autoActivateIdentities() {
 // The panel lists ALL of the account's identities (not just already-active
 // ones) and activates the chosen one on approve — so a user who opened the link
 // in a fresh browser, or just added an email below, can proceed.
+const ownerLocalOf = (email) => (email || '').slice(0, (email || '').lastIndexOf('@'));
+function stripOwnerPrefix(handle, email) {
+  const p = ownerLocalOf(email) + '+';
+  return handle.startsWith(p) ? handle.slice(p.length) : handle;
+}
+// Fallback owners are scoped to `<you>+…`; show that as a fixed prefix chip so
+// the human just types the short handle. Primary owners type a bare name.
+function updateProvisionPrefix() {
+  const email = $('pv-identity').value;
+  const advOpen = !$('pv-adv').hidden;
+  const prefixEl = $('pv-prefix');
+  // The chip only applies to the simple single-handle input, and only for a
+  // fallback owner. In advanced mode the human types full names.
+  prefixEl.hidden = advOpen || !(email && isFallbackOwner(email, location.host));
+  if (!prefixEl.hidden) prefixEl.textContent = ownerLocalOf(email) + '+';
+  updateProvisionPreview();
+}
+function updateProvisionPreview() {
+  const email = $('pv-identity').value, handle = $('pv-handle').value.trim().toLowerCase();
+  const prev = $('pv-preview');
+  if (!email || !handle || !$('pv-adv').hidden) { prev.textContent = ''; return; }
+  const name = agentConstraintName(email, location.host, handle);
+  prev.textContent = `→ ${agentIdentityEmail(email, name)}`;
+}
+
 function refreshProvisionPicker() {
   const sel = $('pv-identity');
   if (!sel || $('provision').hidden) return;
@@ -861,6 +904,7 @@ function refreshProvisionPicker() {
   const none = ids.length === 0;
   $('pv-approve').disabled = none;
   if (none) { $('pv-status').className = 'status muted'; $('pv-status').textContent = 'Add an email below, then pick it here to authorize the agent.'; }
+  updateProvisionPrefix();
 }
 
 async function showProvisionApproval(code) {
@@ -875,8 +919,23 @@ async function showProvisionApproval(code) {
   $('pv-intro').textContent = (info.label ? `“${info.label}” ` : 'An agent ') +
     'wants its own identity, acting for you. Only approve if you just started setting up this agent.';
   $('pv-fp').textContent = 'Agent key fingerprint: ' + info.fingerprint + '  (confirm it matches what your agent shows)';
-  $('pv-handles').value = (info.requested_names || []).join(', ') || (info.requested_patterns || []).join(', ');
   refreshProvisionPicker();
+  // Optimize for a single handle: the first suggestion goes in the simple input
+  // (stripped of any owner prefix the agent already added); the full list is
+  // available under "Advanced".
+  const suggests = (info.requested_names && info.requested_names.length)
+    ? info.requested_names : (info.requested_patterns || []);
+  $('pv-handle').value = stripOwnerPrefix((suggests[0] || '').toLowerCase(), $('pv-identity').value);
+  $('pv-handles').value = suggests.join(', ');
+  $('pv-adv').hidden = true;
+  updateProvisionPrefix();
+  $('pv-identity').onchange = updateProvisionPrefix;
+  $('pv-handle').oninput = updateProvisionPreview;
+  $('pv-adv-toggle').onclick = () => {
+    const adv = $('pv-adv'); adv.hidden = !adv.hidden;
+    if (!adv.hidden && !$('pv-handles').value) $('pv-handles').value = $('pv-handle').value; // seed advanced from simple
+    updateProvisionPrefix();
+  };
   $('pv-approve').onclick = () => approveProvision(code, info.provisioning_pubkey);
   $('pv-deny').onclick = () => denyProvision(code);
 }
@@ -888,8 +947,10 @@ async function approveProvision(code, provPubkeyX) {
     if (!id) throw new Error('Could not activate that identity — try another.');
     status.textContent = 'Signing…';
     const idpDomain = id.issuer || location.host;
-    const handles = $('pv-handles').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-    if (!handles.length) throw new Error('Enter at least one handle.');
+    const handles = $('pv-adv').hidden
+      ? [$('pv-handle').value].map(s => s.trim().toLowerCase()).filter(Boolean)
+      : $('pv-handles').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    if (!handles.length) throw new Error('Enter a handle.');
     // The constraint holds full local-parts: a fallback owner's handles are
     // sub-addressed under their own email (`<local>+<handle>`).
     const names = [...new Set(handles.map(h => agentConstraintName(id.email, idpDomain, h)))];
