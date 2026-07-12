@@ -76,6 +76,22 @@
 
   <div id="gate" class="card"><p style="margin:0">Checking your session…</p></div>
 
+  <!-- Paired agent provisioning approval (bean 74u1) -->
+  <div id="provision" class="card" hidden>
+    <h2>Authorize an agent</h2>
+    <p class="sub" id="pv-intro"></p>
+    <p class="sub" id="pv-fp" style="font-family:ui-monospace,monospace"></p>
+    <label for="pv-identity">Which identity should it act for?</label>
+    <select id="pv-identity"></select>
+    <label for="pv-handles" style="margin-top:10px;display:block">Handle(s) it may use (comma-separated)</label>
+    <input id="pv-handles" placeholder="researcher">
+    <div style="margin-top:14px">
+      <button class="primary" id="pv-approve">Approve</button>
+      <button id="pv-deny" type="button">Deny</button>
+    </div>
+    <p class="status" id="pv-status"></p>
+  </div>
+
   <!-- Sign-in -->
   <div id="signin" class="card" hidden>
     <h2>Sign in</h2>
@@ -651,13 +667,82 @@ async function reloadAccount() {
   account.certs = certs;
   await refreshKeystore();
 }
+// -------- paired agent provisioning approval (bean 74u1) --------
+// Reached as /account?provision=<code> (the agent's one-click URL). The human
+// signs a delegation over the AGENT-supplied provisioning key with their
+// identity key, registers it, and hands it to the pending record; the agent
+// polls and picks it up. The provisioning private key stays with the agent.
+async function showProvisionApproval(code) {
+  let info;
+  try {
+    info = await post('/agent-provision/info', { code });
+  } catch (e) {
+    throw new Error('This pairing request is invalid or has expired — ask your agent to start again.');
+  }
+  $('app').hidden = true;
+  $('provision').hidden = false;
+  $('pv-intro').textContent = (info.label ? `“${info.label}” ` : 'An agent ') +
+    'wants its own identity, acting for you. Only approve if you just started setting up this agent.';
+  $('pv-fp').textContent = 'Agent key fingerprint: ' + info.fingerprint + '  (confirm it matches what your agent shows)';
+  const ids = localIdentities();
+  $('pv-identity').innerHTML = ids.length
+    ? ids.map(i => `<option value="${escapeHtml(i.email)}">${escapeHtml(i.email)}</option>`).join('')
+    : '<option value="">— no active identity in this browser; activate one first —</option>';
+  $('pv-handles').value = (info.requested_names || []).join(', ') || (info.requested_patterns || []).join(', ');
+  $('pv-approve').onclick = () => approveProvision(code, info.provisioning_pubkey);
+  $('pv-deny').onclick = () => denyProvision(code);
+}
+
+async function approveProvision(code, provPubkeyX) {
+  const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Signing…';
+  try {
+    const id = localIdentity($('pv-identity').value);
+    if (!id) throw new Error('Activate an identity in this browser first, then retry.');
+    const names = $('pv-handles').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    if (!names.length) throw new Error('Enter at least one handle.');
+    // Sign a P_cert over the AGENT-supplied provisioning key (not one generated here).
+    const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+    const certClaims = { typ: 'browserid-provisioning-cert-v1', iss: id.email, iat: nowS(), exp: nowS() + 90 * 24 * 3600,
+      'public-key': { algorithm: 'Ed25519', publicKey: provPubkeyX }, constraint: { names: [...new Set(names)], patterns: [] } };
+    const payload = b64urlJson(certClaims);
+    const sig = await window.Keystore.sign(id.privateKey, `${header}.${payload}`);
+    const delegation = `${id.cert}~${header}.${payload}.${sig}`;
+    // Register so the agent can endorse→mint; then hand the delegation to the record.
+    await post('/wsapi/register_provisioning_cert', { label: 'paired agent', bundle: delegation });
+    await post('/agent-provision/complete', { code, approve: true, delegation });
+    status.className = 'status ok';
+    status.textContent = 'Approved — your agent is picking up its identity now. You can close this tab.';
+    $('pv-approve').disabled = true; $('pv-deny').disabled = true;
+  } catch (e) {
+    status.className = 'status err'; status.textContent = 'Failed: ' + e.message;
+  }
+}
+
+async function denyProvision(code) {
+  try { await post('/agent-provision/complete', { code, approve: false }); } catch {}
+  $('pv-status').className = 'status muted'; $('pv-status').textContent = 'Denied.';
+  $('pv-approve').disabled = true; $('pv-deny').disabled = true;
+}
+
 async function boot() {
   let ctx; try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
   $('gate').hidden = true;
-  if (!ctx.authenticated) { $('signin').hidden = false; return; }
+  const provisionCode = new URLSearchParams(location.search).get('provision');
+  if (!ctx.authenticated) {
+    // Preserve the pairing code across sign-in so we resume after auth.
+    $('signin').hidden = false;
+    return;
+  }
   account.csrf = ctx.csrf_token;
   try { await window.Keystore.migrateFromLocalStorage(); } catch (e) { console.warn('keystore migrate:', e); }
   await reloadAccount();
+  if (provisionCode) {
+    showProvisionApproval(provisionCode).catch(e => {
+      $('provision').hidden = false; $('app').hidden = true;
+      $('pv-status').className = 'status err'; $('pv-status').textContent = e.message;
+    });
+    return;
+  }
   $('app').hidden = false;
   renderUserIdentities();
   renderAgents();

@@ -203,8 +203,8 @@ pub async fn request(
     USER_CODES.lock().unwrap().insert(user_code.clone(), code.clone());
     Ok(Json(RequestResponse {
         success: true,
-        verification_uri: format!("{origin}/link"),
-        verification_uri_complete: format!("{origin}/agent-provision/{code}"),
+        verification_uri: format!("{origin}/account"),
+        verification_uri_complete: format!("{origin}/account?provision={code}"),
         user_code,
         fingerprint: fp,
         expires_in: REQUEST_VALIDITY_SECONDS,
