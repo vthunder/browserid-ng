@@ -27,14 +27,22 @@ import {
 import { z } from "zod";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 
 const BROKER = (process.env.BROWSERID_BROKER || "https://browserid.me").replace(/\/$/, "");
 const HOME = process.env.BROWSERID_HOME || join(homedir(), ".browserid");
 const GUESTBOOK_URL = process.env.GUESTBOOK_URL || `${BROKER}/guestbook`;
 const CREDENTIAL = join(HOME, "agent-credential.json");
 const IDENTITY = join(HOME, "agent.identity.json");
-mkdirSync(HOME, { recursive: true });
+// The home dir + files hold private keys — keep them owner-only (700 / 600).
+mkdirSync(HOME, { recursive: true, mode: 0o700 });
+try { chmodSync(HOME, 0o700); } catch {}
+
+/** Write JSON to a private (0600) file. */
+function writePrivate(path, obj) {
+  writeFileSync(path, JSON.stringify(obj, null, 2), { mode: 0o600 });
+  try { chmodSync(path, 0o600); } catch {}
+}
 
 const text = (t) => ({ content: [{ type: "text", text: t }] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -156,8 +164,8 @@ server.registerTool(
       provisionError = null;
       pairing.ready
         .then(async (agent) => {
-          writeFileSync(CREDENTIAL, JSON.stringify(agent.credential.toJSON(), null, 2));
-          await agent.save(IDENTITY);
+          writePrivate(CREDENTIAL, agent.credential.toJSON());
+          await agent.save(IDENTITY); // 0600, array format (sdk/agent)
           readyAgent = agent;
         })
         .catch((e) => { provisionError = e; })

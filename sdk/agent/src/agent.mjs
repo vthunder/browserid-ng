@@ -1,7 +1,7 @@
 // The agent identity: provision a delegated identity, obtain warrants (with
 // human consent), and mint warrant-backed assertions. Mirrors the Rust
 // browserid-agent AgentIdentity; see PORTING notes in protocol.mjs.
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, chmod } from "node:fs/promises";
 import { KeyPair, b64u, fromB64u, publicKeyField, fingerprint } from "./crypto.mjs";
 import { Credential } from "./credential.mjs";
 import {
@@ -15,6 +15,15 @@ import {
 
 const CERT_REFRESH_MARGIN_S = 60;
 const trim = (u) => u.replace(/\/$/, "");
+
+// The identity file holds an ARRAY of identities (the wallet uses one today, but
+// the format supports many). Accept the current `{v:2, identities:[...]}` shape
+// and the legacy single-identity object.
+function storedIdentities(data) {
+  if (Array.isArray(data?.identities)) return data.identities;
+  if (data?.email) return [data]; // legacy v1 single-identity file
+  return [];
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function postJson(http, url, body) {
@@ -135,11 +144,13 @@ export class Agent {
   }
 
   /** Load a persisted identity, or provision one if the file is absent. */
-  static async open(credentialPathOrObj, identityPath, { name, http = fetch } = {}) {
+  static async open(credentialPathOrObj, identityPath, { name, email, http = fetch } = {}) {
     const credential = Credential.load(credentialPathOrObj);
     try {
-      const raw = await readFile(identityPath, "utf8");
-      return Agent.#fromStored(JSON.parse(raw), credential, http);
+      const identities = storedIdentities(JSON.parse(await readFile(identityPath, "utf8")));
+      const record = email ? identities.find((i) => i.email === email) : identities[0];
+      if (!record) { const e = new Error("no stored identity"); e.code = "ENOENT"; throw e; }
+      return Agent.#fromStored(record, credential, http);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
       const agent = await Agent.provision(credential, { name, http });
@@ -156,14 +167,26 @@ export class Agent {
   }
 
   async save(identityPath) {
-    const stored = {
-      v: 1,
+    const record = {
       email: this.#email,
       cert: this.#cert.encoded,
       key_seed: b64u(this.#key.seed),
       warrants: [...this.#warrants.values()].map((w) => w.encoded),
     };
-    await writeFile(identityPath, JSON.stringify(stored, null, 2));
+    // Upsert this identity by email into the array, preserving any others.
+    let identities = [];
+    try {
+      identities = storedIdentities(JSON.parse(await readFile(identityPath, "utf8"))).filter(
+        (i) => i.email !== record.email
+      );
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+    identities.push(record);
+    // 0600 — the file holds private keys. Set on create, and chmod in case it
+    // already existed with looser perms.
+    await writeFile(identityPath, JSON.stringify({ v: 2, identities }, null, 2), { mode: 0o600 });
+    try { await chmod(identityPath, 0o600); } catch {}
   }
 
   // ---- warrants ------------------------------------------------------------

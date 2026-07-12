@@ -23,6 +23,8 @@ export interface WarrantRequest {
 export interface OpenOptions {
   /** Reserved name to provision as (for multi-name credentials). */
   name?: string;
+  /** Which stored identity to load, by email (the file holds an array). Default: the first. */
+  email?: string;
   /** Custom fetch implementation. */
   http?: typeof fetch;
 }

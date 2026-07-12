@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, writeFile, rm } from "node:fs/promises";
+import { statSync } from "node:fs";
 
 import { Agent, Credential, AmbiguousNameError, NoWarrantError } from "./index.mjs";
 import { KeyPair, publicKeyField, decodeJwtClaims, verifyJws, PublicKey, b64u } from "./src/crypto.mjs";
@@ -226,6 +227,40 @@ test("denied consent rejects the approved promise", async () => {
   await assert.rejects(() => approved, /denied/);
 });
 
+test("identity file is a 0600 array (holds many), upsert by email", async () => {
+  const { cred, userKey } = makeCredential({ names: ["researcher"] });
+  const srv = mockServer(userKey);
+  const path = join(tmpdir(), `agent-arr-${process.pid}-${Date.now()}.json`);
+  try {
+    const agent = await Agent.provision(cred, { http: srv.fetch });
+    await agent.save(path);
+
+    let j = JSON.parse(await readFile(path, "utf8"));
+    assert.equal(j.v, 2);
+    assert.ok(Array.isArray(j.identities));
+    assert.equal(j.identities.length, 1);
+    assert.equal(j.identities[0].email, "researcher@idp.test");
+    assert.equal(statSync(path).mode & 0o777, 0o600); // owner-only
+
+    // saving again upserts (no duplicate)
+    await agent.save(path);
+    assert.equal(JSON.parse(await readFile(path, "utf8")).identities.length, 1);
+
+    // a hand-written second identity → open picks it by email
+    const rec = j.identities[0];
+    await writeFile(path, JSON.stringify({ v: 2, identities: [rec, { ...rec, email: "other@idp.test", warrants: [] }] }));
+    const opened = await Agent.open(cred, path, { email: "other@idp.test", http: srv.fetch });
+    assert.equal(opened.email, "other@idp.test");
+
+    // a legacy single-identity file still loads
+    await writeFile(path, JSON.stringify({ v: 1, ...rec }));
+    const legacy = await Agent.open(cred, path, { http: srv.fetch });
+    assert.equal(legacy.email, "researcher@idp.test");
+  } finally {
+    await rm(path, { force: true });
+  }
+});
+
 test("save / open round-trips identity + warrants", async () => {
   const { cred, userKey } = makeCredential({ names: ["researcher"] });
   const srv = mockServer(userKey);
@@ -237,8 +272,8 @@ test("save / open round-trips identity + warrants", async () => {
     await agent.save(path);
 
     const stored = JSON.parse(await readFile(path, "utf8"));
-    assert.equal(stored.email, "researcher@idp.test");
-    assert.equal(stored.warrants.length, 1);
+    assert.equal(stored.identities[0].email, "researcher@idp.test");
+    assert.equal(stored.identities[0].warrants.length, 1);
 
     // reopen (file exists → loads, no provision)
     const reopened = await Agent.open(cred, path, { http: srv.fetch });
