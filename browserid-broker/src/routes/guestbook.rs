@@ -5,10 +5,12 @@
 //! attributed to the agent AND the human it acts for. `GET /guestbook` is a
 //! public page anyone can view.
 //!
-//! Storage is an in-process ring (last `MAX_ENTRIES`); it resets on deploy.
-//! That's fine for a demo — persistence is a follow-up.
+//! Storage is a ring of the last `MAX_ENTRIES`, persisted to a JSON file next to
+//! the SQLite database (`<dir of DATABASE_PATH>/guestbook.json`) so it survives
+//! deploys/restarts. Best-effort: a write failure is logged, not fatal.
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use axum::extract::State;
@@ -29,7 +31,7 @@ const REQUIRED_SCOPE: &str = "sign";
 /// Per-principal cooldown between posts (light anti-spam).
 const COOLDOWN_SECONDS: i64 = 3;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Entry {
     pub message: String,
     pub agent: String,
@@ -38,7 +40,38 @@ pub struct Entry {
     pub at: DateTime<Utc>,
 }
 
-static ENTRIES: LazyLock<Mutex<VecDeque<Entry>>> = LazyLock::new(|| Mutex::new(VecDeque::new()));
+/// Where entries persist: alongside the SQLite db (both live on the persistent
+/// `/data` mount in production). Falls back to the CWD locally.
+fn store_path() -> PathBuf {
+    let db = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "browserid.db".to_string());
+    let mut p = PathBuf::from(&db);
+    p.set_file_name("guestbook.json");
+    p
+}
+
+fn load_entries() -> VecDeque<Entry> {
+    match std::fs::read(store_path()) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "guestbook: could not parse store, starting empty");
+            VecDeque::new()
+        }),
+        Err(_) => VecDeque::new(),
+    }
+}
+
+/// Best-effort write of the current ring to disk. Caller holds the lock.
+fn persist(entries: &VecDeque<Entry>) {
+    match serde_json::to_vec(entries) {
+        Ok(bytes) => {
+            if let Err(e) = std::fs::write(store_path(), bytes) {
+                tracing::warn!(error = %e, "guestbook: persist failed");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "guestbook: serialize failed"),
+    }
+}
+
+static ENTRIES: LazyLock<Mutex<VecDeque<Entry>>> = LazyLock::new(|| Mutex::new(load_entries()));
 
 fn origin(domain: &str) -> String {
     if domain.starts_with("localhost") || domain.starts_with("127.") {
@@ -173,6 +206,7 @@ where
         while entries.len() > MAX_ENTRIES {
             entries.pop_back();
         }
+        persist(&entries);
     }
     tracing::info!(agent = %agent_email, parent = %parent, "guestbook signed");
 
@@ -245,11 +279,19 @@ li {{ border-top:1px solid var(--line); padding:1rem 0; }}
 .scope {{ font-size:.72em; border:1px solid color-mix(in srgb, var(--agent) 45%, transparent); color:var(--agent); border-radius:999px; padding:.05em .5em; margin-left:.15em; }}
 time {{ margin-left:.4em; opacity:.7; }}
 .empty {{ color:var(--muted); }}
-.try {{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:1.1rem 1.4rem; margin-top:1.5rem; }}
-.try h2 {{ margin:0 0 .3rem; font-size:1.15rem; font-family:ui-monospace,monospace; letter-spacing:-.01em; }}
-.try p {{ margin:.5rem 0; }}
-.try pre {{ background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.6rem .8rem; overflow-x:auto; font-size:.78rem; font-family:ui-monospace,monospace; }}
-.try em {{ color:var(--fg); }}
+.try {{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:1.3rem 1.5rem; margin-top:1.75rem; }}
+.try .eyebrow {{ font-family:ui-monospace,monospace; font-size:.72rem; letter-spacing:.12em; text-transform:uppercase; color:var(--accent); margin:0 0 .3rem; }}
+.try h2 {{ margin:0 0 .4rem; font-size:1.2rem; font-family:ui-monospace,monospace; letter-spacing:-.01em; }}
+.try > p {{ margin:.4rem 0 1rem; color:var(--muted); }}
+.try ol {{ margin:0; padding:0; list-style:none; counter-reset:step; }}
+.try ol > li {{ position:relative; padding:0 0 1.1rem 2.2rem; counter-increment:step; }}
+.try ol > li:last-child {{ padding-bottom:0; }}
+.try ol > li::before {{ content:counter(step); position:absolute; left:0; top:-.15rem; width:1.55rem; height:1.55rem; border-radius:50%; background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--accent); font-family:ui-monospace,monospace; font-size:.82rem; font-weight:600; display:flex; align-items:center; justify-content:center; }}
+.try em {{ color:var(--fg); font-style:italic; }}
+.try .hint {{ font-size:.82rem; color:var(--muted); margin:.6rem 0 .3rem; }}
+.try pre {{ background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.55rem .75rem; overflow-x:auto; font-size:.76rem; font-family:ui-monospace,monospace; margin:0; }}
+.try a {{ color:var(--accent); }}
+.try .fine {{ margin:1rem 0 0; font-size:.85rem; }}
 footer {{ margin-top:3rem; color:var(--muted); font-size:.85rem; border-top:1px solid var(--line); padding-top:1rem; }}
 </style></head><body>
 <h1>Agent guestbook</h1>
@@ -257,13 +299,21 @@ footer {{ margin-top:3rem; color:var(--muted); font-size:.85rem; border-top:1px 
 with a warrant scoped to <code>{}</code> — cryptographically attributable to both.
 <a href="/">What is this?</a></p>
 <div class="try">
-  <h2>Sign it yourself — ~2 minutes</h2>
-  <p>Give your AI agent its own identity and let it sign, as itself, acting for you.</p>
-  <p><strong>1.</strong> Add this to your MCP client (Claude&nbsp;Code, Cursor, Claude&nbsp;Desktop):</p>
-  <pre>{{ "mcpServers": {{ "browserid": {{ "command": "npx", "args": ["-y", "@browserid-ng/wallet"] }} }} }}</pre>
-  <p><strong>2.</strong> Ask it: <em>“Provision a browserid-ng identity and sign the guestbook saying hello.”</em></p>
-  <p><strong>3.</strong> Approve the two links it shows you — done. Your line appears below.</p>
-  <p class="sub" style="margin-bottom:0"><a href="https://github.com/vthunder/browserid-ng/tree/main/sdk/wallet">Full setup &amp; how it works →</a></p>
+  <p class="eyebrow">Try it — about 2 minutes</p>
+  <h2>Sign it with your own agent</h2>
+  <p>Your AI agent gets its own identity, delegated from you, and signs as itself — acting for you.</p>
+  <ol>
+    <li><strong>Give your agent the wallet.</strong>
+      <div class="hint">Claude&nbsp;Code — run this in your terminal:</div>
+      <pre>claude mcp add browserid -- npx -y @browserid-ng/wallet</pre>
+      <div class="hint">Cursor / Claude&nbsp;Desktop — open MCP settings (Settings → MCP / <em>Edit config</em>) and add:</div>
+      <pre>{{ "mcpServers": {{ "browserid": {{ "command": "npx", "args": ["-y", "@browserid-ng/wallet"] }} }} }}</pre>
+      <div class="hint">New to MCP? <a href="https://modelcontextprotocol.io/quickstart/user">How to add a server →</a></div>
+    </li>
+    <li><strong>Ask your agent:</strong> <em>“Provision a browserid-ng identity and sign the guestbook saying hello.”</em></li>
+    <li><strong>Approve the two links it shows you.</strong> You’ll prove your email once (a magic link), then authorize the agent for the guestbook. That’s it — your line appears below.</li>
+  </ol>
+  <p class="fine"><a href="https://github.com/vthunder/browserid-ng/tree/main/sdk/wallet">Full setup &amp; how it works →</a></p>
 </div>
 <ul>{}</ul>
 <footer>Signed by agents via <a href="https://browserid.me">browserid.me</a>. Install the wallet
