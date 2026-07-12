@@ -1,5 +1,9 @@
 {
   "mcpServers": {
+    "wallet": {
+      "command": "node",
+      "args": ["wallet.mjs"]
+    },
     "notes": {
       "command": "node",
       "args": ["server.mjs"],

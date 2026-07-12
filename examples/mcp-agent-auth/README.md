@@ -1,31 +1,33 @@
 # MCP agent auth — a browserid-ng reference integration
 
-An [MCP](https://modelcontextprotocol.io) server whose tools require the caller
-to be an **agent with a browserid-ng identity and a human-signed warrant**. When
-an agent calls a tool, the server verifies its assertion and learns three things:
+Two [MCP](https://modelcontextprotocol.io) servers that together show an AI agent
+signing in **as itself**, acting for a human, within scopes the human approved:
 
-- **who the agent is** (`researcher@browserid.me`),
-- **who it acts for** (`alice@acme.com`, its human principal), and
-- **what that human authorized here** (the scopes Alice signed for *this* server).
+- **wallet** — the agent's browserid-ng identity, built on
+  [`@browserid/agent`](../../sdk/agent): `identity`, `authorize(audience, scopes)`,
+  `get_assertion(audience)`. It provisions the identity, runs the consent flow,
+  and mints assertions — all in-process.
+- **notes** — a target server whose tools require an agent assertion and enforce
+  scope, built on [`@browserid/verify`](../../sdk/js): `post_note` (needs `post`),
+  `list_notes` (needs `read`).
 
-Each tool is gated on the right scope. The human approved a warrant naming this
-server and these scopes — and can revoke it anytime. This is agent auth with
-attribution and consent, in ~120 lines.
+The agent calls `wallet.authorize` → shows you a consent link → `wallet.get_assertion`
+→ `notes.post_note`. The notes server verifies and learns **who acted, for whom,
+and what you allowed here**. **Node-only — no Rust, no shell** — so it runs in any
+MCP client, including Claude Desktop.
 
 ```
-agent  ──assert(audience)──▶  MCP tool call  ──▶  server verifies via /verify
-                                                    ├─ agent identity
-                                                    ├─ principal (the human)
-                                                    └─ scopes for THIS audience
-                                                  → enforce scope → run tool
+wallet.authorize ─▶ APPROVE_URL ─▶ human approves warrant (browserid.me)
+wallet.get_assertion ─▶ agent_cert ~ warrant ~ assertion
+notes.post_note(assertion) ─▶ verify ─▶ agent + principal + scopes ─▶ enforce ─▶ run
 ```
 
 ## Run it — the agent guides the rest
 
-The point of the demo is that **the agent does the work**: it surfaces the
-consent URL, walks you through approving it, and calls the tool as itself.
+The point of the demo is that **the agent does the work**: it surfaces the consent
+URL, walks you through approving it, and acts as itself.
 
-**1. Clone + install.** (Needs Node 18+, and Rust for the agent CLI.)
+**1. Clone + install** (Node 18+; no Rust):
 
 ```bash
 git clone https://github.com/vthunder/browserid-ng.git
@@ -33,51 +35,49 @@ cd browserid-ng/examples/mcp-agent-auth
 npm install
 ```
 
-**2. Point your agent at the notes server.** A ready [`.mcp.json`](./.mcp.json)
-lives here, so **Claude Code / Cursor auto-register it** when you launch in this
-directory — nothing to edit. (Claude Desktop: copy the `mcpServers` block into
-its config, using an absolute path to `server.mjs`.)
+**2. Launch an MCP client in this directory.** The committed [`.mcp.json`](./.mcp.json)
+auto-registers **both** servers in **Claude Code / Cursor** — nothing to edit.
+**Claude Desktop**: copy the `mcpServers` block into its config with absolute paths
+to `wallet.mjs` and `server.mjs`.
 
-**3. Run your agent in this directory and paste:**
+**3. Paste this prompt:**
 
 > Read `AGENT_INSTRUCTIONS.md` and follow it to post a note to the notes MCP
 > server. Guide me through anything that needs me.
 
-That's it. The agent will check whether you have an agent identity (and if not,
-walk you through creating one at [browserid.me/agents](https://browserid.me/agents)),
-show you a consent link to approve a warrant for this server, then call
-`post_note` as itself — and the server logs the note *"by agent
-researcher@browserid.me, acting for you."* Ask it to list notes next and it
+The agent checks its identity (guiding you to create one at
+[browserid.me/agents](https://browserid.me/agents) if needed), gets your approval
+for a scoped warrant, then posts as itself — and the notes server logs it *"by
+agent researcher@browserid.me, acting for you."* Ask it to list notes next and it
 reuses the same warrant.
 
-By default the server verifies against the hosted `https://browserid.me/verify`;
-set `VERIFIER_URL` on the server to point at your own broker instead.
-
-### Under the hood / debugging by hand
-
-The agent just runs these — you can too. No env vars: the helper finds your
-credential (`agent-credential.json` here) and the CLI on its own, requests the
-`post`/`read` scopes, and `get` waits for you to approve.
-
-```bash
-node mint-assertion.mjs consent https://notes.mcp.example   # → CONSENT_URL (approve it)
-node mint-assertion.mjs get     https://notes.mcp.example   # → ASSERTION: <...> (polls until approved)
-SERVER_AUDIENCE=https://notes.mcp.example \
-  node client.mjs --assertion "<paste ASSERTION>" post "hello from my agent"
-```
-
-`consent` takes optional scopes (`… consent <aud> post read`, the default). For a
-credential that reserves several fixed names, set `AGENT_NAME=<reserved-name>`.
+By default the wallet talks to `https://browserid.me` and the notes server verifies
+against `https://browserid.me/verify`. Override with `BROWSERID_BROKER` (in the
+credential) / `VERIFIER_URL` to run against your own broker.
 
 ## Try it offline (no consent, no network)
 
-The end-to-end test wires a real MCP client to the real server with a mock
-`/verify`, and asserts the auth-gating — scope enforcement, agent requirement,
-fail-closed:
+`npm test` runs two end-to-end tests over the real MCP protocol, no network:
+
+- **notes** (`test.mjs`) — a real MCP client ↔ the notes server with a mock
+  `/verify`, asserting the auth-gating (scope enforcement, agents-only, fail-closed).
+- **wallet** (`wallet.test.mjs`) — a real MCP client ↔ the wallet server driving
+  `authorize` → `get_assertion` against a local mock broker that auto-approves,
+  proving the whole agent-native flow with no shell and no Rust.
 
 ```bash
 npm install
 npm test
+```
+
+### Debugging the notes server by hand
+
+`client.mjs` calls the notes server directly with an assertion (e.g. one from
+`wallet.get_assertion`):
+
+```bash
+SERVER_AUDIENCE=https://notes.mcp.example \
+  node client.mjs --assertion "<paste an ASSERTION>" post "hello from my agent"
 ```
 
 ## What to copy into your own MCP server
@@ -99,6 +99,6 @@ Notes:
   in one file. Production would hoist auth to the transport / MCP OAuth layer and
   verify once per session — the check itself is identical.
 - `SERVER_AUDIENCE` is your server's stable identifier; pin it, and it's what the
-  agent targets in `assert <audience>`.
+  agent targets when it calls `wallet.authorize` / `get_assertion`.
 - Uses [`@browserid/verify`](../../sdk/js); see also
   [`docs/verify-quickstart.md`](../../docs/verify-quickstart.md).
