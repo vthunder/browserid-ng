@@ -24,7 +24,7 @@ export default defineConfig({
   // Run broker before tests
   webServer: {
     // DISABLE_SMTP=1 prevents .env from enabling SMTP (checked before .env loads)
-    command: 'DISABLE_SMTP=1 cargo run -p browserid-broker',
+    command: 'DISABLE_SMTP=1 AGENT_PROVISIONING=1 cargo run -p browserid-broker',
     url: 'http://localhost:3000/.well-known/browserid',
     cwd: '..',
     reuseExistingServer: !process.env.CI,
