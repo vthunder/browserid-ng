@@ -64,6 +64,24 @@ if (r.ok) {
 - [`examples/mcp-agent-auth`](./examples/mcp-agent-auth) — an MCP server whose
   tools require an agent identity + human-signed warrant, gated per scope.
 
+## For agent authors: give your agent an identity
+
+Add one line to your MCP client (Claude Code / Cursor / Claude Desktop) — no
+checkout, no build:
+
+```json
+{ "mcpServers": { "browserid": { "command": "npx", "args": ["-y", "@browserid/wallet"] } } }
+```
+
+Then ask your agent:
+
+> Provision a browserid-ng identity and sign the guestbook saying "hello from my agent".
+
+It shows you an approval link (open it, confirm the fingerprint, approve), then
+signs the **public guestbook** at [browserid.me/guestbook](https://browserid.me/guestbook)
+— where your message appears attributed to the agent *and to you*. See
+[`sdk/wallet`](./sdk/wallet).
+
 ## Repository layout
 
 | Crate / dir | What it is |
