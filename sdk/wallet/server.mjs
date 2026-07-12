@@ -39,21 +39,36 @@ mkdirSync(HOME, { recursive: true });
 const text = (t) => ({ content: [{ type: "text", text: t }] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-let agentPromise = null;
-let provisioning = null;
-const pendingWarrants = new Map(); // audience -> Promise (approval in flight)
+// A provisioning is a two-step handshake (start → human approves → pickup). The
+// tools must NEVER block waiting for the human — they return the approve URL and
+// the agent shows it. Approval is picked up in the BACKGROUND; the next tool
+// call finds the identity ready.
+let readyAgent = null; // the resolved Agent, once available
+let pendingProvisionUrl = null; // set while a provision awaits approval
 
-function loadAgent() {
-  if (agentPromise) return agentPromise;
-  if (provisioning) return provisioning;
-  agentPromise = Agent.open(CREDENTIAL, IDENTITY, { name: process.env.AGENT_NAME }).catch((e) => {
-    agentPromise = null;
-    throw e;
-  });
-  return agentPromise;
+/** Raised (non-blocking) when a provision is started but not yet approved. */
+class PendingProvision extends Error {
+  constructor(url) {
+    super("provisioning pending");
+    this.url = url;
+  }
+}
+
+const pendingWarrants = new Map(); // audience -> { approveUrl } while awaiting approval
+
+// Never blocks: returns the ready agent, loads one from disk, or signals pending.
+async function loadAgent() {
+  if (readyAgent) return readyAgent;
+  if (pendingProvisionUrl) throw new PendingProvision(pendingProvisionUrl);
+  readyAgent = await Agent.open(CREDENTIAL, IDENTITY, { name: process.env.AGENT_NAME });
+  return readyAgent;
 }
 
 function explain(e) {
+  if (e instanceof PendingProvision)
+    return text(
+      `PENDING — the human hasn't approved provisioning yet. Show them this link and wait for them to approve, then try again:\n${e.url}`
+    );
   if (e instanceof NeedCredentialError)
     return text("NEED_CREDENTIAL: no identity yet. Call the `provision` tool to pair one — the human approves a link, nothing to download.");
   if (e instanceof AmbiguousNameError)
@@ -63,20 +78,17 @@ function explain(e) {
   return null;
 }
 
-// Ensure a warrant for `audience`+`scopes`: returns { ready } if held, or
-// { approveUrl } (with the approval polling in the background) if not.
+// Non-blocking. { ready } if held; { approveUrl } to show the human; { pending }
+// if approval is still in flight. Approval is polled in the background — once the
+// human approves, `warrantCovers` becomes true and a retry proceeds.
 async function ensureWarrant(agent, audience, scopes) {
   if (agent.warrantCovers(audience, scopes)) return { ready: true };
   const inflight = pendingWarrants.get(audience);
-  if (inflight) {
-    const ok = await Promise.race([inflight.then(() => true), sleep(150000).then(() => false)]);
-    if (!ok) return { pending: true };
-    pendingWarrants.delete(audience);
-    return { ready: true };
-  }
+  if (inflight) return { pending: true, approveUrl: inflight.approveUrl };
   const { approveUrl, approved } = await agent.requestWarrant(audience, scopes);
   if (!approveUrl) return { ready: true };
-  pendingWarrants.set(audience, approved.then(() => agent.save(IDENTITY)));
+  pendingWarrants.set(audience, { approveUrl });
+  approved.then(() => agent.save(IDENTITY)).catch(() => {}).finally(() => pendingWarrants.delete(audience));
   return { approveUrl };
 }
 
@@ -99,19 +111,22 @@ server.registerTool(
         requestedHandles: handles?.length ? { names: handles } : undefined,
         label: label || "agent",
       });
-      provisioning = pairing.ready.then(async (agent) => {
-        writeFileSync(CREDENTIAL, JSON.stringify(agent.credential.toJSON(), null, 2));
-        await agent.save(IDENTITY);
-        agentPromise = Promise.resolve(agent);
-        provisioning = null;
-        return agent;
-      });
-      provisioning.catch(() => { provisioning = null; });
+      pendingProvisionUrl = pairing.verificationUriComplete;
+      // Pick up the identity in the BACKGROUND when the human approves.
+      pairing.ready
+        .then(async (agent) => {
+          writeFileSync(CREDENTIAL, JSON.stringify(agent.credential.toJSON(), null, 2));
+          await agent.save(IDENTITY);
+          readyAgent = agent;
+        })
+        .catch(() => {})
+        .finally(() => { pendingProvisionUrl = null; });
       return text(
         `APPROVE_URL: ${pairing.verificationUriComplete}\n` +
           `(or go to ${pairing.verificationUri} and enter code ${pairing.userCode})\n` +
-          `Agent key fingerprint: ${pairing.fingerprint}\n` +
-          `Show the human this link. Once they approve, call identity to confirm.`
+          `Agent key fingerprint: ${pairing.fingerprint}\n\n` +
+          `⚠ Show the human this APPROVE_URL and ask them to open it and approve. ` +
+          `Do NOT call other tools until they tell you they've approved — then call identity to confirm.`
       );
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);
@@ -148,9 +163,11 @@ server.registerTool(
     try {
       const agent = await loadAgent();
       const r = await ensureWarrant(agent, audience, scopes?.length ? scopes : ["use"]);
-      if (r.approveUrl) return text(`APPROVE_URL: ${r.approveUrl}\nShow the human; then call get_assertion.`);
-      if (r.pending) return text("PENDING — not approved yet; ask the human to approve, then retry.");
-      return text(`READY — authorized for ${audience}.`);
+      if (r.ready) return text(`READY — authorized for ${audience}. Call get_assertion.`);
+      return text(
+        `APPROVE_URL: ${r.approveUrl}\n⚠ Show the human this link and ask them to approve. ` +
+          `Wait for them to confirm, then call get_assertion (or authorize again to check).`
+      );
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);
     }
@@ -189,11 +206,11 @@ server.registerTool(
     try {
       const agent = await loadAgent();
       const w = await ensureWarrant(agent, GUESTBOOK_URL, ["sign"]);
-      if (w.approveUrl)
+      if (!w.ready)
         return text(
-          `APPROVE_URL: ${w.approveUrl}\nAsk the human to approve you signing the guestbook, then call sign_guestbook again with the same message.`
+          `APPROVE_URL: ${w.approveUrl}\n⚠ Show the human this link and ask them to approve you signing ` +
+            `the guestbook. Wait for them to confirm, then call sign_guestbook again with the same message.`
         );
-      if (w.pending) return text("PENDING — approve the link, then call sign_guestbook again.");
 
       const assertion = await agent.assertionFor(GUESTBOOK_URL);
       await agent.save(IDENTITY);
