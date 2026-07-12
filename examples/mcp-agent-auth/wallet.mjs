@@ -19,9 +19,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { existsSync, readdirSync, statSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const IDENTITY = process.env.AGENT_IDENTITY || join(HERE, "agent.identity.json");
+const BROKER = process.env.BROWSERID_BROKER || "https://browserid.me";
 const DEFAULT_SCOPES = ["post", "read"];
 
 // Find the agent credential. Precedence: an explicit AGENT_CREDENTIAL; then a
@@ -51,8 +53,11 @@ const text = (t) => ({ content: [{ type: "text", text: t }] });
 const pending = new Map(); // audience -> Promise<void> (approval in flight)
 
 let agentPromise = null;
+let provisioning = null; // a paired-provisioning bootstrap in flight
 let credSource = null; // where the credential was found, for reporting
 function loadAgent() {
+  if (agentPromise) return agentPromise;
+  if (provisioning) return provisioning; // waiting on a pairing to complete
   if (!agentPromise) {
     const cred = resolveCredential();
     if (!cred.path) {
@@ -73,9 +78,10 @@ function loadAgent() {
 function explain(e) {
   if (e instanceof NeedCredentialError)
     return text(
-      "NEED_CREDENTIAL: no agent identity yet. Ask the human to create an agent key at " +
-        "https://browserid.me/agents and download it — you can leave it in your Downloads, " +
-        "I'll find it (searched: " + (e.searched || []).join(", ") + ")."
+      "NEED_CREDENTIAL: no agent identity yet. Call the `provision` tool to pair one — " +
+        "the human approves a link and the identity is picked up automatically, no file needed. " +
+        "(Or, advanced: they can download a credential from https://browserid.me/agents and " +
+        "leave it in Downloads; I search: " + (e.searched || []).join(", ") + ".)"
     );
   if (e instanceof AmbiguousNameError)
     return text(
@@ -88,6 +94,47 @@ function explain(e) {
 }
 
 const server = new McpServer({ name: "browserid-wallet", version: "0.1.0" });
+
+server.registerTool(
+  "provision",
+  {
+    title: "Provision an identity (pairing)",
+    description:
+      "Start pairing a new browserid-ng agent identity with the human. Returns an approval URL to show them; once they approve, the identity is picked up automatically (no file to download). Use this when identity says NEED_CREDENTIAL.",
+    inputSchema: {
+      handles: z.array(z.string()).optional().describe("handles to suggest (the human confirms/edits)"),
+      label: z.string().optional().describe("a label shown to the human, e.g. what this agent is"),
+    },
+  },
+  async ({ handles, label }) => {
+    try {
+      const pairing = await Agent.bootstrap({
+        broker: BROKER,
+        requestedHandles: handles?.length ? { names: handles } : undefined,
+        label: label || "MCP agent",
+      });
+      // On approval: persist the credential (generated here, never transmitted)
+      // + identity locally, and adopt it as the wallet's agent.
+      provisioning = pairing.ready.then(async (agent) => {
+        const credPath = join(HERE, `agent-credential-${agent.email.split("@")[0]}.json`);
+        await writeFile(credPath, JSON.stringify(agent.credential.toJSON(), null, 2));
+        await agent.save(IDENTITY);
+        agentPromise = Promise.resolve(agent);
+        provisioning = null;
+        return agent;
+      });
+      provisioning.catch(() => { provisioning = null; }); // surfaced on the next tool call
+      return text(
+        `APPROVE_URL: ${pairing.verificationUriComplete}\n` +
+          `(or go to ${pairing.verificationUri} and enter code ${pairing.userCode})\n` +
+          `Agent key fingerprint: ${pairing.fingerprint}\n` +
+          `Show the human this link. Once they approve, I'll have my identity — then call identity or authorize.`
+      );
+    } catch (e) {
+      return explain(e) || text("ERROR: " + e.message);
+    }
+  }
+);
 
 server.registerTool(
   "identity",

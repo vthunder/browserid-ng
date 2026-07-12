@@ -42,6 +42,13 @@ export class Credential {
     return new Credential(json);
   }
 
+  /** The credential file shape ({secret_key, delegation, broker, idp}) — for
+   *  persisting a paired-provisioned credential locally (it was generated here,
+   *  never transmitted). */
+  toJSON() {
+    return { secret_key: this.secretKey, delegation: this.delegation, broker: this.broker, idp: this.idp };
+  }
+
   /** The provisioning key that signs provisioning/warrant requests. */
   provisioningKey() {
     const seed = fromB64u(this.secretKey);

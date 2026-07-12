@@ -13,13 +13,14 @@ You have two MCP servers available: **wallet** (your browserid-ng identity) and
 Call the **wallet** server's **`identity`** tool.
 
 - **"Acting as `<name>@…`"** — good. Tell the human who you'll act as, continue.
-- **`NEED_CREDENTIAL: …`** — you have no identity yet. Tell the human: *"Create an
-  agent key at https://browserid.me/agents (sign in first) and download it — you
-  can just leave it in your Downloads, I'll find it."* When they confirm, call
-  `identity` again. (The wallet auto-discovers `agent-credential*.json` in
-  Downloads / Desktop / home; it reports which file it used.)
-- **`AMBIGUOUS_NAME: …`** — the credential reserves several names. Ask the human
-  which one, then they restart the wallet server with `AGENT_NAME=<that>` set.
+- **`NEED_CREDENTIAL: …`** — you have no identity yet. Call the **`provision`** tool
+  (optionally suggest a handle, e.g. `handles: ["researcher"]`). It returns an
+  **`APPROVE_URL`** and a key **fingerprint** — show the human the link: *"Open
+  this, pick which of your identities I should act for, and approve — the
+  fingerprint should match `<fingerprint>`."* Once they approve, your identity is
+  picked up automatically; call `identity` again to confirm. No file to download.
+- **`AMBIGUOUS_NAME: …`** — (only for a downloaded credential) it reserves several
+  names. Ask the human which one, then they restart the wallet with `AGENT_NAME=<that>`.
 
 ## Step 2 — Request access
 
