@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-12T11:42:42Z
-updated_at: 2026-07-12T11:45:59Z
+updated_at: 2026-07-12T11:51:59Z
 ---
 
 Today the initial agent-credential handoff has no protocol: the user goes to browserid.me/agents, downloads a credential JSON (containing the provisioning PRIVATE key), and the wallet polls ~/Downloads to pick it up. Standardize it as a device-authorization-style pairing flow, mirroring the warrant consent flow (request -> verification_uri -> poll -> pickup).
@@ -40,3 +40,7 @@ The real axis is deployment shape, not agent capability (any browserid-ng agent 
 - PORTABLE credential (web-first download): keep it — needed for provision-here-deploy-there, headless/air-gapped, thin/non-SDK consumers, and batch pre-provisioning. It inherently contains the provisioning private key, so label it clearly as a secret + offer easy revoke.
 
 Unification: both are the SAME signing page, differing only in where the provisioning PUBLIC key comes from — agent-supplied (paired, via the code) or browser-generated (portable, for download). So keeping both is cheap: the pairing flow is the 'an agent is present' branch of the existing /agents signing UI. Nudge toward paired in tooling (SDK bootstrap(), wallet provision tool); keep download as the explicit/advanced escape hatch.
+
+## Design doc
+
+docs/plans/2026-07-12-paired-agent-provisioning-design.md — full flow, endpoints (/agent-provision/request + /poll mirroring warrant consent), shared signing page, session-authenticated reservation, data model, security analysis (no secret transit; poll result not a secret; device-grant phishing mitigations), SDK bootstrap() + wallet provision tool, compat, open questions, sequencing.
