@@ -60,11 +60,17 @@ agent (holds provisioning privkey)                 browser (human, authenticated
   "requested_handles": { "names": ["researcher"], "patterns": [] },  // optional hint; human can edit
   "label": "my research agent",                                       // optional, shown to human
   "hint": "agent@host" }                                              // optional, shown for recognition
-// response
+// response — all entry points; the agent shows whichever fits its context
 { "success": true, "code": "aprv_…",
-  "verification_uri": "https://browserid.me/agent-provision/aprv_…",
+  "verification_uri": "https://browserid.me/link",              // type user_code here (headless/cross-device)
+  "verification_uri_complete": "https://browserid.me/agent-provision/aprv_…", // one-click (desktop)
+  "user_code": "WXYZ-1234",                                     // short, typeable
+  "fingerprint": "4F-2A-9C",                                    // of provisioning_pubkey; confirm on the page
   "expires_in": 900, "interval": 5 }
 ```
+Desktop agents surface `verification_uri_complete` (one click). Headless/remote
+agents print `user_code` for the human to type at `verification_uri`. The verify
+page shows `fingerprint` for pairing confirmation.
 
 `POST {broker}/agent-provision/poll`
 ```jsonc
@@ -82,35 +88,45 @@ Same discipline as consent: HTTP 410 → expired, 429 → poll-too-fast (treat a
 pending), record single-delivery and deleted on completed pickup, rate-limited
 per code, `cleanup_expired` on request.
 
-### The `/agent-provision/<code>` page
+### The verify page — a MODE of `/account`, reached by `<code>` or a typed `user_code`
 
-Reuses the account/consent signing stack. On load (authenticated; if not, prompt
-sign-in first):
-1. Fetch the pending record; show **label/hint**, the **provisioning-key
-   fingerprint** (so a human who is intentionally pairing can confirm it matches
-   what their agent displayed — the device-grant anti-phishing confirmation), and
-   the **requested handles**.
-2. Human picks the delegating identity (their activated identities), edits the
-   handles (add/remove/patterns), sees reissue-vs-new per handle.
-3. Their **identity key signs the `P_cert`** over the **agent-supplied**
-   provisioning public key + the final constraint (this is the only crypto the
-   page does; it never generates a provisioning key in paired mode).
-4. Session-authenticated: **register** the delegation (`register_provisioning_cert`)
-   and **reserve** the handles (see below), then **store the result** on the
-   pending record so the agent's poll returns it.
-5. "Approve" / "Deny" — Deny marks the record denied.
+It is **not a new page**: it's the existing account/agents UI with a pending-code
+context layered on, so a brand-new user can complete first-time setup in-flow
+(the common path). On entry (`/agent-provision/<code>` or `/link` after entering a
+`user_code`):
+1. **Auth / new-user gate.** If not signed in → sign up / sign in. If the user has
+   no usable identity yet → **add email → verify → activate** inline (reusing
+   account.html), because delegating from a just-added email is the normal
+   brand-new-user path. Also covers "signed in but this identity's key isn't in
+   this browser" (same gate the consent page uses).
+2. Show **label/hint**, the **fingerprint** of the agent's provisioning key (for
+   pairing confirmation), and the **requested handles**.
+3. Human picks the delegating identity, edits handles (add/remove/patterns), sees
+   reissue-vs-new per handle.
+4. Their **identity key signs the `P_cert`** over the **agent-supplied**
+   provisioning public key + final constraint (the only crypto the page does; it
+   never generates a provisioning key in paired mode).
+5. Session-authenticated: **register** the delegation
+   (`register_provisioning_cert`) and **reserve** the handles (see below), then
+   **store the result** on the pending record for the agent's poll.
+6. "Approve" / "Deny" — Deny marks the record denied.
 
-### Reservation at verify time
+### Reservation — a standalone primitive, two auth modes
 
-Today reservation (`/provision/reserve`, `agent.rs`) is proven by a
-**provisioning-key-signed** request bundle — fine when the *agent* reserves, but
-the browser in the paired flow does not hold that key. Since the human is
-authenticated, reservation here is **session-authenticated**: fold it into the
-delegation registration (reserve the constraint's `names` for the account) or add
-a sibling session-authed reserve. This preserves create-time handle locking
-without the provisioning key. (Analysis of the current reuse/reissue semantics —
-handles are account-scoped, idempotent for the owner, revocation sticks — is in
-the session notes; the page surfaces those choices.)
+Reservation is a single `reserve(handles)` operation, decoupled from registration,
+reached two ways:
+- **session-authenticated** — the logged-in human reserves their own handles;
+  used by this verify page and by the future reservation-only web flow.
+- **provisioning-key-authenticated** — the agent reserves under its constraint;
+  the existing `/provision/reserve` (`agent.rs`), unchanged.
+
+Both hit the same underlying logic (`ensure_agent_identity`). Keeping it a
+primitive (rather than folding it into registration) preserves agent-suggested
+names (a `requested_handles` hint the human confirms), agent-driven reservation,
+and the reservation-only flow. Create-time locking holds because the paired flow
+reserves at the moment the human approves. (Reuse/reissue semantics — handles
+account-scoped, idempotent for the owner, revocation sticks — surfaced on the
+page.)
 
 ## Data model — pending provision record
 
@@ -152,16 +168,19 @@ Single-delivery: deleted when a `completed` poll hands the credential over.
 
 `@browserid/agent`:
 ```js
-const { verificationUri, ready } = await Agent.bootstrap({
+const pairing = await Agent.bootstrap({
   broker: "https://browserid.me", requestedHandles: { names: ["researcher"] }, label: "my agent",
 });
-console.log("Approve at:", verificationUri);
-const agent = await ready;          // resolves when the human completes; polls internally
+// pairing: { verificationUri, verificationUriComplete, userCode, fingerprint, ready }
+console.log("Approve at:", pairing.verificationUriComplete);        // desktop: one click
+// or, headless:  `Go to ${pairing.verificationUri} and enter ${pairing.userCode}`
+const agent = await pairing.ready;   // resolves when the human completes; polls internally
 await agent.save("agent.identity.json");
 ```
 Internally: generate provisioning keypair → `/agent-provision/request` → return
-`verificationUri` + a `ready` promise that polls `/agent-provision/poll` and
-assembles the `Credential` + `Agent`.
+the entry points + a `ready` promise that polls `/agent-provision/poll` and
+assembles the `Credential` + `Agent`. The wallet `provision` tool surfaces the
+same fields for the agent to show the human.
 
 Wallet MCP server: a **`provision`** tool returning `PROVISION_URL: <uri>`, then
 `get_assertion`/`identity` work as before. This **deletes the `~/Downloads`
@@ -173,18 +192,44 @@ discovery hack** for the paired path (discovery stays only for the portable mode
 - Existing credentials keep working (unchanged wire formats).
 - No verifier/RP changes — provisioning output is the same delegation shape.
 
-## Open questions
+## Resolved decisions (2026-07-12)
 
-1. **Code display** — URL only, or also a short human-typeable code + fingerprint
-   confirmation (stronger anti-phishing, more steps)? Lean: URL + show fingerprint
-   on the page; optionally echo it from the agent.
-2. **Reservation home** — fold into `register_provisioning_cert`, or a separate
-   session-authed `reserve`? Lean: fold in (one authenticated action).
-3. **Unauthenticated start** — the page must handle "not signed in": sign in, then
-   resume the code. Reuse the dialog/session gate.
-4. **Relation to a dedicated agent domain (0phq)** — the `idp`/`idpDomain` the
-   record returns should come from the delegating identity's issuer; if agents
-   move to `agents.browserid.me`, this flow inherits it with no shape change.
+1. **Entry points — return all of them; the agent picks by context (like OAuth
+   device flow).** The `request` response carries `verification_uri` (clickable),
+   `user_code`, and `verification_uri_complete` (URL with the code baked in), plus
+   a provisioning-key **fingerprint**:
+   - Desktop / local agent → show the clickable URL → **one click** (the smooth
+     path is never given up).
+   - Headless / remote agent (server, CI, no browser) → print `user_code`; the
+     human types it at `{broker}/link` on their own device. This cross-device
+     case — not anti-phishing — is the primary reason for the code.
+   - The **fingerprint** is shown on the verify page and (optionally) by the agent
+     as an "is this the agent I meant" confirmation.
+   `/link` is a thin page: resolve a typed `user_code` → the same verify page.
+
+2. **Reservation is a standalone primitive with two auth modes — NOT folded into
+   registration.** One `reserve(handles)` operation, reached by:
+   - **session-auth** — the logged-in human reserves their own handles (paired
+     verify page + the future reservation-only web flow, bean for that filed),
+   - **provisioning-key-auth** — the agent reserves under its constraint (the
+     existing `/provision/reserve`).
+   Registration stays decoupled from reservation. This preserves agent-suggested
+   names (a `requested_handles` hint the human confirms), agent-*driven*
+   reservation, and the reservation-only flow with a single reusable primitive.
+   Create-time locking holds because the paired flow reserves at human approval.
+
+3. **The verify page is a MODE of the existing `/account` (or `/agents`) UI, and
+   must support new-user setup in-flow.** Adding + verifying + activating a new
+   email and delegating from it is the **common** path for a brand-new user, not
+   an edge case. So the page reuses account.html's add-email / activate-identity /
+   create-agent machinery with the pending-code context layered on: sign up/in →
+   add email → verify → activate → select as delegator → approve. This also
+   subsumes "signed in but this identity's key isn't in this browser" (same gate
+   the consent page uses).
+
+4. **Agent domain (0phq):** `idp`/`idpDomain` comes from the delegating identity's
+   issuer; if agents move to `agents.browserid.me`, this flow inherits it in one
+   place with no shape change. No v1 action.
 
 ## Sequencing
 

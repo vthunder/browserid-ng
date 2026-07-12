@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-12T11:42:42Z
-updated_at: 2026-07-12T11:51:59Z
+updated_at: 2026-07-12T12:09:42Z
 ---
 
 Today the initial agent-credential handoff has no protocol: the user goes to browserid.me/agents, downloads a credential JSON (containing the provisioning PRIVATE key), and the wallet polls ~/Downloads to pick it up. Standardize it as a device-authorization-style pairing flow, mirroring the warrant consent flow (request -> verification_uri -> poll -> pickup).
@@ -44,3 +44,10 @@ Unification: both are the SAME signing page, differing only in where the provisi
 ## Design doc
 
 docs/plans/2026-07-12-paired-agent-provisioning-design.md — full flow, endpoints (/agent-provision/request + /poll mirroring warrant consent), shared signing page, session-authenticated reservation, data model, security analysis (no secret transit; poll result not a secret; device-grant phishing mitigations), SDK bootstrap() + wallet provision tool, compat, open questions, sequencing.
+
+## Q1-Q4 resolved (2026-07-12)
+- Q1: return all entry points (verification_uri + user_code + verification_uri_complete + fingerprint); agent shows whichever fits — desktop one-click URL (kept), headless types code at /link. Code is for cross-device/headless, not primarily anti-phishing.
+- Q2: reservation is a standalone primitive with two auth modes (session-auth for browser/verify + reservation-only flow; provisioning-key-auth for the agent). NOT folded into registration — preserves agent-suggested + agent-driven reservation and the reservation-only flow.
+- Q3: the verify page is a MODE of /account (reuse add-email/activate/create-agent), and MUST support new-user setup in-flow (add+verify+activate+delegate) — the common brand-new-user path, not an edge case.
+- Q4: idp from delegating identity's issuer; inherits 0phq later, no v1 action.
+Design doc updated accordingly.
