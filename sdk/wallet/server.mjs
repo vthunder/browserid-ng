@@ -27,7 +27,7 @@ import {
 import { z } from "zod";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 
 const BROKER = (process.env.BROWSERID_BROKER || "https://browserid.me").replace(/\/$/, "");
 const HOME = process.env.BROWSERID_HOME || join(homedir(), ".browserid");
@@ -173,6 +173,29 @@ server.registerTool(
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);
     }
+  }
+);
+
+server.registerTool(
+  "forget",
+  {
+    title: "Forget this identity",
+    description:
+      "Delete this agent's local identity (credential + cert) so a fresh one can be provisioned. Does NOT revoke it server-side — that's done at browserid.me/account.",
+  },
+  async () => {
+    readyAgent = null;
+    provisionError = null;
+    pendingProvisionUrl = null;
+    pendingWarrants.clear();
+    let removed = 0;
+    for (const p of [CREDENTIAL, IDENTITY]) {
+      try { rmSync(p); removed++; } catch {}
+    }
+    return text(
+      `Forgot the local identity (${removed} file(s) removed). Call provision to set up a new one. ` +
+        `(The old identity still exists at browserid.me/account until revoked there.)`
+    );
   }
 );
 
