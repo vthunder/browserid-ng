@@ -75,6 +75,7 @@ if (r.ok) {
 | **browserid-rp** | Relying-party helpers — fail-closed verification with scope enforcement |
 | **sdk/js** | `@browserid/verify` — the zero-dependency hosted-verify client (RP side) |
 | **sdk/agent** | `@browserid/agent` — the Node agent-side SDK (provision, warrants, assertions) |
+| **sdk/wallet** | `@browserid/wallet` — an MCP server (run via `npx`) giving an agent a browserid-ng identity; ships the guestbook demo |
 | **e2e-tests** | Playwright end-to-end suite (90+ tests) |
 | **docs/** | Design plans and the verification quickstart |
 
