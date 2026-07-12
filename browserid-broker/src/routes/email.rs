@@ -207,6 +207,11 @@ where
         return Err(BrokerError::EmailAlreadyExists);
     }
 
+    // One verification email per address per cooldown.
+    if let Err(secs) = state.throttle_email(&req.email, "add_email").await {
+        return Err(BrokerError::EmailRateLimited(secs));
+    }
+
     // Generate verification code
     let code = generate_verification_code();
 

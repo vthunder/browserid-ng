@@ -133,7 +133,10 @@ impl SmtpEmailSender {
 
 impl EmailSender for SmtpEmailSender {
     fn send_verification(&self, email: &str, code: &str) -> Result<(), String> {
-        let subject = "Your verification code";
+        // Code in the subject: each message is then a distinct thread (mail
+        // clients won't collapse them), and it's visible without opening.
+        let subject = format!("browserid.me code: {code}");
+        let subject = subject.as_str();
         let body = format!(
             "Your verification code is: {}\n\n\
              Enter this code to verify your email address.\n\n\
@@ -147,7 +150,8 @@ impl EmailSender for SmtpEmailSender {
     }
 
     fn send_password_reset(&self, email: &str, code: &str) -> Result<(), String> {
-        let subject = "Password reset code";
+        let subject = format!("browserid.me password reset code: {code}");
+        let subject = subject.as_str();
         let body = format!(
             "Your password reset code is: {}\n\n\
              Enter this code to reset your password.\n\n\

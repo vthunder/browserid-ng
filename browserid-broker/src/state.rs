@@ -49,10 +49,17 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// primitive in production and MUST stay off there. Off by default; only
     /// dev/test (no real SMTP) turns it on.
     pub test_endpoints_enabled: bool,
+    /// Per-address throttle for outbound verification/reset emails: address
+    /// (lowercased) -> time of the last send. Bounds email-bombing and code
+    /// spam server-side (the client cooldown is only a UX hint).
+    pub email_send_times: RwLock<HashMap<String, chrono::DateTime<chrono::Utc>>>,
 }
 
 /// Default per-user agent identity quota
 pub const DEFAULT_AGENT_QUOTA: usize = 50;
+
+/// Minimum spacing between verification/reset emails to one address.
+pub const EMAIL_SEND_COOLDOWN_SECS: i64 = 300;
 
 impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
     pub fn new(
@@ -73,6 +80,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             agent_provisioning_enabled: false,
             max_agent_identities_per_user: DEFAULT_AGENT_QUOTA,
             test_endpoints_enabled: false,
+            email_send_times: RwLock::new(HashMap::new()),
         }
     }
 
@@ -95,6 +103,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             agent_provisioning_enabled: false,
             max_agent_identities_per_user: DEFAULT_AGENT_QUOTA,
             test_endpoints_enabled: false,
+            email_send_times: RwLock::new(HashMap::new()),
         }
     }
 
@@ -139,6 +148,37 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
     pub fn get_fallback_fetcher(&self) -> Option<Arc<FallbackFetcher>> {
         self.fallback_fetcher.get().cloned()
     }
+
+    /// Rate-limit an outbound email of kind `scope` (e.g. "new_account",
+    /// "reset", "add_email") to one per [`EMAIL_SEND_COOLDOWN_SECS`] per address.
+    /// Keyed per-scope so a legitimate cross-kind sequence (sign up, then reset)
+    /// isn't blocked, while resends of the *same* kind are. On success records
+    /// the send; returns `Err(seconds_remaining)` if the caller must wait.
+    /// Enforced server-side so it can't be bypassed by reloading the page.
+    pub async fn throttle_email(&self, email: &str, scope: &str) -> Result<(), i64> {
+        let key = format!("{scope}\u{0}{}", email.to_lowercase());
+        let now = chrono::Utc::now();
+        let mut times = self.email_send_times.write().await;
+        if let Some(last) = times.get(&key) {
+            let elapsed = (now - *last).num_seconds();
+            if elapsed < EMAIL_SEND_COOLDOWN_SECS {
+                return Err(EMAIL_SEND_COOLDOWN_SECS - elapsed);
+            }
+        }
+        times.insert(key, now);
+        times.retain(|_, t| (now - *t).num_seconds() < EMAIL_SEND_COOLDOWN_SECS); // bound memory
+        Ok(())
+    }
+
+    /// Forget all send-throttle entries for an address (any scope) — e.g. on
+    /// account cancellation, so a legitimate re-registration isn't blocked.
+    pub async fn clear_email_throttle(&self, email: &str) {
+        let suffix = format!("\u{0}{}", email.to_lowercase());
+        self.email_send_times
+            .write()
+            .await
+            .retain(|k, _| !k.ends_with(&suffix));
+    }
 }
 
 /// Type alias for the default in-memory state
@@ -147,3 +187,33 @@ pub type InMemoryAppState = AppState<
     crate::store::InMemorySessionStore,
     crate::email::ConsoleEmailSender,
 >;
+
+#[cfg(test)]
+mod throttle_tests {
+    use super::*;
+    use crate::email::ConsoleEmailSender;
+    use crate::store::{InMemorySessionStore, InMemoryUserStore};
+    use browserid_core::KeyPair;
+
+    fn state() -> InMemoryAppState {
+        AppState::new(
+            KeyPair::generate(),
+            "localhost".into(),
+            InMemoryUserStore::new(),
+            InMemorySessionStore::new(),
+            ConsoleEmailSender::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn throttle_blocks_second_send_per_address() {
+        let s = state();
+        assert!(s.throttle_email("a@b.com", "reset").await.is_ok()); // first is allowed
+        let blocked = s.throttle_email("A@B.com", "reset").await; // same address+scope (case-insensitive)
+        assert!(matches!(blocked, Err(secs) if secs > 0 && secs <= EMAIL_SEND_COOLDOWN_SECS));
+        assert!(s.throttle_email("other@b.com", "reset").await.is_ok()); // a different address is independent
+        assert!(s.throttle_email("a@b.com", "new_account").await.is_ok()); // different scope, same address: independent
+        s.clear_email_throttle("a@b.com").await; // clearing (e.g. cancel) re-opens every scope
+        assert!(s.throttle_email("a@b.com", "reset").await.is_ok());
+    }
+}

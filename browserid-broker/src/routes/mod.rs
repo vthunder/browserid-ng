@@ -78,6 +78,9 @@ where
         .route("/wsapi/user_creation_status", get(account::user_creation_status))
         // Admin seed provisioning (ADMIN_TOKEN-gated; for @mingo.place demo accounts)
         .route("/admin/create_account", post(account::admin_create_account))
+        // Operator-only code peek (X-Admin-Token) — testing escape hatch when
+        // email delivery is flaky; not the public /wsapi/test route.
+        .route("/admin/pending_code", get(account::admin_pending_code))
         .route("/wsapi/authenticate_user", post(auth::authenticate_user))
         .route("/wsapi/logout", post(auth::logout))
         .route("/wsapi/update_password", post(auth::update_password))

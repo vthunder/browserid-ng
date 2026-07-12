@@ -56,6 +56,11 @@ where
         return Err(BrokerError::EmailAlreadyExists);
     }
 
+    // One account-verification email per address per cooldown.
+    if let Err(secs) = state.throttle_email(&req.email, "new_account").await {
+        return Err(BrokerError::EmailRateLimited(secs));
+    }
+
     // Hash password
     let password_hash = hash_password(&req.pass)
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -208,6 +213,12 @@ where
     // Delete user and all associated data
     state.user_store.delete_user(session.user_id)?;
 
+    // Forget the send-throttle for these addresses so the user can immediately
+    // re-register (a cancel is an authenticated action, so no abuse vector).
+    for e in &emails {
+        state.clear_email_throttle(&e.email).await;
+    }
+
     // Clear session cookie
     super::session::clear_session_cookie(&cookies);
 
@@ -335,4 +346,47 @@ where
         .map_err(|e| ise(e.to_string()))?;
 
     Ok(Json(AdminCreateResponse { success: true, email: req.email }))
+}
+
+#[derive(Deserialize)]
+pub struct AdminPendingCodeQuery {
+    pub email: String,
+    /// "new_account" (default), "add_email", or "password_reset".
+    #[serde(rename = "type")]
+    pub verification_type: Option<String>,
+}
+
+/// GET /admin/pending_code?email=&type=  (header: X-Admin-Token)
+///
+/// Operator-only escape hatch: return the current pending verification/reset
+/// code for an address. Gated by ADMIN_TOKEN — the operator already has full DB
+/// access, so this is not a privilege escalation; it exists so the operator can
+/// exercise the sign-up/reset flow when email delivery is flaky, WITHOUT
+/// reopening the public `/wsapi/test/*` route (which was an account-takeover
+/// hole). Never enable ADMIN_TOKEN-less, and keep the token secret.
+pub async fn admin_pending_code<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    headers: HeaderMap,
+    Query(q): Query<AdminPendingCodeQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let expected = std::env::var("ADMIN_TOKEN").ok().filter(|t| !t.is_empty());
+    let provided = headers.get("x-admin-token").and_then(|v| v.to_str().ok());
+    match (expected, provided) {
+        (Some(exp), Some(got)) if exp == got => {}
+        _ => return Err((StatusCode::FORBIDDEN, "admin token required".into())),
+    }
+    let vt = match q.verification_type.as_deref() {
+        Some("add_email") => VerificationType::AddEmail,
+        Some("password_reset") | Some("reset") => VerificationType::PasswordReset,
+        _ => VerificationType::NewAccount,
+    };
+    match state.user_store.get_pending_by_email(&q.email, vt) {
+        Ok(Some(p)) => Ok(Json(serde_json::json!({ "success": true, "code": p.secret, "email": p.email }))),
+        _ => Ok(Json(serde_json::json!({ "success": false, "reason": "no pending code for that address/type" }))),
+    }
 }

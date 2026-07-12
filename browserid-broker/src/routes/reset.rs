@@ -47,6 +47,11 @@ where
         .get_user_by_email(&req.email)?
         .ok_or(BrokerError::EmailNotFound)?;
 
+    // One reset email per address per cooldown (anti email-bombing / code spam).
+    if let Err(secs) = state.throttle_email(&req.email, "reset").await {
+        return Err(BrokerError::EmailRateLimited(secs));
+    }
+
     // Generate verification code
     let code = generate_verification_code();
 

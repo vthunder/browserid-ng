@@ -46,6 +46,11 @@ pub enum BrokerError {
     #[error("Invalid email address")]
     InvalidEmail,
 
+    /// Too many verification/reset emails to an address; the value is the number
+    /// of seconds the caller must wait before requesting another.
+    #[error("Too many requests; retry in {0}s")]
+    EmailRateLimited(i64),
+
     #[error("Validation error: {0}")]
     ValidationError(String),
 
@@ -102,6 +107,21 @@ impl IntoResponse for BrokerError {
             });
             return (StatusCode::CONFLICT, axum::Json(body)).into_response();
         }
+        // Rate limiting carries a human message + machine-readable retry_after.
+        if let BrokerError::EmailRateLimited(secs) = &self {
+            let mins = (*secs + 59) / 60;
+            let wait = if *secs >= 60 {
+                format!("about {mins} minute{}", if mins == 1 { "" } else { "s" })
+            } else {
+                format!("{secs} seconds")
+            };
+            let body = json!({
+                "success": false,
+                "reason": format!("A code was just sent — please wait {wait} before requesting another."),
+                "retry_after": secs,
+            });
+            return (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
+        }
         let (status, message) = match &self {
             BrokerError::UserNotFound => (StatusCode::NOT_FOUND, "User not found"),
             BrokerError::EmailNotFound => (StatusCode::NOT_FOUND, "Email not found"),
@@ -148,6 +168,7 @@ impl IntoResponse for BrokerError {
             BrokerError::PolicyRefused(msg) => (StatusCode::FORBIDDEN, msg.as_str()),
             // Handled above with a structured body; unreachable here.
             BrokerError::NamesTaken(_) => (StatusCode::CONFLICT, "handles unavailable"),
+            BrokerError::EmailRateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "too many requests"),
             BrokerError::QuotaExceeded => {
                 (StatusCode::TOO_MANY_REQUESTS, "Agent identity quota exceeded")
             }
