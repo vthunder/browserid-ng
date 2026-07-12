@@ -150,6 +150,7 @@
           <p class="warn" style="margin:12px 0 4px"><b>Copy this now — shown only once.</b></p>
           <p class="sub">The agent credential (contains a private key that never left this page).
             Save it as the agent's <code>agent-credential.json</code>.</p>
+          <p class="sub" id="ag-cred-identity" style="font-weight:600"></p>
           <pre id="ag-cred-json"></pre>
           <button class="small" id="ag-download">Download JSON</button>
           <button class="small" id="ag-done">Done</button>
@@ -474,18 +475,28 @@ $('ag-create').onclick = async () => {
   $('ag-create').disabled = true; status.textContent = 'Creating…';
   try {
     const idpDomain = id.issuer || location.host, idpUrl = idpUrlFor(idpDomain);
+    const uniqNames = [...new Set(names)], uniqPatterns = [...new Set(patterns)];
     const provKey = await genKeypair(); // provisioning key stays extractable (exported to the agent)
     const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
     const certClaims = { typ: 'browserid-provisioning-cert-v1', iss: id.email, iat: nowS(), exp: nowS() + 90*24*3600,
-      'public-key': { algorithm: 'Ed25519', publicKey: provKey.publicKey._jwk.x }, constraint: { names: [...new Set(names)], patterns: [...new Set(patterns)] } };
+      'public-key': { algorithm: 'Ed25519', publicKey: provKey.publicKey._jwk.x }, constraint: { names: uniqNames, patterns: uniqPatterns } };
     const payload = b64urlJson(certClaims);
     const sig = await window.Keystore.sign(id.privateKey, `${header}.${payload}`); // sign with the non-extractable identity key
     const delegation = `${id.cert}~${header}.${payload}.${sig}`;
     await post('/wsapi/register_provisioning_cert', { csrf: account.csrf, label: $('ag-label').value.trim() || 'agent key', bundle: delegation });
     if (names.length) { status.textContent = 'Reserving…'; await reserveNames(provKey, idpDomain, idpUrl, delegation); }
-    const credential = { secret_key: provKey.secretKey._jwk.d, delegation, broker: location.origin, idp: idpUrl };
+    // `names`/`patterns` are duplicated at the top level for human legibility;
+    // the authoritative copy is inside the delegation's provisioning cert, which
+    // is what tooling and the IdP actually enforce.
+    const credential = { secret_key: provKey.secretKey._jwk.d, delegation, broker: location.origin, idp: idpUrl,
+      names: uniqNames, patterns: uniqPatterns };
     const json = JSON.stringify(credential, null, 2);
     $('ag-cred-json').textContent = json;
+    const idText = uniqNames.length === 1 && !uniqPatterns.length
+      ? `Provisions as ${uniqNames[0]}@${idpDomain}`
+      : [uniqNames.length ? `names: ${uniqNames.join(', ')}` : '', uniqPatterns.length ? `patterns: ${uniqPatterns.join(', ')}` : '']
+          .filter(Boolean).join(' · ');
+    $('ag-cred-identity').textContent = idText + ` — at ${idpDomain}`;
     $('ag-cred').hidden = false;
     $('ag-download').onclick = () => {
       const a = document.createElement('a');
