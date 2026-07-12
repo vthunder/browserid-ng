@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-12T11:42:42Z
-updated_at: 2026-07-12T11:42:42Z
+updated_at: 2026-07-12T11:45:59Z
 ---
 
 Today the initial agent-credential handoff has no protocol: the user goes to browserid.me/agents, downloads a credential JSON (containing the provisioning PRIVATE key), and the wallet polls ~/Downloads to pick it up. Standardize it as a device-authorization-style pairing flow, mirroring the warrant consent flow (request -> verification_uri -> poll -> pickup).
@@ -32,3 +32,11 @@ Key property: the provisioning private key is born in the agent and NEVER transi
 - Docs.
 
 Design doc first (docs/plans), then implement. Relates to 0phq (agent domain).
+
+## Decision: keep both modes (paired default; portable download advanced)
+
+The real axis is deployment shape, not agent capability (any browserid-ng agent can sign → can keygen; 'can't generate a keypair' is a phantom for real agents):
+- PAIRED provisioning (agent-initiated, key stays local): the default/prominent path for a present, interactive agent. Zero secret transit.
+- PORTABLE credential (web-first download): keep it — needed for provision-here-deploy-there, headless/air-gapped, thin/non-SDK consumers, and batch pre-provisioning. It inherently contains the provisioning private key, so label it clearly as a secret + offer easy revoke.
+
+Unification: both are the SAME signing page, differing only in where the provisioning PUBLIC key comes from — agent-supplied (paired, via the code) or browser-generated (portable, for download). So keeping both is cheap: the pairing flow is the 'an agent is present' branch of the existing /agents signing UI. Nudge toward paired in tooling (SDK bootstrap(), wallet provision tool); keep download as the explicit/advanced escape hatch.
