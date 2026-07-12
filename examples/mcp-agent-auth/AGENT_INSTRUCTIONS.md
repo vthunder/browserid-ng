@@ -14,9 +14,10 @@ Call the **wallet** server's **`identity`** tool.
 
 - **"Acting as `<name>@…`"** — good. Tell the human who you'll act as, continue.
 - **`NEED_CREDENTIAL: …`** — you have no identity yet. Tell the human: *"Create an
-  agent key at https://browserid.me/agents (sign in first), download the file, and
-  save it as `agent-credential.json` in this directory."* When they confirm, call
-  `identity` again.
+  agent key at https://browserid.me/agents (sign in first) and download it — you
+  can just leave it in your Downloads, I'll find it."* When they confirm, call
+  `identity` again. (The wallet auto-discovers `agent-credential*.json` in
+  Downloads / Desktop / home; it reports which file it used.)
 - **`AMBIGUOUS_NAME: …`** — the credential reserves several names. Ask the human
   which one, then they restart the wallet server with `AGENT_NAME=<that>` set.
 
@@ -25,19 +26,21 @@ Call the **wallet** server's **`identity`** tool.
 Call **wallet** `authorize` with `audience: "https://notes.mcp.example"` and
 `scopes: ["post","read"]`.
 
-- **`APPROVE_URL: <url>`** — show the human that link and say: *"Approve this to
-  let me post and read on your behalf at that server — then tell me when done."*
-  It's a browserid.me consent screen; they sign a warrant with their own key,
-  revocable anytime.
+- **`APPROVE_URL: <url>`** — show the human that link: *"Approve this to let me
+  post and read on your behalf at that server."* It's a browserid.me consent
+  screen; they sign a warrant with their own key, revocable anytime.
+  **Then go straight to Step 3 — don't wait for the human to tell you they're done.**
 - **`READY — already authorized`** — skip to Step 3.
 
 ## Step 3 — Get your assertion
 
-Call **wallet** `get_assertion` with the same `audience`.
+Immediately after showing the link, call **wallet** `get_assertion` with the same
+`audience`. It **waits for the human to approve and returns automatically** — so
+you proceed the moment they click Approve, no "are you done?" needed.
 
 - **`ASSERTION: <value>`** — copy `<value>`; it's your credential for Step 4.
-- **`PENDING — not approved yet`** — remind the human to approve the link, then
-  call `get_assertion` again.
+- **`PENDING — not approved yet`** — it waited a couple minutes and they haven't
+  approved. Remind them about the link, then call `get_assertion` again.
 
 ## Step 4 — Act, as yourself
 

@@ -17,19 +17,51 @@ import { Agent, NeedCredentialError, AmbiguousNameError, NoWarrantError, Warrant
 import { z } from "zod";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+import { existsSync, readdirSync, statSync } from "node:fs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CREDENTIAL = process.env.AGENT_CREDENTIAL || join(HERE, "agent-credential.json");
 const IDENTITY = process.env.AGENT_IDENTITY || join(HERE, "agent.identity.json");
 const DEFAULT_SCOPES = ["post", "read"];
+
+// Find the agent credential. Precedence: an explicit AGENT_CREDENTIAL; then a
+// credential placed in this directory; then the newest `agent-credential*.json`
+// the human just downloaded (Downloads / Desktop / home). Returns { path } or
+// { path: null, searched } so the caller can tell the human where to look.
+function resolveCredential() {
+  if (process.env.AGENT_CREDENTIAL) return { path: process.env.AGENT_CREDENTIAL, source: "AGENT_CREDENTIAL" };
+  const dirs = [HERE, join(homedir(), "Downloads"), join(homedir(), "Desktop"), homedir()];
+  const matches = [];
+  for (const dir of dirs) {
+    let names = [];
+    try { names = readdirSync(dir); } catch { continue; }
+    for (const n of names) {
+      if (/^agent-credential.*\.json$/.test(n) || /\.agent-credential\.json$/.test(n)) {
+        const p = join(dir, n);
+        try { matches.push({ path: p, mtime: statSync(p).mtimeMs }); } catch {}
+      }
+    }
+  }
+  if (!matches.length) return { path: null, searched: dirs };
+  matches.sort((a, b) => b.mtime - a.mtime); // newest first (just-downloaded)
+  return { path: matches[0].path, source: "auto-discovered", others: matches.slice(1).map((m) => m.path) };
+}
 
 const text = (t) => ({ content: [{ type: "text", text: t }] });
 const pending = new Map(); // audience -> Promise<void> (approval in flight)
 
 let agentPromise = null;
+let credSource = null; // where the credential was found, for reporting
 function loadAgent() {
   if (!agentPromise) {
-    agentPromise = Agent.open(CREDENTIAL, IDENTITY, { name: process.env.AGENT_NAME }).catch((e) => {
+    const cred = resolveCredential();
+    if (!cred.path) {
+      const e = new NeedCredentialError(join(HERE, "agent-credential.json"));
+      e.searched = cred.searched;
+      return Promise.reject(e);
+    }
+    credSource = cred;
+    agentPromise = Agent.open(cred.path, IDENTITY, { name: process.env.AGENT_NAME }).catch((e) => {
       agentPromise = null; // let a later call retry (e.g. after the human adds the credential)
       throw e;
     });
@@ -42,7 +74,8 @@ function explain(e) {
   if (e instanceof NeedCredentialError)
     return text(
       "NEED_CREDENTIAL: no agent identity yet. Ask the human to create an agent key at " +
-        "https://browserid.me/agents and save the downloaded file as:\n  " + CREDENTIAL
+        "https://browserid.me/agents and download it — you can leave it in your Downloads, " +
+        "I'll find it (searched: " + (e.searched || []).join(", ") + ")."
     );
   if (e instanceof AmbiguousNameError)
     return text(
@@ -63,10 +96,12 @@ server.registerTool(
     try {
       const agent = await loadAgent();
       const id = agent.identity();
+      const from = credSource?.source === "auto-discovered" ? ` (credential: ${credSource.path})` : "";
       return text(
         `Acting as ${agent.email}.` +
           (id.names.length ? ` Reserved names: ${id.names.join(", ")}.` : "") +
-          (id.patterns.length ? ` Patterns: ${id.patterns.join(", ")}.` : "")
+          (id.patterns.length ? ` Patterns: ${id.patterns.join(", ")}.` : "") +
+          from
       );
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);
@@ -128,4 +163,4 @@ server.registerTool(
 );
 
 await server.connect(new StdioServerTransport());
-console.error(`browserid-wallet MCP server ready — credential ${CREDENTIAL}`);
+console.error("browserid-wallet MCP server ready");

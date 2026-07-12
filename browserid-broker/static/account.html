@@ -149,7 +149,8 @@
         <div id="ag-cred" hidden>
           <p class="warn" style="margin:12px 0 4px"><b>Copy this now — shown only once.</b></p>
           <p class="sub">The agent credential (contains a private key that never left this page).
-            Save it as the agent's <code>agent-credential.json</code>.</p>
+            Downloads as <code id="ag-cred-fname">agent-credential.json</code> — its agent
+            can auto-find it in your Downloads.</p>
           <p class="sub" id="ag-cred-identity" style="font-weight:600"></p>
           <pre id="ag-cred-json"></pre>
           <button class="small" id="ag-download">Download JSON</button>
@@ -498,10 +499,17 @@ $('ag-create').onclick = async () => {
           .filter(Boolean).join(' · ');
     $('ag-cred-identity').textContent = idText + ` — at ${idpDomain}`;
     $('ag-cred').hidden = false;
+    // Filename hints at the identity so multiple downloads don't collide as
+    // "agent-credential (N).json". Handles are [a-z0-9._+-], safe in a filename.
+    const hint = uniqNames.length
+      ? uniqNames[0] + (uniqNames.length > 1 ? `+${uniqNames.length - 1}` : '')
+      : (uniqPatterns[0] ? uniqPatterns[0].replace('+*', '') : 'agent');
+    const filename = `agent-credential-${hint}.json`;
+    $('ag-cred-fname').textContent = filename;
     $('ag-download').onclick = () => {
       const a = document.createElement('a');
       a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
-      a.download = 'agent-credential.json'; a.click(); URL.revokeObjectURL(a.href);
+      a.download = filename; a.click(); URL.revokeObjectURL(a.href);
     };
     $('ag-done').onclick = () => { $('ag-cred').hidden = true; $('add-agent-form').hidden = true; };
     status.textContent = ''; $('ag-handle').value = ''; $('ag-extra').value = ''; $('ag-patterns').value = ''; $('ag-label').value = '';
