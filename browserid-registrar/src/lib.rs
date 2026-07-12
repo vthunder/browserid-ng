@@ -39,6 +39,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use browserid_core::KeyPair;
 
+pub mod agent_provision;
 pub mod consent;
 pub mod error;
 pub mod host;
@@ -78,6 +79,12 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         // Warrant consent flow (agent spec §6, v0.4):
         .route("/warrant/request", post(consent::request))
         .route("/warrant/poll", post(consent::poll))
+        // Paired agent provisioning (device-grant bootstrap, 74u1):
+        .route("/agent-provision/request", post(agent_provision::request))
+        .route("/agent-provision/poll", post(agent_provision::poll))
+        .route("/agent-provision/info", post(agent_provision::info))
+        .route("/agent-provision/resolve", post(agent_provision::resolve))
+        .route("/agent-provision/complete", post(agent_provision::complete))
         .route("/wsapi/warrant_requests", get(consent::list_requests))
         .route("/wsapi/warrant_respond", post(consent::respond))
         // Warrant registry (jipx):

@@ -41,6 +41,9 @@ pub enum RegistrarError {
 
     #[error("Polling too fast")]
     PollTooFast,
+
+    #[error("Provision request not found")]
+    ProvisionRequestNotFound,
 }
 
 impl IntoResponse for RegistrarError {
@@ -68,6 +71,9 @@ impl IntoResponse for RegistrarError {
                 (StatusCode::NOT_FOUND, "Warrant request not found")
             }
             RegistrarError::PollTooFast => (StatusCode::TOO_MANY_REQUESTS, "Polling too fast"),
+            RegistrarError::ProvisionRequestNotFound => {
+                (StatusCode::NOT_FOUND, "Provision request not found or expired")
+            }
         };
 
         let body = json!({
