@@ -20,59 +20,43 @@ agent  ──assert(audience)──▶  MCP tool call  ──▶  server verifie
                                                   → enforce scope → run tool
 ```
 
-## Run it — from an agent, by pasting a prompt
+## Run it — the agent guides the rest
 
 The point of the demo is that **the agent does the work**: it surfaces the
-consent URL, waits for you to approve, and calls the tool as itself. You just
-paste a prompt.
+consent URL, walks you through approving it, and calls the tool as itself.
 
-### One-time setup
+**1. Clone + install.** (Needs Node 18+, and Rust for the agent CLI.)
 
-1. **Agent identity.** At [browserid.me/agents](https://browserid.me/agents)
-   create an agent key and save `agent-credential.json` in this directory.
-2. `npm install`
-3. **Register the notes server** with an MCP-capable, shell-capable agent
-   (Claude Code, Cursor, Claude Desktop…). For Claude Code, `.mcp.json`:
+```bash
+git clone https://github.com/vthunder/browserid-ng.git
+cd browserid-ng/examples/mcp-agent-auth
+npm install
+```
 
-   ```json
-   {
-     "mcpServers": {
-       "notes": {
-         "command": "node",
-         "args": ["/ABS/PATH/examples/mcp-agent-auth/server.mjs"],
-         "env": { "SERVER_AUDIENCE": "https://notes.mcp.example" }
-       }
-     }
-   }
-   ```
-4. Tell the assertion helper where your credential is (default shown):
+**2. Point your agent at the notes server.** A ready [`.mcp.json`](./.mcp.json)
+lives here, so **Claude Code / Cursor auto-register it** when you launch in this
+directory — nothing to edit. (Claude Desktop: copy the `mcpServers` block into
+its config, using an absolute path to `server.mjs`.)
 
-   ```bash
-   export AGENT_CLI="cargo run -q -p browserid-agent --example agent_cli -- ./agent-credential.json"
-   ```
+**3. Run your agent in this directory and paste:**
 
-### Then paste this to your agent
+> Read `AGENT_INSTRUCTIONS.md` and follow it to post a note to the notes MCP
+> server. Guide me through anything that needs me.
 
-> Post a note saying **"hello from my agent"** to the **notes** MCP server.
-> It needs a browserid-ng assertion for the audience `https://notes.mcp.example`. To get one:
-> 1. Run `node examples/mcp-agent-auth/mint-assertion.mjs consent https://notes.mcp.example`.
->    It prints `CONSENT_URL: …` — **show me that link and wait** until I say I've approved it.
-> 2. Then run `node examples/mcp-agent-auth/mint-assertion.mjs get https://notes.mcp.example`
->    to read the `ASSERTION:` value (retry once if it says PENDING).
-> 3. Call the notes server's `post_note` tool with that assertion and the text.
-
-What happens: the agent shows you a browserid.me consent URL; you approve a
-warrant naming *this server* and the `post`/`read` scopes; the agent reads back
-its assertion and calls `post_note` — and the server logs the note as
-*"by agent researcher@browserid.me, acting for you."* Ask it to `list_notes`
-next and it reuses the same warrant.
+That's it. The agent will check whether you have an agent identity (and if not,
+walk you through creating one at [browserid.me/agents](https://browserid.me/agents)),
+show you a consent link to approve a warrant for this server, then call
+`post_note` as itself — and the server logs the note *"by agent
+researcher@browserid.me, acting for you."* Ask it to list notes next and it
+reuses the same warrant.
 
 By default the server verifies against the hosted `https://browserid.me/verify`;
 set `VERIFIER_URL` on the server to point at your own broker instead.
 
-### Without an agent (manual, for debugging)
+### Under the hood / debugging by hand
 
-`mint-assertion.mjs` and `client.mjs` are just thin wrappers you can run by hand:
+The agent just runs these — you can too. No env vars: the helper finds your
+credential (`agent-credential.json` here) and the CLI on its own.
 
 ```bash
 node mint-assertion.mjs consent https://notes.mcp.example   # → CONSENT_URL (approve it)

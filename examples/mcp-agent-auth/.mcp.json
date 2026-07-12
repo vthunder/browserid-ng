@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "notes": {
+      "command": "node",
+      "args": ["server.mjs"],
+      "env": { "SERVER_AUDIENCE": "https://notes.mcp.example" }
+    }
+  }
+}

@@ -18,19 +18,36 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
+// Everything resolves relative to THIS file, so it works from any cwd with no
+// env vars: the credential sits next to it, and the agent CLI is run against the
+// workspace two levels up.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO = join(HERE, "..", "..");
+const CREDENTIAL = process.env.AGENT_CREDENTIAL || join(HERE, "agent-credential.json");
 const AGENT_CLI =
   process.env.AGENT_CLI ||
-  "cargo run -q -p browserid-agent --example agent_cli -- ./agent-credential.json";
-const SCOPES = (process.env.SCOPES || "post read").split(/\s+/).filter(Boolean);
+  `cargo run -q --manifest-path ${JSON.stringify(join(REPO, "Cargo.toml"))} ` +
+    `-p browserid-agent --example agent_cli -- ${JSON.stringify(CREDENTIAL)}`;
 
 const [, , cmd, audience] = process.argv;
 if (!cmd || !audience || !["consent", "get"].includes(cmd)) {
   console.error("usage: node mint-assertion.mjs <consent|get> <audience>");
   process.exit(2);
+}
+
+// Preflight: without an agent identity there's nothing to mint. Tell the agent
+// exactly what to ask the human for.
+if (!existsSync(CREDENTIAL)) {
+  console.log(
+    "NEED_CREDENTIAL: no agent identity yet. Ask the human to create an agent key at " +
+      "https://browserid.me/agents and save the downloaded file as:\n  " + CREDENTIAL
+  );
+  process.exit(4);
 }
 
 // Stable per-audience temp files so `consent` and a later `get` (separate
@@ -55,11 +72,10 @@ if (cmd === "get") {
   process.exit(a ? 0 : 3);
 }
 
-// cmd === "consent": if we already have it, say so.
-if (readAssertion()) {
-  console.log("READY — assertion already minted; call `get` to read it.");
-  process.exit(0);
-}
+// cmd === "consent": always mint fresh, so a stale/expired assertion from a
+// previous run is never handed back. Clear prior state before spawning.
+rmSync(outFile, { force: true });
+rmSync(errFile, { force: true });
 
 // Kick off `assert <audience>`, detached, redirecting its streams to files so it
 // survives this process exiting. It prints the approve URL to stderr, blocks
