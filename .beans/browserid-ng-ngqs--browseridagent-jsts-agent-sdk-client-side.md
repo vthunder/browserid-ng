@@ -1,11 +1,11 @@
 ---
 # browserid-ng-ngqs
 title: '@browserid/agent — JS/TS agent SDK (client side)'
-status: in-progress
+status: completed
 type: feature
 priority: high
 created_at: 2026-07-12T08:54:03Z
-updated_at: 2026-07-12T08:54:03Z
+updated_at: 2026-07-12T09:14:27Z
 ---
 
 A Node/TS agent-side SDK mirroring browserid-agent (Rust): load credential, provision a delegated identity, request warrants (consent URL + await approval), mint warrant-backed assertions, refresh certs, revoke. Enables Node-only agent integration and lets the MCP demo drop the cargo shell-out + temp-file plumbing and run in pure-MCP clients (Claude Desktop) via a wallet MCP server.
