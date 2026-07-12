@@ -186,8 +186,12 @@ async fn sign_warrant(
 #[tokio::test]
 async fn delegation_mint_assert_verify_roundtrip() {
     let (server, email_sender, broker_pub) = create_agent_server(5);
+    // A primary human (email domain == the broker/IdP domain) so the whole
+    // chain is primary-shaped and offline-verifiable via the core key resolver;
+    // agents are then bare handles. (Fallback sub-addressing is covered by the
+    // reserve tests + the guestbook e2e's DNS-aware verifier.)
     let (delegation, prov_kp, session) =
-        register_agent_key(&server, &email_sender, "human@example.com").await;
+        register_agent_key(&server, &email_sender, "human@localhost:3000").await;
 
     let agent_kp = KeyPair::generate();
     let bundle = mint_bundle(&delegation, &prov_kp, "attestor", &agent_kp);
@@ -204,7 +208,7 @@ async fn delegation_mint_assert_verify_roundtrip() {
     // The minted cert is an agent certificate (v0.4): typed + attributed.
     let cert = Certificate::parse(body["cert"].as_str().unwrap()).unwrap();
     assert!(cert.is_agent());
-    assert_eq!(cert.agent_parent(), Some("human@example.com"));
+    assert_eq!(cert.agent_parent(), Some("human@localhost:3000"));
 
     // Bare cert~assertion is fail-closed: an agent cert needs a warrant.
     let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &agent_kp).unwrap();
@@ -214,14 +218,14 @@ async fn delegation_mint_assert_verify_roundtrip() {
     // With a user-signed warrant, the presentation verifies offline and
     // carries the attribution.
     let warrant =
-        sign_warrant(&server, &session, "human@example.com", "attestor@localhost:3000", AUDIENCE)
+        sign_warrant(&server, &session, "human@localhost:3000", "attestor@localhost:3000", AUDIENCE)
             .await;
     let verified = BackedAssertion::new_agent(cert, warrant, assertion)
         .verify(AUDIENCE, |_| Ok(broker_pub.clone()))
         .unwrap();
     assert_eq!(verified.email, "attestor@localhost:3000");
     let attribution = verified.agent.expect("agent attribution");
-    assert_eq!(attribution.parent, "human@example.com");
+    assert_eq!(attribution.parent, "human@localhost:3000");
     assert_eq!(attribution.scopes, vec!["post"]);
 
     // Attribution recorded: agent → human@example.com.
@@ -240,7 +244,7 @@ async fn delegation_mint_assert_verify_roundtrip() {
         .json();
     let ids = body["identities"].as_array().unwrap();
     assert_eq!(ids.len(), 1);
-    assert_eq!(ids[0]["parent_email"], "human@example.com");
+    assert_eq!(ids[0]["parent_email"], "human@localhost:3000");
     assert_eq!(ids[0]["active"], true);
 }
 
@@ -380,8 +384,9 @@ async fn quota_enforced() {
 #[tokio::test]
 async fn remint_rotated_agent_key() {
     let (server, email_sender, broker_pub) = create_agent_server(5);
+    // Primary human → bare agent handle, offline-verifiable (see roundtrip note).
     let (delegation, prov_kp, session) =
-        register_agent_key(&server, &email_sender, "human@example.com").await;
+        register_agent_key(&server, &email_sender, "human@localhost:3000").await;
 
     let bundle = mint_bundle(&delegation, &prov_kp, "bot", &KeyPair::generate());
     let e = endorse(&server, &bundle).await;
@@ -405,7 +410,7 @@ async fn remint_rotated_agent_key() {
     let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &rotated).unwrap();
     // The warrant binds by identity, so it survives agent-key rotation.
     let warrant =
-        sign_warrant(&server, &session, "human@example.com", "bot@localhost:3000", AUDIENCE).await;
+        sign_warrant(&server, &session, "human@localhost:3000", "bot@localhost:3000", AUDIENCE).await;
     let verified = BackedAssertion::new_agent(cert, warrant, assertion)
         .verify(AUDIENCE, |_| Ok(broker_pub.clone()))
         .unwrap();
@@ -577,14 +582,14 @@ async fn reserve_then_mint() {
         .json();
     assert_eq!(body["success"], true, "mint of reserved name failed: {body}");
     let cert = Certificate::parse(body["cert"].as_str().unwrap()).unwrap();
-    let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &agent_kp).unwrap();
-    let warrant =
-        sign_warrant(&server, &session, "human@example.com", "alpha@localhost:3000", AUDIENCE)
-            .await;
-    let verified = BackedAssertion::new_agent(cert, warrant, assertion)
-        .verify(AUDIENCE, |_| Ok(broker_pub.clone()))
-        .unwrap();
-    assert_eq!(verified.email, "alpha@localhost:3000");
+    // The human is fallback (broker-rooted): the minted agent is sub-addressed
+    // under the human's OWN email — the per-owner-scoped namespace — while the
+    // cert stays broker-issued (fallback shape). Such a leaf verifies via the
+    // DNS/fallback verifier (exercised e2e by the guestbook), not the primary
+    // core path used by the bare-name tests, so we assert the cert's shape here.
+    assert_eq!(cert.email().unwrap(), "human+alpha@example.com", "agent sub-addressed under the human");
+    assert_eq!(cert.issuer(), DOMAIN, "cert is still broker-issued (fallback shape)");
+    let _ = (broker_pub, session, agent_kp);
 }
 
 /// Registration rejects an empty (unconstrained) provisioning cert.
@@ -609,10 +614,12 @@ async fn register_rejects_unconstrained_cert() {
     let _ = user_cert;
 }
 
-/// A reservation collision reports exactly which names are unavailable, so the
-/// UI can ask the user to change them.
+/// Sub-addressing scopes agent handles per owner, so two different fallback
+/// users reserving the SAME handle never collide — cross-account squatting is
+/// structurally impossible. (The bare-name collision path, which still reports
+/// taken names, is covered by registrar_glue's reserve unit tests.)
 #[tokio::test]
-async fn reserve_reports_taken_names() {
+async fn reserve_subaddresses_handles_per_owner() {
     let (server, email_sender, _) = create_agent_server(10);
     // First account reserves "shared".
     let (deleg_a, kp_a, _sa) = register_agent_key_with(
@@ -636,7 +643,8 @@ async fn reserve_reports_taken_names() {
         200
     );
 
-    // Second account tries to reserve "shared" (taken) + "bob-only" (free).
+    // Second account reserves "shared" too — but it's bob+shared@example.com,
+    // distinct from alice+shared@example.com, so it succeeds.
     let (deleg_b, kp_b, _sb) = register_agent_key_with(
         &server,
         &email_sender,
@@ -657,9 +665,7 @@ async fn reserve_reports_taken_names() {
         .post("/provision/reserve")
         .json(&json!({ "request_bundle": reserve_b, "endorsement": e }))
         .await;
-    assert_eq!(resp.status_code(), 409);
-    let body: Value = resp.json();
-    assert_eq!(body["taken"], json!(["shared"]), "only the taken name is reported");
+    assert_eq!(resp.status_code(), 200, "per-owner handle must not collide: {:?}", resp.text());
 }
 
 /// The consent page must serve at both the bare path and the deep link —
