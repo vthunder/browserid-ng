@@ -73,6 +73,11 @@ export class Agent {
     this.#http = http;
   }
 
+  /** The agent's provisioning name IS its email local-part — no translation:
+   *  the P_cert constraint holds the full local-part, so mint/warrant/revoke all
+   *  use exactly this string. */
+  #name() { return this.#email.split("@")[0]; }
+
   get email() { return this.#email; }
   get credential() { return this.#cred; }
 
@@ -219,7 +224,7 @@ export class Agent {
   async requestWarrant(audience, scopes = null) {
     if (this.warrantCovers(audience, scopes)) return { approveUrl: null, approved: Promise.resolve() };
     const provKey = this.#cred.provisioningKey();
-    const name = this.#email.split("@")[0];
+    const name = this.#name();
     const grants = [{ aud: audience, scopes: scopes || undefined }];
     const bundleStr = bundle(this.#cred.delegation, warrantRequest(provKey, this.#cred.brokerDomain, name, grants));
     const { res, json } = await postJson(this.#http, `${trim(this.#cred.broker)}/warrant/request`, { request_bundle: bundleStr });
@@ -272,7 +277,7 @@ export class Agent {
 
   async #ensureFreshCert() {
     if (this.#cert.exp > nowS() + CERT_REFRESH_MARGIN_S) return;
-    const name = this.#email.split("@")[0];
+    const name = this.#name();
     const { email, cert } = await mintFlow(this.#cred, name, this.#key.publicKeyB64, this.#http);
     this.#email = email;
     this.#cert = parseCert(cert);
@@ -282,7 +287,7 @@ export class Agent {
 
   async revoke() {
     const provKey = this.#cred.provisioningKey();
-    const name = this.#email.split("@")[0];
+    const name = this.#name();
     const bundleStr = bundle(this.#cred.delegation, revokeRequest(provKey, this.#cred.idpDomain, name));
     const endorsement = await endorse(this.#cred, bundleStr, this.#http);
     const { res, json } = await postJson(this.#http, `${trim(this.#cred.idp)}/provision/revoke`, { request_bundle: bundleStr, endorsement });

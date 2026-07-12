@@ -126,9 +126,20 @@ pub(crate) fn issue_certificate<U: UserStore>(
                 "agent parent is not a verified email on this account".into(),
             ));
         }
-        if !browserid_registrar::is_canonical_agent_email(&email_record.email, parent, domain) {
+        // The agent email must be `<permitted-name>@<parent's domain>`: same
+        // domain as the owner's verified email, and a name the fallback/primary
+        // rule allows. So the fallback IdP can never stamp an address (e.g. a
+        // bare `victim@gmail.com`) the owner hasn't proven.
+        let (a_local, a_domain) = email_record
+            .email
+            .rsplit_once('@')
+            .ok_or_else(|| BrokerError::PolicyRefused("agent email is malformed".into()))?;
+        let p_domain = parent.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
+        if !a_domain.eq_ignore_ascii_case(p_domain)
+            || !browserid_registrar::agent_name_allowed(a_local, parent, domain)
+        {
             return Err(BrokerError::PolicyRefused(
-                "agent email is not a canonical sub-address of its owner's verified email".into(),
+                "agent email is not a permitted identity for its owner".into(),
             ));
         }
         // The broker is IdP + registrar in one process, so an agent it mints

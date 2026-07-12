@@ -186,7 +186,7 @@ fn ensure_agent_identity<U: UserStore, S: SessionStore, E: EmailSender>(
         .get_user_by_email(delegator)?
         .ok_or_else(|| BrokerError::Internal("delegator email has no account".into()))?;
 
-    let email = browserid_registrar::agent_identity_email(delegator, &state.domain, name);
+    let email = browserid_registrar::agent_identity_email(delegator, name);
     match state.user_store.get_email(&email)? {
         Some(rec) if rec.user_id == account.id && rec.email_type == EmailType::Agent => {
             if !rec.verified {
@@ -241,7 +241,7 @@ where
     // identity) so the user learns exactly which handles to change.
     let mut taken = Vec::new();
     for name in &names {
-        let email = browserid_registrar::agent_identity_email(&verified.delegator, &state.domain, name);
+        let email = browserid_registrar::agent_identity_email(&verified.delegator, name);
         if let Some(rec) = state.user_store.get_email(&email)? {
             if rec.user_id != account.id || rec.email_type != EmailType::Agent {
                 taken.push(name.clone());
@@ -328,7 +328,7 @@ where
         .user_store
         .get_user_by_email(&verified.delegator)?
         .ok_or_else(|| BrokerError::Internal("delegator email has no account".into()))?;
-    let email = browserid_registrar::agent_identity_email(&verified.delegator, &state.domain, name);
+    let email = browserid_registrar::agent_identity_email(&verified.delegator, name);
     let record = state
         .user_store
         .get_email(&email)?

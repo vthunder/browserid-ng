@@ -199,19 +199,10 @@ pub async fn request(
         seen.push(key);
     }
 
-    // The agent's identity domain is the domain of the IdP that roots the
-    // delegator (identity-domain rule) — the registered U_cert's issuer.
-    // (For a broker-rooted `alice@gmail.com`, that's the broker's domain,
-    // not gmail.com.)
-    let idp_domain = rec
-        .bundle
-        .split_once('~')
-        .and_then(|(u, _)| browserid_core::Certificate::parse(u).ok())
-        .map(|u| u.issuer().to_string())
-        .ok_or_else(|| RegistrarError::Internal("registered bundle has no parseable U_cert".into()))?;
-    // Per-owner-scoped for fallback users (sub-address under their own email),
-    // bare for primary-IdP users. Must match the minted cert's subject exactly.
-    let agent_email = crate::agent_identity_email(&rec.delegator_email, &idp_domain, name);
+    // The name is the full local-part (already gated by the constraint, which
+    // was checked against the fallback/primary rule at registration). The agent
+    // email is just `<name>@<owner's domain>` — no translation.
+    let agent_email = crate::agent_identity_email(&rec.delegator_email, name);
 
     let code = new_code();
     let now = Utc::now();

@@ -40,12 +40,14 @@ function mockServer(userKey, { denyWarrant = false } = {}) {
   let polls = 0;
   let grants = null;
   let agentEmail = null;
+  let warrantName = null; // the `name` the SDK sent on /warrant/request
   const calls = [];
   const lastRequest = (bundle) => decodeJwtClaims(bundle.split("~").pop());
 
   return {
     issuerKey,
     calls,
+    get warrantName() { return warrantName; },
     fetch: async (url, init) => {
       const path = new URL(url).pathname;
       const body = JSON.parse(init.body);
@@ -74,6 +76,7 @@ function mockServer(userKey, { denyWarrant = false } = {}) {
         const r = lastRequest(body.request_bundle);
         assert.equal(r.action, "warrant");
         assert.equal(r.domain, "broker.test");         // domain pin = registrar domain
+        warrantName = r.name;
         grants = r["warrant-grants"];
         agentEmail = `${r.name}@${IDP_DOMAIN}`;
         polls = 0;
@@ -118,6 +121,20 @@ test("credential: single reserved name resolves; pattern generates; multi is amb
   assert.equal(pat.generated, true);
   assert.equal(pat.prefix, "svc");
   assert.equal(makeCredential({ names: ["a", "b"] }).cred.defaultIdentity(), null);
+});
+
+test("sub-addressed name: the warrant carries the full local-part (no '+' splitting)", async () => {
+  // Under the constraint-holds-the-full-local-part model, the name IS the email
+  // local-part. A fallback owner's identity is `alice+researcher@…`; the warrant
+  // request must send `alice+researcher`, not `alice` or `researcher`.
+  const { cred, userKey } = makeCredential({ names: ["alice+researcher"] });
+  const srv = mockServer(userKey);
+  const agent = await Agent.provision(cred, { http: srv.fetch });
+  assert.equal(agent.email, "alice+researcher@idp.test");
+  const { approved } = await agent.requestWarrant("https://rp.test", ["sign"]);
+  assert.equal(srv.warrantName, "alice+researcher");
+  await approved;
+  assert.deepEqual(agent.warrantedAudiences(), ["https://rp.test"]);
 });
 
 test("provision throws AmbiguousNameError for a multi-name credential", async () => {

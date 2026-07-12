@@ -8,7 +8,7 @@ mod common;
 use browserid_agent::{AgentError, AgentIdentity};
 use browserid_core::{BackedAssertion, Certificate, StatusListToken, StatusRef, Warrant, WarrantGrant};
 use chrono::Duration;
-use common::{make_credential, make_credential_email, start_broker};
+use common::{human_email, make_credential, make_credential_email, start_broker};
 use serde_json::{json, Value};
 
 const AUDIENCE: &str = "https://api.example.com";
@@ -138,7 +138,7 @@ async fn consent_flow_approval_roundtrip() {
     let w = backed.warrant().expect("agent presentation carries a warrant");
     assert_eq!(w.agent(), agent.email());
     assert_eq!(w.audience(), AUDIENCE);
-    assert_eq!(w.delegator(), "human@example.com");
+    assert_eq!(w.delegator(), human_email(&base));
     let _ = &broker_pubkey;
 
     // Single delivery: the code is dead after pickup.

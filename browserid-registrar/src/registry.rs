@@ -94,19 +94,11 @@ pub async fn list_provisioning_certs(
                 .and_then(|(_, p)| ProvisioningCert::parse(p).ok())
                 .map(|p| p.constraint().clone())
                 .unwrap_or_default();
-            // The IdP domain is the U_cert issuer, NOT the email's domain: for a
-            // fallback (broker-rooted) owner those differ, and the client uses
-            // this to reconstruct the sub-addressed agent email. Getting it from
-            // the email domain made the UI show a bare `<name>@<domain>`.
-            let idp_domain = c
-                .bundle
-                .split_once('~')
-                .and_then(|(u, _)| browserid_core::Certificate::parse(u).ok())
-                .map(|u| u.issuer().to_string())
-                .unwrap_or_else(|| idp_domain_of(&c.delegator_email).to_string());
             ProvisioningCertInfo {
                 id: c.id,
-                domain: idp_domain,
+                // The agent email is `<name>@<owner's email domain>`, so the UI
+                // just needs the owner's domain here.
+                domain: idp_domain_of(&c.delegator_email).to_string(),
                 label: c.label,
                 delegator_email: c.delegator_email,
                 names: constraint.names,
@@ -208,6 +200,30 @@ pub async fn register_provisioning_cert(
         return Err(RegistrarError::ValidationError(
             "the delegated identity is not a verified email on this account".into(),
         ));
+    }
+
+    // Anti-squatting: the agent name IS the identity's local-part (no
+    // translation), so gate it here. On a FALLBACK IdP (the delegator's email
+    // domain differs from the IdP that rooted them — U_cert issuer) every name
+    // must sub-address the delegator's own email (`<local>+…`); on a PRIMARY
+    // IdP any local-part is allowed.
+    let idp_domain = user_cert.issuer();
+    for n in &p_cert.constraint().names {
+        if !crate::agent_name_allowed(n, delegator, idp_domain) {
+            return Err(RegistrarError::ValidationError(format!(
+                "'{n}' is not a permitted agent name for {delegator}: a fallback identity must use '{}+<name>'",
+                delegator.split('@').next().unwrap_or("")
+            )));
+        }
+    }
+    for p in &p_cert.constraint().patterns {
+        // `<prefix>+*` generates `<prefix>+<hex>`; check that generated shape.
+        let sample = format!("{}x", p.trim_end_matches('*'));
+        if !crate::agent_name_allowed(&sample, delegator, idp_domain) {
+            return Err(RegistrarError::ValidationError(format!(
+                "pattern '{p}' is not permitted for {delegator} on this IdP"
+            )));
+        }
     }
 
     let rec = state.store.register_provisioning_cert(

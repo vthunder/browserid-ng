@@ -331,7 +331,7 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
         // Pre-scan: any handle owned by another account (or a non-agent) is taken.
         let mut taken = Vec::new();
         for name in names {
-            let email = browserid_registrar::agent_identity_email(delegator, &self.domain, name);
+            let email = browserid_registrar::agent_identity_email(delegator, name);
             if let Some(rec) = self.user_store.get_email(&email).map_err(to_reg_err)? {
                 if rec.user_id.0 != user_id || rec.email_type != EmailType::Agent {
                     taken.push(name.clone());
@@ -350,7 +350,7 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
         let new_count = names
             .iter()
             .filter(|name| {
-                let email = browserid_registrar::agent_identity_email(delegator, &self.domain, name);
+                let email = browserid_registrar::agent_identity_email(delegator, name);
                 !existing.iter().any(|e| e.email.eq_ignore_ascii_case(&email))
             })
             .count();
@@ -361,7 +361,7 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
         }
         // Create the handles that don't exist yet, parented to the delegator.
         for name in names {
-            let email = browserid_registrar::agent_identity_email(delegator, &self.domain, name);
+            let email = browserid_registrar::agent_identity_email(delegator, name);
             if self.user_store.get_email(&email).map_err(to_reg_err)?.is_none() {
                 self.user_store
                     .add_email_with_type(UserId(user_id), &email, true, EmailType::Agent)
@@ -420,20 +420,20 @@ mod reserve_tests {
         }
     }
 
-    // Fallback (broker-rooted) users get sub-addressed handles scoped to their
-    // own email, so the SAME handle for two different owners cannot collide.
+    // The name is the full local-part (no translation): `<name>@<owner-domain>`.
+    // For fallback owners the names are sub-addresses (`alice+shared`), so two
+    // different owners' handles cannot collide.
     #[test]
-    fn reserve_subaddresses_fallback_handles_per_owner() {
+    fn reserve_uses_name_at_owner_domain_scoped_per_owner() {
         let (h, u1, u2) = host(10);
-        // domain != broker domain -> sub-address under the owner's email.
-        h.reserve_agent_names(u1, "alice@gmail.com", &["bot".into()]).unwrap();
-        let rec = h.user_store.get_email("alice+bot@gmail.com").unwrap().unwrap();
+        h.reserve_agent_names(u1, "alice@gmail.com", &["alice+shared".into()]).unwrap();
+        let rec = h.user_store.get_email("alice+shared@gmail.com").unwrap().unwrap();
         assert_eq!(rec.email_type, EmailType::Agent);
         assert_eq!(rec.parent_email.as_deref(), Some("alice@gmail.com"));
-        // A different owner reserving the same handle is NOT taken — it's their own.
-        h.reserve_agent_names(u2, "bob@gmail.com", &["bot".into()]).unwrap();
-        assert!(h.user_store.get_email("bob+bot@gmail.com").unwrap().is_some());
+        // A different owner's sub-address does not collide.
+        h.reserve_agent_names(u2, "bob@gmail.com", &["bob+shared".into()]).unwrap();
+        assert!(h.user_store.get_email("bob+shared@gmail.com").unwrap().is_some());
         // Idempotent for the owner.
-        h.reserve_agent_names(u1, "alice@gmail.com", &["bot".into()]).unwrap();
+        h.reserve_agent_names(u1, "alice@gmail.com", &["alice+shared".into()]).unwrap();
     }
 }

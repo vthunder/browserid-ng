@@ -442,15 +442,28 @@ function renderUserIdentities() {
 /// A minted agent's parent (from the derived map) or, for a not-yet-minted
 /// reserved handle, the provisioning cert's delegator.
 // Mirror of the server's agent-identity email rule (browserid_registrar::
-// agent_identity_email): bare `<name>@<idp>` for primary-IdP owners, sub-address
-// `<local>+<name>@<domain>` (RFC 5233) for fallback owners. Must stay in sync.
-function agentIdentityEmail(delegator, idpDomain, name) {
-  const at = (delegator || '').lastIndexOf('@');
-  const domain = at >= 0 ? delegator.slice(at + 1) : '';
-  const local = at >= 0 ? delegator.slice(0, at) : (delegator || '');
-  return domain && domain.toLowerCase() !== (idpDomain || '').toLowerCase()
-    ? `${local}+${name}@${domain}`
-    : `${name}@${idpDomain}`;
+// agent_identity_email): no translation — the name IS the full local-part, so
+// the identity email is just `<name>@<owner's email domain>`.
+function agentIdentityEmail(delegator, name) {
+  const domain = (delegator || '').slice((delegator || '').lastIndexOf('@') + 1);
+  return `${name}@${domain}`;
+}
+
+// Is this owner on a fallback IdP (their email domain differs from the IdP that
+// roots them)? Fallback owners may only sub-address their own email.
+function isFallbackOwner(delegator, idpDomain) {
+  const domain = (delegator || '').slice((delegator || '').lastIndexOf('@') + 1);
+  return !!domain && domain.toLowerCase() !== (idpDomain || '').toLowerCase();
+}
+
+// The full constraint name (= identity local-part) for a typed handle: for a
+// fallback owner it must be `<owner-local>+<handle>`; for a primary owner the
+// handle is used as-is. Idempotent if the user already typed the prefix.
+function agentConstraintName(delegator, idpDomain, handle) {
+  const local = (delegator || '').slice(0, (delegator || '').lastIndexOf('@'));
+  return isFallbackOwner(delegator, idpDomain) && !handle.startsWith(local + '+')
+    ? `${local}+${handle}`
+    : handle;
 }
 
 function agentEntries() {
@@ -459,7 +472,7 @@ function agentEntries() {
   for (const c of account.certs) {
     if (c.revoked) continue;
     for (const name of (c.names || [])) {
-      const email = agentIdentityEmail(c.delegator_email, c.domain, name);
+      const email = agentIdentityEmail(c.delegator_email, name);
       byEmail.set(email, { email, parent: c.delegator_email, minted: false, keyId: c.id, keyLabel: c.label });
     }
   }
@@ -616,7 +629,12 @@ $('ag-create').onclick = async () => {
   $('ag-create').disabled = true; status.textContent = 'Creating…';
   try {
     const idpDomain = id.issuer || location.host, idpUrl = idpUrlFor(idpDomain);
-    const uniqNames = [...new Set(names)], uniqPatterns = [...new Set(patterns)];
+    // Constraint entries are full local-parts. A fallback owner's names are
+    // sub-addressed under their own email, and patterns become `<local>+*`.
+    const ownerLocal = id.email.slice(0, id.email.lastIndexOf('@'));
+    const uniqNames = [...new Set(names.map(h => agentConstraintName(id.email, idpDomain, h)))];
+    const uniqPatterns = [...new Set(patterns.map(p =>
+      isFallbackOwner(id.email, idpDomain) ? `${ownerLocal}+*` : p))];
     const provKey = await genKeypair(); // provisioning key stays extractable (exported to the agent)
     const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
     const certClaims = { typ: 'browserid-provisioning-cert-v1', iss: id.email, iat: nowS(), exp: nowS() + 90*24*3600,
@@ -634,7 +652,7 @@ $('ag-create').onclick = async () => {
     const json = JSON.stringify(credential, null, 2);
     $('ag-cred-json').textContent = json;
     const idText = uniqNames.length === 1 && !uniqPatterns.length
-      ? `Provisions as ${agentIdentityEmail(id.email, idpDomain, uniqNames[0])}`
+      ? `Provisions as ${agentIdentityEmail(id.email, uniqNames[0])}`
       : [uniqNames.length ? `names: ${uniqNames.join(', ')}` : '', uniqPatterns.length ? `patterns: ${uniqPatterns.join(', ')}` : '']
           .filter(Boolean).join(' · ');
     $('ag-cred-identity').textContent = idText + ` — at ${idpDomain}`;
@@ -869,12 +887,16 @@ async function approveProvision(code, provPubkeyX) {
     const id = await ensureActive($('pv-identity').value);
     if (!id) throw new Error('Could not activate that identity — try another.');
     status.textContent = 'Signing…';
-    const names = $('pv-handles').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-    if (!names.length) throw new Error('Enter at least one handle.');
+    const idpDomain = id.issuer || location.host;
+    const handles = $('pv-handles').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    if (!handles.length) throw new Error('Enter at least one handle.');
+    // The constraint holds full local-parts: a fallback owner's handles are
+    // sub-addressed under their own email (`<local>+<handle>`).
+    const names = [...new Set(handles.map(h => agentConstraintName(id.email, idpDomain, h)))];
     // Sign a P_cert over the AGENT-supplied provisioning key (not one generated here).
     const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
     const certClaims = { typ: 'browserid-provisioning-cert-v1', iss: id.email, iat: nowS(), exp: nowS() + 90 * 24 * 3600,
-      'public-key': { algorithm: 'Ed25519', publicKey: provPubkeyX }, constraint: { names: [...new Set(names)], patterns: [] } };
+      'public-key': { algorithm: 'Ed25519', publicKey: provPubkeyX }, constraint: { names, patterns: [] } };
     const payload = b64urlJson(certClaims);
     const sig = await window.Keystore.sign(id.privateKey, `${header}.${payload}`);
     const delegation = `${id.cert}~${header}.${payload}.${sig}`;

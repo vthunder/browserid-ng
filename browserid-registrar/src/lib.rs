@@ -53,60 +53,44 @@ pub use consent::scope_fingerprint;
 pub use registry::valid_agent_name;
 pub use store::{RegistrarStore, StoreResult};
 
-/// Construct an agent identity's email from its owner (the delegating human) and
-/// the IdP domain that roots them. This is the single source of truth for the
-/// agent-namespace shape — every mint/reserve/warrant site must agree, or the
-/// warrant's agent-email comparison fails at verify time.
-///
-/// - **Primary IdP** — the owner's email domain *is* the IdP domain: a bare
-///   handle, `<name>@<idp_domain>`. A global-unique namespace at that domain,
-///   kept deliberately as an incentive to use a primary-IdP email.
-/// - **Fallback** — the owner is broker-rooted (their email domain differs from
-///   the IdP/broker domain): sub-address the handle under the owner's own
-///   verified email, `<local>+<name>@<owner_domain>` (RFC 5233). Handles are
-///   then scoped per-owner by construction — cross-user squatting is impossible,
-///   because only the party who proved `<local>@<owner_domain>` can mint under
-///   it. The cert issuer stays the broker; verification uses the same fallback
-///   path as the human (the email domain need not equal the issuer).
-pub fn agent_identity_email(delegator_email: &str, idp_domain: &str, name: &str) -> String {
-    match delegator_email.rsplit_once('@') {
-        Some((local, domain)) if !domain.eq_ignore_ascii_case(idp_domain) => {
-            format!("{local}+{name}@{domain}")
-        }
-        _ => format!("{name}@{idp_domain}"),
-    }
+/// An agent identity's email is simply `<name>@<domain-of the owner's email>`.
+/// The `name` is the FULL local-part carried verbatim in the provisioning-cert
+/// constraint (no translation): `vthunder+claude@gmail.com`, `claude@sandmill.org`,
+/// or `danmills+claude@sandmill.org`. What names are *permitted* is enforced by
+/// [`agent_name_allowed`], not by rewriting here.
+pub fn agent_identity_email(delegator_email: &str, name: &str) -> String {
+    let domain = delegator_email.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
+    format!("{name}@{domain}")
 }
 
-/// Guardrail: is `agent` a canonical agent-identity email for owner
-/// `delegator_email` under `idp_domain` — i.e. one that [`agent_identity_email`]
-/// could have produced for *some* handle? This is the inverse of that rule and
-/// the last line of defense before a cert is stamped: it rejects any address
-/// that isn't derived from the owner's proven email.
+/// Which agent-identity local-parts a delegator may mint — the anti-squatting
+/// rule, enforced when a provisioning cert is registered and again before any
+/// cert is stamped:
 ///
-/// - Fallback owner (email domain ≠ IdP domain): the agent MUST be a sub-address
-///   of the owner's own email — `<owner-local>+<name>@<owner-domain>`. This is
-///   what makes it impossible for the fallback IdP to stamp e.g. a bare
-///   `victim@gmail.com` the owner never proved.
-/// - Primary / native-domain owner (email domain == IdP domain): a bare
-///   `<name>@<idp_domain>` at that domain.
-pub fn is_canonical_agent_email(agent: &str, delegator_email: &str, idp_domain: &str) -> bool {
-    let (a_local, a_domain) = match agent.rsplit_once('@') {
+/// - **Fallback IdP** — the owner's email domain differs from the IdP that
+///   rooted them (e.g. a gmail address vouched by the broker): the name MUST
+///   sub-address the owner's own verified email, i.e. start with `<owner-local>+`
+///   and carry something after it. So you can only ever mint under an address you
+///   proved you control; `victim@gmail.com` or someone else's `alice+x` is
+///   impossible.
+/// - **Primary / native-domain IdP** — the owner owns the domain: any non-empty
+///   local-part is allowed (bare `claude` or `owner+claude`); that domain runs
+///   its own namespace.
+pub fn agent_name_allowed(name: &str, delegator_email: &str, idp_domain: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let (local, domain) = match delegator_email.rsplit_once('@') {
         Some(x) => x,
         None => return false,
     };
-    let (d_local, d_domain) = match delegator_email.rsplit_once('@') {
-        Some(x) => x,
-        None => return false,
-    };
-    if d_domain.eq_ignore_ascii_case(idp_domain) {
-        // Primary / native-domain owner: bare `<name>@<idp_domain>`.
-        !a_local.is_empty() && a_domain.eq_ignore_ascii_case(idp_domain)
+    if domain.eq_ignore_ascii_case(idp_domain) {
+        true // primary / native-domain owner: their own domain's namespace
     } else {
-        // Fallback owner: sub-address `<owner-local>+<name>@<owner-domain>`.
-        let prefix = format!("{d_local}+");
-        a_domain.eq_ignore_ascii_case(d_domain)
-            && a_local.len() > prefix.len()
-            && a_local
+        // Fallback owner: must be `<owner-local>+<something>`.
+        let prefix = format!("{local}+");
+        name.len() > prefix.len()
+            && name
                 .get(..prefix.len())
                 .is_some_and(|p| p.eq_ignore_ascii_case(&prefix))
     }
@@ -159,32 +143,30 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
 
 #[cfg(test)]
 mod email_rule_tests {
-    use super::{agent_identity_email, is_canonical_agent_email};
+    use super::{agent_identity_email, agent_name_allowed};
 
     #[test]
-    fn subaddress_for_fallback_bare_for_primary() {
-        // Fallback: owner's email domain != IdP domain -> sub-address.
-        assert_eq!(agent_identity_email("vthunder@gmail.com", "browserid.me", "researcher"),
-                   "vthunder+researcher@gmail.com");
-        // Primary/native: owner's email domain == IdP domain -> bare.
-        assert_eq!(agent_identity_email("bob@browserid.me", "browserid.me", "researcher"),
-                   "researcher@browserid.me");
+    fn email_is_name_at_owner_domain() {
+        // No translation: the name is the full local-part, appended to the
+        // owner's own email domain — same rule on any IdP.
+        assert_eq!(agent_identity_email("vthunder@gmail.com", "vthunder+claude"),
+                   "vthunder+claude@gmail.com");
+        assert_eq!(agent_identity_email("dan@sandmill.org", "claude"), "claude@sandmill.org");
+        assert_eq!(agent_identity_email("dan@sandmill.org", "dan+claude"), "dan+claude@sandmill.org");
     }
 
     #[test]
-    fn canonical_accepts_only_derived_addresses() {
-        // Fallback owner: only their own sub-address is canonical.
-        assert!(is_canonical_agent_email("vthunder+researcher@gmail.com", "vthunder@gmail.com", "browserid.me"));
-        assert!(is_canonical_agent_email("vthunder+svc+abc@gmail.com", "vthunder@gmail.com", "browserid.me")); // handle may contain '+'
-        // The whole point: a bare, unproven address is REJECTED.
-        assert!(!is_canonical_agent_email("researcher@gmail.com", "vthunder@gmail.com", "browserid.me"));
-        assert!(!is_canonical_agent_email("victim@gmail.com", "vthunder@gmail.com", "browserid.me"));
-        // Someone else's sub-address (different local) is rejected.
-        assert!(!is_canonical_agent_email("mallory+x@gmail.com", "vthunder@gmail.com", "browserid.me"));
-        // Wrong domain rejected.
-        assert!(!is_canonical_agent_email("vthunder+x@evil.com", "vthunder@gmail.com", "browserid.me"));
-        // Primary/native owner: bare at the IdP domain is canonical.
-        assert!(is_canonical_agent_email("researcher@browserid.me", "bob@browserid.me", "browserid.me"));
-        assert!(!is_canonical_agent_email("researcher@gmail.com", "bob@browserid.me", "browserid.me"));
+    fn fallback_names_must_subaddress_the_owner() {
+        // Fallback (email domain != IdP): must be `<owner-local>+<something>`.
+        assert!(agent_name_allowed("vthunder+claude", "vthunder@gmail.com", "browserid.me"));
+        assert!(agent_name_allowed("vthunder+svc+abc", "vthunder@gmail.com", "browserid.me")); // may contain more '+'
+        assert!(!agent_name_allowed("claude", "vthunder@gmail.com", "browserid.me")); // bare -> rejected
+        assert!(!agent_name_allowed("victim", "vthunder@gmail.com", "browserid.me"));
+        assert!(!agent_name_allowed("mallory+x", "vthunder@gmail.com", "browserid.me")); // someone else's prefix
+        assert!(!agent_name_allowed("vthunder+", "vthunder@gmail.com", "browserid.me")); // empty after '+'
+        // Primary / native-domain owner (email domain == IdP): bare OR sub-addressed both allowed.
+        assert!(agent_name_allowed("claude", "dan@sandmill.org", "sandmill.org"));
+        assert!(agent_name_allowed("dan+claude", "dan@sandmill.org", "sandmill.org"));
+        assert!(!agent_name_allowed("", "dan@sandmill.org", "sandmill.org"));
     }
 }

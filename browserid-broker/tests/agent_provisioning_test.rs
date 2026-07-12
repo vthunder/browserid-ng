@@ -228,7 +228,7 @@ async fn delegation_mint_assert_verify_roundtrip() {
     assert_eq!(attribution.parent, "human@localhost:3000");
     assert_eq!(attribution.scopes, vec!["post"]);
 
-    // Attribution recorded: agent → human@example.com.
+    // Attribution recorded: agent → human@localhost:3000.
     let list_req = {
         let (u, p) = delegation.split_once('~').unwrap();
         let r = ProvisioningRequest::list(DOMAIN, &prov_kp).unwrap();
@@ -254,7 +254,7 @@ async fn delegation_mint_assert_verify_roundtrip() {
 async fn mint_requires_matching_endorsement() {
     let (server, email_sender, _) = create_agent_server(5);
     let (delegation, prov_kp, _s) =
-        register_agent_key(&server, &email_sender, "human@example.com").await;
+        register_agent_key(&server, &email_sender, "human@localhost:3000").await;
     let bundle = mint_bundle(&delegation, &prov_kp, "attestor", &KeyPair::generate());
 
     // Missing/garbage endorsement → 401.
@@ -299,7 +299,7 @@ async fn endorse_requires_registered_active_cert() {
 
     // Register a real one, then revoke it → endorse refused (403).
     let (delegation, prov_kp, session) =
-        register_agent_key(&server, &email_sender, "human@example.com").await;
+        register_agent_key(&server, &email_sender, "human@localhost:3000").await;
     let certs: Value = server
         .get("/wsapi/provisioning_certs")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
@@ -335,11 +335,11 @@ async fn endorse_requires_registered_active_cert() {
 #[tokio::test]
 async fn register_requires_owned_verified_email() {
     let (server, email_sender, _) = create_agent_server(5);
-    let session = create_user(&server, &email_sender, "human@example.com", "testpassword").await;
+    let session = create_user(&server, &email_sender, "human@localhost:3000", "testpassword").await;
 
     // A U_cert for an email the account does NOT own.
     let user_kp = KeyPair::generate();
-    let foreign = issue_user_cert(&server, &session, "human@example.com", &user_kp).await;
+    let foreign = issue_user_cert(&server, &session, "human@localhost:3000", &user_kp).await;
     // Sign a P_cert claiming a different delegator than the cert certifies.
     let prov_kp = KeyPair::generate();
     let p_cert =
@@ -360,7 +360,7 @@ async fn register_requires_owned_verified_email() {
 async fn quota_enforced() {
     let (server, email_sender, _) = create_agent_server(2);
     let (delegation, prov_kp, _s) =
-        register_agent_key(&server, &email_sender, "human@example.com").await;
+        register_agent_key(&server, &email_sender, "human@localhost:3000").await;
 
     for name in ["one", "two"] {
         let bundle = mint_bundle(&delegation, &prov_kp, name, &KeyPair::generate());
@@ -422,7 +422,7 @@ async fn remint_rotated_agent_key() {
 async fn identity_revocation_sticks() {
     let (server, email_sender, _) = create_agent_server(5);
     let (delegation, prov_kp, _s) =
-        register_agent_key(&server, &email_sender, "human@example.com").await;
+        register_agent_key(&server, &email_sender, "human@localhost:3000").await;
 
     let bundle = mint_bundle(&delegation, &prov_kp, "doomed", &KeyPair::generate());
     let e = endorse(&server, &bundle).await;
@@ -462,7 +462,7 @@ async fn identity_revocation_sticks() {
 #[tokio::test]
 async fn disabled_by_default() {
     let (server, email_sender) = common::create_test_server();
-    let session = create_user(&server, &email_sender, "human@example.com", "testpassword").await;
+    let session = create_user(&server, &email_sender, "human@localhost:3000", "testpassword").await;
     let csrf = get_csrf(&server, &session).await;
 
     let resp = server
@@ -485,7 +485,7 @@ async fn disabled_by_default() {
 async fn foreign_endorsement_rejected() {
     let (server, email_sender, _) = create_agent_server(5);
     let (delegation, prov_kp, _s) =
-        register_agent_key(&server, &email_sender, "human@example.com").await;
+        register_agent_key(&server, &email_sender, "human@localhost:3000").await;
     let agent_kp = KeyPair::generate();
     let bundle_str = mint_bundle(&delegation, &prov_kp, "attestor", &agent_kp);
 
@@ -496,7 +496,7 @@ async fn foreign_endorsement_rejected() {
         DOMAIN,
         DOMAIN,
         &bundle,
-        "human@example.com",
+        "human@localhost:3000",
         &format!("http://{DOMAIN}"),
         Duration::minutes(10),
         &rogue,
@@ -517,7 +517,7 @@ async fn constraint_enforced_on_mint() {
     let (delegation, prov_kp, _s) = register_agent_key_with(
         &server,
         &email_sender,
-        "human@example.com",
+        "human@localhost:3000",
         Constraint { names: vec!["attestor".into()], patterns: vec!["svc+*".into()] },
     )
     .await;
@@ -550,7 +550,7 @@ async fn reserve_then_mint() {
     let (delegation, prov_kp, session) = register_agent_key_with(
         &server,
         &email_sender,
-        "human@example.com",
+        "human@localhost:3000",
         Constraint::names(["alpha", "beta"]),
     )
     .await;
@@ -582,13 +582,10 @@ async fn reserve_then_mint() {
         .json();
     assert_eq!(body["success"], true, "mint of reserved name failed: {body}");
     let cert = Certificate::parse(body["cert"].as_str().unwrap()).unwrap();
-    // The human is fallback (broker-rooted): the minted agent is sub-addressed
-    // under the human's OWN email — the per-owner-scoped namespace — while the
-    // cert stays broker-issued (fallback shape). Such a leaf verifies via the
-    // DNS/fallback verifier (exercised e2e by the guestbook), not the primary
-    // core path used by the bare-name tests, so we assert the cert's shape here.
-    assert_eq!(cert.email().unwrap(), "human+alpha@example.com", "agent sub-addressed under the human");
-    assert_eq!(cert.issuer(), DOMAIN, "cert is still broker-issued (fallback shape)");
+    // Primary/native human (email domain == the IdP domain), so the name is a
+    // bare local-part and the agent email is just `<name>@<domain>`.
+    assert_eq!(cert.email().unwrap(), "alpha@localhost:3000");
+    assert_eq!(cert.issuer(), DOMAIN);
     let _ = (broker_pub, session, agent_kp);
 }
 
@@ -596,15 +593,15 @@ async fn reserve_then_mint() {
 #[tokio::test]
 async fn register_rejects_unconstrained_cert() {
     let (server, email_sender, _) = create_agent_server(5);
-    let session = create_user(&server, &email_sender, "human@example.com", "testpassword").await;
+    let session = create_user(&server, &email_sender, "human@localhost:3000", "testpassword").await;
     let user_kp = KeyPair::generate();
-    let user_cert = issue_user_cert(&server, &session, "human@example.com", &user_kp).await;
+    let user_cert = issue_user_cert(&server, &session, "human@localhost:3000", &user_kp).await;
     // Hand-build a P_cert with an empty constraint (bypassing create()'s guard)
     // by serializing claims directly is awkward; instead rely on create()
     // rejecting it — a caller can't produce an unconstrained bundle. Assert the
     // guard holds at the type level:
     assert!(ProvisioningCert::create(
-        "human@example.com",
+        "human@localhost:3000",
         &KeyPair::generate().public_key(),
         Constraint::default(),
         Duration::days(90),
@@ -614,19 +611,20 @@ async fn register_rejects_unconstrained_cert() {
     let _ = user_cert;
 }
 
-/// Sub-addressing scopes agent handles per owner, so two different fallback
-/// users reserving the SAME handle never collide — cross-account squatting is
-/// structurally impossible. (The bare-name collision path, which still reports
-/// taken names, is covered by registrar_glue's reserve unit tests.)
+/// Fallback owners must sub-address their own email, so two different owners'
+/// names (`alice+shared` vs `bob+shared`) map to different addresses and never
+/// collide — cross-account squatting is structurally impossible. (Bare-name
+/// collisions on a shared domain are covered by registrar_glue's reserve tests.)
 #[tokio::test]
 async fn reserve_subaddresses_handles_per_owner() {
     let (server, email_sender, _) = create_agent_server(10);
-    // First account reserves "shared".
+    // First account (fallback: email domain != the IdP domain) — names must be
+    // sub-addresses of its own email.
     let (deleg_a, kp_a, _sa) = register_agent_key_with(
         &server,
         &email_sender,
         "alice@example.com",
-        Constraint::names(["shared", "alice-only"]),
+        Constraint::names(["alice+shared", "alice+only"]),
     )
     .await;
     let (u, p) = deleg_a.split_once('~').unwrap();
@@ -643,13 +641,13 @@ async fn reserve_subaddresses_handles_per_owner() {
         200
     );
 
-    // Second account reserves "shared" too — but it's bob+shared@example.com,
-    // distinct from alice+shared@example.com, so it succeeds.
+    // Second account reserves its own `bob+shared` — distinct from
+    // alice+shared@example.com, so it succeeds.
     let (deleg_b, kp_b, _sb) = register_agent_key_with(
         &server,
         &email_sender,
         "bob@example.com",
-        Constraint::names(["shared", "bob-only"]),
+        Constraint::names(["bob+shared", "bob+only"]),
     )
     .await;
     let (u, p) = deleg_b.split_once('~').unwrap();
@@ -666,6 +664,42 @@ async fn reserve_subaddresses_handles_per_owner() {
         .json(&json!({ "request_bundle": reserve_b, "endorsement": e }))
         .await;
     assert_eq!(resp.status_code(), 200, "per-owner handle must not collide: {:?}", resp.text());
+}
+
+/// A fallback owner (email domain != the IdP domain) may register ONLY names
+/// that sub-address their own email; a bare name is rejected at registration.
+#[tokio::test]
+async fn fallback_owner_must_subaddress_its_own_email() {
+    let (server, email_sender, _) = create_agent_server(5);
+    let session = create_user(&server, &email_sender, "eve@example.com", "testpassword").await;
+    let user_kp = KeyPair::generate();
+    let user_cert = issue_user_cert(&server, &session, "eve@example.com", &user_kp).await;
+
+    let register = |names: Constraint| {
+        let prov_kp = KeyPair::generate();
+        let p_cert =
+            ProvisioningCert::create("eve@example.com", &prov_kp.public_key(), names, Duration::days(90), &user_kp)
+                .unwrap();
+        format!("{}~{}", user_cert.encoded(), p_cert.encoded())
+    };
+
+    // A bare name (grabbing `victim` on gmail) — rejected.
+    let csrf = get_csrf(&server, &session).await;
+    let bad = server
+        .post("/wsapi/register_provisioning_cert")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": csrf, "label": "x", "bundle": register(Constraint::names(["victim"])) }))
+        .await;
+    assert_eq!(bad.status_code(), 400, "bare name for a fallback owner must be rejected: {:?}", bad.text());
+
+    // Sub-addressing your own email — allowed.
+    let csrf = get_csrf(&server, &session).await;
+    let good = server
+        .post("/wsapi/register_provisioning_cert")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": csrf, "label": "x", "bundle": register(Constraint::names(["eve+bot"])) }))
+        .await;
+    assert_eq!(good.status_code(), 200, "sub-address of own email must be allowed: {:?}", good.text());
 }
 
 /// The consent page must serve at both the bare path and the deep link —
