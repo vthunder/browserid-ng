@@ -1499,35 +1499,41 @@
 
     // Called synchronously from request() (within the click gesture) so the
     // FedCM prompt is allowed. Delivers the token via observers.login, exactly
-    // like the dialog path; on failure invokes `fallback()` (the popup).
-    function signInViaFedCM(options, fallback) {
+    // like the dialog path.
+    //
+    // IMPORTANT: we deliberately do NOT fall back to the popup on failure. The
+    // popup's window.open would then run AFTER FedCM's async result — outside
+    // the click gesture — and Chrome blocks post-gesture popups; a blocked
+    // popup hangs the dialog (which relies on the WinChan handshake, no
+    // ?origin fallback). FedCM handles the not-signed-in case itself via its
+    // login_url (/account). So when opted in, it's FedCM-or-nothing; disable
+    // the opt-in to get the (gesture-safe, synchronous) popup instead.
+    function signInViaFedCM(options) {
       var configURL = ipServer + '/fedcm/config.json';
-      try {
-        navigator.credentials.get({
-          identity: {
-            providers: [{
-              configURL: configURL,
-              // Registration-free: the RP's own origin is the clientId. The
-              // /fedcm/assertion endpoint uses the Origin header as the audience.
-              clientId: window.location.origin,
-              nonce: (options && options.nonce) || String(new Date().getTime())
-            }]
-          }
-        }).then(function(cred) {
-          var token = cred && cred.token;
-          if (token && observers.login) {
-            try { observers.login(token); }
-            catch (clientError) { console.log(clientError); throw clientError; }
-          } else {
-            fallback();
-          }
-        }).catch(function(err) {
-          try { console.log('browserid: FedCM did not complete, using dialog:', err && err.message); } catch (e) {}
-          fallback();
-        });
-      } catch (e) {
-        fallback();
-      }
+      navigator.credentials.get({
+        identity: {
+          providers: [{
+            configURL: configURL,
+            // Registration-free: the RP's own origin is the clientId. The
+            // /fedcm/assertion endpoint uses the Origin header as the audience.
+            clientId: window.location.origin,
+            nonce: (options && options.nonce) || String(new Date().getTime())
+          }]
+        }
+      }).then(function(cred) {
+        var token = cred && cred.token;
+        if (token && observers.login) {
+          try { observers.login(token); }
+          catch (clientError) { console.log(clientError); throw clientError; }
+        } else {
+          try { console.log('browserid: FedCM returned no token'); } catch (e) {}
+        }
+      }).catch(function(err) {
+        try {
+          console.log('browserid: FedCM did not complete:', err && err.message,
+            '— if you have no browserid.me session, sign in at ' + ipServer + '/account first');
+        } catch (e) {}
+      });
     }
     // ----------------------------------------------------------------------
 
@@ -1544,9 +1550,11 @@
         api_called = "request";
         // returnTo is used for post-email-verification redirect
         if (!options.returnTo) options.returnTo = document.location.pathname;
-        // FedCM fast path — native chooser first, dialog as fallback.
+        // FedCM fast path — when opted in on a supporting browser, use the
+        // native chooser EXCLUSIVELY (no post-gesture popup fallback; see
+        // signInViaFedCM). Otherwise the unchanged, gesture-safe popup.
         if (fedcmAvailable()) {
-          signInViaFedCM(options, function() { internalRequest(options); });
+          signInViaFedCM(options);
           return;
         }
         return internalRequest(options);
