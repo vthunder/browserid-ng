@@ -827,8 +827,13 @@
     // Record the flag; placeFedcmOptin (called from showScreen) moves the
     // checkbox into whichever sign-in screen becomes active. Also wire the
     // note that guides the user to the FedCM confirmation popup.
-    state.fedcm = enabled;
-    if (!enabled) return;
+    //
+    // Only on a fresh identity sign-in — NOT when the RP is provisioning a
+    // specific identity (provision_email). That's a sub-step (e.g. mingo's
+    // second dialog), where "auto sign-in next time" doesn't belong and would
+    // fire a redundant FedCM chooser.
+    state.fedcm = enabled && !state.provisionEmail;
+    if (!state.fedcm) return;
     const box = document.getElementById('fedcm-optin');
     const note = document.getElementById('fedcm-optin-note');
     if (box && note) {
