@@ -1519,7 +1519,21 @@
     //
     // Note: the sign-in CLICK deliberately does NOT use FedCM — it uses the
     // popup dialog as before. FedCM here is purely the zero-click return path.
+    // We gate silent auto-login on OUR OWN per-origin flag, set only when the
+    // user ticks the dialog checkbox (see establishFedCMGrant) and cleared on
+    // logout. The FedCM grant itself is durable in the browser, so relying on it
+    // alone would auto-login even after a sign-out or a sign-in where the user
+    // did NOT opt in. This flag gives deterministic "only when the user asked".
+    var FEDCM_AUTOLOGIN_KEY = 'browserid_fedcm_autologin';
+    function fedcmAutologinEnabled() {
+      try { return localStorage.getItem(FEDCM_AUTOLOGIN_KEY) === '1'; } catch (e) { return false; }
+    }
+    function setFedcmAutologin(on) {
+      try { on ? localStorage.setItem(FEDCM_AUTOLOGIN_KEY, '1') : localStorage.removeItem(FEDCM_AUTOLOGIN_KEY); } catch (e) {}
+    }
+
     function trySilentFedCM() {
+      if (!fedcmAutologinEnabled()) return; // user hasn't opted in this session
       try {
         navigator.credentials.get({
           mediation: 'silent',
@@ -1557,10 +1571,13 @@
               nonce: String(new Date().getTime())
             }]
           }
-        }).then(function() { /* grant established */ })
-          .catch(function(e) {
-            try { console.log('browserid: FedCM grant not established:', e && e.message); } catch (x) {}
-          });
+        }).then(function() {
+          // Grant banked AND the user opted in → enable silent auto-login on
+          // future page loads (until the next logout clears it).
+          setFedcmAutologin(true);
+        }).catch(function(e) {
+          try { console.log('browserid: FedCM grant not established:', e && e.message); } catch (x) {}
+        });
       } catch (e) { /* FedCM unavailable */ }
     }
     // ----------------------------------------------------------------------
@@ -1599,6 +1616,7 @@
         // is checked again — especially for a different email" work). The flag is
         // cleared only by a subsequent successful FedCM sign-in (establishFedCMGrant
         // when the user re-ticks the checkbox).
+        setFedcmAutologin(false); // require a fresh opt-in before auto-login again
         try {
           if (navigator.credentials && navigator.credentials.preventSilentAccess) {
             navigator.credentials.preventSilentAccess();
