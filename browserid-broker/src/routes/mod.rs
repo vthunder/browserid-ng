@@ -18,7 +18,7 @@ mod well_known;
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::http::{header, HeaderValue, Method};
+use axum::http::{header, HeaderName, HeaderValue, Method};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::Router;
@@ -200,11 +200,6 @@ where
         // Registrar routes join here (already stateful); the shared layers
         // below — frame denial, cookies, CORS, cache-control — cover both.
         .merge(registrar)
-        // Deny framing everywhere except the surfaces RPs legitimately embed
-        // (communication_iframe + winchan relay). The consent page especially
-        // must never render in an iframe: its one-click Approve signs a
-        // warrant, a classic clickjacking target.
-        .layer(axum::middleware::from_fn(security_headers))
         .layer(CookieManagerLayer::new())
         .layer(
             CorsLayer::new()
@@ -220,6 +215,14 @@ where
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-cache"),
         ))
+        // Security headers (CSP, anti-clickjacking) + the FedCM Set-Login status.
+        // Applied LAST so it's the OUTERMOST layer: on the response it runs after
+        // CookieManagerLayer has written Set-Cookie, so it can read whether the
+        // session cookie was just set/cleared to derive the login status. It also
+        // denies framing everywhere except the surfaces RPs legitimately embed
+        // (communication_iframe + winchan relay); the consent page especially
+        // must never render in an iframe (its one-click Approve signs a warrant).
+        .layer(axum::middleware::from_fn(security_headers))
 }
 
 /// sha256 hashes of the *inline* `<script>` blocks on the auth-origin pages, so
@@ -315,6 +318,15 @@ async fn security_headers(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let tier = csp_tier(req.uri().path());
+    // Whether the *request* already carried a browserid.me session (for the
+    // FedCM Login Status header below — see after the handler runs).
+    let req_has_session = req
+        .headers()
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(|c| cookie_present(c, "browserid_session"))
+        .unwrap_or(false);
+
     let mut resp = next.run(req).await;
     let headers = resp.headers_mut();
     match tier {
@@ -333,7 +345,52 @@ async fn security_headers(
             headers.insert(header::CONTENT_SECURITY_POLICY, CSP_STRICT_EMBEDDABLE.clone());
         }
     }
+
+    // FedCM Login Status API (browserid-ng-mhyp). FedCM caches the IdP's
+    // login status; once it records "logged-out" (e.g. from an early
+    // /fedcm/accounts 401), it rejects future calls with "not signed in"
+    // WITHOUT re-querying — only Set-Login un-sticks it. We derive the status
+    // from what just happened: this response setting the session cookie =
+    // logged-in, clearing it = logged-out, otherwise fall back to whether the
+    // request was already authenticated. So any authenticated page load (e.g.
+    // /account) re-asserts logged-in, and logout asserts logged-out.
+    let status = login_status(resp.headers(), req_has_session);
+    if let Some(v) = status {
+        resp.headers_mut()
+            .insert(HeaderName::from_static("set-login"), HeaderValue::from_static(v));
+    }
     resp
+}
+
+/// True if `cookie_header` sets `name` to a non-empty value.
+fn cookie_present(cookie_header: &str, name: &str) -> bool {
+    cookie_header.split(';').any(|kv| {
+        kv.trim()
+            .strip_prefix(name)
+            .and_then(|r| r.strip_prefix('='))
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+    })
+}
+
+/// Derive the FedCM Login Status from the response's Set-Cookie(s) — setting
+/// `browserid_session` to a real value = "logged-in", clearing it (empty /
+/// Max-Age=0) = "logged-out" — else fall back to whether the request was
+/// authenticated.
+fn login_status(resp_headers: &axum::http::HeaderMap, req_has_session: bool) -> Option<&'static str> {
+    for sc in resp_headers.get_all(header::SET_COOKIE) {
+        if let Ok(s) = sc.to_str() {
+            if let Some(rest) = s.strip_prefix("browserid_session=") {
+                let clearing = rest.starts_with(';') || s.contains("Max-Age=0");
+                return Some(if clearing { "logged-out" } else { "logged-in" });
+            }
+        }
+    }
+    if req_has_session {
+        Some("logged-in")
+    } else {
+        None
+    }
 }
 
 /// `GET /sign_in` — the primary-IdP auth-return handler. After the IdP
@@ -431,6 +488,31 @@ mod csp_tests {
         );
         checked += 1;
         assert_eq!(checked, INLINE_SCRIPT_HASHES.len(), "unexpected number of inline scripts");
+    }
+
+    #[test]
+    fn cookie_present_detects_nonempty() {
+        assert!(super::cookie_present("browserid_session=abc; Path=/", "browserid_session"));
+        assert!(super::cookie_present("a=1; browserid_session=abc", "browserid_session"));
+        assert!(!super::cookie_present("browserid_session=; Path=/", "browserid_session"));
+        assert!(!super::cookie_present("other=abc", "browserid_session"));
+    }
+
+    #[test]
+    fn login_status_from_response() {
+        use axum::http::{header::SET_COOKIE, HeaderMap, HeaderValue};
+        // Setting the session cookie → logged-in.
+        let mut h = HeaderMap::new();
+        h.insert(SET_COOKIE, HeaderValue::from_static("browserid_session=xyz; Path=/; Max-Age=2592000"));
+        assert_eq!(super::login_status(&h, false), Some("logged-in"));
+        // Clearing it → logged-out.
+        let mut h = HeaderMap::new();
+        h.insert(SET_COOKIE, HeaderValue::from_static("browserid_session=; Path=/; Max-Age=0"));
+        assert_eq!(super::login_status(&h, true), Some("logged-out"));
+        // No session cookie change, but request was authenticated → logged-in.
+        assert_eq!(super::login_status(&HeaderMap::new(), true), Some("logged-in"));
+        // Anonymous → nothing.
+        assert_eq!(super::login_status(&HeaderMap::new(), false), None);
     }
 
     #[test]
