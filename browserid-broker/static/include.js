@@ -1341,6 +1341,9 @@
       options.siteName = displayOpts.siteName || options.siteName;
       options.backgroundColor = displayOpts.backgroundColor || options.backgroundColor;
       options.acceptedFallbacks = displayOpts.acceptedFallbacks || options.acceptedFallbacks;
+      // Tell the dialog whether to offer the "auto sign-in next time" (FedCM)
+      // checkbox — only when this browser supports FedCM and the RP opted in.
+      options.fedcm = fedcmAvailable();
 
       options.rp_api = getRPAPI();
       var couldDoRedirectIfNeeded = (!needsPopupFix || api_called === 'request' || api_called === 'auth');
@@ -1457,6 +1460,11 @@
             console.log(clientError);
             throw clientError;
           }
+          // If the user ticked "auto sign-in next time" in the dialog, show the
+          // FedCM chooser once to bank the grant, so future page loads can
+          // silently auto-login. Runs after the dialog closed (no gesture) —
+          // FedCM widget-mode allows that.
+          if (r.fedcm_optin && fedcmAvailable()) establishFedCMGrant();
         }
 
         // if either err indicates the user canceled the signin (expected) or a
@@ -1530,6 +1538,29 @@
             try { observers.login(token); } catch (clientError) { console.log(clientError); }
           }
         }).catch(function() { /* no silent session; normal flow continues */ });
+      } catch (e) { /* FedCM unavailable */ }
+    }
+
+    // Show the FedCM chooser ONCE (mediation:'required') to bank the grant that
+    // makes future silent auto-logins work. Called after a dialog sign-in where
+    // the user opted in. The returned token is discarded — we only want the
+    // grant side-effect. Widget-mode get() needs no user gesture, so this fires
+    // fine from the dialog-completion callback.
+    function establishFedCMGrant() {
+      try {
+        navigator.credentials.get({
+          mediation: 'required',
+          identity: {
+            providers: [{
+              configURL: ipServer + '/fedcm/config.json',
+              clientId: window.location.origin,
+              nonce: String(new Date().getTime())
+            }]
+          }
+        }).then(function() { /* grant established */ })
+          .catch(function(e) {
+            try { console.log('browserid: FedCM grant not established:', e && e.message); } catch (x) {}
+          });
       } catch (e) { /* FedCM unavailable */ }
     }
     // ----------------------------------------------------------------------

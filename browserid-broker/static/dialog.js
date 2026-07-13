@@ -801,6 +801,19 @@
 
   // The response returned to the RP. When the RP requested SBO signing, report
   // the grant decision explicitly so it never has to guess.
+  // Show the "automatically sign in next time" checkbox only when the RP's
+  // include.js signalled FedCM support+opt-in (so mingo's own dialog opens,
+  // which don't set this, never show it). state.fedcmOptin tracks the choice.
+  function maybeShowFedcmOptin(enabled) {
+    state.fedcm = enabled;
+    const row = document.getElementById('fedcm-optin-row');
+    const box = document.getElementById('fedcm-optin');
+    if (!enabled || !row || !box) return;
+    row.style.display = '';
+    state.fedcmOptin = box.checked;
+    box.addEventListener('change', () => { state.fedcmOptin = box.checked; });
+  }
+
   function buildAssertionResponse(assertion) {
     const resp = { assertion };
     if (state.sboSign) {
@@ -809,6 +822,9 @@
     // When the RP requested a specific identity (provision_email), return it so
     // the RP knows exactly who was provisioned/signed in.
     if (state.provisionEmail) resp.email = state.email;
+    // FedCM opt-in (only when the checkbox was shown, i.e. state.fedcm): tell
+    // include.js to establish the FedCM grant after this dialog closes.
+    if (state.fedcm && state.fedcmOptin) resp.fedcm_optin = true;
     return resp;
   }
 
@@ -1562,6 +1578,9 @@
             state.provisionEmail = args.params.provisionEmail || null;
             state.acceptedFallbacks = normalizeAcceptedFallbacks(args.params.acceptedFallbacks);
             state.winchanCallback = cb;
+            // FedCM opt-in: include.js sets this when the browser supports FedCM
+            // and the RP opted in. Show the "auto sign-in next time" checkbox.
+            maybeShowFedcmOptin(!!args.params.fedcm);
             document.querySelectorAll('.rp-name').forEach(el => {
               el.textContent = new URL(origin).hostname;
             });
