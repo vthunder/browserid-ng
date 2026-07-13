@@ -1072,7 +1072,7 @@
 
     var windowOpenOpts =
       (isFennec ? undefined :
-       "menubar=0,location=1,resizable=1,scrollbars=1,status=0,width=700,height=375");
+       "menubar=0,location=1,resizable=1,scrollbars=1,status=0,width=480,height=660");
 
     // Chrome for iOS
     //    - https://developers.google.com/chrome/mobile/docs/user-agent
@@ -1621,6 +1621,13 @@
           if (navigator.credentials && navigator.credentials.preventSilentAccess) {
             navigator.credentials.preventSilentAccess();
           }
+        } catch (e) {}
+        // Tell the SERVER to drop the silent-auto-login consent for this RP, so
+        // the server refuses future silent assertions until the user opts in
+        // again. Fire-and-forget; the FedCM cookie (path /fedcm) identifies us.
+        try {
+          fetch(ipServer + '/fedcm/reset', { method: 'POST', credentials: 'include', keepalive: true })
+            .catch(function () {});
         } catch (e) {}
         // allocate iframe if it is not allocated
         _open_hidden_iframe();

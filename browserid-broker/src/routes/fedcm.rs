@@ -216,6 +216,30 @@ where
         return err(StatusCode::FORBIDDEN, "account not eligible");
     };
 
+    // SERVER-SIDE auto-login enforcement (browserid-ng-mhyp). FedCM reports
+    // whether the token was AUTO-selected (silent auto-reauthn) vs the user
+    // picking in the chooser (interactive). We refuse a *silent* token unless the
+    // user opted into auto-login for THIS RP on a prior interactive selection —
+    // so the client can't obtain a silent assertion just by asking. An
+    // interactive selection is the opt-in and is recorded after minting below.
+    let session_id = session.id.0.clone();
+    let is_auto = req.is_auto_selected.as_deref() == Some("true");
+    if is_auto {
+        let allowed = state
+            .fedcm_autologin
+            .read()
+            .await
+            .get(&session_id)
+            .map(|set| set.contains(&rp_origin))
+            .unwrap_or(false);
+        if !allowed {
+            return err(
+                StatusCode::FORBIDDEN,
+                "silent auto-login not authorized for this site",
+            );
+        }
+    }
+
     // Mint identical cert~assertion: broker signs the cert over a throwaway
     // ephemeral key; that key signs the audience-bound assertion; discard it.
     let ephemeral = browserid_core::KeyPair::generate();
@@ -246,8 +270,20 @@ where
         };
     let token = BackedAssertion::new(cert, assertion).encode();
 
+    // Interactive selection = the opt-in: remember it so future SILENT
+    // auto-reauthns for this RP are allowed (see the is_auto gate above).
+    if !is_auto {
+        state
+            .fedcm_autologin
+            .write()
+            .await
+            .entry(session_id)
+            .or_default()
+            .insert(rp_origin.clone());
+    }
+
     // FedCM requires the id-assertion response to allow the specific RP origin
-    // with credentials (never `*`). Best-effort here pending browser validation.
+    // with credentials (never `*`).
     let mut resp = Json(json!({ "token": token })).into_response();
     if let Ok(v) = HeaderValue::from_str(&rp_origin) {
         resp.headers_mut()
@@ -256,6 +292,46 @@ where
             header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
             HeaderValue::from_static("true"),
         );
+    }
+    resp
+}
+
+/// `POST /fedcm/reset` — called by include.js on RP logout to DISABLE silent
+/// auto-login for that RP (clears the `(session, RP)` consent). Fail-safe: it
+/// only ever *removes* consent, so no `Sec-Fetch-Dest` gate is needed.
+/// Credentialed (the FedCM cookie identifies the session).
+pub async fn reset<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    headers: HeaderMap,
+    cookies: Cookies,
+) -> Response
+where
+    U: UserStore + 'static,
+    S: SessionStore + 'static,
+    E: EmailSender + 'static,
+{
+    let rp_origin = headers
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    if let (Some(session), Some(origin)) = (
+        super::session::get_fedcm_session(&cookies, state.session_store.as_ref()),
+        rp_origin.clone(),
+    ) {
+        if let Some(set) = state.fedcm_autologin.write().await.get_mut(&session.id.0) {
+            set.remove(&origin);
+        }
+    }
+    let mut resp = StatusCode::OK.into_response();
+    if let Some(origin) = rp_origin {
+        if let Ok(v) = HeaderValue::from_str(&origin) {
+            resp.headers_mut()
+                .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+            resp.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+                HeaderValue::from_static("true"),
+            );
+        }
     }
     resp
 }

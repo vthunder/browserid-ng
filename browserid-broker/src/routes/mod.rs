@@ -119,6 +119,7 @@ where
         .route("/fedcm/config.json", get(fedcm::config))
         .route("/fedcm/accounts", get(fedcm::accounts))
         .route("/fedcm/assertion", post(fedcm::assertion))
+        .route("/fedcm/reset", post(fedcm::reset))
         // The agent guestbook demo (a public RP only agents can sign).
         .route("/guestbook", get(guestbook::page).post(guestbook::sign))
         .route("/guestbook/feed", get(guestbook::feed))

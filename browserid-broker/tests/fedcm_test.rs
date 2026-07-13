@@ -140,6 +140,45 @@ async fn fedcm_assertion_rejects_unowned_account() {
 }
 
 #[tokio::test]
+async fn fedcm_silent_requires_server_side_optin() {
+    // Server-side enforcement: an AUTO-selected (silent) assertion is refused
+    // until the user has opted in via an INTERACTIVE selection; RP logout
+    // (/fedcm/reset) revokes it again.
+    let (server, email_sender) = create_test_server();
+    let session = create_user(&server, &email_sender, "alice@example.com", "Password123!").await;
+
+    // 1. Silent (auto-selected) with no prior opt-in → refused.
+    assert_eq!(post_silent(&server, &session, "true").await, 403, "silent without opt-in refused");
+    // 2. Interactive selection → allowed, records the opt-in.
+    assert_eq!(post_silent(&server, &session, "false").await, 200, "interactive allowed");
+    // 3. Now silent is allowed.
+    assert_eq!(post_silent(&server, &session, "true").await, 200, "silent allowed after opt-in");
+    // 4. RP logout (/fedcm/reset) revokes → silent refused again.
+    let reset = server
+        .post("/fedcm/reset")
+        .add_header(HeaderName::from_static("origin"), HeaderValue::from_static(AUDIENCE))
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await;
+    assert_eq!(reset.status_code(), 200);
+    assert_eq!(post_silent(&server, &session, "true").await, 403, "silent refused after reset");
+}
+
+async fn post_silent(
+    server: &axum_test::TestServer,
+    session: &str,
+    auto: &str,
+) -> axum::http::StatusCode {
+    server
+        .post("/fedcm/assertion")
+        .add_header(HeaderName::from_static("origin"), HeaderValue::from_static(AUDIENCE))
+        .add_header(sec_fetch_dest().0, sec_fetch_dest().1)
+        .add_cookie(cookie::Cookie::new("browserid_session", session.to_string()))
+        .form(&[("account_id", "alice@example.com"), ("is_auto_selected", auto)])
+        .await
+        .status_code()
+}
+
+#[tokio::test]
 async fn fedcm_assertion_rejects_non_fedcm_request() {
     // Security gate: a cross-site fetch() (no Sec-Fetch-Dest: webidentity) must
     // NOT be able to mint an assertion, even with a valid session cookie.

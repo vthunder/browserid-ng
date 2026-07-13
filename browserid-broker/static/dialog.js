@@ -824,9 +824,18 @@
   // include.js signalled FedCM support+opt-in (so mingo's own dialog opens,
   // which don't set this, never show it). state.fedcmOptin tracks the choice.
   function maybeShowFedcmOptin(enabled) {
-    // Just record the flag; placeFedcmOptin (called from showScreen) moves the
-    // checkbox into whichever sign-in screen becomes active.
+    // Record the flag; placeFedcmOptin (called from showScreen) moves the
+    // checkbox into whichever sign-in screen becomes active. Also wire the
+    // note that guides the user to the FedCM confirmation popup.
     state.fedcm = enabled;
+    if (!enabled) return;
+    const box = document.getElementById('fedcm-optin');
+    const note = document.getElementById('fedcm-optin-note');
+    if (box && note) {
+      const sync = () => { note.style.display = box.checked ? '' : 'none'; };
+      box.addEventListener('change', sync);
+      sync();
+    }
   }
 
   function buildAssertionResponse(assertion) {

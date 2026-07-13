@@ -63,6 +63,13 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// `POSTHOG_TOKEN` is set. No analytics JS runs on the auth origin; the
     /// funnel is emitted from handlers, PII-safe. See `crate::analytics`.
     pub analytics: crate::analytics::Analytics,
+    /// FedCM silent-auto-login consent (browserid-ng-mhyp): session id -> the RP
+    /// origins the user opted into SILENT auto-login for. Server-side enforcement:
+    /// `/fedcm/assertion` refuses an *auto-selected* (silent) assertion unless the
+    /// (session, RP) pair is present. An *interactive* FedCM selection records it;
+    /// RP logout (`/fedcm/reset`) clears it. Ephemeral (in-memory) — a restart
+    /// forces re-opt-in, which is safe.
+    pub fedcm_autologin: RwLock<HashMap<String, std::collections::HashSet<String>>>,
 }
 
 /// Default per-user agent identity quota
@@ -93,6 +100,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             email_send_times: RwLock::new(HashMap::new()),
             marketing_url: None,
             analytics: crate::analytics::Analytics::disabled(),
+            fedcm_autologin: RwLock::new(HashMap::new()),
         }
     }
 
@@ -118,6 +126,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             email_send_times: RwLock::new(HashMap::new()),
             marketing_url: None,
             analytics: crate::analytics::Analytics::disabled(),
+            fedcm_autologin: RwLock::new(HashMap::new()),
         }
     }
 
