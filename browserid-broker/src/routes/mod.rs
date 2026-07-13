@@ -23,7 +23,7 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::Router;
 use tower_cookies::CookieManagerLayer;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -202,8 +202,14 @@ where
         .merge(registrar)
         .layer(CookieManagerLayer::new())
         .layer(
+            // Mirror the request Origin rather than emitting `*`. For the
+            // non-credentialed endpoints this is equivalent to `*` (any origin
+            // may read the response), but it lets `/fedcm/assertion` return a
+            // VALID credentialed CORS response — `Access-Control-Allow-Origin: *`
+            // combined with `Allow-Credentials: true` is rejected by browsers,
+            // which is the "did not send the correct CORS headers" error.
             CorsLayer::new()
-                .allow_origin(Any)
+                .allow_origin(tower_http::cors::AllowOrigin::mirror_request())
                 .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
                 .allow_headers([header::CONTENT_TYPE, header::ACCEPT]),
         )

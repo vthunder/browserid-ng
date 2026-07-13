@@ -1276,6 +1276,10 @@
       // A routing hint for the dialog; the RP's verifier enforces (§6.1).
       if (options.acceptedFallbacks) displayOpts.acceptedFallbacks = options.acceptedFallbacks;
 
+      // Opted-in silent FedCM: attempt a zero-UI auto-login for returning users
+      // before the normal hidden-iframe state check. No chooser, no popup.
+      if (fedcmAvailable()) trySilentFedCM();
+
       _open_hidden_iframe();
     }
 
@@ -1497,43 +1501,36 @@
         ('IdentityCredential' in window);
     }
 
-    // Called synchronously from request() (within the click gesture) so the
-    // FedCM prompt is allowed. Delivers the token via observers.login, exactly
-    // like the dialog path.
+    // SILENT FedCM auto-reauthn (opted-in). Runs on watch() at page load — NOT
+    // on the sign-in click — so it NEVER shows a chooser or any UI.
+    // `mediation:'silent'` returns a token only if the browser can silently
+    // auto-reauthenticate a returning user (a prior FedCM grant + Set-Login:
+    // logged-in + a single account); otherwise it fails quietly and the normal
+    // flow (popup dialog on the sign-in click) is unaffected. On success it
+    // delivers the token via observers.login, exactly like the dialog path.
     //
-    // IMPORTANT: we deliberately do NOT fall back to the popup on failure. The
-    // popup's window.open would then run AFTER FedCM's async result — outside
-    // the click gesture — and Chrome blocks post-gesture popups; a blocked
-    // popup hangs the dialog (which relies on the WinChan handshake, no
-    // ?origin fallback). FedCM handles the not-signed-in case itself via its
-    // login_url (/account). So when opted in, it's FedCM-or-nothing; disable
-    // the opt-in to get the (gesture-safe, synchronous) popup instead.
-    function signInViaFedCM(options) {
-      var configURL = ipServer + '/fedcm/config.json';
-      navigator.credentials.get({
-        identity: {
-          providers: [{
-            configURL: configURL,
-            // Registration-free: the RP's own origin is the clientId. The
-            // /fedcm/assertion endpoint uses the Origin header as the audience.
-            clientId: window.location.origin,
-            nonce: (options && options.nonce) || String(new Date().getTime())
-          }]
-        }
-      }).then(function(cred) {
-        var token = cred && cred.token;
-        if (token && observers.login) {
-          try { observers.login(token); }
-          catch (clientError) { console.log(clientError); throw clientError; }
-        } else {
-          try { console.log('browserid: FedCM returned no token'); } catch (e) {}
-        }
-      }).catch(function(err) {
-        try {
-          console.log('browserid: FedCM did not complete:', err && err.message,
-            '— if you have no browserid.me session, sign in at ' + ipServer + '/account first');
-        } catch (e) {}
-      });
+    // Note: the sign-in CLICK deliberately does NOT use FedCM — it uses the
+    // popup dialog as before. FedCM here is purely the zero-click return path.
+    function trySilentFedCM() {
+      try {
+        navigator.credentials.get({
+          mediation: 'silent',
+          identity: {
+            providers: [{
+              configURL: ipServer + '/fedcm/config.json',
+              // Registration-free: the RP's own origin is the clientId; the
+              // /fedcm/assertion endpoint uses the Origin header as the audience.
+              clientId: window.location.origin,
+              nonce: String(new Date().getTime())
+            }]
+          }
+        }).then(function(cred) {
+          var token = cred && cred.token;
+          if (token && observers.login) {
+            try { observers.login(token); } catch (clientError) { console.log(clientError); }
+          }
+        }).catch(function() { /* no silent session; normal flow continues */ });
+      } catch (e) { /* FedCM unavailable */ }
     }
     // ----------------------------------------------------------------------
 
@@ -1550,13 +1547,8 @@
         api_called = "request";
         // returnTo is used for post-email-verification redirect
         if (!options.returnTo) options.returnTo = document.location.pathname;
-        // FedCM fast path — when opted in on a supporting browser, use the
-        // native chooser EXCLUSIVELY (no post-gesture popup fallback; see
-        // signInViaFedCM). Otherwise the unchanged, gesture-safe popup.
-        if (fedcmAvailable()) {
-          signInViaFedCM(options);
-          return;
-        }
+        // The sign-in click always uses the popup dialog. FedCM is used only
+        // for SILENT auto-reauthn at page load (see trySilentFedCM in watch()).
         return internalRequest(options);
       },
       watch: function(options) {
