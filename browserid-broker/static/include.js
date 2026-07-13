@@ -1464,6 +1464,73 @@
       });
     };
 
+    // --- FedCM fast path (spike browserid-ng-mhyp) ------------------------
+    // If the browser supports FedCM, try the browser-native account chooser
+    // first (backed by browserid.me's /fedcm/* endpoints, fallback identities
+    // only). On ANY failure — unsupported, no browserid session, no eligible
+    // account, or the user dismissing the sheet — we fall through to the
+    // unchanged popup dialog.
+    //
+    // OPT-IN while this is a spike: the FedCM path is OFF by default so it can't
+    // change sign-in for live RPs (e.g. mingo.place). Enable it per-tester with
+    // any of: window.__browseridEnableFedCM = true; a `?browserid_fedcm=1` query
+    // param (persisted to localStorage so it survives navigations); or
+    // localStorage['browserid_fedcm'] = '1'. Turn off with `?browserid_fedcm=0`.
+    function fedcmOptedIn() {
+      try {
+        var m = /[?&]browserid_fedcm=([01])/.exec(window.location.search);
+        if (m) {
+          if (m[1] === '1') { localStorage.setItem('browserid_fedcm', '1'); return true; }
+          localStorage.removeItem('browserid_fedcm'); return false;
+        }
+        if (window.__browseridEnableFedCM === true) return true;
+        return localStorage.getItem('browserid_fedcm') === '1';
+      } catch (e) {
+        return window.__browseridEnableFedCM === true;
+      }
+    }
+
+    function fedcmAvailable() {
+      return fedcmOptedIn() &&
+        typeof navigator !== 'undefined' && navigator.credentials &&
+        typeof navigator.credentials.get === 'function' &&
+        ('IdentityCredential' in window);
+    }
+
+    // Called synchronously from request() (within the click gesture) so the
+    // FedCM prompt is allowed. Delivers the token via observers.login, exactly
+    // like the dialog path; on failure invokes `fallback()` (the popup).
+    function signInViaFedCM(options, fallback) {
+      var configURL = ipServer + '/fedcm/config.json';
+      try {
+        navigator.credentials.get({
+          identity: {
+            providers: [{
+              configURL: configURL,
+              // Registration-free: the RP's own origin is the clientId. The
+              // /fedcm/assertion endpoint uses the Origin header as the audience.
+              clientId: window.location.origin,
+              nonce: (options && options.nonce) || String(new Date().getTime())
+            }]
+          }
+        }).then(function(cred) {
+          var token = cred && cred.token;
+          if (token && observers.login) {
+            try { observers.login(token); }
+            catch (clientError) { console.log(clientError); throw clientError; }
+          } else {
+            fallback();
+          }
+        }).catch(function(err) {
+          try { console.log('browserid: FedCM did not complete, using dialog:', err && err.message); } catch (e) {}
+          fallback();
+        });
+      } catch (e) {
+        fallback();
+      }
+    }
+    // ----------------------------------------------------------------------
+
     navigator.id = {
       request: function(options) {
         if (this != navigator.id)
@@ -1477,6 +1544,11 @@
         api_called = "request";
         // returnTo is used for post-email-verification redirect
         if (!options.returnTo) options.returnTo = document.location.pathname;
+        // FedCM fast path — native chooser first, dialog as fallback.
+        if (fedcmAvailable()) {
+          signInViaFedCM(options, function() { internalRequest(options); });
+          return;
+        }
         return internalRequest(options);
       },
       watch: function(options) {
