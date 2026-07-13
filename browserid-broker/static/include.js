@@ -1476,35 +1476,14 @@
       });
     };
 
-    // --- FedCM fast path (spike browserid-ng-mhyp) ------------------------
-    // If the browser supports FedCM, try the browser-native account chooser
-    // first (backed by browserid.me's /fedcm/* endpoints, fallback identities
-    // only). On ANY failure — unsupported, no browserid session, no eligible
-    // account, or the user dismissing the sheet — we fall through to the
-    // unchanged popup dialog.
-    //
-    // OPT-IN while this is a spike: the FedCM path is OFF by default so it can't
-    // change sign-in for live RPs (e.g. mingo.place). Enable it per-tester with
-    // any of: window.__browseridEnableFedCM = true; a `?browserid_fedcm=1` query
-    // param (persisted to localStorage so it survives navigations); or
-    // localStorage['browserid_fedcm'] = '1'. Turn off with `?browserid_fedcm=0`.
-    function fedcmOptedIn() {
-      try {
-        var m = /[?&]browserid_fedcm=([01])/.exec(window.location.search);
-        if (m) {
-          if (m[1] === '1') { localStorage.setItem('browserid_fedcm', '1'); return true; }
-          localStorage.removeItem('browserid_fedcm'); return false;
-        }
-        if (window.__browseridEnableFedCM === true) return true;
-        return localStorage.getItem('browserid_fedcm') === '1';
-      } catch (e) {
-        return window.__browseridEnableFedCM === true;
-      }
-    }
-
+    // --- FedCM fast path (browserid-ng-mhyp) ------------------------------
+    // FedCM is used automatically wherever the browser supports it — RPs do
+    // nothing and never know FedCM was involved. It only ever ADDS a silent
+    // auto-login path (opt-in per user via the dialog checkbox, server-enforced)
+    // and degrades to the popup dialog everywhere else (non-FedCM browsers, no
+    // user opt-in). So it's safe to have on by default for every RP.
     function fedcmAvailable() {
-      return fedcmOptedIn() &&
-        typeof navigator !== 'undefined' && navigator.credentials &&
+      return typeof navigator !== 'undefined' && navigator.credentials &&
         typeof navigator.credentials.get === 'function' &&
         ('IdentityCredential' in window);
     }
