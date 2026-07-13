@@ -69,10 +69,29 @@
     error: document.getElementById('error-screen')
   };
 
+  // Screens where the FedCM "auto sign-in next time" checkbox belongs — the
+  // ones that complete a sign-in and return an assertion.
+  const FEDCM_OPTIN_SCREENS = { pickEmail: 1, password: 1, verify: 1 };
+
+  // The checkbox lives outside the screen cards in markup; each .screen is
+  // absolutely-positioned, so we MOVE the one checkbox element into the active
+  // sign-in screen's .content so it's actually visible inside the card.
+  function placeFedcmOptin(screenId) {
+    const row = document.getElementById('fedcm-optin-row');
+    if (!row || !state.fedcm) return;
+    if (FEDCM_OPTIN_SCREENS[screenId]) {
+      const content = screens[screenId] && screens[screenId].querySelector('.content');
+      if (content) { content.appendChild(row); row.style.display = ''; }
+    } else {
+      row.style.display = 'none';
+    }
+  }
+
   // Screen management
   function showScreen(screenId) {
     Object.values(screens).forEach(s => s.classList.remove('active'));
     screens[screenId].classList.add('active');
+    placeFedcmOptin(screenId);
   }
 
   function showError(message) {
@@ -805,9 +824,9 @@
   // include.js signalled FedCM support+opt-in (so mingo's own dialog opens,
   // which don't set this, never show it). state.fedcmOptin tracks the choice.
   function maybeShowFedcmOptin(enabled) {
+    // Just record the flag; placeFedcmOptin (called from showScreen) moves the
+    // checkbox into whichever sign-in screen becomes active.
     state.fedcm = enabled;
-    const row = document.getElementById('fedcm-optin-row');
-    if (enabled && row) row.style.display = '';
   }
 
   function buildAssertionResponse(assertion) {
