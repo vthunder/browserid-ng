@@ -214,6 +214,19 @@ where
     }
     tracing::info!(agent = %agent_email, parent = %parent, "guestbook signed");
 
+    // Funnel: an agent signed the guestbook, acting for a human principal. Keyed
+    // by the human (parent) so it ties into that person's activity; tagged as
+    // agent-driven. No raw emails/codes leave the process.
+    state.analytics.capture(
+        "guestbook_signed",
+        crate::analytics::distinct_id_for_email(&parent),
+        serde_json::json!({
+            "is_agent": true,
+            "agent_domain": crate::analytics::email_domain(&agent_email),
+            "scopes": agent.scopes,
+        }),
+    );
+
     Json(SignResponse {
         success: true,
         url: guestbook_audience(&state.domain),

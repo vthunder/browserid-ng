@@ -3,6 +3,7 @@
 //! A fallback identity provider for domains that don't implement
 //! native BrowserID support. Similar to Mozilla's login.persona.org.
 
+pub mod analytics;
 pub mod config;
 pub mod crypto;
 pub mod dns_fetcher;

@@ -290,6 +290,13 @@ where
     // Clean up
     state.user_store.delete_pending(&req.token)?;
 
+    // Funnel: an additional email was verified and added to an existing account.
+    state.analytics.capture(
+        "email_verified",
+        crate::analytics::distinct_id_for_email(&pending.email),
+        serde_json::json!({ "email_domain": crate::analytics::email_domain(&pending.email) }),
+    );
+
     Ok(Json(CompleteEmailResponse {
         success: true,
         reason: None,

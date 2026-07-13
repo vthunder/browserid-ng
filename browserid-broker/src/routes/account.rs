@@ -85,6 +85,13 @@ where
         .send_verification(&req.email, &code)
         .map_err(|e| BrokerError::Internal(e))?;
 
+    // Funnel: account signup started (verification email sent).
+    state.analytics.capture(
+        "signup_started",
+        crate::analytics::distinct_id_for_email(&req.email),
+        serde_json::json!({ "email_domain": crate::analytics::email_domain(&req.email) }),
+    );
+
     Ok(Json(StageUserResponse {
         success: true,
         reason: None,
@@ -148,6 +155,14 @@ where
         &cookies,
         &session.id.0,
         super::session::cookie_secure(&state.domain),
+    );
+
+    // Funnel: account created (email verified + user provisioned). This is the
+    // conversion completion for the signup funnel.
+    state.analytics.capture(
+        "signup_completed",
+        crate::analytics::distinct_id_for_email(&pending.email),
+        serde_json::json!({ "email_domain": crate::analytics::email_domain(&pending.email) }),
     );
 
     Ok(Json(CompleteUserCreationResponse {

@@ -101,6 +101,11 @@ async fn main() -> Result<()> {
     if let Some(url) = &state.marketing_url {
         tracing::info!(marketing_url = %url, "Origin split: marketing routes redirect to marketing site");
     }
+    // Server-side product analytics (auth-origin funnel). Enabled iff POSTHOG_TOKEN set.
+    state.analytics = browserid_broker::analytics::Analytics::from_env();
+    if state.analytics.enabled() {
+        tracing::info!("PostHog server-side analytics enabled");
+    }
     if let Some(quota) = std::env::var("AGENT_MAX_IDENTITIES")
         .ok()
         .and_then(|v| v.parse().ok())

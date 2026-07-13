@@ -1,11 +1,11 @@
 ---
 # browserid-ng-omxf
 title: 'PostHog analytics: website + product funnel, auth-safe integration'
-status: todo
+status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-13T07:47:22Z
-updated_at: 2026-07-13T08:27:04Z
+updated_at: 2026-07-13T11:12:52Z
 blocked_by:
     - browserid-ng-93z2
 ---

@@ -59,6 +59,10 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// (`/` and the guestbook page) there, keeping keystore/cookies/wsapi on this
     /// origin only. Unset locally → the broker still serves those pages itself.
     pub marketing_url: Option<String>,
+    /// Server-side product analytics (the auth-origin funnel). Disabled unless
+    /// `POSTHOG_TOKEN` is set. No analytics JS runs on the auth origin; the
+    /// funnel is emitted from handlers, PII-safe. See `crate::analytics`.
+    pub analytics: crate::analytics::Analytics,
 }
 
 /// Default per-user agent identity quota
@@ -88,6 +92,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             test_endpoints_enabled: false,
             email_send_times: RwLock::new(HashMap::new()),
             marketing_url: None,
+            analytics: crate::analytics::Analytics::disabled(),
         }
     }
 
@@ -112,6 +117,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             test_endpoints_enabled: false,
             email_send_times: RwLock::new(HashMap::new()),
             marketing_url: None,
+            analytics: crate::analytics::Analytics::disabled(),
         }
     }
 
