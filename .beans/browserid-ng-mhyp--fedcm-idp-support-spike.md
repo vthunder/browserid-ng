@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-07-13T16:41:07Z
-updated_at: 2026-07-13T17:23:48Z
+updated_at: 2026-07-13T22:17:14Z
 ---
 
 Spike: add FedCM as a progressive-enhancement fast path over the existing popup, with **browserid.me as a FedCM IdP** (fallback identities only). Modernizes the human-login half; retires the dead cross-origin silent-assertion iframe ([[silent-assertion-communication-iframe-is-dead-for]] / browserid-ng-1sy5). Does not touch agents, /verify contract, or the trust model. Follows the origin split ([[origin-split]]) — endpoints live on browserid.me (auth origin).
@@ -88,3 +88,18 @@ Remaining (browser-validation phase, needs an HTTPS harness):
 - [ ] Decide productize/not from the browser UX.
 
 Not committed yet — working tree only.
+
+## Silent-only + fixes (2026-07-13)
+- Set-Login header shipped (required — once the browser caches "logged-out" from an early 401 it never re-queries without it). Emitted from security_headers: logged-in when a session is active/just-set, logged-out on clear. Middleware reordered to be OUTERMOST so it can read Set-Cookie.
+- Fixed credentialed CORS on /fedcm/assertion: global CORS now mirrors the Origin (was `*`); `*`+Allow-Credentials is invalid → was the "did not send the correct CORS headers" browser error. Now ACAO:<origin> + Allow-Credentials:true.
+- include.js: FedCM moved OFF the sign-in click (no chooser) to SILENT-only (mediation:'silent') on watch() page-load. Zero UI; delivers via observers.login for a returning user WITH a prior grant, else quiet. The click uses the popup dialog, unchanged.
+
+## KEY CONSTRAINT surfaced
+FedCM `mediation:'silent'` (auto-reauthn) only returns a token if a **prior FedCM grant** exists for that RP — established by ONE interactive FedCM chooser (the consent moment; FedCM's privacy model, unavoidable). So "pure silent, never any UI" means silent NEVER fires until a grant is bootstrapped. A popup-dialog sign-in does NOT create a FedCM grant. => For an RP like mingo (rich popup flow), FedCM silent requires adding a one-time FedCM chooser to the flow. Decision for Dan: accept a one-time consent chooser per RP (then silent forever), or FedCM silent stays dormant.
+
+## Critical testing finding (2026-07-14)
+The fedcm-demo on www.browserid.me was a CONFOUNDED test: www.browserid.me is SAME-SITE as the broker (browserid.me), so the classic communication_iframe silent-assertion path is NOT storage-partitioned and auto-logs-in on its own — independent of FedCM and the checkbox. Confirmed definitively: it auto-signs-in on Arc, which has NO FedCM support. So all the "auto-login without checkbox" behavior was the classic iframe, not FedCM.
+=> Clean FedCM testing requires a genuinely CROSS-SITE RP. Stood one up at https://fedcm-rp.sandmill.org (sandmill.org != browserid.me; wildcard *.sandmill.org DNS, no registrar action needed; TLS via letsencrypt). There the classic iframe is dead, so FedCM is the only silent route.
+
+## Still TODO: server-side enforcement (Dan's correctness point)
+The client-side localStorage opt-in gate is cosmetic — /fedcm/assertion still mints for any valid FedCM request. Correct fix (started, then reverted pending cross-site confirmation): refuse AUTO-SELECTED (silent) assertions server-side unless the user opted in, using FedCM's is_auto_selected flag; record consent on interactive selection; clear on RP logout via a /fedcm/reset endpoint called from include.js logout(). In-memory per-session consent (ephemeral).
