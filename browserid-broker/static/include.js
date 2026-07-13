@@ -1594,6 +1594,16 @@
       logout: function(callback) {
         if (this != navigator.id)
           throw new Error("all navigator.id calls must be made on the navigator.id object");
+        // FedCM: after logout, DISABLE silent auto-login until the user signs in
+        // and opts in again (this is what makes "don't auto-login unless the box
+        // is checked again — especially for a different email" work). The flag is
+        // cleared only by a subsequent successful FedCM sign-in (establishFedCMGrant
+        // when the user re-ticks the checkbox).
+        try {
+          if (navigator.credentials && navigator.credentials.preventSilentAccess) {
+            navigator.credentials.preventSilentAccess();
+          }
+        } catch (e) {}
         // allocate iframe if it is not allocated
         _open_hidden_iframe();
         // send logout message if the commChan exists

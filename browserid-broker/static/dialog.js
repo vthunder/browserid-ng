@@ -807,11 +807,7 @@
   function maybeShowFedcmOptin(enabled) {
     state.fedcm = enabled;
     const row = document.getElementById('fedcm-optin-row');
-    const box = document.getElementById('fedcm-optin');
-    if (!enabled || !row || !box) return;
-    row.style.display = '';
-    state.fedcmOptin = box.checked;
-    box.addEventListener('change', () => { state.fedcmOptin = box.checked; });
+    if (enabled && row) row.style.display = '';
   }
 
   function buildAssertionResponse(assertion) {
@@ -822,9 +818,11 @@
     // When the RP requested a specific identity (provision_email), return it so
     // the RP knows exactly who was provisioned/signed in.
     if (state.provisionEmail) resp.email = state.email;
-    // FedCM opt-in (only when the checkbox was shown, i.e. state.fedcm): tell
-    // include.js to establish the FedCM grant after this dialog closes.
-    if (state.fedcm && state.fedcmOptin) resp.fedcm_optin = true;
+    // FedCM opt-in: only if the checkbox was shown (state.fedcm) AND the user
+    // actively ticked it. Read at response time so it reflects the real choice
+    // on whatever screen they finished on (default is UNCHECKED — explicit opt-in).
+    const optin = document.getElementById('fedcm-optin');
+    if (state.fedcm && optin && optin.checked) resp.fedcm_optin = true;
     return resp;
   }
 
