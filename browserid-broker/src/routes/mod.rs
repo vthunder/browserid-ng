@@ -6,6 +6,7 @@ mod auth;
 mod cert;
 mod email;
 mod fallback_idp;
+mod fedcm;
 mod guestbook;
 mod primary;
 mod reset;
@@ -111,6 +112,13 @@ where
         .route("/wsapi/set_password", post(primary::set_password))
         // Verification endpoint
         .route("/verify", post(verify::verify))
+        // FedCM IdP surface (browserid-ng-mhyp spike): browserid.me as a FedCM
+        // Identity Provider for fallback identities. Silent lane — mints a
+        // standard cert~assertion server-side; /verify unchanged.
+        .route("/.well-known/web-identity", get(fedcm::web_identity))
+        .route("/fedcm/config.json", get(fedcm::config))
+        .route("/fedcm/accounts", get(fedcm::accounts))
+        .route("/fedcm/assertion", post(fedcm::assertion))
         // The agent guestbook demo (a public RP only agents can sign).
         .route("/guestbook", get(guestbook::page).post(guestbook::sign))
         .route("/guestbook/feed", get(guestbook::feed))
