@@ -200,7 +200,9 @@ button.secondary:active:not(:disabled) {
   margin: 0 0 16px 0;
   border: 1px solid #ddd;
   border-radius: 4px;
-  max-height: 200px;
+  /* Grow to use the popup's height instead of scrolling at a fixed cap, so a
+     longer email list fills the available space rather than leaving it blank. */
+  max-height: 58vh;
   overflow-y: auto;
 }
 
