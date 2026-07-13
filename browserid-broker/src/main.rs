@@ -91,6 +91,16 @@ async fn main() -> Result<()> {
     if state.test_endpoints_enabled {
         tracing::warn!("test endpoints (/wsapi/test/*) ENABLED — dev only, never production");
     }
+    // Origin split: when a separate static marketing site is deployed, point the
+    // public marketing routes (`/`, guestbook page) at it. Keystore/cookies/wsapi
+    // stay on this (auth/issuer) origin only. Unset → broker serves them locally.
+    state.marketing_url = std::env::var("MARKETING_URL")
+        .ok()
+        .map(|s| s.trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(url) = &state.marketing_url {
+        tracing::info!(marketing_url = %url, "Origin split: marketing routes redirect to marketing site");
+    }
     if let Some(quota) = std::env::var("AGENT_MAX_IDENTITIES")
         .ok()
         .and_then(|v| v.parse().ok())

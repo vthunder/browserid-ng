@@ -16,8 +16,9 @@ mod well_known;
 
 use std::sync::Arc;
 
+use axum::extract::State;
 use axum::http::{header, HeaderValue, Method};
-use axum::response::Html;
+use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::Router;
 use tower_cookies::CookieManagerLayer;
@@ -154,8 +155,24 @@ where
         // Demo RPs (apgv): one trusts only an external fallback, one trusts browserid.me.
         .route_service("/fallback-demo", ServeFile::new(format!("{}/fallback-demo.html", static_path)))
         .route_service("/broker-demo", ServeFile::new(format!("{}/broker-demo.html", static_path)))
-        // Landing page at the root.
-        .route_service("/", ServeFile::new(format!("{}/index.html", static_path)))
+        // Landing page at the root. When the origin split is deployed
+        // (MARKETING_URL set), redirect to the static marketing site instead;
+        // otherwise serve index.html locally.
+        .route("/", get({
+            let index_path = format!("{}/index.html", static_path);
+            move |State(state): State<Arc<AppState<U, S, E>>>| {
+                let index_path = index_path.clone();
+                async move {
+                    if let Some(url) = &state.marketing_url {
+                        return axum::response::Redirect::permanent(url).into_response();
+                    }
+                    match tokio::fs::read_to_string(&index_path).await {
+                        Ok(body) => Html(body).into_response(),
+                        Err(_) => axum::http::StatusCode::NOT_FOUND.into_response(),
+                    }
+                }
+            }
+        }))
         // Serve static files (dialog, CSS, JS)
         .nest_service("/dialog", ServeDir::new(static_path));
 

@@ -53,6 +53,12 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// (lowercased) -> time of the last send. Bounds email-bombing and code
     /// spam server-side (the client cooldown is only a UX hint).
     pub email_send_times: RwLock<HashMap<String, chrono::DateTime<chrono::Utc>>>,
+    /// Origin of the separate static marketing site (e.g.
+    /// `https://www.browserid.me`), when the origin split is deployed. When set,
+    /// the broker (auth/issuer origin) redirects the public marketing routes
+    /// (`/` and the guestbook page) there, keeping keystore/cookies/wsapi on this
+    /// origin only. Unset locally → the broker still serves those pages itself.
+    pub marketing_url: Option<String>,
 }
 
 /// Default per-user agent identity quota
@@ -81,6 +87,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             max_agent_identities_per_user: DEFAULT_AGENT_QUOTA,
             test_endpoints_enabled: false,
             email_send_times: RwLock::new(HashMap::new()),
+            marketing_url: None,
         }
     }
 
@@ -104,6 +111,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             max_agent_identities_per_user: DEFAULT_AGENT_QUOTA,
             test_endpoints_enabled: false,
             email_send_times: RwLock::new(HashMap::new()),
+            marketing_url: None,
         }
     }
 

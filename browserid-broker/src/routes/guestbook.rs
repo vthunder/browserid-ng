@@ -232,12 +232,19 @@ pub async fn feed() -> Response {
 
 // ---- GET /guestbook (public HTML page) -------------------------------------
 
-pub async fn page<U, S, E>(State(state): State<Arc<AppState<U, S, E>>>) -> Html<String>
+pub async fn page<U, S, E>(State(state): State<Arc<AppState<U, S, E>>>) -> Response
 where
     U: UserStore + 'static,
     S: SessionStore + 'static,
     E: EmailSender + 'static,
 {
+    // Origin split: the guestbook page is served by the static marketing site
+    // (it's read-only display — agents sign via MCP, not the browser). Redirect
+    // there when deployed; the feed JSON + POST sign API stay on this origin.
+    if let Some(url) = &state.marketing_url {
+        return axum::response::Redirect::permanent(&format!("{url}/guestbook")).into_response();
+    }
+
     let entries = ENTRIES.lock().unwrap().clone();
     let aud = guestbook_audience(&state.domain);
 
@@ -334,4 +341,5 @@ with a warrant scoped to <code>{}</code> — cryptographically attributable to b
         escape(&aud),
         rows
     ))
+    .into_response()
 }
