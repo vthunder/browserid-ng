@@ -196,7 +196,7 @@ where
         // (communication_iframe + winchan relay). The consent page especially
         // must never render in an iframe: its one-click Approve signs a
         // warrant, a classic clickjacking target.
-        .layer(axum::middleware::from_fn(deny_framing))
+        .layer(axum::middleware::from_fn(security_headers))
         .layer(CookieManagerLayer::new())
         .layer(
             CorsLayer::new()
@@ -214,27 +214,116 @@ where
         ))
 }
 
-/// Anti-clickjacking: `X-Frame-Options: DENY` + `frame-ancestors 'none'` on
-/// every response except the RP-embeddable surfaces.
-async fn deny_framing(
-    req: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    let path = req.uri().path();
-    let embeddable = path.starts_with("/communication_iframe")
+/// sha256 hashes of the *inline* `<script>` blocks on the auth-origin pages, so
+/// the strict policy can keep `script-src 'self'` (no `'unsafe-inline'`). All
+/// other auth-cluster pages load only external same-origin scripts. These are
+/// verified against the real files by `csp_tests::inline_script_hashes_match` —
+/// if you edit one of those inline scripts, that test fails and prints the new
+/// hash to paste here.
+const INLINE_SCRIPT_HASHES: &[&str] = &[
+    "'sha256-9l7NyZg4eif6cUD/KmuEGoKcOcMDrWxO6yv1GDFhTsg='", // account.html
+    "'sha256-xQcCYsKTyO8jEp9wbiootp+gVaixXIQ6GRwHMewOXO4='", // consent.html
+    "'sha256-+XqUYbHj+ZXqocYeM/oRYCX1zljIPfY94AJwWAtU2Do='", // agents.html
+    "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)
+];
+
+/// Build the strict CSP. `wasm-unsafe-eval` is required by the WASM signer
+/// (`common/js/sbo-wasm`); there is no `eval`/`new Function` anywhere, so plain
+/// `unsafe-eval` is not needed. `frame-src http(s):` lets the dialog embed a
+/// primary IdP's provisioning page at *any* web origin (https in production,
+/// http for localhost/dev IdPs) — the mediator can't enumerate IdP origins
+/// ahead of time; it still blocks non-web schemes (data:/blob:) an injected
+/// script might abuse. `frame-ancestors 'none'` is added for non-embeddable
+/// pages (everything but the surfaces RPs/mediator legitimately iframe).
+fn build_strict_csp(frame_ancestors_none: bool) -> String {
+    let mut csp = format!(
+        "default-src 'self'; base-uri 'self'; object-src 'none'; \
+         script-src 'self' 'wasm-unsafe-eval' {}; \
+         style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; \
+         connect-src 'self'; frame-src 'self' https: http:; form-action 'self'",
+        INLINE_SCRIPT_HASHES.join(" ")
+    );
+    if frame_ancestors_none {
+        csp.push_str("; frame-ancestors 'none'");
+    }
+    csp
+}
+
+static CSP_STRICT: std::sync::LazyLock<HeaderValue> = std::sync::LazyLock::new(|| {
+    HeaderValue::from_str(&build_strict_csp(true)).expect("valid CSP header")
+});
+static CSP_STRICT_EMBEDDABLE: std::sync::LazyLock<HeaderValue> = std::sync::LazyLock::new(|| {
+    HeaderValue::from_str(&build_strict_csp(false)).expect("valid CSP header")
+});
+
+enum CspTier {
+    /// Demo / marketing / dev pages: unhashed inline scripts, but no keystore,
+    /// session, or wsapi — not security-critical. Keep the old permissive policy.
+    Loose,
+    /// The auth cluster (dialog, account, consent, agents, auth, sign, wsapi, …):
+    /// strict CSP + framing denied.
+    Strict,
+    /// Surfaces RPs / the mediator dialog legitimately embed cross-origin: strict
+    /// CSP, but framing must be *allowed*, so no frame-ancestors/X-Frame-Options.
+    StrictEmbeddable,
+}
+
+fn csp_tier(path: &str) -> CspTier {
+    if path.starts_with("/communication_iframe")
         || path.starts_with("/relay")
         // The fallback-IdP provisioning page is framed cross-origin by the
         // mediator's dialog (apgv), exactly like a primary IdP's provision page.
         || path == "/provision"
-        || path == "/provision.js";
+        || path == "/provision.js"
+    {
+        return CspTier::StrictEmbeddable;
+    }
+    // Demo / marketing / dev pages carry unhashed inline scripts (and demo.html
+    // uses inline handlers). They hold nothing sensitive, so keep them loose
+    // rather than hash every one. `/` 308-redirects to the marketing site in
+    // production; served locally it is index.html.
+    let loose = path == "/"
+        || path == "/broker-demo"
+        || path == "/fallback-demo"
+        || path.ends_with("/index.html")
+        || path.ends_with("/broker-demo.html")
+        || path.ends_with("/fallback-demo.html")
+        || path.ends_with("/demo.html")
+        || path.ends_with("/sbo-smoke-test.html");
+    if loose {
+        CspTier::Loose
+    } else {
+        CspTier::Strict
+    }
+}
+
+/// Security headers: a Content-Security-Policy (script/style/connect/frame/…)
+/// plus anti-clickjacking. The auth cluster gets a strict `script-src 'self'`
+/// (+ inline-script hashes + wasm) so an injected script can neither run nor
+/// exfiltrate; embeddable iframes get the same policy minus framing denial;
+/// demo/marketing pages keep the permissive frame-ancestors-only policy.
+async fn security_headers(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let tier = csp_tier(req.uri().path());
     let mut resp = next.run(req).await;
-    if !embeddable {
-        let headers = resp.headers_mut();
-        headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-        headers.insert(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static("frame-ancestors 'none'"),
-        );
+    let headers = resp.headers_mut();
+    match tier {
+        CspTier::Loose => {
+            headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+            headers.insert(
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static("frame-ancestors 'none'"),
+            );
+        }
+        CspTier::Strict => {
+            headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+            headers.insert(header::CONTENT_SECURITY_POLICY, CSP_STRICT.clone());
+        }
+        CspTier::StrictEmbeddable => {
+            headers.insert(header::CONTENT_SECURITY_POLICY, CSP_STRICT_EMBEDDABLE.clone());
+        }
     }
     resp
 }
@@ -245,8 +334,12 @@ async fn deny_framing(
 /// postMessage and closes, completing the primary provisioning flow. (Was a
 /// blind redirect to the dialog, which dropped the completion signal.)
 async fn sign_in_return() -> Html<&'static str> {
-    Html(
-        r#"<!DOCTYPE html>
+    Html(SIGN_IN_HTML)
+}
+
+/// The `/sign_in` page body. A const (not an inline literal) so the CSP
+/// inline-script-hash test can read the exact bytes it hashes.
+const SIGN_IN_HTML: &str = r#"<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Signing in…</title></head>
 <body style="font:14px/1.5 system-ui,sans-serif;text-align:center;margin-top:40px;color:#555">
 <p id="m">Completing sign-in…</p>
@@ -271,6 +364,79 @@ async fn sign_in_return() -> Html<&'static str> {
   }
 })();
 </script>
-</body></html>"#,
-    )
+</body></html>"#;
+
+#[cfg(test)]
+mod csp_tests {
+    use super::{csp_tier, CspTier, INLINE_SCRIPT_HASHES, SIGN_IN_HTML};
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+
+    /// Extract the first inline (non-`src`) `<script>` body from an HTML string.
+    fn first_inline_script(html: &str) -> Option<&str> {
+        let mut cursor = 0;
+        loop {
+            let start = html[cursor..].find("<script")? + cursor;
+            let gt = html[start..].find('>')? + start;
+            let open_tag = &html[start..=gt];
+            if !open_tag.contains("src=") {
+                let content_start = gt + 1;
+                let end = html[content_start..].find("</script>")? + content_start;
+                return Some(&html[content_start..end]);
+            }
+            cursor = gt + 1;
+        }
+    }
+
+    fn hash_of(script: &str) -> String {
+        let digest = Sha256::digest(script.as_bytes());
+        format!(
+            "'sha256-{}'",
+            base64::engine::general_purpose::STANDARD.encode(digest)
+        )
+    }
+
+    /// The CSP inline-script hashes must match the bytes actually served. If an
+    /// inline script is edited, this fails and prints the hash to paste into
+    /// INLINE_SCRIPT_HASHES — so the strict CSP can never silently break a page.
+    #[test]
+    fn inline_script_hashes_match() {
+        let mut checked = 0;
+        for file in ["static/account.html", "static/consent.html", "static/agents.html"] {
+            let html = std::fs::read_to_string(file)
+                .unwrap_or_else(|e| panic!("read {file}: {e}"));
+            let script = first_inline_script(&html)
+                .unwrap_or_else(|| panic!("no inline script in {file}"));
+            let h = hash_of(script);
+            assert!(
+                INLINE_SCRIPT_HASHES.contains(&h.as_str()),
+                "{file}: inline-script hash {h} not in INLINE_SCRIPT_HASHES — update the CSP"
+            );
+            checked += 1;
+        }
+        // The /sign_in page (served from a Rust const).
+        let script = first_inline_script(SIGN_IN_HTML).expect("sign_in inline script");
+        let h = hash_of(script);
+        assert!(
+            INLINE_SCRIPT_HASHES.contains(&h.as_str()),
+            "/sign_in: inline-script hash {h} not in INLINE_SCRIPT_HASHES — update the CSP"
+        );
+        checked += 1;
+        assert_eq!(checked, INLINE_SCRIPT_HASHES.len(), "unexpected number of inline scripts");
+    }
+
+    #[test]
+    fn csp_tiers_route_correctly() {
+        assert!(matches!(csp_tier("/account"), CspTier::Strict));
+        assert!(matches!(csp_tier("/consent"), CspTier::Strict));
+        assert!(matches!(csp_tier("/dialog/dialog.html"), CspTier::Strict));
+        assert!(matches!(csp_tier("/wsapi/session_context"), CspTier::Strict));
+        assert!(matches!(csp_tier("/sign_in"), CspTier::Strict));
+        assert!(matches!(csp_tier("/communication_iframe"), CspTier::StrictEmbeddable));
+        assert!(matches!(csp_tier("/provision"), CspTier::StrictEmbeddable));
+        assert!(matches!(csp_tier("/relay/index.html"), CspTier::StrictEmbeddable));
+        assert!(matches!(csp_tier("/"), CspTier::Loose));
+        assert!(matches!(csp_tier("/broker-demo"), CspTier::Loose));
+        assert!(matches!(csp_tier("/dialog/demo.html"), CspTier::Loose));
+    }
 }

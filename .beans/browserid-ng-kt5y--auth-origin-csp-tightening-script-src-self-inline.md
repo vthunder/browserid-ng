@@ -1,11 +1,11 @@
 ---
 # browserid-ng-kt5y
 title: 'Auth-origin CSP tightening: script-src ''self'' + inline hashes, connect-src ''self'''
-status: todo
+status: completed
 type: task
 priority: normal
 created_at: 2026-07-13T09:16:37Z
-updated_at: 2026-07-13T09:16:37Z
+updated_at: 2026-07-13T13:39:04Z
 blocked_by:
     - browserid-ng-cn1q
 ---
