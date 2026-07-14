@@ -84,6 +84,7 @@ fn to_reg_request(r: crate::store::WarrantRequestRecord) -> reg::WarrantRequestR
         grants: r.grants.into_iter().map(to_reg_grant).collect(),
         status: to_reg_status(r.status),
         warrants: r.warrants,
+        external: r.external,
         created_at: r.created_at,
         expires_at: r.expires_at,
         last_polled_at: r.last_polled_at,
@@ -100,6 +101,7 @@ fn from_reg_request(r: reg::WarrantRequestRecord) -> crate::store::WarrantReques
         grants: r.grants.into_iter().map(from_reg_grant).collect(),
         status: from_reg_status(r.status),
         warrants: r.warrants,
+        external: r.external,
         created_at: r.created_at,
         expires_at: r.expires_at,
         last_polled_at: r.last_polled_at,
@@ -308,6 +310,15 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
             .any(|e| e.email.eq_ignore_ascii_case(email) && e.verified))
     }
 
+    fn user_for_verified_email(&self, email: &str) -> Result<Option<u64>, RegistrarError> {
+        Ok(self
+            .user_store
+            .get_email(email)
+            .map_err(to_reg_err)?
+            .filter(|e| e.verified)
+            .map(|e| e.user_id.0))
+    }
+
     fn agent_identities(&self, user_id: u64) -> Result<Vec<AgentIdentity>, RegistrarError> {
         Ok(self
             .user_store
@@ -372,6 +383,40 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
             }
         }
         Ok(())
+    }
+}
+
+/// Foreign-IdP key discovery for external warrant requests (§6.6), backed by
+/// the broker's DNSSEC-rooted [`FallbackFetcher`]. A foreign domain without
+/// DNSSEC resolves to the fallback broker's key — the same rooting rule as
+/// everywhere else — so a cert its claimed issuer didn't sign can never pass.
+pub struct BrokerIssuerResolver {
+    pub fetcher: Arc<crate::fallback_fetcher::FallbackFetcher>,
+}
+
+impl browserid_registrar::IssuerKeyResolver for BrokerIssuerResolver {
+    fn resolve_issuer_key<'a>(
+        &'a self,
+        domain: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<browserid_core::PublicKey, RegistrarError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let result = self.fetcher.discover(domain).await.map_err(|e| {
+                RegistrarError::ValidationError(format!(
+                    "issuer discovery failed for '{domain}': {e}"
+                ))
+            })?;
+            result.document.public_key.ok_or_else(|| {
+                RegistrarError::ValidationError(format!(
+                    "no identity key published for '{domain}'"
+                ))
+            })
+        })
     }
 }
 

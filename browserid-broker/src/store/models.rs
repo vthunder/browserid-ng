@@ -149,6 +149,10 @@ pub struct WarrantRequestRecord {
     /// The signed warrant JWSs (one per grant, same order), present once
     /// approved
     pub warrants: Option<Vec<String>>,
+    /// External request (agent spec §6.6): raised by a foreign-IdP service
+    /// agent, not a registered provisioning credential. Redirect-tied —
+    /// excluded from the pending inbox — and rate-limited per delegator.
+    pub external: bool,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub last_polled_at: Option<DateTime<Utc>>,

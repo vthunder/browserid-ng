@@ -55,6 +55,21 @@ where
     // endorsement signing, warrant consent flow + registry, status list.
     // The broker is IdP + registrar in one process; a federated IdP
     // self-hosts this same component (or points at a managed one).
+    // Foreign-IdP key discovery for external warrant requests (§6.6):
+    // DNSSEC-rooted, unless a test injected its own resolver. If the DNS
+    // stack can't initialize, external requests are refused (None) but
+    // everything else runs.
+    let issuer_resolver = state.issuer_resolver_override.clone().or_else(|| {
+        match crate::fallback_fetcher::FallbackFetcher::new(state.domain.clone()) {
+            Ok(f) => Some(Arc::new(crate::registrar_glue::BrokerIssuerResolver {
+                fetcher: Arc::new(f),
+            }) as Arc<dyn browserid_registrar::IssuerKeyResolver>),
+            Err(e) => {
+                tracing::warn!("issuer resolver unavailable (external warrant requests off): {e}");
+                None
+            }
+        }
+    });
     let registrar = browserid_registrar::router(Arc::new(
         browserid_registrar::RegistrarState {
             domain: state.domain.clone(),
@@ -69,6 +84,7 @@ where
                 domain: state.domain.clone(),
                 max_agent_identities: state.max_agent_identities_per_user,
             }),
+            issuer_resolver,
         },
     ));
 
@@ -239,8 +255,8 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-9l7NyZg4eif6cUD/KmuEGoKcOcMDrWxO6yv1GDFhTsg='", // account.html
-    "'sha256-xQcCYsKTyO8jEp9wbiootp+gVaixXIQ6GRwHMewOXO4='", // consent.html
+    "'sha256-nMq/Vy2U6dyRekPbL3osc3/EPJzgSXPbucIj6HzEvNk='", // account.html
+    "'sha256-lyaVTw8LzKtM1f+IHOwBCYxE6+9kmhBIT/tBh1JKJCg='", // consent.html
     "'sha256-+XqUYbHj+ZXqocYeM/oRYCX1zljIPfY94AJwWAtU2Do='", // agents.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)
 ];

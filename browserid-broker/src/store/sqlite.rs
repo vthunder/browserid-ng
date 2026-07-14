@@ -14,7 +14,7 @@ use super::{
 use crate::error::BrokerError;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 10;
+const SCHEMA_VERSION: i32 = 11;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -91,6 +91,9 @@ impl SqliteStore {
             }
             if current_version < 10 {
                 Self::migrate_v10(conn)?;
+            }
+            if current_version < 11 {
+                Self::migrate_v11(conn)?;
             }
 
             // Update schema version
@@ -404,6 +407,17 @@ impl SqliteStore {
         }
         Ok(())
     }
+
+    fn migrate_v11(conn: &Connection) -> Result<(), BrokerError> {
+        // External warrant requests (§6.6): the pending row records whether
+        // it was raised by a foreign-IdP service (redirect-tied, excluded
+        // from the inbox, rate-limited per delegator).
+        conn.execute_batch(
+            "ALTER TABLE warrant_requests ADD COLUMN external INTEGER NOT NULL DEFAULT 0;",
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → WarrantRecord mapping (jipx registry)
@@ -462,13 +476,14 @@ fn warrant_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Warrant
         status: WarrantRequestStatus::from_str(&status_str)
             .unwrap_or(WarrantRequestStatus::Pending),
         warrants: warrants_json.and_then(|w| serde_json::from_str(&w).ok()),
+        external: row.get::<_, i64>(11)? != 0,
         created_at: parse_ts(row.get(8)?),
         expires_at: parse_ts(row.get(9)?),
         last_polled_at: parse_ts_opt(row.get(10)?),
     })
 }
 
-const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, last_polled_at";
+const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, last_polled_at, external";
 
 // Row → ProvisioningCertRecord mapping shared by the registry queries
 fn prov_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProvisioningCertRecord> {
@@ -1068,8 +1083,8 @@ impl UserStore for SqliteStore {
     fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO warrant_requests (code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO warrant_requests (code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, external)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 req.code,
                 req.user_id.0 as i64,
@@ -1081,6 +1096,7 @@ impl UserStore for SqliteStore {
                 req.warrants.as_ref().map(|w| serde_json::to_string(w).unwrap_or_else(|_| "[]".into())),
                 req.created_at.to_rfc3339(),
                 req.expires_at.to_rfc3339(),
+                req.external as i64,
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;

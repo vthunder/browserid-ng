@@ -33,6 +33,11 @@ pub trait RegistrarHost: Send + Sync {
     /// human-authorization gate for registering delegations and warrants.
     fn owns_verified_email(&self, user_id: u64, email: &str) -> Result<bool, RegistrarError>;
 
+    /// The account that owns `email` as a verified address, if any — how an
+    /// external warrant request's delegator hint (§6.6) is routed to the
+    /// local user whose consent it needs.
+    fn user_for_verified_email(&self, email: &str) -> Result<Option<u64>, RegistrarError>;
+
     /// The account's agent identities (for key-revocation status flips).
     fn agent_identities(&self, user_id: u64) -> Result<Vec<AgentIdentity>, RegistrarError>;
 

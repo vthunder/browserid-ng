@@ -156,11 +156,19 @@ function render(requests) {
       <p style="margin-top:0">${(g.scopes || []).length
           ? 'with scopes: ' + g.scopes.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')
           : '<span class="muted">no specific scopes requested (site-level access)</span>'}</p>`;
+  // An external request (§6.6) is a service you don't run — certified by its
+  // own provider — asking to act for one of your identities. Say so plainly.
+  const whoLine = (r) => r.external
+    ? `<span class="who">${escapeHtml(r.agent_email)}</span>
+        <span class="muted">— an <strong>external service</strong> run by
+        <span class="who">${escapeHtml(r.label)}</span> — asks to act for
+        <span class="who">${escapeHtml(r.delegator_email)}</span></span><br>`
+    : `<span class="who">${escapeHtml(r.agent_email)}</span>
+        <span class="muted">(${escapeHtml(r.label)}, acting for
+        <span class="who">${escapeHtml(r.delegator_email)}</span>)</span><br>`;
   list.innerHTML = requests.map(r => `
     <div class="card ${r.code === linkedCode ? 'hot' : ''}" id="req-${escapeHtml(r.code)}">
-      <p style="margin-top:0"><span class="who">${escapeHtml(r.agent_email)}</span>
-        <span class="muted">(${escapeHtml(r.label)}, acting for
-        <span class="who">${escapeHtml(r.delegator_email)}</span>)</span><br>
+      <p style="margin-top:0">${whoLine(r)}
         wants to act for you at${(r.grants || []).length > 1 ? ' each of' : ''}</p>
       ${(r.grants || []).map(grantBlock).join('')}
       <p>
@@ -237,7 +245,10 @@ async function boot() {
   }
   csrf = ctx.csrf_token;
   $('auth-gate').hidden = true;
-  const resp = await api('/wsapi/warrant_requests');
+  // External requests are redirect-tied: they surface ONLY via their
+  // /consent/<code> deep link, so pass the code through when we have one.
+  const resp = await api('/wsapi/warrant_requests'
+    + (linkedCode ? '?code=' + encodeURIComponent(linkedCode) : ''));
   statusUri = resp.status_uri || null;
   render(resp.requests);
 }

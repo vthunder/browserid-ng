@@ -288,6 +288,14 @@ pub struct ProvisioningRequestClaims {
     /// yields one single-audience warrant per entry.
     #[serde(rename = "warrant-grants", skip_serializing_if = "Option::is_none")]
     pub warrant_grants: Option<Vec<WarrantGrant>>,
+    /// External warrant requests only (spec §6.6): the identity the service
+    /// asks to be warranted by — the delegator hint. The requesting service
+    /// knows which of the user's identities it wants the warrant from (it
+    /// authenticated them); the consent page pre-selects it, and the signed
+    /// warrant's `delegator` must match. Absent on own-agent requests, where
+    /// the delegator comes from the registered provisioning chain instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegator: Option<String>,
 }
 
 /// One requested grant in a warrant consent request (spec §6.2): a single
@@ -333,6 +341,7 @@ impl ProvisioningRequest {
             agent_key: None,
             ephemeral: None,
             warrant_grants: None,
+            delegator: None,
         }
     }
 
@@ -376,13 +385,44 @@ impl ProvisioningRequest {
         grants: Vec<WarrantGrant>,
         provisioning_key: &KeyPair,
     ) -> Result<Self> {
+        Self::validate_grants(&grants)?;
+        let mut claims = Self::base_claims(Action::Warrant, domain);
+        claims.name = Some(name.to_string());
+        claims.warrant_grants = Some(grants);
+        Self::create(claims, provisioning_key)
+    }
+
+    /// An **external** warrant consent request (spec §6.6): a service agent —
+    /// certified by its own IdP, holding no provisioning delegation from the
+    /// user — asks `delegator` to warrant it. Signed by the agent's
+    /// **identity key** (the key its agent cert certifies); travels as
+    /// `agent_cert ~ R` ([`ExternalWarrantRequest`]). `domain` is the
+    /// delegator's registrar; no `name` — the agent identity is the cert's
+    /// email.
+    pub fn warrant_external(
+        domain: &str,
+        delegator: &str,
+        grants: Vec<WarrantGrant>,
+        agent_identity_key: &KeyPair,
+    ) -> Result<Self> {
+        if delegator.is_empty() {
+            return Err(invalid("provisioning request", "delegator must be non-empty"));
+        }
+        Self::validate_grants(&grants)?;
+        let mut claims = Self::base_claims(Action::Warrant, domain);
+        claims.delegator = Some(delegator.to_string());
+        claims.warrant_grants = Some(grants);
+        Self::create(claims, agent_identity_key)
+    }
+
+    fn validate_grants(grants: &[WarrantGrant]) -> Result<()> {
         if grants.is_empty() || grants.len() > MAX_WARRANT_GRANTS {
             return Err(invalid(
                 "provisioning request",
                 format!("must request 1..={MAX_WARRANT_GRANTS} grants"),
             ));
         }
-        for g in &grants {
+        for g in grants {
             if g.aud.is_empty() || g.aud.contains('*') {
                 return Err(invalid(
                     "provisioning request",
@@ -396,10 +436,7 @@ impl ProvisioningRequest {
         if auds.len() != grants.len() {
             return Err(invalid("provisioning request", "duplicate grant audiences"));
         }
-        let mut claims = Self::base_claims(Action::Warrant, domain);
-        claims.name = Some(name.to_string());
-        claims.warrant_grants = Some(grants);
-        Self::create(claims, provisioning_key)
+        Ok(())
     }
 
     /// Parse (no signature check); rejects a wrong or missing `typ`
@@ -573,6 +610,160 @@ impl RequestBundle {
             provisioning_pub: self.provisioning_cert.public_key().clone(),
             constraint: self.provisioning_cert.constraint().clone(),
             request: self.request.claims().clone(),
+        })
+    }
+}
+
+// --------------------------------------------------------------------------
+// External warrant request bundle (agent_cert ~ R)
+// --------------------------------------------------------------------------
+
+/// The outcome of verifying an external warrant request. The caller (the
+/// delegator's registrar) still applies its own context checks: `request
+/// .domain` == its domain, the delegator resolves to a local account, and
+/// its anti-spam policy (redirect-tied delivery, per-delegator rate limits).
+#[derive(Debug, Clone)]
+pub struct VerifiedExternalRequest {
+    /// The requesting agent identity (the agent cert's email principal)
+    pub agent_email: String,
+    /// The agent cert's issuer domain (== the service's own IdP)
+    pub agent_issuer: String,
+    /// The identity asked to sign the warrant (the request's delegator claim)
+    pub delegator: String,
+    pub request: ProvisioningRequestClaims,
+}
+
+/// `agent_cert ~ R` — an external warrant consent request (spec §6.6): a
+/// service agent certified by its **own** IdP asks a delegator rooted at
+/// this registrar to warrant it. Unlike [`RequestBundle`] there is no
+/// user-side chain — the service holds no delegation from the user (the
+/// warrant the user signs *is* the authorization) — so `R` is signed by the
+/// agent's identity key and verified under the agent cert.
+#[derive(Debug, Clone)]
+pub struct ExternalWarrantRequest {
+    encoded: String,
+    agent_cert: Certificate,
+    request: ProvisioningRequest,
+}
+
+impl ExternalWarrantRequest {
+    pub fn new(agent_cert: Certificate, request: ProvisioningRequest) -> Self {
+        let encoded = format!("{}~{}", agent_cert.encoded(), request.encoded());
+        Self { encoded, agent_cert, request }
+    }
+
+    pub fn parse(encoded: &str) -> Result<Self> {
+        let parts: Vec<&str> = encoded.split('~').collect();
+        if parts.len() != 2 {
+            return Err(invalid(
+                "external warrant request",
+                "expected agent_cert~request (2 parts)",
+            ));
+        }
+        Ok(Self {
+            encoded: encoded.to_string(),
+            agent_cert: Certificate::parse(parts[0])?,
+            request: ProvisioningRequest::parse(parts[1])?,
+        })
+    }
+
+    pub fn encoded(&self) -> &str {
+        &self.encoded
+    }
+
+    pub fn agent_cert(&self) -> &Certificate {
+        &self.agent_cert
+    }
+
+    pub fn request(&self) -> &ProvisioningRequest {
+        &self.request
+    }
+
+    /// Verify the request against the agent's issuer key (the caller
+    /// resolves the agent cert's issuer via discovery):
+    ///
+    /// 1. `agent_cert` is an **agent** certificate with an email principal
+    ///    whose domain the issuer is authoritative for (`email-domain` ==
+    ///    `iss`, the same anti-spoofing rule the assertion path enforces —
+    ///    otherwise a foreign IdP could certify `mingo-poster@mingo.place`
+    ///    under its own key and the consent page would attribute the request
+    ///    to a service the requester does not control), signed by
+    ///    `agent_issuer_key`, currently valid — the request is short-lived,
+    ///    so no signing-time indirection;
+    /// 2. `R` signed by the agent's certified identity key, unexpired,
+    ///    `action` == `warrant`, carrying a `delegator`;
+    /// 3. the cert's `agent.parent` == the request's `delegator` — a warrant
+    ///    only verifies when its `iss` matches the agent cert's parent
+    ///    (warrant §5.2), so a mismatched request could only ever yield a
+    ///    dead warrant. The service mints its agent cert per-delegator.
+    pub fn verify(&self, agent_issuer_key: &PublicKey) -> Result<VerifiedExternalRequest> {
+        if !self.agent_cert.is_agent() {
+            return Err(invalid(
+                "external warrant request",
+                "certificate is not an agent certificate",
+            ));
+        }
+        let agent_email = self
+            .agent_cert
+            .email()
+            .ok_or_else(|| invalid("agent cert", "no email principal"))?;
+        let agent_domain = agent_email
+            .split('@')
+            .nth(1)
+            .filter(|d| !d.is_empty())
+            .ok_or_else(|| invalid("agent cert", "agent email has no domain"))?;
+        if !agent_domain.eq_ignore_ascii_case(self.agent_cert.issuer()) {
+            return Err(invalid(
+                "external warrant request",
+                format!(
+                    "agent cert issuer '{}' is not authoritative for agent email domain '{agent_domain}'",
+                    self.agent_cert.issuer()
+                ),
+            ));
+        }
+        self.agent_cert.verify(agent_issuer_key)?;
+        if self.agent_cert.is_expired() {
+            return Err(invalid("agent cert", "expired"));
+        }
+
+        self.request.verify(self.agent_cert.public_key())?;
+        if self.request.is_expired() {
+            return Err(invalid("provisioning request", "expired"));
+        }
+        let claims = self.request.claims();
+        if claims.action != Action::Warrant {
+            return Err(invalid(
+                "external warrant request",
+                "action must be 'warrant'",
+            ));
+        }
+        let delegator = claims
+            .delegator
+            .as_deref()
+            .filter(|d| !d.is_empty())
+            .ok_or_else(|| {
+                invalid("external warrant request", "missing delegator claim")
+            })?;
+        match self.agent_cert.agent_parent() {
+            Some(parent) if parent.eq_ignore_ascii_case(delegator) => {}
+            Some(parent) => {
+                return Err(invalid(
+                    "external warrant request",
+                    format!(
+                        "agent cert parent '{parent}' does not match delegator '{delegator}'"
+                    ),
+                ));
+            }
+            None => {
+                return Err(invalid("agent cert", "missing agent parent"));
+            }
+        }
+
+        Ok(VerifiedExternalRequest {
+            agent_email: agent_email.to_string(),
+            agent_issuer: self.agent_cert.issuer().to_string(),
+            delegator: delegator.to_string(),
+            request: claims.clone(),
         })
     }
 }
@@ -908,6 +1099,198 @@ mod tests {
         assert!(parsed
             .verify_for(&broker.public_key(), "mingo.place", &other.bundle)
             .is_err());
+    }
+
+    // ---- External warrant requests (agent_cert ~ R, spec §6.6) ----
+
+    struct External {
+        service_idp: KeyPair,
+        agent: KeyPair,
+        bundle: ExternalWarrantRequest,
+    }
+
+    /// mingo-poster@mingo.place (certified by mingo's own IdP) asking
+    /// browserid.me — dan's registrar — for a warrant from dan@example.com.
+    fn external(cert_validity: Duration) -> External {
+        let service_idp = KeyPair::generate();
+        let agent = KeyPair::generate();
+        let agent_cert = Certificate::create_agent(
+            "mingo.place",
+            "mingo-poster@mingo.place",
+            "dan@example.com",
+            &agent.public_key(),
+            cert_validity,
+            &service_idp,
+            Some("https://browserid.me".to_string()),
+        )
+        .unwrap();
+        let request = ProvisioningRequest::warrant_external(
+            "browserid.me",
+            "dan@example.com",
+            vec![WarrantGrant { aud: "sbo://mingo".into(), scopes: Some(vec!["post".into()]) }],
+            &agent,
+        )
+        .unwrap();
+        let bundle = ExternalWarrantRequest::new(agent_cert, request);
+        External { service_idp, agent, bundle }
+    }
+
+    #[test]
+    fn external_request_roundtrip_and_verify() {
+        let e = external(Duration::hours(24));
+        let parsed = ExternalWarrantRequest::parse(e.bundle.encoded()).unwrap();
+        let verified = parsed.verify(&e.service_idp.public_key()).unwrap();
+        assert_eq!(verified.agent_email, "mingo-poster@mingo.place");
+        assert_eq!(verified.agent_issuer, "mingo.place");
+        assert_eq!(verified.delegator, "dan@example.com");
+        assert_eq!(verified.request.action, Action::Warrant);
+        assert_eq!(verified.request.domain, "browserid.me");
+        let grants = verified.request.warrant_grants.as_deref().unwrap();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].aud, "sbo://mingo");
+        // The delegator claim survives a JWS decode round-trip.
+        let reparsed = ProvisioningRequest::parse(e.bundle.request().encoded()).unwrap();
+        assert_eq!(reparsed.claims().delegator.as_deref(), Some("dan@example.com"));
+    }
+
+    #[test]
+    fn external_request_wrong_issuer_key_rejected() {
+        let e = external(Duration::hours(24));
+        assert!(e.bundle.verify(&KeyPair::generate().public_key()).is_err());
+    }
+
+    #[test]
+    fn external_request_not_signed_by_agent_key_rejected() {
+        let e = external(Duration::hours(24));
+        // R signed by a rogue key, not the key the agent cert certifies.
+        let rogue = KeyPair::generate();
+        let request = ProvisioningRequest::warrant_external(
+            "browserid.me",
+            "dan@example.com",
+            vec![WarrantGrant { aud: "sbo://mingo".into(), scopes: None }],
+            &rogue,
+        )
+        .unwrap();
+        let bundle = ExternalWarrantRequest::new(e.bundle.agent_cert().clone(), request);
+        assert!(bundle.verify(&e.service_idp.public_key()).is_err());
+    }
+
+    #[test]
+    fn external_request_plain_cert_rejected() {
+        let e = external(Duration::hours(24));
+        // A plain (non-agent) certificate must not raise external requests.
+        let plain = Certificate::create(
+            "mingo.place",
+            "somebody@mingo.place",
+            &e.agent.public_key(),
+            Duration::hours(24),
+            &e.service_idp,
+        )
+        .unwrap();
+        let bundle = ExternalWarrantRequest::new(plain, e.bundle.request().clone());
+        let err = bundle.verify(&e.service_idp.public_key()).unwrap_err().to_string();
+        assert!(err.contains("not an agent certificate"), "{err}");
+    }
+
+    #[test]
+    fn external_request_expired_agent_cert_rejected() {
+        let e = external(Duration::seconds(-10));
+        let err = e.bundle.verify(&e.service_idp.public_key()).unwrap_err().to_string();
+        assert!(err.contains("expired"), "{err}");
+    }
+
+    #[test]
+    fn external_request_requires_delegator() {
+        let e = external(Duration::hours(24));
+        // Constructor refuses an empty delegator outright…
+        assert!(ProvisioningRequest::warrant_external(
+            "browserid.me",
+            "",
+            vec![WarrantGrant { aud: "sbo://mingo".into(), scopes: None }],
+            &e.agent,
+        )
+        .is_err());
+        // …and verify refuses a warrant request that never carried one (an
+        // own-agent-shaped R signed by the agent key).
+        let no_delegator = ProvisioningRequest::warrant(
+            "browserid.me",
+            "mingo-poster",
+            vec![WarrantGrant { aud: "sbo://mingo".into(), scopes: None }],
+            &e.agent,
+        )
+        .unwrap();
+        let bundle = ExternalWarrantRequest::new(e.bundle.agent_cert().clone(), no_delegator);
+        let err = bundle.verify(&e.service_idp.public_key()).unwrap_err().to_string();
+        assert!(err.contains("missing delegator"), "{err}");
+    }
+
+    #[test]
+    fn external_request_spoofed_agent_domain_rejected() {
+        // evil.com holds a real discoverable key and mints an agent cert
+        // claiming a trusted-looking email it does not own. The signature
+        // verifies under evil.com's key, but the issuer is not authoritative
+        // for the email's domain, so the request is refused before it can
+        // reach the consent page.
+        let evil_idp = KeyPair::generate();
+        let agent = KeyPair::generate();
+        let cert = Certificate::create_agent(
+            "evil.com",
+            "mingo-poster@mingo.place",
+            "dan@example.com",
+            &agent.public_key(),
+            Duration::hours(24),
+            &evil_idp,
+            Some("https://browserid.me".to_string()),
+        )
+        .unwrap();
+        let request = ProvisioningRequest::warrant_external(
+            "browserid.me",
+            "dan@example.com",
+            vec![WarrantGrant { aud: "sbo://mingo".into(), scopes: None }],
+            &agent,
+        )
+        .unwrap();
+        let bundle = ExternalWarrantRequest::new(cert, request);
+        let err = bundle.verify(&evil_idp.public_key()).unwrap_err().to_string();
+        assert!(err.contains("not authoritative"), "{err}");
+    }
+
+    #[test]
+    fn external_request_parent_delegator_mismatch_rejected() {
+        let e = external(Duration::hours(24));
+        // The cert is parented to dan, but the request asks mallory to sign:
+        // the resulting warrant could never verify, so refuse up front.
+        let request = ProvisioningRequest::warrant_external(
+            "browserid.me",
+            "mallory@example.com",
+            vec![WarrantGrant { aud: "sbo://mingo".into(), scopes: None }],
+            &e.agent,
+        )
+        .unwrap();
+        let bundle = ExternalWarrantRequest::new(e.bundle.agent_cert().clone(), request);
+        let err = bundle.verify(&e.service_idp.public_key()).unwrap_err().to_string();
+        assert!(err.contains("does not match delegator"), "{err}");
+    }
+
+    #[test]
+    fn external_request_non_warrant_action_rejected() {
+        let e = external(Duration::hours(24));
+        // A non-warrant action signed by the agent key must not pass.
+        let mut claims = ProvisioningRequest::base_claims(Action::List, "browserid.me");
+        claims.delegator = Some("dan@example.com".into());
+        let request = ProvisioningRequest::create(claims, &e.agent).unwrap();
+        let bundle = ExternalWarrantRequest::new(e.bundle.agent_cert().clone(), request);
+        let err = bundle.verify(&e.service_idp.public_key()).unwrap_err().to_string();
+        assert!(err.contains("action must be 'warrant'"), "{err}");
+    }
+
+    #[test]
+    fn external_request_two_part_shape_enforced() {
+        let e = external(Duration::hours(24));
+        // A 3-part own-agent bundle is not an external request, and vice versa.
+        let c = chain(Duration::hours(24));
+        assert!(ExternalWarrantRequest::parse(c.bundle.encoded()).is_err());
+        assert!(RequestBundle::parse(e.bundle.encoded()).is_err());
     }
 
     #[test]

@@ -70,6 +70,10 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// RP logout (`/fedcm/reset`) clears it. Ephemeral (in-memory) — a restart
     /// forces re-opt-in, which is safe.
     pub fedcm_autologin: RwLock<HashMap<String, std::collections::HashSet<String>>>,
+    /// Test override for the registrar's foreign-IdP key discovery (external
+    /// warrant requests, §6.6). Production leaves this `None` and gets the
+    /// DNSSEC-rooted fallback fetcher.
+    pub issuer_resolver_override: Option<Arc<dyn browserid_registrar::IssuerKeyResolver>>,
 }
 
 /// Default per-user agent identity quota
@@ -101,6 +105,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             marketing_url: None,
             analytics: crate::analytics::Analytics::disabled(),
             fedcm_autologin: RwLock::new(HashMap::new()),
+            issuer_resolver_override: None,
         }
     }
 
@@ -127,6 +132,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             marketing_url: None,
             analytics: crate::analytics::Analytics::disabled(),
             fedcm_autologin: RwLock::new(HashMap::new()),
+            issuer_resolver_override: None,
         }
     }
 

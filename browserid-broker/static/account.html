@@ -199,6 +199,15 @@
       </div>
     </div>
 
+    <div class="card" id="external-card" hidden>
+      <h2>External services</h2>
+      <p class="sub">Services run by other providers that you allowed to act for you (e.g. a site
+        posting on your behalf). Each entry is a warrant you signed on the consent page —
+        <strong>Revoke</strong> cuts that service off within minutes.</p>
+      <div id="external-warrants"></div>
+      <p class="status" id="ext-status"></p>
+    </div>
+
     <div class="card">
       <h2>Session</h2>
       <p class="sub">Signing out also clears this browser's cached certificates.</p>
@@ -522,6 +531,48 @@ function renderAgents() {
     const a = entries.find(e => e.email === b.dataset.email);
     b.onclick = () => showDetail(a);
   }
+  renderExternalServices(entries);
+}
+
+// -------- external services (§6.6) --------
+// A warrant whose agent is NOT one of this account's own agents was granted
+// to a service someone else runs (e.g. mingo-poster@mingo.place). Those don't
+// belong under "Agents" (there is no agent to click into), so they get their
+// own list, revocable per grant with the ordinary warrant machinery.
+function renderExternalServices(agentList) {
+  const own = new Set((agentList || agentEntries()).map(a => a.email.toLowerCase()));
+  const entries = account.warrants.filter(w => !own.has((w.agent_email || '').toLowerCase()));
+  $('external-card').hidden = !entries.length;
+  if (!entries.length) return;
+  const now = Date.now();
+  const byId = Object.fromEntries(entries.map(w => [w.id, w]));
+  $('external-warrants').innerHTML = `<table class="wtable">` + entries.map(w => {
+    const exp = Date.parse(w.expires_at);
+    const state = w.revoked ? '<span class="badge revoked">revoked</span>'
+      : (exp && exp < now ? '<span class="warn" style="font-size:12px">expired</span>'
+        : `<span class="muted" style="font-size:12px">until ${new Date(exp).toLocaleDateString()}</span>`);
+    const actions = (w.revoked || w.status_idx == null)
+      ? `<button class="small x-forget" data-i="${w.id}">Forget</button>`
+      : `<button class="small x-revoke" data-i="${w.id}" style="color:#c53030">Revoke</button>`;
+    return `<tr>
+      <td><span class="aud">${escapeHtml(w.agent_email)}</span>
+        <span class="muted" style="font-size:12px">acting for ${escapeHtml(w.delegator_email)}</span><br>
+        <span class="muted" style="font-size:12px">at ${escapeHtml(w.audience)}</span>
+        ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')}</td>
+      <td style="white-space:nowrap;text-align:right">${state}<br>${actions}</td></tr>`;
+  }).join('') + '</table>';
+
+  const setStatus = (cls, msg) => { $('ext-status').className = 'status ' + cls; $('ext-status').textContent = msg; };
+  for (const b of $('external-warrants').querySelectorAll('.x-revoke')) b.onclick = async () => {
+    const w = byId[b.dataset.i];
+    if (!confirm(`Stop ${w.agent_email} from acting for ${w.delegator_email} at ${w.audience}? It loses access within minutes.`)) return;
+    try { await post('/wsapi/revoke_warrant', { csrf: account.csrf, id: Number(b.dataset.i) }); await reloadAccount(); renderAgents();
+      setStatus('ok', `Revoked — ${w.agent_email} is cut off within minutes.`); } catch (e) { setStatus('err', 'Revoke failed: ' + e.message); }
+  };
+  for (const b of $('external-warrants').querySelectorAll('.x-forget')) b.onclick = async () => {
+    try { await post('/wsapi/forget_warrant', { csrf: account.csrf, id: Number(b.dataset.i) }); await reloadAccount(); renderAgents();
+      setStatus('muted', 'Removed from the registry.'); } catch (e) { setStatus('err', 'Forget failed: ' + e.message); }
+  };
 }
 
 // -------- activate a secondary identity (issue + cache a cert) --------

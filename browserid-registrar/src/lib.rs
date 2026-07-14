@@ -96,6 +96,25 @@ pub fn agent_name_allowed(name: &str, delegator_email: &str, idp_domain: &str) -
     }
 }
 
+/// Resolves a foreign IdP's identity key (DNSSEC-rooted discovery) so the
+/// registrar can verify the agent certificate on an **external** warrant
+/// request — a service agent certified by its own IdP asking a delegator
+/// rooted here to warrant it (`agent_cert~R`, spec §6.6). The host wires in
+/// its discovery stack; a `None` resolver on [`RegistrarState`] means
+/// external requests are refused.
+pub trait IssuerKeyResolver: Send + Sync {
+    fn resolve_issuer_key<'a>(
+        &'a self,
+        domain: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<browserid_core::PublicKey, RegistrarError>>
+                + Send
+                + 'a,
+        >,
+    >;
+}
+
 /// Everything the registrar needs from its deployment.
 pub struct RegistrarState {
     /// The registrar's own domain (endorsement issuer, status-list subject,
@@ -108,6 +127,9 @@ pub struct RegistrarState {
     pub enabled: bool,
     pub store: Arc<dyn RegistrarStore>,
     pub host: Arc<dyn RegistrarHost>,
+    /// Foreign-IdP key discovery for external warrant requests (§6.6);
+    /// `None` refuses them.
+    pub issuer_resolver: Option<Arc<dyn IssuerKeyResolver>>,
 }
 
 /// The registrar's routes, ready to merge into a host router.
