@@ -64,6 +64,7 @@
     addEmailVerify: document.getElementById('add-email-verify-screen'),
     setPassword: document.getElementById('set-password-screen'),
     primaryTransition: document.getElementById('primary-transition-screen'),
+    primaryAuthContinue: document.getElementById('primary-auth-continue-screen'),
     sboConsent: document.getElementById('sbo-consent-screen'),
     success: document.getElementById('success-screen'),
     error: document.getElementById('error-screen')
@@ -641,7 +642,11 @@
     }
   }
 
-  // Open primary IdP auth in a popup window (resilient to buggy IdPs)
+  // Begin primary-IdP auth. We reach here after awaiting provisioning, so the
+  // original sign-in tap is long gone — a window.open now is out-of-gesture and
+  // mobile browsers block it. So: try to open once (desktop is lenient enough),
+  // and if it's blocked, show a tap-to-continue screen whose button opens the
+  // popup inside its own fresh gesture (which mobile allows).
   function redirectToPrimaryAuth(email, authUrl) {
     // Store state for return (used by popup when it loads dialog with #AUTH_RETURN)
     sessionStorage.setItem('browserid_pending_email', email);
@@ -651,20 +656,32 @@
     const url = new URL(authUrl);
     url.searchParams.set('email', email);
     url.searchParams.set('return_to', window.location.origin + '/sign_in');
+    const urlStr = url.toString();
+
+    if (!openPrimaryAuthWindow(urlStr)) {
+      // Blocked — defer to a user-initiated tap.
+      state.pendingAuthUrl = urlStr;
+      document.querySelectorAll('#primary-auth-continue-screen .idp-name')
+        .forEach(el => { el.textContent = email.split('@')[1]; });
+      showScreen('primaryAuthContinue');
+    }
+  }
+
+  // Open the primary-IdP auth popup and wire the return listener. Returns false
+  // (without touching the screen) if the browser blocked the popup, so the
+  // caller can present a tap-to-continue affordance.
+  function openPrimaryAuthWindow(urlStr) {
+    // Open popup FIRST — if blocked, bail before changing screens.
+    const popup = window.open(urlStr, 'browserid_auth', 'width=600,height=600');
+    if (!popup) {
+      return false;
+    }
 
     // Show waiting screen
     showScreen('loading');
     const loadingText = document.querySelector('#loading p');
     if (loadingText) {
       loadingText.textContent = 'Authenticating with your email provider...';
-    }
-
-    // Open popup
-    const popup = window.open(url.toString(), 'browserid_auth', 'width=600,height=600');
-
-    if (!popup) {
-      showError('Popup blocked. Please allow popups for this site and try again.');
-      return;
     }
 
     // Set up auth return listener
@@ -751,6 +768,8 @@
         showError('Authentication window was closed. Please try again.');
       }
     }, 500);
+
+    return true;
   }
 
   // Create assertion from primary IdP certificate
@@ -1282,6 +1301,14 @@
         }
       } catch (e) {
         showError('Failed to connect to email provider: ' + e.message);
+      }
+    });
+
+    // Tap-to-continue: open the primary-IdP auth popup from a real user gesture
+    // (used when the earlier auto-open was blocked, e.g. on mobile).
+    document.getElementById('continue-primary-auth').addEventListener('click', () => {
+      if (state.pendingAuthUrl && !openPrimaryAuthWindow(state.pendingAuthUrl)) {
+        showError('Could not open the sign-in window. Please allow popups for this site and try again.');
       }
     });
 

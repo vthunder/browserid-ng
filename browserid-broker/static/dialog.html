@@ -324,6 +324,22 @@
       </div>
     </section>
 
+    <!-- Tap-to-continue for the primary-IdP auth popup. Shown only when the
+         browser blocks window.open (mobile browsers block it because the popup
+         is opened after provisioning, past the original tap). The button below
+         opens the popup inside its own fresh gesture. -->
+    <section id="primary-auth-continue-screen" class="screen">
+      <div class="content">
+        <h2>Sign in with your email provider</h2>
+        <p>Tap continue to open <strong class="idp-name"></strong> and sign in.</p>
+
+        <div class="button-row">
+          <button type="button" id="continue-primary-auth" class="primary">Continue</button>
+          <button type="button" class="cancel">Cancel</button>
+        </div>
+      </div>
+    </section>
+
     <!-- SBO Signing Consent Screen (typed signing extension) -->
     <section id="sbo-consent-screen" class="screen">
       <div class="content">
