@@ -1,10 +1,11 @@
 ---
 # browserid-ng-h3u3
 title: 'Mobile: primary IdP auth fails due to popup blocking'
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-07-13T08:26:55Z
-updated_at: 2026-07-13T08:26:55Z
+updated_at: 2026-07-14T00:38:56Z
 ---
 
 Observed by Dan while testing on mobile (2026-07-13): primary IdPs don't work on mobile because the browser blocks the popup. Likely the popup open happens outside (or too long after) the user-gesture window, or mobile browsers are stricter about window.open during the auth handoff to the primary IdP.
