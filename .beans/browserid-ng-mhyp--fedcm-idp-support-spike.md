@@ -1,11 +1,11 @@
 ---
 # browserid-ng-mhyp
 title: FedCM IdP support spike
-status: in-progress
+status: completed
 type: task
 priority: normal
 created_at: 2026-07-13T16:41:07Z
-updated_at: 2026-07-13T22:17:14Z
+updated_at: 2026-07-13T23:57:11Z
 ---
 
 Spike: add FedCM as a progressive-enhancement fast path over the existing popup, with **browserid.me as a FedCM IdP** (fallback identities only). Modernizes the human-login half; retires the dead cross-origin silent-assertion iframe ([[silent-assertion-communication-iframe-is-dead-for]] / browserid-ng-1sy5). Does not touch agents, /verify contract, or the trust model. Follows the origin split ([[origin-split]]) — endpoints live on browserid.me (auth origin).
@@ -103,3 +103,17 @@ The fedcm-demo on www.browserid.me was a CONFOUNDED test: www.browserid.me is SA
 
 ## Still TODO: server-side enforcement (Dan's correctness point)
 The client-side localStorage opt-in gate is cosmetic — /fedcm/assertion still mints for any valid FedCM request. Correct fix (started, then reverted pending cross-site confirmation): refuse AUTO-SELECTED (silent) assertions server-side unless the user opted in, using FedCM's is_auto_selected flag; record consent on interactive selection; clear on RP logout via a /fedcm/reset endpoint called from include.js logout(). In-memory per-session consent (ephemeral).
+
+
+## SHIPPED + merged to main (2026-07-14)
+FedCM silent-login integration is complete, server-enforced, and merged (spike/fedcm -> main, 8f869a0; deployed on the id app). Summary:
+- browserid.me is a FedCM IdP for fallback identities (well-known/config/accounts/assertion), Set-Login status, SameSite=None FedCM cookie.
+- Client: include.js uses FedCM ONLY for silent auto-login on page load (never a chooser on the sign-in click); the dialog shows an "auto sign-in next time" checkbox (default checked, with a note) that banks the FedCM grant after sign-in; logout clears it.
+- Server-enforced opt-in: /fedcm/assertion refuses AUTO-selected (silent) tokens unless the (session, RP) opted in via an interactive selection; POST /fedcm/reset revokes on logout. This is the real control (the client flag alone was cosmetic — Dan's catch).
+- Verified cleanly on a genuinely cross-site RP (https://fedcm-rp.sandmill.org) since the same-site demo was confounded by the classic communication_iframe SSO. Token verifies via /verify unchanged; opt-in gating works; Chrome's auto-reauthn cooldown is expected (RPs keep their own session, as mingo does).
+
+## Follow-ups (not blocking)
+- [ ] Add the opt-in checkbox to the new-user create/verify screens (currently pickEmail/password/verify).
+- [x] mingo refactored to the standard navigator.id/include.js API (mingo feat/standard-navigator-id -> main); gets FedCM automatically. Dialog now suppresses the opt-in checkbox on provision_email steps.
+- [ ] Persist the server-side fedcm_autologin consent (currently in-memory; a broker restart forces re-opt-in).
+- [ ] Decide whether to flip FedCM from opt-in (window.__browseridEnableFedCM) to on-by-default for all RPs.
