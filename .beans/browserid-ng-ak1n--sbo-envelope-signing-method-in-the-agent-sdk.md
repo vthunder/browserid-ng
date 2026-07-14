@@ -1,11 +1,11 @@
 ---
 # browserid-ng-ak1n
 title: SBO-envelope signing method in the agent SDK
-status: todo
+status: in-progress
 type: task
 priority: normal
 created_at: 2026-07-14T16:51:27Z
-updated_at: 2026-07-14T16:51:27Z
+updated_at: 2026-07-14T17:02:19Z
 ---
 
 Enabling gap for delegated server-side SBO posting (see mingo-poster agent
@@ -24,10 +24,14 @@ missing is a first-class SBO-envelope signing method.
   docs/plans/2026-07-09-agent-delegation-chain-design.md.
 
 ## Work
-- [ ] Add an SBO-envelope signer to the agent SDK: given a canonical SBO
-      envelope (SBO-Version header, canonical header order per sbo-core
-      envelope.rs), produce the Ed25519 signature over canonical_signing_content
-      with the agent key, with correct domain separation.
+- [x] SBO-envelope agent-write signer: added `Message::sign_as_agent(key,
+      agent_cert, warrant, auth_evidence)` in sbo-core (branch
+      feat/agent-write-signing-primitive) — attaches Auth-Cert/Auth-Warrant/
+      Auth-Evidence + signs atomically. Test proves signature validity + daemon
+      authorization end-to-end. NOTE: the full mechanism was already implemented
+      + tested in sbo-core (attribution/warrant/authorize + tests/agent_write.rs
+      + examples/agent_write_smoke.rs consumes a real browserid-agent identity
+      file). No new crypto needed; this is the reusable builder.
 - [ ] Emit the Auth-Cert (agent cert) and Auth-Warrant into the wire envelope
       so the daemon's L2 attribution gate verifies "agent acting for <user>".
 - [ ] Confirm the browserid store / cert issuance can support one shared agent
@@ -37,3 +41,9 @@ missing is a first-class SBO-envelope signing method.
 - [ ] Tests against sbo-core attribution + daemon L2 (warrant happy path).
 
 Blocks the mingo-poster delegated-signing feature.
+
+## Progress note
+
+The signing half is essentially DONE — proven end-to-end in sbo-core with real `browserid_core` types and even a live smoke test against real DNSSEC + the daemon L2 gate. The reusable `Message::sign_as_agent` primitive is added (sbo feat/agent-write-signing-primitive, uncommitted-to-main / not pushed).
+
+Remaining under this bean is small: confirm the shared-agent-email-vs-per-user-parent store/cert question, and expose the primitive through the JS agent SDK if mingo's backend is JS (if it's the Rust mingo-idp, it can call sbo-core directly). The BULK of the feature is now plumbing tracked in mingo-3f3i (provision mingo-poster, consent redirect, backend signer service, mingo-web switch to submit-unsigned).
