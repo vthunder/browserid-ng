@@ -1183,6 +1183,14 @@
           });
 
           commChan.bind('login', function(trans, params) {
+            // If a dialog window is still open when a login arrives over the comm
+            // iframe, the dialog delivered its result out-of-band — typical on
+            // mobile, where the dialog is a background tab whose WinChan
+            // postMessage back to us doesn't make it. The dialog is done, so
+            // close it and clear the handle; otherwise the NEXT
+            // navigator.id.request() short-circuits at `if (w)` above and
+            // silently does nothing.
+            if (w) { try { w.close(); } catch (e) {} w = undefined; }
             if (observers.login) observers.login(params);
           });
 
@@ -1356,13 +1364,23 @@
 
       // focus an existing window
       if (w) {
-        try {
-          w.focus();
+        // A STALE handle from a previous request whose window has since closed
+        // must not block a new request. This happens on mobile: the dialog is a
+        // background tab that delivers its result via the comm iframe (its
+        // WinChan postMessage back to us never arrives), so the callback that
+        // clears `w` never runs. If the window is gone, drop the handle and open
+        // a fresh dialog below; only focus-and-return if it's genuinely open.
+        if (w.closed) {
+          w = undefined;
+        } else {
+          try {
+            w.focus();
+          }
+          catch(e) {
+            /* IE7 blows up here, do nothing */
+          }
+          return;
         }
-        catch(e) {
-          /* IE7 blows up here, do nothing */
-        }
-        return;
       }
 
       function isSupported() {
