@@ -270,6 +270,10 @@ async function resolve(r, approve) {
     // Done here — hand the user back. Popup blockers force some mobile
     // browsers to reach this page by same-tab navigation, so when there is
     // history to return through, offer it; a fresh tab can just be closed.
+    // On approval we also go back automatically after a short, announced
+    // delay — the manual button stays as the fallback (history.back() is a
+    // no-op if the browser has nothing to go back to). Denials never
+    // auto-navigate: the user may want to look at what they just refused.
     const back = document.createElement('p');
     back.className = 'row-status muted';
     if (history.length > 1) {
@@ -277,6 +281,10 @@ async function resolve(r, approve) {
       b.textContent = '← Return to the app';
       b.onclick = () => history.back();
       back.appendChild(b);
+      if (approve) {
+        back.appendChild(document.createTextNode(' returning automatically…'));
+        setTimeout(() => history.back(), 1800);
+      }
     } else {
       back.textContent = 'All set — you can close this tab.';
     }

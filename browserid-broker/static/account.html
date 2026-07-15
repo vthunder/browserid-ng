@@ -202,10 +202,8 @@
     <div class="card" id="external-card" hidden>
       <h2>External services</h2>
       <p class="sub">Services run by other providers that you allowed to act for you (e.g. a site
-        posting on your behalf). Each entry is a warrant you signed on the consent page —
-        <strong>Revoke</strong> cuts that service off within minutes.</p>
-      <div id="external-warrants"></div>
-      <p class="status" id="ext-status"></p>
+        posting on your behalf). Click one for the warrants you signed for it.</p>
+      <ul class="idlist" id="external-ids"></ul>
     </div>
 
     <div class="card">
@@ -237,9 +235,7 @@
       <button id="detail-back" class="small">← Back</button>
       <h2 id="d-email" style="word-break:break-all"></h2>
       <p class="kv">Acts for <b id="d-parent"></b> <span id="d-badges"></span></p>
-      <p class="sub">Every warrant on record for this agent. <strong>Revoke</strong> kills one grant
-        within minutes at services that check revocation. To cut this agent off everywhere, revoke
-        its key (Advanced / debug).</p>
+      <p class="sub" id="d-sub"></p>
       <div id="d-warrants"></div>
       <p class="status" id="d-status"></p>
     </div>
@@ -537,42 +533,45 @@ function renderAgents() {
 // -------- external services (§6.6) --------
 // A warrant whose agent is NOT one of this account's own agents was granted
 // to a service someone else runs (e.g. mingo-poster@mingo.place). Those don't
-// belong under "Agents" (there is no agent to click into), so they get their
-// own list, revocable per grant with the ordinary warrant machinery.
-function renderExternalServices(agentList) {
+// belong under "Agents" (the key isn't yours), so they get their own list —
+// one row per service, mirroring Agents; click into it for that service's
+// warrants (revocable per grant with the ordinary warrant machinery).
+function externalEntries(agentList) {
   const own = new Set((agentList || agentEntries()).map(a => a.email.toLowerCase()));
-  const entries = account.warrants.filter(w => !own.has((w.agent_email || '').toLowerCase()));
+  const now = Date.now();
+  const bySvc = new Map();
+  for (const w of account.warrants) {
+    const key = (w.agent_email || '').toLowerCase();
+    if (!key || own.has(key)) continue;
+    const cur = bySvc.get(key)
+      || { email: w.agent_email, external: true, delegators: new Set(), live: 0 };
+    cur.delegators.add(w.delegator_email);
+    const exp = Date.parse(w.expires_at);
+    if (!w.revoked && !(exp && exp < now)) cur.live++;
+    bySvc.set(key, cur);
+  }
+  return [...bySvc.values()]
+    .map(s => ({ ...s, parent: [...s.delegators].join(', ') }))
+    .sort((a, b) => a.email.localeCompare(b.email));
+}
+
+function renderExternalServices(agentList) {
+  const entries = externalEntries(agentList);
   $('external-card').hidden = !entries.length;
   if (!entries.length) return;
-  const now = Date.now();
-  const byId = Object.fromEntries(entries.map(w => [w.id, w]));
-  $('external-warrants').innerHTML = `<table class="wtable">` + entries.map(w => {
-    const exp = Date.parse(w.expires_at);
-    const state = w.revoked ? '<span class="badge revoked">revoked</span>'
-      : (exp && exp < now ? '<span class="warn" style="font-size:12px">expired</span>'
-        : `<span class="muted" style="font-size:12px">until ${new Date(exp).toLocaleDateString()}</span>`);
-    const actions = (w.revoked || w.status_idx == null)
-      ? `<button class="small x-forget" data-i="${w.id}">Forget</button>`
-      : `<button class="small x-revoke" data-i="${w.id}" style="color:#c53030">Revoke</button>`;
-    return `<tr>
-      <td><span class="aud">${escapeHtml(w.agent_email)}</span>
-        <span class="muted" style="font-size:12px">acting for ${escapeHtml(w.delegator_email)}</span><br>
-        <span class="muted" style="font-size:12px">at ${escapeHtml(w.audience)}</span>
-        ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')}</td>
-      <td style="white-space:nowrap;text-align:right">${state}<br>${actions}</td></tr>`;
-  }).join('') + '</table>';
-
-  const setStatus = (cls, msg) => { $('ext-status').className = 'status ' + cls; $('ext-status').textContent = msg; };
-  for (const b of $('external-warrants').querySelectorAll('.x-revoke')) b.onclick = async () => {
-    const w = byId[b.dataset.i];
-    if (!confirm(`Stop ${w.agent_email} from acting for ${w.delegator_email} at ${w.audience}? It loses access within minutes.`)) return;
-    try { await post('/wsapi/revoke_warrant', { csrf: account.csrf, id: Number(b.dataset.i) }); await reloadAccount(); renderAgents();
-      setStatus('ok', `Revoked — ${w.agent_email} is cut off within minutes.`); } catch (e) { setStatus('err', 'Revoke failed: ' + e.message); }
-  };
-  for (const b of $('external-warrants').querySelectorAll('.x-forget')) b.onclick = async () => {
-    try { await post('/wsapi/forget_warrant', { csrf: account.csrf, id: Number(b.dataset.i) }); await reloadAccount(); renderAgents();
-      setStatus('muted', 'Removed from the registry.'); } catch (e) { setStatus('err', 'Forget failed: ' + e.message); }
-  };
+  $('external-ids').innerHTML = entries.map(s => {
+    const badge = s.live
+      ? `<span class="badge active">${s.live} grant${s.live === 1 ? '' : 's'}</span>`
+      : '<span class="badge revoked">no live grants</span>';
+    return `<li><button class="row ext-row" data-email="${escapeHtml(s.email)}">
+      <span class="email-text">${escapeHtml(s.email)}${badge}
+        <span class="email-sub">acting for ${escapeHtml(s.parent)}</span></span>
+      <span class="chev">›</span></button></li>`;
+  }).join('');
+  for (const b of $('external-ids').querySelectorAll('.ext-row')) {
+    const s = entries.find(e => e.email === b.dataset.email);
+    b.onclick = () => showDetail(s);
+  }
 }
 
 // -------- activate a secondary identity (issue + cache a cert) --------
@@ -746,20 +745,17 @@ $('ag-create').onclick = async () => {
   finally { $('ag-create').disabled = false; }
 };
 
-// -------- agent detail + warrants --------
+// -------- agent / external-service detail + warrants --------
 function showDetail(a) {
-  $('app').hidden = true; $('detail').hidden = false;
-  $('d-email').textContent = a.email;
-  $('d-parent').textContent = a.parent || 'unknown';
-  $('d-badges').innerHTML = a.minted ? '<span class="badge active">active</span>' : '<span class="badge info">reserved (not yet minted)</span>';
-  renderDetailWarrants(a.email);
-  history.pushState({ view: 'detail', email: a.email }, '', '#' + encodeURIComponent(a.email));
+  showDetailNoPush(a);
+  history.pushState({ view: 'detail', email: a.email, external: !!a.external }, '', '#' + encodeURIComponent(a.email));
 }
 function backToMain() { $('detail').hidden = true; $('app').hidden = false; }
 $('detail-back').onclick = () => history.back();
 window.addEventListener('popstate', (e) => {
   if (e.state && e.state.view === 'detail') {
-    const a = agentEntries().find(x => x.email === e.state.email);
+    const pool = e.state.external ? externalEntries() : agentEntries();
+    const a = pool.find(x => x.email === e.state.email);
     if (a) { showDetailNoPush(a); return; }
   }
   backToMain();
@@ -767,11 +763,20 @@ window.addEventListener('popstate', (e) => {
 function showDetailNoPush(a) {
   $('app').hidden = true; $('detail').hidden = false;
   $('d-email').textContent = a.email; $('d-parent').textContent = a.parent || 'unknown';
-  $('d-badges').innerHTML = a.minted ? '<span class="badge active">active</span>' : '<span class="badge info">reserved</span>';
-  renderDetailWarrants(a.email);
+  $('d-badges').innerHTML = a.external
+    ? '<span class="badge info">external service</span>'
+    : a.minted ? '<span class="badge active">active</span>' : '<span class="badge info">reserved (not yet minted)</span>';
+  $('d-sub').innerHTML = a.external
+    ? `Every warrant you signed for this service. <strong>Revoke</strong> kills one grant
+       within minutes at services that check revocation; the service keeps working wherever
+       its other grants remain.`
+    : `Every warrant on record for this agent. <strong>Revoke</strong> kills one grant
+       within minutes at services that check revocation. To cut this agent off everywhere, revoke
+       its key (Advanced / debug).`;
+  renderDetailWarrants(a.email, !!a.external);
 }
 
-function renderDetailWarrants(agentEmail) {
+function renderDetailWarrants(agentEmail, external) {
   const now = Date.now();
   const entries = account.warrants.filter(w => (w.agent_email || '').toLowerCase() === agentEmail.toLowerCase());
   if (!entries.length) {
@@ -785,15 +790,23 @@ function renderDetailWarrants(agentEmail) {
     const state = w.revoked ? '<span class="badge revoked">revoked</span>'
       : (exp && exp < now ? '<span class="warn" style="font-size:12px">expired</span>'
         : `<span class="muted" style="font-size:12px">until ${new Date(exp).toLocaleDateString()}</span>`);
+    // Copy/Reissue assume YOU operate the agent and can paste the JWS into it;
+    // an external service holds its own warrant (it picks approvals up itself),
+    // so those two make no sense there — Revoke/Forget only.
     const actions = w.revoked
       ? `<button class="small w-forget" data-i="${w.id}">Forget</button>`
-      : `<button class="small w-copy" data-i="${w.id}">Copy</button>
-         <button class="small w-reissue" data-i="${w.id}">Reissue</button>
+      : `${external ? '' : `<button class="small w-copy" data-i="${w.id}">Copy</button>
+         <button class="small w-reissue" data-i="${w.id}">Reissue</button>`}
          ${w.status_idx != null
            ? `<button class="small w-revoke" data-i="${w.id}" style="color:#c53030">Revoke</button>`
            : `<button class="small w-forget" data-i="${w.id}">Forget</button>`}`;
+    // A service can act for more than one of your identities (e.g. your email
+    // and a handle) — say which one each grant delegates.
+    const delegator = external
+      ? `<span class="muted" style="font-size:12px">acting for ${escapeHtml(w.delegator_email)}</span><br>`
+      : '';
     return `<tr>
-      <td><span class="aud">${escapeHtml(w.audience)}</span><br>
+      <td><span class="aud">${escapeHtml(w.audience)}</span><br>${delegator}
         ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
       <td style="white-space:nowrap;text-align:right">${state}<br>${actions}</td></tr>`;
   }).join('') + '</table>';
@@ -803,13 +816,13 @@ function renderDetailWarrants(agentEmail) {
     await navigator.clipboard.writeText(byId[b.dataset.i].warrant); setStatus('ok', 'Copied — paste into the agent (add_warrant).');
   };
   for (const b of $('d-warrants').querySelectorAll('.w-forget')) b.onclick = async () => {
-    try { await post('/wsapi/forget_warrant', { csrf: account.csrf, id: Number(b.dataset.i) }); await reloadAccount(); renderDetailWarrants(agentEmail);
+    try { await post('/wsapi/forget_warrant', { csrf: account.csrf, id: Number(b.dataset.i) }); await reloadAccount(); renderDetailWarrants(agentEmail, external);
       setStatus('muted', 'Removed from the registry.'); } catch (e) { setStatus('err', 'Forget failed: ' + e.message); }
   };
   for (const b of $('d-warrants').querySelectorAll('.w-revoke')) b.onclick = async () => {
     const w = byId[b.dataset.i];
     if (!confirm(`Revoke this agent's access to ${w.audience}? It stops working there within minutes at services that check revocation.`)) return;
-    try { await post('/wsapi/revoke_warrant', { csrf: account.csrf, id: Number(b.dataset.i) }); await reloadAccount(); renderDetailWarrants(agentEmail);
+    try { await post('/wsapi/revoke_warrant', { csrf: account.csrf, id: Number(b.dataset.i) }); await reloadAccount(); renderDetailWarrants(agentEmail, external);
       setStatus('ok', `Revoked — ${w.audience} rejects this grant within minutes.`); } catch (e) { setStatus('err', 'Revoke failed: ' + e.message); }
   };
   for (const b of $('d-warrants').querySelectorAll('.w-reissue')) b.onclick = async () => {
@@ -826,7 +839,7 @@ function renderDetailWarrants(agentEmail) {
       const sig = await window.Keystore.sign(id.privateKey, `${header}.${payload}`);
       const jws = `${header}.${payload}.${sig}`;
       await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws });
-      await navigator.clipboard.writeText(jws); await reloadAccount(); renderDetailWarrants(agentEmail);
+      await navigator.clipboard.writeText(jws); await reloadAccount(); renderDetailWarrants(agentEmail, external);
       setStatus('ok', 'Reissued (fresh 90-day expiry), registered, and copied — paste into the agent.');
     } catch (e) { setStatus('err', 'Reissue failed: ' + e.message); }
   };
