@@ -44,6 +44,7 @@
     <a href="/account">Manage agents &amp; warrants</a> · <a href="/">← browserid.me</a></p>
 
 <script src="/common/js/keystore.js"></script>
+<script src="/dialog/provisioning.js"></script>
 <script type="module">
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
@@ -79,11 +80,53 @@ async function localIdentity(email) {
   return null;
 }
 
+/// The delegator's identity key isn't in THIS browser's keystore yet — common
+/// on a new device for an IdP-issued handle (e.g. `<name>@mingo.place`). Mint
+/// it here, silently: ask the broker for the identity's primary-IdP
+/// provisioning URL (`/wsapi/address_info`, same-origin — CSP-safe), then run
+/// that IdP's `/provision` in a HIDDEN IFRAME (`BrowserID.Provisioning`), which
+/// uses the user's existing session at that IdP to issue the cert. No popup, no
+/// separate login. Returns the freshly-cached local identity, or null (not a
+/// primary IdP, no session there, or provisioning failed).
+async function provisionPrimaryIdentity(email) {
+  if (!window.BrowserID?.Provisioning) return null;
+  let prov;
+  try {
+    const info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`);
+    if (info.type !== 'primary' || !info.prov) return null;
+    prov = info.prov;
+  } catch { return null; }
+  try {
+    const result = await new Promise((resolve, reject) => {
+      window.BrowserID.Provisioning.start(prov, email,
+        (r) => resolve(r),
+        (reason) => reject(new Error(reason || 'provisioning failed')));
+    });
+    const pubJwk = await crypto.subtle.exportKey('jwk', result.keypair.publicKey);
+    let issuer = email.split('@')[1];
+    try {
+      issuer = JSON.parse(atob(result.certificate.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).iss || issuer;
+    } catch {}
+    // Store the non-extractable key handle + cert, keyed by issuer (e2fi/apgv).
+    await window.Keystore.put(issuer, email, {
+      privateKey: result.keypair.privateKey,
+      publicKeyX: pubJwk.x,
+      cert: result.certificate,
+    });
+    return await localIdentity(email);
+  } catch (e) {
+    console.warn('provisioning', email, 'failed:', e.message);
+    return null;
+  }
+}
+
 /// A warrant must be signed while the parent (identity) cert is valid. If
 /// the cached cert is stale and it's ours to reissue (broker-issued for a
 /// session-owned email), silently refresh it via /wsapi/cert_key.
 async function freshIdentity(email) {
-  const id = await localIdentity(email);
+  let id = await localIdentity(email);
+  // Not in this browser yet (new device, IdP-issued handle) — mint it silently.
+  if (!id) id = await provisionPrimaryIdentity(email);
   if (!id) return null;
   const now = Math.floor(Date.now() / 1000);
   if (id.exp && id.exp > now + 60) return id;

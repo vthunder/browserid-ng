@@ -256,7 +256,7 @@ where
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
     "'sha256-nMq/Vy2U6dyRekPbL3osc3/EPJzgSXPbucIj6HzEvNk='", // account.html
-    "'sha256-lyaVTw8LzKtM1f+IHOwBCYxE6+9kmhBIT/tBh1JKJCg='", // consent.html
+    "'sha256-6DeKyqiZmuOPAQqBB7o357Ui7kq/WRypJeqJBZe9cVI='", // consent.html
     "'sha256-+XqUYbHj+ZXqocYeM/oRYCX1zljIPfY94AJwWAtU2Do='", // agents.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)
 ];
