@@ -267,6 +267,20 @@ async function resolve(r, approve) {
     status.textContent = approve
       ? `Approved${(r.grants || []).length > 1 ? ' (' + r.grants.length + ' warrants)' : ''} — the agent will pick this up within a few seconds.`
       : 'Denied.';
+    // Done here — hand the user back. Popup blockers force some mobile
+    // browsers to reach this page by same-tab navigation, so when there is
+    // history to return through, offer it; a fresh tab can just be closed.
+    const back = document.createElement('p');
+    back.className = 'row-status muted';
+    if (history.length > 1) {
+      const b = document.createElement('button');
+      b.textContent = '← Return to the app';
+      b.onclick = () => history.back();
+      back.appendChild(b);
+    } else {
+      back.textContent = 'All set — you can close this tab.';
+    }
+    card.appendChild(back);
   } catch (e) {
     status.className = 'row-status err';
     status.textContent = 'Failed: ' + e.message;
