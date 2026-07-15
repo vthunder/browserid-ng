@@ -213,6 +213,13 @@ where
             .route("/wsapi/test/remove_mock_primary_idp", post(test::remove_mock_primary_idp));
     }
 
+    // Admin cert-mint for demo seeding (mingo-b2yz): impersonation-grade, so
+    // it mounts ONLY when BROKER_ADMIN_TOKEN is configured, and the handler
+    // additionally enforces the hard principal allowlist (fails closed).
+    if state.admin_mint_token.is_some() {
+        app = app.route("/wsapi/admin/cert_key", post(cert::admin_cert_key));
+    }
+
     app.with_state(state)
         // Registrar routes join here (already stateful); the shared layers
         // below — frame denial, cookies, CORS, cache-control — cover both.

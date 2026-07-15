@@ -210,3 +210,132 @@ where
         reason: None,
     }))
 }
+
+// ---------------------------------------------------------------------------
+// POST /wsapi/admin/cert_key  (X-Admin-Token) — demo seeding (mingo-b2yz)
+//
+// Mint a fallback cert for a DEMO principal without an account, session, or
+// email verification. This is impersonation-grade power, so it is caged
+// twice: the route only mounts when `BROKER_ADMIN_TOKEN` is set (and the
+// header must match), AND the principal must match the hard allowlist in
+// `BROKER_ADMIN_MINT_ALLOWLIST` — the broker must never be seen attesting an
+// address that could belong to a real third party. No allowlist = mint
+// nothing. The cert itself is identical to a /wsapi/cert_key fallback cert
+// (24h validity, status-listed, revocable like any identity).
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct AdminCertKeyRequest {
+    pub email: String,
+    pub pubkey: PublicKeyJson,
+}
+
+/// Whether `email` is covered by the allowlist: an entry containing `@` must
+/// match the full address; a bare-domain entry matches any local part at
+/// exactly that domain. Case-insensitive; an empty list matches nothing.
+pub(crate) fn admin_mint_allowed(allowlist: &[String], email: &str) -> bool {
+    let email = email.to_ascii_lowercase();
+    let Some((_, domain)) = email.rsplit_once('@') else {
+        return false;
+    };
+    allowlist.iter().any(|entry| {
+        let entry = entry.trim().to_ascii_lowercase();
+        if entry.is_empty() {
+            false
+        } else if entry.contains('@') {
+            entry == email
+        } else {
+            entry == domain
+        }
+    })
+}
+
+pub async fn admin_cert_key<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminCertKeyRequest>,
+) -> Result<Json<CertKeyResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let expected = state
+        .admin_mint_token
+        .as_deref()
+        .ok_or(BrokerError::NotAuthenticated)?; // unmounted normally; belt & braces
+    let presented = headers
+        .get("x-admin-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    // Constant-time-ish compare: length check + full XOR fold, no early exit.
+    let token_ok = presented.len() == expected.len()
+        && presented
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0;
+    if !token_ok {
+        return Err(BrokerError::NotAuthenticated);
+    }
+    if !admin_mint_allowed(&state.admin_mint_allowlist, &req.email) {
+        return Err(BrokerError::PolicyRefused(format!(
+            "'{}' is not in the admin mint allowlist",
+            req.email
+        )));
+    }
+    if req.pubkey.algorithm != "Ed25519" {
+        return Err(BrokerError::Internal(format!(
+            "Unsupported algorithm: {}",
+            req.pubkey.algorithm
+        )));
+    }
+    let user_pubkey = PublicKey::from_base64(&req.pubkey.public_key)
+        .map_err(|e| BrokerError::Internal(format!("Invalid public key: {}", e)))?;
+    let email = req.email.to_ascii_lowercase();
+    // Same status-ref scheme as ordinary issuance: one stable index per
+    // identity, so a demo identity is revocable like any other.
+    let status = Some(StatusRef {
+        uri: browserid_registrar::consent::status_list_uri(&state.domain),
+        idx: state
+            .user_store
+            .get_or_allocate_status("identity", &email)?,
+    });
+    let cert = Certificate::create_with_status(
+        &state.domain,
+        &email,
+        &user_pubkey,
+        Duration::hours(24),
+        &state.keypair,
+        status,
+    )
+    .map_err(|e| BrokerError::Internal(format!("Failed to create certificate: {}", e)))?;
+    tracing::warn!(email = %email, "admin cert-mint issued (demo seeding)");
+    Ok(Json(CertKeyResponse {
+        success: true,
+        cert: Some(cert.encoded().to_string()),
+        reason: None,
+    }))
+}
+
+#[cfg(test)]
+mod admin_mint_tests {
+    use super::admin_mint_allowed;
+
+    #[test]
+    fn allowlist_semantics() {
+        let list = vec!["example.com".to_string(), "vthunder@gmail.com".to_string()];
+        // Bare domain matches any local part at exactly that domain.
+        assert!(admin_mint_allowed(&list, "petra@example.com"));
+        assert!(admin_mint_allowed(&list, "PETRA@EXAMPLE.COM"));
+        assert!(!admin_mint_allowed(&list, "petra@sub.example.com"));
+        assert!(!admin_mint_allowed(&list, "petra@notexample.com"));
+        // Full-address entry matches only that address.
+        assert!(admin_mint_allowed(&list, "vthunder@gmail.com"));
+        assert!(!admin_mint_allowed(&list, "someone-else@gmail.com"));
+        // Junk and empties.
+        assert!(!admin_mint_allowed(&list, "no-at-sign"));
+        assert!(!admin_mint_allowed(&[], "petra@example.com"));
+        assert!(!admin_mint_allowed(&["".to_string()], "petra@example.com"));
+    }
+}

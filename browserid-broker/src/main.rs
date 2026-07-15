@@ -91,6 +91,26 @@ async fn main() -> Result<()> {
     if state.test_endpoints_enabled {
         tracing::warn!("test endpoints (/wsapi/test/*) ENABLED — dev only, never production");
     }
+    // Admin cert-mint for demo seeding (mingo-b2yz): both envs must be set for
+    // the endpoint to mint anything — no token → route unmounted; no allowlist
+    // → every request refused.
+    state.admin_mint_token = std::env::var("BROKER_ADMIN_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
+    state.admin_mint_allowlist = std::env::var("BROKER_ADMIN_MINT_ALLOWLIST")
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if state.admin_mint_token.is_some() {
+        tracing::warn!(
+            allowlist = ?state.admin_mint_allowlist,
+            "admin cert-mint (/wsapi/admin/cert_key) ENABLED"
+        );
+    }
     // Origin split: when a separate static marketing site is deployed, point the
     // public marketing routes (`/`, guestbook page) at it. Keystore/cookies/wsapi
     // stay on this (auth/issuer) origin only. Unset → broker serves them locally.

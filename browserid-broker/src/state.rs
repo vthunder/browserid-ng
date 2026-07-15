@@ -49,6 +49,16 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// primitive in production and MUST stay off there. Off by default; only
     /// dev/test (no real SMTP) turns it on.
     pub test_endpoints_enabled: bool,
+    /// Admin cert-mint (`/wsapi/admin/cert_key`, demo seeding — mingo-b2yz):
+    /// the shared token callers present as `X-Admin-Token`. `None` (default)
+    /// = the route is not mounted at all. Set via `BROKER_ADMIN_TOKEN`.
+    pub admin_mint_token: Option<String>,
+    /// Hard allowlist for admin-minted principals: entries are a bare domain
+    /// (`example.com`, any local part) or a full address. Empty (default) =
+    /// mint NOTHING even with a valid token — fails closed twice over. The
+    /// broker must never attest an address that could belong to a real third
+    /// party. Set via `BROKER_ADMIN_MINT_ALLOWLIST` (comma-separated).
+    pub admin_mint_allowlist: Vec<String>,
     /// Per-address throttle for outbound verification/reset emails: address
     /// (lowercased) -> time of the last send. Bounds email-bombing and code
     /// spam server-side (the client cooldown is only a UX hint).
@@ -101,6 +111,8 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             agent_provisioning_enabled: false,
             max_agent_identities_per_user: DEFAULT_AGENT_QUOTA,
             test_endpoints_enabled: false,
+            admin_mint_token: None,
+            admin_mint_allowlist: Vec::new(),
             email_send_times: RwLock::new(HashMap::new()),
             marketing_url: None,
             analytics: crate::analytics::Analytics::disabled(),
@@ -128,6 +140,8 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             agent_provisioning_enabled: false,
             max_agent_identities_per_user: DEFAULT_AGENT_QUOTA,
             test_endpoints_enabled: false,
+            admin_mint_token: None,
+            admin_mint_allowlist: Vec::new(),
             email_send_times: RwLock::new(HashMap::new()),
             marketing_url: None,
             analytics: crate::analytics::Analytics::disabled(),
