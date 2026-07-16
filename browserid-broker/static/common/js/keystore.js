@@ -16,6 +16,13 @@
 
   var DB = "browserid-keys";
   var STORE = "keys";
+  // Staging store for the same-tab provisioning handshake (mingo-ytrs). A
+  // non-extractable CryptoKey can't survive a top-level navigation via
+  // sessionStorage (it isn't a string), but IndexedDB structured-clones it, so we
+  // stash the PENDING keypair + handshake metadata here while the tab is at the
+  // IdP minting the cert, and consume it when the IdP redirects back.
+  var PENDING = "pending";
+  var PENDING_KEY = "current";
   var enc = new TextEncoder();
 
   function b64url(buf) {
@@ -26,19 +33,23 @@
 
   function openDb() {
     return new Promise(function (res, rej) {
-      var req = indexedDB.open(DB, 1);
+      // v2 adds the `pending` staging store (mingo-ytrs). onupgradeneeded runs for
+      // fresh DBs and for existing v1 DBs; create whatever's missing either way.
+      var req = indexedDB.open(DB, 2);
       req.onupgradeneeded = function () {
         if (!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE);
+        if (!req.result.objectStoreNames.contains(PENDING)) req.result.createObjectStore(PENDING);
       };
       req.onsuccess = function () { res(req.result); };
       req.onerror = function () { rej(req.error); };
     });
   }
-  function tx(mode, fn) {
+  function tx(mode, fn) { return txOn(STORE, mode, fn); }
+  function txOn(storeName, mode, fn) {
     return openDb().then(function (db) {
       return new Promise(function (res, rej) {
-        var t = db.transaction(STORE, mode);
-        var store = t.objectStore(STORE);
+        var t = db.transaction(storeName, mode);
+        var store = t.objectStore(storeName);
         var out = fn(store);
         t.oncomplete = function () { res(out && out.result !== undefined ? out.result : out); };
         t.onerror = function () { rej(t.error); };
@@ -130,8 +141,24 @@
     });
   }
 
+  // --- Same-tab provisioning staging (mingo-ytrs) --------------------------
+  // A single in-flight handshake at a time. `rec` carries the non-extractable
+  // privateKey (CryptoKey) plus the metadata needed to validate the returned
+  // cert: { privateKey, publicKeyX, email, issuer, nonce, returnTo }.
+  function putPending(rec) {
+    return txOn(PENDING, "readwrite", function (store) { store.put(rec, PENDING_KEY); });
+  }
+  function getPending() {
+    return txOn(PENDING, "readonly", function (store) { return store.get(PENDING_KEY); })
+      .then(function (r) { return r || null; });
+  }
+  function clearPending() {
+    return txOn(PENDING, "readwrite", function (store) { store.delete(PENDING_KEY); });
+  }
+
   window.Keystore = {
     generate: generate, sign: sign, put: put, get: get, del: del,
-    forEmail: forEmail, all: all, migrateFromLocalStorage: migrateFromLocalStorage
+    forEmail: forEmail, all: all, migrateFromLocalStorage: migrateFromLocalStorage,
+    putPending: putPending, getPending: getPending, clearPending: clearPending
   };
 })();
