@@ -97,8 +97,8 @@ for an IdP's identity key.**
 | Field | Meaning |
 |---|---|
 | `public-key` | The IdP key. **Advisory only** — MUST match the DNSSEC record; the DNSSEC value is authoritative. |
-| `authentication` | Path to the interactive authentication page (§7). |
-| `provisioning` | Path to the provisioning page/endpoint (§7). |
+| `authentication` | Path to the interactive authentication page — the one-time login **bootstrap** (§7). |
+| `agent` | **Capability block** advertising the shared mint verb: `{ "mint_endpoint", "endorse_endpoint" }` (agent module §4.2–§4.3). Its presence declares the IdP serves both agent provisioning **and** browser-as-first-agent login (§7); an IdP without it is non-conformant (agent module §9). |
 | `authority` | Optional delegation pointer to another domain's IdP. |
 
 *(Departures from BrowserID: the former `disabled` field is **removed** — a
@@ -272,15 +272,32 @@ this yields: instant revocation for new sign-ins at status-checking RPs,
 
 ## 7. Primary IdP & browser integration
 
-browserid-ng does **not** use the shimmed `navigator.id` API. Instead:
+browserid-ng does **not** use the shimmed `navigator.id` API, and it does not
+use a hidden cross-origin provisioning iframe. **The browser is the user's
+first agent:** human login is the `subject: self` case of agent provisioning
+(agent module §4.1/§4.3), so an IdP cannot serve login without serving the
+agent mint verb.
 
-- First-party **`/auth`** (authentication) and **`/provision`** pages, with
-  `authentication_api.js` / `provisioning_api.js` shims.
-- A first-party **signer popup** (`/sign`) that holds the user's key and signs
-  assertions/typed writes on request via `postMessage`, so the key never leaves
-  its origin.
-- `wsapi/*` endpoints for account/session/cert operations.
-- `include.js` + `communication_iframe` retained only for RP compatibility.
+- A one-time interactive **bootstrap** — the first-party `/auth` page, driven
+  top-level (same-tab or popup), never a hidden cross-origin iframe —
+  authenticates the user and yields a **provisioning credential**: a
+  `U_cert~P_cert` delegation to the browser's stable non-extractable key, with
+  `constraint.subjects` including `self` (and optionally `agent` if the user
+  also opts into browser-provisioned agents). Only the delegation is persisted
+  client-side; `P_priv` is non-extractable and never leaves the browser.
+- Thereafter the browser obtains and **refreshes** its login certificate by the
+  same cookie-free, signature-authed `POST /provision/mint` that agents use
+  (agent module §4.3), with `subject: self`. No cookie, no iframe, no
+  `postMessage` cert relay.
+- A first-party **signer popup** (`/sign`) MAY still hold the user's key for
+  typed writes/assertions where the key must never leave its origin.
+- **Logout everywhere** = revoke the provisioning credential at the registrar
+  (agent module §4.2/§4.6): further endorsements stop, so the browser can no
+  longer mint, within the endorsement TTL.
+
+The shimmed `provisioning_api.js` / `communication_iframe` silent-refresh path
+is **retired** (superseded by the mint verb above; the divergence record item 7
+flips KEEP→RETIRE).
 
 The RP's login invocation carries an optional **`acceptedFallbacks`** argument
 (§8.1) — the fallback IdPs the RP will accept for no-primary emails — which the
@@ -352,7 +369,9 @@ any RP's accepted-fallbacks choice.
   confine it to the audiences and scopes its principal authorized. Defines the
   `browserid-agent-cert-v1` certificate `typ` and the
   `agent_cert~warrant~assertion` chain that §4.1/§5/§6.2's fail-closed rules
-  exist for.
+  exist for. The provisioning chain is also the substrate for **human login**:
+  the browser is provisioned as the user's first agent and mints its own login
+  certificate via the same verb with `subject: self` (§7).
 - **SBO on-chain attribution** — attributing an email identity to an `ed25519:`
   key on a ledger, built on the offline-verification primitive (§6.3). Specified
   in the **sbo** repo (`specs/SBO Attribution Specification.md`), not here:

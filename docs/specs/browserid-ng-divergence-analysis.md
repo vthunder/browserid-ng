@@ -99,8 +99,8 @@ Phase 3 decisions above for final resolutions.)*
 
 ### 7. Primary IdP + browser API
 - **Mozilla:** shimmed **`navigator.id`**, dialog-driven.
-- **Ours:** **no `navigator.id`.** First-party `/auth` + `/provision` pages, `provisioning_api.js`/`authentication_api.js` shims, `wsapi/*` endpoints, a broker **signer popup** (`/sign`), and `include.js` + `communication_iframe` kept only for RP compat (`routes/mod.rs`).
-- **Flag: KEEP** (navigator.id was never standardized; Persona is dead).
+- **Ours:** **no `navigator.id`.** The browser is the user's first agent: a one-time top-level `/auth` **bootstrap** yields a provisioning credential (`U_cert~P_cert`, `subjects` incl. `self`), then login certs are refreshed via the cookie-free `POST /provision/mint` (`subject: self`) — the same verb agents use. A first-party **signer popup** (`/sign`) MAY remain for typed signing.
+- **Flag: navigator.id rejection KEPT; iframe transport RETIRED** (2026-07-18, Model A / epic `browserid-ng-oup3`). The `provisioning_api.js` + hidden `communication_iframe` silent-refresh path is removed — it was ITP-dead and is superseded by the mint verb. This reverses the earlier "keep the first-party iframe/postMessage provisioning" stance; the `navigator.id` rejection itself stands.
 
 ### 8. Fallback / broker
 - **Mozilla:** `login.persona.org` central fallback.

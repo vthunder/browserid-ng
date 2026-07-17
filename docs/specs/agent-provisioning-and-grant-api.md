@@ -216,6 +216,7 @@ key:
   "exp": 1791376000,
   "public-key": { "algorithm": "Ed25519", "publicKey": "<P_pub base64url>" },
   "constraint": {
+    "subjects": ["agent"],
     "names": ["attestor2", "worker"],
     "patterns": ["dan+*"]
   }
@@ -225,22 +226,40 @@ key:
 `iss` MUST equal the `principal.email` of the accompanying `U_cert`.
 Reference validity: 90 days.
 
-**Constraint (REQUIRED).** A `P_cert` MUST carry a `constraint` that
-authorizes at least one identity — an unconstrained key (empty constraint)
-MUST be rejected. It has two optional arrays, at least one non-empty:
+**Constraint (REQUIRED).** A `P_cert` MUST carry a `constraint` — a **typed
+capability descriptor** bounding what the provisioning key may mint. An empty
+constraint (granting nothing) MUST be rejected. A `P_cert` lacking a
+`subjects` axis MUST be rejected; there is **no legacy default**. Axes:
 
-- `names`: exact agent handles the key may mint. These SHOULD be **reserved**
-  at key-creation (§4.2a) so the mint can't later be refused.
-- `patterns`: `<prefix>+*` subaddress grants — the key may mint any
-  `<prefix>+<non-empty-suffix>`. `<prefix>` MUST be a valid handle; a naked
-  `*` (or any pattern without the `+*` suffix) MUST be rejected. Patterns are
-  not reserved (unbounded); the per-delegator quota still bounds the count.
-  A pattern SHOULD be under a handle the delegator controls (e.g. their own
-  handle or one of `names`), keeping every minted identity attributable.
+- **`subjects`** (REQUIRED, non-empty): the identity *kinds* the key may mint.
+  - `agent` — derived agent identities `<name>@<delegator-domain>` (§5.1),
+    scoped by `names`/`patterns` below.
+  - `self` — the delegator's **own** identity (minted `principal.email` =
+    `iss`). Strictly more powerful than `agent`: a `self` credential acts as
+    the human directly. It MUST NOT be granted implicitly; it is present only
+    because the delegator explicitly consented at credential creation (§7).
+- `names`: exact agent handles the key may mint (**apply only to `subject:
+  agent`**). These SHOULD be **reserved** at key-creation (§4.2a) so the mint
+  can't later be refused.
+- `patterns`: `<prefix>+*` subaddress grants (**`agent` only**) — the key may
+  mint any `<prefix>+<non-empty-suffix>`. `<prefix>` MUST be a valid handle; a
+  naked `*` (or any pattern without the `+*` suffix) MUST be rejected. Patterns
+  are not reserved (unbounded); the per-delegator quota still bounds the count.
+  A pattern SHOULD be under a handle the delegator controls, keeping every
+  minted identity attributable.
 
-An IdP and the registrar MUST enforce that a mint's `name` is authorized by
-the constraint (exact `names` match, or a `patterns` match). Agent names may
-contain `+` (for subaddressing); human handles may not.
+A `subject: agent` credential MUST carry a non-empty `names` or `patterns`; a
+`subject: self`-only credential MAY omit both (the `self` subject *is* its
+authorization). An IdP and the registrar MUST enforce that a mint's `subject`
+is a member of `subjects`, and (for `agent`) that its `name` matches
+`names`/`patterns`. Agent names may contain `+` (subaddressing); human handles
+may not.
+
+**Fail closed on unknown axes.** A registrar or IdP that encounters a
+`constraint` axis, or a `subjects` value, it does not recognize MUST reject the
+credential — never ignore the field. This keeps the descriptor safely
+extensible: an older verifier refuses a newer capability rather than
+over-granting it.
 
 **Provisioning request (`R`)** — signed by `P_priv`:
 
@@ -250,6 +269,7 @@ contain `+` (for subaddressing); human handles may not.
   "iat": 1783600000,
   "exp": 1783600600,
   "action": "mint",
+  "subject": "agent",
   "domain": "mingo.place",
   "name": "attestor2",
   "agent-key": { "algorithm": "Ed25519", "publicKey": "<A_pub base64url>" },
@@ -262,6 +282,13 @@ contain `+` (for subaddressing); human handles may not.
   for `mint`; `warrant` carries `name` plus `warrant-grants` (§6.2).
   `reserve` carries neither `name` nor `agent-key` — it acts on the
   `P_cert`'s `constraint.names`.
+- `subject` (REQUIRED on `mint`) ∈ `agent` | `self` — no default; a `mint`
+  request without `subject` MUST be rejected, and `subject` MUST be a member of
+  the `P_cert` `constraint.subjects`. For `subject: agent`, `name` is required
+  and constraint-authorized. For `subject: self`, `name` MUST be **absent**
+  (the minted principal is the delegator's own `iss`), and the request MUST
+  carry a fresh `jti` (128-bit nonce); the IdP MUST reject a replayed `jti`
+  within the request's validity window.
 - `domain` MUST equal the target IdP's domain (audience pinning).
 - Requests MUST be short-lived (≤ 10 min recommended).
 
@@ -312,7 +339,7 @@ Errors (shape `{"success": false, "reason": "…"}`):
 | Status | Meaning |
 |---|---|
 | 400 | Malformed bundle / bad chain / expired request |
-| 403 | Chain valid but not registered, revoked, or refused by policy (incl. a mint whose `name` the constraint doesn't authorize) |
+| 403 | Chain valid but not registered, revoked, or refused by policy (incl. a mint whose `subject`, or whose `name`, the constraint doesn't authorize) |
 | 429 | Endorsement rate limit |
 
 ### 4.2a IdP: `POST /provision/reserve`
@@ -343,18 +370,32 @@ The IdP MUST verify, in addition to §3's chain rules: `R.domain` and
 by default), fresh, and `E.sub` matches the hash of the exact
 `request_bundle` string; the `U_cert` is its own issuance for the delegator.
 
-Semantics: names share one `<local>@<domain>` namespace with human
-identities and MUST be validated (including any reserved-name policy);
-minting is **idempotent** for an existing active identity of the same
-delegator (returns a fresh certificate for the presented `agent-key`, which
-MAY rotate freely); revoked names are never recycled; new identities count
-against the delegator's quota.
+The IdP MUST additionally verify that `R.subject` is a member of the
+`P_cert` `constraint.subjects` (else `403`), and that the `U_cert` is its own
+current issuance for the delegator.
 
-The minted certificate is an **agent certificate** per §5.1 (distinct
-`typ`, `agent` block naming the delegator). The IdP MUST copy the
-endorsement's `registrar` claim (§4.2) verbatim into the certificate's
-`registrar` claim; it MUST NOT substitute its own value, but MAY refuse to
-mint if it distrusts the named registrar.
+The minted certificate's shape depends on `R.subject`:
+
+- **`subject: agent`** — an **agent certificate** per §5.1 (distinct `typ`,
+  `agent` block naming the delegator, `registrar` claim). Names share one
+  `<local>@<domain>` namespace with human identities and MUST be validated
+  (including any reserved-name policy); minting is **idempotent** for an
+  existing active identity of the same delegator (fresh certificate for the
+  presented `agent-key`, which MAY rotate freely); revoked names are never
+  recycled; new identities count against the delegator's quota. The IdP MUST
+  copy the endorsement's `registrar` claim (§4.2) verbatim into the
+  certificate's `registrar` claim; it MUST NOT substitute its own value, but
+  MAY refuse to mint if it distrusts the named registrar.
+- **`subject: self`** — a **plain user certificate** (protocol §4.1): `typ`
+  absent, no `agent` block, no `registrar` claim, `principal.email =
+  U_cert.principal.email` (the delegator's real email), certified key =
+  `R.agent-key` (the browser's stable key). It is byte-indistinguishable from
+  a cert issued by the interactive login path, so every existing RP verifies
+  it unchanged. It does **not** consume the agent quota and does **not** create
+  an agent identity. Before minting, the IdP MUST verify the delegator email is
+  verified and owned by the account (the same ownership guarantee the
+  interactive path enforces). A credential whose `subjects` lacks `self` MUST
+  NOT be able to mint a self certificate under any request.
 
 Response: `{ "success": true, "email": "attestor2@mingo.place",
 "cert": "<JWS>" }`.
@@ -778,8 +819,14 @@ RPs SHOULD serve `/.well-known/oauth-authorization-server`:
 ## 9. Conformance
 
 An **IdP** conforms if it implements §4.3–§4.5 under §3's rules, minting §5.1
-certificates. A **registrar** conforms if it additionally implements §4.2 (+
-a registry) and the §6 consent flow. An **RP** conforms if it implements
+certificates for `subject: agent` **and** plain user certificates for
+`subject: self` (protocol §7 — the browser-as-first-agent login path rides the
+same mint verb). An IdP that serves human login MUST serve `/provision/mint`,
+cookie-free and without a cross-origin iframe; a login path that is not
+reachable via the mint verb is **non-conformant**. A conformant IdP MUST reject
+a `P_cert`/request bearing a `constraint` axis or `subject` it does not
+recognize (fail-closed, §4.1). A **registrar** conforms if it additionally
+implements §4.2 (+ a registry) and the §6 consent flow. An **RP** conforms if it implements
 §7.2–§7.3 with §5.3 verification (fail-closed on agent certificates); §7.4
 is recommended. A **verifier** (RP-side library or hosted `/verify`)
 conforms only if it enforces §5.3 step 1 — agent certificates are never
