@@ -5,7 +5,8 @@ status: draft
 type: feature
 priority: normal
 created_at: 2026-07-17T10:32:46Z
-updated_at: 2026-07-17T12:15:23Z
+updated_at: 2026-07-17T14:31:15Z
+parent: browserid-ng-mr2n
 ---
 
 Stronger support for authenticating command-line programs against browserid (mingo's CLI is the first consumer), with CLI credentials managed in their OWN /account surface — separate from "Agents" and "External services". Design captured 2026-07-17 (dan + investigation) as a concrete basis for discussion.
