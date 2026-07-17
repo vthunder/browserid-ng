@@ -332,20 +332,33 @@ agent's status bit.
   agent). Revocation still propagates once the endpoint is reachable and the cache
   expires.
 
-#### 6.2.1 Fully-offline revocation (OQ-1 resolved), deferred to phase 2
+#### 6.2.1 Offline-capable revocation (OQ-1 resolved), deferred to phase 2
 
-OQ-1 is **resolved**. As-is, revocability needs a **server-allocated** status
-index — `StatusRef.idx` is a server autoincrement and revoke only flips existing
-rows — so today an agent must be seeded server-side to be revocable. *Validity*,
-though, is already **lazy**: the list is positive/revoked-only, and **absence =
-valid**, so a not-yet-seeded agent still verifies.
+OQ-1 is **resolved: offline-CAPABLE by design, online-IN-PRACTICE.** The point
+is not that the server is never called — it is that **validity and revocability
+never *depend* on a server round-trip** (robustness), and the status index is
+**not** something the server has to allocate. As-is, `StatusRef.idx` is a server
+autoincrement and revoke only flips existing rows, so today an agent must be
+seeded server-side to be revocable; but *validity* is already **lazy** (the list
+is positive/revoked-only, **absence = valid**), so an unseeded agent still
+verifies.
 
-**Decision: target FULLY-OFFLINE revocation** via three small status-service
-changes, so no server round-trip is needed to make an agent revocable:
+**In practice browserid.me knows about the cert regardless**, because the
+per-agent revoke UI lives on **browserid.me/account** — you cannot list or revoke
+a cert the server has never heard of. So at derivation time the client **tells**
+browserid.me about the derived cert so it appears in the `/account` list + revoke
+UI. That registration is a **best-effort / UI concern**, not a required
+allocation step — the deterministic hashed index makes it non-load-bearing for
+validity or revocability.
+
+**Decision: target OFFLINE-CAPABLE revocation** via three small status-service
+changes, so no server round-trip is a *hard dependency* for making an agent
+revocable:
 
 1. **Self-derivable `idx`** = a wide-truncation `hash(subject)` computed offline
    (≥64-bit, ideally 128-bit, to avoid cross-owner collision) — the owner derives
-   the index without asking the server.
+   the index deterministically, without the server allocating it. This is what
+   makes registration best-effort rather than required.
 2. **Sparse revoked-set list encoding** instead of the dense `MAX(idx)` bitmap
    (a hashed 128-bit index space cannot be a dense bitmap).
 3. **Revoke-by-assertion endpoint** that **upserts** the row, authorized by the
@@ -478,11 +491,15 @@ depends on browserid-core, pinned `rev = "e572cda"` in
 
 Only OQ-onchain remains open. The rest are resolved:
 
-- **OQ-1 (status-subject registration) → RESOLVED (§6.2.1).** As-is it needs a
-  server-allocated `idx`, but validity is already lazy (absence = valid).
-  Decision: target **fully-offline** revocation (self-derivable hashed `idx`,
-  sparse revoked-set encoding, revoke-by-assertion upsert), **deferred to phase 2**;
-  phase 1 relies on chain revocation + fail-open, no new status-service work.
+- **OQ-1 (status-subject registration) → RESOLVED (§6.2.1): offline-CAPABLE by
+  design, online-IN-PRACTICE.** Validity/revocability never *depend* on a server
+  round-trip and the `idx` is self-derivable (deterministic hash, not a server
+  allocation); but browserid.me learns of the cert regardless — the `/account`
+  revoke UI can only list certs it has heard of — so the client tells it at
+  derivation time (best-effort/UI, not a required step). Changes (self-derivable
+  hashed `idx`, sparse revoked-set encoding, revoke-by-assertion upsert) are
+  **deferred to phase 2**; phase 1 relies on chain revocation + fail-open, no new
+  status-service work.
 - **OQ-3 (base-key stability) → RESOLVED (§5.1): the base key ROTATES** per
   login/provision (evidence: `keystore.js:64-70`, `dialog.js:226-253`/`301-318`/
   `440-460`, `provisioning.js:98-108`). So a derived agent cert is **bounded by
@@ -510,10 +527,13 @@ verifier fn in browserid-core called by sbo-core** + shared test vectors
   validity <= base validity`, hard base expiry, "≥8h base validity" rule). UX
   note: self-derived agents expire with the base cert (~24h) → periodic re-auth,
   fine for interactive CLIs, not for unattended bots (reinforces decision C).
-- **OQ-1 → RESOLVED: fully-offline revocation, deferred to phase 2** (§6.2.1).
-  As-is needs a server-allocated `idx`; validity is already lazy (absence=valid).
-  Phase-2 changes (self-derivable hashed `idx`, sparse revoked-set encoding,
-  revoke-by-assertion upsert) make revocation offline; phase 1 leans on chain
+- **OQ-1 → RESOLVED: offline-CAPABLE by design, online-IN-PRACTICE, deferred to
+  phase 2** (§6.2.1). Validity/revocability never *depend* on a server round-trip
+  and the `idx` is self-derivable (not server-allocated); but browserid.me knows
+  the cert regardless (the `/account` revoke UI can only list certs it has heard
+  of), so the client registers it best-effort at derivation time. Phase-2 changes
+  (self-derivable hashed `idx`, sparse revoked-set encoding, revoke-by-assertion
+  upsert) remove the server as a hard dependency; phase 1 leans on chain
   revocation + fail-open, so it ships with no new status-service work.
 
 **v2 (same day) — generalized the primitive** per dan + team-lead alignment.

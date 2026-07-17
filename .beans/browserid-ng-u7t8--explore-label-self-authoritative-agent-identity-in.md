@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: high
 created_at: 2026-07-17T14:30:49Z
-updated_at: 2026-07-17T19:09:31Z
+updated_at: 2026-07-17T19:10:53Z
 parent: browserid-ng-mr2n
 ---
 
@@ -75,3 +75,8 @@ Remaining open questions: OQ-1 status-subject registration at browserid.me befor
 - OQ-1 RESOLVED: as-is needs a server-allocated status idx (StatusRef.idx is a server autoincrement; revoke flips existing rows), BUT validity is already lazy (positive/revoked-only list, absence=valid). DECISION: target FULLY-OFFLINE revocation via 3 small status-service changes - self-derivable idx = wide-truncation hash(subject) (>=64-bit, ideally 128-bit), sparse revoked-set encoding (not the dense MAX(idx) bitmap), and a revoke-by-assertion upsert endpoint (owner assertion binds the subject). DEFER all 3 to PHASE 2 (the browser-RP subaddress cases needing per-agent revocation). PHASE 1 (agent-as-self / mingo admin) relies on CHAIN revocation (base-cert expiry) + SBO on-chain, verifier fail-open on the named endpoint - no new status-service work.
 
 Only OQ-onchain (SBO on-chain revocation object = new design) remains open. Doc bumped to v3.
+
+
+## OQ-1 refinement (2026-07-17, dan): offline-CAPABLE by design, online-IN-PRACTICE
+
+browserid.me knows about the derived cert REGARDLESS - the per-agent revoke UI lives on browserid.me/account, and you can't list/revoke a cert the server never heard of. So the offline property is about ROBUSTNESS (validity/revocability never DEPEND on a server round-trip; the idx is self-derivable, not server-allocated), not about never calling the server. In practice the client TELLS browserid.me about the derived cert at derivation time so it appears in the /account list + revoke UI - a best-effort/UI concern, not a required allocation step. Self-derivable hashed-idx design unchanged; still deferred to phase 2 (phase 1 uses chain revocation). §6.2.1 + OQ-1 resolution reworded.
