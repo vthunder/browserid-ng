@@ -716,3 +716,81 @@ async fn consent_page_serves_bare_and_deep_link() {
         assert!(resp.text().contains("Agent consent"), "GET {path} must serve the consent page");
     }
 }
+
+/// Build a `subject: self` mint bundle: the browser's provisioning credential
+/// mints a plain login cert for the delegator's own identity, certifying
+/// `login_kp`.
+fn mint_self_bundle(delegation: &str, provisioning_kp: &KeyPair, jti: &str, login_kp: &KeyPair) -> String {
+    let (u, p) = delegation.split_once('~').unwrap();
+    let request =
+        ProvisioningRequest::mint_self(DOMAIN, &login_kp.public_key(), jti, false, provisioning_kp).unwrap();
+    RequestBundle::new(
+        Certificate::parse(u).unwrap(),
+        ProvisioningCert::parse(p).unwrap(),
+        request,
+    )
+    .encoded()
+    .to_string()
+}
+
+/// Model A: a `self`-subject credential mints a PLAIN user (login) cert for the
+/// delegator's own email via the same /provision/mint verb agents use. The cert
+/// is not an agent cert; it verifies with a bare assertion (no warrant).
+#[tokio::test]
+async fn self_mode_mint_issues_plain_login_cert() {
+    let (server, email_sender, broker_pub) = create_agent_server(5);
+    let (delegation, prov_kp, _session) = register_agent_key_with(
+        &server,
+        &email_sender,
+        "human@localhost:3000",
+        Constraint::self_only(),
+    )
+    .await;
+
+    let login_kp = KeyPair::generate();
+    let bundle = mint_self_bundle(&delegation, &prov_kp, "nonce-1", &login_kp);
+    let endorsement = endorse(&server, &bundle).await;
+
+    let body: Value = server
+        .post("/provision/mint")
+        .json(&json!({ "request_bundle": bundle, "endorsement": endorsement }))
+        .await
+        .json();
+    assert_eq!(body["success"], true, "self mint failed: {body}");
+    assert_eq!(body["email"], "human@localhost:3000");
+
+    // The minted cert is a PLAIN user cert (principal = the human), not an agent.
+    let cert = Certificate::parse(body["cert"].as_str().unwrap()).unwrap();
+    assert!(!cert.is_agent(), "self-mode cert must be a plain user cert");
+
+    // A bare cert~assertion verifies (no warrant needed) — RP sees an ordinary login.
+    let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &login_kp).unwrap();
+    let verified = BackedAssertion::new(cert, assertion)
+        .verify(AUDIENCE, |_| Ok(broker_pub.clone()))
+        .unwrap();
+    assert_eq!(verified.email, "human@localhost:3000");
+    assert!(verified.agent.is_none(), "login presentation carries no agent attribution");
+}
+
+/// D2: an AGENT-only credential (subjects:[agent]) must NOT be able to mint a
+/// `subject: self` login cert — else every agent delegation is an account-takeover.
+#[tokio::test]
+async fn agent_only_credential_cannot_self_mint() {
+    let (server, email_sender, _broker_pub) = create_agent_server(5);
+    // register_agent_key grants an agent-only constraint (names + svc+* pattern).
+    let (delegation, prov_kp, _session) =
+        register_agent_key(&server, &email_sender, "human@localhost:3000").await;
+
+    let login_kp = KeyPair::generate();
+    let bundle = mint_self_bundle(&delegation, &prov_kp, "nonce-2", &login_kp);
+    let endorsement = endorse(&server, &bundle).await;
+
+    let resp = server
+        .post("/provision/mint")
+        .json(&json!({ "request_bundle": bundle, "endorsement": endorsement }))
+        .await;
+    // Refused: the signed constraint does not grant the `self` subject.
+    assert_ne!(resp.status_code(), 200, "agent-only credential must not self-mint: {:?}", resp.text());
+    let body: Value = resp.json();
+    assert_eq!(body["success"], false);
+}
