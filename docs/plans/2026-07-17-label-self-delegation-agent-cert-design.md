@@ -1,452 +1,482 @@
-# +label Self-Delegation Agent Certificate — Design Spec & Change Inventory
+# Self-Derivation Certificates — Design Spec & Change Inventory
 
 Status: DESIGN (no production code). Author: agent for team-lead / dan.
-Date: 2026-07-17.
+Date: 2026-07-17. Version: **v2** (generalized self-derivation primitive; v1 was
++label-agent-only — see the changelog at the end).
 Roadmap: item 4 of epic `browserid-ng-mr2n` (CLI-auth / agent identities for
 external-primary IdP users). Bean `browserid-ng-u7t8`. Chosen by dan over item 3
 (`browserid-ng-pv9b`, browserid.me-rooted agent).
 
-This is a specification and a precise, file:function-level change inventory. It
-does **not** implement anything. It builds directly on the two exploration
-verdicts in `browserid-ng-u7t8` and `browserid-ng-pv9b`; where those already
-located a line, this doc cites it and does not re-derive.
+Specification and precise, file:function-level change inventory. Does **not**
+implement anything. Builds on the exploration verdicts in `browserid-ng-u7t8`
+and `browserid-ng-pv9b`.
 
 ---
 
-## 1. Motivation & the problem being solved
+## 1. Motivation
 
 A user whose home IdP (`sandmill.org`) is a **classic primary** — it publishes
-`_browserid.sandmill.org` and serves `/.well-known/browserid` with interactive
-`provisioning`, but has **no agent-mint endpoint** (`/provision/mint` → 404, no
-`/agents`, it is not a `browserid-broker`) — cannot today obtain a CLI agent
-identity. `mingo login as danmills@sandmill.org` fails at the agent mint with
-"IdP rejected the request (404)" (bug `browserid-ng-3nsg`). There is no
-agent-mint endpoint anywhere for a `sandmill.org`-rooted delegator, because the
-browser roots a primary's `U_cert` at the primary's own IdP, and browserid.me
-cannot substitute (broker mint requires `verified.issuer == state.domain`).
+`_browserid.sandmill.org` and serves interactive provisioning at
+`/.well-known/browserid`, but has **no agent-mint endpoint** (`/provision/mint`
+→ 404, not a `browserid-broker`) — cannot today obtain a CLI agent identity
+(bug `browserid-ng-3nsg`). There is no agent-mint endpoint anywhere for a
+`sandmill.org`-rooted delegator.
 
-Item 4 removes the dependency on any IdP mint: the user's **existing**
-`danmills@sandmill.org` identity key self-issues a name-constrained agent
-certificate for `danmills+<label>@sandmill.org`. No sandmill.org cooperation, no
-browserid.me hosting of the identity. Generalizes to any primary.
+The fix removes any dependency on an IdP mint: the user's **existing**
+`danmills@sandmill.org` identity key self-signs the credential it needs. v1 did
+this for one case (a `+label` agent cert). v2 **generalizes** to a single
+self-derivation primitive covering four cases with one verification path.
 
-### Why this needs real work (not a free cheat)
+### Why this is real work, not a free cheat
 
-The `browserid-ng-u7t8` verdict established that the `+` convention **cannot**
-cheat past the core requirement that the agent leaf cert be signed by the IdP's
-DNSSEC domain key. That requirement is enforced **independently in two
-security-critical verifiers**:
-
-- browserid-core: `assertion.rs` (`verify` / `check_structure`) + `warrant.rs`
-  (`verify_for`) — the chain roots at the domain key, and the warrant's embedded
-  parent-cert must verify under that same domain-issuer key
-  (`warrant.rs:189-196`).
-- sbo-core `attribution.rs` (`verify_attribution_with_warrant` /
-  `extract_provider_key`) — independently re-verifies the agent cert against the
-  `_browserid.<iss>` DNSSEC key.
-
-So making a self-issued `danmills+label@sandmill.org` cert verify requires
-**adding a new, constrained trust path** in both codebases. This spec defines
-that path so it is an *addition* alongside the existing domain-signed path,
-never a weakening of it.
+The core requirement that an agent leaf be signed by the IdP's DNSSEC domain key
+is enforced **independently in two security-critical verifiers** — browserid-core
+(`assertion.rs` `verify`/`check_structure`, `warrant.rs` `verify_for`) and
+sbo-core (`attribution.rs`, which re-verifies the agent cert against the
+`_browserid.<iss>` DNSSEC key). Self-derivation adds a **new, constrained trust
+path** that both must honor. To avoid drift, the path is implemented **once** in
+browserid-core and **called** by sbo-core (decision F, §7).
 
 ---
 
-## 2. The new certificate chain shape
+## 2. The self-derivation primitive (the generalization)
 
-Today an agent presentation is a single agent leaf cert (domain-signed) plus a
-warrant whose embedded `parent-cert` is domain-signed:
+**One rule.** A base identity `user@domain` — holding its **domain-signed base
+cert** and the matching key — MAY self-sign a *derived cert* whose:
 
-```
-[ agent_cert(domain-signed) ] ~ warrant(parent-cert: U_cert domain-signed) ~ assertion
-```
+- **principal** ∈ { `user@domain` (same as base), `user+<label>@domain`
+  (RFC 5233 subaddress of base) }; and
+- **type** ∈ { agent, regular-identity }.
 
-The self-delegation chain introduces one intermediate link — the base identity
-cert — and shifts who signs the agent leaf:
+**Name constraint.** The derived principal local-part is exactly the base
+local-part, or `base-local + "+" + <label>` (non-empty label, first-`+` split);
+same `domain` as the base; and the derived cert's `iss` is the **base
+identity's email** (see §5, issuer semantics — this is *self*-issuance, so the
+issuer is the signer's identity, not the domain).
+
+### 2.1 The four cases (all one primitive)
+
+1. **Agent, principal = self** (`danmills@sandmill.org`): an agent that **acts as
+   the base user**. This is the mingo-CLI-admin case and the phase-1 target (§8).
+2. **Agent, principal = +label** (`danmills+mingo-cli@sandmill.org`): a distinct
+   agent identity that **acts as itself** (that subaddress).
+3. **Regular identity, principal = +label**: a per-site subaddress **login
+   identity** (privacy — a distinct principal per RP), no warrant, full authority
+   as that subaddress. This is the classic BrowserID "directed identity" benefit,
+   now user-derivable without IdP cooperation.
+4. **The base itself**: the domain-signed root, unchanged — the trust anchor the
+   other three chain to.
+
+### 2.2 Chain shape
 
 ```
 domain key (sandmill.org, via _browserid DNSSEC)
-  └─signs→  BASE identity cert   principal = danmills@sandmill.org       (domain-signed, SHORT-LIVED)
-              └─signs→  AGENT cert   principal = danmills+mingo-cli@sandmill.org   (IDENTITY-signed)
-                          typ = browserid-agent-cert-v1
-                          agent.parent = danmills@sandmill.org
-                          status = <browserid.me status ref>   ← per-agent revocation
+  └─signs→  BASE cert   principal=danmills@sandmill.org   iss=sandmill.org   (domain-signed, short-lived)
+              └─signs→  DERIVED cert
+                          principal ∈ { danmills@ , danmills+label@ }  (same domain)
+                          iss = danmills@sandmill.org          ← self-issued: issuer is the base IDENTITY
+                          typ = self-derived (distinct typ; §3.1)
+                          authority = open|closed              ← universal field; §3.2 / decision E
+                          [agent case] agent.parent = danmills@sandmill.org
+                          [agent case] status = <revocation URI>
 ```
 
-Presentation is self-contained (the base cert travels inside the presentation,
-exactly as a warrant embeds its `parent-cert`):
+Presentation embeds the fresh base cert so it is self-contained and
+offline-verifiable (exactly as a warrant embeds its `parent-cert`):
 
 ```
-[ base_cert(domain-signed) , agent_cert(identity-signed) ] ~ warrant(parent-cert: base_cert) ~ assertion
+[ base_cert(domain-signed) , derived_cert(identity-signed) ]  ~ [warrant~]  assertion
 ```
 
-The base cert is domain-signed and **fresh** (short-lived, refreshed by the
-human re-authenticating to sandmill.org). Because verifiers check the whole
-chain, the freshness of the base cert is the primary revocation lever (§6).
+The base cert is domain-signed and **fresh** (short-lived, re-minted by the human
+re-authenticating). A warrant is present **iff** the derived cert is an agent
+cert (mandatory + audience-bound; §4). A regular-identity derived cert (cases 3,
+4) carries no warrant.
 
-### 2.1 The +label name constraint (the security core)
+### 2.3 Verification algorithm (ordered checklist, one path)
 
-An agent cert MAY be signed by an identity cert's key **instead of** the domain
-key **iff**:
+Implemented once in browserid-core (§7, decision F). Given a presentation:
 
-- the agent principal local-part is exactly `<base>+<label>` for some non-empty
-  `<label>` with no further `@`; **and**
-- `<base>@<domain>` equals the signing base identity cert's `principal.email`;
-  **and**
-- the agent principal `<domain>` equals the base cert `<domain>` (same domain);
-  **and**
-- the agent cert's `iss` equals the base cert's `iss` (same issuer domain).
+1. **Parse** `[base, derived]` (or just `[base]`). Detect the self-derived typ on
+   the derived cert (§3.1). If absent → classic domain-signed path, unchanged.
+2. **Base cert domain-signed & fresh**: `base.iss == base` principal domain;
+   `base.verify(domain_key)` under the DNSSEC domain key; `!base.is_expired()`
+   (hard expiry — this is the freshness/chain-revocation lever, §6.1).
+3. **Derived signed by the base key**: `derived.verify(base.public_key())`.
+4. **Name constraint**: `derived` principal local == base local, or
+   `base-local + "+" + <label>` (non-empty label); same domain.
+5. **Issuer semantics** (decision D): `derived.iss == base.principal.email`
+   (self-issued *by* the base identity).
+6. **Type-specific:**
+   - *agent*: `agent.parent == derived.iss == base.principal.email`
+     (see §4 for who the agent acts as); a `status` ref MUST be present (§6.2);
+     a warrant MUST accompany (structural `WarrantRequired`).
+   - *regular identity*: no warrant; authority is full as the derived principal.
+7. **authority field** (§3.2): read the explicit `authority` value; agent certs
+   MUST be `closed`, regular/login certs `open`.
+8. **Warrant** (agent only): run §4 checks with the base cert as parent-cert.
 
-This is X.509 name-constraint style: holding `danmills`'s key lets you mint
-`danmills+anything@sandmill.org`, but **not** `bob@sandmill.org`, **not** a bare
-second `danmills@sandmill.org`, and **not** `danmills+x@other.org`. The
-existing (unconstrained, domain-signed) agent path is untouched: a domain can
-still mint any agent name it likes; only the *identity-signed* path is
-constrained to the `+label` subaddress of the signer.
-
-### 2.2 The self-delegation verification algorithm (ordered checklist)
-
-A verifier presented with an identity-signed agent leaf runs, in order:
-
-1. **Parse** the presentation. Recognize the two-cert chain `[base, agent]`
-   where `agent.is_agent()` and `base` is plain (email principal, non-agent).
-2. **Distinguish the path.** The agent cert declares it is identity-signed (see
-   §3.1, `sig` / `chain` marker). If absent → this is the classic domain-signed
-   agent path; run the existing rules unchanged. If present → run steps 3–8.
-3. **Base cert is domain-signed and fresh.** `base.iss` == `base` principal
-   domain; `base.verify(domain_key)` under the DNSSEC domain key for that
-   domain; `!base.is_expired()` (freshness — this is a *hard* expiry check for
-   the base cert, unlike the warrant's signing-time-only parent-cert; see §6.1).
-4. **Agent leaf signed by the base key.** `agent.verify(base.public_key())`.
-5. **+label name constraint** (§2.1): parse `agent` principal as
-   `<local>+<label>@<domain>`; require `<local>@<domain> == base.principal`;
-   require non-empty `<label>` and exactly one `+` split point (first `+`);
-   require `agent.iss == base.iss == <domain>`.
-6. **agent.parent binding.** `agent.agent_parent()` == `base.principal.email`
-   (`danmills@sandmill.org`). (The `+label` agent acts *as* its base.)
-7. **Status ref present.** The identity-signed agent cert MUST carry a `status`
-   ref whose origin is a recognized status authority (browserid.me by default,
-   §6.2). Unlike the domain-signed path (which pins to `registrar`), the
-   self-issued path pins revocation to the status authority the base identity
-   chose at self-issuance.
-8. **Warrant** (agent presentations only): run the existing warrant checks
-   (§4) with the *base cert* as the parent-cert, verified under the domain key.
-
-Only if all pass is the presentation accepted, attributed to the agent identity
-with `agent.parent = danmills@sandmill.org`.
+Accept only if all pass. The acting identity is the **derived cert's principal**
+(decision B) — no `as:` resolution.
 
 ---
 
 ## 3. Certificate format additions
 
-Extends the existing `Certificate` / `CertificateClaims` in
-`browserid-core/src/certificate.rs`. Today an agent cert is `typ =
-TYP_AGENT_CERT` (`"browserid-agent-cert-v1"`), an `agent: AgentClaims { parent }`
-block, an optional `registrar`, and an optional `status` (§6.4 fast-revocation).
-The certificate is always domain-signed; nothing in the claims records *who*
-signed it — the verifier supplies the key.
+Extends `Certificate` / `CertificateClaims` in
+`browserid-core/src/certificate.rs`.
 
-Two things the self-issued cert must additionally declare:
+### 3.1 (a) Verification marker — "self-signed, not domain-signed" (distinct typ)
 
-### 3.1 (a) "I am identity-signed, not domain-signed"
+Add a distinct `typ` so a verifier selects the constrained path and old verifiers
+**fail closed** (the existing `Certificate::parse` matcher, `certificate.rs:223-241`,
+rejects unknown `typ`s). Because a derived cert can be agent *or* regular, either
+introduce two typs (`browserid-self-agent-cert-v1`, `browserid-self-id-cert-v1`)
+or one self-derived typ plus the existing `agent` block to distinguish agent from
+regular. Preference: **one self-derived typ marker + agent block presence** to
+keep "is it an agent?" answered by the same `agent` field everywhere. Decide at
+implementation (OQ-4 is about a *different* field — see H below).
 
-The self-issued agent cert must be self-describing so a verifier picks the
-constrained path (step 2 above) without guessing. Options, in preference order:
+This marker answers **how to verify** (which key signed it). It is kept
+**distinct** from the `authority` field below, which answers **what it grants**
+(decision H). Both exist; they answer different questions.
 
-- **Preferred: a distinct `typ`.** Add
-  `TYP_SELF_AGENT_CERT = "browserid-self-agent-cert-v1"` alongside
-  `TYP_AGENT_CERT`. The existing fail-closed `Certificate::parse` matcher
-  (`certificate.rs:223-241`) rejects unknown `typ`s — so old verifiers reject
-  self-issued certs (correct: they can't check the constrained path). New
-  verifiers accept both `typ`s and branch on which. This is the cleanest
-  fail-closed signal and reuses the existing typ machinery.
-- **Alternative: a claim on the existing agent typ** (e.g. `sig: "identity"`
-  vs the implicit `"domain"`). Lighter, but a predating verifier would silently
-  treat it as a normal (domain-signed) agent cert and try to verify the leaf
-  against the domain key — which fails closed anyway, but less legibly. The
-  distinct `typ` is safer.
+### 3.2 (b) Universal `authority` field (decision E.2, dan's refinement)
 
-A self-issued agent cert therefore carries: `typ = TYP_SELF_AGENT_CERT`,
-`agent = { parent: <base email> }`, `status = <authority ref>` (required),
-and **no** `registrar` (registrar is the domain-signed concept). The base cert
-is a plain cert produced by the existing `Certificate::create` (unchanged).
+Add an **explicit `authority` claim to ALL cert types** (not agent-only, not
+inferred from `typ`):
 
-### 3.2 (b) Its status / revocation URI
+- `authority = "open"` on identity/login certs (base, regular subaddress): full
+  authority **as the principal**.
+- `authority = "closed"` on agent certs: authority is **warrant-defined** — an RP
+  SHOULD consult the warrant's scopes, not the principal alone.
 
-Reuse the existing `status: Option<StatusRef>` field (`certificate.rs:99-100`,
-`StatusRef { uri, idx }`). For a self-issued cert `status` is **mandatory** and
-its `uri` origin is the status authority (browserid.me) the base identity chose.
-This is the per-agent revocation anchor that the `u7t8` verdict flagged as
-missing for self-signed certs — §6 defines the service that honors it.
+Explicit + universal is deliberate: a verifier is far more likely to read a field
+that is present and meaningful on *every* cert than an agent-only flag it can
+skip on the common path. A fully-naive verifier can still ignore it (that's why
+the verifier-API mitigation, §3.4 / E.1, is the strongest layer), but
+universality raises the odds it is honored.
 
-### 3.3 New constructor
+### 3.3 (c) Status / revocation URI (agent certs)
 
-`Certificate::create_self_agent(base_cert, agent_email, base_key, validity,
-status_authority) -> Certificate`: asserts the `+label` constraint at creation
-(`agent_email` == `<base_local>+<label>@<base_domain>`), sets `typ =
-TYP_SELF_AGENT_CERT`, `agent.parent = base_cert.principal.email`, `status =
-<ref at status_authority>`, signs with `base_key` (the base identity's key, not
-a domain key). Mirrors `create_agent` / `create_agent_with_status`
-(`certificate.rs:164-207`).
+Reuse the existing `status: Option<StatusRef>` field (`certificate.rs:99-100`).
+**Mandatory** on self-derived agent certs; its `uri` names the revocation
+authority the base identity chose (browserid.me by default). The verifier follows
+whatever endpoint the cert names — **no pinning** (decision G, §6.2). No
+`registrar` (that is the domain-signed concept).
+
+### 3.4 New constructors
+
+`Certificate::create_self_derived{_agent,_id}(base_cert, principal, base_key,
+validity, authority, [status])`: assert the name constraint (§2.1), set `iss =
+base_cert.principal.email` (decision D), set the self-derived typ + `authority`,
+and (agent) `agent.parent = base principal` + mandatory `status`; sign with the
+**base key**. Mirrors `create_agent` (`certificate.rs:164-207`).
+
+### 3.5 Naive-RP mitigations, three layers (decision E)
+
+In order of strength:
+
+1. **STRONGEST — verifier API surface (a MUST on conformant verifiers).** A
+   conformant verifier MUST surface agent-ness + scopes prominently — return an
+   `AgentResult { acts_as, scopes }` (or make the agent attribution a
+   non-optional, structurally-distinct part of the result), **never** a bare
+   principal string a caller can mistake for "full access." Today
+   `VerifiedPresentation { email, agent: Option<AgentAttribution> }`
+   (`assertion.rs`) already carries agent attribution but as an easily-ignored
+   `Option`; this hardens the contract so a library-using RP cannot reduce an
+   agent presentation to its principal.
+2. **Universal `authority` field** (§3.2) — better than an agent-only flag
+   because it is meaningful on every cert.
+3. **SHOULD directive**: for an agent cert the PRINCIPAL is *who it acts as*, not
+   *what it may do*; authority = the warrant scopes. `SHOULD`, not `MUST` — an RP
+   MAY consciously treat an agent-as-self as full power.
+
+Reaffirmed structural backstop: an agent cert is **inert without a warrant**
+(`check_structure` → `WarrantRequired`, `assertion.rs:264-265`).
 
 ---
 
-## 4. Composition with the existing warrant
+## 4. Warrant stays SEPARATE from the cert (decision C)
 
-The warrant model (`warrant.rs`) is **almost** unchanged: the warrant still
-delegates authority to the agent identity, embeds the delegator's cert as
-`parent-cert`, and is signed by the delegator's identity key. For self-delegation
-the delegator *is* the base identity, so the warrant's `parent-cert` is the
-**base cert** (domain-signed), and the warrant is signed by the base key — the
-same key that signed the agent leaf.
+We do **not** collapse the warrant into the cert, even though the IdP-privacy
+rationale (warrants never transit the IdP) is moot for a self-signed cert.
+Rationale recorded:
 
-What must change in `Warrant::verify_for` (`warrant.rs:178-278`):
+- **(i) Uniformity** — one presentation format works for self-signed *and* future
+  IdP-issued agents.
+- **(ii) Clean identity/authorization separation** — cert = WHO you are, warrant
+  = WHAT you may do; same separation-of-concerns as SBO's identity-vs-govern.
+- **(iii)** The warrant's per-audience + scope + status factoring is well-built.
 
-- **Step 1 issuer match (`warrant.rs:189-195`)**: today it requires
-  `parent.issuer() == agent_cert.issuer()`. This still holds for self-delegation
-  (base and agent share the domain), so **no change** — but confirm the check is
-  against the *base* cert now embedded, which it is.
-- **Step 3 delegator consistency (`warrant.rs:214-233`)**: `warrant.iss ==
-  parent_email == agent_cert.agent_parent()`. For self-delegation
-  `agent.parent = danmills@sandmill.org = base principal = warrant.iss` — holds
-  with **no change**.
-- **Step 6 revocation authority (`warrant.rs:254-275`)**: today it requires the
-  agent cert to name a `registrar` and pins the warrant's `status` origin to
-  that registrar. A self-issued cert has **no** `registrar` — it has a `status`
-  authority instead. This branch MUST be generalized: for a self-issued agent
-  cert, pin the warrant's status origin to the **cert's status authority**
-  (browserid.me) rather than to `registrar`. (Equivalently: "the revocation
-  authority is `registrar` for domain-signed agents, `status.uri` origin for
-  self-issued agents.")
+The warrant stays **mandatory** and **audience-bound** for agent certs; **agent
+authority = the warrant's scopes.** The hinge to record: collapsing cert+warrant
+would become attractive **only if IdP-issued agents are ruled out** — until then,
+keep them separate.
+
+### 4.1 Changes to `Warrant::verify_for` (`warrant.rs:178-278`)
+
+For self-derivation the delegator **is** the base identity; the warrant's
+`parent-cert` is the **base cert** (domain-signed), signed by the base key (the
+same key that signed the derived agent leaf).
+
+- **Issuer match (`warrant.rs:189-195`) — CORRECTION vs v1.** v1 claimed "no
+  change." That was a **bug** (dan caught it): a self-issued derived cert's `iss`
+  is the base *identity*, not the domain, so `parent.issuer() ==
+  agent_cert.issuer()` is **false** for the self-derived path (parent/base
+  issuer = `sandmill.org`; agent issuer = `danmills@sandmill.org`). Generalize:
+  for the self-derived path require **`agent_cert.issuer() ==
+  parent.principal.email`** (the agent was issued *by* the base identity, which
+  is the delegator/parent). The classic domain-signed path keeps the existing
+  `parent.issuer() == agent_cert.issuer()` check.
+- **Delegator consistency (`warrant.rs:214-233`)**: `warrant.iss ==
+  parent_email == agent_cert.agent_parent()` — holds unchanged for the self case.
+- **Revocation authority (`warrant.rs:254-275`)**: today pins the warrant's
+  `status` origin to the cert's `registrar`. A self-derived agent cert has no
+  `registrar` but has a `status` authority. Generalize the pin **and** apply
+  decision G: for self-derived agents, follow the cert's status endpoint (no
+  registrar pin, no origin-equality requirement). Fail-open within the cache/TTL
+  window if unreachable (§6.2).
 
 The `Warrant::create` guard "an agent identity cannot be a delegator"
-(`warrant.rs:114-116`, `186-188`) is unaffected: the base cert is a plain
-identity cert, a valid delegator; the agent cert still cannot delegate onward.
-
-Role/owner matching in SBO is **already solved** (per the `u7t8` verdict): the
-daemon's `as:` path resolves the effective author to the base email
-(`danmills@sandmill.org`) via `authorize.rs::warrant_effective_email`, so
-`roles.admin = ["danmills@sandmill.org"]` matches a `+label` agent write with
-**zero canonicalization changes**. This spec does not touch role matching.
+(`warrant.rs:114-116`) is unaffected — the base is a plain identity cert.
 
 ---
 
-## 5. Revocation design
+## 5. Effective-author: retire the `as:` hack (decision B)
 
-Two mechanisms, matching dan's confirmed model. The primary (`sandmill.org`)
-stays **dumb** — no revocation infrastructure is added there.
+The acting identity is now the **verified derived cert's principal**, full stop:
 
-### 6.1 Chain revocation (expiry-driven, no CRL at the primary)
+- agent-as-self (principal `danmills@sandmill.org`) acts as `danmills@sandmill.org`;
+- agent-as-subaddress (principal `danmills+mingo-cli@sandmill.org`) acts as that
+  subaddress.
 
-Verifiers check the whole chain, so **not renewing the base
-`danmills@sandmill.org` cert instantly invalidates every `+label` agent** under
-it. Because the base cert is **short-lived** and re-minted only when the human
-re-authenticates to sandmill.org, this is expiry-driven: stop re-authing → the
-base cert lapses → all self-issued agents die at the next base-cert expiry
-window. This is why step 3 of the verification algorithm (§2.2) treats the base
-cert with a **hard** `is_expired()` check (unlike the warrant's parent-cert,
-which uses signing-time-only semantics for its 90-day lifetime). No CRL is
-required at the primary. Blast radius of a base-key compromise is exactly "all
-of that base's `+label` agents" — intended and bounded by the base cert's short
-life.
+The SBO daemon's effective-author logic changes from "resolve `as:`" to "trust
+the verified derived cert's principal" (`sbo-daemon` / `sbo-core`
+`authorize.rs::warrant_effective_email`, `validate.rs::resolve_creator`).
 
-Spec the base-cert validity short (e.g. hours, matching the existing 24h agent
-cert / `U_cert` cadence in `warrant.rs` tests) and require the client to embed a
-**fresh** base cert at presentation time (re-fetching by re-auth as needed).
+**No transition window, no re-genesis.** Warrants are **not** persistent on-chain
+objects — they ride inside a write's `auth_warrant` and are checked at validation
+time. So invalidating all existing warrants is a **daemon code change, not a
+chain event**: already-accepted writes stay valid (they were validated under the
+old rules at their inclusion time); only *new* writes use the new model. Record
+this explicitly in the spec so no one plans a migration/re-genesis.
 
-### 6.2 Per-agent revocation (browserid.me status authority)
-
-For revoking **one** `+label` agent without waiting for base-cert expiry, the
-self-issued agent cert **bakes in** a `status` ref (§3.2) pointing at a status
-authority the base identity chose — browserid.me by default. browserid.me:
-
-- **Registers** a status subject for each self-issued cert (an index allocated
-  under a status list the owner controls). See open question OQ-1 on how the
-  base identity registers the subject before first use.
-- **Publishes a signed status list** at a well-known URI (reuse the existing
-  `/.well-known/browserid-status`-style list the registrar already publishes for
-  warrants — same `StatusRef { uri, idx }` shape). Verifiers fetch it, honor a
-  revoked bit after a cache/TTL window.
-- **Exposes a revoke control at `/account`** (browserid-broker
-  `static/account.html`). The authenticated owner (danmills, proven via a
-  **normal browserid assertion to browserid.me as an RP** — no special auth)
-  revokes a specific agent by flipping its status bit.
-
-Cache/TTL: verifiers cache the signed status list for a bounded window (spec a
-default, e.g. minutes-to-an-hour, matching how RPs treat warrant status today);
-revocation takes effect after the window. This keeps verification offline-capable
-between refreshes.
-
-For **SBO specifically**, on-chain revocation is available as an alternative
-anchor (the daemon can read a revocation record from the wire), but the
-browserid.me-hosted status list is the chosen default.
+Role/owner matching then works directly: `roles.admin =
+["danmills@sandmill.org"]` matches an agent-as-self write because the effective
+author **is** `danmills@sandmill.org` (the derived cert's principal) — no `as:`
+plumbing, no canonicalization.
 
 ---
 
-## 6. Security analysis
+## 6. Revocation
 
-- **The name constraint is sound.** The identity-signed path only ever certifies
-  `<base>+<label>@<domain>` where `<base>@<domain>` is the signer's own verified
-  principal and `<domain>` matches. Holding `danmills`'s key confers authority
-  over `danmills`'s subaddress namespace and nothing else — it cannot mint
-  `bob@`, cannot mint a second bare `danmills@`, cannot cross domains. This
-  mirrors RFC 5233 plus-addressing, where `danmills+x@` already routes to
-  `danmills@`, so treating the base as authoritative over its `+label` space
-  matches deployed email semantics.
-- **It ADDS a path, it does not weaken the domain path.** The domain-signed
-  agent flow (`create_agent`, verified against the DNSSEC domain key) is
-  untouched. A verifier reaches the constrained path **only** for the new
-  `TYP_SELF_AGENT_CERT`; everything else still requires the domain key. Old
-  verifiers fail closed on the new typ (§3.1).
-- **Blast radius.** Base-key compromise = all of that base's `+label` agents
-  (intended, §6.1); it does **not** extend to other users or to non-`+label`
-  identities at the domain. Domain-key compromise is unchanged (still the root
-  of trust; already catastrophic in the existing model).
-- **Interaction with per-warrant status.** The existing warrant status
-  (`warrant.rs:254-275`) still governs per-grant revocation and is pinned — now
-  to the cert's status authority instead of `registrar` for self-issued certs
-  (§4). So there are two independent revocation levers: per-agent (cert status,
-  §6.2) and per-grant (warrant status). The per-agent lever is the new one this
-  design adds; the per-grant lever is unchanged in mechanism, only re-pinned.
-- **Two-verifier consistency.** Because attribution is re-verified independently
-  in sbo-core, the constrained path must be implemented identically in both
-  browserid-core and sbo-core, or an agent write could verify in one and not the
-  other. This is the main correctness risk and the reason the change touches two
-  repos (§7).
+Primary (`sandmill.org`) stays **dumb** — no revocation infrastructure there.
+
+### 6.1 Chain revocation (expiry-driven)
+
+Verifiers check the whole chain, so **not renewing the short-lived base cert
+instantly invalidates every derived cert** under it (step 2 uses a hard
+`is_expired()`). Expiry-driven; no CRL at the primary. This is also the backstop
+that lets us drop status-endpoint pinning (§6.2): a compromised base key that
+names a dishonest status endpoint is still killed by base-cert non-renewal, which
+takes down all its derived certs regardless of endpoint. Matches the SBO spec's
+existing **expiry-over-revocation** stance ("SBO Attestation Specification.md"
+§ "expiry over revocation proofs"; browserid certs are short-lived and re-minted,
+not revoked).
+
+### 6.2 Per-agent revocation (browserid.me status authority), no pinning (decision G)
+
+A self-derived agent cert bakes in a `status` ref (§3.3) pointing at a status
+authority the base identity chose (browserid.me default). browserid.me publishes
+a signed status list and a `/account` revoke control; the owner authenticates by
+a **normal browserid assertion to browserid.me as an RP** and flips a specific
+agent's status bit.
+
+- **No pinning** (decision G): the verifier follows whatever endpoint the cert
+  names. An honest base key names an honest endpoint; a compromised base key is
+  backstopped by chain revocation (§6.1).
+- **Fail-open within cache/TTL** (decision G): when the named status endpoint is
+  **unreachable**, the verifier treats the cert as *not revoked* for the duration
+  of the cache/TTL window (so a status-authority outage does not brick every
+  agent). Revocation still propagates once the endpoint is reachable and the cache
+  expires.
+
+### 6.3 On-chain revocation for SBO (alternative anchor)
+
+For SBO, on-chain revocation = **submit a revocation record on-chain that the
+daemon reads offline** (NOT an online CRL). Prior art check: SBO **has no existing
+status/revocation-object design** — the "SBO Attestation Specification.md"
+explicitly uses **expiry-and-re-issuance** and defers strong revocation ("Strong
+revocation MAY be layered on later; it is out of scope for this version"), and
+"domain-self-certification.md" likewise defers lapse/transfer/revocation. So an
+on-chain agent-revocation object would be **new design** — flagged as an open item
+(OQ-onchain, §9), not something to reinvent silently. A natural shape following
+the attestation model: an issuer-namespace revocation object keyed to the agent
+cert, the daemon reading it as freshness state at validation time.
 
 ---
 
-## 7. Change inventory (EXISTS vs NEW, file:function, size)
+## 7. Change inventory (v2 — generalized primitive)
+
+Design principle (decision F): the self-derivation verification lives **once** in
+browserid-core as a shared function; sbo-core **calls** it (sbo-core already
+depends on browserid-core, pinned `rev = "e572cda"` in
+`crates/sbo-core/Cargo.toml:24`). Shared test vectors, no hand-synced copies.
 
 ### browserid-core (`/Users/thunder/src/browserid-ng/browserid-core`)
 
-- **`certificate.rs`** — MEDIUM.
-  - NEW const `TYP_SELF_AGENT_CERT` (near `TYP_AGENT_CERT`, line 16).
-  - EXISTS→EXTEND `Certificate::parse` matcher (`certificate.rs:223-241`): add
-    the `(Some(TYP_SELF_AGENT_CERT), true)` accepting arm; keep fail-closed on
-    everything else.
-  - NEW `Certificate::create_self_agent[_with_status]` (mirrors `create_agent`,
-    `certificate.rs:164-207`), enforcing the `+label` constraint at creation and
-    signing with the base key.
-  - NEW accessors: `is_self_agent()`, and a helper to parse
-    `<base>+<label>@<domain>` (base email + label). Small.
-- **`assertion.rs`** — MEDIUM/LARGE (security-critical).
-  - EXISTS→EXTEND `verify` (`assertion.rs:295-392`) and the multi-cert chain
-    branch (`assertion.rs:349-371`, which already verifies each cert against the
-    previous cert's key — the hook the `u7t8` verdict flagged). Add: recognize
-    the `[base, self_agent]` chain; run the §2.2 checklist (base domain-signed &
-    fresh, agent signed by base key, `+label` constraint, parent binding, status
-    presence). Route the warrant verification (`assertion.rs:376-386`) to use the
-    base cert as parent and the domain key as issuer key.
-  - EXISTS→EXTEND `check_structure` (`assertion.rs:250-271`): allow a
-    self-issued agent leaf preceded by exactly one plain base cert; keep the
-    "agent cert must be the leaf" and "warrant required for agent leaf" rules.
-- **`warrant.rs`** — SMALL.
-  - EXISTS→EXTEND `verify_for` step 6 (`warrant.rs:254-275`): generalize the
-    revocation-authority pin — `registrar` for domain-signed agents, `status`
-    origin (the cert's status authority) for self-issued agents. Steps 1/3
-    (`warrant.rs:189-195`, `214-233`) confirmed to need **no** change.
+- **`certificate.rs`** — MEDIUM. Self-derived typ marker (§3.1);
+  **universal `authority` claim on `CertificateClaims`** (new field, all certs)
+  + accessor; extend the `parse` matcher (`certificate.rs:223-241`) to accept the
+  self-derived arms and require `authority` per type; new
+  `create_self_derived_{agent,id}` constructors (§3.4), enforcing the name
+  constraint and setting `iss = base principal` (decision D); helper to parse
+  `<base>+<label>@<domain>`.
+- **`assertion.rs`** — MEDIUM/LARGE (security-critical). **NEW shared verifier
+  fn** (e.g. `verify_self_derived_chain(base, derived, domain_key) -> …`) that
+  runs the §2.3 checklist; call it from `verify` (`assertion.rs:295-392`, building
+  on the multi-cert chain branch `assertion.rs:349-371`). Extend `check_structure`
+  (`assertion.rs:250-271`) to allow a self-derived derived-leaf preceded by
+  exactly one plain base cert (agent leaf still requires a warrant; regular
+  derived leaf forbids one). **Harden the verifier result contract** (decision
+  E.1): make agent attribution structurally prominent (`AgentResult { acts_as,
+  scopes }` or non-optional agent block) rather than an easily-dropped `Option`.
+- **`warrant.rs`** — SMALL/MEDIUM. Generalize the issuer-match check
+  (`warrant.rs:189-195`) to `agent_cert.issuer() == parent.principal.email` on the
+  self-derived path (decision D — the v1 "no change" was wrong); generalize the
+  revocation-authority block (`warrant.rs:254-275`) to follow the cert's status
+  endpoint with no pinning + fail-open (decision G).
 
 ### sbo-core (`/Users/thunder/src/sbo/crates/sbo-core`)
 
-- **`attribution.rs`** — MEDIUM/LARGE (security-critical, mirrors browserid-core).
-  - EXISTS→EXTEND `verify_attribution_with_warrant` (`attribution.rs:~355-424`)
-    and `verify_attribution_with_provider_key` (`attribution.rs:520+`): today it
-    verifies the agent cert against the DNSSEC domain key via
-    `extract_provider_key`. Add the identity-signed branch: when the leaf is
-    `TYP_SELF_AGENT_CERT`, verify the **base cert** against the domain key (via
-    the existing `extract_provider_key` path) and the **agent leaf** against the
-    base cert's key, then apply the `+label` constraint + parent binding. The
-    cross-issuer plumbing already present (`warrant_delegator_issuer`,
-    `delegator_evidence`) is reused for the base-cert domain proof.
-  - EXISTS→EXTEND `verify_warrant_with_provider_key` (`attribution.rs:248-337`):
-    the warrant's `parent-cert` is now the base cert; the existing bindings
-    (`warrant.agent() == agent_email`, `warrant.delegator() ==
-    agent.parent == parent-cert principal`) already hold. Confirm the
-    signing-time window checks (`attribution.rs:~322-333`) apply against the
-    base cert. The self-issued cert carries no `registrar`, so if any
-    registrar-pin logic exists here it needs the same generalization as
-    browserid-core §4.
-  - NOTE: the daemon's `as:`/effective-author resolution
-    (`authorize.rs::warrant_effective_email`, `validate.rs::resolve_creator`)
-    needs **no change** — it already collapses `+label`/agent to the base email
-    and matches `roles.admin` (per `u7t8` verdict).
+- **`attribution.rs`** — SMALL/MEDIUM (down from v1's Medium/Large, because of
+  decision F). Instead of re-implementing the constrained path, **call the shared
+  browserid-core verifier**. `verify_attribution_with_warrant`
+  (`attribution.rs:~355-424`) and `verify_warrant_with_provider_key`
+  (`attribution.rs:248-337`): when the leaf is self-derived, verify the base cert
+  against the DNSSEC domain key (existing `extract_provider_key`) and delegate the
+  base→derived link + name constraint to the shared fn; the warrant's `parent-cert`
+  is the base cert. May require bumping the browserid-core pin
+  (`Cargo.toml:24`) to a rev that exports the shared fn.
+- **`sbo-daemon` effective-author** (`validate.rs::resolve_creator`,
+  `authorize.rs::warrant_effective_email`) — MEDIUM (behavior change, decision B).
+  Replace `as:` resolution with "effective author = the verified derived cert's
+  principal." Invalidate all existing warrants by code change (no chain event, no
+  re-genesis — §5). This is the most behaviorally significant SBO change.
 
-### browserid-broker / registrar — MEDIUM (the browserid.me status-authority service)
+### browserid-broker / registrar — MEDIUM
 
-- **NEW service: status authority for self-issued certs** (browserid-broker
-  routes + registrar store). Register a self-issued cert's status subject,
-  publish the signed status list (reuse the existing warrant status-list
-  publisher — same `StatusRef` shape and `/.well-known/browserid-status` URI),
-  and add a `/account` revoke control.
-- **`browserid-broker/static/account.html`** — SMALL/MEDIUM: the revoke control
-  UI for self-issued agents (list the owner's self-issued agents + a revoke
-  button). NOTE: editing broker inline scripts requires updating
-  `INLINE_SCRIPT_HASHES` in `routes/mod.rs` (see repo memory `csp-inline-script-hashes`).
-- **Owner auth for revoke**: no new auth — a normal browserid assertion to
-  browserid.me as an RP proves the owner; the revoke endpoint checks the asserted
-  email owns the status subject.
+- NEW status-authority service for self-derived agent certs (register status
+  subject, publish signed status list — reuse the existing warrant status-list
+  publisher + `StatusRef` shape, no pinning per decision G).
+- **`browserid-broker/static/account.html`** — SMALL/MEDIUM: revoke control UI
+  (list owner's self-derived agents + revoke). CSP gotcha: editing broker inline
+  scripts requires updating `INLINE_SCRIPT_HASHES` in `routes/mod.rs`
+  (repo memory `csp-inline-script-hashes`).
+- Owner auth: no new auth — a normal browserid assertion to browserid.me as an RP.
 
 ### browserid-agent SDK + mingo — MEDIUM
 
-- **`browserid-agent/src/lib.rs`** (`AgentIdentity` / provisioning path,
-  around the `provision` / cert-refresh flow): NEW self-issue path — instead of
-  POSTing `{idp}/provision/mint` (the call that 404s for sandmill.org), the
-  client takes the human-approved base credential, self-issues the `+label`
-  agent cert with the base key (`create_self_agent`), registers the status
-  subject at browserid.me, embeds the **fresh** base cert, and persists the
-  bundle. `mingo login --idp` (the mint) becomes unnecessary for this path.
-- **`sdk/agent`** (TS SDK, README documents `provision` / cert refresh at
-  `{idp}/provision/mint`): mirror the self-issue path for JS clients if parity
-  is wanted (can defer).
-- **mingo `mingo-app/src/login.rs`** (`/Users/thunder/src/mingo/mingo-app`):
-  replace the failed-mint fail-fast (commit c88d23e, from `browserid-ng-3nsg`)
-  with the self-issue flow when the home IdP lacks agent provisioning; pass the
-  CLI label hint (roadmap item 7) as `<label>`.
+- **`browserid-agent/src/lib.rs`** (`AgentIdentity` provision/refresh path):
+  NEW self-derive path — take the human-approved base credential, self-sign the
+  derived cert with the base key (`create_self_derived_*`), register the status
+  subject at browserid.me, embed the **fresh** base cert, persist. Replaces the
+  `/provision/mint` POST that 404s for sandmill.org. `mingo login --idp` becomes
+  unnecessary for this path.
+- **`sdk/agent`** (TS SDK): mirror for JS clients (can defer).
+- **mingo `mingo-app/src/login.rs`**: replace the failed-mint fail-fast (commit
+  c88d23e) with the self-derive flow; CLI label hint (roadmap item 7) → `<label>`.
 
 ### Size summary
 
-| Piece | Size | Risk |
-|---|---|---|
-| browserid-core `certificate.rs` | Medium | Low |
-| browserid-core `assertion.rs` | Medium/Large | High (security-critical) |
-| browserid-core `warrant.rs` | Small | Medium |
-| sbo-core `attribution.rs` | Medium/Large | High (must mirror core exactly) |
-| broker/registrar status authority | Medium | Medium |
-| `account.html` revoke UI | Small/Medium | Low (CSP hash gotcha) |
-| agent SDK + mingo self-issue | Medium | Medium |
+| Piece | Size | Risk | Note |
+|---|---|---|---|
+| browserid-core `certificate.rs` | Medium | Low | + universal `authority` field |
+| browserid-core `assertion.rs` | Medium/Large | High | shared verifier fn + hardened result contract |
+| browserid-core `warrant.rs` | Small/Medium | Medium | issuer-match correction + no-pin/fail-open |
+| sbo-core `attribution.rs` | Small/Medium | Medium | **calls** shared fn (F), not a copy |
+| sbo-daemon effective-author | Medium | Medium/High | retire `as:`, invalidate warrants (code-only) |
+| broker/registrar status authority | Medium | Medium | no pinning |
+| `account.html` revoke UI | Small/Medium | Low | CSP hash gotcha |
+| agent SDK + mingo self-derive | Medium | Medium | |
 
 ---
 
-## 8. Open questions
+## 8. Phasing (build order, decision J)
+
+1. **agent-as-self FIRST** (case 1). Unblocks the mingo admin migration
+   (`mingo-3mhi`) and exercises the whole chain — self-signing, base-cert embed,
+   warrant, two-verifier path, effective-author-by-principal — end to end.
+2. **subaddress-regular** (case 3, per-site login) and **subaddress-agent**
+   (case 2) on the same primitive, once case 1 is proven.
+
+---
+
+## 9. Open questions
 
 - **OQ-1 (status-subject registration).** How does the base identity register a
-  self-issued cert's status subject at browserid.me *before* first use, without
-  browserid.me having minted anything? Likely: the owner authenticates to
-  browserid.me as an RP (normal assertion) and pre-allocates a status index /
-  list that the client then embeds in `create_self_agent`. Defines whether
-  self-issuance can be fully offline or needs one online registration step.
-- **OQ-2 (status-URI trust / pinning).** Must a verifier *trust* the status
-  authority named in a self-issued cert, or accept any origin? Proposal: pin to
-  a small allowlist (browserid.me by default; on-chain for SBO), so a compromised
-  base key cannot point revocation at an attacker-controlled always-"valid"
-  status list. Needs a decision on how the allowlist is configured per verifier.
-- **OQ-3 (base-cert refresh cadence at presentation).** Exact base-cert
-  validity and how aggressively the client must re-fetch a fresh base cert. Too
-  short → constant re-auth friction; too long → slow chain revocation. Suggest
-  matching the existing 24h agent/U_cert cadence but confirm against the CLI UX.
-- **OQ-4 (self-describing marker choice).** Distinct `typ`
-  (`TYP_SELF_AGENT_CERT`, preferred, §3.1) vs a `sig` claim on the existing agent
-  typ. Distinct typ is fail-closed-legible; confirm no downstream consumer
-  enumerates agent certs solely by `TYP_AGENT_CERT` in a way the new typ would
-  silently skip.
-- **OQ-5 (two-verifier drift).** How to keep the browserid-core and sbo-core
-  implementations of the constrained path provably in sync (shared test vectors?
-  a shared verification helper in browserid-core that sbo-core calls?). This is
-  the top correctness risk (§6).
-- **OQ-6 (RPs that treat `x+label@d` as distinct).** A web RP that keys accounts
-  on the full email would see `danmills+mingo-cli@sandmill.org` as a different
-  principal than `danmills@sandmill.org`. For SBO this is resolved by the `as:`
-  path; for generic web RPs, note it as a caveat (the `+label` agent is a
-  distinct principal unless the RP canonicalizes).
-```
+  self-derived agent cert's status subject at browserid.me *before* first use,
+  without browserid.me having minted anything? Likely one online step: owner
+  authenticates as an RP and pre-allocates a status index the client embeds.
+  Determines whether self-derivation is fully offline or needs one registration
+  round-trip.
+- **OQ-3 (base-key stability — the one factual thing to confirm before
+  implementing).** Is a classic primary's identity **key** stable across base-cert
+  refreshes, or does it rotate per login?
+  - *Stable* → derived agent certs signed by it **survive** base-cert refreshes,
+    can be long-lived, and need only a fresh base cert embedded at presentation.
+  - *Rotates per login* → derived agent certs are bounded by the base cert and
+    must be re-issued on rotation; dan's "≥8h base validity when minting" rule
+    applies. The CLI's **own** agent key is stable regardless; this question is
+    only about the base identity key the derived cert is signed by.
+- **OQ-onchain (SBO on-chain revocation design).** No prior SBO status/revocation
+  object exists (§6.3) — SBO defers strong revocation to expiry. An on-chain
+  agent-revocation record (issuer-namespace object the daemon reads as freshness
+  state) is **new design** if pursued; scope it deliberately or stay expiry-only.
+
+**Decided (were open in v1):** OQ-2 revocation pinning → **dropped** (follow the
+named endpoint, fail-open in cache window; decision G). OQ-4 marker → the
+**verification typ** (how to verify) is kept **distinct** from the **`authority`
+field** (what it grants); both exist (decision H). OQ-5 anti-drift → **shared
+verifier fn in browserid-core called by sbo-core** + shared test vectors
+(decision F). The old OQ-6 ("web RPs treat `x+label@d` as distinct") is now a
+*feature* (case 3, per-site login identities), not a caveat.
+
+---
+
+## Changelog — what changed from v1
+
+v1 (earlier same day) specified a **+label-agent-only** self-delegation cert. v2
+generalizes and corrects it per dan + team-lead alignment:
+
+- **Generalized to one self-derivation primitive** (A): base `user@domain` may
+  self-sign a derived cert with principal ∈ {self, +label} and type ∈ {agent,
+  regular} — four cases, one rule, one verification path (was: +label agent
+  only). Adds per-site subaddress **login** identities (case 3).
+- **Retired the `as:` scope hack** (B): the acting identity is now the derived
+  cert's **principal**; the daemon trusts the verified principal instead of
+  resolving `as:`. Warrant invalidation is a **code change, not a chain event** —
+  no transition window, no re-genesis.
+- **Corrected the issuer semantics** (D): a self-issued derived cert's `iss` is
+  the **base identity**, not the domain. v1 §4's "warrant.rs:189 needs no change"
+  was **wrong**; the issuer-match check is generalized to `agent_cert.issuer() ==
+  parent.principal.email`.
+- **Kept cert and warrant separate** (C), with the rationale (uniformity,
+  identity/authorization separation, well-built warrant factoring) and the hinge
+  (collapse only becomes attractive if IdP-issued agents are ruled out) recorded.
+- **Naive-RP mitigations** (E): hardened verifier result contract (MUST surface
+  agent-ness + scopes), a **universal explicit `authority` field** on all cert
+  types (open vs closed), and a SHOULD directive; plus the reaffirmed
+  WarrantRequired backstop.
+- **Anti-drift decided** (F): one shared verifier in browserid-core, called by
+  sbo-core (pin `e572cda`) — sbo-core `attribution.rs` drops from Medium/Large to
+  Small/Medium.
+- **Revocation pinning dropped** (G): follow the cert's named status endpoint,
+  fail-open within the cache/TTL window; on-chain revocation for SBO noted as new
+  design (no prior SBO status object).
+- **Markers clarified** (H): verification typ (how to verify) distinct from the
+  `authority` field (what it grants).
+- **OQ-3 sharpened** (I): the key factual pre-implementation check is base-key
+  stability across refreshes.
+- **Phasing** (J): agent-as-self first, then subaddress cases.

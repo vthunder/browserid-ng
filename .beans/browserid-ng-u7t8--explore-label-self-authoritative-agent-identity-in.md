@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: high
 created_at: 2026-07-17T14:30:49Z
-updated_at: 2026-07-17T15:03:51Z
+updated_at: 2026-07-17T18:55:12Z
 parent: browserid-ng-mr2n
 ---
 
@@ -50,3 +50,20 @@ Change inventory (EXISTS vs NEW, security-critical in TWO cores — must mirror)
 - browserid-agent lib.rs + mingo login.rs: self-issue path replacing the failed /provision/mint; `mingo login --idp` becomes unnecessary.
 
 Open questions: status-subject pre-registration at browserid.me; status-URI trust/pinning (allowlist); base-cert refresh cadence; typ-vs-claim marker; keeping the two verifiers in sync; web RPs treating x+label@d as a distinct principal.
+
+
+## SPEC v2 (2026-07-17) — GENERALIZED to a self-derivation primitive
+
+Revised design at docs/plans/2026-07-17-label-self-delegation-agent-cert-design.md (v2). What changed from v1:
+
+- GENERALIZED (A): one self-derivation rule. Base user@domain (holding its domain-signed base cert+key) self-signs a derived cert, principal in {self, +label}, type in {agent, regular}. Four cases, one verification path: agent-as-self, agent-as-subaddress, regular-subaddress LOGIN (per-site privacy), and the domain-signed base root.
+- RETIRED as: (B): acting identity = the derived cert's PRINCIPAL. Daemon effective-author trusts the verified principal instead of resolving as:. Invalidating existing warrants is a CODE change, not a chain event (warrants ride in a write's auth_warrant, checked at validation time) - no transition window, no re-genesis.
+- CORRECTED issuer semantics (D): a self-issued derived cert's iss is the BASE IDENTITY, not the domain. v1's "warrant.rs:189 no change" was a bug; generalized to agent_cert.issuer() == parent.principal.email.
+- KEPT cert+warrant separate (C): uniformity across self-signed and future IdP-issued agents; identity/authorization separation; well-built warrant factoring. Warrant stays mandatory+audience-bound for agents; authority = warrant scopes. Collapse only attractive if IdP-issued agents are ruled out.
+- NAIVE-RP mitigations (E), 3 layers: MUST-surface AgentResult{acts_as,scopes} on conformant verifiers (strongest); a UNIVERSAL explicit authority field on all certs (open=identity, closed=agent); a SHOULD directive; + the WarrantRequired backstop.
+- ANTI-DRIFT decided (F): implement the verification ONCE in browserid-core, sbo-core CALLS it (pin e572cda). sbo-core attribution.rs drops Medium/Large -> Small/Medium.
+- REVOCATION pinning DROPPED (G): follow the cert's named status endpoint, fail-open within cache/TTL; chain revocation (base-cert non-renewal) backstops a compromised key. On-chain revocation for SBO = new design (SBO has no prior status object - it defers to expiry).
+- Marker (H): verification typ (how to verify) kept distinct from the authority field (what it grants).
+- PHASING (J): agent-as-self FIRST (unblocks mingo admin migration + exercises the whole chain), then subaddress-regular + subaddress-agent.
+
+Remaining open questions: OQ-1 status-subject registration at browserid.me before first use; OQ-3 (the one factual pre-impl check) whether a classic primary's identity KEY is stable across base-cert refreshes (stable -> derived agent certs survive/long-lived; rotates -> bounded by base cert, ">=8h base validity" rule); OQ-onchain SBO on-chain revocation object is new design if pursued.
