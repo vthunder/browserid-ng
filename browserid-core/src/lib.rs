@@ -23,8 +23,8 @@ pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;
 pub use provisioning::{
     Action, Constraint, Endorsement, ExternalWarrantRequest, ProvisioningCert,
-    ProvisioningRequest, RequestBundle, VerifiedExternalRequest, VerifiedRequest, WarrantGrant,
-    MAX_WARRANT_GRANTS,
+    ProvisioningRequest, RequestBundle, Subject, VerifiedExternalRequest, VerifiedRequest,
+    WarrantGrant, MAX_WARRANT_GRANTS,
 };
 pub use rp_auth::{RpChallenge, TokenRequest, TokenResponse};
 pub use status::{StatusList, StatusListToken, StatusRef, TYP_STATUS_LIST};

@@ -142,6 +142,7 @@ pub async fn make_credential_email(base: &str, email: &str) -> (AgentCredential,
     // the tests mint plus an `svc+*` pattern for the generated-name path.
     let provisioning_kp = KeyPair::generate();
     let constraint = browserid_core::Constraint {
+        subjects: vec![browserid_core::Subject::Agent],
         names: ["attestor", "worker", "bot"].iter().map(|s| s.to_string()).collect(),
         patterns: vec!["svc+*".into()],
     };

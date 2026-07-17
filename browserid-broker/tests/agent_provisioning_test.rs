@@ -84,6 +84,7 @@ async fn register_agent_key(
         email_sender,
         email,
         Constraint {
+            subjects: vec![browserid_core::Subject::Agent],
             names: ["attestor", "other", "one", "two", "three", "bot", "doomed", "worker"]
                 .iter()
                 .map(|s| s.to_string())
@@ -518,7 +519,7 @@ async fn constraint_enforced_on_mint() {
         &server,
         &email_sender,
         "human@localhost:3000",
-        Constraint { names: vec!["attestor".into()], patterns: vec!["svc+*".into()] },
+        Constraint { subjects: vec![browserid_core::Subject::Agent], names: vec!["attestor".into()], patterns: vec!["svc+*".into()] },
     )
     .await;
 
