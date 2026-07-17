@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: high
 created_at: 2026-07-17T14:30:49Z
-updated_at: 2026-07-17T18:55:12Z
+updated_at: 2026-07-17T19:09:31Z
 parent: browserid-ng-mr2n
 ---
 
@@ -67,3 +67,11 @@ Revised design at docs/plans/2026-07-17-label-self-delegation-agent-cert-design.
 - PHASING (J): agent-as-self FIRST (unblocks mingo admin migration + exercises the whole chain), then subaddress-regular + subaddress-agent.
 
 Remaining open questions: OQ-1 status-subject registration at browserid.me before first use; OQ-3 (the one factual pre-impl check) whether a classic primary's identity KEY is stable across base-cert refreshes (stable -> derived agent certs survive/long-lived; rotates -> bounded by base cert, ">=8h base validity" rule); OQ-onchain SBO on-chain revocation object is new design if pursued.
+
+
+## SPEC v3 (2026-07-17) — OQ-1 + OQ-3 RESOLVED
+
+- OQ-3 RESOLVED: the base identity key ROTATES per login/provision (client evidence: keystore.js:64-70 fresh non-extractable key each generate(); dialog.js:226-253/301-318/440-460 reuse only while cert unexpired; provisioning.js:98-108 fresh per provision; keygen is client-side in the browserid dialog). CONSEQUENCE: derived agent cert is BOUNDED by the base cert - re-issue on base refresh, agent validity <= base validity, hard is_expired on the embedded base cert, ">=8h base validity when minting" rule. UX: self-derived agents expire with the base (~24h) -> periodic re-auth; fine for interactive CLIs (mingo admin), but unattended bots want the IdP-minted path (reinforces decision C). Design treats the key as rotating: correct today, future-proof if keys ever stabilize.
+- OQ-1 RESOLVED: as-is needs a server-allocated status idx (StatusRef.idx is a server autoincrement; revoke flips existing rows), BUT validity is already lazy (positive/revoked-only list, absence=valid). DECISION: target FULLY-OFFLINE revocation via 3 small status-service changes - self-derivable idx = wide-truncation hash(subject) (>=64-bit, ideally 128-bit), sparse revoked-set encoding (not the dense MAX(idx) bitmap), and a revoke-by-assertion upsert endpoint (owner assertion binds the subject). DEFER all 3 to PHASE 2 (the browser-RP subaddress cases needing per-agent revocation). PHASE 1 (agent-as-self / mingo admin) relies on CHAIN revocation (base-cert expiry) + SBO on-chain, verifier fail-open on the named endpoint - no new status-service work.
+
+Only OQ-onchain (SBO on-chain revocation object = new design) remains open. Doc bumped to v3.

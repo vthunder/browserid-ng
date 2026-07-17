@@ -1,8 +1,8 @@
 # Self-Derivation Certificates — Design Spec & Change Inventory
 
 Status: DESIGN (no production code). Author: agent for team-lead / dan.
-Date: 2026-07-17. Version: **v2** (generalized self-derivation primitive; v1 was
-+label-agent-only — see the changelog at the end).
+Date: 2026-07-17. Version: **v3** (OQ-1 + OQ-3 resolved; v2 generalized the
+primitive; v1 was +label-agent-only — see the changelog at the end).
 Roadmap: item 4 of epic `browserid-ng-mr2n` (CLI-auth / agent identities for
 external-primary IdP users). Bean `browserid-ng-u7t8`. Chosen by dan over item 3
 (`browserid-ng-pv9b`, browserid.me-rooted agent).
@@ -267,6 +267,36 @@ Role/owner matching then works directly: `roles.admin =
 author **is** `danmills@sandmill.org` (the derived cert's principal) — no `as:`
 plumbing, no canonicalization.
 
+### 5.1 Base-cert lifetime binding (OQ-3 resolved: base key rotates)
+
+OQ-3 is **resolved: the base identity key ROTATES per login/provision** (b).
+Decisive from the client code: `keystore.js:64-70` `generate()` makes a fresh
+non-extractable key every time; `dialog.js:226-253` `generateCertificate` always
+generates a new key and only reuses a stored key (`dialog.js:301-318`,
+`440-460`) while its cert is unexpired; the classic-primary path
+`provisioning.js:98-108` `genKeyPair` is likewise fresh per provision. Keygen is
+client-side in the browserid dialog, so this holds regardless of the external
+primary's own pages.
+
+**Consequence — the self-derived agent cert is BOUNDED by the base cert:**
+
+- **Re-issue** the derived agent cert whenever the base cert refreshes (a new base
+  key means the old derived cert no longer chains).
+- **Bind the lifetime**: `agent cert validity <= base cert validity`; embed a
+  **fresh** base cert at presentation; the verifier does a **hard `is_expired()`**
+  check on the embedded base cert (already step 2, §2.3).
+- Apply the **"≥8h base validity when minting"** rule so a derived agent has a
+  usable working window before the base cert lapses.
+- **UX implication**: self-derived agents expire with the base cert (~24h) and
+  need periodic re-auth. Fine for **interactive** CLIs (mingo admin, phase 1);
+  **long-running unattended** agents (bots) are better served by the **IdP-minted**
+  path — which reinforces decision C (keep cert/warrant separate so the IdP-issued
+  agent path shares this presentation format).
+
+This "treat the base key as rotating, re-issue on refresh" design is correct
+today **and** future-proof: if primary keys ever became stable, the same design
+still works (it would merely permit, not require, longer-lived derived certs).
+
 ---
 
 ## 6. Revocation
@@ -301,6 +331,32 @@ agent's status bit.
   of the cache/TTL window (so a status-authority outage does not brick every
   agent). Revocation still propagates once the endpoint is reachable and the cache
   expires.
+
+#### 6.2.1 Fully-offline revocation (OQ-1 resolved), deferred to phase 2
+
+OQ-1 is **resolved**. As-is, revocability needs a **server-allocated** status
+index — `StatusRef.idx` is a server autoincrement and revoke only flips existing
+rows — so today an agent must be seeded server-side to be revocable. *Validity*,
+though, is already **lazy**: the list is positive/revoked-only, and **absence =
+valid**, so a not-yet-seeded agent still verifies.
+
+**Decision: target FULLY-OFFLINE revocation** via three small status-service
+changes, so no server round-trip is needed to make an agent revocable:
+
+1. **Self-derivable `idx`** = a wide-truncation `hash(subject)` computed offline
+   (≥64-bit, ideally 128-bit, to avoid cross-owner collision) — the owner derives
+   the index without asking the server.
+2. **Sparse revoked-set list encoding** instead of the dense `MAX(idx)` bitmap
+   (a hashed 128-bit index space cannot be a dense bitmap).
+3. **Revoke-by-assertion endpoint** that **upserts** the row, authorized by the
+   owner's assertion binding the subject (no pre-seeded row required).
+
+**Phasing (decision J alignment):** DEFER all three to **phase 2** — the
+browser-RP subaddress cases (2, 3) that actually need per-agent revocation.
+**Phase 1** (agent-as-self / mingo admin) relies on **chain revocation**
+(base-cert expiry, §6.1) plus **SBO on-chain** (§6.3) as the SBO-native option;
+the phase-1 verifier treats a named status endpoint as **fail-open** (§6.2). So
+phase 1 ships with no new status-service work.
 
 ### 6.3 On-chain revocation for SBO (alternative anchor)
 
@@ -415,25 +471,24 @@ depends on browserid-core, pinned `rev = "e572cda"` in
 
 ## 9. Open questions
 
-- **OQ-1 (status-subject registration).** How does the base identity register a
-  self-derived agent cert's status subject at browserid.me *before* first use,
-  without browserid.me having minted anything? Likely one online step: owner
-  authenticates as an RP and pre-allocates a status index the client embeds.
-  Determines whether self-derivation is fully offline or needs one registration
-  round-trip.
-- **OQ-3 (base-key stability — the one factual thing to confirm before
-  implementing).** Is a classic primary's identity **key** stable across base-cert
-  refreshes, or does it rotate per login?
-  - *Stable* → derived agent certs signed by it **survive** base-cert refreshes,
-    can be long-lived, and need only a fresh base cert embedded at presentation.
-  - *Rotates per login* → derived agent certs are bounded by the base cert and
-    must be re-issued on rotation; dan's "≥8h base validity when minting" rule
-    applies. The CLI's **own** agent key is stable regardless; this question is
-    only about the base identity key the derived cert is signed by.
 - **OQ-onchain (SBO on-chain revocation design).** No prior SBO status/revocation
   object exists (§6.3) — SBO defers strong revocation to expiry. An on-chain
   agent-revocation record (issuer-namespace object the daemon reads as freshness
   state) is **new design** if pursued; scope it deliberately or stay expiry-only.
+
+Only OQ-onchain remains open. The rest are resolved:
+
+- **OQ-1 (status-subject registration) → RESOLVED (§6.2.1).** As-is it needs a
+  server-allocated `idx`, but validity is already lazy (absence = valid).
+  Decision: target **fully-offline** revocation (self-derivable hashed `idx`,
+  sparse revoked-set encoding, revoke-by-assertion upsert), **deferred to phase 2**;
+  phase 1 relies on chain revocation + fail-open, no new status-service work.
+- **OQ-3 (base-key stability) → RESOLVED (§5.1): the base key ROTATES** per
+  login/provision (evidence: `keystore.js:64-70`, `dialog.js:226-253`/`301-318`/
+  `440-460`, `provisioning.js:98-108`). So a derived agent cert is **bounded by
+  the base cert** — re-issue on refresh, `agent validity <= base validity`, hard
+  base `is_expired()`, "≥8h base validity" rule; design treats the key as rotating
+  (correct today, future-proof if keys ever stabilize).
 
 **Decided (were open in v1):** OQ-2 revocation pinning → **dropped** (follow the
 named endpoint, fail-open in cache window; decision G). OQ-4 marker → the
@@ -445,10 +500,25 @@ verifier fn in browserid-core called by sbo-core** + shared test vectors
 
 ---
 
-## Changelog — what changed from v1
+## Changelog
 
-v1 (earlier same day) specified a **+label-agent-only** self-delegation cert. v2
-generalizes and corrects it per dan + team-lead alignment:
+**v3 (same day) — resolved the last two design open questions:**
+
+- **OQ-3 → RESOLVED: base key rotates** (§5.1). Confirmed from the browserid
+  dialog client that a fresh non-extractable key is generated per login/provision.
+  The derived agent cert is bound to the base cert (re-issue on refresh, `agent
+  validity <= base validity`, hard base expiry, "≥8h base validity" rule). UX
+  note: self-derived agents expire with the base cert (~24h) → periodic re-auth,
+  fine for interactive CLIs, not for unattended bots (reinforces decision C).
+- **OQ-1 → RESOLVED: fully-offline revocation, deferred to phase 2** (§6.2.1).
+  As-is needs a server-allocated `idx`; validity is already lazy (absence=valid).
+  Phase-2 changes (self-derivable hashed `idx`, sparse revoked-set encoding,
+  revoke-by-assertion upsert) make revocation offline; phase 1 leans on chain
+  revocation + fail-open, so it ships with no new status-service work.
+
+**v2 (same day) — generalized the primitive** per dan + team-lead alignment.
+v1 specified a **+label-agent-only** self-delegation cert; v2 generalizes and
+corrects it:
 
 - **Generalized to one self-derivation primitive** (A): base `user@domain` may
   self-sign a derived cert with principal ∈ {self, +label} and type ∈ {agent,
