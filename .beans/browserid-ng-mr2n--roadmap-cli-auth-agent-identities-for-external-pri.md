@@ -5,7 +5,7 @@ status: todo
 type: epic
 priority: high
 created_at: 2026-07-17T14:30:49Z
-updated_at: 2026-07-17T14:30:49Z
+updated_at: 2026-07-17T15:03:58Z
 ---
 
 Roadmap from dan (2026-07-17) after `mingo login` as danmills@sandmill.org hit the primary-IdP agent-provisioning gap (browserid-ng-3nsg). Goal: let a user whose home IdP (sandmill.org) is a classic primary WITHOUT agent-provisioning still get a CLI agent that acts as: their primary identity. Parent epic for browserid-ng-wmgb (CLI-auth) + the items below.
@@ -37,3 +37,8 @@ The client (CLI) can pass a hint that becomes the label — use it in mingo cli,
 - (4) is the most elegant if it holds: no broker hosting, no IdP cooperation, universal across primaries. Explore FIRST; (3) is the reliable fallback (it definitely works — it's the mingo-poster shape with an external parent + cross-issuer warrant). The crux risk in (4) is whether cert verification + sbo attribution can honor +label-authoritative cleanly.
 - (0), (1), (6) are independent of the (3)/(4) outcome and can proceed now.
 - Sequence: 0 (now) -> explore 4 (+label) & 3 (broker-agent) in parallel -> pick -> 2/5/7 build; 1 & 6 as standalone UX/bug fixes.
+
+
+## DECISION (2026-07-17): item 4 (+label self-delegation) is the CHOSEN direction
+
+Dan chose item 4 over item 3 (browserid.me-rooted agent). Design spec + change inventory: docs/plans/2026-07-17-label-self-delegation-agent-cert-design.md; summary on bean browserid-ng-u7t8. Approach = name-constrained self-delegation: base danmills@sandmill.org identity key self-issues a danmills+label@sandmill.org agent cert (new constrained trust path added to browserid-core + sbo-core, NOT a weakening of the domain-signed path), fresh base cert embedded at presentation, per-agent revocation via a browserid.me-hosted status list. Next: build (items 2/5/7 fold into this) after spec review.
