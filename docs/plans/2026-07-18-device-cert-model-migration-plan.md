@@ -231,11 +231,14 @@ the phase list above where they conflict.
 - **B4** Enforce `subject`-equality in the join; `authentication`-only-mints /
   `authorization`-only-signs; absent purpose/subject ⇒ reject. → P1, P6.
 
-## C. Rollout safety (the biggest structural change — was a hard cutover)
+## C. Rollout — CLEAN CUTOVER (decided by user, 2026-07-18)
 
-The plan assumed a hard cutover. There ARE live consumers (mingo CLI, sbo log,
-guestbook, browserid.me accounts). Even under "no one else is using it," the
-**data-loss** items below are real. New principles:
+**Decision: clean cutover, no dual-support.** Consumers are re-provisioned and the
+irreversible data-loss items are **accepted** (sbo historical attribution,
+existing warrants, provisioning certs). The full breakage punch-list is
+`docs/plans/2026-07-18-cutover-breakage-inventory.md`. C1 (dual-support / version-
+tag / tolerant-verifier) is therefore **dropped**. The remaining items are kept
+only as *build-time* hygiene (not prod-coexistence):
 
 - **C1 Dual-support, don't cut over.** The verifier + broker accept BOTH old
   (`cert~assertion`, no warrant) AND new (4-object, warrant-mandatory) bundles for
