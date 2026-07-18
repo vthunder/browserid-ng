@@ -37,6 +37,24 @@ These are the decisions taken after the review; they drive the canonical spec
    implementation (discovery is DNSSEC-primary, not `.well-known`-first).
 6. **Layering:** agent provisioning + SBO on-chain attribution remain
    **separate linked modules** on top of the core protocol, not core.
+7. **Device-cert model** (resolved 2026-07-18; supersedes the "wire formats kept
+   faithful / assertion chain unchanged" stance for items 4, 5, 7, 9). The
+   credential structure is re-shaped: durable IdP-signed **device certs**
+   (`purpose` ∈ {authentication, authorization} × `subject` ∈ {user, agent}),
+   never seen by the RP, mint short-lived fresh-key **access certs**; an
+   `authorization`-purpose **config cert** signs **warrants** over `(identifier,
+   subject) → audience[+scopes]`. The RP receives a **four-object bundle**
+   `access_cert~assertion~warrant~config_cert`, joined by `(identity, subject,
+   audience)`, with `config_cert.iss == access_cert.iss` (identity's own IdP) and
+   three fail-closed status authorities (access→IdP, config→IdP, warrant→hosted
+   broker). **Every IdP MUST implement device-cert issuance (both purposes) and
+   the access-cert mint API**, so agents mint **headless**. Only the JWT/Ed25519
+   building blocks and the tilde-join are inherited from BrowserID; the long-lived
+   RP-facing identity cert and the delegation-chain provisioning of the agent
+   module are dropped. Source of truth: `docs/design/browserid-end-to-end-flow.md`;
+   built types `browserid-core/src/device.rs`; wire vectors
+   `test-vectors/device-cert-v1.json`; migration/divergence detail
+   `docs/plans/2026-07-18-divergence-analysis/`.
 
 ---
 
@@ -90,7 +108,11 @@ Phase 3 decisions above for final resolutions.)*
 ### 5. Backed assertion + assertion format
 - **Mozilla:** `<cert>~…~<assertion>`; assertion `exp`+`aud`.
 - **Ours:** **identical** tilde format (`assertion.rs:135-179`); assertion JWT `EdDSA`, claims `exp`+`aud` (`assertion.rs:12-19,91`).
-- **Flag: KEEP** (faithful wire compat; only the signature alg differs).
+- **Flag: KEEP shape, RESTRUCTURED by Phase 3 #7.** The tilde-join is inherited,
+  but the RP bundle is now the four objects `access_cert~assertion~warrant~config_cert`
+  (joined by `(identity, subject, audience)`), not `<cert>~<assertion>`. The
+  assertion is signed by the **fresh access key**, and a warrant is **always**
+  present. See `browserid-core/src/device.rs`.
 
 ### 6. Verification
 - **Mozilla:** remote verifier API `{assertion, audience}`.
@@ -99,8 +121,14 @@ Phase 3 decisions above for final resolutions.)*
 
 ### 7. Primary IdP + browser API
 - **Mozilla:** shimmed **`navigator.id`**, dialog-driven.
-- **Ours:** **no `navigator.id`.** First-party `/auth` + `/provision` pages, `provisioning_api.js`/`authentication_api.js` shims, `wsapi/*` endpoints, a broker **signer popup** (`/sign`), and `include.js` + `communication_iframe` kept only for RP compat (`routes/mod.rs`).
-- **Flag: KEEP** (navigator.id was never standardized; Persona is dead).
+- **Ours:** **no `navigator.id`.** First-party `/auth` + `/provision` pages, `provisioning_api.js`/`authentication_api.js` shims, `wsapi/*` endpoints, a broker **signer popup** (a first-party WinChan popup, not a hidden cross-origin iframe), and `include.js` + `communication_iframe` kept only for RP compat (`routes/mod.rs`).
+- **Flag: KEEP**, **extended by Phase 3 #7 (device-cert model).** The primary-IdP
+  surface now MUST include **device-cert issuance for both purposes** and the
+  **access-cert mint API** (support-doc `mint` endpoint), and the browser is
+  framed as **one device among many** that mints an access cert (cookie-free,
+  ITP-proof) and signs its login warrant locally with a config cert. The popup
+  channel is unchanged; the credential it produces is the four-object bundle, not
+  a `certificate~assertion`. (navigator.id was never standardized; Persona is dead.)
 
 ### 8. Fallback / broker
 - **Mozilla:** `login.persona.org` central fallback.
@@ -108,8 +136,13 @@ Phase 3 decisions above for final resolutions.)*
 - **Flag: KEEP.**
 
 ### 9. Agent provisioning + on-chain attribution — *net-new, no Mozilla analog*
-- Delegation-chain provisioning + grant API (`docs/specs/agent-provisioning-and-grant-api.md`); SBO on-chain attribution of an email identity to an `ed25519:` key via DNSSEC-proof objects.
-- **Flag: KEEP** → **Phase 3 #6: layered modules.**
+- Agent provisioning + grant API (`docs/specs/agent-provisioning-and-grant-api.md`); SBO on-chain attribution of an email identity to an `ed25519:` key via DNSSEC-proof objects.
+- **Flag: KEEP as a module** → **Phase 3 #6: layered modules**, **but the agent
+  module is re-based by #7:** the `U_cert~P_cert` delegation chain + registrar
+  endorsement is retired; an agent is now a **device with an `agent`-subject
+  device cert** issued directly by the IdP after user authorization (device-grant),
+  minting access certs headlessly. Warrants become config-cert-signed and
+  universal. SBO attribution is unaffected (still built on §6.3 offline proofs).
 
 ### 10. Dual discovery path (the open decision)
 - **Flag: DECIDE** → **Phase 3 #1: resolved — DNSSEC required, sole root.**
