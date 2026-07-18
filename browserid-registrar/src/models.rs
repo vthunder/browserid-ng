@@ -112,6 +112,36 @@ impl WarrantRequestRecord {
     }
 }
 
+/// A durable record of an IdP-signed device/config cert (DC Phase 3/4).
+/// Persisted so certs are listable and revocable; revoking flips the cert's
+/// status bit (shared status-list index space, egr7).
+#[derive(Debug, Clone)]
+pub struct DeviceCertRecord {
+    pub id: u64,
+    pub user_id: u64,
+    /// Emails (or single-`*` globs) the cert authorizes
+    pub identities: Vec<String>,
+    /// "authentication" | "authorization"
+    pub purpose: String,
+    /// "user" | "agent"
+    pub subject: String,
+    /// The device (or config) public key, base64 — UNIQUE registry key
+    pub pubkey: String,
+    /// Issuing IdP domain
+    pub iss: String,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    /// The cert's status-list index (its revocation bit), when it has one
+    pub status_idx: Option<u64>,
+}
+
+impl DeviceCertRecord {
+    pub fn is_active(&self) -> bool {
+        self.revoked_at.is_none()
+    }
+}
+
 /// A registered warrant (jipx): the delegator's own record of a grant they
 /// signed — one agent at one audience. Kept per account (shown only to the
 /// delegator's session), upserted on (user, agent, audience) so a reissue

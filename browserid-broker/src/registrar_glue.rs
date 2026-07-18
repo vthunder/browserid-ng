@@ -22,6 +22,7 @@ fn to_reg_err(e: BrokerError) -> RegistrarError {
     match e {
         BrokerError::ProvisioningCertNotFound => RegistrarError::ProvisioningCertNotFound,
         BrokerError::WarrantRequestNotFound => RegistrarError::WarrantRequestNotFound,
+        BrokerError::DeviceCertNotFound => RegistrarError::DeviceCertNotFound,
         BrokerError::NotAuthenticated => RegistrarError::NotAuthenticated,
         BrokerError::ValidationError(m) => RegistrarError::ValidationError(m),
         other => RegistrarError::Internal(other.to_string()),
@@ -133,8 +134,44 @@ fn from_reg_warrant(w: reg::WarrantRecord) -> crate::store::WarrantRecord {
         scopes: w.scopes,
         warrant: w.warrant,
         status_idx: w.status_idx,
+        // The registrar's WarrantRecord doesn't carry the device-cert-model
+        // fields; legacy/registrar-sourced warrants have neither.
+        subject: None,
+        config_cert: None,
         signed_at: w.signed_at,
         expires_at: w.expires_at,
+    }
+}
+
+fn to_reg_device_cert(c: crate::store::DeviceCertRecord) -> reg::DeviceCertRecord {
+    reg::DeviceCertRecord {
+        id: c.id,
+        user_id: c.user_id.0,
+        identities: c.identities,
+        purpose: c.purpose,
+        subject: c.subject,
+        pubkey: c.pubkey,
+        iss: c.iss,
+        issued_at: c.issued_at,
+        expires_at: c.expires_at,
+        revoked_at: c.revoked_at,
+        status_idx: c.status_idx,
+    }
+}
+
+fn from_reg_device_cert(c: reg::DeviceCertRecord) -> crate::store::DeviceCertRecord {
+    crate::store::DeviceCertRecord {
+        id: c.id,
+        user_id: UserId(c.user_id),
+        identities: c.identities,
+        purpose: c.purpose,
+        subject: c.subject,
+        pubkey: c.pubkey,
+        iss: c.iss,
+        issued_at: c.issued_at,
+        expires_at: c.expires_at,
+        revoked_at: c.revoked_at,
+        status_idx: c.status_idx,
     }
 }
 
@@ -279,6 +316,31 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
 
     fn revoked_status_indices(&self) -> Result<(Vec<u64>, u64), RegistrarError> {
         UserStore::revoked_status_indices(self.user_store.as_ref()).map_err(to_reg_err)
+    }
+
+    fn insert_device_cert(&self, rec: reg::DeviceCertRecord) -> Result<u64, RegistrarError> {
+        UserStore::insert_device_cert(self.user_store.as_ref(), from_reg_device_cert(rec))
+            .map_err(to_reg_err)
+    }
+
+    fn get_device_cert_by_pubkey(
+        &self,
+        pubkey: &str,
+    ) -> Result<Option<reg::DeviceCertRecord>, RegistrarError> {
+        UserStore::get_device_cert_by_pubkey(self.user_store.as_ref(), pubkey)
+            .map(|o| o.map(to_reg_device_cert))
+            .map_err(to_reg_err)
+    }
+
+    fn list_device_certs(&self, user_id: u64) -> Result<Vec<reg::DeviceCertRecord>, RegistrarError> {
+        UserStore::list_device_certs(self.user_store.as_ref(), UserId(user_id))
+            .map(|v| v.into_iter().map(to_reg_device_cert).collect())
+            .map_err(to_reg_err)
+    }
+
+    fn revoke_device_cert(&self, user_id: u64, cert_id: u64) -> Result<(), RegistrarError> {
+        UserStore::revoke_device_cert(self.user_store.as_ref(), UserId(user_id), cert_id)
+            .map_err(to_reg_err)
     }
 }
 

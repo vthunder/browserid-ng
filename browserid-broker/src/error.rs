@@ -92,6 +92,9 @@ pub enum BrokerError {
     #[error("Warrant request not found")]
     WarrantRequestNotFound,
 
+    #[error("Device certificate not found")]
+    DeviceCertNotFound,
+
     #[error("Polling too fast")]
     PollTooFast,
 }
@@ -177,6 +180,9 @@ impl IntoResponse for BrokerError {
             }
             BrokerError::WarrantRequestNotFound => {
                 (StatusCode::NOT_FOUND, "Warrant request not found")
+            }
+            BrokerError::DeviceCertNotFound => {
+                (StatusCode::NOT_FOUND, "Device certificate not found")
             }
             BrokerError::PollTooFast => (StatusCode::TOO_MANY_REQUESTS, "Polling too fast"),
         };
