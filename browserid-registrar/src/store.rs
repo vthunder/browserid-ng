@@ -2,7 +2,9 @@
 //! provides the persistence; the registrar owns the semantics.
 
 use crate::error::RegistrarError;
-use crate::models::{ProvisioningCertRecord, WarrantRecord, WarrantRequestRecord};
+use crate::models::{
+    DeviceCertRecord, ProvisioningCertRecord, WarrantRecord, WarrantRequestRecord,
+};
 
 pub type StoreResult<T> = Result<T, RegistrarError>;
 
@@ -110,4 +112,20 @@ pub trait RegistrarStore: Send + Sync {
 
     /// All revoked indices plus the current max index (bitmap capacity)
     fn revoked_status_indices(&self) -> StoreResult<(Vec<u64>, u64)>;
+
+    // --- Device certs (DC Phase 3/4): durable, revocable IdP-signed certs ---
+
+    /// Persist an issued device/config cert (upsert on its pubkey). Returns
+    /// the row id.
+    fn insert_device_cert(&self, rec: DeviceCertRecord) -> StoreResult<u64>;
+
+    /// Look up a device cert by its public key (base64)
+    fn get_device_cert_by_pubkey(&self, pubkey: &str) -> StoreResult<Option<DeviceCertRecord>>;
+
+    /// List a user's device certs (active and revoked)
+    fn list_device_certs(&self, user_id: u64) -> StoreResult<Vec<DeviceCertRecord>>;
+
+    /// Soft-revoke a device cert. Scoped to the owning user; errors with
+    /// `DeviceCertNotFound` if it doesn't exist or belongs to someone else.
+    fn revoke_device_cert(&self, user_id: u64, cert_id: u64) -> StoreResult<()>;
 }

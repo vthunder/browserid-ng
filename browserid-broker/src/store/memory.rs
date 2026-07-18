@@ -8,7 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    Email, EmailType, PendingVerification, ProvisioningCertRecord, Session, SessionId, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
+    DeviceCertRecord, Email, EmailType, PendingVerification, ProvisioningCertRecord, Session, SessionId, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, User, UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
@@ -27,6 +27,8 @@ pub struct InMemoryUserStore {
     next_status_idx: AtomicU64,
     next_user_id: AtomicU64,
     next_prov_cert_id: AtomicU64,
+    device_certs: RwLock<HashMap<u64, DeviceCertRecord>>,
+    next_device_cert_id: AtomicU64,
 }
 
 impl InMemoryUserStore {
@@ -43,6 +45,8 @@ impl InMemoryUserStore {
             next_status_idx: AtomicU64::new(1),
             next_user_id: AtomicU64::new(1),
             next_prov_cert_id: AtomicU64::new(1),
+            device_certs: RwLock::new(HashMap::new()),
+            next_device_cert_id: AtomicU64::new(1),
         }
     }
 
@@ -549,6 +553,48 @@ impl UserStore for InMemoryUserStore {
         let revoked = entries.values().filter(|(_, r)| *r).map(|(i, _)| *i).collect();
         let max = entries.values().map(|(i, _)| *i).max().unwrap_or(0);
         Ok((revoked, max))
+    }
+
+    fn insert_device_cert(&self, mut rec: DeviceCertRecord) -> StoreResult<u64> {
+        let mut certs = self.device_certs.write().unwrap();
+        // Upsert on pubkey: replace any existing row for the same key.
+        if let Some(existing_id) = certs
+            .values()
+            .find(|c| c.pubkey == rec.pubkey)
+            .map(|c| c.id)
+        {
+            rec.id = existing_id;
+        } else {
+            rec.id = self.next_device_cert_id.fetch_add(1, Ordering::SeqCst);
+        }
+        certs.insert(rec.id, rec.clone());
+        Ok(rec.id)
+    }
+
+    fn get_device_cert_by_pubkey(&self, pubkey: &str) -> StoreResult<Option<DeviceCertRecord>> {
+        let certs = self.device_certs.read().unwrap();
+        Ok(certs.values().find(|c| c.pubkey == pubkey).cloned())
+    }
+
+    fn list_device_certs(&self, user_id: UserId) -> StoreResult<Vec<DeviceCertRecord>> {
+        let certs = self.device_certs.read().unwrap();
+        let mut out: Vec<DeviceCertRecord> =
+            certs.values().filter(|c| c.user_id == user_id).cloned().collect();
+        out.sort_by_key(|c| c.id);
+        Ok(out)
+    }
+
+    fn revoke_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
+        let mut certs = self.device_certs.write().unwrap();
+        match certs.get_mut(&cert_id) {
+            Some(c) if c.user_id == user_id => {
+                if c.revoked_at.is_none() {
+                    c.revoked_at = Some(Utc::now());
+                }
+                Ok(())
+            }
+            _ => Err(BrokerError::DeviceCertNotFound),
+        }
     }
 }
 

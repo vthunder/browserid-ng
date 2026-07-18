@@ -219,8 +219,45 @@ pub struct WarrantRecord {
     pub warrant: String,
     /// The warrant's status index (from its `status` claim), when it has one
     pub status_idx: Option<u64>,
+    /// Device-cert-model subject ("user" | "agent"), when this warrant came
+    /// from the device-cert model (DC Phase 4). `None` for legacy warrants.
+    pub subject: Option<String>,
+    /// The config (authorization) device cert JWS that signed this warrant, in
+    /// the device-cert model (DC Phase 4). `None` for legacy warrants.
+    pub config_cert: Option<String>,
     pub signed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+}
+
+/// A durable record of an IdP-signed device cert or config cert issued via
+/// `/device/issue` (DC Phase 3/4). Persisted so the certs are listable and
+/// revocable: revoking flips the cert's status bit (shared status-list index
+/// space, egr7), which the RP-side verifier checks fail-closed.
+#[derive(Debug, Clone)]
+pub struct DeviceCertRecord {
+    pub id: u64,
+    pub user_id: UserId,
+    /// Emails (or single-`*` globs) the cert authorizes (JSON array on disk)
+    pub identities: Vec<String>,
+    /// "authentication" | "authorization"
+    pub purpose: String,
+    /// "user" | "agent"
+    pub subject: String,
+    /// The device (or config) public key, base64 — UNIQUE registry key
+    pub pubkey: String,
+    /// Issuing IdP domain
+    pub iss: String,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    /// The cert's status-list index (its revocation bit), when it has one
+    pub status_idx: Option<u64>,
+}
+
+impl DeviceCertRecord {
+    pub fn is_active(&self) -> bool {
+        self.revoked_at.is_none()
+    }
 }
 
 /// A user session

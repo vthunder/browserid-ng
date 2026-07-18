@@ -7,14 +7,14 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    Email, EmailType, PendingVerification, ProvisioningCertRecord, Session, SessionId,
-    SessionStore, StoreResult, User, UserId, UserStore, VerificationType, WarrantRecord,
+    DeviceCertRecord, Email, EmailType, PendingVerification, ProvisioningCertRecord, Session,
+    SessionId, SessionStore, StoreResult, User, UserId, UserStore, VerificationType, WarrantRecord,
     WarrantRequestRecord, WarrantRequestStatus,
 };
 use crate::error::BrokerError;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 11;
+const SCHEMA_VERSION: i32 = 12;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -94,6 +94,9 @@ impl SqliteStore {
             }
             if current_version < 11 {
                 Self::migrate_v11(conn)?;
+            }
+            if current_version < 12 {
+                Self::migrate_v12(conn)?;
             }
 
             // Update schema version
@@ -418,7 +421,72 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v12(conn: &Connection) -> Result<(), BrokerError> {
+        // Device-cert model (DC Phase 3/4): the durable, revocable record of
+        // IdP-signed device/config certs, plus device-model columns on the
+        // warrant registry. `status_entries.kind` gains 'device'/'access'/
+        // 'config' usage (free-text — no schema change).
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS device_certs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                identities TEXT NOT NULL,
+                purpose TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                pubkey TEXT NOT NULL UNIQUE,
+                iss TEXT NOT NULL,
+                issued_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT,
+                status_idx INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_device_certs_user ON device_certs(user_id);
+            ALTER TABLE warrants ADD COLUMN subject TEXT;
+            ALTER TABLE warrants ADD COLUMN config_cert TEXT;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
+
+// Row → DeviceCertRecord mapping (DC Phase 3/4)
+fn device_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceCertRecord> {
+    let parse_ts = |s: String| {
+        DateTime::parse_from_rfc3339(&s)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now())
+    };
+    let parse_ts_opt = |s: Option<String>| {
+        s.and_then(|s| {
+            DateTime::parse_from_rfc3339(&s)
+                .map(|dt| dt.with_timezone(&Utc))
+                .ok()
+        })
+    };
+    let id: i64 = row.get(0)?;
+    let user_id: i64 = row.get(1)?;
+    let identities_json: String = row.get(2)?;
+    let status_idx: Option<i64> = row.get(10)?;
+    Ok(DeviceCertRecord {
+        id: id as u64,
+        user_id: UserId(user_id as u64),
+        identities: serde_json::from_str(&identities_json).unwrap_or_default(),
+        purpose: row.get(3)?,
+        subject: row.get(4)?,
+        pubkey: row.get(5)?,
+        iss: row.get(6)?,
+        issued_at: parse_ts(row.get(7)?),
+        expires_at: parse_ts(row.get(8)?),
+        revoked_at: parse_ts_opt(row.get(9)?),
+        status_idx: status_idx.map(|i| i as u64),
+    })
+}
+
+const DEVICE_CERT_COLUMNS: &str =
+    "id, user_id, identities, purpose, subject, pubkey, iss, issued_at, expires_at, revoked_at, status_idx";
 
 // Row → WarrantRecord mapping (jipx registry)
 fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantRecord> {
@@ -440,13 +508,15 @@ fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantR
         scopes: serde_json::from_str(&scopes_json).unwrap_or_default(),
         warrant: row.get(6)?,
         status_idx: status_idx.map(|i| i as u64),
+        subject: row.get(10)?,
+        config_cert: row.get(11)?,
         signed_at: parse_ts(row.get(7)?),
         expires_at: parse_ts(row.get(8)?),
     })
 }
 
 const WARRANT_COLUMNS: &str =
-    "id, user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at, status_idx";
+    "id, user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at, status_idx, subject, config_cert";
 
 // Row → WarrantRequestRecord mapping
 fn warrant_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantRequestRecord> {
@@ -1210,15 +1280,17 @@ impl UserStore for SqliteStore {
     fn upsert_warrant(&self, record: WarrantRecord) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO warrants (user_id, delegator_email, agent_email, audience, scopes, scope_hash, warrant, signed_at, expires_at, status_idx)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO warrants (user_id, delegator_email, agent_email, audience, scopes, scope_hash, warrant, signed_at, expires_at, status_idx, subject, config_cert)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(user_id, agent_email, audience, scope_hash) DO UPDATE SET
                delegator_email = excluded.delegator_email,
                scopes = excluded.scopes,
                warrant = excluded.warrant,
                signed_at = excluded.signed_at,
                expires_at = excluded.expires_at,
-               status_idx = excluded.status_idx",
+               status_idx = excluded.status_idx,
+               subject = excluded.subject,
+               config_cert = excluded.config_cert",
             params![
                 record.user_id.0 as i64,
                 record.delegator_email,
@@ -1230,6 +1302,8 @@ impl UserStore for SqliteStore {
                 record.signed_at.to_rfc3339(),
                 record.expires_at.to_rfc3339(),
                 record.status_idx.map(|i| i as i64),
+                record.subject,
+                record.config_cert,
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -1346,6 +1420,84 @@ impl UserStore for SqliteStore {
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         if rows == 0 {
             return Err(BrokerError::ProvisioningCertNotFound);
+        }
+        Ok(())
+    }
+
+    fn insert_device_cert(&self, mut rec: DeviceCertRecord) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO device_certs (user_id, identities, purpose, subject, pubkey, iss, issued_at, expires_at, revoked_at, status_idx)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(pubkey) DO UPDATE SET
+               identities = excluded.identities,
+               purpose = excluded.purpose,
+               subject = excluded.subject,
+               iss = excluded.iss,
+               issued_at = excluded.issued_at,
+               expires_at = excluded.expires_at,
+               status_idx = excluded.status_idx",
+            params![
+                rec.user_id.0 as i64,
+                serde_json::to_string(&rec.identities).unwrap_or_else(|_| "[]".into()),
+                rec.purpose,
+                rec.subject,
+                rec.pubkey,
+                rec.iss,
+                rec.issued_at.to_rfc3339(),
+                rec.expires_at.to_rfc3339(),
+                rec.revoked_at.map(|t| t.to_rfc3339()),
+                rec.status_idx.map(|i| i as i64),
+            ],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let id: i64 = conn
+            .query_row(
+                "SELECT id FROM device_certs WHERE pubkey = ?1",
+                params![rec.pubkey],
+                |r| r.get(0),
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        rec.id = id as u64;
+        Ok(rec.id)
+    }
+
+    fn get_device_cert_by_pubkey(&self, pubkey: &str) -> StoreResult<Option<DeviceCertRecord>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            &format!("SELECT {DEVICE_CERT_COLUMNS} FROM device_certs WHERE pubkey = ?1"),
+            params![pubkey],
+            device_cert_from_row,
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn list_device_certs(&self, user_id: UserId) -> StoreResult<Vec<DeviceCertRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {DEVICE_CERT_COLUMNS} FROM device_certs WHERE user_id = ?1 ORDER BY id"
+            ))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let certs = stmt
+            .query_map(params![user_id.0 as i64], device_cert_from_row)
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(certs)
+    }
+
+    fn revoke_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE device_certs SET revoked_at = COALESCE(revoked_at, ?1) WHERE id = ?2 AND user_id = ?3",
+                params![Utc::now().to_rfc3339(), cert_id as i64, user_id.0 as i64],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::DeviceCertNotFound);
         }
         Ok(())
     }
@@ -1618,6 +1770,22 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn revoked_status_indices(&self) -> StoreResult<(Vec<u64>, u64)> {
         (**self).revoked_status_indices()
+    }
+
+    fn insert_device_cert(&self, rec: DeviceCertRecord) -> StoreResult<u64> {
+        (**self).insert_device_cert(rec)
+    }
+
+    fn get_device_cert_by_pubkey(&self, pubkey: &str) -> StoreResult<Option<DeviceCertRecord>> {
+        (**self).get_device_cert_by_pubkey(pubkey)
+    }
+
+    fn list_device_certs(&self, user_id: UserId) -> StoreResult<Vec<DeviceCertRecord>> {
+        (**self).list_device_certs(user_id)
+    }
+
+    fn revoke_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
+        (**self).revoke_device_cert(user_id, cert_id)
     }
 }
 

@@ -47,6 +47,9 @@ pub enum RegistrarError {
 
     #[error("Handles already taken: {0:?}")]
     NamesTaken(Vec<String>),
+
+    #[error("Device certificate not found")]
+    DeviceCertNotFound,
 }
 
 impl IntoResponse for RegistrarError {
@@ -88,6 +91,9 @@ impl IntoResponse for RegistrarError {
                     })),
                 )
                     .into_response();
+            }
+            RegistrarError::DeviceCertNotFound => {
+                (StatusCode::NOT_FOUND, "Device certificate not found")
             }
         };
 
