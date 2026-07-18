@@ -182,6 +182,9 @@ where
         // Broker account utilities (sign out / clear cached certs / agent keys),
         // moved off the root when the marketing landing page took `/`.
         .route_service("/account", ServeFile::new(format!("{}/account.html", static_path)))
+        // Device-cert model login demo (DC Phase 5).
+        .route_service("/dc-login", ServeFile::new(format!("{}/dc-login.html", static_path)))
+        .route_service("/dc-login.js", ServeFile::new(format!("{}/dc-login.js", static_path)))
         // Demo RPs (apgv): one trusts only an external fallback, one trusts browserid.me.
         .route_service("/fallback-demo", ServeFile::new(format!("{}/fallback-demo.html", static_path)))
         .route_service("/broker-demo", ServeFile::new(format!("{}/broker-demo.html", static_path)))
