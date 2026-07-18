@@ -402,3 +402,70 @@ async fn no_certificate_rejected() {
     assert_eq!(result.status, "failure");
     assert!(result.reason.is_some());
 }
+
+// ---------------------------------------------------------------------------
+// Device-cert model (DC Phase 6): verify_access_with_dns conformance.
+// ---------------------------------------------------------------------------
+
+use browserid_broker::verifier::verify_access_with_dns;
+use browserid_core::device::{
+    AccessCert as DAccessCert, DeviceCert, Purpose, Subject, Warrant as DWarrant,
+};
+
+fn device_presentation(
+    idp_domain: &str,
+    config_iss: &str,
+    email: &str,
+    audience: &str,
+    idp: &KeyPair,
+) -> String {
+    let access_key = KeyPair::generate();
+    let config_key = KeyPair::generate();
+    let access_cert = DAccessCert::create(
+        idp_domain, email, Subject::User, &access_key.public_key(),
+        Duration::hours(24), idp, None,
+    ).unwrap();
+    let config_cert = DeviceCert::create(
+        config_iss, &config_key.public_key(), Purpose::Authorization, Subject::User,
+        vec![email.to_string()], Duration::days(90), idp, None,
+    ).unwrap();
+    let warrant = DWarrant::create(
+        email, Subject::User, audience, vec!["login".into()],
+        Duration::days(90), &config_key, None,
+    ).unwrap();
+    let assertion = Assertion::create(audience, Duration::minutes(5), &access_key).unwrap();
+    format!("{}~{}~{}~{}", access_cert.encoded(), assertion.encoded(), warrant.encoded(), config_cert.encoded())
+}
+
+#[tokio::test]
+async fn verify_access_primary_conformance_okay() {
+    let idp = KeyPair::generate();
+    let disc = MockDiscoverer::new(idp.public_key()).with_primary("sandmill.org", idp.public_key());
+    let pres = device_presentation("sandmill.org", "sandmill.org", "danmills@sandmill.org", "https://mingo.place", &idp);
+    let r = verify_access_with_dns(&pres, "https://mingo.place", &disc, &[BROKER.to_string()]).await;
+    assert_eq!(r.status, "okay", "{:?}", r);
+    assert_eq!(r.email.as_deref(), Some("danmills@sandmill.org"));
+    assert_eq!(r.subject.as_deref(), Some("user"));
+}
+
+#[tokio::test]
+async fn verify_access_rejects_config_cert_from_rogue_idp() {
+    // config cert claims a different issuer than the access cert → privilege-escalation reject.
+    let idp = KeyPair::generate();
+    let disc = MockDiscoverer::new(idp.public_key()).with_primary("sandmill.org", idp.public_key());
+    let pres = device_presentation("sandmill.org", "evil.example", "danmills@sandmill.org", "https://mingo.place", &idp);
+    let r = verify_access_with_dns(&pres, "https://mingo.place", &disc, &[BROKER.to_string()]).await;
+    assert_eq!(r.status, "failure");
+}
+
+#[tokio::test]
+async fn verify_access_rejects_fallback_issuer_for_primary_domain() {
+    // access cert issued by browserid.me (fallback) for a PRIMARY domain → must fail.
+    let idp = KeyPair::generate();       // the real sandmill.org primary key
+    let fallback = KeyPair::generate();  // browserid.me
+    let disc = MockDiscoverer::new(fallback.public_key()).with_primary("sandmill.org", idp.public_key());
+    // Present certs issued by the FALLBACK for a sandmill.org identity.
+    let pres = device_presentation(BROKER, BROKER, "danmills@sandmill.org", "https://mingo.place", &fallback);
+    let r = verify_access_with_dns(&pres, "https://mingo.place", &disc, &[BROKER.to_string()]).await;
+    assert_eq!(r.status, "failure", "fallback must not vouch for a primary domain: {:?}", r);
+}
