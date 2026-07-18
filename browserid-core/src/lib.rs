@@ -8,6 +8,7 @@
 pub mod keys;
 pub mod certificate;
 pub mod assertion;
+pub mod device;
 pub mod discovery;
 pub mod dns;
 pub mod error;
@@ -19,6 +20,11 @@ pub mod warrant;
 pub use keys::{KeyPair, PublicKey};
 pub use certificate::{AgentClaims, Certificate, TYP_AGENT_CERT};
 pub use assertion::{AgentAttribution, Assertion, BackedAssertion, VerifiedPresentation};
+// Device-cert model (device.rs). `device::Warrant` is intentionally NOT re-exported
+// at the crate root to avoid clashing with the legacy `warrant::Warrant`.
+pub use device::{
+    AccessCert, AccessPresentation, AccessRequest, DeviceCert, Purpose, Subject, VerifiedAccess,
+};
 pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;
 pub use provisioning::{

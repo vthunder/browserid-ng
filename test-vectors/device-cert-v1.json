@@ -1,0 +1,110 @@
+{
+  "accept": {
+    "audience": "https://mingo.place",
+    "expect": {
+      "email": "danmills@sandmill.org",
+      "scopes": [
+        "login"
+      ],
+      "subject": "user"
+    }
+  },
+  "access_cert": {
+    "claims": {
+      "exp": 1800086400,
+      "iat": 1800000000,
+      "identity": "danmills@sandmill.org",
+      "iss": "sandmill.org",
+      "public-key": {
+        "algorithm": "Ed25519",
+        "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY_k2NsFGFKyHN9E"
+      },
+      "status": {
+        "idx": 7,
+        "uri": "https://sandmill.org/.well-known/browserid-status"
+      },
+      "subject": "user",
+      "typ": "browserid-access-cert-v1"
+    },
+    "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJ0eXAiOiJicm93c2VyaWQtYWNjZXNzLWNlcnQtdjEiLCJpc3MiOiJzYW5kbWlsbC5vcmciLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMDA4NjQwMCwiaWRlbnRpdHkiOiJkYW5taWxsc0BzYW5kbWlsbC5vcmciLCJzdWJqZWN0IjoidXNlciIsInB1YmxpYy1rZXkiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInB1YmxpY0tleSI6IjdVa294aWpSd3NicTZRTTRrRm1WWVNsWkp6cGNZX2syTnNGR0ZLeUhOOUUifSwic3RhdHVzIjp7InVyaSI6Imh0dHBzOi8vc2FuZG1pbGwub3JnLy53ZWxsLWtub3duL2Jyb3dzZXJpZC1zdGF0dXMiLCJpZHgiOjd9fQ.G72z7yMXaSnDYEhbZw_n0kjCCgqysCwxpi4MwdwpaXBTtpRGjJU2znZ5vTrrX-Trwp6l8NQlLkfKpTuelZFFAw"
+  },
+  "config_cert": {
+    "claims": {
+      "exp": 1807776000,
+      "iat": 1800000000,
+      "identities": [
+        "danmills@sandmill.org"
+      ],
+      "iss": "sandmill.org",
+      "public-key": {
+        "algorithm": "Ed25519",
+        "publicKey": "ypOsFwUYcHHWe4PH_w7-gQjo7EUwV113JoeTM9vavnw"
+      },
+      "purpose": "authorization",
+      "status": {
+        "idx": 2,
+        "uri": "https://sandmill.org/.well-known/browserid-status"
+      },
+      "subject": "user",
+      "typ": "browserid-device-cert-v1"
+    },
+    "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJ0eXAiOiJicm93c2VyaWQtZGV2aWNlLWNlcnQtdjEiLCJpc3MiOiJzYW5kbWlsbC5vcmciLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwNzc3NjAwMCwicHVycG9zZSI6ImF1dGhvcml6YXRpb24iLCJzdWJqZWN0IjoidXNlciIsImlkZW50aXRpZXMiOlsiZGFubWlsbHNAc2FuZG1pbGwub3JnIl0sInB1YmxpYy1rZXkiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInB1YmxpY0tleSI6InlwT3NGd1VZY0hIV2U0UEhfdzctZ1FqbzdFVXdWMTEzSm9lVE05dmF2bncifSwic3RhdHVzIjp7InVyaSI6Imh0dHBzOi8vc2FuZG1pbGwub3JnLy53ZWxsLWtub3duL2Jyb3dzZXJpZC1zdGF0dXMiLCJpZHgiOjJ9fQ.tl0jzdyMf3z4YJvHXopTLXgUQbsoMY0iP75W2JAHyQTTSM-_j2JuS5tz4uEwoIOKNc4yoYGXti-UM0P7O8ZWBg"
+  },
+  "device_cert_authentication_example": {
+    "claims": {
+      "exp": 1807776000,
+      "iat": 1800000000,
+      "identities": [
+        "danmills@sandmill.org"
+      ],
+      "iss": "sandmill.org",
+      "public-key": {
+        "algorithm": "Ed25519",
+        "publicKey": "gTl3Dqh9F19Wo1Rmw0x-zMuNipG07jeiXfYPW4_Js5Q"
+      },
+      "purpose": "authentication",
+      "status": {
+        "idx": 1,
+        "uri": "https://sandmill.org/.well-known/browserid-status"
+      },
+      "subject": "user",
+      "typ": "browserid-device-cert-v1"
+    },
+    "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJ0eXAiOiJicm93c2VyaWQtZGV2aWNlLWNlcnQtdjEiLCJpc3MiOiJzYW5kbWlsbC5vcmciLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwNzc3NjAwMCwicHVycG9zZSI6ImF1dGhlbnRpY2F0aW9uIiwic3ViamVjdCI6InVzZXIiLCJpZGVudGl0aWVzIjpbImRhbm1pbGxzQHNhbmRtaWxsLm9yZyJdLCJwdWJsaWMta2V5Ijp7ImFsZ29yaXRobSI6IkVkMjU1MTkiLCJwdWJsaWNLZXkiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIn0sInN0YXR1cyI6eyJ1cmkiOiJodHRwczovL3NhbmRtaWxsLm9yZy8ud2VsbC1rbm93bi9icm93c2VyaWQtc3RhdHVzIiwiaWR4IjoxfX0.v8jnV_ND_MKxOGhqD8ZMLS5_ZGLTKPrJECUFuVrPluEg6uQEdkggEqIhc6R8MXx4B_or4mA7gVEQe8ho-MPxDQ"
+  },
+  "keys": {
+    "access_key_seed_b64": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+    "access_pub": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY_k2NsFGFKyHN9E",
+    "config_key_seed_b64": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
+    "config_pub": "ypOsFwUYcHHWe4PH_w7-gQjo7EUwV113JoeTM9vavnw",
+    "idp_pub": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w",
+    "idp_seed_b64": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+  },
+  "note": "Frozen wire vectors. The `jws` field of each object is AUTHORITATIVE — a conformant impl (Rust/JS/PHP) signing the same claims with the same seed key MUST reproduce that exact JWS string. To learn the canonical signed bytes, base64url-DECODE the jws payload: field order is struct-declaration order, compact JSON, no whitespace. The `claims` objects below are alphabetically SORTED for human readability and are NOT the signed byte order — do not sign them as shown. Ed25519 (RFC 8032) signatures are deterministic, so the JWS is reproducible.",
+  "reject_cases": [
+    "config cert signed by an IdP other than the access cert's iss",
+    "config cert with purpose=authentication",
+    "warrant/access subject mismatch",
+    "audience mismatch",
+    "unknown purpose or subject value"
+  ],
+  "version": "device-cert-v1",
+  "warrant": {
+    "claims": {
+      "audience": "https://mingo.place",
+      "exp": 1807776000,
+      "iat": 1800000000,
+      "identifier": "danmills@sandmill.org",
+      "scopes": [
+        "login"
+      ],
+      "status": {
+        "idx": 42,
+        "uri": "https://browserid.me/.well-known/browserid-status"
+      },
+      "subject": "user",
+      "typ": "browserid-warrant-v1"
+    },
+    "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJ0eXAiOiJicm93c2VyaWQtd2FycmFudC12MSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODA3Nzc2MDAwLCJpZGVudGlmaWVyIjoiZGFubWlsbHNAc2FuZG1pbGwub3JnIiwic3ViamVjdCI6InVzZXIiLCJhdWRpZW5jZSI6Imh0dHBzOi8vbWluZ28ucGxhY2UiLCJzY29wZXMiOlsibG9naW4iXSwic3RhdHVzIjp7InVyaSI6Imh0dHBzOi8vYnJvd3NlcmlkLm1lLy53ZWxsLWtub3duL2Jyb3dzZXJpZC1zdGF0dXMiLCJpZHgiOjQyfX0.4urHd336STFabDrR0X6hCg9CDw4y15PjE6KWOfMaRMWPN2ahsAvj4HC_EdnuHwK85FxPdz0adR9KA_O_3EKUCg"
+  }
+}
