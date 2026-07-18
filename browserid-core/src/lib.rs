@@ -8,6 +8,7 @@
 pub mod keys;
 pub mod certificate;
 pub mod assertion;
+pub mod device;
 pub mod discovery;
 pub mod dns;
 pub mod error;
@@ -19,6 +20,9 @@ pub mod warrant;
 pub use keys::{KeyPair, PublicKey};
 pub use certificate::{AgentClaims, Certificate, TYP_AGENT_CERT};
 pub use assertion::{AgentAttribution, Assertion, BackedAssertion, VerifiedPresentation};
+pub use device::{
+    AccessCert, AccessPresentation, AccessRequest, DeviceCert, Purpose, VerifiedAccess,
+};
 pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;
 pub use provisioning::{
