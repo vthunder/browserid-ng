@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>browserid device-cert flow — demo RP</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.5rem; margin-bottom: .25rem; }
+  .sub { color: #777; margin-top: 0; }
+  .card { border: 1px solid #8883; border-radius: 10px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  code { font-family: ui-monospace, monospace; }
+  input { font: inherit; padding: .5rem; border-radius: 8px; border: 1px solid #8886; width: 22rem; max-width: 100%; }
+  button { font: inherit; padding: .55rem 1.1rem; border-radius: 8px; border: 0; background: #2563eb; color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  ol#steps { list-style: none; padding: 0; }
+  ol#steps li { padding: .4rem 0; border-bottom: 1px solid #8882; }
+  ol#steps li .mark { display: inline-block; width: 1.2rem; font-weight: 700; }
+  ol#steps li.ok .mark { color: #16a34a; }
+  ol#steps li.err .mark { color: #dc2626; }
+  ol#steps li.pending { color: #888; }
+  ol#steps li .detail { margin-left: 1.2rem; font-size: 13px; color: #777; word-break: break-word; }
+  .kv { display: grid; grid-template-columns: 6rem 1fr; gap: .25rem .75rem; font-size: 14px; }
+  .kv dt { color: #777; }
+  .kv dd { word-break: break-word; }
+  .note { font-size: 13px; color: #777; }
+</style>
+</head>
+<body>
+<h1>Demo RP — login via the device-cert flow</h1>
+<p class="sub">Two IdP-signed certs + a warrant: <code>device cert → access cert</code> (authentication), <code>config cert → warrant</code> (authorization).</p>
+
+<div class="card">
+  <p>This page acts as a <strong>relying party</strong>. It runs the whole
+  device-cert login flow <strong>in your browser</strong> against this broker
+  (which is playing IdP + hosted broker + verifier): it gets a <strong>device
+  cert</strong>, mints a fresh-key <strong>access cert</strong> through the mint
+  API, obtains a <strong>warrant</strong> over your identity, and presents
+  <code>access&nbsp;cert&nbsp;+&nbsp;assertion&nbsp;+&nbsp;warrant&nbsp;+&nbsp;config&nbsp;cert</code>
+  to the verifier. No hidden iframe, no cookies in the mint path.</p>
+  <p class="note" id="signin-note">Checking session…</p>
+  <p><label>Email you're signed in with: <input id="email" type="email" placeholder="you@example.com" autocomplete="email"></label></p>
+  <p><button id="run">Run the device-cert login</button></p>
+</div>
+
+<ol id="steps"></ol>
+
+<div class="card" id="result" hidden>
+  <h2 style="font-size:1.1rem;margin-top:0">✓ Logged in via the device-cert flow</h2>
+  <dl class="kv">
+    <dt>identity</dt><dd id="r-email"></dd>
+    <dt>access cert</dt><dd id="r-access"></dd>
+    <dt>warrant</dt><dd id="r-warrant"></dd>
+    <dt>config cert</dt><dd id="r-config"></dd>
+  </dl>
+  <p class="note">Authentication (the access cert, key-bound, per-device) and
+  authorization (the warrant, identity-bound, reusable) are separate, and the RP
+  joined them by <code>(identity, subject, audience)</code>.</p>
+</div>
+
+<script src="/common/js/lib/jwcrypto-compat.js"></script>
+<script src="/demo-device-login.js"></script>
+</body>
+</html>

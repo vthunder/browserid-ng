@@ -188,6 +188,9 @@ where
         // agent endpoint (subject:self) — "the browser is your first agent".
         .route_service("/demo-self-login", ServeFile::new(format!("{}/demo-self-login.html", static_path)))
         .route_service("/demo-self-login.js", ServeFile::new(format!("{}/demo-self-login.js", static_path)))
+        // Device-cert model demo RP (DC).
+        .route_service("/demo-device-login", ServeFile::new(format!("{}/demo-device-login.html", static_path)))
+        .route_service("/demo-device-login.js", ServeFile::new(format!("{}/demo-device-login.js", static_path)))
         // Demo RPs (apgv): one trusts only an external fallback, one trusts browserid.me.
         .route_service("/fallback-demo", ServeFile::new(format!("{}/fallback-demo.html", static_path)))
         .route_service("/broker-demo", ServeFile::new(format!("{}/broker-demo.html", static_path)))
