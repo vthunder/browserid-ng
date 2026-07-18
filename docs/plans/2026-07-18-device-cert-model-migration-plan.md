@@ -181,3 +181,130 @@ provisioning-cert trait methods + endorse path.
 - **Not-yet-existing:** Python/Go verifier libs (only `sdk/js`); config-cert
   registry; device-cert registry — all net-new.
 </content>
+
+---
+
+# Adversarial review results (2026-07-18) — findings & plan changes
+
+Five code-grounded adversarial reviewers (security, migration/ops, completeness,
+sequencing, correctness). Full inventories under
+`docs/plans/2026-07-18-adversarial-review/`. Net: the auth core is sound; the real
+holes are on the **authorization/consent side + rollout**. Changes below supersede
+the phase list above where they conflict.
+
+## A. Design-level fixes (genuine holes — applied to the design doc)
+
+- **A1 [BLOCKER] Config-cert → identity-IdP binding.** The join was only
+  `(identity, subject, audience)`; nothing pinned the config cert to the
+  identity's IdP → an agent could self-issue a config cert from a rogue IdP and
+  grant itself scopes (privilege escalation; today `warrant.rs:189-195` pins the
+  delegator to the agent's own DNSSEC-rooted IdP). FIX (done in design):
+  `config_cert.iss == domain(identity)`, DNSSEC-rooted, purpose==authorization,
+  identity in its list — a **second conformance discovery** in verify. → P1, P6.
+- **A2 [BLOCKER] Config-cert revocation.** The config cert is presented + signs
+  warrants but had no status ref → no RP-visible kill switch. FIX (done in
+  design): config cert carries a status ref; RP checks **three** fail-closed
+  authorities (access→IdP, config→IdP, warrant→broker). → P1, P6.
+- **A3 [BLOCKER→qualified] Server-side config cert.** Broker-held config cert =
+  broker signs warrants autonomously; broker is also fallback IdP → silent
+  impersonation. A1's binding **restricts server-side config certs to fallback
+  (no-primary) identities** (which the broker already owns end-to-end); **primary**
+  identities' config certs are primary-issued + **device-resident** (non-extractable).
+  Design updated. **USER DECISION:** even for fallback identities the broker can now
+  sign warrants with no user device in the loop — accept, or require a device key?
+
+## B. Security controls to add
+
+- **B1 Foreign status-list revocation is fail-open/unbuilt** in the hosted verifier
+  (`verify.rs:72-103` checks only own_uri). New model needs federated revocation.
+  Port `browserid-rp`'s `StatusCache` (`lib.rs:456-521`), **fail-closed**. → P6.
+- **B2 Mint gate replaced.** Retiring registrar endorsement removes the two-party
+  throttle/veto. Access-request tokens = **nonce + short expiry + single-use**;
+  **mandatory per-device rate limiting** as conformance (none exists today,
+  `cert.rs` has no rate limit). → P2, spec.
+- **B3 Device-cert revocation granularity.** Give each device cert its own status
+  index; access certs reference the issuing device's index (not the per-identity
+  one), so "revoke one device" actually kills that device's access certs. → P3, P6.
+- **B4** Enforce `subject`-equality in the join; `authentication`-only-mints /
+  `authorization`-only-signs; absent purpose/subject ⇒ reject. → P1, P6.
+
+## C. Rollout safety (the biggest structural change — was a hard cutover)
+
+The plan assumed a hard cutover. There ARE live consumers (mingo CLI, sbo log,
+guestbook, browserid.me accounts). Even under "no one else is using it," the
+**data-loss** items below are real. New principles:
+
+- **C1 Dual-support, don't cut over.** The verifier + broker accept BOTH old
+  (`cert~assertion`, no warrant) AND new (4-object, warrant-mandatory) bundles for
+  ≥1 release; **version-tag the bundle** so the verifier branches deterministically
+  (not by parse failure); enforce warrant-mandatory only after old-bundle traffic
+  ≈ 0. Otherwise deploy skew (www static, sandmill PHP, cached include.js) = total
+  login outage.
+- **C2 Additive, then one late cleanup.** Do NOT retire `provisioning.rs` in P1 or
+  remove `/provision/{endorse,reserve}` in P2. Add the new model **alongside** the
+  old; a single final **CLEANUP** phase (gated by SBO relocation `3b8m`) removes the
+  chain types, endpoints, `provisioning_certs`/`api_keys`, and the hidden iframe —
+  once nothing calls them.
+- **C3 Deprecate-then-drop the DB.** Migrations are forward-only, DROP is
+  irreversible. Do **ADDs** in P3 (device_certs table, warrant `subject` +
+  config-cert-ref); defer **DROPs** to cleanup; take a verified pre-deploy snapshot.
+  **NUMBERING FIX: schema is at v11, not v1–v10 — new work is `migrate_v12+`,
+  bump `SCHEMA_VERSION` to 12** (`sqlite.rs:17`).
+- **C4 Keep legacy parse in core.** sbo has old-format warrants embedded in its log
+  forever; core `parse()` must keep the legacy `TYP_AGENT_WARRANT` path (stop
+  issuing, don't stop verifying) + version the warrant `typ`. Existing broker
+  `warrants` rows can't be backfilled with a config-cert ref → treat as expired,
+  prompt re-consent (P8).
+- **C5 mingo credential compat.** New `AgentCredential` fields `#[serde(default)]`
+  + a "re-run `mingo login`" message (not a serde panic); ship the mingo release
+  before the broker removes endorse.
+- **C6 sandmill P10 gating.** Byte-compat-verify PHP conformance (golden vectors)
+  BEFORE the broker rejects `@sandmill.org`, or primary logins black out.
+
+## D. Sequencing (adopt the revised order)
+
+- **D1 [CRITICAL] Freeze the wire format up front.** Add golden **test-vectors**
+  (canonical claim JSON + signed JWS with a fixed key + accept/reject cases) as a
+  **P1 deliverable** under `test-vectors/`, consumed by Rust + JS + PHP. Today the
+  conformance test self-generates Rust-only vectors — nothing cross-language exists.
+- **D2 Serialize the false-parallel braces.** `P3 (schema ADDs) → P2 (endpoints)`;
+  `P6 (verifier) → {P5 dialog, P7 agent}` (P7 depends on P2+P6 in the crate graph);
+  add an explicit **live-bundle × verifier integration checkpoint** after P5.
+- **D3 Thin vertical slice first.** user-cert + fallback-IdP + server-side config
+  cert → ONE working cold-start login, as an early green milestone, before agents
+  (P7) and primary/PHP (P10) layer on.
+- **D4 Pull P10 forward** to run parallel with {P5,P6,P7} (it depends only on the
+  frozen vectors). Split P4 into P4a (registry/issuance) + P4b (warrant flip +
+  self-login auto-warrant).
+
+**Revised sequence:** P0 spec → **P1 (types + fail-closed + golden vectors,
+additive)** → **P3 (schema ADDs)** → **P2 (issuance/mint/config-cert, new routes
+alongside)** → **P4a** → [THIN SLICE milestone] → **P4b** → **P6 (verifier/rp)** →
+**P5 (dialog)** + **P7 (agent)** + **P10 (sandmill PHP)** in parallel →
+**P8 (UI)** + **P9 (docs)** → **P11 (faithful demo + cross-language conformance
+run + CLEANUP gated by 3b8m)**.
+
+## E. Completeness gaps to add as phase work
+
+- **E1 mingo is a full IdP, not a footnote.** `mingo-idp` mints identity + agent
+  certs and runs the delegation chain — it needs the **same device-cert
+  conformance as sandmill (a P10-sibling)**, plus mingo-web (client), the mingo CLI
+  (agent SDK), and mingo-poster all migrate. Add **P10b — mingo conformance +
+  consumer migration**. sbo (`sbo-core/attribution.rs` offline verifier +
+  `sbo-capture`) migrates its parse/authority surface. All three repos pin
+  browserid-ng revs → coordinated bumps.
+- **E2 FedCM path** (`routes/fedcm.rs`, ~338 lines) mints `cert~assertion` — decide
+  migrate vs retire. **Silent-assertion `communication_iframe`** + logout migrate/
+  retire (with `3b8m`). **`rp_auth` token exchange** grant is a `cert~assertion`
+  (`browserid-rp` + `browserid-agent` consume it) — define the new exchanged token.
+- **E3 Device lifecycle.** No device concept exists today; the design assumes
+  multi-device. `device_certs` needs enroll / list / **revoke-by-device** UI + API,
+  not just a table.
+- **E4 Key rotation.** Single static broker key, no `kid`/jwks (`well_known.rs:23`,
+  `discovery.rs`). Long-lived device certs make rotation worse — consider `kid`/key-
+  set now so rotation doesn't invalidate every device cert.
+- **E5 SBO signing key.** `signSboEnvelope` signs with the **identity key** today;
+  the device-cert model must decide what signs SBO envelopes (access-cert key?
+  device key?) — folds into `3b8m`.
+- **E6 Rate limiting + status-list scale** — see B2; status list is rebuilt-per-
+  request over a monotonic index space (fine now, watch at scale).

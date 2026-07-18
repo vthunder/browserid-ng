@@ -43,10 +43,19 @@ Plus the two RP-facing objects:
 | **Access cert** — certifies a **fresh key**; the assertion chains from it | IdP mint API | yes |
 | **Warrant** — authorizes **(identifier, subject) → audience[+scopes]** | a config cert | yes |
 
-A **config cert** can live server-side at the hosted broker (convenient) or on
-the user's own machines (to minimize broker trust) — a storage choice, not a
-protocol distinction. The RP sees the access cert (fresh key) + assertion, and
-the warrant + the config cert that signed it; it never sees a user/agent cert.
+A **config cert must be issued by the identity's own IdP** — `config_cert.iss ==
+domain(identity)`, DNSSEC-rooted, subject to the same primary/fallback conformance
+as the access cert (a fallback-issued config cert for a domain that has a primary
+fails). Without this binding an RP would accept a warrant signed by *any*
+authorization cert from *any* IdP — a privilege-escalation hole. So a config cert
+can only live **server-side at the hosted broker for fallback (no-primary)
+identities** (which the broker already fully controls as their IdP); for a
+**primary** identity the config cert is issued by that primary and is
+**device-resident** (non-extractable), never broker-held. Storage is a choice
+*within* those bounds, not across them.
+
+The RP sees the access cert (fresh key) + assertion, and the warrant + the config
+cert that signed it; it never sees a user/agent (authentication) cert.
 
 ---
 
@@ -126,12 +135,17 @@ status endpoint RPs consult.
 1. The holder signs a login **assertion** for the RP's audience with the **access key**.
 2. It presents **access cert + assertion + warrant + config cert** (the
    user/agent device certs are not presented).
-3. The RP verifies the DNSSEC-rooted path: access cert + assertion (→ this fresh
-   key speaks for identity X, subject user, at this audience) **and** the warrant
-   (→ X, subject user, is authorized for this audience + scopes), **joining the
-   two by (identity, subject, audience)**. The access cert and the warrant each
-   carry a link to **their respective revocation authority** (the IdP for the
-   access cert; the hosted broker for the warrant), which the RP/verifier queries.
+3. The RP verifies the DNSSEC-rooted path over **two independent issuer
+   discoveries** — the **access cert** (`iss` must be the identity's IdP,
+   conformance-checked) and the **config cert** (`iss` must *also* be the
+   identity's IdP, same conformance check) — then: access cert + assertion (→ this
+   fresh key speaks for identity X, subject user, at this audience) **and** the
+   warrant (→ X, subject user, authorized for this audience + scopes, signed by an
+   IdP-issued `authorization` config cert for X), **joining by (identity, subject,
+   audience)**. It checks **three** revocation authorities via each object's
+   status link: the **access cert** (→ IdP, per-*device* index so revoking one
+   device kills its access certs), the **config cert** (→ its IdP), and the
+   **warrant** (→ hosted broker). All three status checks are **fail-closed**.
 
 The RP either verifies the bundle itself or outsources to a convenience verifier
 (browserid.me runs one); the protocol specifies what the RP receives, not how it
