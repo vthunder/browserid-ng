@@ -176,7 +176,7 @@ Unifies the user/agent path; not backward-compatible.
 - **IdP one-time:** IdP roots issuance of all cert types but is not in the
   per-warrant or per-login-assertion loop.
 - **Long-lived warrants:** issued directly by the long-lived config cert.
-- **Device-agnostic warrants:** a warrant is over (identity, type, audience),
+- **Device-agnostic warrants:** a warrant is over (identity, subject, audience),
   signed once, stored, and reused by any device presenting an access cert for
   that identity — not key-bound, not secret. Authentication (access cert,
   per-device, key-bound) and authorization (warrant, identity-bound, reusable)
@@ -184,23 +184,43 @@ Unifies the user/agent path; not backward-compatible.
 
 ---
 
+## Conformance (required) & verification
+
+**Every IdP MUST implement** device-cert issuance (both `authentication` and
+`authorization` purposes) and the access-cert mint API. Not optional:
+
+- **No-primary domains** are served by a **fallback IdP** (browserid.me), which
+  issues device + access certs itself (iss: the fallback).
+- **Domains with a primary** MUST have that primary implement the full API. The
+  fallback **cannot** issue on a primary's behalf — a fallback-issued cert for a
+  domain that already has a primary fails verification (issuer mismatch). So a
+  non-conformant primary means its users simply cannot log in via browserid until
+  it adopts the endpoints. (This is the sharp end of "agents as a required core
+  verb": login and agents ride the same mandatory API.)
+
+**Verification (RP's choice, unspecified by the protocol):** the RP **receives or
+discovers** the signed bundle — access cert + assertion + warrant + config cert —
+and either verifies the DNSSEC-rooted chain itself, or outsources to a convenience
+verifier at its own discretion. browserid.me continues to run such a verifier, as
+it does today. The protocol specifies *what the RP receives*, not *how it verifies*.
+
+---
+
 ## Open questions (remaining)
 
 - **Q5 — Cookies at mint:** optional-only (confirmed); define what they add.
-- **Q6 — Conformance:** classic primaries must add device-cert issuance (user +
-  config types) and the access-cert mint API. Require adoption vs. hosted-broker/
-  fallback covers non-conformant domains vs. staged.
-- **Q8 — Transports (no hidden iframe):** domain-primary return leg; agent pairing.
-- **Q9 — RP-side warrant verification:** full offline chain vs. hosted status
-  query; how the RP roots the config cert.
+- **Q8 — Transports (no hidden iframe):** domain-primary device-cert return leg;
+  agent device-cert pairing hand-off.
+
 Resolved: Q1/Q2 (warrants signed by config certs, held server-side or on-device),
 Q3 (access cert = fresh key; user/agent device certs hidden), Q4 (multi-identity/
-wildcard), Q7 (mandatory warrants — yes), Q10 (long-lived warrants via config
-cert), Q11 (only the config cert is RP-visible), **Q12 (warrants are over
-(identity, type, audience), not device-key-bound — signed once by a config cert,
-stored, reused by any device with an access cert for that identity; login-only
-devices just fetch the stored warrant, so no per-device config cert)**, agent
-issuance (IdP-issued, user-authorized).
+wildcard), **Q6 (conformance REQUIRED — fallback can't issue for a domain with a
+primary; non-conformant primary → its users can't log in)**, Q7 (mandatory
+warrants — yes), **Q9 (RP receives/discovers the signed bundle and verifies it
+itself or outsources to a convenience verifier at its discretion; protocol doesn't
+specify; browserid.me runs one)**, Q10 (long-lived warrants via config cert), Q11
+(only the config cert is RP-visible), Q12 (warrants over (identity, subject,
+audience), not key-bound), agent issuance (IdP-issued, user-authorized).
 
 ---
 
