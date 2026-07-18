@@ -1,123 +1,163 @@
-# Migration plan — the device-cert model
+# Migration plan — device-cert model (grounded in the existing implementation)
 
 **Epic:** browserid-ng-oup3
-**Design:** `docs/design/browserid-end-to-end-flow.md` (protocol overview — the
-source of truth for the model).
-**Supersedes:** `docs/plans/2026-07-18-model-a-browser-first-agent-migration-plan.md`
-and its subject-axis Phase 0–3 work. The "browser is the first agent" build
-(user-signed provisioning cert + registrar endorsement + plain login cert) is the
-**wrong shape** for this model and is superseded, not extended.
+**Design (source of truth):** `docs/design/browserid-end-to-end-flow.md`
+**Basis:** a six-surface divergence analysis of the *actual* codebase (spec+core,
+login dialog/discovery/keystore, agent endpoints+registrar+DB, warrant+management
+UI, include.js+verifier+demo RPs, README+docs). Supersedes the earlier greenfield
+plan — this one is anchored in what already exists.
 
-## The model in one paragraph
+This is a **structural rewrite of the certificate chain**, not an additive
+feature. But a large amount of mature infrastructure survives, which bounds the
+blast radius. Read "what survives" first.
 
-Two IdP-signed device-cert **purposes** (`authentication` → mints access certs;
-`authorization` → signs warrants) crossed with a **subject** (`user` | `agent` |
-any). An `authentication` device cert mints short-lived, **fresh-key access
-certs** at the IdP (authentication). A **config cert** (`authorization`) signs
-**warrants** over `(identifier, subject) → audience[+scopes]` — signed once,
-stored, device-agnostic (authorization). The RP always receives **access cert +
-assertion + warrant + config cert** and joins them by `(identity, subject,
-audience)`. Every IdP MUST implement device-cert issuance + the mint API; the
-fallback can't cover a domain that has a primary.
+## What survives (reused, ~unchanged)
 
-## What's superseded from the prior build (all on `main`, deployed)
+- **Dialog shell + WinChan first-party popup** entry (the design explicitly wants
+  the popup, not a hidden iframe — the popup half is already right). `dialog.js`.
+- **Discovery**: `GET /wsapi/address_info` + DNSSEC `_browserid` + `.well-known`
+  (`email.rs:403`, `discovery.rs`). Primary/fallback routing + acceptedFallbacks
+  (§8.1) gate + external-fallback path.
+- **Fallback IdP = this broker** (SMTP challenge), `fallback_idp.rs`.
+- **Keystore**: non-extractable Ed25519 in IndexedDB keyed by (issuer,email), with
+  the `pending` same-tab staging store (mingo-ytrs). `common/js/keystore.js`.
+- **The primary/fallback CONFORMANCE rule is ALREADY enforced** in the hosted
+  verifier (`verifier.rs:223-233`: a fallback-issued cert for a primary domain
+  already fails). The "critical" verifier gap is the *smallest*, not the biggest.
+- **include.js** — least-divergent surface: the RP-return contract is an opaque
+  token pass-through; it survives untouched as the bundle grows more segments.
+- **Demo RPs** (`rp-quickstart`, `broker-demo`, `fallback-demo`) — treat the
+  assertion as opaque + delegate to `/verify`; **no structural change**.
+- **Device-grant pairing** (`browserid-registrar/agent_provision.rs`,
+  RFC-8628) — already the design's "agent device cert issued after user
+  authorization" hand-off; keep the flow, change what it returns.
+- **Warrant registry + consent flow + signed status list**
+  (`consent.rs`: `upsert_warrant`, `revoke_warrant`, `/.well-known/browserid-status`).
+- **`browserid-rp` `StatusCache`** (`lib.rs:456-521`) — already does foreign
+  status-list fetch+verify+cache; the hosted verifier lacks this and can port it.
+- Core `keys.rs`, `Assertion`, `StatusRef`, host-cert §4.2, JWS idiom.
 
-- **`browserid-core` subject axis** (`Subject` on `Constraint`, `mint_self`) —
-  the subject belongs on the **device cert**, not a user-signed constraint. Rework
-  in Phase 1 (the enum survives; its home changes).
-- **Broker `subject:self` mint + D2** (`/provision/mint` self-mode) — replaced by
-  the device-cert issuance + access-cert mint APIs (no user-signed P_cert, no
-  registrar endorsement). Phase 2–3.
-- **`/demo-self-login`** (deployed) — a standalone artifact; will be rebuilt
-  around the device-cert model (Phase 7). Harmless additive code; leave until the
-  rebuild lands.
-- The **subject-axis spec edits** (protocol §7, agent §4.1/§4.3) — re-cut in
-  Phase 0 to the device-cert model.
+## The structural changes (the real work)
 
-None of this broke existing flows (all additive), so there is no urgent revert;
-it is replaced as the new phases land.
+1. **Two-tier certs.** Add `purpose` (authentication|authorization) × `subject`
+   (user|agent|any) to certs. Split the durable **device cert** (never seen by
+   the RP) from a fresh, IdP-minted, RP-facing **access cert**. Today the
+   long-lived identity/agent cert IS what the RP roots on (`cert.rs`,
+   `certificate.rs:59` has only `is_agent()`/`agent_parent`).
+2. **Warrant flips.** From agent-only, **user-identity-key-signed**, embedding the
+   `U_cert` as `parent-cert` (`warrant.rs:51,114`) → **universal** (present for
+   user logins too), **config-cert-signed**, over **(identifier, subject) →
+   audience[+scopes]**, with the **config cert presented separately** to the RP
+   (user cert never seen).
+3. **Presentation + join.** From `cert~assertion` / `agent_cert~warrant~assertion`
+   → **`access_cert~assertion~warrant~config_cert`**, verified by a two-path
+   DNSSEC-rooted join on **(identity, subject, audience)** (`assertion.rs:295`,
+   `warrant.rs:178`).
+4. **Delegation chain retires.** `provisioning.rs` (`P_cert`, `RequestBundle`,
+   `Endorsement`) + `/provision/endorse` + the provisioning-cert registry go away,
+   collapsing into **direct IdP device-cert issuance** + a **mandatory headless
+   mint API**. No endorser, no `U_cert~P_cert~R` chain.
+5. **Mandatory HTTP issuance/mint is core conformance.** Every IdP MUST implement
+   device-cert issuance (both purposes) + the access-cert mint API — so agents
+   mint **headless**. Moves today's layered, endorsement-gated provisioning into
+   required core, gated by the device-cert signature alone. **This is the point:
+   the primary path stops being a browser-only hidden iframe.**
 
-## The RP-facing breaking change
+## Phases (dependency-ordered, with code anchors)
 
-Warrants become **mandatory on every login** (today a human login is a plain
-`cert~assertion` with no warrant). Every RP/verifier must process a warrant. This
-unifies the user and agent path but is **not backward-compatible** — pre-GA, this
-is acceptable, but it is the single biggest downstream change and gates Phase 6.
+- **P0 — Spec.** Rewrite `browserid-ng-protocol.md` (§4.1/§5/§6.2 CHANGE; §7/§8 add
+  the mandatory issuance+mint conformance) + `agent-provisioning-and-grant-api.md`
+  (§4 mostly REPLACED; §6 consent + §7 grant exchange keep shape). Record the
+  device-cert / access-cert / config-cert / warrant-over-identity chain.
+- **P1 — Core types & format (`browserid-core`).** `DeviceCert{purpose,subject,
+  identities,pubkey,validity,iss}`; `AccessRequest` (device-signed);
+  `AccessCert` (fresh key, RP-facing); re-cut `Warrant` to `(identifier,subject,
+  audience,scopes)` signed by a config cert (drop `parent-cert` embedding);
+  `AccessPresentation` verify joining by (identity,subject,audience);
+  fail-closed on unknown purpose/subject. Deprecate/retire `provisioning.rs`
+  chain types. Keep `Assertion`/`keys`/`StatusRef`.
+- **P2 — IdP issuance + mint (`browserid-broker/routes`).** Device-cert issuance
+  API (both purposes/subjects, **batch** user+agent) — evolve `cert.rs:52`
+  `issue_certificate`; **access-cert mint API** (device-cert-authed, headless,
+  fresh key) — evolve `/provision/mint` (`agent.rs:121`) dropping
+  `verify_as_target_idp`'s endorsement/chain; config-cert issuance. Remove
+  `/provision/endorse` (`registry.rs:318`), the provisioning-cert registry
+  (`registry.rs:79-297`), `/provision/reserve` (`agent.rs:222`).
+- **P3 — DB schema migration (`store/sqlite.rs`).** ADD a `device_certs` table
+  (user_id, identities, purpose, subject, pubkey, validity, revoked, status_idx).
+  ADD `subject` + config-cert ref to `warrants` (v8/`:317`). REMOVE
+  `provisioning_certs` (v5/`:238`) + `api_keys`. KEEP `emails`, `warrants`(mostly),
+  `warrant_requests`, `status_entries`. Update `registrar_glue`/`RegistrarStore`
+  trait (drop provisioning-cert methods).
+- **P4 — Warrant model (`registrar` + core).** Config-cert-signed warrants;
+  `consent.rs respond()`(`:550`)/`warrant_to_record`(`:624`) validate a
+  config-cert-signed `(identifier,subject)` warrant; gate flips from
+  `owns_verified_email` to "config cert is mine"; **self-login auto-warrant** from
+  a self-scoped config cert; ADD a **config-cert registry** + device-cert registry.
+- **P5 — Client: dialog + keystore (`static/`).** Dialog: ensure a device cert
+  exists (issue via popup→**primary HTTP issuance endpoint** or fallback SMTP),
+  **mint an access cert**, assemble the RP bundle. **Replace the hidden-iframe
+  primary path** (`provisioning.js`, `navigator.id.*` postMessage) with the HTTP
+  device-cert issuance endpoint via popup (reuse the mingo-ytrs same-tab
+  handshake). Keystore stores device certs (new record kind); reuse-check becomes
+  "hold a valid device cert? → mint access cert." Handle IdP mint refusal
+  ("re-login required").
+- **P6 — Verifier + RP contract.** Hosted `/verify` (`verify.rs`,`verifier.rs`):
+  accept the 4-object bundle; **always-warrant**; config-cert-as-signer;
+  purpose×subject validation + subject-in-join; two-authority revocation (access
+  cert→IdP list [**port `StatusCache`**], warrant→broker list). Reuse the existing
+  conformance check (`verifier.rs:223-233`). `browserid-rp` same, + optionally add
+  DNSSEC discovery so the **pinned-key path** can honor conformance (it can't
+  today). include.js + demo RPs unchanged; `sdk/js` response typedef gains subject.
+- **P7 — Agent SDK + headless (`browserid-agent`, `agent_provision.rs`).**
+  `AgentCredential{device_key,agent_device_cert,idp}` (drop delegation+broker
+  endorse); `mint()`→sign access-request token→mint API (drop `endorse()`);
+  `provision()`→device-grant pairing yielding an **IdP-signed agent device cert**
+  (`agent_provision.rs complete()` `:382` returns a cert, not a delegation). Keep
+  warrant request/poll, `assertion_for` (now emits the 4-object bundle), token
+  exchange.
+- **P8 — Management + warrant UI (`account.html`, `consent.html`).** Device-cert
+  view (user/agent authn certs, purpose/subject badges, revoke=log out
+  device/agent); **Config-cert** section (create self-scoped `authz+user` vs
+  `authz+agent`, revoke); warrant rows show subject + config cert; consent signs
+  with a **config cert** not the identity key; self-login warrant surfacing.
+- **P9 — Docs + landing + README.** Fix the priority-wrong snippets:
+  `README.md:166-178` (backed-assertion format + "warrant signed by identity
+  key"), `README.md:100-113` (chain "one picture"), `sdk/agent/README.md:77-88`,
+  `docs/verify-quickstart.md:26,48`, `examples/mcp-agent-auth/README.md:21`. ADD
+  access-cert/device-cert/purpose×subject/config-cert/mandatory-conformance/
+  headless-minting. Landing is least-diverged (keep narrative, add positioning).
+- **P10 — Faithful demo + conformance + live validation.** A **cold-start** demo
+  RP (real discovery, no session shortcut). For a faithful **primary** demo with
+  `danmills@sandmill.org`, **sandmill.org's primary IdP must implement device-cert
+  issuance + the mint API** (whatever runs it today — identify it). Conformance
+  test suite (issuance + mint + always-warrant + fail-closed on unknown
+  purpose/subject + reject-fallback-for-primary). SBO signing relocation (`3b8m`)
+  before deleting the hidden iframe.
 
----
+Sequence: P0 → P1 → {P2, P3} → P4 → {P5, P6, P7} → P8 → P9 → P10.
 
-## Phases
+## DB migration (explicit)
 
-- **Phase 0 — Spec.** Rewrite `browserid-ng-protocol.md` + `agent-provisioning-
-  and-grant-api.md` to the device-cert model: device certs (`purpose × subject`),
-  the device-cert issuance API, the access-request-token + access-cert mint API,
-  warrants over `(identifier, subject)` with revocation links, config certs,
-  mandatory conformance, and the always-warrant RP presentation. Fold in Q5/Q8
-  decisions. Supersede the subject-axis edits.
-- **Phase 1 — Core types (`browserid-core`).** `DeviceCert { purpose, subject,
-  identities, validity, key, iss }` (IdP-signed); `AccessRequestToken` (device-
-  signed: identity, subject, fresh access pubkey); `AccessCert` (IdP-signed,
-  fresh key, short-lived, revocation ref); `Warrant` re-cut to `(identifier,
-  subject, audience, scopes)` + revocation ref; `purpose`/`subject` enums,
-  fail-closed parsing. Retire the user-signed `ProvisioningCert` path.
-- **Phase 2 — IdP device-cert issuance API.** Issue device cert(s) after auth
-  (fallback SMTP / primary interactive), including **batch** (a user cert + one or
-  more agent certs in one request) and config certs. IdP-signed.
-- **Phase 3 — IdP access-cert mint API.** Verify an access request token + device
-  cert; mint a fresh-key access cert; discretionary refusal. Replaces
-  `/provision/mint` + `/provision/endorse` (no registrar/endorsement).
-- **Phase 4 — Config certs, warrant issuance & registry.** Config-cert-signed
-  warrants over `(identity, subject, audience, scopes)`; hosted-broker warrant
-  **registry / status / revocation UI** (`jipx`); self-login auto-warrant; agent
-  consent-scoped warrant.
-- **Phase 5 — Client broker (keystore + flows).** Device keystore (non-extractable
-  keys); cold bootstrap via the **WinChan popup** (RP login → email → discovery →
-  device-cert issuance); access-cert minting; warrant fetch; RP presentation;
-  **agent device-cert pairing** (device-grant). Retire the hidden-iframe /
-  postMessage / session-cookie mint path.
-- **Phase 6 — RP verification contract (breaking).** Always-warrant verification:
-  access cert + assertion + warrant, joined by `(identity, subject, audience)`,
-  both revocation links checked. Update `browserid-rp`, the JS/Python/Go verifier
-  libs, and hosted `/verify`.
-- **Phase 7 — Retire old path, rebuild demo, consumers.** Remove the superseded
-  subject-axis/self-mint/`P_cert` code + old iframe path; **rebuild the demo**
-  around device certs; **relocate SBO signing** (`browserid-ng-3b8m`, prereq for
-  iframe deletion); migrate **mingo** (its own IdP + client) and **sbo** (verifier
-  pin). 
-- **Phase 8 — Docs/website, conformance tests, live validation.** README + site
-  to the device-cert story; conformance suite (issuance + mint + always-warrant +
-  fail-closed on unknown purpose/subject); live test on sandmill.org + mingo.
+REMOVE `provisioning_certs`, `api_keys`. ADD `device_certs`; ADD `subject` +
+config-cert ref on `warrants`. KEEP `emails`(+`email_type`/`parent_email`),
+`warrants`, `warrant_requests`, `status_entries`. `status_entries.kind` gains a
+`device`/`access` kind alongside `identity`/`warrant`. Update
+`registrar_glue::BrokerRegistrarStore` (`store.rs:17-45`) to drop the
+provisioning-cert trait methods + endorse path.
 
-Sequencing: 0 → 1 → {2, 3} → 4 → 5 → 6 → 7 → 8. Phase 7's SBO relocation (`3b8m`)
-gates the old-iframe deletion.
+## Open questions / risks
 
----
-
-## Open build questions
-
-- **Q5 — Cookies at mint.** Optional-only (never required, or cross-origin ITP
-  returns). Decide what a cookie *adds* as a freshness/anti-abuse signal.
-- **Q8 — Transports (no hidden iframe).** Confirm the WinChan popup covers the
-  domain-primary device-cert return leg; define the agent device-cert pairing
-  hand-off (device-grant based on `agent_provision.rs`).
-
-## Risk register
-
-| Risk | Severity | Mitigation |
-|---|---|---|
-| Mandatory warrants break every existing RP | High (accepted) | Pre-GA; land Phase 6 + verifier libs before any RP cutover |
-| Deleting the iframe breaks live SBO signing | High | `3b8m`: relocate `signSboEnvelope` first (Phase 7 prereq) |
-| Non-conformant primaries lock out their users | Medium (by design) | Conformance is required; fallback only for no-primary domains |
-| Fresh-key access certs + device-key possession proof done wrong | Medium | Access request token signed by the device key; IdP verifies before minting |
-| Warrant privacy leak (aggregated site/service usage) | Medium | Warrants stored but not published/queryable; access-cert gate makes a leaked warrant unusable |
-| mingo runs its own superseded iframe stack | Medium | Phase 7 parallel migration; mingo-idp already has a mint handler to evolve |
-
-## Bean reconciliation
-
-- **oup3** — re-scoped to the device-cert model (this plan).
-- **Completed, now superseded (historical record, not reverted):** i32c (spec),
-  54jz (core subject axis), wid3 (broker self-mint), 8fq2 (demo).
-- **Superseded before starting → scrap:** the old todo phases (iframe-retirement,
-  consumers, docs, conformance as previously scoped).
-- **Still valid:** `3b8m` (SBO signing relocation).
-- **New:** device-cert Phase 0–8 beans created under oup3.
+- **Q5 — cookies at mint:** optional-only (never required, or ITP returns).
+- **Q8 — transports:** confirm the WinChan popup carries the primary device-cert
+  return leg; define the agent device-cert pairing hand-off (already
+  `agent_provision.rs`-shaped).
+- **Primary demo needs sandmill.org to implement the endpoints** — identify what
+  runs its primary IdP; until then, faithful demos are fallback-only (no-primary
+  emails) and MUST reject `@sandmill.org` (correct behavior).
+- **Breaking:** warrants mandatory on every login → every RP/verifier processes a
+  warrant (accepted, pre-GA).
+- **Hidden-iframe deletion is gated by SBO signing relocation (`3b8m`).**
+- **Not-yet-existing:** Python/Go verifier libs (only `sdk/js`); config-cert
+  registry; device-cert registry — all net-new.
+</content>
