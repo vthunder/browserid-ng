@@ -207,11 +207,14 @@ the phase list above where they conflict.
   authorities (access→IdP, config→IdP, warrant→broker). → P1, P6.
 - **A3 [BLOCKER→qualified] Server-side config cert.** Broker-held config cert =
   broker signs warrants autonomously; broker is also fallback IdP → silent
-  impersonation. A1's binding **restricts server-side config certs to fallback
-  (no-primary) identities** (which the broker already owns end-to-end); **primary**
-  identities' config certs are primary-issued + **device-resident** (non-extractable).
-  Design updated. **USER DECISION:** even for fallback identities the broker can now
-  sign warrants with no user device in the loop — accept, or require a device key?
+  impersonation. **DECIDED (user, 2026-07-18):** the concern is overstated — for a
+  fallback identity the broker is the issuer anyway; for a primary identity a
+  broker-held config cert can't obtain an access cert, so it can't log in. **We
+  keep config certs CLIENT-SIDE and non-extractable (like access certs), issued
+  alongside the user cert at every login (batch); the device signs its own login
+  warrant locally, which syncs to the server registry for device-agnostic reuse.**
+  Server-side config-cert storage is dropped. **BACKLOG:** withhold the config cert
+  on less-trusted machines (login-only devices), for least privilege — deferred.
 
 ## B. Security controls to add
 
@@ -270,9 +273,10 @@ guestbook, browserid.me accounts). Even under "no one else is using it," the
 - **D2 Serialize the false-parallel braces.** `P3 (schema ADDs) → P2 (endpoints)`;
   `P6 (verifier) → {P5 dialog, P7 agent}` (P7 depends on P2+P6 in the crate graph);
   add an explicit **live-bundle × verifier integration checkpoint** after P5.
-- **D3 Thin vertical slice first.** user-cert + fallback-IdP + server-side config
-  cert → ONE working cold-start login, as an early green milestone, before agents
-  (P7) and primary/PHP (P10) layer on.
+- **D3 Thin vertical slice first.** user-cert + fallback-IdP + a **client-side
+  (device-resident) config cert issued alongside the user cert**, signing its own
+  login warrant → ONE working cold-start login, as an early green milestone, before
+  agents (P7) and primary/PHP (P10) layer on.
 - **D4 Pull P10 forward** to run parallel with {P5,P6,P7} (it depends only on the
   frozen vectors). Split P4 into P4a (registry/issuance) + P4b (warrant flip +
   self-login auto-warrant).

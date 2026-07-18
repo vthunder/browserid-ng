@@ -47,12 +47,18 @@ A **config cert must be issued by the identity's own IdP** — `config_cert.iss 
 domain(identity)`, DNSSEC-rooted, subject to the same primary/fallback conformance
 as the access cert (a fallback-issued config cert for a domain that has a primary
 fails). Without this binding an RP would accept a warrant signed by *any*
-authorization cert from *any* IdP — a privilege-escalation hole. So a config cert
-can only live **server-side at the hosted broker for fallback (no-primary)
-identities** (which the broker already fully controls as their IdP); for a
-**primary** identity the config cert is issued by that primary and is
-**device-resident** (non-extractable), never broker-held. Storage is a choice
-*within* those bounds, not across them.
+authorization cert from *any* IdP — a privilege-escalation hole.
+
+**Config certs are device-resident and non-extractable** (like access certs),
+issued by the identity's IdP **alongside the user cert at login** (one batch
+request yields both). The browser signs its own login warrant locally with its
+config cert; the signed warrant then syncs to the hosted-broker registry for
+device-agnostic reuse. *(Server-side config-cert storage wouldn't add real
+exposure — for a fallback identity the broker is already the issuer, and for a
+primary identity a broker-held config cert still can't obtain an access cert so it
+can't log in — but client-side non-extractable is simpler and cleaner, so that is
+what we do. Withholding the config cert on less-trusted machines, for least
+privilege, is a later refinement.)*
 
 The RP sees the access cert (fresh key) + assertion, and the warrant + the config
 cert that signed it; it never sees a user/agent (authentication) cert.
