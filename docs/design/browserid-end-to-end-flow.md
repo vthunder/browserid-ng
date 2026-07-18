@@ -66,14 +66,12 @@ Cold start; user has never touched this RP, browserid, or the broker.
    and issues certs (iss: `browserid.me`). **Primary** → the client broker opens
    the domain's login page; the user authenticates; the **domain IdP** issues
    certs (iss: the domain). `OPEN:` return transport (no hidden iframe).
-4. The IdP issues, for this device/identity:
-   - a **user device cert** (login: mints access request tokens);
-   - `OPEN:` (Q12) a **config cert** — where? server-side at the broker by
-     default, and/or a self-scoped config cert to this device so it can warrant
-     its own login (see Q12).
-   Each cert certifies the relevant key with metadata: **identities** (one/many/
+4. The IdP issues this device a **user device cert** (login: mints access request
+   tokens), certifying the device key with metadata: **identities** (one/many/
    wildcard, all from this IdP), **type**, **validity** (IdP decides; broker MAY
-   request a preference).
+   request a preference). A **config cert** (to author warrants) is issued
+   separately and need not live on every device — server-side at the broker by
+   default, or momentarily on a main machine (Stage 3).
 
 ### Agent variant
 The agent's device keypair is generated **off-browser**; the agent can't
@@ -109,20 +107,27 @@ refuse/revoke → short access certs stay meaningful, IdP keeps control, no cook
 
 ---
 
-## Stage 3 — Warrant (issued by a config cert)
+## Stage 3 — Warrant (issued by a config cert, over identity+type)
 
-A warrant is **always** present at the RP; it is issued by a **config cert** and
-is **long-lived** (the config cert is long-lived; re-stamping the config key can
-let warrants outlive a single config cert — renew to keep them working).
+A warrant is **always** present at the RP. It authorizes an **(identifier, type)
+→ audience [+ scopes]** — e.g. "`danmills+agent@sandmill.org`, type `user`, may
+sign into `https://mingo.place/`". Crucially it is **over the identifier + type,
+not bound to any device/access key.** Consequences:
 
-- **User login:** a warrant with default scopes for this RP, signed by a config
-  cert (server-side broker, or a self-scoped config cert on the device — Q12).
-- **Agent:** the user selects scopes/restrictions at consent time; the user's
-  config cert signs a warrant authorizing the agent identity + audience + scopes.
-- **Registry / revocation / status:** the hosted broker records issued warrants
-  (`jipx`), hosts the revocation UI, and serves the RP status endpoint. Warrants
-  carry a status ref; revoking one (or the config cert) cuts off the grant within
-  the status cache window.
+- Signed **once** by a **config cert** (which need exist only momentarily, on a
+  main machine or server-side), then **stored** (hosted broker registry) and
+  **reused device-agnostically**: any device that can mint an access cert for that
+  identity presents the stored warrant alongside it. A login-only device (user
+  cert, no config cert) just fetches the stored warrant — this is what dissolves Q12.
+- **Long-lived**, independent of any single device cert; re-stamping the config
+  key lets a warrant outlive the config cert that signed it (renew to keep it live).
+- **Not a secret:** a leaked warrant is useless without a matching IdP-minted
+  access cert for that identity, so warrants can be stored/served openly.
+- **User login:** default scopes for the RP (auto, first time). **Agent:** user
+  picks scopes/restrictions at consent. Either way the config cert signs it once.
+- **Registry / revocation / status:** the hosted broker stores warrants (`jipx`),
+  hosts the revocation UI, and serves the RP status endpoint; revoking a warrant
+  (or its config cert) cuts off the grant within the status cache window.
 
 ---
 
@@ -131,11 +136,13 @@ let warrants outlive a single config cert — renew to keep them working).
 1. Sign a login **assertion** for the RP's audience with the **access key**.
 2. Present **access cert + assertion + warrant + the config cert**. User/agent
    device certs are not presented.
-3. The RP verifies, DNSSEC-rooted: access cert + assertion (→ this key speaks for
-   identity X at this audience) **and** the warrant (→ X's config cert authorizes
-   this audience + scopes), checking revocation of the access cert (IdP) and the
-   warrant/config cert (hosted broker). Or posts to the hosted `/verify` for
-   convenience.
+3. The RP verifies, DNSSEC-rooted: access cert + assertion (→ this fresh key
+   speaks for identity X, type user, at this audience) **and** the warrant (→ X,
+   type user, is authorized for this audience + scopes), **joining the two by
+   (identity, type, audience)** — the warrant is not key-bound; the access cert
+   supplies the key→identity binding. It checks revocation of the access cert
+   (IdP) and the warrant/config cert (hosted broker). Or posts to the hosted
+   `/verify` for convenience.
 
 **Breaking change (accepted):** every RP processes a warrant on every login.
 Unifies the user/agent path; not backward-compatible.
@@ -155,6 +162,11 @@ Unifies the user/agent path; not backward-compatible.
 - **IdP one-time:** IdP roots issuance of all cert types but is not in the
   per-warrant or per-login-assertion loop.
 - **Long-lived warrants:** issued directly by the long-lived config cert.
+- **Device-agnostic warrants:** a warrant is over (identity, type, audience),
+  signed once, stored, and reused by any device presenting an access cert for
+  that identity — not key-bound, not secret. Authentication (access cert,
+  per-device, key-bound) and authorization (warrant, identity-bound, reusable)
+  are cleanly separated.
 
 ---
 
@@ -167,19 +179,14 @@ Unifies the user/agent path; not backward-compatible.
 - **Q8 — Transports (no hidden iframe):** domain-primary return leg; agent pairing.
 - **Q9 — RP-side warrant verification:** full offline chain vs. hosted status
   query; how the RP roots the config cert.
-- **Q12 — Login-only devices vs. always-warrant (the live tension):** a device
-  with only a user cert can't sign its own login warrant. Options: (a) server-side
-  broker config cert signs login warrants (server-side config becomes the de-facto
-  default); (b) exempt pure self-login from the warrant rule (weakens uniformity);
-  (c) issue every login device a **self-scoped** config cert (login device can
-  warrant only itself; full config certs, for authorizing agents/others, stay on
-  main machines / server). Leaning (c).
-
 Resolved: Q1/Q2 (warrants signed by config certs, held server-side or on-device),
 Q3 (access cert = fresh key; user/agent device certs hidden), Q4 (multi-identity/
 wildcard), Q7 (mandatory warrants — yes), Q10 (long-lived warrants via config
-cert), Q11 (only the config cert is RP-visible), agent issuance (IdP-issued,
-user-authorized).
+cert), Q11 (only the config cert is RP-visible), **Q12 (warrants are over
+(identity, type, audience), not device-key-bound — signed once by a config cert,
+stored, reused by any device with an access cert for that identity; login-only
+devices just fetch the stored warrant, so no per-device config cert)**, agent
+issuance (IdP-issued, user-authorized).
 
 ---
 
