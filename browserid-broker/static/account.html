@@ -206,6 +206,15 @@
       <ul class="idlist" id="external-ids"></ul>
     </div>
 
+    <div class="card" id="devices-card" hidden>
+      <h2>Devices</h2>
+      <p class="sub">Certificates this account issued: <b>device / agent</b> certs (authentication —
+        what logs a device or agent in) and <b>config</b> certs (authorization — what signs your
+        warrants). Revoking a device logs it out and <b>kills the access certificates it minted</b>,
+        so anything currently signed in with it stops working.</p>
+      <ul class="idlist" id="device-certs"></ul>
+    </div>
+
     <div class="card">
       <h2>Session</h2>
       <p class="sub">Signing out also clears this browser's cached certificates.</p>
@@ -269,7 +278,7 @@ const post = (path, body) => api(path, {
   body: JSON.stringify({ csrf: account.csrf, ...body }),
 });
 
-let account = { emails: [], agents: [], parentOf: {}, warrants: [], certs: [], csrf: null };
+let account = { emails: [], agents: [], parentOf: {}, warrants: [], certs: [], deviceCerts: [], csrf: null };
 let idCache = []; // in-memory snapshot of the non-extractable keystore (e2fi)
 
 // -------- local identities (this browser's cached certs+keys) --------
@@ -290,6 +299,19 @@ function localIdentities() {
 async function refreshKeystore() { idCache = await window.Keystore.all(); }
 function certPayload(cert) {
   try { return JSON.parse(atob(cert.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); } catch { return null; }
+}
+// Device-cert (DC) display: pull `subject` and the signing cert's principal out
+// of a warrant JWS. `config-cert` (authorization signer) is preferred; falls
+// back to the legacy `parent-cert` (identity-key-signed warrants).
+function warrantMeta(w) {
+  const p = certPayload(w.warrant || '') || {};
+  const signerCert = p['config-cert'] || p['parent-cert'];
+  let signer = null;
+  if (signerCert) {
+    const sp = certPayload(signerCert);
+    signer = sp?.principal?.email || sp?.iss || null;
+  }
+  return { subject: p.subject || null, signer };
 }
 /// active = a cached cert with at least a minute of life left
 function isActive(email) { const id = localIdentity(email); return !!id && id.exp > nowS() + 60; }
@@ -574,6 +596,52 @@ function renderExternalServices(agentList) {
   }
 }
 
+// -------- devices (device-cert model, DC Phase 8) --------
+// Lists this account's IdP-issued certs: authentication certs (device / agent
+// login — "what mints access certs") and authorization certs (config — "what
+// signs your warrants"). Each is revocable = "log this device/agent out";
+// revoking flips the cert's status bit so its outstanding access certs die.
+function renderDeviceCerts() {
+  const certs = account.deviceCerts || [];
+  $('devices-card').hidden = !certs.length;
+  if (!certs.length) return;
+  const now = Date.now();
+  const byId = Object.fromEntries(certs.map(c => [c.id, c]));
+  $('device-certs').innerHTML = certs.map(c => {
+    const auth = c.purpose === 'authorization';
+    const purposeBadge = auth
+      ? '<span class="badge info">config · authorization</span>'
+      : `<span class="badge active">${escapeHtml(c.subject)} · authentication</span>`;
+    const exp = Date.parse(c.expires_at);
+    const state = c.revoked
+      ? '<span class="badge revoked">revoked</span>'
+      : (exp && exp < now
+        ? '<span class="warn" style="font-size:12px">expired</span>'
+        : `<span class="muted" style="font-size:12px">until ${new Date(exp).toLocaleDateString()}</span>`);
+    const ids = (c.identities || []).map(i => `<span class="scope">${escapeHtml(i)}</span>`).join('') || '';
+    const label = auth
+      ? (c.subject === 'agent' ? 'Log this agent out' : 'Log this device out')
+      : 'Revoke config cert';
+    const action = c.revoked ? ''
+      : `<button class="small dc-revoke" data-i="${c.id}" style="color:#c53030">${label}</button>`;
+    return `<li><div class="row"><span class="email-text">${purposeBadge} ${ids}
+      <span class="email-sub" style="font-family:ui-monospace,monospace;word-break:break-all">${escapeHtml((c.pubkey || '').slice(0, 24))}… · ${escapeHtml(c.iss)}</span></span>
+      <span style="white-space:nowrap;text-align:right">${state}<br>${action}</span></div></li>`;
+  }).join('');
+  for (const b of $('device-certs').querySelectorAll('.dc-revoke')) b.onclick = async () => {
+    const c = byId[b.dataset.i];
+    const noun = c.purpose === 'authorization' ? 'config cert'
+      : (c.subject === 'agent' ? 'agent' : 'device');
+    if (!confirm(`Revoke this ${noun}? It stops working, and any access certificates it minted die within minutes.`)) return;
+    b.disabled = true;
+    try {
+      await post('/wsapi/revoke_device_cert', { csrf: account.csrf, id: Number(b.dataset.i) });
+      await reloadAccount();
+      renderDeviceCerts();
+    } catch (e) { b.disabled = false; alert('Revoke failed: ' + e.message); }
+  };
+}
+
 // -------- activate a secondary identity (issue + cache a cert) --------
 async function activate(email, btn) {
   btn.disabled = true;
@@ -805,8 +873,15 @@ function renderDetailWarrants(agentEmail, external) {
     const delegator = external
       ? `<span class="muted" style="font-size:12px">acting for ${escapeHtml(w.delegator_email)}</span><br>`
       : '';
+    // Device-cert model (DC): surface the warrant's subject (user|agent) and
+    // which cert signed it. Read straight from the warrant JWS so it works for
+    // both legacy (identity/parent-cert) and config-cert-signed warrants.
+    const meta = warrantMeta(w);
+    const metaLine = (meta.subject || meta.signer)
+      ? `<span class="muted" style="font-size:12px">${meta.subject ? `subject <b>${escapeHtml(meta.subject)}</b>` : ''}${meta.subject && meta.signer ? ' · ' : ''}${meta.signer ? `signed by ${escapeHtml(meta.signer)}` : ''}</span><br>`
+      : '';
     return `<tr>
-      <td><span class="aud">${escapeHtml(w.audience)}</span><br>${delegator}
+      <td><span class="aud">${escapeHtml(w.audience)}</span><br>${delegator}${metaLine}
         ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
       <td style="white-space:nowrap;text-align:right">${state}<br>${actions}</td></tr>`;
   }).join('') + '</table>';
@@ -881,14 +956,16 @@ $('reset').onclick = () => { clearLocal(); renderUserIdentities(); renderAgents(
 // -------- boot --------
 async function reloadAccount() {
   const resp = await api('/wsapi/list_emails');
-  let warrants = [], certs = [];
+  let warrants = [], certs = [], deviceCerts = [];
   try { warrants = (await api('/wsapi/warrants')).warrants || []; } catch {}
   try { certs = (await api('/wsapi/provisioning_certs')).certs || []; } catch {}
+  try { deviceCerts = (await api('/wsapi/device_certs')).certs || []; } catch {}
   account.emails = resp.emails || [];
   account.agents = resp.agents || [];
   account.parentOf = Object.fromEntries((resp.derived || []).map(d => [d.email, d.parent_email]));
   account.warrants = warrants;
   account.certs = certs;
+  account.deviceCerts = deviceCerts;
   await refreshKeystore();
 }
 // -------- paired agent provisioning approval (bean 74u1) --------
@@ -1057,6 +1134,7 @@ async function boot() {
   $('app').hidden = false;
   renderUserIdentities();
   renderAgents();
+  renderDeviceCerts();
   await autoActivateIdentities(); // make a just-verified identity usable now
   // Paired provisioning banner sits above the account app so add-email/activate
   // are right there for new users.
