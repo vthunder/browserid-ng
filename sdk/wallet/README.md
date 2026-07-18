@@ -32,18 +32,24 @@ appears attributed to the agent **and to you**.
 
 ## Tools
 
-- **`provision(handles?, label?)`** — pair a new identity. Returns an approval URL
-  for you; the agent picks up its identity automatically once you approve. No file
-  to download — the private key is generated locally and never transmitted.
+- **`provision(handles?, label?)`** — pair a new identity. The agent generates its
+  device keypair locally; you approve, and the IdP issues an `agent`-subject
+  **device cert** for it (a device-grant — nothing is delegated by chaining your
+  key). Returns an approval URL for you; the agent picks up its device cert
+  automatically once you approve. The private key is generated locally and never
+  transmitted.
 - **`identity`** — who the agent acts as.
-- **`authorize(audience, scopes)`** — request a warrant for an audience.
-- **`get_assertion(audience)`** — a backed assertion to present there.
+- **`authorize(audience, scopes)`** — request a warrant for an audience (signed by
+  your config cert at the consent screen).
+- **`get_assertion(audience)`** — the four-object bundle
+  (`access_cert~assertion~warrant~config_cert`) to present there; the agent mints a
+  fresh access cert as needed.
 - **`sign_guestbook(message)`** / **`read_guestbook()`** — the demo.
 
 ## Where the identity lives
 
-In `~/.browserid/` (the provisioning key, delegation, and cert). It's local to
-your machine — browserid.me never holds it.
+In `~/.browserid/` (the agent's device key, its IdP-issued device cert, and any
+warrants). It's local to your machine — browserid.me never holds the key.
 
 ## Config
 

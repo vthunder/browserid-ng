@@ -31,6 +31,21 @@ agent an identity of its own:
 Everything verifies **offline against DNS signatures** — no company sits between
 you and your users, and nothing breaks if browserid.me disappears.
 
+Three properties fall out of the design:
+
+- **Agent-native, headless.** An agent is just a device with an `agent`-subject
+  device cert. It mints its own short-lived **access certs** through the IdP's
+  mint API — no browser, no user in the loop at mint time. Humans and agents ride
+  the identical mint + presentation path.
+- **Least privilege: authentication ≠ authorization.** Device certs come in two
+  purposes — `authentication` (mints access certs → logging in) and
+  `authorization` (a **config cert** that signs warrants → granting). A
+  compromised login-only device can't authorize new grants.
+- **Works with any email, any domain — because every IdP implements the same
+  thing.** Conformance is mandatory: every IdP MUST implement device-cert
+  issuance (both purposes) and the access-cert mint API. Domains without their own
+  IdP are served by the `browserid.me` fallback.
+
 ## For app developers: verify in one call
 
 Your users (and their agents) sign in; your backend POSTs the assertion to a
@@ -41,19 +56,25 @@ for and what it may do here.
 import { createVerifier } from "@browserid-ng/verify";
 const verifier = createVerifier();               // hosted verifier, or point at your own
 
-const r = await verifier.verify(assertion, "https://app.example.com");
+const r = await verifier.verify(bundle, "https://app.example.com");
 if (r.ok) {
-  session.user = r.email;                         // verified identity
-  // r.agent?.parent  → the human an agent acts for
-  // r.agent?.scopes  → what that human authorized at this audience
+  session.user = r.email;                         // the verified identity (identifier)
+  // r.subject         → "user" or "agent"
+  // r.scopes          → what the identity's config cert authorized at this audience
 } else {
   reject(r.reason);                               // fail-closed on anything else
 }
 ```
 
+`bundle` is the four-object presentation the client sends —
+`access_cert~assertion~warrant~config_cert` (see [Protocol notes](#protocol-notes)) —
+but as a relying party you never parse it: you POST it and read back
+`{ email, subject, scopes, issuer }`.
+
 - **JS/TS wrapper:** [`sdk/js`](./sdk/js) (`@browserid-ng/verify`) — thin, typed, fail-closed.
-- **Agent side (Node):** [`sdk/agent`](./sdk/agent) (`@browserid-ng/agent`) — provision a
-  delegated identity, obtain warrants, mint assertions — for agents integrating in Node/TS.
+- **Agent side (Node):** [`sdk/agent`](./sdk/agent) (`@browserid-ng/agent`) — obtain an
+  agent device cert, mint access certs headlessly, obtain warrants, present the bundle —
+  for agents integrating in Node/TS.
 - **Any language:** [`docs/verify-quickstart.md`](./docs/verify-quickstart.md) — the
   `/verify` HTTP contract with Python / Go / curl examples.
 - No registration, no client IDs, no secrets to manage.
@@ -86,10 +107,10 @@ signs the **public guestbook** at [browserid.me/guestbook](https://browserid.me/
 
 | Crate / dir | What it is |
 |---|---|
-| **browserid-core** | Protocol primitives — Ed25519 keys, JWT/JWS, certificates, assertions, warrants, status lists, DNSSEC-first discovery |
-| **browserid-broker** | The identity broker: human auth (passwordless email), certificate issuance, agent-consent + warrant registry, revocation, and the hosted `/verify` endpoint |
-| **browserid-registrar** | The user's own delegation authority — consent, warrant issuance, status-list authoring (unbundled from the IdP role) |
-| **browserid-agent** | Agent-side library + CLI — provision a delegated identity, request warrants, present assertions |
+| **browserid-core** | Protocol primitives — Ed25519 keys, JWT/JWS, **device / access / config certs** (`device.rs`), assertions, warrants, status lists, DNSSEC-first discovery |
+| **browserid-broker** | IdP + hosted broker: human auth (passwordless email), **device-cert issuance (both purposes) + the access-cert mint API**, consent + the warrant registry, revocation, and the hosted `/verify` endpoint |
+| **browserid-registrar** | The hosted broker's warrant surface — consent, warrant **registry / status-list authoring** (the warrant itself is signed client-side by the user's config cert, not here) |
+| **browserid-agent** | Agent-side library + CLI — obtain an agent device cert, mint access certs headlessly, request warrants, present the bundle |
 | **browserid-rp** | Relying-party helpers — fail-closed verification with scope enforcement |
 | **sdk/js** | `@browserid-ng/verify` — the zero-dependency hosted-verify client (RP side) |
 | **sdk/agent** | `@browserid-ng/agent` — the Node agent-side SDK (provision, warrants, assertions) |
@@ -100,17 +121,26 @@ signs the **public guestbook** at [browserid.me/guestbook](https://browserid.me/
 ## The agent model in one picture
 
 ```
-DNS  _browserid.acme.com  (Ed25519, DNSSEC)          ← trust root
-  └─ alice@acme.com        identity cert              ← the human
-       └─ warrant: agent=researcher, aud=api.example.com, scopes=[post,read]
-            └─ researcher@acme.com  agent cert + assertion   ← what the agent presents
+DNS  _browserid.acme.com  (Ed25519, DNSSEC)              ← trust root
+  └─ acme.com IdP  issues, per device (never seen by the RP):
+       • agent device cert   purpose=authentication, subject=agent, identities=[dan+researcher@acme.com]
+       • config cert         purpose=authorization                          (signs warrants)
+
+  agent device cert ──mint API──▶ access cert  (fresh key, short-lived)      ← RP-facing
+  config cert ──signs──▶ warrant (dan+researcher@acme.com, subject=agent, aud=api.example.com, scopes=[post,read])
+
+  RP receives the four-object bundle:  access_cert ~ assertion ~ warrant ~ config_cert
 ```
 
-A relying party verifying the agent's assertion learns the agent's identity, its
-principal (`alice@acme.com`), and the scopes Alice signed **for that audience** —
-and rejects anything outside them. See
-[`docs/verify-quickstart.md`](./docs/verify-quickstart.md) and the design plans
-under [`docs/plans`](./docs/plans).
+The device certs stay on the device; the RP sees only the **access cert** (a
+fresh, IdP-minted key), the **assertion** it signs, the **warrant**, and the
+**config cert** that signed the warrant. The RP joins them by
+`(identity, subject, audience)`, checks `config_cert.iss == access_cert.iss` (the
+warrant was signed by an authorization cert from the identity's own IdP), and
+learns the agent's identity, that it acts as `subject=agent`, and the scopes
+authorized **for that audience** — rejecting anything outside them. See
+[`docs/verify-quickstart.md`](./docs/verify-quickstart.md), the protocol spec, and
+the design under [`docs/design`](./docs/design).
 
 ## Getting started (run the broker)
 
@@ -152,8 +182,13 @@ navigator.id.watch({
 document.getElementById('login').onclick = () => navigator.id.request();
 ```
 
-The server verifies the returned `certificate~assertion` exactly as in the
-one-call example above.
+In the device-cert model the browser is just **one device among many**: it holds
+the user's device certs, mints an **access cert** through the IdP's mint API
+(cookie-free, so it survives ITP), and signs its login warrant locally with the
+user's **config cert**. The interactive step uses a first-party WinChan popup, not
+a hidden cross-origin iframe. What the server verifies is the same four-object
+bundle (`access_cert~assertion~warrant~config_cert`) as in the one-call example
+above — a human login carries `subject=user`.
 
 ## Testing
 
@@ -165,16 +200,28 @@ cd sdk/js && node --test   # JS verifier client
 
 ## Protocol notes
 
-### Backed assertion format
+### The four-object bundle
+
+An RP receives four tilde-joined objects — the same for humans and agents:
 
 ```
-<certificate>~<assertion>[~<warrant>]
+<access_cert>~<assertion>~<warrant>~<config_cert>
 ```
-- **Certificate** — signed by the issuer, binds an email (or agent) to a public key.
-- **Assertion** — signed by that key, contains `{aud, exp}`.
-- **Warrant** *(agent presentations)* — signed by the delegator's identity key,
-  binds `{agent, aud, scopes}`. Load-bearing: an agent cert without a valid
-  warrant is rejected.
+- **Access cert** — IdP-signed, certifies a **fresh** key, short-lived, minted
+  online through the mint API. This is what the RP roots on; the durable
+  **device cert** that authorized the mint is never presented.
+- **Assertion** — signed by that fresh access key, contains `{aud, exp}`.
+- **Warrant** — signed by a **config cert** (an `authorization`-purpose device
+  cert), binds `(identifier, subject) → audience[+scopes]`. Always present — for
+  human logins too. Load-bearing: no warrant, no login.
+- **Config cert** — the `authorization` device cert that signed the warrant,
+  presented so the RP can verify it. The RP MUST check
+  `config_cert.iss == access_cert.iss` (identity's own IdP) and check three
+  fail-closed status authorities: access cert → IdP (per device), config cert →
+  IdP, warrant → hosted broker.
+
+The RP joins the four by `(identity, subject, audience)`. See
+`browserid-core/src/device.rs` and `test-vectors/device-cert-v1.json`.
 
 ### DNS-based key discovery (divergence from original BrowserID)
 

@@ -3,7 +3,14 @@
 Adding identity verification to a relying party (RP) is one HTTPS call. Your
 backend POSTs the assertion it received from the browser to a hosted `/verify`
 service, which does all the cryptography (DNSSEC-rooted key resolution, signature
-checks, agent-warrant validation, revocation) and returns the verified email.
+checks, the config-cert issuer binding, warrant validation, and the three
+fail-closed revocation checks) and returns the verified email.
+
+The `assertion` field carries the client's **four-object bundle** —
+`access_cert~assertion~warrant~config_cert` — not a bare `certificate~assertion`
+string. As an RP you never parse it: the spec "specifies what the RP receives,
+not how it verifies." You POST the blob and read back the verified fields. (The
+field is named `assertion` for wire-compat.)
 
 This is the **zero-dependency path** — it works from any language that can make
 an HTTP request. For JavaScript/TypeScript there is a thin typed wrapper,
@@ -22,7 +29,7 @@ POST https://browserid.me/verify
 Content-Type: application/json
 
 {
-  "assertion": "<certificate~assertion string from the browser>",
+  "assertion": "<the four-object bundle from the client>",
   "audience": "https://app.example.com",
   "accepted_fallbacks": ["fallback.example"]   // optional; see below
 }
@@ -45,9 +52,12 @@ Content-Type: application/json
 - **`audience`** — the exact origin you expect, e.g. `https://app.example.com`.
   Pin this **server-side**; never echo a client-supplied value. A mismatch fails.
 - **`accepted_fallbacks`** *(optional)* — issuer domains you accept as fallback
-  IdPs for emails that have **no primary IdP** (spec §8.1). Primary-IdP emails
-  are always verified against their own primary regardless of this list. Omit to
-  use the verifier's default (`{that broker}`).
+  IdPs for emails that have **no primary IdP** (spec §8.1). The fallback IdP
+  serves **only** no-primary domains: a fallback-issued cert (access *or* config)
+  for a domain that **has** a primary fails verification, so a fallback can never
+  override a domain's own IdP. Primary-IdP emails are always verified against
+  their own primary regardless of this list. Omit to use the verifier's default
+  (`{that broker}`).
 - **`agent`** *(response, optional)* — present only when the presentation is an
   AI **agent** acting for a human via a warrant. `parent` is the human; `scopes`
   is what the human's warrant authorized at this audience. If you run a plain

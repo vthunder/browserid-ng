@@ -18,7 +18,7 @@ MCP client, including Claude Desktop.
 
 ```
 wallet.authorize ─▶ APPROVE_URL ─▶ human approves warrant (browserid.me)
-wallet.get_assertion ─▶ agent_cert ~ warrant ~ assertion
+wallet.get_assertion ─▶ access_cert ~ assertion ~ warrant ~ config_cert  (the bundle)
 notes.post_note(assertion) ─▶ verify ─▶ agent + principal + scopes ─▶ enforce ─▶ run
 ```
 

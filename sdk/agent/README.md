@@ -37,8 +37,8 @@ if (approveUrl) {
   await approved;                              // polls until they do
 }
 
-// Mint a backed presentation (agent_cert ~ warrant ~ assertion) for the RP/MCP
-// server. It refreshes the cert automatically if stale.
+// Mint the four-object bundle (access_cert ~ assertion ~ warrant ~ config_cert)
+// for the RP/MCP server. It mints a fresh access cert automatically as needed.
 const assertion = await agent.assertionFor(audience);
 
 await agent.save("agent.identity.json");       // persist key + cert + warrants
@@ -75,14 +75,24 @@ names — pick one), `WarrantDeniedError`, `WarrantExpiredError`, `NoWarrantErro
 
 ## How it maps to the protocol
 
-- **provision / cert refresh** — endorse at `{broker}/provision/endorse`, then
-  mint at `{idp}/provision/mint`.
-- **warrant** — `{broker}/warrant/request` → poll `{broker}/warrant/poll`; the
-  human signs the warrant with their own key at the consent screen (the agent
-  never signs warrants).
-- **assertion** — signed with the agent's own key; presented as
-  `agent_cert ~ warrant ~ assertion`.
-- **revoke** — endorse, then `{idp}/provision/revoke`.
+The agent holds an **agent device cert** (`subject: agent`, `purpose:
+authentication`) the IdP issued after the human authorized it. It never presents
+that device cert; it mints short-lived **access certs** from it.
+
+- **device cert** — obtained once via the user-authorized device-grant; durable,
+  IdP-signed, never sent to an RP.
+- **access cert** — `assertionFor` signs an **access request** with the agent
+  device key and mints a fresh-key **access cert** at the IdP's mint API. The
+  assertion is signed by that fresh access key, not the device key.
+- **warrant** — `{broker}/warrant/request` → poll `{broker}/warrant/poll`; on
+  approval the human's **config cert** (an `authorization`-purpose device cert)
+  signs the warrant at the consent screen, and it's registered in the hosted
+  broker. The agent never signs warrants.
+- **presentation** — the four-object bundle
+  `access_cert ~ assertion ~ warrant ~ config_cert`, joined by
+  `(identity, subject, audience)`.
+- **revoke** — revoke the agent device cert (its status ref → IdP) or a specific
+  warrant (its status ref → hosted broker).
 
 See [`../../examples/mcp-agent-auth`](../../examples/mcp-agent-auth) for a wallet
 MCP server built on this SDK.
