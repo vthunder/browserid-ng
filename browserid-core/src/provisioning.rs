@@ -94,28 +94,8 @@ pub(crate) fn expired(exp: i64) -> bool {
 /// - `patterns`: `<prefix>+*` subaddress grants — the key may mint any
 ///   `<prefix>+<suffix>`. These are not reserved (unbounded); the count is
 ///   still bounded by the per-delegator quota.
-/// The *kind* of identity a provisioning key may mint. `self` mints the
-/// delegator's own identity (a plain user / login cert, principal == the
-/// delegator's email); `agent` mints derived `<name>@<domain>` agent
-/// identities. `self` is strictly more powerful than `agent` and is only ever
-/// granted with explicit user consent at credential creation (protocol §7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Subject {
-    #[serde(rename = "self")]
-    Self_,
-    #[serde(rename = "agent")]
-    Agent,
-}
-
-/// A typed capability descriptor bounding what a provisioning key may mint.
-///
-/// - `subjects`: which identity kinds (REQUIRED, non-empty; no legacy default —
-///   a constraint with no `subjects` fails [`Constraint::validate`]).
-/// - `names`/`patterns`: agent-handle scope — **apply only to `Subject::Agent`**.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Constraint {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub subjects: Vec<Subject>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub names: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -123,24 +103,8 @@ pub struct Constraint {
 }
 
 impl Constraint {
-    /// An `agent`-subject constraint scoped to exact `names`.
     pub fn names(names: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self {
-            subjects: vec![Subject::Agent],
-            names: names.into_iter().map(Into::into).collect(),
-            patterns: Vec::new(),
-        }
-    }
-
-    /// A `self`-only constraint: the browser's own login credential. No agent
-    /// names/patterns — the `self` subject *is* the authorization.
-    pub fn self_only() -> Self {
-        Self { subjects: vec![Subject::Self_], names: Vec::new(), patterns: Vec::new() }
-    }
-
-    /// Whether this constraint authorizes minting the given identity kind.
-    pub fn authorizes_subject(&self, subject: Subject) -> bool {
-        self.subjects.contains(&subject)
+        Self { names: names.into_iter().map(Into::into).collect(), patterns: Vec::new() }
     }
 
     /// A pattern's required shape: `<prefix>+*`, where `<prefix>` is a
@@ -157,18 +121,8 @@ impl Constraint {
     /// Validate the constraint: at least one entry, and every pattern is a
     /// well-formed `<prefix>+*` (naked `*` rejected).
     pub fn validate(&self) -> Result<()> {
-        if self.subjects.is_empty() {
-            return Err(invalid("constraint", "must grant at least one subject (self|agent)"));
-        }
-        // `agent` needs a handle scope; `self` is self-authorizing.
-        if self.subjects.contains(&Subject::Agent)
-            && self.names.is_empty()
-            && self.patterns.is_empty()
-        {
-            return Err(invalid(
-                "constraint",
-                "subject 'agent' requires at least one name or pattern",
-            ));
+        if self.names.is_empty() && self.patterns.is_empty() {
+            return Err(invalid("constraint", "must grant at least one name or pattern"));
         }
         for p in &self.patterns {
             if Self::pattern_prefix(p).is_none() {
@@ -328,16 +282,6 @@ pub struct ProvisioningRequestClaims {
     pub agent_key: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ephemeral: Option<bool>,
-    /// Which identity kind to mint (REQUIRED for `action=mint`): `self`|`agent`.
-    /// No default — a mint request without `subject` MUST be rejected, and it
-    /// MUST be a member of the P_cert's `constraint.subjects`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subject: Option<Subject>,
-    /// Anti-replay nonce, REQUIRED for `subject: self` mints (the minted cert
-    /// speaks as the human). The IdP MUST reject a replayed `jti` within the
-    /// request's validity window.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub jti: Option<String>,
     /// The grants a warrant consent request asks for (action=warrant only):
     /// one entry per RP audience, each with its own scopes — audiences are
     /// copied verbatim from RP challenges, never typed by anyone. Approval
@@ -396,8 +340,6 @@ impl ProvisioningRequest {
             name: None,
             agent_key: None,
             ephemeral: None,
-            subject: None,
-            jti: None,
             warrant_grants: None,
             delegator: None,
         }
@@ -411,28 +353,8 @@ impl ProvisioningRequest {
         provisioning_key: &KeyPair,
     ) -> Result<Self> {
         let mut claims = Self::base_claims(Action::Mint, domain);
-        claims.subject = Some(Subject::Agent);
         claims.name = Some(name.to_string());
         claims.agent_key = Some(agent_pub.clone());
-        claims.ephemeral = if ephemeral { Some(true) } else { None };
-        Self::create(claims, provisioning_key)
-    }
-
-    /// A `subject: self` mint — the browser (or any provisioning credential
-    /// bearing the `self` subject) mints a plain login certificate for the
-    /// delegator's **own** identity, certifying `login_key`. No `name`. A fresh
-    /// `jti` is generated for anti-replay.
-    pub fn mint_self(
-        domain: &str,
-        login_pub: &PublicKey,
-        jti: &str,
-        ephemeral: bool,
-        provisioning_key: &KeyPair,
-    ) -> Result<Self> {
-        let mut claims = Self::base_claims(Action::Mint, domain);
-        claims.subject = Some(Subject::Self_);
-        claims.agent_key = Some(login_pub.clone());
-        claims.jti = Some(jti.to_string());
         claims.ephemeral = if ephemeral { Some(true) } else { None };
         Self::create(claims, provisioning_key)
     }
@@ -1011,19 +933,18 @@ mod tests {
         assert!(!c.authorizes("other"));
 
         // Patterns: <prefix>+* only; naked * rejected.
-        let c = Constraint { subjects: vec![Subject::Agent], names: vec![], patterns: vec!["dan+*".into(), "foo+*".into()] };
+        let c = Constraint { names: vec![], patterns: vec!["dan+*".into(), "foo+*".into()] };
         c.validate().unwrap();
         assert!(c.authorizes("dan+ci"));
         assert!(c.authorizes("foo+worker"));
         assert!(!c.authorizes("dan"), "bare prefix is not authorized by the +* pattern");
         assert!(!c.authorizes("dan+"), "empty suffix is not authorized");
         assert!(!c.authorizes("other+x"));
-        assert!(Constraint { subjects: vec![Subject::Agent], names: vec![], patterns: vec!["*".into()] }.validate().is_err());
-        assert!(Constraint { subjects: vec![Subject::Agent], names: vec![], patterns: vec!["dan*".into()] }.validate().is_err());
+        assert!(Constraint { names: vec![], patterns: vec!["*".into()] }.validate().is_err());
+        assert!(Constraint { names: vec![], patterns: vec!["dan*".into()] }.validate().is_err());
 
         // Combined names + patterns (the user's example).
         let c = Constraint {
-            subjects: vec![Subject::Agent],
             names: vec!["foo".into(), "bar".into()],
             patterns: vec!["user+*".into(), "foo+*".into()],
         };
@@ -1031,53 +952,6 @@ mod tests {
         assert!(c.authorizes("foo") && c.authorizes("bar"));
         assert!(c.authorizes("user+ci") && c.authorizes("foo+ci"));
         assert!(!c.authorizes("baz"));
-    }
-
-    #[test]
-    fn subject_axis_constraint_and_request() {
-        // names() is an agent constraint; self_only() is a self constraint.
-        let agent_c = Constraint::names(["worker"]);
-        assert!(agent_c.authorizes_subject(Subject::Agent));
-        assert!(!agent_c.authorizes_subject(Subject::Self_));
-        agent_c.validate().unwrap();
-
-        let self_c = Constraint::self_only();
-        assert!(self_c.authorizes_subject(Subject::Self_));
-        assert!(!self_c.authorizes_subject(Subject::Agent));
-        self_c.validate().unwrap(); // self needs no names/patterns
-
-        // Missing subjects is rejected (no legacy default).
-        assert!(Constraint { subjects: vec![], names: vec!["x".into()], patterns: vec![] }
-            .validate()
-            .is_err());
-        // agent subject with no names/patterns is rejected.
-        assert!(Constraint { subjects: vec![Subject::Agent], names: vec![], patterns: vec![] }
-            .validate()
-            .is_err());
-
-        // mint_self builds a subject:self request: no name, has jti + agent-key.
-        let p = KeyPair::generate();
-        let login_key = KeyPair::generate();
-        let r = ProvisioningRequest::mint_self(
-            "idp.example",
-            &login_key.public_key(),
-            "nonce-123",
-            false,
-            &p,
-        )
-        .unwrap();
-        let parsed = ProvisioningRequest::parse(r.encoded()).unwrap();
-        assert_eq!(parsed.claims().subject, Some(Subject::Self_));
-        assert_eq!(parsed.claims().jti.as_deref(), Some("nonce-123"));
-        assert!(parsed.claims().name.is_none());
-        assert!(parsed.claims().agent_key.is_some());
-        parsed.verify(&p.public_key()).unwrap();
-
-        // agent-mode mint still carries subject:agent + name.
-        let a = ProvisioningRequest::mint("idp.example", "worker", &login_key.public_key(), false, &p)
-            .unwrap();
-        assert_eq!(a.claims().subject, Some(Subject::Agent));
-        assert_eq!(a.claims().name.as_deref(), Some("worker"));
     }
 
     #[test]

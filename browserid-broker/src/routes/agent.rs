@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::Json;
-use browserid_core::provisioning::{Action, Endorsement, RequestBundle, Subject, VerifiedRequest};
+use browserid_core::provisioning::{Action, Endorsement, RequestBundle, VerifiedRequest};
 use browserid_registrar::valid_agent_name;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -130,71 +130,19 @@ where
     require_enabled(&state)?;
     let (_bundle, verified) = verify_as_target_idp(&state, &req, Action::Mint)?;
 
-    // The request MUST declare its subject (self|agent) — no legacy default.
-    let subject = verified.request.subject.ok_or_else(|| {
-        BrokerError::InvalidProvisioningRequest("mint requires a subject (self|agent)".into())
-    })?;
+    let name = verified
+        .request
+        .name
+        .as_deref()
+        .ok_or_else(|| BrokerError::InvalidProvisioningRequest("mint requires a name".into()))?;
     let agent_pub = verified
         .request
         .agent_key
         .as_ref()
         .ok_or_else(|| BrokerError::InvalidProvisioningRequest("mint requires an agent-key".into()))?;
+
+    let record = ensure_agent_identity(&state, &verified, name)?;
     let ephemeral = verified.request.ephemeral.unwrap_or(false);
-
-    // Resolve the identity record to certify, enforcing that the signed
-    // constraint authorizes this subject kind (D2: a `self`-capable credential
-    // is strictly more powerful and must never be implied by `provision agent`).
-    let record = match subject {
-        Subject::Self_ => {
-            if !verified.constraint.authorizes_subject(Subject::Self_) {
-                return Err(BrokerError::PolicyRefused(
-                    "this credential's constraint does not grant the 'self' subject".into(),
-                ));
-            }
-            // A self mint speaks as the human — require a fresh anti-replay nonce
-            // and forbid a name (the principal is the delegator's own email).
-            if verified.request.jti.as_deref().unwrap_or("").is_empty() {
-                return Err(BrokerError::InvalidProvisioningRequest(
-                    "subject:self mint requires a jti nonce".into(),
-                ));
-            }
-            if verified.request.name.is_some() {
-                return Err(BrokerError::InvalidProvisioningRequest(
-                    "subject:self mint must not carry a name".into(),
-                ));
-            }
-            // The minted identity is the delegator's OWN email: it must be a
-            // verified, owned, non-agent identity — the same guarantee the
-            // interactive login path enforces (a self credential can never mint
-            // for an address the account has not proven it controls, because the
-            // U_cert issuer is us and its principal is `delegator`).
-            let rec = state
-                .user_store
-                .get_email(&verified.delegator)?
-                .ok_or_else(|| BrokerError::PolicyRefused("delegator email is unknown".into()))?;
-            if rec.email_type == EmailType::Agent {
-                return Err(BrokerError::PolicyRefused(
-                    "subject:self cannot mint for an agent identity".into(),
-                ));
-            }
-            if !rec.verified {
-                return Err(BrokerError::EmailNotVerified);
-            }
-            rec
-        }
-        Subject::Agent => {
-            if !verified.constraint.authorizes_subject(Subject::Agent) {
-                return Err(BrokerError::PolicyRefused(
-                    "this credential's constraint does not grant the 'agent' subject".into(),
-                ));
-            }
-            let name = verified.request.name.as_deref().ok_or_else(|| {
-                BrokerError::InvalidProvisioningRequest("agent mint requires a name".into())
-            })?;
-            ensure_agent_identity(&state, &verified, name)?
-        }
-    };
-
     let cert = issue_certificate(
         &state.domain,
         &state.keypair,
@@ -204,7 +152,7 @@ where
         ephemeral,
     )?;
 
-    tracing::info!(email = %record.email, delegator = %verified.delegator, subject = ?subject, "minted identity (delegation chain)");
+    tracing::info!(email = %record.email, delegator = %verified.delegator, "minted agent identity (delegation chain)");
     Ok(Json(MintResponse {
         success: true,
         email: record.email,

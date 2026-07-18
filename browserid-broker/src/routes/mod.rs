@@ -4,7 +4,6 @@ mod account;
 mod agent;
 mod auth;
 mod cert;
-mod device;
 mod email;
 mod fallback_idp;
 mod fedcm;
@@ -112,12 +111,6 @@ where
         .route("/wsapi/parent_of", get(email::parent_of))
         .route("/wsapi/email_addition_status", get(email::email_addition_status))
         .route("/wsapi/cert_key", post(cert::cert_key))
-        // Device-cert model (DC): device-cert issuance, access-cert mint,
-        // warrant issuance, and a convenience verifier.
-        .route("/device/issue", post(device::device_issue))
-        .route("/access/mint", post(device::access_mint))
-        .route("/warrant/issue", post(device::warrant_issue))
-        .route("/verify-access", post(device::verify_access))
         // Broker-as-target-IdP (tdxf, delegation chain) — 404 unless
         // state.agent_provisioning_enabled is set. The registrar half
         // (registry, endorse, consent flow, warrant registry, status list)
@@ -184,13 +177,6 @@ where
         // Broker account utilities (sign out / clear cached certs / agent keys),
         // moved off the root when the marketing landing page took `/`.
         .route_service("/account", ServeFile::new(format!("{}/account.html", static_path)))
-        // Model A demo (oup3): the browser mints its own login cert via the
-        // agent endpoint (subject:self) — "the browser is your first agent".
-        .route_service("/demo-self-login", ServeFile::new(format!("{}/demo-self-login.html", static_path)))
-        .route_service("/demo-self-login.js", ServeFile::new(format!("{}/demo-self-login.js", static_path)))
-        // Device-cert model demo RP (DC).
-        .route_service("/demo-device-login", ServeFile::new(format!("{}/demo-device-login.html", static_path)))
-        .route_service("/demo-device-login.js", ServeFile::new(format!("{}/demo-device-login.js", static_path)))
         // Demo RPs (apgv): one trusts only an external fallback, one trusts browserid.me.
         .route_service("/fallback-demo", ServeFile::new(format!("{}/fallback-demo.html", static_path)))
         .route_service("/broker-demo", ServeFile::new(format!("{}/broker-demo.html", static_path)))

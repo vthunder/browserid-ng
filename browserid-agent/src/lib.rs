@@ -958,7 +958,6 @@ mod tests {
             let n = format!("svc+{}", random_hex());
             assert!(n.starts_with("svc+") && n.len() <= 32);
             assert!(browserid_core::Constraint {
-                subjects: vec![browserid_core::Subject::Agent],
                 names: vec![],
                 patterns: vec!["svc+*".into()]
             }
