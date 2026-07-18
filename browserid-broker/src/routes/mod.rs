@@ -177,6 +177,10 @@ where
         // Broker account utilities (sign out / clear cached certs / agent keys),
         // moved off the root when the marketing landing page took `/`.
         .route_service("/account", ServeFile::new(format!("{}/account.html", static_path)))
+        // Model A demo (oup3): the browser mints its own login cert via the
+        // agent endpoint (subject:self) — "the browser is your first agent".
+        .route_service("/demo-self-login", ServeFile::new(format!("{}/demo-self-login.html", static_path)))
+        .route_service("/demo-self-login.js", ServeFile::new(format!("{}/demo-self-login.js", static_path)))
         // Demo RPs (apgv): one trusts only an external fallback, one trusts browserid.me.
         .route_service("/fallback-demo", ServeFile::new(format!("{}/fallback-demo.html", static_path)))
         .route_service("/broker-demo", ServeFile::new(format!("{}/broker-demo.html", static_path)))
