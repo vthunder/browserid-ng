@@ -11,26 +11,26 @@ device-cert model fixes both: the durable credential is **IdP-signed**.
 
 ## The two certificates + the warrant
 
-Everything the RP sees is **IdP-signed**. There are two certificates and one
-warrant.
+Everything the RP relies on is **IdP-signed**. There are two certificates and one
+warrant. The RP sees the **access cert**, the **assertion**, the **warrant**, and
+the broker's **warrant cert** — it does **not** see the minting device cert.
 
-| Object | Lifetime | Signed by | Role |
-|---|---|---|---|
-| **Device certificate** | IdP-chosen (long, e.g. weeks) | the **IdP** (primary or fallback) | authorizes a *device* to request access certs for given identities; carries metadata (identities, kind, validity, may-sign-warrants) |
-| **Access certificate** | short (e.g. 24h) | the **IdP**, via the mint API | the RP-facing identity claim; the assertion chains from it |
-| **Warrant** | short | a **warrant-capable device cert** | authorization/scoping; **always** present at the RP |
+| Object | Lifetime | Signed by | Seen by RP? | Role |
+|---|---|---|---|---|
+| **Device certificate** | IdP-chosen (long) | the **IdP** (primary or fallback) | **no** | authorizes a *device* to request access certs for given identities; metadata: identities (one/many/wildcard), kind (self/agent), validity, may-sign-warrants |
+| **Access certificate** | short (e.g. 24h) | the **IdP** mint API | yes | the RP-facing identity claim; certifies a **fresh access key**; the assertion chains from it |
+| **Warrant** | short–medium | the **broker's** warrant-capable device cert | yes (+ the broker's cert) | authorization/scoping; **always** present |
 
 **Key reframe (why a long-lived IdP-signed device cert is fine):** the device
-cert is a **request token, not an RP-facing identity claim.** RPs fail closed on
-it (never accept it as proof of identity). So the IdP's long-lived signature only
-authorizes *requests*; every actual identity claim is a short-lived access cert
-the IdP mints on demand and **may refuse** (abuse/compromise). Long-lived
-authorization + short-lived, IdP-gated claims.
+cert is a **request token, not an RP-facing identity claim** — RPs never see it.
+The IdP's long-lived signature only authorizes *requests*; every actual identity
+claim is a short-lived access cert the IdP mints on demand and **may refuse**.
 
 **Chains presented to the RP:**
 ```
-device cert (may-sign-warrants)                → Warrant ─┐
-device cert (iss: IdP) → Access cert (iss: IdP) → Assertion ┘→ RP checks BOTH
+broker device cert (may-sign-warrants) → Warrant ────────┐
+IdP → Access cert (fresh access key) → Assertion ────────┘→ RP checks BOTH
+(the user's / agent's minting device cert stays private: device/broker ↔ IdP only)
 ```
 
 ---
@@ -39,40 +39,44 @@ device cert (iss: IdP) → Access cert (iss: IdP) → Assertion ┘→ RP checks
 
 Cold start; the user has never touched this RP, browserid, or the broker.
 
-1. Arrive at RP, click **login**.
-2. The **broker** (browserid.me) opens, asks for an email.
-3. Broker does **discovery** on the email domain (`_browserid` DNSSEC + `.well-known`).
-4. The device generates a **device keypair** (ideally non-extractable).
-5. **No primary** → the broker's **fallback IdP** verifies control of the email
+1. Arrive at RP, click **login**. The **broker** (browserid.me) opens, asks for
+   an email.
+2. Broker does **discovery** on the email domain (`_browserid` DNSSEC + `.well-known`).
+3. The device generates a **device keypair** (ideally non-extractable).
+4. **No primary** → the broker's **fallback IdP** verifies control of the email
    (SMTP challenge) and issues a **device cert** (iss: `browserid.me`).
    **Domain has a primary** → the broker opens the domain's login page; the user
    authenticates with their existing IdP credentials; the **domain IdP** issues a
    **device cert** (iss: the email domain). `OPEN:` the return transport for the
    domain-primary case (top-level redirect / popup / same-tab — not a hidden iframe).
-6. The device cert certifies the device key with metadata: the **identities** it
-   may request access certs for, the **kind** of access cert (self-login vs
-   agent), a **validity period** (IdP decides; the broker MAY request a
-   preference), and **may-sign-warrants** (true for a user's own login device;
-   false for an agent).
+5. The device cert certifies the device key with metadata: the **identities** it
+   may request access certs for (one, several, or a wildcard — all from this same
+   IdP), the **kind** (self-login vs agent), a **validity period** (IdP decides;
+   broker MAY request a preference), and **may-sign-warrants** (normally false —
+   see Stage 3).
+6. **Broker warrant authorization.** As part of the authenticated bootstrap, the
+   user authorizes the IdP to issue **the broker** a **may-sign-warrants** device
+   cert for this identity, so the broker can warrant on the user's behalf (Stage
+   3). For the fallback case (broker = IdP) this is internal; for a primary
+   domain it is an explicit **IdP→broker** authorization the domain IdP must
+   support.
 
-Output: a durable, IdP-signed **device certificate**. This is "your logged-in
-device" — revoking it logs that device out everywhere.
+Output: a durable, IdP-signed **device certificate** ("your logged-in device";
+revoke it to log that device out), plus the broker's warrant authority for this
+identity.
 
 ### Agent variant of Stage 1
-The agent's device keypair is generated **off-browser**. The agent cannot
-authenticate to the IdP itself, so the **user authorizes** its issuance:
+The agent's device keypair is generated **off-browser**. The agent can't
+authenticate to the IdP itself, so the **user authorizes** its issuance and the
+**IdP issues it directly** (no user-signed intermediary — since the IdP must
+issue the access cert anyway, a user-minted agent cert would buy nothing):
 - The agent's device pubkey flows to the IdP **via the broker** (a device-grant /
-  pairing hand-off; `agent_provision.rs` is the existing basis). `OPEN:` confirm
-  this transport.
+  pairing hand-off; `agent_provision.rs` is the existing basis). `OPEN:` confirm transport.
 - The authenticated user approves a device cert for the agent's key with a
-  constraint they choose (identities, kind = agent, **may-sign-warrants =
-  false**, validity). `OPEN:` the IdP MAY limit how many may-sign-warrants
-  device certs exist per identity.
-- The IdP signs the agent's device cert. The agent now holds it and can mint its
-  own access certs headlessly.
-
-So the agent's durable credential is an **IdP-signed device cert too** — same
-object class as the human's, just with `may-sign-warrants = false`.
+  constraint they choose (identities — possibly several or a wildcard, kind =
+  agent, **may-sign-warrants = false**, validity).
+- The IdP signs the agent's device cert. The agent mints its own access certs
+  headlessly thereafter.
 
 ---
 
@@ -82,63 +86,62 @@ The device cert mints a short-lived **access cert** via an **online, IdP-operate
 mint API:
 
 1. The holder (browser or agent) calls the IdP's **mint API** with its **device
-   cert** (+ `OPEN:` optionally session cookies as a bonus freshness signal —
-   never *required*, or cross-origin ITP returns) and the identity/kind it wants.
-2. The IdP verifies the device cert (its own signature, unrevoked, in-validity)
-   and mints a short-lived **access cert** (iss: IdP) for the requested identity.
-   It **may refuse** even a nominally-valid device cert (device abusive /
-   compromised) → error → the user may be required to re-login (re-bootstrap a
-   device cert).
+   cert**, the target identity/kind, and a **fresh access pubkey** to certify
+   (proving device-key possession by signing the request). `OPEN:` cookies MAY be
+   sent as a bonus freshness signal — never *required*, or cross-origin ITP returns.
+2. The IdP verifies the device cert (own signature, unrevoked, in-validity,
+   identity in its list) and mints a short-lived **access cert** (iss: IdP)
+   certifying the fresh access key for the requested identity. It **may refuse**
+   even a nominally-valid device cert (abuse/compromise) → error → the user may
+   re-login (re-bootstrap).
 
 No registrar/endorsement step: the device cert is the IdP's own signature, so the
-IdP mints directly from it. `OPEN:` what key the access cert certifies — the
-device key reused, or a fresh per-session access key the mint certifies.
+IdP mints directly from it. The access cert certifies a **fresh** key, so the
+device cert never leaves the device/broker↔IdP channel.
 
-**Why online + IdP-discretionary (answers "what's the point / palatable to
-IdPs?"):** the IdP gates every access cert and can refuse/revoke, so short access
-certs stay meaningful and the IdP keeps control. It needs no session cookie
-(survives ITP) and works headless (agents) — the two wins over the old
-iframe-session mint.
+**Why online + IdP-discretionary:** the IdP gates every access cert and can
+refuse/revoke, so short access certs stay meaningful and the IdP keeps control —
+with no session cookie (survives ITP) and headless (agents).
 
 ---
 
-## Stage 3 — Warrant
+## Stage 3 — Warrant (issued by the broker)
 
 A warrant is **always** present at the RP (so the access cert needs no
-"warrant-required" flag — one always is). It is signed by a **warrant-capable
-device cert**.
+"warrant-required" flag). In principle any holder of a may-sign-warrants device
+cert could sign one; **in practice only the broker does.**
 
-- **User login:** the warrant is auto-generated (default scopes for this RP), no
-  user interaction. `OPEN:` who signs it — the user's own may-sign-warrants
-  device key, or the broker centrally? (Interacts with whether every login device
-  is warrant-capable, or only a primary one.)
-- **Agent:** the user manually selects scopes/restrictions (as today), and the
-  warrant is signed by the **user's** may-sign-warrants device cert (the agent's
-  own device cert cannot sign warrants). The warrant names the agent identity +
-  audience + scopes.
+- The **broker** holds a may-sign-warrants device cert (Stage 1.6) and **issues
+  all warrants**: for a **user login**, auto-generated with default scopes for
+  this RP (no user interaction); for an **agent**, with the scopes/restrictions
+  the user selected at consent time (as today).
+- The **broker hosts** the warrant registry, the **revocation UI**, and the
+  **status endpoint** RPs consult. Revoking a warrant there cuts off the agent/
+  login at RPs within the status cache window.
+- IdPs **MAY** constrain may-sign-warrants device certs (shorter validity for
+  shared machines, a per-identity count cap) — an allowed differentiation point,
+  not a mandate; they are not expected to cap at 1.
 
-Because warrants may be signed offline by a long-lived device key, the device
-cert carries a **status ref** and the **RP checks its revocation** when verifying
-the warrant.
+Because warrants are signed by a long-lived broker device key, that cert carries
+a **status ref** and RPs check it. `OPEN:` whether RPs verify the warrant chain
+fully offline vs. query the broker's status endpoint (convenience-trust).
 
 ---
 
 ## Stage 4 — Login / access at the RP
 
-1. The holder signs a login **assertion** for the RP's audience with the access
-   cert's key.
-2. It presents **access cert + warrant + assertion** (and the warrant-signing
-   device cert, so the RP can check the warrant signature).
-3. The RP verifies, server-side, the whole DNSSEC-rooted path: the access cert +
-   assertion (→ this key speaks for identity X at this audience) **and** the
-   warrant (→ X, via an IdP-blessed warrant-capable device, authorizes this
-   audience with these scopes), checking both certs' revocation status. Or, for
-   convenience only and if it chooses to trust it, it posts to the broker's
-   hosted `/verify`.
+1. The holder signs a login **assertion** for the RP's audience with the **access
+   key**.
+2. It presents **access cert + assertion + warrant** (+ the broker's warrant
+   cert). The minting device cert is **not** presented.
+3. The RP verifies, server-side, the DNSSEC-rooted path: access cert + assertion
+   (→ this key speaks for identity X at this audience) **and** the warrant (→ X's
+   broker authorizes this audience + scopes), checking revocation status of the
+   access cert (IdP) and the warrant (broker). Or, for convenience only, it posts
+   to the broker's hosted `/verify`.
 
-**Breaking change:** every RP now processes a warrant on every login (previously
-human logins were a plain `cert~assertion`). This unifies the user and agent
-verification path but is not backward-compatible.
+**Breaking change (accepted):** every RP now processes a warrant on every login.
+This unifies the user and agent path; it is not backward-compatible.
 
 ---
 
@@ -146,45 +149,49 @@ verification path but is not backward-compatible.
 
 - **ITP:** the device cert replaces the session cookie as the mint credential →
   cookie-free minting → survives third-party-cookie/iframe death.
-- **Agents:** first-class — an agent is just a device with a `may-sign-warrants =
-  false` device cert; humans and agents share the mint + presentation path.
-- **IdP control:** long-lived signature only on the request token; every
-  identity claim is a short-lived, IdP-gated access cert; revoke the device cert
-  to cut off both minting and (via status check) its warrants.
-- **Uniform RP path:** access cert + warrant + assertion for everything.
+- **Agents:** first-class — an agent is a device with a `may-sign-warrants=false`
+  device cert; humans and agents share the mint + presentation path.
+- **IdP control:** long-lived signature only on the (RP-invisible) request token;
+  every identity claim is a short-lived IdP-gated access cert; the IdP can refuse
+  any mint.
+- **Broker role (deliberate, load-bearing):** the broker is the warrant authority
+  (signs, revokes, serves status). User-chosen and replaceable, but concentrates
+  warrant trust + availability in it.
+- **Uniform RP path:** access cert + assertion + warrant for everything; the RP
+  never sees a device cert except the broker's warrant cert.
 
 ---
 
-## Open questions (consolidated)
+## Open questions (remaining)
 
-- **Q1 — Self-login warrant signer:** the user's own device key vs. the broker.
-- **Q2 — Warrant-capability distribution:** every login device warrant-capable
-  (so it can self-sign its login warrant) vs. a limited/primary one only (then
-  self-login warrants must come from the broker).
-- **Q3 — Access-cert key:** reuse the device key vs. a fresh per-session key.
-- **Q4 — Device cert scope:** per-identity vs. multi-identity; is
-  kind/warrant-capability per-identity within a multi-identity cert?
-- **Q5 — Cookies at mint:** optional-only (must be), and what they add.
-- **Q6 — Conformance (H1):** classic primaries must add device-cert issuance +
-  the mint API. Require adoption, allow broker-mints-on-behalf, or stage both?
-- **Q7 — Mandatory warrants:** confirm the RP-breaking uniform-warrant change.
-- **Q8 — Bootstrap/pairing transport:** domain-primary return leg + agent
-  device-cert pairing hand-off (no hidden iframe).
+- **Q5 — Cookies at mint:** optional-only (confirmed); define what they add.
+- **Q6 — Conformance:** classic primaries must add (a) device-cert issuance,
+  (b) the access-cert mint API, and (c) issuing the broker a may-sign-warrants
+  device cert. Require adoption, allow broker-mints-on-behalf, or stage both?
+- **Q8 — Transports (no hidden iframe):** domain-primary device-cert return leg;
+  agent device-cert pairing hand-off.
+- **Q9 — RP-side warrant verification:** full offline chain vs. broker status
+  query (convenience-trust), and how the RP roots the broker's warrant cert.
+- **Q10 — Warrant lifetime:** short per-login vs. medium for agents (so a headless
+  agent isn't forced back to the broker every access-cert refresh).
+
+Resolved: Q1 (broker signs warrants), Q2 (broker is the practical authority; IdPs
+may constrain), Q3 (access cert certifies a fresh key; device cert hidden from
+RP), Q4 (multi-identity/wildcard device certs), Q7 (mandatory warrants — yes),
+agent issuance (IdP-issued, user-authorized, no user-signed intermediary).
 
 ---
 
-## Delta vs. what was built (Phases 1–3, the demo)
+## Delta vs. what was built (Phases 1–3, the demo) — SUPERSEDED
 
-The **built code does NOT match this design** and needs rework:
-- Built: a **user-signed** provisioning cert (`P_cert`) + `subject` axis on a
-  user constraint + registrar endorsement + a **plain login cert with no
-  warrant** (D1) + D2 capability on the user constraint. → Superseded.
-- New: an **IdP-signed device cert** (kind/identities/validity/may-sign-warrants
-  as IdP metadata) + direct IdP mint (no endorsement) + an **always-present
-  warrant** (D1 reversed).
-- What carries over conceptually: the `subject` self/agent distinction becomes
-  the device cert's **kind**; D2's "self is a privileged capability" becomes the
-  IdP's control over **kind + may-sign-warrants** at device-cert issuance; the
-  online-mint principle stands (now without a registrar). The `/demo-self-login`
-  page and the Phase-1/2 core+broker changes will need to be re-cut against the
-  device-cert model.
+The built code does **not** match this design and needs re-cutting:
+- Built: a **user-signed** provisioning cert + `subject` axis on a user
+  constraint + registrar endorsement + a **plain login cert with no warrant** +
+  D2 on the user constraint.
+- New: an **IdP-signed device cert** (identities/kind/validity/may-sign-warrants
+  as IdP metadata) + direct IdP mint of an access cert on a **fresh key** + an
+  **always-present broker-signed warrant**.
+- Carries over conceptually: `subject` self/agent → device-cert **kind**; D2's
+  "self is privileged" → the IdP's control of **kind + may-sign-warrants** at
+  issuance; online-mint principle (now without a registrar). The `/demo-self-login`
+  page and the Phase-1/2 core+broker changes will be re-cut against this model.
