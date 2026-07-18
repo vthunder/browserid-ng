@@ -16,25 +16,39 @@ sketch. The durable credentials are all **IdP-signed**.
   for revocation/status. It MAY also hold a **config cert server-side** (a
   deployment convenience, not a protocol requirement).
 
-## Three device-cert types + the access cert + the warrant
+## Device certs: two orthogonal fields (purpose × subject)
 
-Every credential the RP relies on is **IdP-issued**. Device certs are
-**capability-typed**:
+Every credential the RP relies on is **IdP-issued**. A device cert carries two
+orthogonal fields (verifiers **fail closed** on unknown values of either):
 
-| Cert | Type can sign | Signed by | Seen by RP? |
-|---|---|---|---|
-| **User device cert** | an **access request token** (→ access cert) | IdP | no |
-| **Agent device cert** | an **access request token** (→ access cert) | IdP | no |
-| **Config device cert** | a **warrant** | IdP | yes (verifies the warrant) |
-| **Access cert** | an assertion | IdP mint API | yes; certifies a **fresh key** |
-| **Warrant** | (the presented authorization) | a **config cert** | yes |
+- **purpose**: `authentication` (mints access request tokens → access certs) or
+  `authorization` (signs warrants). This is the least-privilege axis: **logging
+  in ≠ authorizing.**
+- **subject**: `user`, `agent`, or blank/any — which *kind* of identity the cert
+  acts for. Same axis the warrant ranges over.
 
-- **User / agent certs** can *only* mint access request tokens, exchanged online
-  at the IdP for short-lived **access certs**. They can **not** issue warrants.
-- **Config certs** can *only* issue **warrants** (long-lived; the config cert is
-  long-lived and issues them directly). They can **not** mint access certs.
-- Separation = least privilege: **logging in ≠ authorizing.** A login-only device
-  holds just a user cert; only a config-cert holder can authorize grants.
+The three common combinations (with shorthand names used below):
+
+| Shorthand | purpose | subject | can sign | RP sees? |
+|---|---|---|---|---|
+| **user cert** | authentication | user | access request token → access cert | no |
+| **agent cert** | authentication | agent | access request token → access cert | no |
+| **config cert** | authorization | (blank/any) | warrant | yes (verifies it) |
+
+Other combinations are legal and useful: `authorization + user` is a
+**self-scoped config cert** (may author warrants only for your own logins, not
+agents); `authorization + agent` may authorize only agents. `authentication`
+normally carries a concrete subject (a login device is `user`; an agent device is
+`agent`). An `authentication` cert can **only** mint access request tokens (never
+warrants); an `authorization` cert can **only** sign warrants (never mint access
+certs).
+
+Plus the two RP-facing objects:
+
+| Object | Signed by | RP sees? |
+|---|---|---|
+| **Access cert** — certifies a **fresh key**; the assertion chains from it | IdP mint API | yes |
+| **Warrant** — authorizes **(identifier, subject) → audience[+scopes]** | a config cert | yes |
 
 **Config-cert placement (protocol-agnostic storage choice):**
 - **Server-side at the hosted broker** (convenient default): the broker issues
@@ -109,10 +123,10 @@ refuse/revoke → short access certs stay meaningful, IdP keeps control, no cook
 
 ## Stage 3 — Warrant (issued by a config cert, over identity+type)
 
-A warrant is **always** present at the RP. It authorizes an **(identifier, type)
-→ audience [+ scopes]** — e.g. "`danmills+agent@sandmill.org`, type `user`, may
-sign into `https://mingo.place/`". Crucially it is **over the identifier + type,
-not bound to any device/access key.** Consequences:
+A warrant is **always** present at the RP. It authorizes an **(identifier,
+subject) → audience [+ scopes]** — e.g. "`danmills+agent@sandmill.org`, subject
+`user`, may sign into `https://mingo.place/`". Crucially it is **over the
+identifier + subject, not bound to any device/access key.** Consequences:
 
 - Signed **once** by a **config cert** (which need exist only momentarily, on a
   main machine or server-side), then **stored** (hosted broker registry) and
@@ -137,10 +151,10 @@ not bound to any device/access key.** Consequences:
 2. Present **access cert + assertion + warrant + the config cert**. User/agent
    device certs are not presented.
 3. The RP verifies, DNSSEC-rooted: access cert + assertion (→ this fresh key
-   speaks for identity X, type user, at this audience) **and** the warrant (→ X,
-   type user, is authorized for this audience + scopes), **joining the two by
-   (identity, type, audience)** — the warrant is not key-bound; the access cert
-   supplies the key→identity binding. It checks revocation of the access cert
+   speaks for identity X, subject user, at this audience) **and** the warrant (→
+   X, subject user, is authorized for this audience + scopes), **joining the two
+   by (identity, subject, audience)** — the warrant is not key-bound; the access
+   cert supplies the key→identity binding. It checks revocation of the access cert
    (IdP) and the warrant/config cert (hosted broker). Or posts to the hosted
    `/verify` for convenience.
 
