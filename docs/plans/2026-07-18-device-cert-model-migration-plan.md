@@ -127,15 +127,33 @@ blast radius. Read "what survives" first.
   `docs/verify-quickstart.md:26,48`, `examples/mcp-agent-auth/README.md:21`. ADD
   access-cert/device-cert/purpose×subject/config-cert/mandatory-conformance/
   headless-minting. Landing is least-diverged (keep narrative, add positioning).
-- **P10 — Faithful demo + conformance + live validation.** A **cold-start** demo
-  RP (real discovery, no session shortcut). For a faithful **primary** demo with
-  `danmills@sandmill.org`, **sandmill.org's primary IdP must implement device-cert
-  issuance + the mint API** (whatever runs it today — identify it). Conformance
-  test suite (issuance + mint + always-warrant + fail-closed on unknown
-  purpose/subject + reject-fallback-for-primary). SBO signing relocation (`3b8m`)
-  before deleting the hidden iframe.
+- **P10 — sandmill.org primary IdP conformance (`~/src/sandmill`, Laravel/PHP;
+  deploy `dokku@sandmill.org:sandmill`).** sandmill.org is the reference
+  **primary** for `@sandmill.org`. Today it is a classic Persona-style IdP —
+  `App\Http\Controllers\BrowserIdController` serves `GET /.well-known/browserid`
+  (discovery), `POST /api/browserid/cert_key` (24h identity certs signed by its
+  IdP key), and the `GET /browserid/{provision,auth}` **hidden-iframe** pages
+  (`routes/web.php:194-266`). Bring it to device-cert conformance: implement
+  **device-cert issuance** (both `purpose`s, subjects `user`/`agent`, batch),
+  the mandatory **access-cert mint API** (headless, fresh key), and **config-cert
+  issuance**, all signed with its existing IdP key (published at
+  `_browserid.sandmill.org`); update `/.well-known/browserid` to advertise the new
+  endpoints; replace the iframe `/browserid/provision` page with the popup + HTTP
+  issuance flow. **The PHP Ed25519 JWS output MUST be byte-compatible with
+  `browserid-core`'s device/access/config-cert + warrant claim shapes** (`typ`
+  values, field names, `PublicKey` `{algorithm,publicKey}` JWK) so the hosted +
+  RP verifiers accept it. Deploy via dokku. This is what lets
+  `danmills@sandmill.org` log in through the real **primary** path — and unblocks
+  the faithful primary demo (P11).
+- **P11 — Faithful demo + conformance + live validation.** A **cold-start** demo
+  RP (real discovery, no session shortcut) that logs in `danmills@sandmill.org`
+  via the sandmill.org primary (P10) and a no-primary email via the fallback.
+  Conformance test suite (issuance + mint + always-warrant + fail-closed on
+  unknown purpose/subject + reject-fallback-for-primary). SBO signing relocation
+  (`3b8m`) before deleting the hidden iframe.
 
-Sequence: P0 → P1 → {P2, P3} → P4 → {P5, P6, P7} → P8 → P9 → P10.
+Sequence: P0 → P1 → {P2, P3} → P4 → {P5, P6, P7} → P8 → P9 → P10 → P11.
+(P10 mirrors P0/P1/P2's issuance+mint format; P11's primary demo depends on P10.)
 
 ## DB migration (explicit)
 
@@ -152,8 +170,10 @@ provisioning-cert trait methods + endorse path.
 - **Q8 — transports:** confirm the WinChan popup carries the primary device-cert
   return leg; define the agent device-cert pairing hand-off (already
   `agent_provision.rs`-shaped).
-- **Primary demo needs sandmill.org to implement the endpoints** — identify what
-  runs its primary IdP; until then, faithful demos are fallback-only (no-primary
+- **Primary demo needs sandmill.org conformance (now planned as P10)** — a
+  Laravel/PHP `BrowserIdController` change deployed via `dokku@sandmill.org:sandmill`.
+  Cross-language risk: the PHP cert/JWS output must match `browserid-core`'s
+  shapes exactly. Until P10 lands, faithful demos are fallback-only (no-primary
   emails) and MUST reject `@sandmill.org` (correct behavior).
 - **Breaking:** warrants mandatory on every login → every RP/verifier processes a
   warrant (accepted, pre-GA).
