@@ -233,6 +233,8 @@ fn test_warrant_upsert_keys_on_audience_and_scopes() {
         scopes: scopes.iter().map(|s| s.to_string()).collect(),
         warrant: jws.into(),
         status_idx: None,
+        subject: None,
+        config_cert: None,
         signed_at: Utc::now(),
         expires_at: Utc::now(),
     };

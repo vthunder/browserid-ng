@@ -116,6 +116,8 @@ where
         .route("/device/issue", post(device::device_issue))
         .route("/access/mint", post(device::access_mint))
         .route("/verify-access", post(device::verify_access))
+        .route("/wsapi/device_certs", get(device::device_certs))
+        .route("/wsapi/revoke_device_cert", post(device::revoke_device_cert))
         // Broker-as-target-IdP (tdxf, delegation chain) — 404 unless
         // state.agent_provisioning_enabled is set. The registrar half
         // (registry, endorse, consent flow, warrant registry, status list)
@@ -270,7 +272,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-brYteLVuynIDc5d6P4NJL3o1vd03slr7JM1xJcwoPjs='", // account.html
+    "'sha256-Q3QOt4zXNpnCuQ1/XQSCdU1VWk9Mk5QMjcmjPyRTnT8='", // account.html
     "'sha256-b1iFaqLAekTKdTAr89Bm4ToBdO7tJYCPKo4ZNxiClG8='", // consent.html
     "'sha256-+XqUYbHj+ZXqocYeM/oRYCX1zljIPfY94AJwWAtU2Do='", // agents.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)
