@@ -4,6 +4,7 @@ mod account;
 mod agent;
 mod auth;
 mod cert;
+mod device;
 mod email;
 mod fallback_idp;
 mod fedcm;
@@ -111,6 +112,12 @@ where
         .route("/wsapi/parent_of", get(email::parent_of))
         .route("/wsapi/email_addition_status", get(email::email_addition_status))
         .route("/wsapi/cert_key", post(cert::cert_key))
+        // Device-cert model (DC): device-cert issuance, access-cert mint,
+        // warrant issuance, and a convenience verifier.
+        .route("/device/issue", post(device::device_issue))
+        .route("/access/mint", post(device::access_mint))
+        .route("/warrant/issue", post(device::warrant_issue))
+        .route("/verify-access", post(device::verify_access))
         // Broker-as-target-IdP (tdxf, delegation chain) — 404 unless
         // state.agent_provisioning_enabled is set. The registrar half
         // (registry, endorse, consent flow, warrant registry, status list)
