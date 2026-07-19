@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-19T10:13:26Z
-updated_at: 2026-07-19T11:14:58Z
+updated_at: 2026-07-19T12:02:54Z
 parent: browserid-ng-oup3
 ---
 
@@ -41,3 +41,6 @@ REMAINING:
 Steps 1-4 of the removal + deploys are done. browserid.me and sandmill.org both run the device-cert model in production; the classic protocol is gone from the Rust workspace. Try it: https://browserid.me/broker-demo (any no-primary email = SMTP fallback; danmills@sandmill.org = primary popup).
 
 Next work (in order): (1) human click-through of the sandmill primary path; (2) mingo migration (idp/web/cli/poster) + sbo, pin bump — restores mingo.place login; (3) sdk/agent + sdk/wallet JS -> device model (guestbook signing depends on it); (4) SBO relocation 3b8m then delete communication_iframe + common/js classic stack; (5) account.html/agents.html dead-section cleanup; (6) marketing snippets.
+
+## Correction (session 3): dialog UX restored
+The step-1 rewrite over-reached: it replaced the account-based dialog UX (session chooser over ALL account identities, password auth, account creation, reset) with an SMTP-code-per-login flow. Restored the ORIGINAL dialog state machine (ported from 2240ae6^) with device-cert internals only: /device/issue instead of cert_key, 4-object presentation instead of cert~assertion, device-authorization popup instead of the provisioning iframe. transition_no_password now always uses the reset-code flow (/wsapi/set_password is gone). The dialog-driven SMTP fallback surface (/auth/send|verify|device_cert) remains server-side for conformance/external mediators but the dialog no longer uses it. e2e: create-account cold start + session chooser both green in a real browser.
