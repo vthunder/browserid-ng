@@ -234,13 +234,16 @@ mod tests {
         assert!(parsed.verify(&KeyPair::generate().public_key(), uri).is_err());
         assert!(parsed.verify(&key.public_key(), "https://other.example/list").is_err());
 
-        // Domain separation: a certificate is not a status list.
-        let cert = crate::Certificate::create(
+        // Domain separation: a device cert is not a status list.
+        let cert = crate::DeviceCert::create(
             "broker.example",
-            "a@broker.example",
             &KeyPair::generate().public_key(),
+            crate::Purpose::Authentication,
+            crate::Subject::User,
+            vec!["a@broker.example".to_string()],
             chrono::Duration::hours(1),
             &key,
+            None,
         )
         .unwrap();
         assert!(StatusListToken::parse(cert.encoded()).is_err());

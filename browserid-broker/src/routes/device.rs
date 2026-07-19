@@ -1,6 +1,5 @@
 //! Device-cert model endpoints (DC Phases 2 + 6) — see
-//! `docs/design/browserid-end-to-end-flow.md`. Built ADDITIVELY alongside the
-//! legacy `/wsapi/cert_key` + `/provision/*` routes (removed only at cleanup).
+//! `docs/design/browserid-end-to-end-flow.md`.
 //!
 //! - `POST /device/issue`  (session) → a **user** device cert (authentication)
 //!   + a **config** device cert (authorization), batch, both IdP-signed, each

@@ -2,17 +2,13 @@
 
 mod account;
 mod auth;
-mod cert;
 mod device;
 mod email;
 mod fallback_idp;
-mod fedcm;
 mod guestbook;
-mod primary;
 mod reset;
 pub(crate) mod session;
 mod test;
-mod verify;
 mod well_known;
 
 use std::sync::Arc;
@@ -110,7 +106,6 @@ where
         .route("/wsapi/set_parent", post(email::set_parent))
         .route("/wsapi/parent_of", get(email::parent_of))
         .route("/wsapi/email_addition_status", get(email::email_addition_status))
-        .route("/wsapi/cert_key", post(cert::cert_key))
         // Device-cert model (DC Phases 2/6) — additive alongside the legacy routes.
         .route("/device/issue", post(device::device_issue))
         .route("/access/mint", post(device::access_mint))
@@ -121,19 +116,6 @@ where
         .route("/wsapi/stage_reset", post(reset::stage_reset))
         .route("/wsapi/complete_reset", post(reset::complete_reset))
         .route("/wsapi/password_reset_status", get(reset::password_reset_status))
-        // Primary IdP authentication
-        .route("/wsapi/auth_with_assertion", post(primary::auth_with_assertion))
-        .route("/wsapi/set_password", post(primary::set_password))
-        // Verification endpoint
-        .route("/verify", post(verify::verify))
-        // FedCM IdP surface (browserid-ng-mhyp spike): browserid.me as a FedCM
-        // Identity Provider for fallback identities. Silent lane — mints a
-        // standard cert~assertion server-side; /verify unchanged.
-        .route("/.well-known/web-identity", get(fedcm::web_identity))
-        .route("/fedcm/config.json", get(fedcm::config))
-        .route("/fedcm/accounts", get(fedcm::accounts))
-        .route("/fedcm/assertion", post(fedcm::assertion))
-        .route("/fedcm/reset", post(fedcm::reset))
         // The agent guestbook demo (a public RP only agents can sign).
         .route("/guestbook", get(guestbook::page).post(guestbook::sign))
         .route("/guestbook/feed", get(guestbook::feed))
@@ -149,20 +131,12 @@ where
         .nest_service("/relay", ServeDir::new(format!("{}/relay", static_path)))
         .route_service("/include.js", ServeFile::new(format!("{}/include.js", static_path)))
         .route_service("/communication_iframe", ServeFile::new(format!("{}/communication_iframe.html", static_path)))
-        // API shims for primary IdP pages
-        .route_service("/provisioning_api.js", ServeFile::new(format!("{}/provisioning_api.js", static_path)))
-        .route_service("/authentication_api.js", ServeFile::new(format!("{}/authentication_api.js", static_path)))
         // Serve common JS files (for communication_iframe)
         .nest_service("/common/js", ServeDir::new(format!("{}/common/js", static_path)))
         // Serve communication_iframe scripts (explicit route to avoid conflict)
         .route_service("/communication_iframe/start.js", ServeFile::new(format!("{}/communication_iframe/start.js", static_path)))
         // SBO signer popup (first-party broker window for cross-site typed signing)
         .route_service("/sign", ServeFile::new(format!("{}/sign.html", static_path)))
-        // Fallback-IdP primary interface pages (apgv)
-        .route_service("/auth", ServeFile::new(format!("{}/auth.html", static_path)))
-        .route_service("/auth.js", ServeFile::new(format!("{}/auth.js", static_path)))
-        .route_service("/provision", ServeFile::new(format!("{}/provision.html", static_path)))
-        .route_service("/provision.js", ServeFile::new(format!("{}/provision.js", static_path)))
         // Agent-key management UI (tdxf) — create/list/revoke provisioning certs
         .route_service("/agents", ServeFile::new(format!("{}/agents.html", static_path)))
         // Warrant consent surface (spec §6.3) — approve/deny agent requests.
@@ -174,8 +148,7 @@ where
         // Broker account utilities (sign out / clear cached certs / agent keys),
         // moved off the root when the marketing landing page took `/`.
         .route_service("/account", ServeFile::new(format!("{}/account.html", static_path)))
-        // Demo RPs (apgv): one trusts only an external fallback, one trusts browserid.me.
-        .route_service("/fallback-demo", ServeFile::new(format!("{}/fallback-demo.html", static_path)))
+        // Demo RP on the device-cert model.
         .route_service("/broker-demo", ServeFile::new(format!("{}/broker-demo.html", static_path)))
         // Landing page at the root. When the origin split is deployed
         // (MARKETING_URL set), redirect to the static marketing site instead;
@@ -208,13 +181,6 @@ where
             .route("/wsapi/test/set_mock_primary_idp", post(test::set_mock_primary_idp))
             .route("/wsapi/test/clear_mock_primary_idps", post(test::clear_mock_primary_idps))
             .route("/wsapi/test/remove_mock_primary_idp", post(test::remove_mock_primary_idp));
-    }
-
-    // Admin cert-mint for demo seeding (mingo-b2yz): impersonation-grade, so
-    // it mounts ONLY when BROKER_ADMIN_TOKEN is configured, and the handler
-    // additionally enforces the hard principal allowlist (fails closed).
-    if state.admin_mint_token.is_some() {
-        app = app.route("/wsapi/admin/cert_key", post(cert::admin_cert_key));
     }
 
     app.with_state(state)

@@ -5,7 +5,6 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use chrono::Utc;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{Error, KeyPair, PublicKey, Result};
@@ -41,6 +40,3 @@ pub(crate) fn jws_verify(encoded: &str, key: &PublicKey, what: &str) -> Result<(
     key.verify(message.as_bytes(), &signature)
 }
 
-pub(crate) fn expired(exp: i64) -> bool {
-    Utc::now().timestamp() > exp
-}
