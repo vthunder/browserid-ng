@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-19T10:13:26Z
-updated_at: 2026-07-19T12:02:54Z
+updated_at: 2026-07-19T13:53:33Z
 parent: browserid-ng-oup3
 ---
 
@@ -44,3 +44,8 @@ Next work (in order): (1) human click-through of the sandmill primary path; (2) 
 
 ## Correction (session 3): dialog UX restored
 The step-1 rewrite over-reached: it replaced the account-based dialog UX (session chooser over ALL account identities, password auth, account creation, reset) with an SMTP-code-per-login flow. Restored the ORIGINAL dialog state machine (ported from 2240ae6^) with device-cert internals only: /device/issue instead of cert_key, 4-object presentation instead of cert~assertion, device-authorization popup instead of the provisioning iframe. transition_no_password now always uses the reset-code flow (/wsapi/set_password is gone). The dialog-driven SMTP fallback surface (/auth/send|verify|device_cert) remains server-side for conformance/external mediators but the dialog no longer uses it. e2e: create-account cold start + session chooser both green in a real browser.
+
+## Correction (session 3b): RP API restored + primary chooser memory
+- include.js is the ORIGINAL navigator.id implementation again (recovered from git), ported: onlogin delivers the presentation; FedCM lanes removed; browserid.login() kept as a promise wrapper. mingo.place's watch() calls work again (its backend still needs the /verify -> /verify-access migration).
+- NEW /wsapi/auth_with_presentation (device-model auth_with_assertion, same link/transfer semantics). The dialog's primary flow does the classic dual-presentation dance so primary identities join a broker account and the chooser remembers them.
+- Deployed + verified live on browserid.me.
