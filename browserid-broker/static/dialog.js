@@ -1207,6 +1207,7 @@
   }
 
   // WinChan protocol for include.js
+  let winchanBroken = false;
   if (typeof WinChan !== 'undefined' && WinChan.onOpen) {
     try {
       WinChan.onOpen(function(origin, args, cb) {
@@ -1225,8 +1226,27 @@
         }
       });
     } catch (e) {
-      // WinChan.onOpen may throw if not in popup context
-      console.log('WinChan not available:', e.message);
+      // Thrown when this window has NO OPENER (e.g. a browser converted the
+      // popup into a detached tab, or the page was opened directly). The RP's
+      // request can never arrive, so don't sit on "Loading..." forever.
+      winchanBroken = true;
+      console.log('WinChan not available:', e.message || e);
     }
   }
+
+  // Fail loudly instead of hanging: if no sign-in request has arrived shortly
+  // after load (no ?origin= params and no WinChan message — opener severed,
+  // popup turned into a tab, or a stale/refreshed dialog window), tell the
+  // user what to do rather than spin forever.
+  setTimeout(function () {
+    if (state.origin) return; // a request arrived — normal operation
+    const hint = winchanBroken || !window.opener
+      ? 'This sign-in window lost its connection to the site that opened it ' +
+        '(some browsers, e.g. Arc, detach popups into tabs). Close this ' +
+        'window, go back to the site, and click sign in again — and if it ' +
+        'keeps happening, allow popups for the site.'
+      : 'The site that opened this window never sent a sign-in request. ' +
+        'Close this window and click sign in again.';
+    showError(hint);
+  }, 3000);
 })();
