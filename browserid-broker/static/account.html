@@ -1086,25 +1086,11 @@ async function approveProvision(code, provPubkeyX) {
   try {
     const id = await ensureActive($('pv-identity').value);
     if (!id) throw new Error('Could not activate that identity — try another.');
-    status.textContent = 'Signing…';
-    const idpDomain = id.issuer || location.host;
-    const handles = $('pv-adv').hidden
-      ? [$('pv-handle').value].map(s => s.trim().toLowerCase()).filter(Boolean)
-      : $('pv-handles').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-    if (!handles.length) throw new Error('Enter a handle.');
-    // The constraint holds full local-parts: a fallback owner's handles are
-    // sub-addressed under their own email (`<local>+<handle>`).
-    const names = [...new Set(handles.map(h => agentConstraintName(id.email, idpDomain, h)))];
-    // Sign a P_cert over the AGENT-supplied provisioning key (not one generated here).
-    const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
-    const certClaims = { typ: 'browserid-provisioning-cert-v1', iss: id.email, iat: nowS(), exp: nowS() + 90 * 24 * 3600,
-      'public-key': { algorithm: 'Ed25519', publicKey: provPubkeyX }, constraint: { names, patterns: [] } };
-    const payload = b64urlJson(certClaims);
-    const sig = await window.Keystore.sign(id.privateKey, `${header}.${payload}`);
-    const delegation = `${id.cert}~${header}.${payload}.${sig}`;
-    // Register so the agent can endorse→mint; then hand the delegation to the record.
-    await post('/wsapi/register_provisioning_cert', { label: 'paired agent', bundle: delegation });
-    await post('/agent-provision/complete', { code, approve: true, delegation });
+    status.textContent = 'Approving…';
+    // Device-cert model: the user just approves the identity to mint under. The
+    // IdP signs an AGENT DEVICE CERT over the agent-supplied key server-side for
+    // the requested handle; no browser-signed delegation is involved.
+    await post('/agent-provision/complete', { code, approve: true, identity_email: id.email });
     status.className = 'status ok';
     status.textContent = 'Approved — your agent is picking up its identity now. You can close this tab.';
     $('pv-approve').disabled = true; $('pv-deny').disabled = true;

@@ -135,15 +135,6 @@ pub struct RegistrarState {
 /// The registrar's routes, ready to merge into a host router.
 pub fn router(state: Arc<RegistrarState>) -> Router {
     Router::new()
-        // Browser-side registry management (session + CSRF):
-        .route("/wsapi/provisioning_certs", get(registry::list_provisioning_certs))
-        .route("/wsapi/register_provisioning_cert", post(registry::register_provisioning_cert))
-        .route("/wsapi/revoke_provisioning_cert", post(registry::revoke_provisioning_cert))
-        // Endorsement signing:
-        .route("/provision/endorse", post(registry::endorse))
-        // Warrant consent flow (agent spec §6, v0.4):
-        .route("/warrant/request", post(consent::request))
-        .route("/warrant/poll", post(consent::poll))
         // Paired agent provisioning (device-grant bootstrap, 74u1):
         .route("/agent-provision/request", post(agent_provision::request))
         .route("/agent-provision/poll", post(agent_provision::poll))

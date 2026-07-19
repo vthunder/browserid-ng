@@ -54,18 +54,11 @@ struct Record {
     requested_patterns: Vec<String>,
     label: String,
     fingerprint: String,
-    /// Device-cert model (DC Phase 7): on approval the IdP signs an AGENT DEVICE
-    /// CERT for the agent's key instead of the browser signing a `U_cert~P_cert`
-    /// delegation. Additive alongside the legacy delegation path.
-    device_mode: bool,
     status: Status,
     fail_reason: Option<String>,
-    // filled on approval, derived from the signed delegation:
-    delegation: Option<String>,
     idp: Option<String>,
-    names: Vec<String>,
-    patterns: Vec<String>,
-    // filled on approval in device-cert mode:
+    // filled on approval (device-cert model): the IdP signs an AGENT DEVICE
+    // CERT for the agent's key.
     device_cert: Option<String>,
     agent_email: Option<String>,
     expires_at: DateTime<Utc>,
@@ -104,41 +97,6 @@ fn fingerprint(pubkey_b64: &str) -> String {
     h[..3].iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join("-")
 }
 
-fn jwt_claims(jwt: &str) -> Option<serde_json::Value> {
-    let payload = jwt.split('.').nth(1)?;
-    serde_json::from_slice(&B64.decode(payload).ok()?).ok()
-}
-
-/// Extracted from a `U_cert~P_cert` delegation — all from the signed certs,
-/// never trusted client metadata.
-struct DelegationMeta {
-    provisioning_pubkey: String,
-    names: Vec<String>,
-    patterns: Vec<String>,
-    idp_iss: String,   // U_cert issuer (the IdP domain)
-    delegator: String, // P_cert issuer (the delegating identity's email)
-}
-
-fn delegation_meta(delegation: &str) -> Option<DelegationMeta> {
-    let mut parts = delegation.split('~');
-    let u = jwt_claims(parts.next()?)?;
-    let p = jwt_claims(parts.next()?)?;
-    let arr = |v: &serde_json::Value, k| -> Vec<String> {
-        v.get("constraint")
-            .and_then(|c| c.get(k))
-            .and_then(|n| n.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-            .unwrap_or_default()
-    };
-    Some(DelegationMeta {
-        provisioning_pubkey: p.get("public-key")?.get("publicKey")?.as_str()?.to_string(),
-        names: arr(&p, "names"),
-        patterns: arr(&p, "patterns"),
-        idp_iss: u.get("iss")?.as_str()?.to_string(),
-        delegator: p.get("iss")?.as_str()?.to_string(),
-    })
-}
-
 fn sweep() {
     let mut m = PROVISIONS.lock().unwrap();
     m.retain(|_, r| !r.is_expired());
@@ -170,10 +128,6 @@ pub struct RequestBody {
     pub requested_handles: Option<Handles>,
     #[serde(default)]
     pub label: Option<String>,
-    /// `"device-cert"` requests the DC Phase 7 path (IdP-signed agent device
-    /// cert); anything else (or absent) uses the legacy delegation path.
-    #[serde(default)]
-    pub mode: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -204,7 +158,6 @@ pub async fn request(
         return Err(RegistrarError::ValidationError("provisioning_pubkey must be a 32-byte Ed25519 key".into()));
     }
     let handles = req.requested_handles.unwrap_or_default();
-    let device_mode = req.mode.as_deref() == Some("device-cert");
     let code = new_code();
     let user_code = new_user_code();
     let fp = fingerprint(&pubkey);
@@ -215,13 +168,9 @@ pub async fn request(
         requested_patterns: handles.patterns,
         label: req.label.unwrap_or_default(),
         fingerprint: fp.clone(),
-        device_mode,
         status: Status::Pending,
         fail_reason: None,
-        delegation: None,
         idp: None,
-        names: vec![],
-        patterns: vec![],
         device_cert: None,
         agent_email: None,
         expires_at: Utc::now() + Duration::seconds(REQUEST_VALIDITY_SECONDS),
@@ -281,31 +230,17 @@ pub async fn poll(State(state): State<Arc<RegistrarState>>, Json(req): Json<Poll
         }
         Status::Completed => {
             m.remove(&req.code);
-            if rec.device_mode {
-                // DC Phase 7: hand back an IdP-signed agent device cert. The
-                // agent mints access certs headlessly at the IdP's `/access/mint`.
-                Json(json!({
-                    "status": "completed",
-                    "credential": {
-                        "device_cert": rec.device_cert,
-                        "idp": rec.idp,
-                        "identity": rec.agent_email,
-                    }
-                }))
-                .into_response()
-            } else {
-                Json(json!({
-                    "status": "completed",
-                    "credential": {
-                        "delegation": rec.delegation,
-                        "broker": public_origin(&state.domain),
-                        "idp": rec.idp,
-                        "names": rec.names,
-                        "patterns": rec.patterns,
-                    }
-                }))
-                .into_response()
-            }
+            // Hand back an IdP-signed agent device cert. The agent mints access
+            // certs headlessly at the IdP's `/access/mint`.
+            Json(json!({
+                "status": "completed",
+                "credential": {
+                    "device_cert": rec.device_cert,
+                    "idp": rec.idp,
+                    "identity": rec.agent_email,
+                }
+            }))
+            .into_response()
         }
     }
 }
@@ -397,12 +332,8 @@ pub struct CompleteBody {
     pub csrf: String,
     pub code: String,
     pub approve: bool,
-    /// The `U_cert~P_cert` delegation the identity key signed (approve only,
-    /// legacy delegation mode).
-    #[serde(default)]
-    pub delegation: Option<String>,
-    /// The verified email the user is minting the agent under (device-cert mode,
-    /// approve only). The agent identity is `<requested-name>@<its domain>`.
+    /// The verified email the user is minting the agent under (approve only).
+    /// The agent identity is `<requested-name>@<its domain>`.
     #[serde(default)]
     pub identity_email: Option<String>,
 }
@@ -412,10 +343,9 @@ pub struct CompleteResponse {
     pub success: bool,
 }
 
-/// POST /agent-provision/complete — the verify page, after the human signs the
-/// delegation over the agent's pubkey. Session + CSRF authenticated. Metadata
-/// (idp, names, patterns) is derived from the signed delegation, not trusted
-/// from the client; the delegation must certify the requested pubkey.
+/// POST /agent-provision/complete — the verify page, after the human approves.
+/// Session + CSRF authenticated. On approval the IdP signs an agent device cert
+/// over the requested pubkey for the session-owned identity.
 pub async fn complete(
     State(state): State<Arc<RegistrarState>>,
     cookies: Cookies,
@@ -426,7 +356,7 @@ pub async fn complete(
     require_csrf(&user, &req.csrf)?;
 
     // Snapshot the pending record (drop the lock before DB work).
-    let (expected_pubkey, device_mode, requested_name) = {
+    let (expected_pubkey, requested_name) = {
         let m = PROVISIONS.lock().unwrap();
         let rec = m
             .get(&req.code)
@@ -434,7 +364,6 @@ pub async fn complete(
             .ok_or(RegistrarError::ProvisionRequestNotFound)?;
         (
             rec.provisioning_pubkey.clone(),
-            rec.device_mode,
             rec.requested_names.first().cloned(),
         )
     };
@@ -446,58 +375,13 @@ pub async fn complete(
         return Ok(Json(CompleteResponse { success: true }));
     }
 
-    if device_mode {
-        return complete_device_cert(&state, &user, &req, &expected_pubkey, requested_name);
-    }
-
-    let delegation = req
-        .delegation
-        .clone()
-        .ok_or_else(|| RegistrarError::ValidationError("delegation required to approve".into()))?;
-    let meta = delegation_meta(&delegation)
-        .ok_or_else(|| RegistrarError::ValidationError("malformed delegation".into()))?;
-    // Binding: the delegation must certify the AGENT's provisioning pubkey.
-    if meta.provisioning_pubkey != expected_pubkey {
-        return Err(RegistrarError::ValidationError(
-            "delegation does not certify the requested provisioning key".into(),
-        ));
-    }
-    // The session must own the delegating identity.
-    if !state.host.owns_verified_email(user.user_id, &meta.delegator).unwrap_or(false) {
-        return Err(RegistrarError::PolicyRefused(
-            "you don't own the delegating identity".into(),
-        ));
-    }
-    // Reserve the handles NOW (session-authenticated) — locks them to this
-    // account so the agent's later mint can't be refused (closes the race).
-    // NamesTaken/quota errors surface here; record them on the request so the
-    // agent's poll returns the reason instead of an endless "pending".
-    if let Err(e) = state.host.reserve_agent_names(user.user_id, &meta.delegator, &meta.names) {
-        if let Some(rec) = PROVISIONS.lock().unwrap().get_mut(&req.code) {
-            rec.status = Status::Failed;
-            rec.fail_reason = Some(e.to_string());
-        }
-        return Err(e);
-    }
-
-    // Store the result for single-delivery pickup.
-    let mut m = PROVISIONS.lock().unwrap();
-    let rec = m
-        .get_mut(&req.code)
-        .filter(|r| r.status == Status::Pending)
-        .ok_or(RegistrarError::ProvisionRequestNotFound)?;
-    rec.delegation = Some(delegation);
-    rec.idp = Some(public_origin(&meta.idp_iss));
-    rec.names = meta.names;
-    rec.patterns = meta.patterns;
-    rec.status = Status::Completed;
-    Ok(Json(CompleteResponse { success: true }))
+    complete_device_cert(&state, &user, &req, &expected_pubkey, requested_name)
 }
 
-/// DC Phase 7 device-cert approval: the IdP (this registrar's keypair) signs an
-/// AGENT DEVICE CERT (`purpose=authentication`, `subject=agent`) certifying the
-/// agent's provisioning key for the approved `<name>@<domain>` identity. No
-/// browser-signed delegation is involved — the user just approves.
+/// Device-cert approval: the IdP (this registrar's keypair) signs an AGENT
+/// DEVICE CERT (`purpose=authentication`, `subject=agent`) certifying the
+/// agent's provisioning key for the approved `<name>@<domain>` identity. The
+/// user just approves.
 fn complete_device_cert(
     state: &Arc<RegistrarState>,
     user: &AuthedUser,
@@ -579,25 +463,6 @@ mod tests {
         assert!(fp.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
         // deterministic
         assert_eq!(fingerprint(pubkey), fp);
-    }
-
-    #[test]
-    fn delegation_meta_extracts_pubkey_names_and_idp() {
-        // A minimal U_cert~P_cert (payloads only need the fields we read; sigs
-        // aren't checked here — binding is by pubkey equality).
-        let b64 = |v: &serde_json::Value| B64.encode(serde_json::to_vec(v).unwrap());
-        let u = json!({ "iss": "mingo.place", "principal": { "email": "alice@mingo.place" } });
-        let p = json!({ "iss": "alice@mingo.place",
-                        "public-key": { "algorithm": "Ed25519", "publicKey": "PUBKEY123" },
-                        "constraint": { "names": ["researcher"], "patterns": ["svc+*"] } });
-        let u_cert = format!("h.{}.s", b64(&u));
-        let p_cert = format!("h.{}.s", b64(&p));
-        let m = delegation_meta(&format!("{u_cert}~{p_cert}")).unwrap();
-        assert_eq!(m.provisioning_pubkey, "PUBKEY123");
-        assert_eq!(m.names, vec!["researcher"]);
-        assert_eq!(m.patterns, vec!["svc+*"]);
-        assert_eq!(m.idp_iss, "mingo.place");
-        assert_eq!(m.delegator, "alice@mingo.place");
     }
 
     #[test]

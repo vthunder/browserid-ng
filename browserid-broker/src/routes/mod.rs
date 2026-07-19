@@ -1,7 +1,6 @@
 //! HTTP routes for the broker
 
 mod account;
-mod agent;
 mod auth;
 mod cert;
 mod device;
@@ -118,14 +117,6 @@ where
         .route("/verify-access", post(device::verify_access))
         .route("/wsapi/device_certs", get(device::device_certs))
         .route("/wsapi/revoke_device_cert", post(device::revoke_device_cert))
-        // Broker-as-target-IdP (tdxf, delegation chain) — 404 unless
-        // state.agent_provisioning_enabled is set. The registrar half
-        // (registry, endorse, consent flow, warrant registry, status list)
-        // is the extracted browserid-registrar component, merged below.
-        .route("/provision/reserve", post(agent::reserve))
-        .route("/provision/mint", post(agent::mint))
-        .route("/provision/list", post(agent::list))
-        .route("/provision/revoke", post(agent::revoke))
         .route("/wsapi/account_cancel", post(account::account_cancel))
         .route("/wsapi/stage_reset", post(reset::stage_reset))
         .route("/wsapi/complete_reset", post(reset::complete_reset))
@@ -272,7 +263,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-Q3QOt4zXNpnCuQ1/XQSCdU1VWk9Mk5QMjcmjPyRTnT8='", // account.html
+    "'sha256-Lqu77yLdsnzOKedRdfXM9jR8RXq2ezoL1c6qSX9yZP8='", // account.html
     "'sha256-b1iFaqLAekTKdTAr89Bm4ToBdO7tJYCPKo4ZNxiClG8='", // consent.html
     "'sha256-+XqUYbHj+ZXqocYeM/oRYCX1zljIPfY94AJwWAtU2Do='", // agents.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)

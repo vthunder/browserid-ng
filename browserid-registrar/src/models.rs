@@ -3,35 +3,6 @@
 
 use chrono::{DateTime, Utc};
 
-/// A registered provisioning certificate (tdxf, spec v0.2). The registrar
-/// holds only public data: the delegation bundle `U_cert~P_cert` the user's
-/// identity key signed in-browser, plus the provisioning public key `P_pub`
-/// it delegates to. The registrar never sees `P_priv` (the "API key").
-/// Endorsement is granted only for a registered, unrevoked cert; revoking one
-/// starves future endorsements so agents age out within a cert TTL (≤24h).
-#[derive(Debug, Clone)]
-pub struct ProvisioningCertRecord {
-    pub id: u64,
-    pub user_id: u64,
-    /// The delegating identity (`P_cert.iss` == `U_cert` email)
-    pub delegator_email: String,
-    /// P_pub, base64 — the registry lookup key at endorse time
-    pub provisioning_pub: String,
-    /// The full `U_cert~P_cert` delegation bundle
-    pub bundle: String,
-    /// Human label ("ci-bot")
-    pub label: String,
-    pub created_at: DateTime<Utc>,
-    pub last_endorsed_at: Option<DateTime<Utc>>,
-    pub revoked_at: Option<DateTime<Utc>>,
-}
-
-impl ProvisioningCertRecord {
-    pub fn is_active(&self) -> bool {
-        self.revoked_at.is_none()
-    }
-}
-
 /// A pending warrant consent request (agent spec §6, v0.4). Created by an
 /// agent's `warrant` request against a registered provisioning cert; resolved
 /// by the delegator on the consent page, which signs the warrants client-side

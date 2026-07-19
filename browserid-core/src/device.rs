@@ -24,7 +24,7 @@
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::provisioning::{invalid, jws_decode, jws_sign, jws_verify};
+use crate::jws::{invalid, jws_decode, jws_sign, jws_verify};
 use crate::status::StatusRef;
 use crate::{Assertion, KeyPair, PublicKey, Result};
 

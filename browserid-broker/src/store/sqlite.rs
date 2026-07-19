@@ -7,14 +7,14 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    DeviceCertRecord, Email, EmailType, PendingVerification, ProvisioningCertRecord, Session,
+    DeviceCertRecord, Email, EmailType, PendingVerification, Session,
     SessionId, SessionStore, StoreResult, User, UserId, UserStore, VerificationType, WarrantRecord,
     WarrantRequestRecord, WarrantRequestStatus,
 };
 use crate::error::BrokerError;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 12;
+const SCHEMA_VERSION: i32 = 13;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -97,6 +97,9 @@ impl SqliteStore {
             }
             if current_version < 12 {
                 Self::migrate_v12(conn)?;
+            }
+            if current_version < 13 {
+                Self::migrate_v13(conn)?;
             }
 
             // Update schema version
@@ -450,6 +453,21 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v13(conn: &Connection) -> Result<(), BrokerError> {
+        // Retire the legacy delegation chain (device-cert model replaces it):
+        // drop the provisioning-cert registry and the long-dead api_keys table.
+        // Irreversible under the clean cutover — in-flight agent delegations are
+        // orphaned server-side, which is intended.
+        conn.execute_batch(
+            r#"
+            DROP TABLE IF EXISTS provisioning_certs;
+            DROP TABLE IF EXISTS api_keys;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → DeviceCertRecord mapping (DC Phase 3/4)
@@ -554,36 +572,6 @@ fn warrant_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Warrant
 }
 
 const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, last_polled_at, external";
-
-// Row → ProvisioningCertRecord mapping shared by the registry queries
-fn prov_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProvisioningCertRecord> {
-    let parse_ts = |s: Option<String>| {
-        s.and_then(|s| {
-            DateTime::parse_from_rfc3339(&s)
-                .map(|dt| dt.with_timezone(&Utc))
-                .ok()
-        })
-    };
-    let id: i64 = row.get(0)?;
-    let user_id: i64 = row.get(1)?;
-    let created_at: String = row.get(6)?;
-    Ok(ProvisioningCertRecord {
-        id: id as u64,
-        user_id: UserId(user_id as u64),
-        delegator_email: row.get(2)?,
-        provisioning_pub: row.get(3)?,
-        bundle: row.get(4)?,
-        label: row.get(5)?,
-        created_at: DateTime::parse_from_rfc3339(&created_at)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now()),
-        last_endorsed_at: parse_ts(row.get(7)?),
-        revoked_at: parse_ts(row.get(8)?),
-    })
-}
-
-const PROV_CERT_COLUMNS: &str =
-    "id, user_id, delegator_email, provisioning_pub, bundle, label, created_at, last_endorsed_at, revoked_at";
 
 // Helper to convert VerificationType to/from string
 impl VerificationType {
@@ -1063,93 +1051,6 @@ impl UserStore for SqliteStore {
         Ok(())
     }
 
-    fn register_provisioning_cert(
-        &self,
-        user_id: UserId,
-        delegator_email: &str,
-        provisioning_pub: &str,
-        bundle: &str,
-        label: &str,
-    ) -> StoreResult<ProvisioningCertRecord> {
-        let conn = self.conn.lock().unwrap();
-        let now = Utc::now();
-        let delegator = delegator_email.to_lowercase();
-
-        conn.execute(
-            "INSERT INTO provisioning_certs (user_id, delegator_email, provisioning_pub, bundle, label, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![user_id.0 as i64, delegator, provisioning_pub, bundle, label, now.to_rfc3339()],
-        )
-        .map_err(|e| BrokerError::Internal(e.to_string()))?;
-
-        Ok(ProvisioningCertRecord {
-            id: conn.last_insert_rowid() as u64,
-            user_id,
-            delegator_email: delegator,
-            provisioning_pub: provisioning_pub.to_string(),
-            bundle: bundle.to_string(),
-            label: label.to_string(),
-            created_at: now,
-            last_endorsed_at: None,
-            revoked_at: None,
-        })
-    }
-
-    fn get_provisioning_cert_by_pub(
-        &self,
-        provisioning_pub: &str,
-    ) -> StoreResult<Option<ProvisioningCertRecord>> {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            &format!("SELECT {PROV_CERT_COLUMNS} FROM provisioning_certs WHERE provisioning_pub = ?1"),
-            params![provisioning_pub],
-            prov_cert_from_row,
-        )
-        .optional()
-        .map_err(|e| BrokerError::Internal(e.to_string()))
-    }
-
-    fn list_provisioning_certs(&self, user_id: UserId) -> StoreResult<Vec<ProvisioningCertRecord>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {PROV_CERT_COLUMNS} FROM provisioning_certs WHERE user_id = ?1 ORDER BY id"
-            ))
-            .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        let certs = stmt
-            .query_map(params![user_id.0 as i64], prov_cert_from_row)
-            .map_err(|e| BrokerError::Internal(e.to_string()))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        Ok(certs)
-    }
-
-    fn count_active_provisioning_certs(&self, user_id: UserId) -> StoreResult<usize> {
-        let conn = self.conn.lock().unwrap();
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM provisioning_certs WHERE user_id = ?1 AND revoked_at IS NULL",
-                params![user_id.0 as i64],
-                |r| r.get(0),
-            )
-            .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        Ok(n as usize)
-    }
-
-    fn revoke_provisioning_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn
-            .execute(
-                "UPDATE provisioning_certs SET revoked_at = COALESCE(revoked_at, ?1) WHERE id = ?2 AND user_id = ?3",
-                params![Utc::now().to_rfc3339(), cert_id as i64, user_id.0 as i64],
-            )
-            .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        if rows == 0 {
-            return Err(BrokerError::ProvisioningCertNotFound);
-        }
-        Ok(())
-    }
-
     fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -1410,20 +1311,6 @@ impl UserStore for SqliteStore {
         Ok((revoked, max as u64))
     }
 
-    fn touch_provisioning_cert(&self, cert_id: u64) -> StoreResult<()> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn
-            .execute(
-                "UPDATE provisioning_certs SET last_endorsed_at = ?1 WHERE id = ?2",
-                params![Utc::now().to_rfc3339(), cert_id as i64],
-            )
-            .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        if rows == 0 {
-            return Err(BrokerError::ProvisioningCertNotFound);
-        }
-        Ok(())
-    }
-
     fn insert_device_cert(&self, mut rec: DeviceCertRecord) -> StoreResult<u64> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -1668,40 +1555,6 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn unverify_email(&self, email: &str) -> StoreResult<()> {
         (**self).unverify_email(email)
-    }
-
-    fn register_provisioning_cert(
-        &self,
-        user_id: UserId,
-        delegator_email: &str,
-        provisioning_pub: &str,
-        bundle: &str,
-        label: &str,
-    ) -> StoreResult<ProvisioningCertRecord> {
-        (**self).register_provisioning_cert(user_id, delegator_email, provisioning_pub, bundle, label)
-    }
-
-    fn get_provisioning_cert_by_pub(
-        &self,
-        provisioning_pub: &str,
-    ) -> StoreResult<Option<ProvisioningCertRecord>> {
-        (**self).get_provisioning_cert_by_pub(provisioning_pub)
-    }
-
-    fn list_provisioning_certs(&self, user_id: UserId) -> StoreResult<Vec<ProvisioningCertRecord>> {
-        (**self).list_provisioning_certs(user_id)
-    }
-
-    fn count_active_provisioning_certs(&self, user_id: UserId) -> StoreResult<usize> {
-        (**self).count_active_provisioning_certs(user_id)
-    }
-
-    fn revoke_provisioning_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
-        (**self).revoke_provisioning_cert(user_id, cert_id)
-    }
-
-    fn touch_provisioning_cert(&self, cert_id: u64) -> StoreResult<()> {
-        (**self).touch_provisioning_cert(cert_id)
     }
 
     fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {
@@ -1969,44 +1822,6 @@ mod tests {
 
         // Session should be gone
         assert!(store.get(&session.id).unwrap().is_none());
-    }
-
-    #[test]
-    fn provisioning_cert_lifecycle() {
-        let (store, _dir) = create_test_store();
-        let u = store.create_user("pw").unwrap();
-        store.add_email(u, "human@example.com", true).unwrap();
-
-        let rec = store
-            .register_provisioning_cert(u, "Human@Example.com", "PPUB", "UCERT~PCERT", "ci-bot")
-            .unwrap();
-        assert_eq!(rec.delegator_email, "human@example.com"); // normalized
-        assert!(rec.is_active());
-        assert_eq!(store.count_active_provisioning_certs(u).unwrap(), 1);
-
-        // Lookup by P_pub; miss returns None
-        let found = store.get_provisioning_cert_by_pub("PPUB").unwrap().unwrap();
-        assert_eq!(found.id, rec.id);
-        assert_eq!(found.label, "ci-bot");
-        assert!(store.get_provisioning_cert_by_pub("nope").unwrap().is_none());
-
-        // touch records last_endorsed_at
-        assert!(found.last_endorsed_at.is_none());
-        store.touch_provisioning_cert(rec.id).unwrap();
-        assert!(store
-            .get_provisioning_cert_by_pub("PPUB")
-            .unwrap()
-            .unwrap()
-            .last_endorsed_at
-            .is_some());
-
-        // Revocation is scoped to the owning user and sticks
-        let other = store.create_user("pw2").unwrap();
-        assert!(store.revoke_provisioning_cert(other, rec.id).is_err());
-        store.revoke_provisioning_cert(u, rec.id).unwrap();
-        assert!(!store.get_provisioning_cert_by_pub("PPUB").unwrap().unwrap().is_active());
-        assert_eq!(store.count_active_provisioning_certs(u).unwrap(), 0);
-        assert_eq!(store.list_provisioning_certs(u).unwrap().len(), 1);
     }
 
     #[test]
