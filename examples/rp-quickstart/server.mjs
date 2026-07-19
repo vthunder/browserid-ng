@@ -1,14 +1,16 @@
-// The 5-minute relying-party: passwordless human sign-in with browserid-ng.
+// The 5-minute relying-party: passwordless human sign-in with browserid-ng
+// (device-cert model).
 //
-// The whole integration is the /api/login handler below: take the assertion the
-// browser produced, verify it against YOUR origin, and start a session. No
-// passwords, no registration, no client secret.
+// The whole integration is the /api/login handler below: take the access
+// presentation the browser produced (browserid.login()), verify it against
+// YOUR origin, and start a session. No passwords, no registration, no client
+// secret.
 //
 // Config (env):
 //   PORT         listen port (default 8080)
 //   RP_ORIGIN    your public origin, the audience you pin (default http://localhost:PORT)
 //   BROKER       broker origin serving include.js + the dialog (default https://browserid.me)
-//   VERIFIER_URL /verify URL (default the broker's). Point at your own to self-verify.
+//   VERIFIER_URL /verify-access URL (default the broker's). Point at your own to self-verify.
 //   SESSION_SECRET  HMAC key for the session cookie (default: dev-only constant)
 
 import { createServer } from "node:http";
@@ -19,7 +21,7 @@ const PORT = Number(process.env.PORT || 8080);
 const RP_ORIGIN = process.env.RP_ORIGIN || `http://localhost:${PORT}`;
 const BROKER = process.env.BROKER || "https://browserid.me";
 const SECRET = process.env.SESSION_SECRET || "dev-only-not-secret";
-const verifier = createVerifier({ verifierUrl: process.env.VERIFIER_URL || `${BROKER}/verify` });
+const verifier = createVerifier({ verifierUrl: process.env.VERIFIER_URL || `${BROKER}/verify-access` });
 
 // --- tiny signed-cookie session (HMAC; no dependency) ----------------------
 const b64 = (s) => Buffer.from(s).toString("base64url");
@@ -60,13 +62,16 @@ const $=id=>document.getElementById(id), state=$('state');
 async function refresh(){ const me=await (await fetch('/api/me')).json();
   if(me.email){ state.innerHTML='Signed in as <code>'+me.email+'</code>'; $('login').hidden=true; $('logout').hidden=false; }
   else { state.textContent='Not signed in.'; $('login').hidden=false; $('logout').hidden=true; } }
-navigator.id.watch({ loggedInUser:null,
-  onlogin: async (assertion)=>{ state.textContent='verifying…';
-    const r=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({assertion})});
-    if(!r.ok){ const e=await r.json(); state.textContent='sign-in failed: '+e.reason; return; } refresh(); },
-  onlogout: ()=>{} });
-$('login').onclick=()=>navigator.id.request({siteName:'RP Quickstart'});
-$('logout').onclick=async()=>{ await fetch('/api/logout',{method:'POST'}); navigator.id.logout&&navigator.id.logout(); refresh(); };
+$('login').onclick=async()=>{
+  try{
+    const r=await browserid.login();
+    state.textContent='verifying…';
+    const resp=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({presentation:r.presentation})});
+    if(!resp.ok){ const e=await resp.json(); state.textContent='sign-in failed: '+e.reason; return; }
+    refresh();
+  }catch(e){ if(!e.cancelled) state.textContent='sign-in error: '+(e.message||e); }
+};
+$('logout').onclick=async()=>{ await fetch('/api/logout',{method:'POST'}); refresh(); };
 refresh();
 </script>`;
 
@@ -85,11 +90,11 @@ const server = createServer(async (req, res) => {
     return res.end(PAGE);
   }
 
-  // THE INTEGRATION: verify the browser's assertion against your origin.
+  // THE INTEGRATION: verify the browser's presentation against your origin.
   if (req.method === "POST" && req.url === "/api/login") {
-    let assertion;
-    try { ({ assertion } = JSON.parse(await readBody(req))); } catch {}
-    const r = await verifier.verify(assertion, RP_ORIGIN); // agents rejected by default
+    let presentation;
+    try { ({ presentation } = JSON.parse(await readBody(req))); } catch {}
+    const r = await verifier.verify(presentation, RP_ORIGIN); // agents rejected by default
     if (!r.ok) return json(res, 401, { reason: r.reason });
     const session = sign({ email: r.email, exp: Math.floor(Date.now() / 1000) + 86400 });
     return json(res, 200, { email: r.email }, {

@@ -1,16 +1,18 @@
-//! Wire contract for agent → RP API authentication (l8lw Phase 2).
+//! Wire contract for agent → RP API authentication (l8lw Phase 2, device-cert
+//! model).
 //!
 //! A non-browser client needs a non-browser auth path. The RP opts into one
-//! small thing: a token-exchange endpoint where a browserid assertion is
-//! swapped for the RP's own bearer token (RFC 7521-shaped; the RP still
-//! learns just "an email"). Discovery is in-band and self-describing:
+//! small thing: a token-exchange endpoint where a browserid **access
+//! presentation** (`access_cert~assertion~warrant~config_cert`) is swapped for
+//! the RP's own bearer token (RFC 7521-shaped; the RP still learns just "an
+//! email" + subject + scopes). Discovery is in-band and self-describing:
 //!
 //! ```text
 //! GET /data
 //! → 401 WWW-Authenticate: BrowserID realm="api", audience="https://api.example.com",
 //!       token_endpoint="https://api.example.com/token"
 //!
-//! POST /token   grant_type=urn:x-browserid:grant-type:assertion&assertion=<cert~assertion>
+//! POST /token   grant_type=urn:x-browserid:grant-type:assertion&assertion=<access_cert~assertion~warrant~config_cert>
 //! → 200 {"access_token":"…","token_type":"Bearer","expires_in":3600}
 //! ```
 //!
@@ -137,7 +139,7 @@ fn split_params(s: &str) -> Vec<&str> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenRequest {
     pub grant_type: String,
-    /// The backed assertion (`cert~assertion`)
+    /// The access presentation (`access_cert~assertion~warrant~config_cert`)
     pub assertion: String,
 }
 
@@ -148,13 +150,6 @@ impl TokenRequest {
             assertion: assertion.into(),
         }
     }
-}
-
-/// Agent attribution in a token response (spec §7.3, v0.4)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TokenAgent {
-    /// The delegator the agent acts for
-    pub parent: String,
 }
 
 /// Successful token-exchange response (OAuth-shaped)
@@ -168,9 +163,10 @@ pub struct TokenResponse {
     /// The verified email — extra response member; RPs may omit it
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
-    /// Agent attribution — present iff the presentation was an agent's
+    /// Which kind of identity authenticated: `"user"` or `"agent"` (the
+    /// presentation's verified subject axis)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<TokenAgent>,
+    pub subject: Option<String>,
     /// Scopes granted to this token (intersection of the warrant's scopes
     /// with the RP's own) — present only for agent tokens
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,23 +1,16 @@
-// Type definitions for @browserid-ng/verify
-
-export interface AgentAttribution {
-  /** The delegator (human identity) the agent acts for. */
-  parent: string;
-  /** Scopes the delegator's warrant grants at this audience. */
-  scopes: string[];
-}
+// Type definitions for @browserid-ng/verify (device-cert model)
 
 export type VerifyResult =
   | {
       ok: true;
       /** The verified email / identity. */
       email: string;
-      /** The issuing domain. */
+      /** The issuing IdP domain (the identity's IdP). */
       issuer?: string;
-      /** Expiry (unix seconds). */
-      expires?: number;
-      /** Present iff this was an agent presentation and `allowAgent` was set. */
-      agent: AgentAttribution | null;
+      /** Which kind of identity authenticated. */
+      subject: "user" | "agent";
+      /** Scopes the warrant grants at this audience. */
+      scopes: string[];
     }
   | {
       ok: false;
@@ -26,7 +19,7 @@ export type VerifyResult =
     };
 
 export interface CreateVerifierOptions {
-  /** Hosted /verify URL. Default: https://browserid.me/verify */
+  /** Hosted /verify-access URL. Default: https://browserid.me/verify-access */
   verifierUrl?: string;
   /** Default accepted fallback-IdP issuer domains (spec §8.1). */
   acceptedFallbacks?: string[];
@@ -45,7 +38,7 @@ export interface VerifyCallOptions {
 
 export interface Verifier {
   verify(
-    assertion: string,
+    presentation: string,
     audience: string,
     opts?: VerifyCallOptions
   ): Promise<VerifyResult>;
@@ -54,8 +47,8 @@ export interface Verifier {
 
 export function createVerifier(opts?: CreateVerifierOptions): Verifier;
 
-export function verifyAssertion(
-  assertion: string,
+export function verifyPresentation(
+  presentation: string,
   audience: string,
   opts?: CreateVerifierOptions & VerifyCallOptions
 ): Promise<VerifyResult>;

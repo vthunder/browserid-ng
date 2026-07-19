@@ -1,20 +1,22 @@
-// Reference MCP server that authenticates its callers with browserid-ng.
+// Reference MCP server that authenticates its callers with browserid-ng
+// (device-cert model).
 //
-// The pattern: an agent (an AI acting for a human) presents a warrant-backed
-// assertion. The server verifies it — learning the agent's identity, the HUMAN
-// it acts for, and the SCOPES that human signed for THIS server — and gates each
-// tool on the right scope. The human stays in control: they approved a warrant
-// naming this server and these scopes, and can revoke it anytime.
+// The pattern: an agent (an AI acting for a human) presents an access
+// presentation (`access_cert~assertion~warrant~config_cert`). The server
+// verifies it — learning the agent's identity and the SCOPES the human's
+// warrant grants for THIS server — and gates each tool on the right scope.
+// The human stays in control: they approved a warrant naming this server and
+// these scopes, and can revoke it anytime.
 //
-// Here the assertion is passed as a tool argument so the verification is visible
-// in one file. A production server would hoist auth to the transport / MCP OAuth
-// layer and verify once per session; the check itself — verify → agent+parent+
-// scopes → enforce — is identical.
+// Here the presentation is passed as a tool argument so the verification is
+// visible in one file. A production server would hoist auth to the transport /
+// MCP OAuth layer and verify once per session; the check itself — verify →
+// subject+scopes → enforce — is identical.
 //
 // Config (env):
-//   SERVER_AUDIENCE     the audience the agent's assertion must target
+//   SERVER_AUDIENCE     the audience the agent's presentation must target
 //                       (default "https://notes.mcp.example")
-//   VERIFIER_URL        hosted /verify URL (default https://browserid.me/verify)
+//   VERIFIER_URL        hosted /verify-access URL (default https://browserid.me/verify-access)
 //   ACCEPTED_FALLBACKS  optional comma-separated fallback-IdP issuer domains
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -34,21 +36,21 @@ const verifier = createVerifier({
 const notes = [];
 
 /**
- * Verify the caller's assertion and require a scope. Returns the verified
+ * Verify the caller's presentation and require a scope. Returns the verified
  * identity, or throws an Error whose message is safe to surface to the caller.
  * This is the whole security boundary — every tool goes through it.
  */
-async function authorize(assertion, requiredScope) {
-  const r = await verifier.verify(assertion, SERVER_AUDIENCE, { allowAgent: true });
+async function authorize(presentation, requiredScope) {
+  const r = await verifier.verify(presentation, SERVER_AUDIENCE, { allowAgent: true });
   if (!r.ok) throw new Error(`authentication failed: ${r.reason}`);
-  if (!r.agent) throw new Error("this server is for agents acting for a human; no warrant present");
-  if (!r.agent.scopes.includes(requiredScope)) {
+  if (r.subject !== "agent") throw new Error("this server is for agents acting for a human; present an agent credential");
+  if (!r.scopes.includes(requiredScope)) {
     throw new Error(
-      `not authorized: your principal (${r.agent.parent}) did not grant "${requiredScope}" here ` +
-        `(granted: ${r.agent.scopes.join(", ") || "none"})`
+      `not authorized: the human did not grant "${requiredScope}" here ` +
+        `(granted: ${r.scopes.join(", ") || "none"})`
     );
   }
-  return r; // { ok, email, issuer, agent: { parent, scopes } }
+  return r; // { ok, email, issuer, subject, scopes }
 }
 
 const server = new McpServer({ name: "browserid-notes", version: "0.1.0" });
@@ -58,28 +60,28 @@ server.registerTool(
   {
     title: "Post a note",
     description:
-      "Append a note. Requires an agent assertion carrying the 'post' scope for this server.",
+      "Append a note. Requires an agent presentation carrying the 'post' scope for this server.",
     inputSchema: {
-      assertion: z.string().describe("browserid-ng backed assertion (certificate~assertion~warrant)"),
+      presentation: z.string().describe("browserid-ng access presentation (access_cert~assertion~warrant~config_cert)"),
       text: z.string().describe("the note body"),
     },
   },
-  async ({ assertion, text }) => {
+  async ({ presentation, text }) => {
     let id;
     try {
-      id = await authorize(assertion, "post");
+      id = await authorize(presentation, "post");
     } catch (e) {
       return { isError: true, content: [{ type: "text", text: e.message }] };
     }
-    const note = { text, by: id.email, for: id.agent.parent, at: notes.length };
+    const note = { text, by: id.email, at: notes.length };
     notes.push(note);
     return {
       content: [
         {
           type: "text",
           text:
-            `posted (#${note.at}) by agent ${note.by}, acting for ${note.for}. ` +
-            `every action here is attributable to ${note.for}.`,
+            `posted (#${note.at}) by agent ${note.by}. ` +
+            `every action here is attributable to that identity.`,
         },
       ],
     };
@@ -91,20 +93,20 @@ server.registerTool(
   {
     title: "List notes",
     description:
-      "Read all notes. Requires an agent assertion carrying the 'read' scope for this server.",
+      "Read all notes. Requires an agent presentation carrying the 'read' scope for this server.",
     inputSchema: {
-      assertion: z.string().describe("browserid-ng backed assertion"),
+      presentation: z.string().describe("browserid-ng access presentation"),
     },
   },
-  async ({ assertion }) => {
+  async ({ presentation }) => {
     let id;
     try {
-      id = await authorize(assertion, "read");
+      id = await authorize(presentation, "read");
     } catch (e) {
       return { isError: true, content: [{ type: "text", text: e.message }] };
     }
     const body = notes.length
-      ? notes.map((n) => `#${n.at} [${n.for}] ${n.text}`).join("\n")
+      ? notes.map((n) => `#${n.at} [${n.by}] ${n.text}`).join("\n")
       : "(no notes yet)";
     return { content: [{ type: "text", text: body }] };
   }

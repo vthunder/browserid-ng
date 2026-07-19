@@ -1,12 +1,11 @@
-// Minimal MCP client that presents a browserid-ng agent assertion to the
+// Minimal MCP client that presents a browserid-ng access presentation to the
 // browserid-notes server and calls a tool.
 //
-// In real use the assertion comes from the agent CLI:
-//   cargo run -p browserid-agent --example agent_cli -- \
-//     agent-credential.json assert https://notes.mcp.example
-// then:
-//   node client.mjs --assertion "<that string>" post "hello from my agent"
-//   node client.mjs --assertion "<that string>" list
+// In real use the presentation comes from the agent SDK/CLI (device-cert
+// model: mint an access cert with your device cert, attach your stored
+// warrant + config cert), then:
+//   node client.mjs --presentation "<that string>" post "hello from my agent"
+//   node client.mjs --presentation "<that string>" list
 //
 // Env passes through to the spawned server (SERVER_AUDIENCE, VERIFIER_URL, ...).
 
@@ -18,12 +17,12 @@ function arg(flag) {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
-const assertion = arg("--assertion") || process.env.ASSERTION;
-if (!assertion) {
-  console.error('missing --assertion (or ASSERTION env). Get one from the agent CLI "assert" command.');
+const presentation = arg("--presentation") || process.env.PRESENTATION;
+if (!presentation) {
+  console.error('missing --presentation (or PRESENTATION env). Get one from the agent SDK.');
   process.exit(2);
 }
-const rest = process.argv.slice(2).filter((a) => a !== "--assertion" && a !== assertion);
+const rest = process.argv.slice(2).filter((a) => a !== "--presentation" && a !== presentation);
 const cmd = rest[0] || "list";
 const text = rest.slice(1).join(" ") || "hello from my agent";
 
@@ -37,8 +36,8 @@ await client.connect(transport);
 
 const call =
   cmd === "post"
-    ? { name: "post_note", arguments: { assertion, text } }
-    : { name: "list_notes", arguments: { assertion } };
+    ? { name: "post_note", arguments: { presentation, text } }
+    : { name: "list_notes", arguments: { presentation } };
 
 const res = await client.callTool(call);
 const out = (res.content || []).map((c) => c.text).join("\n");

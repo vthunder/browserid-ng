@@ -1,20 +1,18 @@
-//! Relying-party library for BrowserID-NG (l8lw Phase 2).
+//! Relying-party library for BrowserID-NG (device-cert model).
 //!
-//! The one opt-in an API RP makes to accept agents: verify a browserid
-//! assertion once at a token-exchange endpoint, mint its **own** bearer
-//! token, and keep every other piece of its session machinery unchanged.
-//! The RP learns a verified email — plus, for agent presentations (spec
-//! §5.3, v0.4), the attribution the protocol now carries: which delegator
-//! the agent acts for and which scopes their warrant grants here. Warrant
-//! enforcement is unconditional and fail-closed (it happens inside the core
-//! chain verification — an agent certificate without a warrant for this
-//! audience never verifies).
+//! The one opt-in an API RP makes to accept browserid identities (human or
+//! agent): verify an **access presentation** once at a token-exchange
+//! endpoint, mint its **own** bearer token, and keep every other piece of its
+//! session machinery unchanged. The RP learns a verified email, the subject
+//! axis (`user` | `agent`), and the scopes the warrant grants here. Warrant
+//! enforcement is unconditional and fail-closed — a presentation without a
+//! warrant for this audience never parses/verifies.
 //!
 //! Three pieces, composable with any HTTP framework:
 //!
-//! - [`Verifier`] — checks a backed assertion against the RP's audience and
-//!   its trusted issuer keys (pinned, or fetched from an IdP's
-//!   `/.well-known/browserid`).
+//! - [`Verifier`] — checks an `access_cert~assertion~warrant~config_cert`
+//!   presentation against the RP's audience and its trusted issuer keys
+//!   (pinned, or fetched from an IdP's `/.well-known/browserid`).
 //! - [`TokenStore`] — a minimal in-memory bearer-token issuer/authenticator
 //!   for RPs that don't already have one. RPs with existing token machinery
 //!   use [`Verifier`] + their own store.
@@ -30,7 +28,7 @@
 //! use browserid_rp::{Verifier, TokenStore};
 //!
 //! let verifier = Verifier::new("https://api.example.com")
-//!     .trust_issuer_from_well_known("https://agents.browserid.me")
+//!     .trust_issuer_from_well_known("https://browserid.me")
 //!     .await?;
 //! let tokens = TokenStore::new(chrono::Duration::hours(1));
 //!
@@ -48,11 +46,9 @@ use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
 
-use browserid_core::rp_auth::{TokenAgent, TokenErrorResponse, GRANT_TYPE_ASSERTION};
-use browserid_core::{
-    AgentAttribution, BackedAssertion, PublicKey, RpChallenge, StatusListToken, StatusRef,
-    TokenRequest, TokenResponse,
-};
+use browserid_core::device::{AccessPresentation, Subject};
+use browserid_core::rp_auth::{TokenErrorResponse, GRANT_TYPE_ASSERTION};
+use browserid_core::{PublicKey, RpChallenge, StatusListToken, StatusRef, TokenRequest, TokenResponse};
 
 pub use browserid_core::rp_auth;
 
@@ -97,23 +93,24 @@ impl ExchangeError {
     }
 }
 
-/// A verified assertion: what the RP learns
+/// A verified presentation: what the RP learns
 #[derive(Debug, Clone)]
 pub struct VerifiedIdentity {
     pub email: String,
-    /// Domain that signed the certificate
+    /// The IdP that issued the access + config certs (the identity's IdP)
     pub issuer: String,
-    /// Agent attribution — `Some` iff the presentation was an agent's
-    /// (agent certificate + verified warrant for this audience). `scopes`
-    /// are the warrant's, verbatim; [`exchange`] applies the RP scope
-    /// policy (intersection) when issuing a token.
-    pub agent: Option<AgentAttribution>,
+    /// Which kind of identity authenticated
+    pub subject: Subject,
+    /// The warrant's scopes, verbatim; [`exchange`] applies the RP scope
+    /// policy (intersection) when issuing a token
+    pub scopes: Vec<String>,
 }
 
-/// Assertion verifier for one RP audience, trusting an explicit set of
-/// issuer keys. Trust is per-domain: a key for `agents.browserid.me` can
-/// only vouch for `*@agents.browserid.me` (core chain verification already
-/// enforces issuer == email domain).
+/// Presentation verifier for one RP audience, trusting an explicit set of
+/// issuer keys. Trust is per-domain: the core join already enforces that the
+/// access cert and config cert share one issuer, and the RP's issuer-key
+/// table decides which issuers it accepts (a primary for its own domain, or
+/// an accepted fallback such as browserid.me).
 pub struct Verifier {
     audience: String,
     issuer_keys: HashMap<String, PublicKey>,
@@ -126,8 +123,8 @@ pub struct Verifier {
 }
 
 impl Verifier {
-    /// `audience` is what assertions must be signed for — usually the API
-    /// origin, and the same string advertised in the challenge
+    /// `audience` is what assertions/warrants must be signed for — usually
+    /// the API origin, and the same string advertised in the challenge
     pub fn new(audience: impl Into<String>) -> Self {
         Self {
             audience: audience.into(),
@@ -158,7 +155,7 @@ impl Verifier {
         &self.scopes
     }
 
-    /// Trust `domain` assertions signed by `key` (pinned)
+    /// Trust `domain`-issued presentations signed by `key` (pinned)
     pub fn trust_issuer(mut self, domain: impl Into<String>, key: PublicKey) -> Self {
         self.issuer_keys.insert(domain.into(), key);
         self
@@ -199,15 +196,17 @@ impl Verifier {
         &self.audience
     }
 
-    /// Verify a backed assertion (`cert~assertion`, or the agent form
-    /// `agent_cert~warrant~assertion`): audience, expiry, signature chain,
-    /// issuer trust — and, for agents, the user-signed warrant for this
-    /// audience (fail-closed; enforced inside core verification)
-    pub fn verify(&self, backed_assertion: &str) -> Result<VerifiedIdentity, ExchangeError> {
-        let backed = BackedAssertion::parse(backed_assertion)
+    /// Verify an access presentation
+    /// (`access_cert~assertion~warrant~config_cert`): audience, expiry, the
+    /// full cryptographic join (assertion ← access cert; warrant ← config
+    /// cert; both certs ← one trusted issuer; identity/subject/audience
+    /// consistent), issuer trust, and — when a status cache is configured —
+    /// the three revocation refs (access cert, config cert, warrant).
+    pub fn verify(&self, presentation: &str) -> Result<VerifiedIdentity, ExchangeError> {
+        let pres = AccessPresentation::parse(presentation)
             .map_err(|e| ExchangeError::InvalidAssertion(e.to_string()))?;
 
-        let verified = backed
+        let verified = pres
             .verify(&self.audience, |domain| {
                 self.issuer_keys
                     .get(domain)
@@ -219,25 +218,19 @@ impl Verifier {
             })
             .map_err(|e| ExchangeError::InvalidAssertion(e.to_string()))?;
 
-        let issuer = backed
-            .certificates()
-            .last()
-            .map(|c| c.issuer().to_string())
-            .unwrap_or_default();
-
         // Revocation status (core §6.4): revoked → reject; unknown/stale is
         // policy — fail-open by default (degrades to TTL semantics),
         // fail-closed when the cache says so.
         if let Some(cache) = &self.status_cache {
-            let mut refs: Vec<StatusRef> = backed
-                .certificates()
-                .iter()
-                .filter_map(|c| c.status().cloned())
-                .collect();
-            if let Some(r) = backed.warrant().and_then(|w| w.status().cloned()) {
-                refs.push(r);
-            }
-            for r in &refs {
+            let refs: Vec<&StatusRef> = [
+                verified.access_status.as_ref(),
+                verified.config_status.as_ref(),
+                verified.warrant_status.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            for r in refs {
                 match cache.check(r) {
                     StatusVerdict::Revoked => {
                         return Err(ExchangeError::InvalidAssertion(
@@ -257,8 +250,9 @@ impl Verifier {
 
         Ok(VerifiedIdentity {
             email: verified.email,
-            issuer,
-            agent: verified.agent,
+            issuer: verified.issuer,
+            subject: verified.subject,
+            scopes: verified.scopes,
         })
     }
 
@@ -276,9 +270,9 @@ impl Verifier {
 
 struct TokenRecord {
     email: String,
-    /// Granted agent attribution (post-intersection scopes); `None` for
-    /// human tokens
-    agent: Option<AgentAttribution>,
+    subject: Subject,
+    /// Granted scopes (post-intersection); `None` for user login tokens
+    scopes: Option<Vec<String>>,
     expires_at: DateTime<Utc>,
 }
 
@@ -286,8 +280,9 @@ struct TokenRecord {
 #[derive(Debug, Clone)]
 pub struct TokenGrant {
     pub email: String,
-    /// Granted agent attribution; `None` for human tokens
-    pub agent: Option<AgentAttribution>,
+    pub subject: Subject,
+    /// Granted scopes; `None` for user login tokens
+    pub scopes: Option<Vec<String>>,
 }
 
 /// Minimal in-memory bearer-token store: `issue` at the token endpoint,
@@ -306,15 +301,20 @@ impl TokenStore {
         }
     }
 
-    /// Mint a bearer token for a verified email (human presentations)
+    /// Mint a bearer token for a verified email (user presentations)
     pub fn issue(&self, email: &str) -> TokenResponse {
-        self.issue_with(email, None)
+        self.issue_with(email, Subject::User, None)
     }
 
-    /// Mint a bearer token, recording granted agent attribution. The token
-    /// is bounded server-side by `agent.scopes` — resolve them via
+    /// Mint a bearer token recording the verified subject + granted scopes.
+    /// The token is bounded server-side by `scopes` — resolve them via
     /// [`TokenStore::grant`] in protected handlers.
-    pub fn issue_with(&self, email: &str, agent: Option<AgentAttribution>) -> TokenResponse {
+    pub fn issue_with(
+        &self,
+        email: &str,
+        subject: Subject,
+        scopes: Option<Vec<String>>,
+    ) -> TokenResponse {
         let mut bytes = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut bytes);
         let token = format!(
@@ -326,7 +326,8 @@ impl TokenStore {
             token.clone(),
             TokenRecord {
                 email: email.to_string(),
-                agent: agent.clone(),
+                subject,
+                scopes: scopes.clone(),
                 expires_at: Utc::now() + self.ttl,
             },
         );
@@ -335,10 +336,14 @@ impl TokenStore {
             token_type: "Bearer".to_string(),
             expires_in: self.ttl.num_seconds(),
             email: Some(email.to_string()),
-            agent: agent.as_ref().map(|a| TokenAgent {
-                parent: a.parent.clone(),
-            }),
-            scopes: agent.map(|a| a.scopes),
+            subject: Some(
+                match subject {
+                    Subject::User => "user",
+                    Subject::Agent => "agent",
+                }
+                .to_string(),
+            ),
+            scopes,
         }
     }
 
@@ -347,8 +352,8 @@ impl TokenStore {
         self.grant(token).map(|g| g.email)
     }
 
-    /// Resolve a bearer token to its full grant (email + agent attribution
-    /// and granted scopes); `None` if unknown or expired
+    /// Resolve a bearer token to its full grant (email + subject + granted
+    /// scopes); `None` if unknown or expired
     pub fn grant(&self, token: &str) -> Option<TokenGrant> {
         let tokens = self.tokens.read().unwrap();
         let record = tokens.get(token)?;
@@ -357,7 +362,8 @@ impl TokenStore {
         }
         Some(TokenGrant {
             email: record.email.clone(),
-            agent: record.agent.clone(),
+            subject: record.subject,
+            scopes: record.scopes.clone(),
         })
     }
 
@@ -376,14 +382,15 @@ impl TokenStore {
     }
 }
 
-/// The token-endpoint core: check the grant type, verify the assertion,
+/// The token-endpoint core: check the grant type, verify the presentation,
 /// issue a token. Wire it to POST `/token` in any framework; on `Err`, serve
 /// `err.to_response()` with HTTP 400.
 ///
-/// Agent scope policy (spec §7.3): the issued token is bounded by the
-/// intersection of the warrant's scopes with the RP's declared vocabulary.
-/// A scope-unqualified warrant grants the RP's full declared set
-/// (audience-level authorization) — declare an empty set to grant none.
+/// Scope policy (spec §7.3): an **agent** token is bounded by the
+/// intersection of the warrant's scopes with the RP's declared vocabulary
+/// (a scope-unqualified warrant grants the RP's full declared set — declare
+/// an empty set to grant none). A **user** token carries no scope bound —
+/// the user logged in, same as any session.
 pub fn exchange(
     verifier: &Verifier,
     tokens: &TokenStore,
@@ -395,11 +402,11 @@ pub fn exchange(
         ));
     }
     let identity = verifier.verify(&request.assertion)?;
-    let granted = identity.agent.map(|a| AgentAttribution {
-        parent: a.parent,
-        scopes: grant_scopes(&a.scopes, verifier.scopes()),
-    });
-    Ok(tokens.issue_with(&identity.email, granted))
+    let scopes = match identity.subject {
+        Subject::User => None,
+        Subject::Agent => Some(grant_scopes(&identity.scopes, verifier.scopes())),
+    };
+    Ok(tokens.issue_with(&identity.email, identity.subject, scopes))
 }
 
 /// Intersection of warrant scopes with the RP's declared vocabulary; an
@@ -534,41 +541,70 @@ pub fn oauth_metadata_with_scopes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use browserid_core::{Assertion, Certificate, KeyPair};
+    use browserid_core::device::{AccessCert, DeviceCert, Purpose, Warrant};
+    use browserid_core::{Assertion, KeyPair};
 
     const AUDIENCE: &str = "https://api.example.com";
-    const ISSUER: &str = "agents.example.com";
-    const REGISTRAR: &str = "https://registrar.example";
+    const ISSUER: &str = "browserid.example";
 
-    fn backed_assertion(issuer_kp: &KeyPair, audience: &str) -> String {
-        let agent_kp = KeyPair::generate();
-        let cert = Certificate::create(
-            ISSUER,
-            &format!("bot@{ISSUER}"),
-            &agent_kp.public_key(),
-            Duration::hours(1),
-            issuer_kp,
+    /// Build a full device-model presentation for `email` at `audience`,
+    /// with the warrant issued for `warrant_audience` and `warrant_scopes`.
+    fn presentation(
+        issuer_kp: &KeyPair,
+        email: &str,
+        subject: Subject,
+        audience: &str,
+        warrant_audience: &str,
+        warrant_scopes: Vec<String>,
+        status: Option<StatusRef>,
+    ) -> String {
+        let access_kp = KeyPair::generate();
+        let config_kp = KeyPair::generate();
+        let access_cert = AccessCert::create(
+            ISSUER, email, subject, &access_kp.public_key(),
+            Duration::hours(24), issuer_kp, status.clone(),
         )
         .unwrap();
-        let assertion = Assertion::create(audience, Duration::minutes(5), &agent_kp).unwrap();
-        BackedAssertion::new(cert, assertion).encode()
+        let config_cert = DeviceCert::create(
+            ISSUER, &config_kp.public_key(), Purpose::Authorization, subject,
+            vec![email.to_string()], Duration::days(90), issuer_kp, None,
+        )
+        .unwrap();
+        let warrant = Warrant::create(
+            email, subject, warrant_audience, warrant_scopes,
+            Duration::days(90), &config_kp, None,
+        )
+        .unwrap();
+        let assertion = Assertion::create(audience, Duration::minutes(5), &access_kp).unwrap();
+        format!(
+            "{}~{}~{}~{}",
+            access_cert.encoded(),
+            assertion.encoded(),
+            warrant.encoded(),
+            config_cert.encoded()
+        )
     }
 
     #[test]
-    fn exchange_happy_path() {
+    fn exchange_happy_path_user() {
         let issuer_kp = KeyPair::generate();
         let verifier = Verifier::new(AUDIENCE).trust_issuer(ISSUER, issuer_kp.public_key());
         let tokens = TokenStore::new(Duration::hours(1));
 
-        let request = TokenRequest::new(backed_assertion(&issuer_kp, AUDIENCE));
+        let request = TokenRequest::new(presentation(
+            &issuer_kp, "alice@example.com", Subject::User, AUDIENCE, AUDIENCE,
+            vec!["login".into()], None,
+        ));
         let response = exchange(&verifier, &tokens, &request).unwrap();
 
         assert_eq!(response.token_type, "Bearer");
         assert!(response.access_token.starts_with(TOKEN_PREFIX));
-        assert_eq!(response.email.as_deref(), Some("bot@agents.example.com"));
+        assert_eq!(response.email.as_deref(), Some("alice@example.com"));
+        assert_eq!(response.subject.as_deref(), Some("user"));
+        assert_eq!(response.scopes, None, "user tokens carry no scope bound");
         assert_eq!(
             tokens.authenticate(&response.access_token).as_deref(),
-            Some("bot@agents.example.com")
+            Some("alice@example.com")
         );
     }
 
@@ -580,7 +616,10 @@ mod tests {
 
         let request = TokenRequest {
             grant_type: "authorization_code".to_string(),
-            assertion: backed_assertion(&issuer_kp, AUDIENCE),
+            assertion: presentation(
+                &issuer_kp, "alice@example.com", Subject::User, AUDIENCE, AUDIENCE,
+                vec![], None,
+            ),
         };
         let err = exchange(&verifier, &tokens, &request).unwrap_err();
         assert_eq!(err.oauth_error(), "unsupported_grant_type");
@@ -592,66 +631,36 @@ mod tests {
         let verifier = Verifier::new(AUDIENCE).trust_issuer(ISSUER, issuer_kp.public_key());
         let tokens = TokenStore::new(Duration::hours(1));
 
-        // Assertion signed for someone else's audience
-        let request = TokenRequest::new(backed_assertion(&issuer_kp, "https://evil.example.com"));
+        // Assertion + warrant signed for someone else's audience
+        let request = TokenRequest::new(presentation(
+            &issuer_kp, "alice@example.com", Subject::User,
+            "https://evil.example.com", "https://evil.example.com", vec![], None,
+        ));
         let err = exchange(&verifier, &tokens, &request).unwrap_err();
         assert_eq!(err.oauth_error(), "invalid_grant");
 
         // Issuer the RP doesn't trust (different keypair)
         let rogue_kp = KeyPair::generate();
-        let request = TokenRequest::new(backed_assertion(&rogue_kp, AUDIENCE));
+        let request = TokenRequest::new(presentation(
+            &rogue_kp, "alice@example.com", Subject::User, AUDIENCE, AUDIENCE, vec![], None,
+        ));
         let err = exchange(&verifier, &tokens, &request).unwrap_err();
         assert_eq!(err.oauth_error(), "invalid_grant");
     }
 
-    // ---- agent presentations (spec §5.3 / §7.3) ----
+    #[test]
+    fn warrant_for_other_audience_rejected() {
+        let issuer_kp = KeyPair::generate();
+        let verifier = Verifier::new(AUDIENCE).trust_issuer(ISSUER, issuer_kp.public_key());
+        let tokens = TokenStore::new(Duration::hours(1));
 
-    fn agent_assertion(
-        issuer_kp: &KeyPair,
-        audience: &str,
-        warrant_audience: &str,
-        warrant_scopes: Option<Vec<String>>,
-        with_warrant: bool,
-    ) -> String {
-        let user_kp = KeyPair::generate();
-        let agent_kp = KeyPair::generate();
-        let parent_cert = Certificate::create(
-            ISSUER,
-            &format!("alice@{ISSUER}"),
-            &user_kp.public_key(),
-            Duration::hours(24),
-            issuer_kp,
-        )
-        .unwrap();
-        let agent_cert = Certificate::create_agent(
-            ISSUER,
-            &format!("bot@{ISSUER}"),
-            &format!("alice@{ISSUER}"),
-            &agent_kp.public_key(),
-            Duration::hours(1),
-            issuer_kp,
-            Some(REGISTRAR.to_string()),
-        )
-        .unwrap();
-        let assertion = Assertion::create(audience, Duration::minutes(5), &agent_kp).unwrap();
-        if with_warrant {
-            let warrant = browserid_core::Warrant::create_with_status(
-                &parent_cert,
-                &format!("bot@{ISSUER}"),
-                warrant_audience,
-                warrant_scopes,
-                Duration::days(30),
-                &user_kp,
-                Some(StatusRef {
-                    uri: format!("{REGISTRAR}/.well-known/browserid-status"),
-                    idx: 3,
-                }),
-            )
-            .unwrap();
-            BackedAssertion::new_agent(agent_cert, warrant, assertion).encode()
-        } else {
-            format!("{}~{}", agent_cert.encoded(), assertion.encoded())
-        }
+        // Assertion targets us, warrant authorizes a different audience.
+        let request = TokenRequest::new(presentation(
+            &issuer_kp, "bot@example.com", Subject::Agent, AUDIENCE,
+            "https://other.example.com", vec![], None,
+        ));
+        let err = exchange(&verifier, &tokens, &request).unwrap_err();
+        assert_eq!(err.oauth_error(), "invalid_grant");
     }
 
     #[test]
@@ -663,28 +672,24 @@ mod tests {
         let tokens = TokenStore::new(Duration::hours(1));
 
         // Warrant grants post+delete; RP offers post+read+admin → token gets post.
-        let request = TokenRequest::new(agent_assertion(
-            &issuer_kp,
-            AUDIENCE,
-            AUDIENCE,
-            Some(vec!["post".into(), "delete".into()]),
-            true,
+        let request = TokenRequest::new(presentation(
+            &issuer_kp, "bot@example.com", Subject::Agent, AUDIENCE, AUDIENCE,
+            vec!["post".into(), "delete".into()], None,
         ));
         let response = exchange(&verifier, &tokens, &request).unwrap();
-        assert_eq!(response.email.as_deref(), Some("bot@agents.example.com"));
-        assert_eq!(
-            response.agent.as_ref().map(|a| a.parent.as_str()),
-            Some("alice@agents.example.com")
-        );
+        assert_eq!(response.email.as_deref(), Some("bot@example.com"));
+        assert_eq!(response.subject.as_deref(), Some("agent"));
         assert_eq!(response.scopes, Some(vec!["post".to_string()]));
 
         // Server-side grant carries the same bound.
         let grant = tokens.grant(&response.access_token).unwrap();
-        assert_eq!(grant.agent.unwrap().scopes, vec!["post"]);
+        assert_eq!(grant.subject, Subject::Agent);
+        assert_eq!(grant.scopes, Some(vec!["post".to_string()]));
 
-        // Scope-unqualified warrant → full declared set.
-        let request =
-            TokenRequest::new(agent_assertion(&issuer_kp, AUDIENCE, AUDIENCE, None, true));
+        // Scope-unqualified agent warrant → full declared set.
+        let request = TokenRequest::new(presentation(
+            &issuer_kp, "bot@example.com", Subject::Agent, AUDIENCE, AUDIENCE, vec![], None,
+        ));
         let response = exchange(&verifier, &tokens, &request).unwrap();
         assert_eq!(
             response.scopes,
@@ -693,28 +698,35 @@ mod tests {
     }
 
     #[test]
-    fn agent_without_warrant_rejected() {
+    fn revoked_credential_rejected_via_status_cache() {
+        use browserid_core::{StatusList, StatusListToken};
         let issuer_kp = KeyPair::generate();
-        let verifier = Verifier::new(AUDIENCE).trust_issuer(ISSUER, issuer_kp.public_key());
+        let uri = "https://browserid.example/.well-known/browserid-status";
+        // Index 7 revoked.
+        let list = StatusList::from_revoked(vec![7], 8);
+        let token = StatusListToken::create(ISSUER, uri, &list, &issuer_kp).unwrap();
+        let cache = std::sync::Arc::new(StatusCache::new());
+        cache.insert(uri, token);
+
+        let verifier = Verifier::new(AUDIENCE)
+            .trust_issuer(ISSUER, issuer_kp.public_key())
+            .with_status_cache(cache);
         let tokens = TokenStore::new(Duration::hours(1));
 
-        // Leaked cert+key without a warrant: fail-closed at parse.
-        let request =
-            TokenRequest::new(agent_assertion(&issuer_kp, AUDIENCE, AUDIENCE, None, false));
-        let err = exchange(&verifier, &tokens, &request).unwrap_err();
-        assert_eq!(err.oauth_error(), "invalid_grant");
-
-        // Warrant for a different audience: rejected even though the
-        // assertion targets us.
-        let request = TokenRequest::new(agent_assertion(
-            &issuer_kp,
-            AUDIENCE,
-            "https://other.example.com",
-            None,
-            true,
+        // Presentation whose access cert carries the revoked index.
+        let request = TokenRequest::new(presentation(
+            &issuer_kp, "alice@example.com", Subject::User, AUDIENCE, AUDIENCE,
+            vec![], Some(StatusRef { uri: uri.into(), idx: 7 }),
         ));
         let err = exchange(&verifier, &tokens, &request).unwrap_err();
         assert_eq!(err.oauth_error(), "invalid_grant");
+
+        // A clear index passes.
+        let request = TokenRequest::new(presentation(
+            &issuer_kp, "alice@example.com", Subject::User, AUDIENCE, AUDIENCE,
+            vec![], Some(StatusRef { uri: uri.into(), idx: 3 }),
+        ));
+        assert!(exchange(&verifier, &tokens, &request).is_ok());
     }
 
     #[test]
@@ -729,11 +741,11 @@ mod tests {
     #[test]
     fn tokens_expire_and_revoke() {
         let tokens = TokenStore::new(Duration::seconds(-1)); // born expired
-        let response = tokens.issue("bot@agents.example.com");
+        let response = tokens.issue("bot@example.com");
         assert_eq!(tokens.authenticate(&response.access_token), None);
 
         let tokens = TokenStore::new(Duration::hours(1));
-        let response = tokens.issue("bot@agents.example.com");
+        let response = tokens.issue("bot@example.com");
         assert!(tokens.authenticate(&response.access_token).is_some());
         tokens.revoke(&response.access_token);
         assert_eq!(tokens.authenticate(&response.access_token), None);

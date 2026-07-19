@@ -1,9 +1,11 @@
-// @browserid-ng/verify — verify BrowserID-NG identity assertions.
+// @browserid-ng/verify — verify BrowserID-NG access presentations
+// (device-cert model).
 //
-// This is the zero-dependency path: it POSTs the assertion to a hosted /verify
-// service (default https://browserid.me/verify) which performs the DNSSEC-rooted
-// key resolution, signature checks, agent-warrant validation, and status-list
-// revocation check. You get back a small, typed result.
+// This is the zero-dependency path: it POSTs the presentation to a hosted
+// /verify-access service (default https://browserid.me/verify-access) which
+// performs the DNSSEC-rooted key resolution, the full cryptographic join
+// (access cert + assertion + warrant + config cert), primary/fallback
+// conformance, and revocation checks. You get back a small, typed result.
 //
 // It is FAIL-CLOSED by construction: any non-"okay" status, network error,
 // malformed response, or exception resolves to { ok: false, reason }. Callers
@@ -13,15 +15,15 @@
 // Trust note: using a hosted verifier means you trust that service to perform
 // verification honestly. That is the right tradeoff for many RPs (it is the same
 // party you already discover keys through), but if you need to verify without
-// trusting a third party, run your own /verify (the broker is open source) and
-// point `verifierUrl` at it, or wait for the native verifier libraries.
+// trusting a third party, run your own /verify-access (the broker is open
+// source) and point `verifierUrl` at it, or use the native verifier libraries.
 
-const DEFAULT_VERIFIER = "https://browserid.me/verify";
+const DEFAULT_VERIFIER = "https://browserid.me/verify-access";
 
 /**
- * Create a verifier bound to a hosted /verify endpoint.
+ * Create a verifier bound to a hosted /verify-access endpoint.
  * @param {object} [opts]
- * @param {string} [opts.verifierUrl] hosted /verify URL (default browserid.me)
+ * @param {string} [opts.verifierUrl] hosted /verify-access URL (default browserid.me)
  * @param {string[]} [opts.acceptedFallbacks] default fallback-IdP issuer domains
  *   accepted for emails with no primary IdP (spec §8.1). Primaries are always
  *   accepted. Omit for the verifier's default ({that broker}).
@@ -38,18 +40,20 @@ export function createVerifier(opts = {}) {
   }
 
   /**
-   * Verify a backed assertion against an expected audience.
-   * @param {string} assertion the `certificate~assertion` string from the RP flow
+   * Verify an access presentation against an expected audience.
+   * @param {string} presentation the `access_cert~assertion~warrant~config_cert`
+   *   string from the RP flow (browserid.login() returns it as `.presentation`)
    * @param {string} audience the exact origin you expect (e.g. "https://app.example")
    * @param {object} [callOpts]
    * @param {string[]} [callOpts.acceptedFallbacks] override the default set
    * @param {boolean} [callOpts.allowAgent] if false (default), an agent
-   *   presentation is REJECTED — set true to accept agents and read `.agent`
+   *   presentation is REJECTED — set true to accept agents and read `.subject`
+   *   / `.scopes`
    * @returns {Promise<VerifyResult>}
    */
-  async function verify(assertion, audience, callOpts = {}) {
-    if (!assertion || typeof assertion !== "string") {
-      return fail("no assertion provided");
+  async function verify(presentation, audience, callOpts = {}) {
+    if (!presentation || typeof presentation !== "string") {
+      return fail("no presentation provided");
     }
     if (!audience || typeof audience !== "string") {
       return fail("no audience provided");
@@ -57,7 +61,7 @@ export function createVerifier(opts = {}) {
     const acceptedFallbacks = callOpts.acceptedFallbacks ?? defaultFallbacks;
     const allowAgent = callOpts.allowAgent === true;
 
-    const body = { assertion, audience };
+    const body = { presentation, audience };
     if (acceptedFallbacks) body.accepted_fallbacks = acceptedFallbacks;
 
     const controller = new AbortController();
@@ -92,18 +96,15 @@ export function createVerifier(opts = {}) {
       ok: true,
       email: json.email,
       issuer: json.issuer,
-      expires: json.expires,
-      agent: json.agent
-        ? { parent: json.agent.parent, scopes: json.agent.scopes || [] }
-        : null,
+      subject: json.subject || "user",
+      scopes: json.scopes || [],
     };
 
     // Default posture: an agent may not stand in for a human login. The caller
-    // must opt in, at which point it is responsible for checking `.agent`.
-    if (result.agent && !allowAgent) {
+    // must opt in, at which point it is responsible for checking `.scopes`.
+    if (result.subject === "agent" && !allowAgent) {
       return fail(
-        `assertion is an agent presentation (acting for ${result.agent.parent}); ` +
-          `pass allowAgent:true to accept it`
+        "presentation is an agent's; pass allowAgent:true to accept it"
       );
     }
     return result;
@@ -118,17 +119,17 @@ function fail(reason) {
 
 /**
  * One-shot convenience wrapper.
- * @param {string} assertion
+ * @param {string} presentation
  * @param {string} audience
  * @param {object} [opts] merges createVerifier + verify options
  * @returns {Promise<VerifyResult>}
  */
-export function verifyAssertion(assertion, audience, opts = {}) {
-  return createVerifier(opts).verify(assertion, audience, opts);
+export function verifyPresentation(presentation, audience, opts = {}) {
+  return createVerifier(opts).verify(presentation, audience, opts);
 }
 
 /**
- * @typedef {{ok: true, email: string, issuer?: string, expires?: number,
- *   agent: {parent: string, scopes: string[]} | null}
+ * @typedef {{ok: true, email: string, issuer?: string,
+ *   subject: "user" | "agent", scopes: string[]}
  *   | {ok: false, reason: string}} VerifyResult
  */

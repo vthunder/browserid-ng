@@ -19,15 +19,15 @@ async function boot(verifierUrl) {
   return { base: `http://127.0.0.1:${port}`, close: () => server.close() };
 }
 
-test("RP: verify → session cookie → /api/me; bad assertion fails closed", async () => {
-  // The mock returns a human for assertion "human"; our RP audience must match.
+test("RP: verify → session cookie → /api/me; bad presentation fails closed", async () => {
+  // The mock returns a user for presentation "human"; our RP audience must match.
   const mock = await startMockVerifier(RP_ORIGIN);
   const rp = await boot(mock.url);
   try {
-    // good human assertion → session established
+    // good user presentation → session established
     const login = await fetch(`${rp.base}/api/login`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ assertion: "human" }),
+      body: JSON.stringify({ presentation: "human" }),
     });
     assert.equal(login.status, 200);
     assert.equal((await login.json()).email, "alice@acme.com");
@@ -41,10 +41,10 @@ test("RP: verify → session cookie → /api/me; bad assertion fails closed", as
     const anon = await fetch(`${rp.base}/api/me`);
     assert.deepEqual(await anon.json(), {});
 
-    // bad assertion → 401, fail closed
+    // bad presentation → 401, fail closed
     const bad = await fetch(`${rp.base}/api/login`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ assertion: "nonsense" }),
+      body: JSON.stringify({ presentation: "nonsense" }),
     });
     assert.equal(bad.status, 401);
 

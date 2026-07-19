@@ -1,6 +1,7 @@
 // End-to-end test: real MCP client ↔ real MCP server (stdio), with a mock
-// /verify so no network or human consent is needed. Proves the auth-gating —
-// scope enforcement, agent requirement, fail-closed — over the actual protocol.
+// /verify-access so no network or human consent is needed. Proves the
+// auth-gating — scope enforcement, agent requirement, fail-closed — over the
+// actual protocol.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -35,29 +36,29 @@ test("MCP agent auth: scope enforcement over the real protocol", async () => {
       const { tools } = await client.listTools();
       assert.deepEqual(tools.map((t) => t.name).sort(), ["list_notes", "post_note"]);
 
-      // agent with post scope → allowed, attribution surfaced
-      const posted = await call(client, "post_note", { assertion: "good-post", text: "hello" });
+      // agent with post scope → allowed, identity surfaced
+      const posted = await call(client, "post_note", { presentation: "good-post", text: "hello" });
       assert.equal(posted.isError, undefined);
-      assert.match(textOf(posted), /acting for alice@acme\.com/);
+      assert.match(textOf(posted), /by agent alice\+researcher@acme\.com/);
 
       // read-only agent → post denied with a scope reason
-      const denied = await call(client, "post_note", { assertion: "good-read-only", text: "nope" });
+      const denied = await call(client, "post_note", { presentation: "good-read-only", text: "nope" });
       assert.equal(denied.isError, true);
       assert.match(textOf(denied), /not authorized/);
       assert.match(textOf(denied), /post/);
 
       // read-only agent → list allowed, sees the earlier post
-      const listed = await call(client, "list_notes", { assertion: "good-read-only" });
+      const listed = await call(client, "list_notes", { presentation: "good-read-only" });
       assert.equal(listed.isError, undefined);
-      assert.match(textOf(listed), /\[alice@acme\.com\] hello/);
+      assert.match(textOf(listed), /\[alice\+researcher@acme\.com\] hello/);
 
-      // a plain human (no warrant) → rejected: this server is for agents
-      const human = await call(client, "post_note", { assertion: "human", text: "x" });
+      // a plain user (subject user) → rejected: this server is for agents
+      const human = await call(client, "post_note", { presentation: "human", text: "x" });
       assert.equal(human.isError, true);
       assert.match(textOf(human), /agents acting for a human/);
 
-      // garbage assertion → fail closed
-      const bad = await call(client, "list_notes", { assertion: "nonsense" });
+      // garbage presentation → fail closed
+      const bad = await call(client, "list_notes", { presentation: "nonsense" });
       assert.equal(bad.isError, true);
       assert.match(textOf(bad), /authentication failed/);
     });

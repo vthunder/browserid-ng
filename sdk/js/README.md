@@ -1,17 +1,18 @@
 # @browserid-ng/verify
 
-Verify [BrowserID-NG](https://browserid.me) identity assertions from your relying
-party (RP) backend. Zero dependencies, **fail-closed**.
+Verify [BrowserID-NG](https://browserid.me) access presentations (device-cert
+model) from your relying party (RP) backend. Zero dependencies, **fail-closed**.
 
-This is the *hosted-verifier* path: your server POSTs the assertion to a running
-`/verify` service (default `https://browserid.me/verify`) which does the
-DNSSEC-rooted key resolution, signature checks, agent-warrant validation, and
-revocation (status-list) check. You get back a small typed result.
+This is the *hosted-verifier* path: your server POSTs the presentation to a
+running `/verify-access` service (default `https://browserid.me/verify-access`)
+which does the DNSSEC-rooted key resolution, the full cryptographic join
+(access cert + assertion + warrant + config cert), primary/fallback
+conformance, and revocation checks. You get back a small typed result.
 
 > **Trust:** a hosted verifier is a party you trust to verify honestly — the same
 > party you already discover keys through. If you need to verify *without*
-> trusting a third party, run your own `/verify` (the broker is open source) and
-> set `verifierUrl` to it.
+> trusting a third party, run your own `/verify-access` (the broker is open
+> source) and set `verifierUrl` to it.
 
 ## Install
 
@@ -27,13 +28,14 @@ Requires Node 18+ (uses global `fetch`).
 import { createVerifier } from "@browserid-ng/verify";
 
 const verifier = createVerifier({
-  // verifierUrl: "https://browserid.me/verify",  // default
-  // acceptedFallbacks: ["fallback.example"],      // optional (spec §8.1)
+  // verifierUrl: "https://browserid.me/verify-access",  // default
+  // acceptedFallbacks: ["browserid.me"],                 // optional (spec §8.1)
 });
 
-// In your login handler, `assertion` came from the browser; `audience` is YOUR
-// origin — the exact string, pinned server-side, never taken from the client.
-const result = await verifier.verify(assertion, "https://app.example.com");
+// In your login handler, `presentation` came from the browser
+// (browserid.login() returned it); `audience` is YOUR origin — the exact
+// string, pinned server-side, never taken from the client.
+const result = await verifier.verify(presentation, "https://app.example.com");
 
 if (result.ok) {
   // result.email is verified — log the user in.
@@ -44,45 +46,46 @@ if (result.ok) {
 }
 ```
 
-`result` is either `{ ok: true, email, issuer, expires, agent }` or
+`result` is either `{ ok: true, email, issuer, subject, scopes }` or
 `{ ok: false, reason }`. There is no status string to remember to check — a
 truthy `.ok` is the only success signal, and every error path (including network
 failures and malformed responses) resolves to `ok: false`.
 
 ### Agents
 
-By default an **agent** presentation (an AI agent acting for a human, via a
-warrant) is **rejected** — a human login endpoint should not silently accept one.
-To accept agents, opt in and read the attribution:
+By default an **agent** presentation (an AI agent acting under a user-authorized
+warrant) is **rejected** — a human login endpoint should not silently accept
+one. To accept agents, opt in and read the subject + scopes:
 
 ```js
-const result = await verifier.verify(assertion, audience, { allowAgent: true });
-if (result.ok && result.agent) {
-  // result.agent.parent — the human this agent acts for
-  // result.agent.scopes — what the human's warrant authorized at this audience
-  if (!result.agent.scopes.includes("post")) throw new Error("not authorized to post");
+const result = await verifier.verify(presentation, audience, { allowAgent: true });
+if (result.ok && result.subject === "agent") {
+  // result.email  — the agent identity (e.g. dan+agent@example.com)
+  // result.scopes — what the user's warrant authorized at this audience
+  if (!result.scopes.includes("post")) throw new Error("not authorized to post");
 }
 ```
 
 ## API
 
 - `createVerifier(opts?)` → `{ verify, verifierUrl }`
-  - `opts.verifierUrl` — hosted `/verify` URL (default `https://browserid.me/verify`)
+  - `opts.verifierUrl` — hosted `/verify-access` URL (default
+    `https://browserid.me/verify-access`)
   - `opts.acceptedFallbacks` — default fallback-IdP issuer domains for
     no-primary emails (primaries are always accepted)
   - `opts.timeoutMs` — request timeout (default `10000`)
   - `opts.fetch` — custom fetch implementation
-- `verifier.verify(assertion, audience, callOpts?)` → `Promise<VerifyResult>`
+- `verifier.verify(presentation, audience, callOpts?)` → `Promise<VerifyResult>`
   - `callOpts.acceptedFallbacks` — override for this call
   - `callOpts.allowAgent` — accept agent presentations (default `false`)
-- `verifyAssertion(assertion, audience, opts?)` — one-shot convenience wrapper
+- `verifyPresentation(presentation, audience, opts?)` — one-shot convenience wrapper
 
 ## Security notes
 
 - **Pin the audience server-side.** Pass your own origin; never echo a
   client-supplied audience.
-- **Verify on the server.** The assertion is a bearer credential for your origin;
-  verifying in the browser gives no security.
+- **Verify on the server.** The presentation is a bearer credential for your
+  origin; verifying in the browser gives no security.
 - Failures are deliberately coarse (`reason` is for logging, not branching).
 
 ## License

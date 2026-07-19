@@ -1,8 +1,9 @@
-// A stand-in for the hosted /verify, so the demo runs end-to-end with no network
-// and no human consent. It maps fake assertion strings to canned verdicts:
+// A stand-in for the hosted /verify-access, so the demo runs end-to-end with no
+// network and no human consent. It maps fake presentation strings to canned
+// verdicts:
 //   "good-post"       → agent with scopes [post, read]
 //   "good-read-only"  → agent with scopes [read]
-//   "human"           → a plain human (no agent block)
+//   "human"           → a plain user login (subject user)
 //   anything else     → failure
 // It also enforces the audience, exactly like the real endpoint.
 import { createServer } from "node:http";
@@ -21,26 +22,27 @@ export function startMockVerifier(audience) {
         res.end(JSON.stringify(obj));
       };
       if (body.audience !== audience) {
-        return reply({ status: "failure", reason: `Audience mismatch: expected ${audience}` });
+        return reply({ status: "failure", reason: `audience mismatch: expected ${audience}` });
       }
-      switch (body.assertion) {
+      switch (body.presentation) {
         case "good-post":
-          return reply({ status: "okay", email: "researcher@browserid.me", issuer: "browserid.me",
-            agent: { parent: "alice@acme.com", scopes: ["post", "read"] } });
+          return reply({ status: "okay", email: "alice+researcher@acme.com", issuer: "browserid.me",
+            subject: "agent", scopes: ["post", "read"] });
         case "good-read-only":
-          return reply({ status: "okay", email: "researcher@browserid.me", issuer: "browserid.me",
-            agent: { parent: "alice@acme.com", scopes: ["read"] } });
+          return reply({ status: "okay", email: "alice+researcher@acme.com", issuer: "browserid.me",
+            subject: "agent", scopes: ["read"] });
         case "human":
-          return reply({ status: "okay", email: "alice@acme.com", issuer: "browserid.me" });
+          return reply({ status: "okay", email: "alice@acme.com", issuer: "browserid.me",
+            subject: "user", scopes: ["login"] });
         default:
-          return reply({ status: "failure", reason: "Invalid assertion" });
+          return reply({ status: "failure", reason: "invalid presentation" });
       }
     });
   });
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address();
-      resolve({ url: `http://127.0.0.1:${port}/verify`, close: () => server.close() });
+      resolve({ url: `http://127.0.0.1:${port}/verify-access`, close: () => server.close() });
     });
   });
 }
