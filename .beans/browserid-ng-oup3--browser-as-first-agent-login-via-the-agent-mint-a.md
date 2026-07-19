@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: normal
 created_at: 2026-07-17T22:08:36Z
-updated_at: 2026-07-18T22:11:06Z
+updated_at: 2026-07-18T22:53:13Z
 ---
 
 Reframe human login as provisioning the browser's stable non-extractable key as an agent. Interactive bootstrap (top-level first-party, reusing mingo-ytrs consent.html handshake) yields a provisioning credential (U_cert~P_cert delegation to the browser key, ~90d, client-held). Cert issuance + refresh = cookie-free signature-authed POST to the SAME /provision/mint endpoint agents use (login-mode vs agent-mode a single param). Replaces the ITP-dead hidden-iframe+postMessage silent refresh. Chosen from a 3-way PoC spike (A=popup/same-tab, B=redirect, C=minimal-iframe-relies); A/B share the architecture, C rejected (entangles at URL but keeps cookie-auth => zero ITP fix). Guardrails: login is an explicit consented capability (typed login:bool + distinct consent); 'logout everywhere' = revoke provisioning cert. Spike A branch: worktree-agent-a050bf44400d2fe0d. This epic = produce a very thorough migration plan across spec, implementation, README, website, and consumer apps (sbo, mingo).
@@ -43,3 +43,9 @@ REMAINING: Phase 7 (retire old subject-axis/self-mint/iframe path + rebuild-clea
 - P6 (umme, partial): verify_access_with_dns — REAL primary/fallback conformance; reject-fallback-for-primary + reject-rogue-config-issuer proven. TODO: fail-closed foreign status fetch (with P4 registry), jti replay cache.
 All ADDITIVE (legacy routes untouched; baseline builds; prod on baseline). No regression (core 32, broker lib 41, verifier 18, device 2).
 REMAINING for a clickable cold-start login: P5 browser client (device keygen -> /device/issue -> /access/mint -> config-cert-signed warrant -> assertion -> /verify-access), P3 DB persistence, P4 warrant registry+status, P10 sandmill primary.
+
+## Full build wave (2026-07-19) — merged to main, additive
+DONE+MERGED: P1 core+vectors, P2 issuance/mint, P5 client/demo, P6 verifier, P3 device_certs persistence (migrate_v12), P4 warrant registry + /warrant/register + fail-closed 3-authority status, P0/P9 spec+docs. P10 sandmill PHP (byte-compat proven, deploying). Broker + sandmill deploying.
+IN FLIGHT: P7 headless agent SDK (worktree), P8 device-cert management UI (worktree).
+REMAINING: consumer migration (mingo full IdP+web+CLI+poster, sbo verifier), cleanup phase (retire legacy chain, gated 3b8m). All additive so consumers still compile until cleanup.
+No regressions: core 68, broker lib 41, verifier 18 (incl fail-closed status), registrar 8.
