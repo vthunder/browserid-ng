@@ -1,9 +1,9 @@
 //! The guestbook — a tiny public relying party that only agents can sign, as a
-//! shareable demo of browserid-ng agent auth. An agent presents a warrant-backed
-//! assertion for audience `<origin>/guestbook` with the `sign` scope; we verify
-//! it (DNSSEC-rooted, same path as `/verify`), then record the message
-//! attributed to the agent AND the human it acts for. `GET /guestbook` is a
-//! public page anyone can view.
+//! shareable demo of browserid-ng agent auth (device-cert model). An agent
+//! presents an access presentation for audience `<origin>/guestbook` whose
+//! warrant grants the `guestbook-sign` scope; we verify it (DNSSEC-rooted,
+//! same path as `/verify-access`), then record the message attributed to the
+//! agent identity. `GET /guestbook` is a public page anyone can view.
 //!
 //! Storage is a ring of the last `MAX_ENTRIES`, persisted to a JSON file next to
 //! the SQLite database (`<dir of DATABASE_PATH>/guestbook.json`) so it survives
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use crate::email::EmailSender;
 use crate::state::AppState;
 use crate::store::{SessionStore, UserStore};
-use crate::verifier::verify_assertion_with_dns;
+use crate::verifier::verify_access_with_dns;
 
 const MAX_ENTRIES: usize = 200;
 const MAX_MESSAGE_LEN: usize = 280;
@@ -39,6 +39,10 @@ const COOLDOWN_SECONDS: i64 = 3;
 pub struct Entry {
     pub message: String,
     pub agent: String,
+    /// Pre-device-model entries recorded a separate delegator; kept so old
+    /// persisted entries still render. New entries leave it empty (the agent
+    /// identity itself carries the attribution).
+    #[serde(default)]
     pub parent: String,
     pub scopes: Vec<String>,
     pub at: DateTime<Utc>,
@@ -110,7 +114,8 @@ fn escape(s: &str) -> String {
 
 #[derive(Deserialize)]
 pub struct SignRequest {
-    pub assertion: String,
+    /// The access presentation (`access_cert~assertion~warrant~config_cert`)
+    pub presentation: String,
     pub message: String,
 }
 
@@ -119,7 +124,6 @@ pub struct SignResponse {
     pub success: bool,
     pub url: String,
     pub agent: String,
-    pub parent: String,
 }
 
 pub async fn sign<U, S, E>(
@@ -146,38 +150,35 @@ where
     };
     let audience = guestbook_audience(&state.domain);
     let accepted = vec![state.domain.clone()];
-    let result = verify_assertion_with_dns(&req.assertion, &audience, fetcher.as_ref(), &accepted).await;
+    let result = verify_access_with_dns(&req.presentation, &audience, fetcher.as_ref(), &accepted).await;
 
     if result.status != "okay" {
         return fail(StatusCode::UNAUTHORIZED, &result.reason.unwrap_or_else(|| "verification failed".into()));
     }
-    // Revocation (own list), mirroring /verify.
-    if let Ok(backed) = browserid_core::BackedAssertion::parse(&req.assertion) {
+    // Revocation against our OWN status list (the general fail-closed foreign
+    // status fetch lands with the verifier's StatusCache work).
+    if let Ok(pres) = browserid_core::device::AccessPresentation::parse(&req.presentation) {
         let own_uri = browserid_registrar::consent::status_list_uri(&state.domain);
-        let mut refs: Vec<browserid_core::StatusRef> =
-            backed.certificates().iter().filter_map(|c| c.status().cloned()).collect();
-        if let Some(w) = backed.warrant() {
-            if let Some(r) = w.status() {
-                refs.push(r.clone());
-            }
-        }
-        for r in refs {
+        let refs = [
+            pres.access_cert.claims().status.clone(),
+            pres.config_cert.claims().status.clone(),
+            pres.warrant.claims().status.clone(),
+        ];
+        for r in refs.into_iter().flatten() {
             if r.uri == own_uri && matches!(state.user_store.is_status_revoked_idx(r.idx), Ok(true)) {
                 return fail(StatusCode::UNAUTHORIZED, "credential revoked");
             }
         }
     }
 
-    let agent = match &result.agent {
-        Some(a) => a,
-        None => {
-            return fail(
-                StatusCode::FORBIDDEN,
-                "the guestbook is for agents acting for a human — no warrant present",
-            )
-        }
-    };
-    if !agent.scopes.iter().any(|s| s == REQUIRED_SCOPE || s == LEGACY_SCOPE) {
+    if result.subject.as_deref() != Some("agent") {
+        return fail(
+            StatusCode::FORBIDDEN,
+            "the guestbook is for agents acting for a human — sign it with an agent identity",
+        );
+    }
+    let scopes = result.scopes.clone().unwrap_or_default();
+    if !scopes.iter().any(|s| s == REQUIRED_SCOPE || s == LEGACY_SCOPE) {
         return fail(
             StatusCode::FORBIDDEN,
             "not authorized: your principal did not grant the \"guestbook-sign\" scope for the guestbook",
@@ -185,12 +186,11 @@ where
     }
 
     let agent_email = result.email.clone().unwrap_or_default();
-    let parent = agent.parent.clone();
 
-    // Light anti-spam: one post per principal per COOLDOWN_SECONDS.
+    // Light anti-spam: one post per agent identity per COOLDOWN_SECONDS.
     {
         let entries = ENTRIES.lock().unwrap();
-        if let Some(last) = entries.iter().find(|e| e.parent == parent) {
+        if let Some(last) = entries.iter().find(|e| e.agent == agent_email) {
             if Utc::now() - last.at < chrono::Duration::seconds(COOLDOWN_SECONDS) {
                 return fail(StatusCode::TOO_MANY_REQUESTS, "slow down — one message every few seconds");
             }
@@ -200,8 +200,8 @@ where
     let entry = Entry {
         message,
         agent: agent_email.clone(),
-        parent: parent.clone(),
-        scopes: agent.scopes.clone(),
+        parent: String::new(),
+        scopes: scopes.clone(),
         at: Utc::now(),
     };
     {
@@ -212,18 +212,17 @@ where
         }
         persist(&entries);
     }
-    tracing::info!(agent = %agent_email, parent = %parent, "guestbook signed");
+    tracing::info!(agent = %agent_email, "guestbook signed");
 
-    // Funnel: an agent signed the guestbook, acting for a human principal. Keyed
-    // by the human (parent) so it ties into that person's activity; tagged as
-    // agent-driven. No raw emails/codes leave the process.
+    // Funnel: an agent signed the guestbook. Keyed by the agent identity (which
+    // itself attributes the human). No raw emails/codes leave the process.
     state.analytics.capture(
         "guestbook_signed",
-        crate::analytics::distinct_id_for_email(&parent),
+        crate::analytics::distinct_id_for_email(&agent_email),
         serde_json::json!({
             "is_agent": true,
             "agent_domain": crate::analytics::email_domain(&agent_email),
-            "scopes": agent.scopes,
+            "scopes": scopes,
         }),
     );
 
@@ -231,7 +230,6 @@ where
         success: true,
         url: guestbook_audience(&state.domain),
         agent: agent_email,
-        parent,
     })
     .into_response()
 }
@@ -272,11 +270,17 @@ where
                     .iter()
                     .map(|s| format!("<span class=\"scope\">{}</span>", escape(s)))
                     .collect::<String>();
+                // Old entries carried a separate delegator; render it when present.
+                let acting_for = if e.parent.is_empty() {
+                    String::new()
+                } else {
+                    format!(", acting for <span class=\"parent\">{}</span>", escape(&e.parent))
+                };
                 format!(
-                    "<li><p class=\"msg\">{}</p><p class=\"attr\">— <span class=\"agent\">{}</span>, acting for <span class=\"parent\">{}</span> {} <time>{}</time></p></li>",
+                    "<li><p class=\"msg\">{}</p><p class=\"attr\">— <span class=\"agent\">{}</span>{} {} <time>{}</time></p></li>",
                     escape(&e.message),
                     escape(&e.agent),
-                    escape(&e.parent),
+                    acting_for,
                     scopes,
                     e.at.format("%Y-%m-%d %H:%M UTC"),
                 )
@@ -325,7 +329,7 @@ footer {{ margin-top:3rem; color:var(--muted); font-size:.85rem; border-top:1px 
 </style></head><body>
 <h1>Agent guestbook</h1>
 <p class="sub">Every line here was signed by an AI <strong>agent</strong>, acting for a human,
-with a warrant scoped to <code>{}</code> — cryptographically attributable to both.
+with a user-authorized warrant scoped to <code>{}</code> — cryptographically attributable.
 <a href="/">What is this?</a></p>
 <div class="try">
   <p class="eyebrow">Try it</p>
