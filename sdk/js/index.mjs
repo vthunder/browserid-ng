@@ -42,7 +42,7 @@ export function createVerifier(opts = {}) {
   /**
    * Verify an access presentation against an expected audience.
    * @param {string} presentation the `access_cert~assertion~warrant~config_cert`
-   *   string from the RP flow (browserid.login() returns it as `.presentation`)
+   *   string from the RP flow (navigator.id.watch()'s onlogin delivers it)
    * @param {string} audience the exact origin you expect (e.g. "https://app.example")
    * @param {object} [callOpts]
    * @param {string[]} [callOpts.acceptedFallbacks] override the default set

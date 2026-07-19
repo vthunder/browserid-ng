@@ -5,8 +5,13 @@
  * Include this script to get the navigator.id API (watch/request/logout).
  * Device-cert model: onlogin receives the 4-object ACCESS PRESENTATION
  * (`access_cert~assertion~warrant~config_cert`) — verify it server-side via
- * POST /verify-access (or the @browserid-ng/verify SDK). A promise wrapper is
- * also provided: browserid.login(opts) -> Promise<{presentation, email}>.
+ * POST /verify-access (or the @browserid-ng/verify SDK).
+ *
+ * Popup-hostile browsers (Arc's detached popups, blockers): when the dialog
+ * popup fails, the flow falls back to a FULL-PAGE REDIRECT and the
+ * presentation is delivered on the return page load through the SAME
+ * onlogin observer — which is why watch()+request() is the only API: a
+ * promise cannot survive the navigation.
  * Configure broker URL via:
  *   - data-browserid-url attribute on script tag
  *   - window.BROWSERID_URL global variable
@@ -822,7 +827,11 @@
           if (e.origin !== origin) { return; }
           try {
             var d = JSON.parse(e.data);
-            if (d.a === 'ready') messageTarget.postMessage(req, origin);
+            if (d.a === 'ready') {
+              // The dialog window is alive and connected (not a detached tab).
+              if (opts.onReady) { try { opts.onReady(); } catch (e2) { } }
+              messageTarget.postMessage(req, origin);
+            }
             else if (d.a === 'error') {
               cleanup();
               if (cb) {
@@ -1088,14 +1097,6 @@
       (isFennec ? undefined :
        "menubar=0,location=1,resizable=1,scrollbars=1,status=0,width=480,height=660");
 
-    // Chrome for iOS
-    //    - https://developers.google.com/chrome/mobile/docs/user-agent
-    // Windows Phone
-    //    - http://stackoverflow.com/questions/11381673/javascript-solution-to-detect-mobile-browser
-    var needsPopupFix = userAgent.match(/CriOS/) ||
-                        userAgent.match(/Windows Phone/);
-
-    var REQUIRES_WATCH = "WATCH_NEEDED";
     var WINDOW_NAME = "__persona_dialog";
     var w;
 
@@ -1295,6 +1296,18 @@
       if (fedcmAvailable()) trySilentFedCM();
 
       _open_hidden_iframe();
+
+      // Deliver a redirect-mode return now that the observer exists.
+      if (pendingRedirectReturn) {
+        var pr = pendingRedirectReturn;
+        pendingRedirectReturn = null;
+        setTimeout(function () {
+          if (observers.login) {
+            try { observers.login(pr.presentation); } catch (clientError) { console.log(clientError); }
+          }
+          if (pr.fedcm_optin && fedcmAvailable()) establishFedCMGrant();
+        }, 0);
+      }
     }
 
     function isNull(arg) {
@@ -1360,7 +1373,6 @@
       options.fedcm = fedcmAvailable();
 
       options.rp_api = getRPAPI();
-      var couldDoRedirectIfNeeded = (!needsPopupFix || api_called === 'request' || api_called === 'auth');
 
       // reset the api_called in case the site implementor changes which api
       // method called the next time around.
@@ -1379,27 +1391,9 @@
         return;
       }
 
-      function isSupported() {
-        return BrowserSupport.isSupported() && couldDoRedirectIfNeeded;
-      }
-
-      function noSupportReason() {
+      if (!BrowserSupport.isSupported()) {
         var reason = BrowserSupport.getNoSupportReason();
-        if (!reason && !couldDoRedirectIfNeeded) {
-          return REQUIRES_WATCH;
-        }
-      }
-
-      if (!isSupported()) {
-        var reason = noSupportReason();
-        var url = "unsupported_dialog";
-
-        if(reason === "LOCALSTORAGE_DISABLED") {
-          url = "cookies_disabled";
-        } else if (reason === REQUIRES_WATCH) {
-          url = "unsupported_dialog_without_watch";
-        }
-
+        var url = (reason === "LOCALSTORAGE_DISABLED") ? "cookies_disabled" : "unsupported_dialog";
         w = window.open(
           ipServer + "/" + url,
           WINDOW_NAME,
@@ -1407,29 +1401,35 @@
         return;
       }
 
+      // Explicit redirect mode: skip the popup attempt entirely.
+      if (options.redirect === true && observers.login) {
+        return engageRedirect(options);
+      }
+
       // notify the iframe that the dialog is running so we
       // don't do duplicative work
       if (commChan) commChan.notify({ method: 'dialog_running' });
 
-      function doPopupFix() {
-        if (commChan) {
-          return commChan.call({
-            method: 'redirect_flow',
-            params: JSON.stringify(options),
-            success: function() {
-              // use call/success so that we do not have to depend on
-              // the postMessage being synchronous.
-              window.location = ipServer + '/sign_in';
-            }
-          });
-        }
+      // Detached-popup watchdog (Arc converts popups to opener-less tabs: the
+      // window exists but WinChan's 'ready' ping can never arrive). If the
+      // dialog hasn't pinged within the timeout, close the orphan and fall
+      // back to the full-page redirect flow.
+      var readyTimer = null;
+      function armDetachedPopupWatchdog(popupOptions) {
+        readyTimer = setTimeout(function () {
+          readyTimer = null;
+          if (!observers.login) return; // stateless API cannot survive a navigation
+          try { if (w) w.close(); } catch (e) { }
+          w = undefined;
+          engageRedirect(popupOptions);
+        }, 4000);
       }
 
-      if (needsPopupFix) {
-        return doPopupFix();
-      }
-
+      armDetachedPopupWatchdog(options);
       w = WinChan.open({
+        onReady: function () {
+          if (readyTimer) { clearTimeout(readyTimer); readyTimer = null; }
+        },
         url: ipServer + '/sign_in',
         relay_url: ipServer + '/relay',
         window_features: windowOpenOpts,
@@ -1439,6 +1439,13 @@
           params: options
         }
       }, function(err, r) {
+        if (readyTimer) { clearTimeout(readyTimer); readyTimer = null; }
+        // Popup blocked outright: fall back to the full-page redirect flow
+        // (only possible in watch mode — the observer survives navigation).
+        if (err === 'popup blocked' && observers.login) {
+          w = undefined;
+          return engageRedirect(options);
+        }
         // unpause the iframe to detect future changes in login state
         if (commChan) {
           // update the loggedInUser in the case that an assertion was generated, as
@@ -1462,7 +1469,6 @@
         // clear the window handle
         w = undefined;
         if (!err && r && r.presentation) {
-          lastResponse = r;
           try {
             if (observers.login) observers.login(r.presentation);
           } catch(clientError) {
@@ -1487,9 +1493,83 @@
       });
     };
 
-    // The most recent successful dialog response ({presentation, email, ...})
-    // — lets the browserid.login() promise wrapper surface the email too.
-    var lastResponse = null;
+    // --- full-page redirect fallback (Arc / blocked popups) ---------------
+    // The dialog runs as a top-level navigation instead of a popup; the
+    // presentation returns in the URL FRAGMENT of a fresh page load and is
+    // delivered through observers.login (the reason watch() is the only API).
+    var REDIRECT_STASH = 'browserid_redirect';
+
+    function b64urlJson(obj) {
+      var bytes = new TextEncoder().encode(JSON.stringify(obj));
+      var bin = '';
+      for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+    function b64urlParse(str) {
+      var b = atob(str.replace(/-/g, '+').replace(/_/g, '/'));
+      var bytes = new Uint8Array(b.length);
+      for (var i = 0; i < b.length; i++) bytes[i] = b.charCodeAt(i);
+      return JSON.parse(new TextDecoder().decode(bytes));
+    }
+    function redirectNonce() {
+      var a = new Uint8Array(16);
+      crypto.getRandomValues(a);
+      var out = '';
+      for (var i = 0; i < a.length; i++) out += ('0' + a[i].toString(16)).slice(-2);
+      return out;
+    }
+
+    // Navigate this tab to the dialog. The pre-redirect URL (including any
+    // SPA fragment) is stashed so the return restores it exactly; the nonce
+    // binds the return to this tab (login-CSRF guard).
+    function engageRedirect(options) {
+      try {
+        var nonce = redirectNonce();
+        sessionStorage.setItem(REDIRECT_STASH, JSON.stringify({
+          state: nonce,
+          resumeUrl: window.location.href
+        }));
+        var params = {
+          sboSign: !!options.sboSign,
+          provisionEmail: options.provisionEmail || null,
+          acceptedFallbacks: options.acceptedFallbacks || null,
+          fedcm: fedcmAvailable()
+        };
+        window.location.assign(
+          ipServer + '/dialog/dialog.html' +
+          '?rp_redirect=1' +
+          '&rp_origin=' + encodeURIComponent(window.location.origin) +
+          '&return_to=' + encodeURIComponent(
+            window.location.origin + window.location.pathname + window.location.search) +
+          '&state=' + encodeURIComponent(nonce) +
+          '&params=' + encodeURIComponent(b64urlJson(params))
+        );
+      } catch (e) {
+        warn('browserid: redirect fallback failed: ' + e);
+      }
+    }
+
+    // Returning from a redirect-mode dialog? Consume `#browserid=<payload>`:
+    // verify the nonce, strip the fragment (restoring the pre-redirect URL),
+    // and hold the presentation until watch() registers its observer.
+    var pendingRedirectReturn = null;
+    (function consumeRedirectReturn() {
+      var h = window.location.hash;
+      if (!h || h.indexOf('#browserid=') !== 0) return;
+      var stored = null;
+      try { stored = JSON.parse(sessionStorage.getItem(REDIRECT_STASH) || 'null'); } catch (e) { }
+      try { sessionStorage.removeItem(REDIRECT_STASH); } catch (e) { }
+      var payload = null;
+      try { payload = b64urlParse(h.slice('#browserid='.length)); } catch (e) { }
+      try {
+        history.replaceState(null, '', (stored && stored.resumeUrl)
+          ? stored.resumeUrl
+          : window.location.pathname + window.location.search);
+      } catch (e) { }
+      if (!payload || !stored || !payload.state || payload.state !== stored.state) return; // forged/stale
+      if (payload.cancelled || !payload.presentation) return;
+      pendingRedirectReturn = payload;
+    })();
 
     // --- FedCM fast path (browserid-ng-mhyp, device-cert model) -----------
     // FedCM is used automatically wherever the browser supports it — RPs do
@@ -1679,33 +1759,6 @@
       _shimmed: true
     };
 
-    // Promise convenience wrapper over watch()+request():
-    //   const { presentation, email } = await browserid.login({...});
-    // Rejects with err.cancelled === true when the user cancels.
-    window.browserid = {
-      brokerUrl: ipServer,
-      login: function (options) {
-        options = options || {};
-        return new Promise(function (resolve, reject) {
-          navigator.id.watch({
-            loggedInUser: null,
-            onlogin: function (presentation) {
-              resolve({
-                presentation: presentation,
-                email: (lastResponse && lastResponse.email) || null
-              });
-            },
-            onlogout: function () {}
-          });
-          options.oncancel = function () {
-            var e = new Error('sign-in was cancelled');
-            e.cancelled = true;
-            reject(e);
-          };
-          navigator.id.request(options);
-        });
-      }
-    };
   }
   }());
   }

@@ -35,7 +35,11 @@
     sboSign: false,  // RP requested the SBO typed-signing capability
     pendingPresentation: null,  // presentation held while showing the SBO consent screen
     provisionEmail: null,  // RP asked to provision/sign in a SPECIFIC identity (skip the chooser)
-    pendingPrimary: null   // {email, info, keys} while waiting on tap-to-continue
+    pendingPrimary: null,  // {email, info, keys} while waiting on tap-to-continue
+    // Full-page redirect mode (Arc / blocked popups): {returnTo, state}. The
+    // response navigates back to the RP with the payload in the fragment
+    // instead of using WinChan/postMessage.
+    redirect: null
   };
 
   // API endpoints (relative to current origin)
@@ -178,6 +182,13 @@
     const payload = b64urlJson(claims);
     const sig = await Keystore.sign(privateKey, `${JWS_HDR}.${payload}`);
     return `${JWS_HDR}.${payload}.${sig}`;
+  }
+
+  function b64urlParse(str) {
+    const b = atob(str.replace(/-/g, '+').replace(/_/g, '/'));
+    const bytes = new Uint8Array(b.length);
+    for (let i = 0; i < b.length; i++) bytes[i] = b.charCodeAt(i);
+    return JSON.parse(new TextDecoder().decode(bytes));
   }
 
   function decodeJws(jws) {
@@ -536,6 +547,11 @@
         showError(domain + ' runs its own identity provider, but it does not support device sign-in yet.');
         return;
       }
+      // Redirect mode cannot open a popup (that is why we are here) — hop to
+      // the IdP's device-authorization page in THIS tab and resume on return.
+      if (state.redirect) {
+        return await primaryRedirectHop(email, addressInfo);
+      }
       const keys = { device: await Keystore.generate(), config: await Keystore.generate() };
       let certs;
       try {
@@ -557,6 +573,90 @@
       await finishSignIn(email, pair, domain, mintUrl);
     } catch (e) {
       showError('Sign-in with your email provider failed: ' + (e.message || e));
+    }
+  }
+
+  // Same-tab primary hop (redirect mode): park the freshly-generated
+  // non-extractable keypairs + the dialog's state in the keystore's pending
+  // store (IndexedDB structured-clones CryptoKeys across navigations — the
+  // same mechanism mingo-ytrs used), then navigate THIS tab to the IdP's
+  // device-authorization page with a return_url pointing back at
+  // /dialog/dialog.html?resume=device_auth.
+  async function primaryRedirectHop(email, info) {
+    const keys = { device: await Keystore.generate(), config: await Keystore.generate() };
+    await Keystore.putPending({
+      kind: 'device_auth',
+      deviceKey: keys.device.privateKey,
+      devicePubX: keys.device.publicKeyX,
+      configKey: keys.config.privateKey,
+      configPubX: keys.config.publicKeyX,
+      email,
+      domain: email.split('@')[1],
+      mintUrl: info.access_mint,
+      dialog: {
+        origin: state.origin,
+        redirect: state.redirect,
+        sboSign: state.sboSign,
+        fedcm: !!state.fedcm,
+        provisionEmail: state.provisionEmail,
+        acceptedFallbacks: state.acceptedFallbacks,
+        emails: state.emails
+      }
+    });
+    const resume = window.location.origin + '/dialog/dialog.html?resume=device_auth';
+    window.location.assign(
+      info.device_auth +
+      '#email=' + encodeURIComponent(email) +
+      '&device_pubkey=' + encodeURIComponent(keys.device.publicKeyX) +
+      '&config_pubkey=' + encodeURIComponent(keys.config.publicKeyX) +
+      '&return_origin=' + encodeURIComponent(window.location.origin) +
+      '&return_url=' + encodeURIComponent(resume)
+    );
+  }
+
+  // Returning from the same-tab hop: certs (or an error) ride the fragment;
+  // the keys + dialog state come back out of the pending store.
+  async function resumeDeviceAuth() {
+    showScreen('loading', 'Finishing sign-in...');
+    const frag = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    history.replaceState(null, '', window.location.pathname); // certs out of the URL bar
+    let pending = null;
+    try { pending = await Keystore.getPending(); } catch (e) { /* fall through */ }
+    try { await Keystore.clearPending(); } catch (e) { /* best-effort */ }
+    if (!pending || pending.kind !== 'device_auth' || !pending.dialog) {
+      showError('Sign-in state was lost — go back to the site and click sign in again.');
+      return;
+    }
+    state.origin = pending.dialog.origin;
+    state.redirect = pending.dialog.redirect;
+    state.sboSign = !!pending.dialog.sboSign;
+    state.provisionEmail = pending.dialog.provisionEmail || null;
+    state.acceptedFallbacks = pending.dialog.acceptedFallbacks || null;
+    state.emails = pending.dialog.emails || [];
+    maybeShowFedcmOptin(!!pending.dialog.fedcm);
+    document.querySelectorAll('.rp-name').forEach(el => {
+      try { el.textContent = new URL(state.origin).hostname; } catch (e) { /* leave */ }
+    });
+    const errReason = frag.get('device_error');
+    if (errReason) {
+      showError('Sign-in with your email provider failed: ' + errReason);
+      return;
+    }
+    const certs = { device_cert: frag.get('device_cert'), config_cert: frag.get('config_cert') };
+    if (!certs.device_cert || !certs.config_cert) {
+      showError('Your email provider returned no certificates — try again.');
+      return;
+    }
+    const keys = {
+      device: { privateKey: pending.deviceKey, publicKeyX: pending.devicePubX },
+      config: { privateKey: pending.configKey, publicKeyX: pending.configPubX }
+    };
+    try {
+      const pair = await finishPrimaryCerts(pending.email, keys, certs);
+      await ensureBrokerSession(pending.email, pair, pending.domain, pending.mintUrl);
+      await finishSignIn(pending.email, pair, pending.domain, pending.mintUrl);
+    } catch (e) {
+      showError(e.message || String(e));
     }
   }
 
@@ -659,6 +759,14 @@
 
   // Communication with parent window
   function sendResponse(data) {
+    // Redirect mode: hand the payload back in the URL fragment of a fresh RP
+    // page load. location.replace keeps this dialog page out of history so
+    // Back never re-enters a spent sign-in.
+    if (state.redirect) {
+      data.state = state.redirect.state;
+      window.location.replace(state.redirect.returnTo + '#browserid=' + b64urlJson(data));
+      return;
+    }
     // WinChan callback takes precedence
     if (state.winchanCallback) {
       state.winchanCallback(data);
@@ -677,6 +785,10 @@
   }
 
   function sendCancel() {
+    if (state.redirect) {
+      sendResponse({ cancelled: true });
+      return;
+    }
     if (state.winchanCallback) {
       state.winchanCallback(null);
       state.winchanCallback = null;
@@ -1190,11 +1302,41 @@
   // Setup and start
   setupEventHandlers();
 
-  // Normal initialization
   const params = new URLSearchParams(window.location.search);
-  const origin = params.get('origin');
 
-  if (origin) {
+  if (params.get('resume') === 'device_auth') {
+    // Returning from the same-tab primary hop (redirect mode).
+    resumeDeviceAuth();
+  } else if (params.get('rp_redirect') === '1') {
+    // Full-page redirect mode: the RP's include.js navigated here because the
+    // popup failed (Arc detaches popups; blockers). The response goes back by
+    // navigation, so the return address MUST belong to the requesting origin —
+    // in the popup flow postMessage's targetOrigin enforces this; here we must:
+    // otherwise a crafted link could deliver a presentation minted for the
+    // victim RP's audience to an attacker's page.
+    const rpOrigin = params.get('rp_origin') || '';
+    const returnTo = params.get('return_to') || '';
+    let returnOk = false;
+    try { returnOk = !!rpOrigin && new URL(returnTo).origin === rpOrigin; } catch (e) { /* invalid */ }
+    if (!returnOk) {
+      showError('Invalid sign-in link: the return address does not belong to the requesting site.');
+    } else {
+      state.origin = rpOrigin;
+      state.redirect = { returnTo, state: params.get('state') || '' };
+      let opts = {};
+      try { opts = b64urlParse(params.get('params') || '') || {}; } catch (e) { /* defaults */ }
+      state.sboSign = !!opts.sboSign;
+      state.provisionEmail = opts.provisionEmail || null;
+      state.acceptedFallbacks = normalizeAcceptedFallbacks(opts.acceptedFallbacks);
+      maybeShowFedcmOptin(!!opts.fedcm);
+      document.querySelectorAll('.rp-name').forEach(el => {
+        el.textContent = new URL(rpOrigin).hostname;
+      });
+      init();
+    }
+  } else if (params.get('origin')) {
+    // Direct link with ?origin= (dev / debugging).
+    const origin = params.get('origin');
     state.origin = origin;
     state.sboSign = params.get('sbo_sign') === '1';
     state.provisionEmail = params.get('provision_email');
@@ -1240,6 +1382,7 @@
   // user what to do rather than spin forever.
   setTimeout(function () {
     if (state.origin) return; // a request arrived — normal operation
+    if (screens.error.classList.contains('active')) return; // a specific error is already showing
     const hint = winchanBroken || !window.opener
       ? 'This sign-in window lost its connection to the site that opened it ' +
         '(some browsers, e.g. Arc, detach popups into tabs). Close this ' +

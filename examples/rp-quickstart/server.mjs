@@ -62,16 +62,18 @@ const $=id=>document.getElementById(id), state=$('state');
 async function refresh(){ const me=await (await fetch('/api/me')).json();
   if(me.email){ state.innerHTML='Signed in as <code>'+me.email+'</code>'; $('login').hidden=true; $('logout').hidden=false; }
   else { state.textContent='Not signed in.'; $('login').hidden=false; $('logout').hidden=true; } }
-$('login').onclick=async()=>{
-  try{
-    const r=await browserid.login();
+navigator.id.watch({
+  loggedInUser: null,
+  onlogin: async (presentation)=>{
     state.textContent='verifying…';
-    const resp=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({presentation:r.presentation})});
+    const resp=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({presentation})});
     if(!resp.ok){ const e=await resp.json(); state.textContent='sign-in failed: '+e.reason; return; }
     refresh();
-  }catch(e){ if(!e.cancelled) state.textContent='sign-in error: '+(e.message||e); }
-};
-$('logout').onclick=async()=>{ await fetch('/api/logout',{method:'POST'}); refresh(); };
+  },
+  onlogout: ()=>{}
+});
+$('login').onclick=()=>navigator.id.request({siteName:'RP Quickstart'});
+$('logout').onclick=async()=>{ await fetch('/api/logout',{method:'POST'}); navigator.id.logout&&navigator.id.logout(); refresh(); };
 refresh();
 </script>`;
 

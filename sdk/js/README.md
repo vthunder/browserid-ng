@@ -32,8 +32,8 @@ const verifier = createVerifier({
   // acceptedFallbacks: ["browserid.me"],                 // optional (spec §8.1)
 });
 
-// In your login handler, `presentation` came from the browser
-// (browserid.login() returned it); `audience` is YOUR origin — the exact
+// In your login handler, `presentation` came from the browser (delivered to
+// navigator.id.watch()'s onlogin); `audience` is YOUR origin — the exact
 // string, pinned server-side, never taken from the client.
 const result = await verifier.verify(presentation, "https://app.example.com");
 
