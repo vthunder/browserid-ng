@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-19T10:13:26Z
-updated_at: 2026-07-19T11:08:53Z
+updated_at: 2026-07-19T11:14:58Z
 parent: browserid-ng-oup3
 ---
 
@@ -17,7 +17,7 @@ Rewrite browserid-broker/static/{dialog.js,include.js} as the device-cert cold-s
 - [x] keystore.js: device store (DB v3) for device/config cert records
 - [x] Primary popup path (dialog side): discovery 'device-authorization' page + postMessage handshake; sandmill still needs the page (separate repo work)
 - [x] Tests: fallback_idp_test rewritten for device flow incl. full presentation verify; workspace green; no new inline scripts (CSP unchanged)
-- [ ] Smoke: cold-start login via dialog against browserid.me (deploy gated: converting demos/RP libs first — new include.js drops navigator.id, would break mingo.place until step 6)
+- [x] DEPLOYED to browserid.me (c187c47) + prod smoke green: admin-seed account -> /device/issue (+* glob confirmed) -> /access/mint -> warrant+assertion -> /verify-access okay. Classic /verify is 404 in prod. NOTE: mingo.place login is broken until its migration (include.js has no navigator.id — expected cutover breakage).
 - [x] Real-browser (playwright) e2e: cold-start SMTP login + keystore fast-path both verify via /verify-access on local broker
 
 ## Progress (2026-07-19, session 2)
@@ -29,10 +29,15 @@ Steps 1-4 of the removal punch-list are DONE and committed (2240ae6, adbc8b0, a5
 - [x] Step 4: classic protocol REMOVED from core+broker (Certificate/BackedAssertion/classic Warrant/cert_key//verify/FedCM/primary auth/fallback pages). grep clean in .rs. 41 suites green.
 
 REMAINING:
-- [ ] Deploy to browserid.me + prod smoke (NOTE: breaks mingo.place login until step 6 — new include.js has no navigator.id)
-- [ ] sandmill: device-authorization popup page + CORS/Accept-JSON fix on access_cert mint (~/src/sandmill)
+- [x] Deploy to browserid.me + prod smoke (mingo.place login broken until step 6 as expected)
+- [x] sandmill (2a0f7af, deployed): /browserid/device-authorize popup (fragment params -> sessionStorage across the /login round-trip -> first-party device_cert -> postMessage to opener), discovery advertises it, CORS on the headless access_cert mint, force.json on the API routes, config cert +* glob. VERIFIED live: discovery + page 200 + preflight 204 + broker address_info surfaces device_auth/access_mint for danmills@sandmill.org. Remaining: a HUMAN click-through of https://browserid.me/broker-demo with danmills@sandmill.org (needs the real sandmill password).
 - [ ] account.html + agents.html: strip dead classic sections (identity Activate via cert_key, chain-based agent create); repoint agents UI at /agent-provision device flow
 - [ ] sdk/agent + sdk/wallet JS -> device model (wallet gates guestbook signing; guestbook server now expects device presentations)
 - [ ] SBO relocation 3b8m -> then delete communication_iframe* + common/js classic stack + winchan dialog-side? (winchan still used by dialog)
 - [ ] marketing/ classic snippets
 - [ ] Consumers: mingo (idp+web+cli+poster), sbo — finish device migration, bump pins
+
+## Session 2 outcome
+Steps 1-4 of the removal + deploys are done. browserid.me and sandmill.org both run the device-cert model in production; the classic protocol is gone from the Rust workspace. Try it: https://browserid.me/broker-demo (any no-primary email = SMTP fallback; danmills@sandmill.org = primary popup).
+
+Next work (in order): (1) human click-through of the sandmill primary path; (2) mingo migration (idp/web/cli/poster) + sbo, pin bump — restores mingo.place login; (3) sdk/agent + sdk/wallet JS -> device model (guestbook signing depends on it); (4) SBO relocation 3b8m then delete communication_iframe + common/js classic stack; (5) account.html/agents.html dead-section cleanup; (6) marketing snippets.
