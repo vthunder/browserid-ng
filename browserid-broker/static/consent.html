@@ -32,10 +32,10 @@
 <body>
   <h1>Agent consent</h1>
   <p class="muted">An agent acting for you is asking to sign in somewhere new. Approving
-  signs a <strong>warrant</strong> with your identity's own key (held in this browser) —
-  one per place shown, each valid <em>only there</em>, with <em>only the scopes shown</em>,
-  for <strong>90 days</strong>, revocable at any time from your account page. Nothing is
-  shared with any other site.</p>
+  signs a <strong>warrant</strong> with your config key (issued by your identity provider,
+  held only in this browser) — one per place shown, each valid <em>only there</em>, with
+  <em>only the scopes shown</em>, for <strong>90 days</strong>, revocable at any time from
+  your account page. Nothing is shared with any other site.</p>
 
   <div id="auth-gate" class="card"><p>Checking your session…</p></div>
   <div id="list" hidden></div>
@@ -49,10 +49,6 @@ const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
 const b64urlJson = (obj) => btoa(String.fromCharCode(...enc.encode(JSON.stringify(obj))))
   .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-const b64urlRandom = (n) => {
-  const a = new Uint8Array(n); crypto.getRandomValues(a);
-  return btoa(String.fromCharCode(...a)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-};
 const b64urlToJson = (seg) => JSON.parse(atob(seg.replace(/-/g,'+').replace(/_/g,'/')));
 const escapeHtml = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -68,160 +64,55 @@ async function api(path, opts = {}) {
   return body;
 }
 
-/// Locally-held identities: {email, cert, priv, issuer, exp} — same origin
-/// store the dialog / agents page use. The identity key never leaves here.
-async function localIdentity(email) {
-  const recs = await window.Keystore.forEmail(email);
-  for (const rec of recs) {
-    if (!rec.privateKey || !rec.cert) continue;
-    let exp = 0, issuer = null;
-    try {
-      const p = JSON.parse(atob(rec.cert.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
-      exp = p.exp; issuer = p.iss;
-    } catch {}
-    return { email: rec.email, cert: rec.cert, privateKey: rec.privateKey, publicKeyX: rec.publicKeyX, issuer, exp };
-  }
-  return null;
+/// Whether a device-cert identities entry (exact email or single-`*` glob)
+/// covers `email` — mirrors browserid-core device::identity_matches.
+function identityMatches(pattern, email) {
+  if (pattern === email || pattern === '*') return true;
+  const star = pattern.indexOf('*');
+  if (star === -1) return false;
+  const pre = pattern.slice(0, star), post = pattern.slice(star + 1);
+  return email.length >= pre.length + post.length
+    && email.startsWith(pre) && email.endsWith(post);
 }
 
-/// The delegator's identity key isn't in THIS browser's keystore yet — common
-/// on a new device for an IdP-issued handle (e.g. `<name>@mingo.place`). The old
-/// hidden-iframe provisioning is dead on mobile Safari: it mints inside a
-/// third-party IdP iframe whose session cookie ITP blocks, so nothing is stored
-/// (mingo-ytrs). We use a SAME-TAB navigation handshake instead:
-///   1. ask the broker for the identity's primary-IdP provisioning URL
-///      (`/wsapi/address_info`, same-origin — CSP-safe); bail if not a primary,
-///   2. generate a fresh NON-EXTRACTABLE keypair here (only the public part ever
-///      leaves this browser),
-///   3. stash it PENDING in IndexedDB — a non-extractable CryptoKey survives the
-///      top-level navigation via structured clone (sessionStorage can't hold it),
-///   4. navigate the TOP frame to the IdP's FIRST-PARTY `/provision_return` page,
-///      which mints the cert under the user's own IdP session and redirects back
-///      to THIS consent URL with the cert in the URL FRAGMENT.
-/// On return, `consumePendingProvision()` validates + deposits it. This function
-/// NAVIGATES AWAY and never resolves (for a provisionable primary); it returns
-/// null only when the identity isn't a same-tab-provisionable primary.
-///
-/// Reusable by design (dialog.js handlePrimaryIdP can adopt it for the
-/// login/client-signing path later); only the consent warrant path is wired now.
-///
-/// PSEUDONYMITY (mingo-ytrs): the account's external login email is deliberately
-/// kept entirely off this path. The cert principal is ONLY the handle; we do NOT
-/// call set_parent and the IdP does NOT return subordinate_to here — recording
-/// the subordinate→parent link is a deferred follow-up.
-async function startSameTabProvision(email) {
-  let provOrigin;
-  try {
-    const info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`);
-    if (info.type !== 'primary' || !info.prov) return null;
-    provOrigin = new URL(info.prov).origin;
-  } catch { return null; }
-  const { privateKey, publicKeyX } = await window.Keystore.generate();
-  const nonce = b64urlRandom(16);
-  const issuer = email.split('@')[1] || '';
-  // Return to THIS consent URL (browserid origin persists across the hop). Own
-  // the fragment we append on return by dropping any existing one here.
-  const returnTo = location.origin + location.pathname + location.search;
-  await window.Keystore.putPending({ privateKey, publicKeyX, email, issuer, nonce, returnTo });
-  const url = provOrigin + '/provision_return'
-    + '?email=' + encodeURIComponent(email)
-    + '&pubkey=' + encodeURIComponent(publicKeyX)
-    + '&state=' + encodeURIComponent(nonce)
-    + '&return_to=' + encodeURIComponent(returnTo);
-  location.href = url;
-  return await new Promise(() => {}); // halt: the page is navigating away
-}
-
-/// Returning from the IdP's same-tab provisioning (mingo-ytrs): validate the cert
-/// handed back in the URL FRAGMENT and deposit {key,cert}. Returns true when a
-/// pending handshake was consumed. Checks, in order: state nonce matches the one
-/// we stashed; the cert certifies EXACTLY the pubkey we generated; the principal
-/// email is EXACTLY the handle we requested; and iss is the expected IdP.
-/// (Signature-over-the-cert verification is done downstream by every warrant
-/// verifier against the IdP's published key; here we bind the cert to our own
-/// pending keypair + requested identity.)
-async function consumePendingProvision() {
-  const frag = location.hash.startsWith('#') ? location.hash.slice(1) : '';
-  const params = new URLSearchParams(frag);
-  const certJws = params.get('prov_cert');
-  const state = params.get('state');
-  if (!certJws || !state) return false;
-  // Strip the fragment immediately: the cert must not be re-processed or linger
-  // in the address bar / history.
-  history.replaceState(null, '', location.pathname + location.search);
-  let pending = null;
-  try { pending = await window.Keystore.getPending(); } catch {}
-  if (!pending) return false;
-  const done = async (ok) => { try { await window.Keystore.clearPending(); } catch {} return ok; };
-  if (state !== pending.nonce) { console.warn('provision: state mismatch'); return done(false); }
-  let claims;
-  try { claims = b64urlToJson(certJws.split('.')[1]); }
-  catch { console.warn('provision: undecodable cert'); return done(false); }
-  const principal = claims.principal && claims.principal.email;
-  const certPub = claims['public-key'] && claims['public-key'].publicKey;
-  if (certPub !== pending.publicKeyX) { console.warn('provision: pubkey mismatch'); return done(false); }
-  if (!principal || principal.toLowerCase() !== String(pending.email).toLowerCase()) {
-    console.warn('provision: principal mismatch'); return done(false); }
-  if (!claims.iss || claims.iss.toLowerCase() !== String(pending.issuer).toLowerCase()) {
-    console.warn('provision: issuer mismatch'); return done(false); }
-  // Deposit the non-extractable key handle + cert (same record shape the dialog
-  // uses), keyed by the cert's issuer (e2fi/apgv).
-  await window.Keystore.put(claims.iss, pending.email, {
-    privateKey: pending.privateKey, publicKeyX: pending.publicKeyX, cert: certJws,
-  });
-  return done(true);
-}
-
-/// A warrant must be signed while the parent (identity) cert is valid. If
-/// the cached cert is stale and it's ours to reissue (broker-issued for a
-/// session-owned email), silently refresh it via /wsapi/cert_key.
-async function freshIdentity(email) {
-  let id = await localIdentity(email);
-  // Not in this browser yet (new device, IdP-issued handle) — provision it via
-  // the same-tab handshake. For a provisionable primary this NAVIGATES AWAY and
-  // never returns here; on return, boot()'s consumePendingProvision deposits the
-  // cert so localIdentity above then succeeds and the user taps Approve.
-  if (!id) id = await startSameTabProvision(email);
-  if (!id) return null;
+/// The CONFIG (authorization) device cert + non-extractable key in this
+/// browser's keystore that can sign warrants for `agentEmail`, preferring one
+/// stored for `delegatorEmail`. Deposited by the login dialog at sign-in.
+async function localConfig(delegatorEmail, agentEmail) {
+  const recs = (await window.Keystore.allDevice()).filter(r => r.kind === 'config' && r.cert && r.privateKey);
   const now = Math.floor(Date.now() / 1000);
-  if (id.exp && id.exp > now + 60) return id;
-  if (!id.publicKeyX) return null;
-  try {
-    const body = await api('/wsapi/cert_key', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        email: id.email,
-        pubkey: { algorithm: 'Ed25519', publicKey: id.publicKeyX },
-        ephemeral: false,
-        csrf,
-      }),
-    });
-    // Update just the cert on the existing non-extractable key handle (e2fi).
-    await window.Keystore.put(id.issuer, id.email,
-      { privateKey: id.privateKey, publicKeyX: id.publicKeyX, cert: body.cert });
-    return await localIdentity(email);
-  } catch { return null; }
+  const candidates = [];
+  for (const rec of recs) {
+    let claims;
+    try { claims = b64urlToJson(rec.cert.split('.')[1]); } catch { continue; }
+    if (!claims.exp || claims.exp <= now + 60) continue;
+    if (claims.purpose !== 'authorization') continue;
+    if (!(claims.identities || []).some(p => identityMatches(p, agentEmail))) continue;
+    candidates.push({ rec, claims });
+  }
+  candidates.sort((a, b) => (a.rec.email === delegatorEmail ? -1 : 0) - (b.rec.email === delegatorEmail ? -1 : 0));
+  const hit = candidates[0];
+  return hit ? { cert: hit.rec.cert, privateKey: hit.rec.privateKey } : null;
 }
 
-
-/// Sign the §5.2 warrant with the delegator's identity key. `status`
-/// ({uri, idx}, broker-allocated) makes this single grant revocable.
-async function signWarrant(id, agentEmail, audience, scopes, status) {
+/// Sign the device-model warrant with the config key: (identifier, subject
+/// agent) → audience[+scopes]. `status` ({uri, idx}, registrar-allocated)
+/// makes this single grant revocable.
+async function signWarrant(config, agentEmail, audience, scopes, status) {
   const now = Math.floor(Date.now() / 1000);
   const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
   const claims = {
-    typ: 'browserid-agent-warrant-v1',
-    iss: id.email,
-    agent: agentEmail,
-    aud: audience,
-    'parent-cert': id.cert,
+    typ: 'browserid-warrant-v1',
     iat: now,
     exp: now + 90 * 24 * 3600,
+    identifier: agentEmail,
+    subject: 'agent',
+    audience: audience,
   };
   if (scopes && scopes.length) claims.scopes = scopes;
   if (status) claims.status = status;
   const payload = b64urlJson(claims);
-  const sig = await window.Keystore.sign(id.privateKey, `${header}.${payload}`);
+  const sig = await window.Keystore.sign(config.privateKey, `${header}.${payload}`);
   return `${header}.${payload}.${sig}`;
 }
 
@@ -297,26 +188,27 @@ async function resolve(r, approve) {
   const card = document.getElementById(`req-${r.code}`);
   for (const b of card.querySelectorAll('button')) b.disabled = true;
   try {
-    let warrants = null;
+    let warrants = null, configCert = null;
     if (approve) {
       status.className = 'row-status muted';
       status.textContent = 'Signing warrants…';
-      const id = await freshIdentity(r.delegator_email);
-      if (!id) throw new Error(
-        `the identity key for ${r.delegator_email} is not available in this browser — ` +
+      const config = await localConfig(r.delegator_email, r.agent_email);
+      if (!config) throw new Error(
+        `no config key for ${r.delegator_email} in this browser — ` +
         `sign in to an app with that identity here first, then retry`);
+      configCert = config.cert;
       // The broker records each approved warrant in the account's registry
       // (jipx) — reviewable later on /account, from any browser.
       warrants = [];
       for (const g of (r.grants || [])) {
         const status = (g.status_idx != null && statusUri)
           ? { uri: statusUri, idx: g.status_idx } : null;
-        warrants.push(await signWarrant(id, r.agent_email, g.audience, g.scopes, status));
+        warrants.push(await signWarrant(config, r.agent_email, g.audience, g.scopes, status));
       }
     }
     await api('/wsapi/warrant_respond', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ csrf, code: r.code, approve, warrants }),
+      body: JSON.stringify({ csrf, code: r.code, approve, warrants, config_cert: configCert }),
     });
     status.className = approve ? 'row-status ok' : 'row-status muted';
     status.textContent = approve
@@ -352,10 +244,6 @@ async function resolve(r, approve) {
 }
 
 async function boot() {
-  // Returning from same-tab provisioning (mingo-ytrs)? Validate + deposit the
-  // handle cert first, then render normally — Approve is enabled but NOT
-  // auto-approved; the user still taps it.
-  try { await consumePendingProvision(); } catch (e) { console.warn('provision return:', e); }
   let ctx;
   try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
   if (!ctx.authenticated) {

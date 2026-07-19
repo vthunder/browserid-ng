@@ -329,15 +329,23 @@ where
         }
     };
     let ttl = Duration::days(DEVICE_CERT_VALIDITY_DAYS);
-    let issue = |pubkey: &PublicKey, purpose: Purpose, status: browserid_core::StatusRef| {
+    // The config (authorization) cert also covers the email's `+tag`
+    // sub-addresses, so it can sign warrants for the user's plus-named agent
+    // identities (design doc Stage 3 — e.g. `dan+claude@example.com`). The
+    // authentication cert stays exact: only the user's own login.
+    let config_identities = match email.split_once('@') {
+        Some((local, domain)) => vec![email.clone(), format!("{local}+*@{domain}")],
+        None => vec![email.clone()],
+    };
+    let issue = |pubkey: &PublicKey, purpose: Purpose, identities: Vec<String>, status: browserid_core::StatusRef| {
         DeviceCert::create(
             &state.domain, pubkey, purpose, Subject::User,
-            vec![email.clone()], ttl, &state.keypair, Some(status),
+            identities, ttl, &state.keypair, Some(status),
         )
     };
     let (device_cert, config_cert) = match (
-        issue(&device_pub, Purpose::Authentication, device_ref.clone()),
-        issue(&config_pub, Purpose::Authorization, config_ref.clone()),
+        issue(&device_pub, Purpose::Authentication, vec![email.clone()], device_ref.clone()),
+        issue(&config_pub, Purpose::Authorization, config_identities, config_ref.clone()),
     ) {
         (Ok(d), Ok(c)) => (d, c),
         (Err(e), _) | (_, Err(e)) => {

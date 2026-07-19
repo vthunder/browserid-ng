@@ -112,9 +112,15 @@ where
         &state.domain, &device_pub, Purpose::Authentication, Subject::User,
         vec![email.clone()], ttl, &state.keypair, Some(device_ref.clone()),
     ).map_err(ce)?;
+    // The config cert also covers `+tag` sub-addresses so it can sign
+    // warrants for the user's plus-named agent identities (design doc §3).
+    let config_identities = match email.split_once('@') {
+        Some((local, domain)) => vec![email.clone(), format!("{local}+*@{domain}")],
+        None => vec![email.clone()],
+    };
     let config_cert = DeviceCert::create(
         &state.domain, &config_pub, Purpose::Authorization, Subject::User,
-        vec![email.clone()], ttl, &state.keypair, Some(config_ref.clone()),
+        config_identities, ttl, &state.keypair, Some(config_ref.clone()),
     ).map_err(ce)?;
 
     // Durable registry rows (upsert on pubkey) so the certs are enumerable and

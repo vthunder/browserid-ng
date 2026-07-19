@@ -104,6 +104,8 @@ fn to_reg_warrant(w: crate::store::WarrantRecord) -> reg::WarrantRecord {
         scopes: w.scopes,
         warrant: w.warrant,
         status_idx: w.status_idx,
+        subject: w.subject,
+        config_cert: w.config_cert,
         signed_at: w.signed_at,
         expires_at: w.expires_at,
     }
@@ -119,10 +121,8 @@ fn from_reg_warrant(w: reg::WarrantRecord) -> crate::store::WarrantRecord {
         scopes: w.scopes,
         warrant: w.warrant,
         status_idx: w.status_idx,
-        // The registrar's WarrantRecord doesn't carry the device-cert-model
-        // fields; legacy/registrar-sourced warrants have neither.
-        subject: None,
-        config_cert: None,
+        subject: w.subject,
+        config_cert: w.config_cert,
         signed_at: w.signed_at,
         expires_at: w.expires_at,
     }

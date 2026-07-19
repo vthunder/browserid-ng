@@ -129,6 +129,11 @@ pub struct WarrantRecord {
     pub warrant: String,
     /// The warrant's status index (from its `status` claim), when it has one
     pub status_idx: Option<u64>,
+    /// Device-cert-model subject axis ("user" | "agent")
+    pub subject: Option<String>,
+    /// The config (authorization) device cert JWS that signed this warrant —
+    /// presented alongside it in the 4-object bundle
+    pub config_cert: Option<String>,
     pub signed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }

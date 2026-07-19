@@ -1,12 +1,15 @@
-//! Warrant consent flow (agent spec §6, v0.4) + warrant registry (jipx) +
+//! Warrant consent flow (device-cert model) + warrant registry (jipx) +
 //! signed revocation status list (core §6.4). Unbundled from the broker per
 //! 1pnf — this is the registrar's consent surface API.
 //!
 //! Warrants are requested, not configured: an agent that hits an RP's
-//! `WWW-Authenticate` challenge raises a **consent request** here (its
-//! registrar), the delegator approves on the consent page — which signs the
-//! warrant client-side with the identity key held in this origin — and the
-//! agent polls the result (RFC 8628 shape).
+//! `WWW-Authenticate` challenge raises a **consent request** here
+//! (`POST /warrant/request`, authenticated by its IdP-signed agent device
+//! cert), the delegator approves on the consent page — which signs each
+//! warrant client-side with the **config (authorization) device cert** held
+//! in this origin's keystore — and the agent polls the result
+//! (`POST /warrant/poll`, RFC 8628 shape), receiving `warrant~config_cert`
+//! pairs it presents inside the 4-object access presentation.
 //!
 //! The pending request (the poll code) is single-delivery and deleted on
 //! handover; the issued warrants are retained in the per-delegator warrant
@@ -18,16 +21,35 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::Json;
 use base64::Engine;
-use browserid_core::{StatusList, StatusListToken, Warrant};
-use chrono::{DateTime, Utc};
+use browserid_core::device::{DeviceCert, Purpose, Subject, Warrant};
+use browserid_core::{StatusList, StatusListToken};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use tower_cookies::Cookies;
 
 use crate::error::RegistrarError;
 use crate::host::require_csrf;
-use crate::models::{WarrantGrantItem, WarrantRecord};
+use crate::models::{WarrantGrantItem, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus};
 use crate::registry::{require_enabled, require_session};
 use crate::RegistrarState;
+
+/// How long a pending consent request lives before it expires.
+const REQUEST_TTL_MINUTES: i64 = 15;
+/// Minimum seconds between polls on one code.
+const POLL_INTERVAL_SECONDS: i64 = 5;
+
+/// The delegator (account identity) behind an agent identity: the local part
+/// with any `+tag` sub-address stripped. `danmills+claude@sandmill.org` →
+/// `danmills@sandmill.org`; a bare identity maps to itself.
+pub fn delegator_of(identity: &str) -> String {
+    match identity.split_once('@') {
+        Some((local, domain)) => {
+            let base = local.split('+').next().unwrap_or(local);
+            format!("{base}@{domain}")
+        }
+        None => identity.to_string(),
+    }
+}
 
 /// The registrar's published status list URI (core §6.4)
 pub fn status_list_uri(domain: &str) -> String {
@@ -142,9 +164,13 @@ pub struct RespondBody {
     pub csrf: String,
     pub code: String,
     pub approve: bool,
-    /// The warrant JWSs the consent page signed client-side, one per grant
-    /// in the request's grant order (approve only)
+    /// The warrant JWSs the consent page signed client-side with the config
+    /// key, one per grant in the request's grant order (approve only)
     pub warrants: Option<Vec<String>>,
+    /// The config (authorization) device cert whose key signed the warrants
+    /// (approve only) — stored + delivered with them; the agent presents it
+    /// as the 4th object of the access presentation
+    pub config_cert: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -153,10 +179,11 @@ pub struct RespondResponse {
 }
 
 /// POST /wsapi/warrant_respond — resolve a pending request. On approve, the
-/// page has already signed the warrant with the identity key held in this
-/// origin; the registrar validates it against the pending request (right
-/// agent, right audience, right delegator — no swapped-in grants) and stores
-/// it for the single pickup.
+/// page has already signed each warrant with the config (authorization)
+/// device key held in this origin's keystore; the registrar validates them
+/// against the pending request (right agent identity, right audience, signed
+/// by the presented config cert — no swapped-in grants) and stores
+/// `warrant~config_cert` pairs for the single pickup.
 pub async fn respond(
     State(state): State<Arc<RegistrarState>>,
     cookies: Cookies,
@@ -186,6 +213,9 @@ pub async fn respond(
     let warrant_jwss = req.warrants.as_deref().ok_or_else(|| {
         RegistrarError::ValidationError("approve requires the signed warrants".into())
     })?;
+    let config_jws = req.config_cert.as_deref().ok_or_else(|| {
+        RegistrarError::ValidationError("approve requires the signing config cert".into())
+    })?;
     if warrant_jwss.len() != rec.grants.len() {
         return Err(RegistrarError::ValidationError(format!(
             "expected {} warrants (one per grant), got {}",
@@ -193,31 +223,64 @@ pub async fn respond(
             warrant_jwss.len()
         )));
     }
+    let config_cert = DeviceCert::parse(config_jws)
+        .map_err(|e| RegistrarError::ValidationError(format!("bad config cert: {e}")))?;
+    if config_cert.purpose() != Purpose::Authorization {
+        return Err(RegistrarError::ValidationError(
+            "signing cert is not an authorization (config) cert".into(),
+        ));
+    }
+    if config_cert.is_expired() {
+        return Err(RegistrarError::ValidationError("config cert expired".into()));
+    }
+    if !config_cert.authorizes_identity(&rec.agent_email) {
+        return Err(RegistrarError::ValidationError(
+            "config cert does not authorize the requested agent identity".into(),
+        ));
+    }
     let mut records = Vec::with_capacity(warrant_jwss.len());
     for (jws, grant) in warrant_jwss.iter().zip(&rec.grants) {
         let warrant = Warrant::parse(jws)
             .map_err(|e| RegistrarError::ValidationError(format!("bad warrant: {e}")))?;
-        if warrant.audience() != grant.audience {
+        warrant
+            .verify(config_cert.public_key())
+            .map_err(|_| RegistrarError::ValidationError(
+                "warrant is not signed by the presented config cert".into(),
+            ))?;
+        let claims = warrant.claims();
+        if claims.audience != grant.audience {
             return Err(RegistrarError::ValidationError(
                 "warrant audience does not match its grant".into(),
             ));
         }
-        if warrant.agent() != rec.agent_email {
+        if claims.identifier != rec.agent_email {
             return Err(RegistrarError::ValidationError(
-                "warrant agent does not match the request".into(),
+                "warrant identifier does not match the requested agent".into(),
             ));
         }
-        if !warrant.delegator().eq_ignore_ascii_case(&rec.delegator_email) {
+        if claims.subject != Subject::Agent {
             return Err(RegistrarError::ValidationError(
-                "warrant delegator does not match the request".into(),
+                "warrant subject must be 'agent'".into(),
             ));
         }
-        records.push(warrant_to_record(user.user_id, &warrant, jws));
+        records.push(warrant_to_record(
+            user.user_id,
+            &rec.delegator_email,
+            &warrant,
+            jws,
+            config_jws,
+        ));
     }
 
+    // Single-delivery payload: each entry is `warrant~config_cert`, the exact
+    // tail the agent splices into its access presentations.
+    let delivery: Vec<String> = warrant_jwss
+        .iter()
+        .map(|w| format!("{w}~{config_jws}"))
+        .collect();
     state
         .store
-        .respond_warrant_request(user.user_id, &req.code, Some(warrant_jwss))?;
+        .respond_warrant_request(user.user_id, &req.code, Some(&delivery))?;
     // Registry (jipx): the delegator's own reviewable record of each grant.
     for record in records {
         state.store.upsert_warrant(record)?;
@@ -231,18 +294,32 @@ pub async fn respond(
 // Warrant registry (jipx): the delegator's own record of issued warrants
 // ===========================================================================
 
-fn warrant_to_record(user_id: u64, warrant: &Warrant, jws: &str) -> WarrantRecord {
+fn warrant_to_record(
+    user_id: u64,
+    delegator_email: &str,
+    warrant: &Warrant,
+    jws: &str,
+    config_cert: &str,
+) -> WarrantRecord {
     let claims = warrant.claims();
     let ts = |secs: i64| DateTime::from_timestamp(secs, 0).unwrap_or_else(Utc::now);
     WarrantRecord {
         id: 0, // assigned by the store
         user_id,
-        delegator_email: warrant.delegator().to_string(),
-        agent_email: warrant.agent().to_string(),
-        audience: warrant.audience().to_string(),
-        scopes: claims.scopes.clone().unwrap_or_default(),
+        delegator_email: delegator_email.to_string(),
+        agent_email: claims.identifier.clone(),
+        audience: claims.audience.clone(),
+        scopes: claims.scopes.clone(),
         warrant: jws.to_string(),
-        status_idx: warrant.status().map(|s| s.idx),
+        status_idx: claims.status.as_ref().map(|s| s.idx),
+        subject: Some(
+            match claims.subject {
+                Subject::User => "user",
+                Subject::Agent => "agent",
+            }
+            .to_string(),
+        ),
+        config_cert: Some(config_cert.to_string()),
         signed_at: ts(claims.iat),
         expires_at: ts(claims.exp),
     }
@@ -261,6 +338,12 @@ pub struct WarrantInfo {
     pub status_idx: Option<u64>,
     /// Whether this warrant's status bit is set (revoked, egr7)
     pub revoked: bool,
+    /// "user" | "agent" (the warrant's subject axis)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// The config cert that signed this warrant (4th object of a presentation)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_cert: Option<String>,
     pub signed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -296,6 +379,8 @@ pub async fn list_warrants(
                 warrant: r.warrant,
                 status_idx: r.status_idx,
                 revoked,
+                subject: r.subject,
+                config_cert: r.config_cert,
                 signed_at: r.signed_at,
                 expires_at: r.expires_at,
             }
@@ -307,13 +392,17 @@ pub async fn list_warrants(
 #[derive(Deserialize)]
 pub struct RegisterWarrantBody {
     pub csrf: String,
-    /// A warrant JWS signed client-side (manual card / reissue)
+    /// A warrant JWS signed client-side (manual card / reissue / login sync)
     pub warrant: String,
+    /// The config (authorization) device cert whose key signed it
+    pub config_cert: String,
 }
 
 /// POST /wsapi/register_warrant — record a warrant signed outside the
-/// consent flow (manual signing, reissue). The delegator must be a verified
-/// email on this account; the JWS itself is the user-signed authorization.
+/// consent flow (manual signing, reissue, or the login dialog syncing a
+/// warrant for device-agnostic reuse). The warrant's delegator — its
+/// identifier with any `+tag` stripped — must be a verified email on this
+/// account, and the warrant must verify against the presented config cert.
 pub async fn register_warrant(
     State(state): State<Arc<RegistrarState>>,
     cookies: Cookies,
@@ -324,17 +413,37 @@ pub async fn register_warrant(
     require_csrf(&user, &req.csrf)?;
     let warrant = Warrant::parse(&req.warrant)
         .map_err(|e| RegistrarError::ValidationError(format!("bad warrant: {e}")))?;
-    if !state
-        .host
-        .owns_verified_email(user.user_id, warrant.delegator())?
-    {
+    let config_cert = DeviceCert::parse(&req.config_cert)
+        .map_err(|e| RegistrarError::ValidationError(format!("bad config cert: {e}")))?;
+    if config_cert.purpose() != Purpose::Authorization {
+        return Err(RegistrarError::ValidationError(
+            "signing cert is not an authorization (config) cert".into(),
+        ));
+    }
+    warrant
+        .verify(config_cert.public_key())
+        .map_err(|_| RegistrarError::ValidationError(
+            "warrant is not signed by the presented config cert".into(),
+        ))?;
+    let identifier = &warrant.claims().identifier;
+    if !config_cert.authorizes_identity(identifier) {
+        return Err(RegistrarError::ValidationError(
+            "config cert does not authorize the warrant's identifier".into(),
+        ));
+    }
+    let delegator = delegator_of(identifier);
+    if !state.host.owns_verified_email(user.user_id, &delegator)? {
         return Err(RegistrarError::ValidationError(
             "the warrant's delegator is not a verified email on this account".into(),
         ));
     }
-    state
-        .store
-        .upsert_warrant(warrant_to_record(user.user_id, &warrant, &req.warrant))?;
+    state.store.upsert_warrant(warrant_to_record(
+        user.user_id,
+        &delegator,
+        &warrant,
+        &req.warrant,
+        &req.config_cert,
+    ))?;
     Ok(Json(RespondResponse { success: true }))
 }
 
@@ -438,6 +547,248 @@ pub async fn revoke_warrant(
     tracing::info!(delegator = %record.delegator_email, audience = %record.audience,
         "warrant revoked (status bit set)");
     Ok(Json(RespondResponse { success: true }))
+}
+
+// ===========================================================================
+// Agent-facing: raise + poll a consent request (device-cert model)
+// ===========================================================================
+
+fn new_poll_code() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 24];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+#[derive(Deserialize)]
+pub struct WarrantRequestGrant {
+    pub audience: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct WarrantRequestBody {
+    /// The agent's IdP-signed AUTHENTICATION device cert (subject `agent`) —
+    /// the credential that raises the request
+    pub device_cert: String,
+    /// Which agent identity (∈ the cert's identities) the warrants are for
+    pub identity: String,
+    /// The grants being asked for — one warrant per audience
+    pub grants: Vec<WarrantRequestGrant>,
+    /// Display label shown on the consent page
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct WarrantRequestResponse {
+    pub success: bool,
+    /// The poll credential (single delivery)
+    pub code: String,
+    pub verification_uri: String,
+    pub verification_uri_complete: String,
+    pub expires_in: i64,
+    pub interval: i64,
+}
+
+fn bad(msg: impl Into<String>) -> RegistrarError {
+    RegistrarError::ValidationError(msg.into())
+}
+
+/// POST /warrant/request — an agent raises a consent request, authenticated
+/// by its IdP-signed agent device cert. The delegator is derived from the
+/// agent identity (`+tag` stripped) and must be a verified email on a local
+/// account; the request then appears on that account's consent page.
+pub async fn warrant_request(
+    State(state): State<Arc<RegistrarState>>,
+    Json(req): Json<WarrantRequestBody>,
+) -> Result<Json<WarrantRequestResponse>, RegistrarError> {
+    require_enabled(&state)?;
+
+    let device_cert = DeviceCert::parse(&req.device_cert)
+        .map_err(|e| bad(format!("bad device cert: {e}")))?;
+    // Must be OUR issuance: this registrar is the agent's IdP.
+    device_cert
+        .verify(&state.keypair.public_key())
+        .map_err(|_| bad("device cert not issued by this registrar's IdP"))?;
+    if device_cert.iss() != state.domain {
+        return Err(bad("device cert not issued by this registrar's IdP"));
+    }
+    if device_cert.is_expired() {
+        return Err(bad("device cert expired"));
+    }
+    if device_cert.purpose() != Purpose::Authentication {
+        return Err(bad("device cert must be an authentication cert"));
+    }
+    if device_cert.subject() != Subject::Agent {
+        return Err(bad("device cert subject must be 'agent'"));
+    }
+    let identity = req.identity.trim().to_lowercase();
+    if !device_cert.authorizes_identity(&identity) {
+        return Err(bad("device cert does not authorize this identity"));
+    }
+    // Revoked agents can't raise requests (their status bit is flipped).
+    if let Some(status) = &device_cert.claims().status {
+        if status.uri == status_list_uri(&state.domain)
+            && state.store.is_status_revoked_idx(status.idx)?
+        {
+            return Err(bad("device cert revoked"));
+        }
+    }
+    if req.grants.is_empty() || req.grants.len() > 10 {
+        return Err(bad("between 1 and 10 grants per request"));
+    }
+    for g in &req.grants {
+        if g.audience.is_empty()
+            || g.audience.contains('*')
+            || g.audience.len() > 512
+            || g.audience.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Err(bad("bad audience"));
+        }
+        if g.scopes.len() > 32 || g.scopes.iter().any(|s| s.len() > 128) {
+            return Err(bad("bad scopes"));
+        }
+    }
+
+    // Route to the delegator's account: the identity with `+tag` stripped
+    // must be a verified email on a local account. (Bare agent names on a
+    // primary domain need a reverse name-registry lookup — not wired yet.)
+    let delegator = delegator_of(&identity);
+    let user_id = state
+        .host
+        .user_for_verified_email(&delegator)?
+        .ok_or_else(|| bad("no local account for this identity's delegator"))?;
+
+    // One warrant per grant; each gets its stable status index up front so
+    // the consent page embeds it in what it signs.
+    let grants: Vec<WarrantGrantItem> = req
+        .grants
+        .iter()
+        .map(|g| {
+            let idx = state.store.get_or_allocate_status(
+                "warrant",
+                &warrant_status_subject(user_id, &identity, &g.audience, &g.scopes),
+            )?;
+            Ok(WarrantGrantItem {
+                audience: g.audience.clone(),
+                scopes: g.scopes.clone(),
+                status_idx: Some(idx),
+            })
+        })
+        .collect::<Result<_, RegistrarError>>()?;
+
+    let code = new_poll_code();
+    let now = Utc::now();
+    state.store.create_warrant_request(WarrantRequestRecord {
+        code: code.clone(),
+        user_id,
+        delegator_email: delegator.clone(),
+        agent_email: identity.clone(),
+        label: req.label.unwrap_or_else(|| identity.clone()),
+        grants,
+        status: WarrantRequestStatus::Pending,
+        warrants: None,
+        external: false,
+        created_at: now,
+        expires_at: now + Duration::minutes(REQUEST_TTL_MINUTES),
+        last_polled_at: None,
+    })?;
+    state.store.cleanup_expired_warrant_requests().ok();
+
+    let origin = public_origin(&state.domain);
+    tracing::info!(agent = %identity, delegator = %delegator, "warrant request raised");
+    Ok(Json(WarrantRequestResponse {
+        success: true,
+        code: code.clone(),
+        verification_uri: format!("{origin}/consent"),
+        verification_uri_complete: format!("{origin}/consent/{code}"),
+        expires_in: REQUEST_TTL_MINUTES * 60,
+        interval: POLL_INTERVAL_SECONDS,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct WarrantPollBody {
+    pub code: String,
+}
+
+#[derive(Serialize)]
+pub struct WarrantPollGrant {
+    pub audience: String,
+    /// `warrant~config_cert` — splice `~{this}` after your access cert +
+    /// assertion to form the 4-object presentation
+    pub warrant: String,
+}
+
+#[derive(Serialize)]
+pub struct WarrantPollResponse {
+    pub success: bool,
+    /// "pending" | "approved" | "denied"
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grants: Option<Vec<WarrantPollGrant>>,
+}
+
+/// POST /warrant/poll — RFC-8628-shaped poll on a consent request. Single
+/// delivery: an approved request is deleted on pickup.
+pub async fn warrant_poll(
+    State(state): State<Arc<RegistrarState>>,
+    Json(req): Json<WarrantPollBody>,
+) -> Result<Json<WarrantPollResponse>, RegistrarError> {
+    require_enabled(&state)?;
+    let rec = state
+        .store
+        .get_warrant_request(&req.code)?
+        .ok_or(RegistrarError::WarrantRequestNotFound)?;
+    if rec.is_expired() {
+        state.store.delete_warrant_request(&req.code).ok();
+        return Err(RegistrarError::WarrantRequestNotFound);
+    }
+    match rec.status {
+        WarrantRequestStatus::Pending => {
+            // Slow-down: enforce the advertised interval while still pending.
+            // A resolved request delivers immediately regardless.
+            if let Some(last) = state.store.touch_warrant_poll(&req.code)? {
+                if Utc::now() - last < Duration::seconds(POLL_INTERVAL_SECONDS) {
+                    return Err(bad("slow_down: poll at most every 5 seconds"));
+                }
+            }
+            Ok(Json(WarrantPollResponse {
+                success: true,
+                status: "pending".into(),
+                grants: None,
+            }))
+        }
+        WarrantRequestStatus::Denied => {
+            state.store.delete_warrant_request(&req.code).ok();
+            Ok(Json(WarrantPollResponse {
+                success: true,
+                status: "denied".into(),
+                grants: None,
+            }))
+        }
+        WarrantRequestStatus::Approved => {
+            let warrants = rec.warrants.clone().unwrap_or_default();
+            let grants = rec
+                .grants
+                .iter()
+                .zip(warrants)
+                .map(|(g, w)| WarrantPollGrant {
+                    audience: g.audience.clone(),
+                    warrant: w,
+                })
+                .collect();
+            // Single delivery.
+            state.store.delete_warrant_request(&req.code)?;
+            Ok(Json(WarrantPollResponse {
+                success: true,
+                status: "approved".into(),
+                grants: Some(grants),
+            }))
+        }
+    }
 }
 
 /// GET /.well-known/browserid-status — the registrar's signed status list
