@@ -12,7 +12,7 @@ pub mod device;
 pub mod discovery;
 pub mod dns;
 pub mod error;
-pub mod provisioning;
+pub mod jws;
 pub mod rp_auth;
 pub mod status;
 pub mod warrant;
@@ -27,11 +27,6 @@ pub use device::{
 };
 pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;
-pub use provisioning::{
-    Action, Constraint, Endorsement, ExternalWarrantRequest, ProvisioningCert,
-    ProvisioningRequest, RequestBundle, VerifiedExternalRequest, VerifiedRequest, WarrantGrant,
-    MAX_WARRANT_GRANTS,
-};
 pub use rp_auth::{RpChallenge, TokenRequest, TokenResponse};
 pub use status::{StatusList, StatusListToken, StatusRef, TYP_STATUS_LIST};
 pub use warrant::{Warrant, TYP_AGENT_WARRANT, WARRANT_VALIDITY_DAYS};

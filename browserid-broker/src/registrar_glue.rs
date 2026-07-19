@@ -20,26 +20,11 @@ use crate::store::{EmailType, SessionStore, UserId, UserStore};
 
 fn to_reg_err(e: BrokerError) -> RegistrarError {
     match e {
-        BrokerError::ProvisioningCertNotFound => RegistrarError::ProvisioningCertNotFound,
         BrokerError::WarrantRequestNotFound => RegistrarError::WarrantRequestNotFound,
         BrokerError::DeviceCertNotFound => RegistrarError::DeviceCertNotFound,
         BrokerError::NotAuthenticated => RegistrarError::NotAuthenticated,
         BrokerError::ValidationError(m) => RegistrarError::ValidationError(m),
         other => RegistrarError::Internal(other.to_string()),
-    }
-}
-
-fn to_reg_cert(c: crate::store::ProvisioningCertRecord) -> reg::ProvisioningCertRecord {
-    reg::ProvisioningCertRecord {
-        id: c.id,
-        user_id: c.user_id.0,
-        delegator_email: c.delegator_email,
-        provisioning_pub: c.provisioning_pub,
-        bundle: c.bundle,
-        label: c.label,
-        created_at: c.created_at,
-        last_endorsed_at: c.last_endorsed_at,
-        revoked_at: c.revoked_at,
     }
 }
 
@@ -181,58 +166,6 @@ pub struct BrokerRegistrarStore<U> {
 }
 
 impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
-    fn register_provisioning_cert(
-        &self,
-        user_id: u64,
-        delegator_email: &str,
-        provisioning_pub: &str,
-        bundle: &str,
-        label: &str,
-    ) -> Result<reg::ProvisioningCertRecord, RegistrarError> {
-        UserStore::register_provisioning_cert(
-            self.user_store.as_ref(),
-            UserId(user_id),
-            delegator_email,
-            provisioning_pub,
-            bundle,
-            label,
-        )
-        .map(to_reg_cert)
-        .map_err(to_reg_err)
-    }
-
-    fn get_provisioning_cert_by_pub(
-        &self,
-        provisioning_pub: &str,
-    ) -> Result<Option<reg::ProvisioningCertRecord>, RegistrarError> {
-        UserStore::get_provisioning_cert_by_pub(self.user_store.as_ref(), provisioning_pub)
-            .map(|o| o.map(to_reg_cert))
-            .map_err(to_reg_err)
-    }
-
-    fn list_provisioning_certs(
-        &self,
-        user_id: u64,
-    ) -> Result<Vec<reg::ProvisioningCertRecord>, RegistrarError> {
-        UserStore::list_provisioning_certs(self.user_store.as_ref(), UserId(user_id))
-            .map(|v| v.into_iter().map(to_reg_cert).collect())
-            .map_err(to_reg_err)
-    }
-
-    fn count_active_provisioning_certs(&self, user_id: u64) -> Result<usize, RegistrarError> {
-        UserStore::count_active_provisioning_certs(self.user_store.as_ref(), UserId(user_id))
-            .map_err(to_reg_err)
-    }
-
-    fn revoke_provisioning_cert(&self, user_id: u64, cert_id: u64) -> Result<(), RegistrarError> {
-        UserStore::revoke_provisioning_cert(self.user_store.as_ref(), UserId(user_id), cert_id)
-            .map_err(to_reg_err)
-    }
-
-    fn touch_provisioning_cert(&self, cert_id: u64) -> Result<(), RegistrarError> {
-        UserStore::touch_provisioning_cert(self.user_store.as_ref(), cert_id).map_err(to_reg_err)
-    }
-
     fn create_warrant_request(&self, req: reg::WarrantRequestRecord) -> Result<(), RegistrarError> {
         UserStore::create_warrant_request(self.user_store.as_ref(), from_reg_request(req))
             .map_err(to_reg_err)

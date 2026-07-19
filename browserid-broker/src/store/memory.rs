@@ -8,7 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    DeviceCertRecord, Email, EmailType, PendingVerification, ProvisioningCertRecord, Session, SessionId, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
+    DeviceCertRecord, Email, EmailType, PendingVerification, Session, SessionId, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, User, UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
@@ -18,7 +18,6 @@ pub struct InMemoryUserStore {
     users: RwLock<HashMap<UserId, User>>,
     emails: RwLock<HashMap<String, Email>>,
     pending: RwLock<HashMap<String, PendingVerification>>,
-    prov_certs: RwLock<HashMap<u64, ProvisioningCertRecord>>,
     warrant_requests: RwLock<HashMap<String, WarrantRequestRecord>>,
     warrant_records: RwLock<HashMap<u64, WarrantRecord>>,
     next_warrant_id: AtomicU64,
@@ -26,7 +25,6 @@ pub struct InMemoryUserStore {
     status_entries: RwLock<HashMap<(String, String), (u64, bool)>>,
     next_status_idx: AtomicU64,
     next_user_id: AtomicU64,
-    next_prov_cert_id: AtomicU64,
     device_certs: RwLock<HashMap<u64, DeviceCertRecord>>,
     next_device_cert_id: AtomicU64,
 }
@@ -37,14 +35,12 @@ impl InMemoryUserStore {
             users: RwLock::new(HashMap::new()),
             emails: RwLock::new(HashMap::new()),
             pending: RwLock::new(HashMap::new()),
-            prov_certs: RwLock::new(HashMap::new()),
             warrant_requests: RwLock::new(HashMap::new()),
             warrant_records: RwLock::new(HashMap::new()),
             next_warrant_id: AtomicU64::new(1),
             status_entries: RwLock::new(HashMap::new()),
             next_status_idx: AtomicU64::new(1),
             next_user_id: AtomicU64::new(1),
-            next_prov_cert_id: AtomicU64::new(1),
             device_certs: RwLock::new(HashMap::new()),
             next_device_cert_id: AtomicU64::new(1),
         }
@@ -310,80 +306,6 @@ impl UserStore for InMemoryUserStore {
                 Ok(())
             }
             None => Err(BrokerError::EmailNotFound),
-        }
-    }
-
-    fn register_provisioning_cert(
-        &self,
-        user_id: UserId,
-        delegator_email: &str,
-        provisioning_pub: &str,
-        bundle: &str,
-        label: &str,
-    ) -> StoreResult<ProvisioningCertRecord> {
-        let rec = ProvisioningCertRecord {
-            id: self.next_prov_cert_id.fetch_add(1, Ordering::SeqCst),
-            user_id,
-            delegator_email: delegator_email.to_lowercase(),
-            provisioning_pub: provisioning_pub.to_string(),
-            bundle: bundle.to_string(),
-            label: label.to_string(),
-            created_at: Utc::now(),
-            last_endorsed_at: None,
-            revoked_at: None,
-        };
-        self.prov_certs.write().unwrap().insert(rec.id, rec.clone());
-        Ok(rec)
-    }
-
-    fn get_provisioning_cert_by_pub(
-        &self,
-        provisioning_pub: &str,
-    ) -> StoreResult<Option<ProvisioningCertRecord>> {
-        let certs = self.prov_certs.read().unwrap();
-        Ok(certs
-            .values()
-            .find(|c| c.provisioning_pub == provisioning_pub)
-            .cloned())
-    }
-
-    fn list_provisioning_certs(&self, user_id: UserId) -> StoreResult<Vec<ProvisioningCertRecord>> {
-        let certs = self.prov_certs.read().unwrap();
-        let mut result: Vec<ProvisioningCertRecord> =
-            certs.values().filter(|c| c.user_id == user_id).cloned().collect();
-        result.sort_by_key(|c| c.id);
-        Ok(result)
-    }
-
-    fn count_active_provisioning_certs(&self, user_id: UserId) -> StoreResult<usize> {
-        let certs = self.prov_certs.read().unwrap();
-        Ok(certs
-            .values()
-            .filter(|c| c.user_id == user_id && c.is_active())
-            .count())
-    }
-
-    fn revoke_provisioning_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
-        let mut certs = self.prov_certs.write().unwrap();
-        match certs.get_mut(&cert_id) {
-            Some(c) if c.user_id == user_id => {
-                if c.revoked_at.is_none() {
-                    c.revoked_at = Some(Utc::now());
-                }
-                Ok(())
-            }
-            _ => Err(BrokerError::ProvisioningCertNotFound),
-        }
-    }
-
-    fn touch_provisioning_cert(&self, cert_id: u64) -> StoreResult<()> {
-        let mut certs = self.prov_certs.write().unwrap();
-        match certs.get_mut(&cert_id) {
-            Some(c) => {
-                c.last_endorsed_at = Some(Utc::now());
-                Ok(())
-            }
-            None => Err(BrokerError::ProvisioningCertNotFound),
         }
     }
 

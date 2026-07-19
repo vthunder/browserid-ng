@@ -27,7 +27,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-use crate::provisioning::{jws_decode, jws_sign, jws_verify};
+use crate::jws::{jws_decode, jws_sign, jws_verify};
 use crate::{Error, KeyPair, PublicKey, Result};
 
 /// Claim-level `typ` of a status list token
