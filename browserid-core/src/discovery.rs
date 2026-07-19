@@ -33,6 +33,26 @@ pub struct SupportDocument {
     /// Delegation to another domain
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authority: Option<String>,
+
+    // --- Device-cert conformance (docs/design/browserid-end-to-end-flow.md) ---
+    /// Path to the batch device-cert issuance API (session/interactive-authed):
+    /// issues the user (authentication) + config (authorization) device certs.
+    #[serde(rename = "device-cert", skip_serializing_if = "Option::is_none")]
+    pub device_cert: Option<String>,
+
+    /// Path to the headless access-cert mint API (the device cert is the
+    /// credential — this is what lets agents mint with no browser).
+    #[serde(rename = "access-cert", skip_serializing_if = "Option::is_none")]
+    pub access_cert: Option<String>,
+
+    /// Path to the browser-facing device-authorization page. The login dialog
+    /// opens it in a popup with `#email=…&device_pubkey=…&config_pubkey=…&
+    /// return_origin=…`; the page authenticates the user first-party, calls the
+    /// domain's own device-cert API for those pubkeys, and posts
+    /// `{type:'browserid:device_certs', device_cert, config_cert}` back to
+    /// `window.opener` (targetOrigin = return_origin), then closes.
+    #[serde(rename = "device-authorization", skip_serializing_if = "Option::is_none")]
+    pub device_authorization: Option<String>,
 }
 
 impl SupportDocument {
@@ -43,6 +63,9 @@ impl SupportDocument {
             authentication: None,
             provisioning: None,
             authority: None,
+            device_cert: None,
+            access_cert: None,
+            device_authorization: None,
         }
     }
 
@@ -58,6 +81,24 @@ impl SupportDocument {
         self
     }
 
+    /// Set the device-cert issuance API path
+    pub fn with_device_cert(mut self, path: impl Into<String>) -> Self {
+        self.device_cert = Some(path.into());
+        self
+    }
+
+    /// Set the headless access-cert mint API path
+    pub fn with_access_cert(mut self, path: impl Into<String>) -> Self {
+        self.access_cert = Some(path.into());
+        self
+    }
+
+    /// Set the browser-facing device-authorization page path
+    pub fn with_device_authorization(mut self, path: impl Into<String>) -> Self {
+        self.device_authorization = Some(path.into());
+        self
+    }
+
     /// Create a delegation document
     pub fn delegate(authority: impl Into<String>) -> Self {
         Self {
@@ -65,6 +106,9 @@ impl SupportDocument {
             authentication: None,
             provisioning: None,
             authority: Some(authority.into()),
+            device_cert: None,
+            access_cert: None,
+            device_authorization: None,
         }
     }
 

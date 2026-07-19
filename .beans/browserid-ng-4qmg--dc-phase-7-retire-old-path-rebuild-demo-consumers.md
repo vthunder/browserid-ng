@@ -1,11 +1,11 @@
 ---
 # browserid-ng-4qmg
 title: DC Phase 7 — Retire old path, rebuild demo, consumers
-status: todo
+status: completed
 type: task
 priority: normal
 created_at: 2026-07-18T19:40:58Z
-updated_at: 2026-07-18T19:41:27Z
+updated_at: 2026-07-19T09:36:26Z
 parent: browserid-ng-oup3
 blocked_by:
     - browserid-ng-umme

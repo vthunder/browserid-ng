@@ -23,6 +23,11 @@
   // IdP minting the cert, and consume it when the IdP redirects back.
   var PENDING = "pending";
   var PENDING_KEY = "current";
+  // Device-cert model records (v3): the durable device (authentication) and
+  // config (authorization) keys + their IdP-signed certs, per (issuer, email).
+  // Record: { issuer, email, kind: 'device'|'config', publicKeyX,
+  //           privateKey (non-extractable CryptoKey), cert }
+  var DEVICE = "device";
   var enc = new TextEncoder();
 
   function b64url(buf) {
@@ -33,12 +38,13 @@
 
   function openDb() {
     return new Promise(function (res, rej) {
-      // v2 adds the `pending` staging store (mingo-ytrs). onupgradeneeded runs for
-      // fresh DBs and for existing v1 DBs; create whatever's missing either way.
-      var req = indexedDB.open(DB, 2);
+      // v3 adds the `device` store (device-cert model). onupgradeneeded runs for
+      // fresh DBs and for older DBs; create whatever's missing either way.
+      var req = indexedDB.open(DB, 3);
       req.onupgradeneeded = function () {
         if (!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE);
         if (!req.result.objectStoreNames.contains(PENDING)) req.result.createObjectStore(PENDING);
+        if (!req.result.objectStoreNames.contains(DEVICE)) req.result.createObjectStore(DEVICE);
       };
       req.onsuccess = function () { res(req.result); };
       req.onerror = function () { rej(req.error); };
@@ -141,6 +147,39 @@
     });
   }
 
+  // --- Device-cert model records (device-cert login) -----------------------
+  function deviceKey(issuer, email, kind) {
+    return issuer + "\n" + email.toLowerCase() + "\n" + kind;
+  }
+  // rec: { publicKeyX, privateKey, cert }
+  function putDevice(issuer, email, kind, rec) {
+    return txOn(DEVICE, "readwrite", function (store) {
+      store.put({ issuer: issuer, email: email.toLowerCase(), kind: kind,
+                  publicKeyX: rec.publicKeyX, privateKey: rec.privateKey, cert: rec.cert },
+                deviceKey(issuer, email, kind));
+    });
+  }
+  function getDevice(issuer, email, kind) {
+    return txOn(DEVICE, "readonly", function (store) { return store.get(deviceKey(issuer, email, kind)); })
+      .then(function (r) { return r || null; });
+  }
+  function delDevice(issuer, email, kind) {
+    return txOn(DEVICE, "readwrite", function (store) { store.delete(deviceKey(issuer, email, kind)); });
+  }
+  // Every device-store record (across issuers/emails/kinds).
+  function allDevice() {
+    return txOn(DEVICE, "readonly", function (store) {
+      var acc = [];
+      store.openCursor().onsuccess = function (e) {
+        var c = e.target.result;
+        if (!c) return;
+        acc.push(c.value);
+        c.continue();
+      };
+      return { get result() { return acc; } };
+    });
+  }
+
   // --- Same-tab provisioning staging (mingo-ytrs) --------------------------
   // A single in-flight handshake at a time. `rec` carries the non-extractable
   // privateKey (CryptoKey) plus the metadata needed to validate the returned
@@ -159,6 +198,7 @@
   window.Keystore = {
     generate: generate, sign: sign, put: put, get: get, del: del,
     forEmail: forEmail, all: all, migrateFromLocalStorage: migrateFromLocalStorage,
-    putPending: putPending, getPending: getPending, clearPending: clearPending
+    putPending: putPending, getPending: getPending, clearPending: clearPending,
+    putDevice: putDevice, getDevice: getDevice, delDevice: delDevice, allDevice: allDevice
   };
 })();

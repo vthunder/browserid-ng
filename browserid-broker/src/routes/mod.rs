@@ -137,14 +137,13 @@ where
         // The agent guestbook demo (a public RP only agents can sign).
         .route("/guestbook", get(guestbook::page).post(guestbook::sign))
         .route("/guestbook/feed", get(guestbook::feed))
-        // Fallback-IdP surface (apgv): the broker implements the primary-IdP
-        // interface (auth+provision pages driven by the dialog) with SMTP auth,
-        // so it can vouch for emails whose domain it doesn't own for any RP
-        // that lists it in acceptedFallbacks.
+        // Fallback-IdP surface (apgv, device-cert model): SMTP-verified email
+        // control gates batch device-cert issuance, so the broker can vouch
+        // for emails whose domain runs no primary IdP.
         .route("/auth/send", post(fallback_idp::auth_send))
         .route("/auth/verify", post(fallback_idp::auth_verify))
         .route("/whoami", get(fallback_idp::whoami))
-        .route("/cert_key", post(fallback_idp::cert_key))
+        .route("/auth/device_cert", post(fallback_idp::device_cert))
         // Compatibility routes for include.js
         .route("/sign_in", get(sign_in_return))
         .nest_service("/relay", ServeDir::new(format!("{}/relay", static_path)))

@@ -22,7 +22,11 @@ where
 {
     let doc = SupportDocument::new(state.keypair.public_key())
         .with_authentication("/auth")
-        .with_provisioning("/provision");
+        .with_provisioning("/provision")
+        // Device-cert conformance: browser device issuance rides the fallback
+        // SMTP surface; the mint is headless (device cert = the credential).
+        .with_device_cert("/auth/device_cert")
+        .with_access_cert("/access/mint");
 
     Json(doc)
 }

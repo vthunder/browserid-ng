@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: normal
 created_at: 2026-07-17T22:08:36Z
-updated_at: 2026-07-18T22:53:13Z
+updated_at: 2026-07-19T09:36:26Z
 ---
 
 Reframe human login as provisioning the browser's stable non-extractable key as an agent. Interactive bootstrap (top-level first-party, reusing mingo-ytrs consent.html handshake) yields a provisioning credential (U_cert~P_cert delegation to the browser key, ~90d, client-held). Cert issuance + refresh = cookie-free signature-authed POST to the SAME /provision/mint endpoint agents use (login-mode vs agent-mode a single param). Replaces the ITP-dead hidden-iframe+postMessage silent refresh. Chosen from a 3-way PoC spike (A=popup/same-tab, B=redirect, C=minimal-iframe-relies); A/B share the architecture, C rejected (entangles at URL but keeps cookie-auth => zero ITP fix). Guardrails: login is an explicit consented capability (typed login:bool + distinct consent); 'logout everywhere' = revoke provisioning cert. Spike A branch: worktree-agent-a050bf44400d2fe0d. This epic = produce a very thorough migration plan across spec, implementation, README, website, and consumer apps (sbo, mingo).
@@ -49,3 +49,8 @@ DONE+MERGED: P1 core+vectors, P2 issuance/mint, P5 client/demo, P6 verifier, P3 
 IN FLIGHT: P7 headless agent SDK (worktree), P8 device-cert management UI (worktree).
 REMAINING: consumer migration (mingo full IdP+web+CLI+poster, sbo verifier), cleanup phase (retire legacy chain, gated 3b8m). All additive so consumers still compile until cleanup.
 No regressions: core 68, broker lib 41, verifier 18 (incl fail-closed status), registrar 8.
+
+## Cleanup done (2026-07-19) — delegation chain retired
+Pushed to origin (0efbd1c) + deploying. Removed: provisioning.rs delegation types (jws helpers extracted to jws.rs first), /provision/* routes, provisioning-cert registry + endorse, legacy AgentCredential/AgentIdentity SDK, migrate_v13 DROP provisioning_certs+api_keys. Device model + browser warrant consent kept. Full workspace build + tests GREEN (delegation tests + the consent_flow flake removed with the chain).
+DONE: entire device-cert migration P0-P10 built, tested, pushed, deployed (browserid.me + sandmill.org). Live device-cert login verified.
+REMAINING (follow-ups): (1) finish consumer migration mingo/sbo onto the device model + bump their pin to 0efbd1c (partial WIP in those repos); (2) hidden-iframe deletion gated by SBO-signing relocation 3b8m; (3) account.html legacy Agents-create card removal (tracked, degrades gracefully); (4) a device-shaped /warrant/request path (browser consent respond/registry/status kept, but the agent-facing request entry was removed with the chain).

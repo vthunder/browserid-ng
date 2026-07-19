@@ -1,25 +1,34 @@
-//! Fallback-IdP surface (apgv): SMTP /auth establishes an email cookie that
-//! gates /cert_key, which issues a short cert (iss = this broker's domain) for
-//! an email whose domain the broker doesn't own.
+//! Fallback-IdP surface (apgv, device-cert model): SMTP /auth establishes an
+//! email cookie that gates /auth/device_cert, which batch-issues the user
+//! (authentication) + config (authorization) device certs (iss = this broker)
+//! for an email whose domain the broker doesn't own. Those certs then drive
+//! the standard mint → presentation path.
 
 mod common;
 
-use browserid_core::{Certificate, KeyPair};
+use browserid_core::device::{
+    AccessPresentation, AccessRequest, DeviceCert, Purpose, Subject, Warrant,
+};
+use browserid_core::{Assertion, KeyPair, PublicKey};
+use chrono::Duration;
 use common::create_test_server;
 use serde_json::{json, Value};
 
 #[tokio::test]
-async fn smtp_auth_then_cert_key_issues_a_cert() {
+async fn smtp_auth_then_device_cert_issues_the_pair() {
     let (server, email_sender) = create_test_server();
     let email = "someone@gmail.com"; // a domain this broker does NOT own
-    let user_kp = KeyPair::generate();
+    let device_kp = KeyPair::generate();
+    let config_kp = KeyPair::generate();
+    let issue_body = json!({
+        "email": email,
+        "device_pubkey": device_kp.public_key().to_base64(),
+        "config_pubkey": config_kp.public_key().to_base64(),
+    });
 
-    // 1. Provision without a session → 401 (dialog would drop to /auth).
-    let r = server
-        .post("/cert_key")
-        .json(&json!({ "email": email, "pubkey": { "algorithm": "Ed25519", "publicKey": user_kp.public_key().to_base64() } }))
-        .await;
-    assert_eq!(r.status_code(), 401, "no session yet: {:?}", r.text());
+    // 1. Issuance without the email cookie → 401 (dialog drops to SMTP).
+    let r = server.post("/auth/device_cert").json(&issue_body).await;
+    assert_eq!(r.status_code(), 401, "no cookie yet: {:?}", r.text());
 
     // 2. SMTP challenge.
     let r = server.post("/auth/send").json(&json!({ "email": email })).await;
@@ -40,26 +49,77 @@ async fn smtp_auth_then_cert_key_issues_a_cert() {
     assert_eq!(who["authenticated"], true);
     assert_eq!(who["email"], email);
 
-    // 6. cert_key now issues a cert bound to the email, iss = broker domain.
-    let r = server
-        .post("/cert_key")
-        .add_cookie(cookie.clone())
-        .json(&json!({ "email": email, "pubkey": { "algorithm": "Ed25519", "publicKey": user_kp.public_key().to_base64() } }))
-        .await;
+    // 6. Device-cert issuance now succeeds: user + config certs, iss = broker.
+    let r = server.post("/auth/device_cert").add_cookie(cookie.clone()).json(&issue_body).await;
     assert_eq!(r.status_code(), 200, "{:?}", r.text());
     let body: Value = r.json();
-    let cert = Certificate::parse(body["cert"].as_str().unwrap()).unwrap();
-    assert_eq!(cert.email(), Some(email));
-    assert_eq!(cert.issuer(), "localhost:3000"); // the test broker's domain
-    assert!(!cert.is_agent());
+    let device_cert = DeviceCert::parse(body["device_cert"].as_str().unwrap()).unwrap();
+    let config_cert = DeviceCert::parse(body["config_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(device_cert.iss(), "localhost:3000");
+    assert_eq!(config_cert.iss(), "localhost:3000");
+    assert_eq!(device_cert.purpose(), Purpose::Authentication);
+    assert_eq!(config_cert.purpose(), Purpose::Authorization);
+    assert_eq!(device_cert.subject(), Subject::User);
+    assert!(device_cert.authorizes_identity(email));
+    assert!(config_cert.authorizes_identity(email));
+    // Per-device status refs, distinct per key.
+    assert!(device_cert.claims().status.is_some());
+    assert!(config_cert.claims().status.is_some());
+    assert_ne!(device_cert.claims().status, config_cert.claims().status);
 
-    // 7. The cookie only authorizes its own email — not a different one.
+    // 7. The cookie only authorizes its own email.
     let r = server
-        .post("/cert_key")
-        .add_cookie(cookie)
-        .json(&json!({ "email": "other@gmail.com", "pubkey": { "algorithm": "Ed25519", "publicKey": user_kp.public_key().to_base64() } }))
+        .post("/auth/device_cert")
+        .add_cookie(cookie.clone())
+        .json(&json!({
+            "email": "other@gmail.com",
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": config_kp.public_key().to_base64(),
+        }))
         .await;
     assert_eq!(r.status_code(), 401, "cookie must not vouch for a different email");
+
+    // 8. The full login path: mint an access cert with the device key, sign a
+    //    warrant with the config key + an assertion with the access key, and
+    //    verify the 4-object presentation against the broker's key.
+    let audience = "https://rp.example.com";
+    let access_kp = KeyPair::generate();
+    let areq = AccessRequest::create(
+        "localhost:3000", email, Subject::User, &access_kp.public_key(), "jti-fb-1", &device_kp,
+    )
+    .unwrap();
+    let r = server
+        .post("/access/mint")
+        .json(&json!({ "device_cert": body["device_cert"], "access_request": areq.encoded() }))
+        .await;
+    assert_eq!(r.status_code(), 200, "mint: {:?}", r.text());
+    let minted: Value = r.json();
+    let access_cert = minted["access_cert"].as_str().unwrap();
+
+    let warrant = Warrant::create(
+        email, Subject::User, audience, vec!["login".into()], Duration::days(90), &config_kp, None,
+    )
+    .unwrap();
+    let assertion = Assertion::create(audience, Duration::minutes(5), &access_kp).unwrap();
+    let presentation = format!(
+        "{}~{}~{}~{}",
+        access_cert,
+        assertion.encoded(),
+        warrant.encoded(),
+        body["config_cert"].as_str().unwrap()
+    );
+
+    // The broker's public key, as an RP would discover it.
+    let wk: Value = server.get("/.well-known/browserid").await.json();
+    let broker_key = PublicKey::from_base64(wk["public-key"]["publicKey"].as_str().unwrap()).unwrap();
+
+    let verified = AccessPresentation::parse(&presentation)
+        .unwrap()
+        .verify(audience, |_iss| Ok(broker_key.clone()))
+        .expect("full fallback-issued presentation verifies");
+    assert_eq!(verified.email, email);
+    assert_eq!(verified.subject, Subject::User);
+    assert_eq!(verified.scopes, vec!["login".to_string()]);
 }
 
 #[tokio::test]

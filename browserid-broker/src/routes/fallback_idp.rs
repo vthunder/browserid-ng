@@ -1,19 +1,17 @@
-//! Fallback IdP surface (apgv): the broker implements the **primary-IdP
-//! interface** (a `.well-known` `authentication`/`provisioning` pair driven by
-//! the dialog via `navigator.id.*`), with the only difference from a real
-//! primary being that it vouches for emails whose domain it does **not** own —
-//! gated by an SMTP challenge instead of DNS authority.
+//! Fallback IdP surface (apgv, device-cert model): browserid.me vouches for
+//! emails whose domain runs no primary IdP — gated by an SMTP challenge
+//! instead of DNS authority.
 //!
-//! Flow, mirroring a primary:
-//! - `/provision` (page) runs in the dialog: `beginProvisioning` → `genKeyPair`
-//!   (the dialog holds the private key) → `POST /cert_key {email, pubkey}` →
-//!   `registerCertificate`. `/cert_key` is gated on a **medium-lived email
-//!   cookie** proving control of `email`; absent it, it 401s and the dialog
-//!   drops to interactive `/auth`.
-//! - `/auth` (page) emails a one-time code; on `POST /auth/verify` we set the
-//!   email cookie (reference: 30 days). Certs stay short (24h) and the dialog
-//!   silently re-provisions against the cookie until it expires — then the
-//!   SMTP dance runs again. No long-lived certs needed.
+//! Flow (driven by the same-origin login dialog):
+//! - `POST /auth/send {email}` emails a one-time code; `POST /auth/verify
+//!   {email, code}` sets a **medium-lived email cookie** (30 days) proving
+//!   control of `email`.
+//! - `POST /auth/device_cert {email, device_pubkey, config_pubkey}` — gated on
+//!   that cookie — batch-issues the two **device certs** for this browser:
+//!   a **user** cert (`authentication`, mints access certs at `/access/mint`)
+//!   and a **config** cert (`authorization`, signs warrants). iss = this
+//!   broker's domain. Until the cookie expires the dialog can silently
+//!   re-issue; then the SMTP dance runs again.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -22,9 +20,10 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 use base64::Engine;
-use browserid_core::{Certificate, PublicKey};
+use browserid_core::device::{DeviceCert, Purpose, Subject, DEVICE_CERT_VALIDITY_DAYS};
+use browserid_core::PublicKey;
 use chrono::{DateTime, Duration, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 use tower_cookies::cookie::SameSite;
@@ -32,7 +31,7 @@ use tower_cookies::{Cookie, Cookies};
 
 use crate::email::EmailSender;
 use crate::state::AppState;
-use crate::store::{SessionStore, UserStore};
+use crate::store::{DeviceCertRecord, SessionStore, UserStore};
 
 /// Cookie proving this browser controls a verified email (SMTP-established).
 const EMAIL_COOKIE: &str = "fb_email";
@@ -40,9 +39,6 @@ const EMAIL_COOKIE: &str = "fb_email";
 const EMAIL_COOKIE_DAYS: i64 = 30;
 /// A one-time auth code is valid this long.
 const CODE_TTL_MINUTES: i64 = 15;
-/// Issued fallback certs are short — the dialog silently refreshes them
-/// against the cookie (matching a primary's 24h certs).
-const CERT_HOURS: i64 = 24;
 
 /// email -> (code, expiry). In-memory: codes are short-lived and this is a
 /// single-instance fallback; a restart just re-sends.
@@ -159,11 +155,6 @@ pub struct AuthSendRequest {
     pub email: String,
 }
 
-#[derive(Serialize)]
-pub struct OkResponse {
-    pub success: bool,
-}
-
 pub async fn auth_send<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     Json(req): Json<AuthSendRequest>,
@@ -242,16 +233,16 @@ where
         return (StatusCode::UNAUTHORIZED, Json(json!({"success": false, "reason": "wrong or expired code"})));
     }
 
-    // SameSite=None (+ Secure): the provision page fetches /cert_key from a
-    // THIRD-PARTY iframe inside the mediator's dialog, so a Lax cookie would be
-    // withheld. (Where the browser blocks third-party cookies entirely, silent
-    // provisioning falls back to the top-level /auth flow.)
+    // SameSite=Lax: the login dialog is SAME-ORIGIN with this fallback surface
+    // (it drives /auth/send → /auth/verify → /auth/device_cert directly), so
+    // the old cross-origin-iframe None is no longer needed — and None without
+    // Secure is rejected outright by modern browsers on http dev hosts.
     let secure = crate::routes::session::cookie_secure(&state.domain);
     let cookie = Cookie::build((EMAIL_COOKIE, issue_email_token(state.as_ref(), &email)))
         .path("/")
         .http_only(true)
         .secure(secure)
-        .same_site(SameSite::None)
+        .same_site(SameSite::Lax)
         .max_age(tower_cookies::cookie::time::Duration::days(EMAIL_COOKIE_DAYS))
         .build();
     cookies.add(cookie);
@@ -276,25 +267,22 @@ where
     }
 }
 
-// --- POST /cert_key { email, pubkey } (primary-style, cookie-gated) ---------
+// --- POST /auth/device_cert { email, device_pubkey, config_pubkey } ---------
+// Cookie-gated batch issuance of the two device certs (device-cert model).
 
 #[derive(Deserialize)]
-pub struct FbCertKeyRequest {
+pub struct FbDeviceCertRequest {
     pub email: String,
-    pub pubkey: PubkeyJson,
+    /// base64url Ed25519 public key of the (non-extractable) device key.
+    pub device_pubkey: String,
+    /// base64url Ed25519 public key of the (non-extractable) config key.
+    pub config_pubkey: String,
 }
 
-#[derive(Deserialize)]
-pub struct PubkeyJson {
-    pub algorithm: String,
-    #[serde(rename = "publicKey")]
-    pub public_key: String,
-}
-
-pub async fn cert_key<U, S, E>(
+pub async fn device_cert<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
-    Json(req): Json<FbCertKeyRequest>,
+    Json(req): Json<FbDeviceCertRequest>,
 ) -> (StatusCode, Json<serde_json::Value>)
 where
     U: UserStore,
@@ -315,25 +303,81 @@ where
             )
         }
     }
-    if req.pubkey.algorithm != "Ed25519" {
-        return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "reason": "unsupported algorithm"})));
-    }
-    let pubkey = match PublicKey::from_base64(&req.pubkey.public_key) {
-        Ok(k) => k,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "reason": format!("bad pubkey: {e}")}))),
+    let parse_pub = |s: &str| PublicKey::from_base64(s);
+    let (device_pub, config_pub) = match (parse_pub(&req.device_pubkey), parse_pub(&req.config_pubkey)) {
+        (Ok(d), Ok(c)) => (d, c),
+        (Err(e), _) | (_, Err(e)) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "reason": format!("bad pubkey: {e}")})))
+        }
     };
-    // Issue a short-lived cert with iss = this fallback's domain, principal =
-    // the SMTP-verified email (a domain we don't own).
-    let cert = match Certificate::create(
-        &state.domain,
-        &email,
-        &pubkey,
-        Duration::hours(CERT_HOURS),
-        &state.keypair,
+    // Per-device status refs so each cert is individually revocable (revoking a
+    // device kills the access certs minted from it — B3).
+    let status_for = |pubkey: &PublicKey| -> Result<browserid_core::StatusRef, String> {
+        let idx = state
+            .user_store
+            .get_or_allocate_status("device", &pubkey.to_base64())
+            .map_err(|e| e.to_string())?;
+        Ok(browserid_core::StatusRef {
+            uri: browserid_registrar::consent::status_list_uri(&state.domain),
+            idx,
+        })
+    };
+    let (device_ref, config_ref) = match (status_for(&device_pub), status_for(&config_pub)) {
+        (Ok(d), Ok(c)) => (d, c),
+        (Err(e), _) | (_, Err(e)) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"success": false, "reason": format!("status: {e}")})))
+        }
+    };
+    let ttl = Duration::days(DEVICE_CERT_VALIDITY_DAYS);
+    let issue = |pubkey: &PublicKey, purpose: Purpose, status: browserid_core::StatusRef| {
+        DeviceCert::create(
+            &state.domain, pubkey, purpose, Subject::User,
+            vec![email.clone()], ttl, &state.keypair, Some(status),
+        )
+    };
+    let (device_cert, config_cert) = match (
+        issue(&device_pub, Purpose::Authentication, device_ref.clone()),
+        issue(&config_pub, Purpose::Authorization, config_ref.clone()),
     ) {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"success": false, "reason": format!("cert: {e}")}))),
+        (Ok(d), Ok(c)) => (d, c),
+        (Err(e), _) | (_, Err(e)) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"success": false, "reason": format!("cert: {e}")})))
+        }
     };
-    tracing::info!(email = %email, "fallback IdP: issued cert");
-    (StatusCode::OK, Json(json!({"success": true, "cert": cert.encoded()})))
+
+    // If a broker account owns this (verified) email, persist registry rows so
+    // the certs are enumerable + revocable from the account UI. A cookie-only
+    // fallback identity with no account still gets working certs (the status
+    // refs above exist regardless); there is just no UI listing them yet.
+    if let Ok(Some(user)) = state.user_store.get_user_by_email(&email) {
+        let now = Utc::now();
+        for (pubkey, purpose, status_idx) in [
+            (&req.device_pubkey, "authentication", device_ref.idx),
+            (&req.config_pubkey, "authorization", config_ref.idx),
+        ] {
+            let _ = state.user_store.insert_device_cert(DeviceCertRecord {
+                id: 0,
+                user_id: user.id,
+                identities: vec![email.clone()],
+                purpose: purpose.to_string(),
+                subject: "user".to_string(),
+                pubkey: pubkey.clone(),
+                iss: state.domain.clone(),
+                issued_at: now,
+                expires_at: now + ttl,
+                revoked_at: None,
+                status_idx: Some(status_idx),
+            });
+        }
+    }
+
+    tracing::info!(email = %email, "fallback IdP: issued device + config certs");
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "device_cert": device_cert.encoded(),
+            "config_cert": config_cert.encoded(),
+        })),
+    )
 }

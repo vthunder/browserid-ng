@@ -368,6 +368,13 @@ pub struct AddressInfoResponse {
     /// Provisioning URL (primary IdP only)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prov: Option<String>,
+    /// Device-authorization page URL (primary IdP, device-cert model): the
+    /// dialog opens this in a popup to obtain the user+config device certs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_auth: Option<String>,
+    /// Headless access-cert mint URL (primary IdP, device-cert model).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_mint: Option<String>,
 }
 
 /// Determine state based on password_known, last_used_as, current_type
@@ -422,11 +429,16 @@ where
     let mock_idp = state.get_mock_primary_idp(domain).await;
 
     // Determine type and URLs based on mock or DNS discovery
+    let mut device_auth = None;
+    let mut access_mint = None;
     let (addr_type, current_type, auth, prov, issuer) = if let Some(mock) = mock_idp {
         // Mock primary IdP configured for testing
         tracing::debug!("Using mock primary IdP for domain: {}", domain);
         let auth_url = Some(format!("{}{}", mock.base_url, mock.auth_path));
         let prov_url = Some(format!("{}{}", mock.base_url, mock.prov_path));
+        // Device-model endpoints follow the same base (tests may serve them).
+        device_auth = Some(format!("{}/device-authorize", mock.base_url));
+        access_mint = Some(format!("{}/access/mint", mock.base_url));
         (
             "primary",
             EmailType::Primary,
@@ -461,6 +473,17 @@ where
                 let prov_url = result
                     .document
                     .provisioning
+                    .as_ref()
+                    .map(|path| format!("https://{}{}", domain, path));
+                // Device-cert model endpoints from the discovery document.
+                device_auth = result
+                    .document
+                    .device_authorization
+                    .as_ref()
+                    .map(|path| format!("https://{}{}", domain, path));
+                access_mint = result
+                    .document
+                    .access_cert
                     .as_ref()
                     .map(|path| format!("https://{}{}", domain, path));
                 (
@@ -500,6 +523,8 @@ where
         normalized_email: normalized,
         auth,
         prov,
+        device_auth,
+        access_mint,
     }))
 }
 

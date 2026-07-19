@@ -17,12 +17,13 @@
 </head>
 <body>
   <h1>Broker Demo RP</h1>
-  <p class="muted">This relying party trusts <strong>browserid.me</strong> as its fallback IdP (the default). Signing in with a no-primary email uses browserid.me's own account flow → a browserid.me-issued cert. Contrast with the fallback demo, which trusts only fallback.sandmill.org.</p>
-    <code>fallback.sandmill.org</code> as a fallback IdP — <em>not</em> browserid.me.
-    It passes <code>acceptedFallbacks: ["fallback.sandmill.org"]</code>, so signing
-    in with any email (no primary) routes through that fallback's SMTP verification,
-    and the assertion is verified against its DNSSEC key. browserid.me is only the
-    mediator + a stateless verification service.</p>
+  <p class="muted">A relying party on the <strong>device-cert model</strong>.
+    Sign in opens the browserid dialog, which routes your email to its identity
+    provider (your domain's own IdP, or browserid.me's SMTP fallback for
+    no-primary domains), obtains device certs, mints a fresh-key access cert,
+    and returns the 4-object presentation
+    <code>access_cert~assertion~warrant~config_cert</code>. This page then
+    verifies it via <code>POST /verify-access</code>.</p>
 
   <p><button id="login">Sign in</button></p>
   <h3>Result</h3>
@@ -30,27 +31,21 @@
 
   <script src="/include.js"></script>
   <script>
-    var ACCEPTED = null; // default → {browserid.me}
     var out = document.getElementById('out');
     function show(o) { out.textContent = typeof o === 'string' ? o : JSON.stringify(o, null, 2); }
 
-    navigator.id.watch({
-      loggedInUser: null,
-      onlogin: function (assertion) {
-        show('Got assertion — verifying (default: browserid.me)…');
-        fetch('/verify', {
+    document.getElementById('login').onclick = function () {
+      show('Opening sign-in dialog…');
+      browserid.login().then(function (r) {
+        show('Got presentation for ' + r.email + ' — verifying…');
+        return fetch('/verify-access', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(ACCEPTED
-            ? { assertion: assertion, audience: window.location.origin, accepted_fallbacks: ACCEPTED }
-            : { assertion: assertion, audience: window.location.origin })
-        }).then(function (r) { return r.json(); }).then(show).catch(function (e) { show('verify error: ' + e); });
-      },
-      onlogout: function () {}
-    });
-
-    document.getElementById('login').onclick = function () {
-      navigator.id.request(ACCEPTED ? { siteName: 'Broker Demo RP', acceptedFallbacks: ACCEPTED } : { siteName: 'Broker Demo RP' });
+          body: JSON.stringify({ presentation: r.presentation, audience: window.location.origin })
+        }).then(function (resp) { return resp.json(); }).then(show);
+      }).catch(function (e) {
+        show(e.cancelled ? '(sign-in cancelled)' : 'error: ' + (e.message || e));
+      });
     };
   </script>
 </body>
