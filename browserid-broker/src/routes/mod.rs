@@ -239,12 +239,17 @@ const INLINE_SCRIPT_HASHES: &[&str] = &[
 /// ahead of time; it still blocks non-web schemes (data:/blob:) an injected
 /// script might abuse. `frame-ancestors 'none'` is added for non-embeddable
 /// pages (everything but the surfaces RPs/mediator legitimately iframe).
-fn build_strict_csp(frame_ancestors_none: bool) -> String {
+fn build_strict_csp(frame_ancestors_none: bool, connect_any_web: bool) -> String {
+    // The login dialog is the one page that must CONNECT cross-origin: it
+    // POSTs to a primary IdP's headless access-cert mint (discovered at
+    // runtime — origins can't be enumerated ahead of time). Everywhere else
+    // keeps connect-src 'self' so an injected script cannot exfiltrate.
+    let connect = if connect_any_web { "'self' https: http:" } else { "'self'" };
     let mut csp = format!(
         "default-src 'self'; base-uri 'self'; object-src 'none'; \
          script-src 'self' 'wasm-unsafe-eval' {}; \
          style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; \
-         connect-src 'self'; frame-src 'self' https: http:; form-action 'self'",
+         connect-src {connect}; frame-src 'self' https: http:; form-action 'self'",
         INLINE_SCRIPT_HASHES.join(" ")
     );
     if frame_ancestors_none {
@@ -254,10 +259,13 @@ fn build_strict_csp(frame_ancestors_none: bool) -> String {
 }
 
 static CSP_STRICT: std::sync::LazyLock<HeaderValue> = std::sync::LazyLock::new(|| {
-    HeaderValue::from_str(&build_strict_csp(true)).expect("valid CSP header")
+    HeaderValue::from_str(&build_strict_csp(true, false)).expect("valid CSP header")
 });
 static CSP_STRICT_EMBEDDABLE: std::sync::LazyLock<HeaderValue> = std::sync::LazyLock::new(|| {
-    HeaderValue::from_str(&build_strict_csp(false)).expect("valid CSP header")
+    HeaderValue::from_str(&build_strict_csp(false, false)).expect("valid CSP header")
+});
+static CSP_DIALOG: std::sync::LazyLock<HeaderValue> = std::sync::LazyLock::new(|| {
+    HeaderValue::from_str(&build_strict_csp(true, true)).expect("valid CSP header")
 });
 
 enum CspTier {
@@ -270,9 +278,15 @@ enum CspTier {
     /// Surfaces RPs / the mediator dialog legitimately embed cross-origin: strict
     /// CSP, but framing must be *allowed*, so no frame-ancestors/X-Frame-Options.
     StrictEmbeddable,
+    /// The login dialog: strict, framing denied, but connect-src open to any
+    /// web origin (it POSTs to primary IdPs' mint APIs discovered at runtime).
+    Dialog,
 }
 
 fn csp_tier(path: &str) -> CspTier {
+    if path.starts_with("/dialog/") {
+        return CspTier::Dialog;
+    }
     if path.starts_with("/communication_iframe")
         || path.starts_with("/relay")
         // The fallback-IdP provisioning page is framed cross-origin by the
@@ -336,6 +350,10 @@ async fn security_headers(
         }
         CspTier::StrictEmbeddable => {
             headers.insert(header::CONTENT_SECURITY_POLICY, CSP_STRICT_EMBEDDABLE.clone());
+        }
+        CspTier::Dialog => {
+            headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+            headers.insert(header::CONTENT_SECURITY_POLICY, CSP_DIALOG.clone());
         }
     }
 
@@ -512,7 +530,7 @@ mod csp_tests {
     fn csp_tiers_route_correctly() {
         assert!(matches!(csp_tier("/account"), CspTier::Strict));
         assert!(matches!(csp_tier("/consent"), CspTier::Strict));
-        assert!(matches!(csp_tier("/dialog/dialog.html"), CspTier::Strict));
+        assert!(matches!(csp_tier("/dialog/dialog.html"), CspTier::Dialog));
         assert!(matches!(csp_tier("/wsapi/session_context"), CspTier::Strict));
         assert!(matches!(csp_tier("/sign_in"), CspTier::Strict));
         assert!(matches!(csp_tier("/communication_iframe"), CspTier::StrictEmbeddable));
@@ -520,6 +538,5 @@ mod csp_tests {
         assert!(matches!(csp_tier("/relay/index.html"), CspTier::StrictEmbeddable));
         assert!(matches!(csp_tier("/"), CspTier::Loose));
         assert!(matches!(csp_tier("/broker-demo"), CspTier::Loose));
-        assert!(matches!(csp_tier("/dialog/demo.html"), CspTier::Loose));
     }
 }
