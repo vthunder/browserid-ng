@@ -228,7 +228,10 @@
         params: {
           params: {
             acceptedFallbacks: options.acceptedFallbacks || null,
-            email: options.email || null
+            // Sign in / provision a SPECIFIC identity (skips the chooser).
+            provisionEmail: options.provisionEmail || options.email || null,
+            // Request the SBO typed-signing capability (consent-gated).
+            sboSign: !!options.sboSign
           }
         }
       }, function (err, r) {

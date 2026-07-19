@@ -125,11 +125,11 @@
 
   // Purge everything from the CLASSIC protocol era: the old identity-cert
   // store, the same-tab provisioning staging area, and the legacy localStorage
-  // blobs. The device-cert model keeps only the `device` store. Idempotent —
-  // safe to call on every page boot.
+  // key blob. (`siteInfo` stays — it holds per-site login state + SBO signing
+  // grants, not certificates.) The device-cert model keeps only the `device`
+  // store. Idempotent — safe to call on every page boot.
   function purgeLegacy() {
     try { localStorage.removeItem("emails"); } catch (e) {}
-    try { localStorage.removeItem("siteInfo"); } catch (e) {}
     var clearStore = function (name) {
       return txOn(name, "readwrite", function (store) { store.clear(); }).catch(function () {});
     };

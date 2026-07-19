@@ -1,9 +1,9 @@
 <!DOCTYPE html>
 <!--
-  BrowserID-NG Login Dialog — device-cert model.
-  Mediates: email → discovery → IdP device-cert issuance (fallback SMTP or
-  primary popup) → access-cert mint → config-cert-signed warrant → returns the
-  4-object presentation (access_cert~assertion~warrant~config_cert) to the RP.
+  BrowserID-NG Dialog
+  Based on Mozilla Persona (MPL 2.0) — the original account-based login flow,
+  completing on the device-cert model (device/config cert issuance ->
+  access-cert mint -> config-signed warrant -> 4-object presentation).
 -->
 <html lang="en">
 <head>
@@ -27,8 +27,6 @@
       <div class="content">
         <h2>Sign in to <span class="rp-name"></span></h2>
 
-        <ul id="known-list" class="email-list" style="display:none"></ul>
-
         <form id="email-form">
           <div class="form-group">
             <label for="email">Email address</label>
@@ -49,49 +47,274 @@
       </div>
     </section>
 
-    <!-- Verification Code Screen (fallback IdP SMTP challenge) -->
-    <section id="code-screen" class="screen">
+    <!-- Password Entry Screen (for existing users) -->
+    <section id="password-screen" class="screen">
+      <div class="content">
+        <h2>Enter your password</h2>
+        <p class="email-display"></p>
+
+        <form id="password-form">
+          <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password"
+                   placeholder="Password"
+                   autocomplete="current-password"
+                   required>
+            <div class="error" id="password-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Sign In</button>
+            <button type="button" class="back">Back</button>
+          </div>
+
+          <p class="link-row">
+            <a href="#" id="forgot-password-link">Forgot your password?</a>
+          </p>
+        </form>
+      </div>
+    </section>
+
+    <!-- Create Account Screen (for new users) -->
+    <section id="create-screen" class="screen">
+      <div class="content">
+        <h2>Create your account</h2>
+        <p class="email-display"></p>
+
+        <form id="create-form">
+          <div class="form-group">
+            <label for="create-password">Password</label>
+            <input type="password" id="create-password" name="password"
+                   placeholder="Password (8+ characters)"
+                   autocomplete="new-password"
+                   minlength="8"
+                   maxlength="80"
+                   required>
+            <div class="hint">Must be 8-80 characters</div>
+            <div class="error" id="create-password-error"></div>
+          </div>
+
+          <div class="form-group">
+            <label for="confirm-password">Confirm Password</label>
+            <input type="password" id="confirm-password" name="confirm-password"
+                   placeholder="Confirm password"
+                   autocomplete="new-password"
+                   required>
+            <div class="error" id="confirm-password-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Create Account</button>
+            <button type="button" class="back">Back</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Verification Code Screen -->
+    <section id="verify-screen" class="screen">
       <div class="content">
         <h2>Check your email</h2>
-        <p>We sent a sign-in code to <span class="email-display"></span></p>
+        <p>We sent a verification code to <span class="email-display"></span></p>
 
-        <form id="code-form">
+        <form id="verify-form">
           <div class="form-group">
-            <label for="code">Sign-in code</label>
-            <input type="text" id="code" name="code"
+            <label for="verification-code">Verification Code</label>
+            <input type="text" id="verification-code" name="code"
                    placeholder="000000"
                    pattern="[0-9]{6}"
                    maxlength="6"
                    autocomplete="one-time-code"
                    inputmode="numeric"
                    required>
-            <div class="error" id="code-error"></div>
+            <div class="error" id="verify-error"></div>
           </div>
 
           <div class="button-row">
             <button type="submit" class="primary">Verify</button>
             <button type="button" class="back">Back</button>
           </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Password Reset - Enter Email Screen -->
+    <section id="reset-email-screen" class="screen">
+      <div class="content">
+        <h2>Reset your password</h2>
+        <p>Enter your email address and we'll send you a reset code.</p>
+
+        <form id="reset-email-form">
+          <div class="form-group">
+            <label for="reset-email">Email address</label>
+            <input type="email" id="reset-email" name="email"
+                   placeholder="you@example.com"
+                   autocomplete="email"
+                   required>
+            <div class="error" id="reset-email-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Send Reset Code</button>
+            <button type="button" class="back">Back</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Password Reset - Enter Code & New Password Screen -->
+    <section id="reset-password-screen" class="screen">
+      <div class="content">
+        <h2>Set your password</h2>
+        <p>We emailed you a 6-digit code to confirm it’s you. Enter it and choose a password.</p>
+
+        <form id="reset-password-form">
+          <div class="form-group">
+            <label for="reset-code">Reset Code</label>
+            <input type="text" id="reset-code" name="code"
+                   placeholder="000000"
+                   pattern="[0-9]{6}"
+                   maxlength="6"
+                   autocomplete="one-time-code"
+                   inputmode="numeric"
+                   required>
+            <div class="error" id="reset-code-error"></div>
+          </div>
+
+          <div class="form-group">
+            <label for="new-password">New Password</label>
+            <input type="password" id="new-password" name="password"
+                   placeholder="New password (8+ characters)"
+                   autocomplete="new-password"
+                   minlength="8"
+                   maxlength="80"
+                   required>
+            <div class="error" id="new-password-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Set Password</button>
+            <button type="button" class="back">Back</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Email Selection Screen (for signed-in users) -->
+    <section id="pick-email-screen" class="screen">
+      <div class="content">
+        <h2>Sign in to <span class="rp-name"></span></h2>
+
+        <form id="pick-email-form">
+          <ul id="email-list" class="email-list">
+            <!-- Email options will be populated by JS -->
+          </ul>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Sign In</button>
+            <button type="button" class="cancel">Cancel</button>
+          </div>
 
           <p class="link-row">
-            <a href="#" id="resend-code-link">Resend code</a>
+            <a href="#" id="add-email-link">Use a different email</a>
           </p>
         </form>
       </div>
     </section>
 
-    <!-- Primary-IdP continue screen: shown when the popup to the identity
-         provider was blocked (or on mobile) so the user can open it inside a
-         fresh tap gesture. -->
-    <section id="primary-continue-screen" class="screen">
+    <!-- Add Email Screen (for adding email to existing account) -->
+    <section id="add-email-screen" class="screen">
+      <div class="content">
+        <h2>Add a new email</h2>
+        <p>Add another email address to your account.</p>
+
+        <form id="add-email-form">
+          <div class="form-group">
+            <label for="new-email">Email address</label>
+            <input type="email" id="new-email" name="email"
+                   placeholder="you@example.com"
+                   autocomplete="email"
+                   autocapitalize="off"
+                   autocorrect="off"
+                   required>
+            <div class="error" id="add-email-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Add Email</button>
+            <button type="button" class="back-to-pick">Back</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Add Email Verification Screen -->
+    <section id="add-email-verify-screen" class="screen">
+      <div class="content">
+        <h2>Verify your email</h2>
+        <p>We sent a verification code to <span class="new-email-display"></span></p>
+
+        <form id="add-email-verify-form">
+          <div class="form-group">
+            <label for="add-email-code">Verification Code</label>
+            <input type="text" id="add-email-code" name="code"
+                   placeholder="000000"
+                   pattern="[0-9]{6}"
+                   maxlength="6"
+                   autocomplete="one-time-code"
+                   inputmode="numeric"
+                   required>
+            <div class="error" id="add-email-verify-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Verify</button>
+            <button type="button" class="back-to-pick">Back</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Primary Transition Screen (for secondary->primary transition) -->
+    <section id="primary-transition-screen" class="screen">
       <div class="content">
         <h2>Sign in with your email provider</h2>
-        <p><strong class="email-display"></strong> is managed by
-           <strong class="idp-name"></strong>. Tap continue to sign in there.</p>
+        <p>Your email <strong class="email-display"></strong> can now be verified directly by your email provider.</p>
+        <p>Click continue to sign in with <strong class="idp-name"></strong>.</p>
 
         <div class="button-row">
-          <button type="button" id="continue-primary" class="primary">Continue</button>
+          <button type="button" id="continue-to-primary" class="primary">Continue</button>
           <button type="button" class="cancel">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tap-to-continue for the primary-IdP device-authorization popup. Shown
+         when the browser blocks window.open (e.g. on mobile, past the original
+         tap). The button opens the popup inside its own fresh gesture. -->
+    <section id="primary-auth-continue-screen" class="screen">
+      <div class="content">
+        <h2>Sign in with your email provider</h2>
+        <p>Tap continue to open <strong class="idp-name"></strong> and sign in.</p>
+
+        <div class="button-row">
+          <button type="button" id="continue-primary-auth" class="primary">Continue</button>
+          <button type="button" class="cancel">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- SBO Signing Consent Screen (typed signing extension) -->
+    <section id="sbo-consent-screen" class="screen">
+      <div class="content">
+        <h2>Allow posting as you</h2>
+        <p><strong class="rp-name"></strong> wants to create and sign posts on the
+           SBO network as <strong class="email-display"></strong>.</p>
+        <p>You can revoke this anytime by signing out of this site.</p>
+
+        <div class="button-row">
+          <button type="button" id="sbo-consent-allow" class="primary">Allow</button>
+          <button type="button" id="sbo-consent-deny" class="secondary">Not now</button>
         </div>
       </div>
     </section>

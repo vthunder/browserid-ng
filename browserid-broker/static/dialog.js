@@ -1,39 +1,147 @@
 /*
- * BrowserID-NG Login Dialog — device-cert model.
- *
- * The cold-start mediator (design doc Stages 1–4):
- *   1. email → discovery (/wsapi/address_info: _browserid DNSSEC + .well-known)
- *   2. device-cert issuance at the identity's IdP:
- *        - no primary → this broker's fallback surface (SMTP code →
- *          /auth/device_cert), iss = this broker
- *        - primary   → popup to the IdP's device-authorization page, which
- *          issues certs for our (non-extractable) pubkeys first-party
- *      Both yield a USER device cert (authentication) + CONFIG cert
- *      (authorization), stored in the origin keystore (IndexedDB).
- *   3. access-cert mint: sign an access request with the device key, POST to
- *      the IdP's headless mint → short-lived fresh-key access cert.
- *   4. warrant (config-key-signed, over identity+subject→audience) + assertion
- *      (access-key-signed) → return the 4-object presentation
- *      `access_cert~assertion~warrant~config_cert` to the RP.
- *
- * The RP never sees the device cert; the IdP gates every mint online.
+ * BrowserID-NG Dialog Logic
+ * Based on Mozilla Persona (MPL 2.0) — the original account-based login flow
+ * (broker session, email chooser over ALL account identities, password /
+ * create-account / verify / reset screens), completing on the DEVICE-CERT
+ * model: the broker session issues a device+config cert pair (/device/issue),
+ * the device key mints a fresh access cert (/access/mint), the config key
+ * signs the login warrant, and the RP receives the 4-object presentation
+ * `access_cert~assertion~warrant~config_cert`. Primary-IdP identities get
+ * their pair from the IdP's device-authorization popup instead.
  */
 
-(function () {
+(function() {
   'use strict';
 
-  // --- state ----------------------------------------------------------------
+  // Set storageCheck bit so communication_iframe knows localStorage is accessible
+  try {
+    localStorage.storageCheck = "true";
+  } catch (e) {
+    // localStorage may not be available (iOS privacy mode, etc.)
+  }
 
-  const state = {
-    origin: null,            // RP origin = assertion/warrant audience
+  // State
+  let state = {
     email: null,
-    winchanCallback: null,
-    acceptedFallbacks: null, // RP's accepted fallback issuers (null = {this broker})
-    brokerDomain: location.hostname, // refined from /wsapi/session_context
-    pendingPrimary: null     // {email, addressInfo} while waiting for a tap-to-continue
+    origin: null,
+    callback: null,
+    winchanCallback: null,  // WinChan response callback
+    emails: [],
+    derived: {},  // subordinate identity -> controlling parent email (mingo-cm8z)
+    newEmail: null,  // Email being added to account
+    pendingAddressInfo: null,  // Stored addressInfo for transition flows
+    acceptedFallbacks: null,   // RP's accepted fallback IdPs (spec §8.1); null = default {this broker}
+    brokerDomain: null,        // this broker's own issuer domain (from session_context)
+    sboSign: false,  // RP requested the SBO typed-signing capability
+    pendingPresentation: null,  // presentation held while showing the SBO consent screen
+    provisionEmail: null,  // RP asked to provision/sign in a SPECIFIC identity (skip the chooser)
+    pendingPrimary: null   // {email, info, keys} while waiting on tap-to-continue
   };
 
-  // --- tiny JWS toolkit (Ed25519 via WebCrypto, non-extractable keys) -------
+  // API endpoints (relative to current origin)
+  const API = {
+    sessionContext: '/wsapi/session_context',
+    stageUser: '/wsapi/stage_user',
+    completeUserCreation: '/wsapi/complete_user_creation',
+    authenticate: '/wsapi/authenticate_user',
+    listEmails: '/wsapi/list_emails',
+    deviceIssue: '/device/issue',
+    accessMint: '/access/mint',
+    stageReset: '/wsapi/stage_reset',
+    completeReset: '/wsapi/complete_reset',
+    addressInfo: '/wsapi/address_info',
+    stageEmail: '/wsapi/stage_email',
+    completeEmailAddition: '/wsapi/complete_email_addition'
+  };
+
+  // DOM elements
+  const screens = {
+    loading: document.getElementById('loading'),
+    email: document.getElementById('email-screen'),
+    password: document.getElementById('password-screen'),
+    create: document.getElementById('create-screen'),
+    verify: document.getElementById('verify-screen'),
+    resetEmail: document.getElementById('reset-email-screen'),
+    resetPassword: document.getElementById('reset-password-screen'),
+    pickEmail: document.getElementById('pick-email-screen'),
+    addEmail: document.getElementById('add-email-screen'),
+    addEmailVerify: document.getElementById('add-email-verify-screen'),
+    primaryTransition: document.getElementById('primary-transition-screen'),
+    primaryAuthContinue: document.getElementById('primary-auth-continue-screen'),
+    sboConsent: document.getElementById('sbo-consent-screen'),
+    success: document.getElementById('success-screen'),
+    error: document.getElementById('error-screen')
+  };
+
+  // Screen management
+  function showScreen(screenId, loadingText) {
+    Object.values(screens).forEach(s => s.classList.remove('active'));
+    screens[screenId].classList.add('active');
+    if (screenId === 'loading') {
+      const t = document.getElementById('loading-text');
+      if (t) t.textContent = loadingText || 'Loading...';
+    }
+  }
+
+  function showError(message) {
+    const errorEl = document.querySelector('.error-message');
+    if (errorEl) {
+      errorEl.textContent = message;
+    } else {
+      console.error('Error (no error element):', message);
+    }
+    showScreen('error');
+  }
+
+  // API helpers
+  async function apiCall(endpoint, method = 'GET', body = null) {
+    const options = {
+      method,
+      headers: {},
+      credentials: 'include'
+    };
+
+    if (body) {
+      // State-changing wsapi endpoints require the session's CSRF token.
+      // Fetched fresh per call: cheap for a login dialog, never stale
+      // across the auth transitions that rotate the session.
+      if (method === 'POST' && !('csrf' in body)) {
+        try {
+          const ctx = await (await fetch(API.sessionContext, { credentials: 'include' })).json();
+          if (ctx.csrf_token) body = { ...body, csrf: ctx.csrf_token };
+        } catch {}
+      }
+      options.headers['Content-Type'] = 'application/json';
+      options.body = JSON.stringify(body);
+    }
+
+    const response = await fetch(endpoint, options);
+    const data = await response.json();
+
+    if (!response.ok && !data.success) {
+      throw new Error(data.reason || data.error || 'Request failed');
+    }
+
+    return data;
+  }
+
+  // Plain JSON POST without the session-CSRF injection (mint endpoints are
+  // device-cert-authed, and a primary's mint is cross-origin).
+  async function postJson(url, body) {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'accept': 'application/json' },
+      credentials: url.startsWith('/') ? 'include' : 'omit',
+      body: JSON.stringify(body)
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok && !data.success) {
+      throw new Error(data.reason || data.error || `request failed (${r.status})`);
+    }
+    return data;
+  }
+
+  // --- JWS toolkit (Ed25519 via WebCrypto, non-extractable keys) -----------
 
   const enc = new TextEncoder();
   const b64urlJson = (o) =>
@@ -47,7 +155,6 @@
     return [...a].map((b) => b.toString(16).padStart(2, '0')).join('');
   };
 
-  // Sign `claims` into a compact JWS with a (non-extractable) private CryptoKey.
   async function signJws(privateKey, claims) {
     const payload = b64urlJson(claims);
     const sig = await Keystore.sign(privateKey, `${JWS_HDR}.${payload}`);
@@ -68,79 +175,7 @@
     return nowS() + (skewS || 60) >= c.exp;
   }
 
-  // --- screens --------------------------------------------------------------
-
-  const screens = {
-    loading: document.getElementById('loading'),
-    email: document.getElementById('email-screen'),
-    code: document.getElementById('code-screen'),
-    primaryContinue: document.getElementById('primary-continue-screen'),
-    success: document.getElementById('success-screen'),
-    error: document.getElementById('error-screen')
-  };
-
-  function showScreen(id, loadingText) {
-    Object.values(screens).forEach((s) => s.classList.remove('active'));
-    screens[id].classList.add('active');
-    if (id === 'loading') {
-      document.getElementById('loading-text').textContent = loadingText || 'Working...';
-    }
-  }
-
-  function showError(message) {
-    const el = document.querySelector('.error-message');
-    if (el) el.textContent = message;
-    showScreen('error');
-  }
-
-  function setEmailDisplays(email) {
-    document.querySelectorAll('.email-display').forEach((el) => { el.textContent = email; });
-  }
-
-  // --- API helpers ----------------------------------------------------------
-
-  async function postJson(url, body) {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'accept': 'application/json' },
-      credentials: url.startsWith('/') ? 'include' : 'omit',
-      body: JSON.stringify(body)
-    });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok && !data.success) {
-      throw new Error(data.reason || data.error || `request failed (${r.status})`);
-    }
-    return data;
-  }
-
-  const getJson = (url) => fetch(url, { credentials: 'include' }).then((r) => r.json());
-
-  // --- fallback-acceptance policy (spec §8.1) -------------------------------
-
-  function normalizeAcceptedFallbacks(v) {
-    if (v == null) return null;
-    if (!Array.isArray(v)) v = [v];
-    return v.map((s) => String(s).trim().toLowerCase()).filter(Boolean);
-  }
-
-  // Whether this broker's fallback identity is acceptable to the RP. Default
-  // (no argument) = {this broker}; an explicit list must name this broker.
-  function brokerFallbackAccepted() {
-    if (!state.acceptedFallbacks) return true;
-    return state.acceptedFallbacks.indexOf(state.brokerDomain.toLowerCase()) !== -1;
-  }
-
-  // --- discovery ------------------------------------------------------------
-
-  async function discover(email) {
-    const r = await fetch(`/wsapi/address_info?email=${encodeURIComponent(email)}`);
-    if (!r.ok) {
-      throw new Error(`couldn't look up this email (${r.status}) — please try again`);
-    }
-    return r.json();
-  }
-
-  // --- keystore -------------------------------------------------------------
+  // --- device-cert keystore (IndexedDB device store) -----------------------
 
   // A stored, unexpired (device, config) cert pair for (issuer, email), or null.
   async function storedDevicePair(issuer, email) {
@@ -160,57 +195,210 @@
     });
   }
 
-  // Known sign-in-ready identities (for the one-click list on the email screen).
-  async function knownIdentities() {
-    try {
-      const recs = await Keystore.allDevice();
-      const byEmail = {};
-      recs.forEach((r) => {
-        if (!r || !r.cert || jwsExpired(r.cert)) return;
-        byEmail[r.email] = byEmail[r.email] || {};
-        byEmail[r.email][r.kind] = true;
-      });
-      return Object.keys(byEmail).filter((e) => byEmail[e].device && byEmail[e].config).sort();
-    } catch (e) {
-      return [];
-    }
-  }
-
-  // --- fallback IdP path (this broker vouches via SMTP) ---------------------
-
-  async function fallbackObtainCerts(email) {
-    // Within the 30-day email-cookie window we can silently re-issue.
-    try {
-      const who = await getJson('/whoami');
-      if (who && who.authenticated && who.email === email) {
-        return await fallbackIssue(email);
-      }
-    } catch (e) { /* fall through to SMTP */ }
-
-    await postJson('/auth/send', { email });
-    setEmailDisplays(email);
-    showScreen('code');
-    return null; // continued by the code-form handler
-  }
-
-  async function fallbackIssue(email) {
-    showScreen('loading', 'Setting up this device...');
+  // Issue a fresh device+config pair for a session-owned email (the device
+  // model's replacement for the classic /wsapi/cert_key).
+  async function issueDevicePair(email) {
     const keys = { device: await Keystore.generate(), config: await Keystore.generate() };
-    const certs = await postJson('/auth/device_cert', {
+    const certs = await apiCall(API.deviceIssue, 'POST', {
       email,
       device_pubkey: keys.device.publicKeyX,
       config_pubkey: keys.config.publicKeyX
     });
+    if (!certs.device_cert || !certs.config_cert) {
+      throw new Error(certs.reason || 'device issuance failed');
+    }
     await storeDevicePair(state.brokerDomain, email, keys, certs);
     return storedDevicePair(state.brokerDomain, email);
   }
 
-  // --- primary IdP path (popup to the IdP's device-authorization page) ------
+  // Mint + warrant + assertion → the 4-object presentation for the RP.
+  async function buildPresentation(pair, issuer, mintUrl, email) {
+    const audience = state.origin;
 
-  // Opens the IdP popup and resolves with {device_cert, config_cert} once the
-  // page posts them back. The pubkeys ride the URL fragment (public values;
-  // the fragment never hits server logs); the response comes via postMessage
-  // with our origin as the target.
+    // 1. Fresh access key + device-signed access request → IdP mint.
+    const access = await Keystore.generate();
+    const accessRequest = await signJws(pair.device.privateKey, {
+      typ: 'browserid-access-request-v1',
+      iat: nowS(),
+      exp: nowS() + 600,
+      jti: rndHex(),
+      domain: issuer,
+      identity: email,
+      subject: 'user',
+      'access-key': { algorithm: 'Ed25519', publicKey: access.publicKeyX }
+    });
+    const minted = await postJson(mintUrl, {
+      device_cert: pair.device.cert,
+      access_request: accessRequest
+    });
+    if (!minted.access_cert) throw new Error(minted.reason || 'mint failed');
+
+    // 2. Login warrant, signed by the CONFIG key: (identity, user) → audience.
+    const warrant = await signJws(pair.config.privateKey, {
+      typ: 'browserid-warrant-v1',
+      iat: nowS(),
+      exp: nowS() + 90 * 86400,
+      identifier: email,
+      subject: 'user',
+      audience,
+      scopes: ['login']
+    });
+
+    // 3. Assertion for the RP's audience, signed by the fresh access key.
+    const assertion = await signJws(access.privateKey, { exp: nowS() + 300, aud: audience });
+
+    return `${minted.access_cert}~${assertion}~${warrant}~${pair.config.cert}`;
+  }
+
+  // Normalize the RP's acceptedFallbacks argument (spec §8.1): null/absent →
+  // null (default policy applies); otherwise an array of lowercased issuer
+  // domains (an explicit empty array means "primaries only").
+  function normalizeAcceptedFallbacks(v) {
+    if (v == null) return null;
+    if (!Array.isArray(v)) v = [v];
+    return v.map(s => String(s).trim().toLowerCase()).filter(Boolean);
+  }
+
+  // Whether this broker's own fallback (its `domain`) is acceptable to the RP.
+  // Default (no argument) = {this broker}, so email sign-in works as today; an
+  // explicit list must name this broker's domain, else the RP declined it.
+  // Enforcement is still the RP's verifier (spec §6.1); this is fail-fast UX.
+  function brokerFallbackAccepted() {
+    if (!state.acceptedFallbacks) return true; // default {this broker}
+    const dom = (state.brokerDomain || location.hostname).toLowerCase();
+    return state.acceptedFallbacks.indexOf(dom) !== -1;
+  }
+
+  // Check email address info (type, state, primary IdP URLs)
+  async function checkEmail(email) {
+    // A lookup failure must NOT be silently treated as "new user" — doing so routed
+    // existing/primary emails into the create-account flow and produced a confusing
+    // "email already exists" 409. Surface the error so the caller can show it and let
+    // the user retry. A genuinely-new email still returns 200 with state:"unknown".
+    const response = await fetch(`${API.addressInfo}?email=${encodeURIComponent(email)}`);
+    if (!response.ok) {
+      throw new Error(`couldn't look up this email (${response.status}) — please try again`);
+    }
+    return await response.json();
+  }
+
+  // Store logged-in state in localStorage for communication_iframe
+  // This mirrors what BrowserID.Storage.site.set does
+  function storeLoggedInState(origin, email) {
+    try {
+      const siteInfo = JSON.parse(localStorage.getItem('siteInfo') || '{}');
+      siteInfo[origin] = siteInfo[origin] || {};
+      siteInfo[origin].logged_in = email;
+      siteInfo[origin].email = email;
+      localStorage.setItem('siteInfo', JSON.stringify(siteInfo));
+    } catch (e) {
+      console.warn('Failed to store logged-in state:', e);
+    }
+  }
+
+  // Handle email chosen - the original state machine, on device certs.
+  // Subordinate-identity substitution (mingo-cm8z). A derived identity (e.g. a
+  // minted <handle>@issuer) cannot authenticate to its OWN issuer — the issuer
+  // mints it but requires a fresh proof of the controlling parent. So when logging
+  // INTO the issuer, we authenticate the parent and deliver ITS presentation
+  // instead. For every OTHER relying party the subordinate is a first-class
+  // identity (returns null → proceed normally, revealing nothing about the parent).
+  async function maybeSubstituteParent(email) {
+    if (state.provisionEmail) return null;
+    let rpHost = null;
+    try { rpHost = new URL(state.origin).hostname.toLowerCase(); } catch (e) { return null; }
+    const emailDomain = (email.split('@')[1] || '').toLowerCase();
+    if (!rpHost || emailDomain !== rpHost) return null;
+    try {
+      const pj = await apiCall(`/wsapi/parent_of?email=${encodeURIComponent(email)}`);
+      return (pj && pj.parent_email) ? pj.parent_email : null;
+    } catch (e) {
+      // Not subordinate, not our email, or not signed in → no substitution.
+      return null;
+    }
+  }
+
+  /// A password-less account signing in with a broker-verified email. Proving
+  /// control = the emailed reset code, then choose a password. (The classic
+  /// signed-in /wsapi/set_password shortcut left with the old protocol — the
+  /// reset flow covers both cases.)
+  async function handleNoPasswordTransition(email) {
+    state.email = email;
+    document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+    await apiCall(API.stageReset, 'POST', { email });
+    showScreen('resetPassword');
+  }
+
+  async function handleEmailChosen(email, _substituted) {
+    showScreen('loading');
+
+    try {
+      // 0. Subordinate-identity substitution (mingo-cm8z) — see maybeSubstituteParent.
+      if (!_substituted) {
+        const parent = await maybeSubstituteParent(email);
+        if (parent) return await handleEmailChosen(parent, true);
+      }
+
+      // 1. Discovery: which IdP roots this email.
+      const addressInfo = await checkEmail(email);
+
+      if (addressInfo.type === 'primary') {
+        // Primary email — its own IdP issues the device certs.
+        return await handlePrimaryIdP(email, addressInfo);
+      }
+
+      // Everything below is secondary — this broker acts as the fallback IdP.
+      // Fail fast if the RP didn't list this broker in acceptedFallbacks
+      // (spec §8.1), rather than issuing and getting rejected at the RP.
+      if (!brokerFallbackAccepted()) {
+        const dom = state.brokerDomain || location.hostname;
+        showError('This site doesn’t accept email sign-in via ' + dom +
+          '. Use an email whose domain is its own identity provider.');
+        return;
+      }
+
+      if (addressInfo.state === 'transition_to_secondary') {
+        // Was primary, now secondary - need password
+        state.email = email;
+        document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+        showScreen('password');
+        return;
+      }
+
+      if (addressInfo.state === 'transition_no_password') {
+        // Account without a password — prove control via code, then set one.
+        await handleNoPasswordTransition(email);
+        return;
+      }
+
+      if (addressInfo.state === 'unverified') {
+        // Email not verified - re-verify
+        await apiCall(API.stageEmail, 'POST', { email });
+        state.email = email;
+        document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+        showScreen('verify');
+        return;
+      }
+
+      // Secondary, known, verified — complete via the session (issue if needed).
+      if (addressInfo.state === 'known') {
+        return await completeSignIn(email);
+      }
+
+      // Unknown state - shouldn't happen for a selected email
+      showError('Cannot sign in with this email (unknown state: ' + addressInfo.state + ')');
+
+    } catch (e) {
+      showError('Failed to sign in: ' + e.message);
+    }
+  }
+
+  // --- primary IdP: device-authorization popup ------------------------------
+
+  // Opens the IdP's device-authorization page and resolves with
+  // {device_cert, config_cert} once it posts them back. The pubkeys ride the
+  // URL fragment (public values; never reach server logs); the response comes
+  // via postMessage with our origin as the target.
   function primaryPopupFlow(email, deviceAuthUrl, keys) {
     return new Promise((resolve, reject) => {
       const idpOrigin = new URL(deviceAuthUrl).origin;
@@ -225,7 +413,7 @@
         reject({ popupBlocked: true });
         return;
       }
-      showScreen('loading', 'Signing in with your email provider...');
+      showScreen('loading', 'Authenticating with your email provider...');
 
       const TIMEOUT_MS = 3 * 60 * 1000;
       let timeoutId = null;
@@ -269,29 +457,6 @@
     });
   }
 
-  async function primaryObtainCerts(email, info) {
-    if (!info.device_auth) {
-      throw new Error(email.split('@')[1] +
-        ' runs its own identity provider, but it does not support device sign-in yet.');
-    }
-    const keys = { device: await Keystore.generate(), config: await Keystore.generate() };
-    let certs;
-    try {
-      certs = await primaryPopupFlow(email, info.device_auth, keys);
-    } catch (e) {
-      if (e && e.popupBlocked) {
-        // Blocked — re-run from a fresh tap gesture.
-        state.pendingPrimary = { email, info, keys };
-        setEmailDisplays(email);
-        document.querySelectorAll('.idp-name').forEach((el) => { el.textContent = email.split('@')[1]; });
-        showScreen('primaryContinue');
-        return null; // continued by the continue-primary handler
-      }
-      throw e;
-    }
-    return finishPrimaryCerts(email, keys, certs);
-  }
-
   async function finishPrimaryCerts(email, keys, certs) {
     // Shape-check what came back before storing (the RP re-verifies fully).
     const dc = decodeJws(certs.device_cert);
@@ -304,113 +469,145 @@
     return storedDevicePair(domain, email);
   }
 
-  // --- mint + warrant + assertion → presentation ----------------------------
+  // Handle primary IdP flow: reuse a stored pair, else run the popup.
+  async function handlePrimaryIdP(email, addressInfo) {
+    showScreen('loading');
+    try {
+      const domain = email.split('@')[1];
+      const mintUrl = addressInfo.access_mint;
+      if (!mintUrl) {
+        showError(domain + ' runs its own identity provider, but it does not support device sign-in yet.');
+        return;
+      }
 
-  async function completeLogin(email, issuer, pair, mintUrl) {
-    showScreen('loading', 'Signing you in...');
-    const audience = state.origin;
+      // Valid stored pair from this IdP → mint straight away.
+      const stored = await storedDevicePair(domain, email);
+      if (stored) {
+        try {
+          return await finishSignIn(email, stored, domain, mintUrl);
+        } catch (e) {
+          // Mint refused (revoked / IdP policy) — drop the pair and re-authorize.
+          await Keystore.delDevice(domain, email, 'device');
+          await Keystore.delDevice(domain, email, 'config');
+        }
+      }
 
-    // 1. Fresh access key + device-signed access request → IdP mint.
-    const access = await Keystore.generate();
-    const accessRequest = await signJws(pair.device.privateKey, {
-      typ: 'browserid-access-request-v1',
-      iat: nowS(),
-      exp: nowS() + 600,
-      jti: rndHex(),
-      domain: issuer,
-      identity: email,
-      subject: 'user',
-      'access-key': { algorithm: 'Ed25519', publicKey: access.publicKeyX }
-    });
-    const minted = await postJson(mintUrl, {
-      device_cert: pair.device.cert,
-      access_request: accessRequest
-    });
-    if (!minted.access_cert) throw new Error(minted.reason || 'mint failed');
+      if (!addressInfo.device_auth) {
+        showError(domain + ' runs its own identity provider, but it does not support device sign-in yet.');
+        return;
+      }
+      const keys = { device: await Keystore.generate(), config: await Keystore.generate() };
+      let certs;
+      try {
+        certs = await primaryPopupFlow(email, addressInfo.device_auth, keys);
+      } catch (e) {
+        if (e && e.popupBlocked) {
+          // Blocked — re-run from a fresh tap gesture (mobile).
+          state.pendingPrimary = { email, info: addressInfo, keys };
+          document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+          document.querySelectorAll('#primary-auth-continue-screen .idp-name')
+            .forEach(el => { el.textContent = domain; });
+          showScreen('primaryAuthContinue');
+          return;
+        }
+        throw e;
+      }
+      const pair = await finishPrimaryCerts(email, keys, certs);
+      await finishSignIn(email, pair, domain, mintUrl);
+    } catch (e) {
+      showError('Sign-in with your email provider failed: ' + (e.message || e));
+    }
+  }
 
-    // 2. Login warrant, signed by the CONFIG key: (identity, user) → audience.
-    //    Re-signed per login for now; registry-synced reuse lands with the
-    //    device-shaped warrant registry work.
-    const warrant = await signJws(pair.config.privateKey, {
-      typ: 'browserid-warrant-v1',
-      iat: nowS(),
-      exp: nowS() + 90 * 86400,
-      identifier: email,
-      subject: 'user',
-      audience,
-      scopes: ['login']
-    });
+  // Complete sign-in for a broker-rooted (secondary) email: reuse or issue the
+  // device pair under the session, then present.
+  async function completeSignIn(email) {
+    try {
+      showScreen('loading');
+      const issuer = state.brokerDomain || location.hostname;
+      let pair = await storedDevicePair(issuer, email);
+      if (!pair) {
+        pair = await issueDevicePair(email);
+      }
+      await finishSignIn(email, pair, issuer, API.accessMint);
+    } catch (e) {
+      showError('Failed to sign in: ' + e.message);
+    }
+  }
 
-    // 3. Assertion for the RP's audience, signed by the fresh access key.
-    const assertion = await signJws(access.privateKey, { exp: nowS() + 300, aud: audience });
-
-    const presentation = `${minted.access_cert}~${assertion}~${warrant}~${pair.config.cert}`;
+  // Shared tail: mint + warrant + assertion, record login, return to the RP.
+  async function finishSignIn(email, pair, issuer, mintUrl) {
+    const presentation = await buildPresentation(pair, issuer, mintUrl, email);
+    storeLoggedInState(state.origin, email);
     state.email = email;
     returnPresentation(presentation);
   }
 
-  // --- routing --------------------------------------------------------------
-
-  async function handleEmailChosen(email) {
-    showScreen('loading', 'Looking up ' + email + '...');
-    setEmailDisplays(email);
-    state.email = email;
-
-    const info = await discover(email);
-    const isPrimary = info.type === 'primary';
-    const issuer = isPrimary ? email.split('@')[1] : state.brokerDomain;
-    const mintUrl = isPrimary ? info.access_mint : '/access/mint';
-
-    if (!isPrimary && !brokerFallbackAccepted()) {
-      showError('This site doesn’t accept email sign-in via ' + state.brokerDomain +
-        '. Use an email whose domain is its own identity provider.');
-      return;
-    }
-    if (isPrimary && !mintUrl) {
-      showError(issuer + ' runs its own identity provider, but it does not support device sign-in yet.');
-      return;
-    }
-
-    // Fast path: this device already holds valid certs from the right issuer.
-    const stored = await storedDevicePair(issuer, email);
-    if (stored) {
-      try {
-        return await completeLogin(email, issuer, stored, mintUrl);
-      } catch (e) {
-        // Mint refused (revoked / IdP policy) — drop the stale pair and re-issue.
-        await Keystore.delDevice(issuer, email, 'device');
-        await Keystore.delDevice(issuer, email, 'config');
-      }
-    }
-
-    const pair = isPrimary
-      ? await primaryObtainCerts(email, info)
-      : await fallbackObtainCerts(email);
-    if (pair) await completeLogin(email, issuer, pair, mintUrl);
-    // pair === null → an interactive step (code entry / tap-to-continue) took
-    // over the flow and will call completeLogin itself.
-  }
-
-  // --- returning to the RP --------------------------------------------------
-
+  // Single exit for every presentation-returning path. If the RP requested the
+  // SBO typed-signing capability and this origin is not yet granted, show the
+  // consent screen first; otherwise return immediately.
   function returnPresentation(presentation) {
+    if (state.sboSign && !sboSignGranted(state.origin)) {
+      state.pendingPresentation = presentation;
+      const emailEl = screens.sboConsent.querySelector('.email-display');
+      if (emailEl) emailEl.textContent = state.email || '';
+      showScreen('sboConsent');
+      return;
+    }
     showScreen('success');
     setTimeout(() => {
-      sendResponse({ presentation, email: state.email });
-    }, 600);
+      sendResponse(buildResponse(presentation));
+    }, 1000);
   }
 
+  // The response returned to the RP. When the RP requested SBO signing, report
+  // the grant decision explicitly so it never has to guess.
+  function buildResponse(presentation) {
+    const resp = { presentation, email: state.email };
+    if (state.sboSign) {
+      resp.sbo_sign_granted = sboSignGranted(state.origin);
+    }
+    return resp;
+  }
+
+  // Per-origin grant for the SBO typed-signing capability, persisted in the same
+  // `siteInfo` localStorage map communication_iframe reads via storage.site.get.
+  function sboSignGranted(origin) {
+    try {
+      const siteInfo = JSON.parse(localStorage.getItem('siteInfo') || '{}');
+      return !!(siteInfo[origin] && siteInfo[origin].sbo_sign_granted);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function grantSboSign(origin) {
+    try {
+      const siteInfo = JSON.parse(localStorage.getItem('siteInfo') || '{}');
+      siteInfo[origin] = siteInfo[origin] || {};
+      siteInfo[origin].sbo_sign_granted = true;
+      localStorage.setItem('siteInfo', JSON.stringify(siteInfo));
+    } catch (e) {
+      console.warn('Failed to store SBO signing grant:', e);
+    }
+  }
+
+  // Communication with parent window
   function sendResponse(data) {
+    // WinChan callback takes precedence
     if (state.winchanCallback) {
       state.winchanCallback(data);
       state.winchanCallback = null;
       return;
     }
+    // Fallback to postMessage for simple popup case
     if (window.opener) {
       window.opener.postMessage(data, state.origin);
       window.close();
     } else if (window.parent !== window) {
       window.parent.postMessage(data, state.origin);
+    } else if (state.callback) {
+      state.callback(data);
     }
   }
 
@@ -418,67 +615,350 @@
     if (state.winchanCallback) {
       state.winchanCallback(null);
       state.winchanCallback = null;
-      try { window.close(); } catch (e) { /* not a popup */ }
     } else {
       sendResponse({ presentation: null, cancelled: true });
     }
   }
 
-  // --- event wiring ---------------------------------------------------------
-
-  function wireEvents() {
+  // Event handlers
+  function setupEventHandlers() {
+    // Email form
     document.getElementById('email-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const email = document.getElementById('email').value.trim().toLowerCase();
+      const email = document.getElementById('email').value.trim();
+
       if (!email) {
         document.getElementById('email-error').textContent = 'Email is required';
         return;
       }
+
+      state.email = email;
+      document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+
+      showScreen('loading');
+
       try {
-        await handleEmailChosen(email);
-      } catch (err) {
-        showError(err.message || String(err));
+        // Subordinate substitution for a TYPED identity (mingo-cm8z), same as the
+        // chooser path: typing a subordinate to log into its own issuer
+        // authenticates the parent instead. No-ops when not applicable / signed out.
+        const parent = await maybeSubstituteParent(email);
+        if (parent) return await handleEmailChosen(parent, true);
+
+        const addressInfo = await checkEmail(email);
+
+        // Handle based on type and state
+        if (addressInfo.type === 'primary') {
+          // Primary IdP flow
+          if (addressInfo.state === 'transition_to_secondary') {
+            // Was primary, now secondary with password
+            showScreen('password');
+          } else if (addressInfo.state === 'transition_no_password') {
+            // Was primary, now secondary without password - need to set one
+            await handleNoPasswordTransition(email);
+          } else {
+            // Normal primary flow (known or unknown)
+            await handlePrimaryIdP(email, addressInfo);
+          }
+        } else {
+          // Secondary flow — also covers a primary email transiently seen as secondary
+          // (e.g. a discovery hiccup), whose existing record yields a transition_* state.
+          // Mirror handleEmailChosen so an *existing* account never falls into create.
+          //
+          // Fail fast if the RP didn't accept this broker as a fallback IdP
+          // (spec §8.1). transition_to_primary is exempt — it routes to a
+          // primary, not the broker.
+          if (addressInfo.state !== 'transition_to_primary' && !brokerFallbackAccepted()) {
+            const dom = state.brokerDomain || location.hostname;
+            showError('This site doesn’t accept email sign-in via ' + dom +
+              '. Use an email whose domain is its own identity provider.');
+            return;
+          }
+          if (addressInfo.state === 'known') {
+            showScreen('password');
+          } else if (addressInfo.state === 'transition_to_secondary') {
+            // Existing account (was primary) — authenticate with password
+            showScreen('password');
+          } else if (addressInfo.state === 'transition_no_password') {
+            // Existing account without a password — prove control, set one
+            await handleNoPasswordTransition(email);
+          } else if (addressInfo.state === 'transition_to_primary' && addressInfo.device_auth) {
+            // Was secondary, now primary - show transition info screen
+            const domain = email.split('@')[1];
+            document.querySelectorAll('.idp-name').forEach(el => el.textContent = domain);
+            state.pendingAddressInfo = addressInfo;
+            showScreen('primaryTransition');
+          } else if (addressInfo.state === 'unknown') {
+            // Genuinely new email — create an account
+            showScreen('create');
+          } else {
+            showError('Cannot sign in with this email (unexpected state: ' + addressInfo.state + ')');
+          }
+        }
+      } catch (e) {
+        showError('Failed to check email: ' + e.message);
       }
     });
 
-    document.getElementById('code-form').addEventListener('submit', async (e) => {
+    // Password form (sign in)
+    document.getElementById('password-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const code = document.getElementById('code').value.trim();
-      if (!code || code.length !== 6) {
-        document.getElementById('code-error').textContent = 'Please enter the 6-digit code';
+      const password = document.getElementById('password').value;
+
+      if (!password) {
+        document.getElementById('password-error').textContent = 'Password is required';
         return;
       }
-      showScreen('loading', 'Verifying...');
+
+      showScreen('loading');
+
       try {
-        await postJson('/auth/verify', { email: state.email, code });
-        const pair = await fallbackIssue(state.email);
-        if (!pair) throw new Error('device setup failed');
-        await completeLogin(state.email, state.brokerDomain, pair, '/access/mint');
-      } catch (err) {
-        showScreen('code');
-        document.getElementById('code-error').textContent = err.message || String(err);
+        await apiCall(API.authenticate, 'POST', {
+          email: state.email,
+          pass: password,
+          ephemeral: false
+        });
+
+        await completeSignIn(state.email);
+      } catch (e) {
+        showScreen('password');
+        document.getElementById('password-error').textContent = e.message;
       }
     });
 
-    document.getElementById('resend-code-link').addEventListener('click', async (e) => {
+    // Create account form
+    document.getElementById('create-form').addEventListener('submit', async (e) => {
       e.preventDefault();
+      const password = document.getElementById('create-password').value;
+      const confirmPassword = document.getElementById('confirm-password').value;
+
+      if (password.length < 8) {
+        document.getElementById('create-password-error').textContent = 'Password must be at least 8 characters';
+        return;
+      }
+
+      if (password !== confirmPassword) {
+        document.getElementById('confirm-password-error').textContent = 'Passwords do not match';
+        return;
+      }
+
+      showScreen('loading');
+
       try {
-        await postJson('/auth/send', { email: state.email });
-        document.getElementById('code-error').textContent = 'A new code is on its way.';
-      } catch (err) {
-        document.getElementById('code-error').textContent = err.message || String(err);
+        await apiCall(API.stageUser, 'POST', {
+          email: state.email,
+          pass: password
+        });
+
+        showScreen('verify');
+      } catch (e) {
+        // The account already exists (e.g. we reached 'create' from a transient
+        // mis-detection). Don't dead-end — route to sign-in for the existing account.
+        if (/already exists/i.test(e.message)) {
+          document.querySelectorAll('.email-display').forEach(el => el.textContent = state.email);
+          showScreen('password');
+          const pwErr = document.getElementById('password-error');
+          if (pwErr) pwErr.textContent = 'This email is already registered — sign in below.';
+        } else {
+          showScreen('create');
+          document.getElementById('create-password-error').textContent = e.message;
+        }
       }
     });
 
-    // Tap-to-continue: rerun the primary popup inside a fresh user gesture.
-    document.getElementById('continue-primary').addEventListener('click', async () => {
+    // Verification form
+    document.getElementById('verify-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = document.getElementById('verification-code').value.trim();
+
+      if (!code || code.length !== 6) {
+        document.getElementById('verify-error').textContent = 'Please enter the 6-digit code';
+        return;
+      }
+
+      showScreen('loading');
+
+      try {
+        await apiCall(API.completeUserCreation, 'POST', { token: code });
+        await completeSignIn(state.email);
+      } catch (e) {
+        showScreen('verify');
+        document.getElementById('verify-error').textContent = e.message;
+      }
+    });
+
+    // Forgot password link
+    document.getElementById('forgot-password-link').addEventListener('click', (e) => {
+      e.preventDefault();
+      document.getElementById('reset-email').value = state.email || '';
+      showScreen('resetEmail');
+    });
+
+    // Reset email form
+    document.getElementById('reset-email-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('reset-email').value.trim();
+
+      if (!email) {
+        document.getElementById('reset-email-error').textContent = 'Email is required';
+        return;
+      }
+
+      state.email = email;
+      showScreen('loading');
+
+      try {
+        await apiCall(API.stageReset, 'POST', { email });
+        showScreen('resetPassword');
+      } catch (e) {
+        showScreen('resetEmail');
+        document.getElementById('reset-email-error').textContent = e.message;
+      }
+    });
+
+    // Reset password form
+    document.getElementById('reset-password-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = document.getElementById('reset-code').value.trim();
+      const password = document.getElementById('new-password').value;
+
+      if (!code || code.length !== 6) {
+        document.getElementById('reset-code-error').textContent = 'Please enter the 6-digit code';
+        return;
+      }
+
+      if (password.length < 8) {
+        document.getElementById('new-password-error').textContent = 'Password must be at least 8 characters';
+        return;
+      }
+
+      showScreen('loading');
+
+      try {
+        await apiCall(API.completeReset, 'POST', { token: code, pass: password });
+        // Now sign in with the new password
+        await apiCall(API.authenticate, 'POST', {
+          email: state.email,
+          pass: password,
+          ephemeral: false
+        });
+        await completeSignIn(state.email);
+      } catch (e) {
+        showScreen('resetPassword');
+        if (e.message.includes('code')) {
+          document.getElementById('reset-code-error').textContent = e.message;
+        } else {
+          document.getElementById('new-password-error').textContent = e.message;
+        }
+      }
+    });
+
+    // Pick email form
+    document.getElementById('pick-email-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const selected = document.querySelector('input[name="selected-email"]:checked');
+
+      if (!selected) {
+        return;
+      }
+
+      state.email = selected.value;
+      await handleEmailChosen(state.email);
+    });
+
+    // Add email link - go to add email screen (not login screen)
+    document.getElementById('add-email-link').addEventListener('click', (e) => {
+      e.preventDefault();
+      document.getElementById('new-email').value = '';
+      document.getElementById('add-email-error').textContent = '';
+      showScreen('addEmail');
+    });
+
+    // Add email form
+    document.getElementById('add-email-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('new-email').value.trim();
+
+      if (!email) {
+        document.getElementById('add-email-error').textContent = 'Email is required';
+        return;
+      }
+
+      state.newEmail = email;
+      document.querySelectorAll('.new-email-display').forEach(el => el.textContent = email);
+
+      showScreen('loading');
+
+      try {
+        // A primary-IdP email is proven via its own IdP (the device-authorization
+        // popup), not SMTP. Detect it first — otherwise a primary email would
+        // wrongly get an emailed code. Only genuine secondary emails fall
+        // through to SMTP staging.
+        const addressInfo = await checkEmail(email);
+        if (addressInfo.type === 'primary') {
+          state.email = email;
+          document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+          await handlePrimaryIdP(email, addressInfo);
+          return;
+        }
+
+        await apiCall(API.stageEmail, 'POST', { email });
+        showScreen('addEmailVerify');
+      } catch (e) {
+        showScreen('addEmail');
+        document.getElementById('add-email-error').textContent = e.message;
+      }
+    });
+
+    // Add email verification form
+    document.getElementById('add-email-verify-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = document.getElementById('add-email-code').value.trim();
+
+      if (!code || code.length !== 6) {
+        document.getElementById('add-email-verify-error').textContent = 'Please enter the 6-digit code';
+        return;
+      }
+
+      showScreen('loading');
+
+      try {
+        await apiCall(API.completeEmailAddition, 'POST', { token: code });
+        // Email added successfully - use it to sign in
+        state.email = state.newEmail;
+        await completeSignIn(state.email);
+      } catch (e) {
+        showScreen('addEmailVerify');
+        document.getElementById('add-email-verify-error').textContent = e.message;
+      }
+    });
+
+    // Continue to primary IdP button (for secondary->primary transition)
+    document.getElementById('continue-to-primary').addEventListener('click', async () => {
+      showScreen('loading');
+
+      try {
+        const addressInfo = state.pendingAddressInfo || await checkEmail(state.email);
+
+        if (addressInfo.type === 'primary' || addressInfo.device_auth) {
+          await handlePrimaryIdP(state.email, addressInfo);
+        } else {
+          showError('This email is no longer a primary IdP');
+        }
+      } catch (e) {
+        showError('Failed to connect to email provider: ' + e.message);
+      }
+    });
+
+    // Tap-to-continue: open the primary-IdP popup from a real user gesture
+    // (used when the earlier auto-open was blocked, e.g. on mobile).
+    document.getElementById('continue-primary-auth').addEventListener('click', async () => {
       const p = state.pendingPrimary;
       if (!p) return showScreen('email');
       state.pendingPrimary = null;
       try {
         const certs = await primaryPopupFlow(p.email, p.info.device_auth, p.keys);
         const pair = await finishPrimaryCerts(p.email, p.keys, certs);
-        await completeLogin(p.email, p.email.split('@')[1], pair, p.info.access_mint);
+        await finishSignIn(p.email, pair, p.email.split('@')[1], p.info.access_mint);
       } catch (err) {
         if (err && err.popupBlocked) {
           showError('Could not open the sign-in window. Please allow popups for this site and try again.');
@@ -488,96 +968,197 @@
       }
     });
 
-    document.querySelectorAll('.back').forEach((btn) => {
-      btn.addEventListener('click', () => showScreen('email'));
+    // Back to pick email buttons
+    document.querySelectorAll('.back-to-pick').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        // Refresh email list and go back to pick screen
+        try {
+          const emailsResponse = await apiCall(API.listEmails);
+          state.emails = emailsResponse.emails || [];
+          state.derived = derivedMapFromResponse(emailsResponse);
+          populateEmailList(state.emails);
+        } catch (e) {
+          // Keep existing list
+        }
+        showScreen('pickEmail');
+      });
     });
-    document.querySelectorAll('.cancel').forEach((btn) => {
-      btn.addEventListener('click', sendCancel);
+
+    // Back buttons
+    document.querySelectorAll('.back').forEach(btn => {
+      btn.addEventListener('click', () => {
+        showScreen('email');
+      });
     });
-    document.querySelector('.try-again').addEventListener('click', () => showScreen('email'));
+
+    // Cancel buttons
+    document.querySelectorAll('.cancel').forEach(btn => {
+      btn.addEventListener('click', () => {
+        sendCancel();
+      });
+    });
+
+    // Try again button
+    document.querySelector('.try-again').addEventListener('click', () => {
+      showScreen('email');
+    });
+
+    // SBO signing consent: Allow grants this origin the typed-signing
+    // capability; Not now returns the presentation without granting (login
+    // still succeeds).
+    function finishAfterConsent() {
+      const presentation = state.pendingPresentation;
+      state.pendingPresentation = null;
+      showScreen('success');
+      setTimeout(() => {
+        sendResponse(buildResponse(presentation));
+      }, 1000);
+    }
+    document.getElementById('sbo-consent-allow').addEventListener('click', () => {
+      grantSboSign(state.origin);
+      finishAfterConsent();
+    });
+    document.getElementById('sbo-consent-deny').addEventListener('click', () => {
+      finishAfterConsent();
+    });
+
+    // Handle messages from parent
+    window.addEventListener('message', (e) => {
+      if (e.data && e.data.type === 'browserid:request') {
+        state.origin = e.origin;
+        state.sboSign = !!(e.data.params && e.data.params.sboSign);
+        state.provisionEmail = (e.data.params && e.data.params.provisionEmail) || null;
+        state.acceptedFallbacks = normalizeAcceptedFallbacks(e.data.params && e.data.params.acceptedFallbacks);
+        document.querySelectorAll('.rp-name').forEach(el => {
+          el.textContent = new URL(e.origin).hostname;
+        });
+        init();
+      }
+    });
   }
 
-  // --- init -----------------------------------------------------------------
+  // Build the subordinate -> parent map from a list_emails response (mingo-cm8z).
+  function derivedMapFromResponse(resp) {
+    const map = {};
+    (resp && resp.derived || []).forEach(d => { map[d.email] = d.parent_email; });
+    return map;
+  }
 
+  // Escape a value for safe interpolation into innerHTML.
   function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => (
+    return String(s).replace(/[&<>"']/g, c => (
       { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
     ));
   }
 
-  async function init() {
-    // Drop any classic-era client state (old identity-cert store, legacy
-    // localStorage blobs) — the device store is the only keystore now.
-    try { await Keystore.purgeLegacy(); } catch (e) { /* best-effort */ }
-    document.querySelectorAll('.rp-name').forEach((el) => {
-      el.textContent = new URL(state.origin).hostname;
+  // Populate email list — ALL of the account's identities, whether or not this
+  // browser holds device certs for them (issuance happens on selection).
+  // Derived/subordinate identities (mingo-cm8z) get a distinct sub-label
+  // naming the parent they sign in through.
+  function populateEmailList(emails) {
+    const list = document.getElementById('email-list');
+    list.innerHTML = '';
+
+    emails.forEach((emailStr, index) => {
+      const parent = state.derived[emailStr];
+      const li = document.createElement('li');
+      if (parent) li.className = 'derived';
+      const safeEmail = escapeHtml(emailStr);
+      const sub = parent
+        ? `<span class="email-sub">signs in via ${escapeHtml(parent)}</span>`
+        : '';
+      li.innerHTML = `
+        <label>
+          <input type="radio" name="selected-email" value="${safeEmail}" ${index === 0 ? 'checked' : ''}>
+          <span class="email-text">${safeEmail}${sub}</span>
+        </label>
+      `;
+      list.appendChild(li);
     });
+  }
 
-    // This broker's issuer identity (for the acceptedFallbacks gate).
+  // Initialize
+  async function init() {
+    // Drop any classic-era client state (old identity-cert store, legacy key
+    // blobs) — the device store is the only keystore now.
+    try { await Keystore.purgeLegacy(); } catch (e) { console.warn('keystore purge:', e); }
+    // Learn this broker's own issuer domain (its fallback-IdP identity) so the
+    // acceptedFallbacks gate (spec §8.1) works on every entry path, including
+    // the provisionEmail fast-path below.
+    try { state.brokerDomain = (await apiCall(API.sessionContext)).domain || state.brokerDomain; } catch {}
+
+    // If the RP asked to provision/sign in a SPECIFIC identity, skip the chooser
+    // entirely and drive that identity straight through.
+    if (state.provisionEmail) {
+      showScreen('loading');
+      handleEmailChosen(state.provisionEmail);
+      return;
+    }
     try {
-      const ctx = await getJson('/wsapi/session_context');
-      if (ctx && ctx.domain) state.brokerDomain = ctx.domain;
-    } catch (e) { /* keep hostname */ }
+      // Check if already authenticated
+      const session = await apiCall(API.sessionContext);
 
-    // If the RP hinted an email, drive it straight through.
-    if (state.emailHint) {
-      try {
-        return await handleEmailChosen(state.emailHint);
-      } catch (err) {
-        return showError(err.message || String(err));
+      if (session.authenticated) {
+        // Get user's emails
+        const emailsResponse = await apiCall(API.listEmails);
+        state.emails = emailsResponse.emails || [];
+        state.derived = derivedMapFromResponse(emailsResponse);
+
+        if (state.emails.length >= 1) {
+          // Show email picker - even with one email, let user confirm or add another
+          populateEmailList(state.emails);
+          showScreen('pickEmail');
+        } else {
+          // No emails (shouldn't happen), show email entry
+          showScreen('email');
+        }
+      } else {
+        // Not authenticated, show email entry
+        showScreen('email');
       }
+    } catch (e) {
+      showScreen('email');
     }
-
-    // One-click list of identities this device can already sign in with.
-    const known = await knownIdentities();
-    if (known.length) {
-      const list = document.getElementById('known-list');
-      list.innerHTML = '';
-      known.forEach((email) => {
-        const li = document.createElement('li');
-        li.innerHTML = '<label style="cursor:pointer"><span class="email-text">' +
-          escapeHtml(email) + '</span></label>';
-        li.addEventListener('click', () => {
-          handleEmailChosen(email).catch((err) => showError(err.message || String(err)));
-        });
-        list.appendChild(li);
-      });
-      list.style.display = '';
-    }
-    showScreen('email');
   }
 
-  function startRequest(origin, params, winchanCb) {
+  // Setup and start
+  setupEventHandlers();
+
+  // Normal initialization
+  const params = new URLSearchParams(window.location.search);
+  const origin = params.get('origin');
+
+  if (origin) {
     state.origin = origin;
-    state.winchanCallback = winchanCb || null;
-    state.acceptedFallbacks = normalizeAcceptedFallbacks(params && params.acceptedFallbacks);
-    state.emailHint = (params && params.email) || null;
-    init().catch((e) => showError(e.message || String(e)));
+    state.sboSign = params.get('sbo_sign') === '1';
+    state.provisionEmail = params.get('provision_email');
+    state.acceptedFallbacks = normalizeAcceptedFallbacks(
+      params.get('accepted_fallbacks') ? params.get('accepted_fallbacks').split(',') : null);
+    document.querySelectorAll('.rp-name').forEach(el => {
+      el.textContent = new URL(origin).hostname;
+    });
+    init();
   }
 
-  wireEvents();
-
-  // Entry 1: WinChan popup (the include.js path).
+  // WinChan protocol for include.js
   if (typeof WinChan !== 'undefined' && WinChan.onOpen) {
     try {
-      WinChan.onOpen((origin, args, cb) => {
-        startRequest(origin, (args && args.params) || {}, cb);
+      WinChan.onOpen(function(origin, args, cb) {
+        if (args && args.params) {
+          state.origin = origin;
+          state.sboSign = !!args.params.sboSign;
+          state.provisionEmail = args.params.provisionEmail || null;
+          state.acceptedFallbacks = normalizeAcceptedFallbacks(args.params.acceptedFallbacks);
+          state.winchanCallback = cb;
+          document.querySelectorAll('.rp-name').forEach(el => {
+            el.textContent = new URL(origin).hostname;
+          });
+          init();
+        }
       });
     } catch (e) {
-      // Not opened via WinChan — fall through to query params.
-    }
-  }
-
-  // Entry 2: direct link with ?origin= (dev / debugging).
-  if (!state.origin) {
-    const params = new URLSearchParams(window.location.search);
-    const origin = params.get('origin');
-    if (origin) {
-      startRequest(origin, {
-        acceptedFallbacks: params.get('accepted_fallbacks')
-          ? params.get('accepted_fallbacks').split(',') : null,
-        email: params.get('email')
-      }, null);
+      // WinChan.onOpen may throw if not in popup context
+      console.log('WinChan not available:', e.message);
     }
   }
 })();
