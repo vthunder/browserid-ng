@@ -120,6 +120,35 @@ async fn smtp_auth_then_device_cert_issues_the_pair() {
     assert_eq!(verified.email, email);
     assert_eq!(verified.subject, Subject::User);
     assert_eq!(verified.scopes, vec!["login".to_string()]);
+
+    // 9. auth_with_presentation is for PRIMARY identities only: a broker-issued
+    //    (fallback) presentation must be refused — broker-rooted emails join a
+    //    session with their password. (This drives the endpoint through full
+    //    verification: the broker's own audience, DNSSEC discovery, then the
+    //    issuer gate.)
+    let broker_audience = "http://localhost:3000";
+    let warrant_b = Warrant::create(
+        email, Subject::User, broker_audience, vec!["login".into()], Duration::days(90), &config_kp, None,
+    )
+    .unwrap();
+    let assertion_b = Assertion::create(broker_audience, Duration::minutes(5), &access_kp).unwrap();
+    let presentation_b = format!(
+        "{}~{}~{}~{}",
+        access_cert,
+        assertion_b.encoded(),
+        warrant_b.encoded(),
+        body["config_cert"].as_str().unwrap()
+    );
+    let r = server
+        .post("/wsapi/auth_with_presentation")
+        .json(&json!({ "presentation": presentation_b }))
+        .await;
+    assert_ne!(r.status_code(), 200, "broker-rooted presentation must be refused");
+    assert!(
+        r.text().contains("broker-rooted") || r.text().contains("failed"),
+        "unexpected refusal reason: {}",
+        r.text()
+    );
 }
 
 #[tokio::test]

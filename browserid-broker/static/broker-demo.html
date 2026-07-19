@@ -34,18 +34,22 @@
     var out = document.getElementById('out');
     function show(o) { out.textContent = typeof o === 'string' ? o : JSON.stringify(o, null, 2); }
 
-    document.getElementById('login').onclick = function () {
-      show('Opening sign-in dialog…');
-      browserid.login().then(function (r) {
-        show('Got presentation for ' + r.email + ' — verifying…');
-        return fetch('/verify-access', {
+    navigator.id.watch({
+      loggedInUser: null,
+      onlogin: function (presentation) {
+        show('Got presentation — verifying…');
+        fetch('/verify-access', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ presentation: r.presentation, audience: window.location.origin })
-        }).then(function (resp) { return resp.json(); }).then(show);
-      }).catch(function (e) {
-        show(e.cancelled ? '(sign-in cancelled)' : 'error: ' + (e.message || e));
-      });
+          body: JSON.stringify({ presentation: presentation, audience: window.location.origin })
+        }).then(function (r) { return r.json(); }).then(show)
+          .catch(function (e) { show('verify error: ' + e); });
+      },
+      onlogout: function () {}
+    });
+
+    document.getElementById('login').onclick = function () {
+      navigator.id.request({ siteName: 'Broker Demo RP' });
     };
   </script>
 </body>

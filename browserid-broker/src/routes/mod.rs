@@ -6,6 +6,7 @@ mod device;
 mod email;
 mod fallback_idp;
 mod guestbook;
+mod primary;
 mod reset;
 pub(crate) mod session;
 mod test;
@@ -96,6 +97,10 @@ where
         // email delivery is flaky; not the public /wsapi/test route.
         .route("/admin/pending_code", get(account::admin_pending_code))
         .route("/wsapi/authenticate_user", post(auth::authenticate_user))
+        // Primary-IdP session join (device model): a presentation for the
+        // broker's own audience links the identity into an account so the
+        // chooser remembers it.
+        .route("/wsapi/auth_with_presentation", post(primary::auth_with_presentation))
         .route("/wsapi/logout", post(auth::logout))
         .route("/wsapi/update_password", post(auth::update_password))
         .route("/wsapi/list_emails", get(email::list_emails))

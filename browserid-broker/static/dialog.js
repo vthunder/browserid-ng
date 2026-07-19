@@ -211,9 +211,10 @@
     return storedDevicePair(state.brokerDomain, email);
   }
 
-  // Mint + warrant + assertion → the 4-object presentation for the RP.
-  async function buildPresentation(pair, issuer, mintUrl, email) {
-    const audience = state.origin;
+  // Mint + warrant + assertion → the 4-object presentation for `audience`
+  // (the RP's origin, or the broker's own origin for the session join).
+  async function buildPresentation(pair, issuer, mintUrl, email, audience) {
+    audience = audience || state.origin;
 
     // 1. Fresh access key + device-signed access request → IdP mint.
     const access = await Keystore.generate();
@@ -457,6 +458,25 @@
     });
   }
 
+  // Classic dual-assertion dance, on device certs: a primary identity has no
+  // broker password, so present a SECOND presentation for the BROKER's own
+  // audience to join/create the account (mingo-1c6v). That is what makes the
+  // chooser remember primary identities across dialogs. Best-effort — the RP
+  // login must not fail because the broker session couldn't be established.
+  async function ensureBrokerSession(email, pair, issuer, mintUrl) {
+    try {
+      if (state.emails.indexOf(email) !== -1) return; // already on the account
+      const brokerPresentation = await buildPresentation(
+        pair, issuer, mintUrl, email, window.location.origin);
+      await apiCall('/wsapi/auth_with_presentation', 'POST', {
+        presentation: brokerPresentation,
+        ephemeral: false
+      });
+    } catch (e) {
+      console.warn('broker session join failed (non-fatal):', e.message || e);
+    }
+  }
+
   async function finishPrimaryCerts(email, keys, certs) {
     // Shape-check what came back before storing (the RP re-verifies fully).
     const dc = decodeJws(certs.device_cert);
@@ -484,6 +504,7 @@
       const stored = await storedDevicePair(domain, email);
       if (stored) {
         try {
+          await ensureBrokerSession(email, stored, domain, mintUrl);
           return await finishSignIn(email, stored, domain, mintUrl);
         } catch (e) {
           // Mint refused (revoked / IdP policy) — drop the pair and re-authorize.
@@ -513,6 +534,7 @@
         throw e;
       }
       const pair = await finishPrimaryCerts(email, keys, certs);
+      await ensureBrokerSession(email, pair, domain, mintUrl);
       await finishSignIn(email, pair, domain, mintUrl);
     } catch (e) {
       showError('Sign-in with your email provider failed: ' + (e.message || e));
@@ -958,6 +980,7 @@
       try {
         const certs = await primaryPopupFlow(p.email, p.info.device_auth, p.keys);
         const pair = await finishPrimaryCerts(p.email, p.keys, certs);
+        await ensureBrokerSession(p.email, pair, p.email.split('@')[1], p.info.access_mint);
         await finishSignIn(p.email, pair, p.email.split('@')[1], p.info.access_mint);
       } catch (err) {
         if (err && err.popupBlocked) {
