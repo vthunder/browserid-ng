@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-19T10:13:26Z
-updated_at: 2026-07-19T14:03:18Z
+updated_at: 2026-07-19T14:38:32Z
 parent: browserid-ng-oup3
 ---
 
@@ -53,3 +53,9 @@ The step-1 rewrite over-reached: it replaced the account-based dialog UX (sessio
 ## Assessment notes (session 3c)
 - FedCM: removed because /fedcm/assertion minted classic cert~assertion server-side (dual-impl). Re-spike on device certs is feasible (server mints a full presentation server-side; same server-custody trade-off the classic lane had). Pending user decision.
 - mingo WIP (~/src/mingo, uncommitted): KEEP. mingo-idp/src/device.rs (device_cert + access/mint, mirrors sandmill), discovery advert, device_cert_e2e conformance test vs real DeviceAgent SDK, mingo-app/src/device_login.rs (mint+present half, storage). Blockers: mingo's classic modules (agent.rs, poster.rs, verify.rs, routes.rs cert_key) don't compile against post-cutover browserid-ng main — pin bump requires stripping mingo's classic surface; well_known can use the new typed SupportDocument fields; mingo needs a device-authorization popup page; device_login can now wire to /warrant/request+poll.
+
+## mingo site migration (session 3d) — deployed from ~/src/mingo branch device-migration
+mingo-idp+web ported (see mingo commit): from-presentation session, device-authorize popup, typed discovery, classic surface removed, poster stubbed 503, pinned to browserid-ng 36b49c4. CLI/poster follow-ups in a new bean.
+
+## mingo.place LIVE on the device model (session 3d)
+Deployed (mingo 154cd7f). Verified live: discovery advertises device-cert/access-cert/device-authorization; /device-authorize 200; /session/from-presentation fail-closed; poster reports disabled cleanly; classic /cert_key gone; mint CORS open for the dialog; broker address_info for @mingo.place surfaces device_auth+access_mint; SPA boots error-free and sign-in opens the browserid dialog (playwright). Remaining human check: full login click-through + handle claim.
