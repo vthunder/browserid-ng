@@ -5,6 +5,7 @@ mod auth;
 mod device;
 mod email;
 mod fallback_idp;
+mod fedcm;
 mod guestbook;
 mod primary;
 mod reset;
@@ -111,6 +112,13 @@ where
         .route("/wsapi/set_parent", post(email::set_parent))
         .route("/wsapi/parent_of", get(email::parent_of))
         .route("/wsapi/email_addition_status", get(email::email_addition_status))
+        // FedCM IdP surface (browserid-ng-mhyp, device-cert model): the silent
+        // lane mints a device presentation server-side; /verify-access unchanged.
+        .route("/.well-known/web-identity", get(fedcm::web_identity))
+        .route("/fedcm/config.json", get(fedcm::config))
+        .route("/fedcm/accounts", get(fedcm::accounts))
+        .route("/fedcm/assertion", post(fedcm::assertion))
+        .route("/fedcm/reset", post(fedcm::reset))
         // Device-cert model (DC Phases 2/6) — additive alongside the legacy routes.
         .route("/device/issue", post(device::device_issue))
         .route("/access/mint", post(device::access_mint))

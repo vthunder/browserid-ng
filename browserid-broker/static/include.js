@@ -1290,6 +1290,10 @@
       // A routing hint for the dialog; the RP's verifier enforces (§6.1).
       if (options.acceptedFallbacks) displayOpts.acceptedFallbacks = options.acceptedFallbacks;
 
+      // Opted-in silent FedCM: attempt a zero-UI auto-login for returning users
+      // before the normal hidden-iframe state check. No chooser, no popup.
+      if (fedcmAvailable()) trySilentFedCM();
+
       _open_hidden_iframe();
     }
 
@@ -1351,6 +1355,9 @@
       options.siteName = displayOpts.siteName || options.siteName;
       options.backgroundColor = displayOpts.backgroundColor || options.backgroundColor;
       options.acceptedFallbacks = displayOpts.acceptedFallbacks || options.acceptedFallbacks;
+      // Tell the dialog whether to offer the "auto sign-in next time" (FedCM)
+      // checkbox — only when this browser supports FedCM and the RP opted in.
+      options.fedcm = fedcmAvailable();
 
       options.rp_api = getRPAPI();
       var couldDoRedirectIfNeeded = (!needsPopupFix || api_called === 'request' || api_called === 'auth');
@@ -1464,6 +1471,11 @@
             console.log(clientError);
             throw clientError;
           }
+          // If the user ticked "auto sign-in next time" in the dialog, show the
+          // FedCM chooser once to bank the grant, so future page loads can
+          // silently auto-login. Runs after the dialog closed (no gesture) —
+          // FedCM widget-mode allows that.
+          if (r.fedcm_optin && fedcmAvailable()) establishFedCMGrant();
         }
 
         // if either err indicates the user canceled the signin (expected) or a
@@ -1478,6 +1490,85 @@
     // The most recent successful dialog response ({presentation, email, ...})
     // — lets the browserid.login() promise wrapper surface the email too.
     var lastResponse = null;
+
+    // --- FedCM fast path (browserid-ng-mhyp, device-cert model) -----------
+    // FedCM is used automatically wherever the browser supports it — RPs do
+    // nothing and never know FedCM was involved. It only ever ADDS a silent
+    // auto-login path (opt-in per user via the dialog checkbox, server-enforced)
+    // and degrades to the popup dialog everywhere else. The token FedCM returns
+    // is a standard access presentation, delivered through observers.login
+    // exactly like the dialog path.
+    function fedcmAvailable() {
+      return typeof navigator !== 'undefined' && navigator.credentials &&
+        typeof navigator.credentials.get === 'function' &&
+        ('IdentityCredential' in window);
+    }
+
+    // SILENT FedCM auto-reauthn (opted-in). Runs on watch() at page load — NOT
+    // on the sign-in click — so it NEVER shows a chooser or any UI.
+    // `mediation:'silent'` returns a token only if the browser can silently
+    // auto-reauthenticate a returning user; otherwise it fails quietly and the
+    // normal flow (popup dialog on the sign-in click) is unaffected.
+    // We gate silent auto-login on OUR OWN per-origin flag, set only when the
+    // user ticks the dialog checkbox (see establishFedCMGrant) and cleared on
+    // logout — deterministic "only when the user asked".
+    var FEDCM_AUTOLOGIN_KEY = 'browserid_fedcm_autologin';
+    function fedcmAutologinEnabled() {
+      try { return localStorage.getItem(FEDCM_AUTOLOGIN_KEY) === '1'; } catch (e) { return false; }
+    }
+    function setFedcmAutologin(on) {
+      try { on ? localStorage.setItem(FEDCM_AUTOLOGIN_KEY, '1') : localStorage.removeItem(FEDCM_AUTOLOGIN_KEY); } catch (e) {}
+    }
+
+    function trySilentFedCM() {
+      if (!fedcmAutologinEnabled()) return; // user hasn't opted in this session
+      try {
+        navigator.credentials.get({
+          mediation: 'silent',
+          identity: {
+            providers: [{
+              configURL: ipServer + '/fedcm/config.json',
+              // Registration-free: the RP's own origin is the clientId; the
+              // /fedcm/assertion endpoint uses the Origin header as the audience.
+              clientId: window.location.origin,
+              nonce: String(new Date().getTime())
+            }]
+          }
+        }).then(function(cred) {
+          var token = cred && cred.token;
+          if (token && observers.login) {
+            try { observers.login(token); } catch (clientError) { console.log(clientError); }
+          }
+        }).catch(function() { /* no silent session; normal flow continues */ });
+      } catch (e) { /* FedCM unavailable */ }
+    }
+
+    // Show the FedCM chooser ONCE (mediation:'required') to bank the grant that
+    // makes future silent auto-logins work. Called after a dialog sign-in where
+    // the user opted in. The returned token is discarded — we only want the
+    // grant side-effect. Widget-mode get() needs no user gesture, so this fires
+    // fine from the dialog-completion callback.
+    function establishFedCMGrant() {
+      try {
+        navigator.credentials.get({
+          mediation: 'required',
+          identity: {
+            providers: [{
+              configURL: ipServer + '/fedcm/config.json',
+              clientId: window.location.origin,
+              nonce: String(new Date().getTime())
+            }]
+          }
+        }).then(function() {
+          // Grant banked AND the user opted in → enable silent auto-login on
+          // future page loads (until the next logout clears it).
+          setFedcmAutologin(true);
+        }).catch(function(e) {
+          try { console.log('browserid: FedCM grant not established:', e && e.message); } catch (x) {}
+        });
+      } catch (e) { /* FedCM unavailable */ }
+    }
+    // ----------------------------------------------------------------------
 
     navigator.id = {
       request: function(options) {
@@ -1506,6 +1597,22 @@
       logout: function(callback) {
         if (this != navigator.id)
           throw new Error("all navigator.id calls must be made on the navigator.id object");
+        // FedCM: after logout, DISABLE silent auto-login until the user signs in
+        // and opts in again. The flag is re-set only by a subsequent sign-in
+        // where the user re-ticks the checkbox (establishFedCMGrant).
+        setFedcmAutologin(false);
+        try {
+          if (navigator.credentials && navigator.credentials.preventSilentAccess) {
+            navigator.credentials.preventSilentAccess();
+          }
+        } catch (e) {}
+        // Tell the SERVER to drop the silent-auto-login consent for this RP, so
+        // it refuses future silent assertions until the user opts in again.
+        // Fire-and-forget; the FedCM cookie (path /fedcm) identifies us.
+        try {
+          fetch(ipServer + '/fedcm/reset', { method: 'POST', credentials: 'include', keepalive: true })
+            .catch(function () {});
+        } catch (e) {}
         // allocate iframe if it is not allocated
         _open_hidden_iframe();
         // send logout message if the commChan exists

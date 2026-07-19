@@ -73,6 +73,24 @@
     error: document.getElementById('error-screen')
   };
 
+  // Screens where the FedCM "auto sign-in next time" checkbox belongs — the
+  // ones that complete a sign-in and return a presentation.
+  const FEDCM_OPTIN_SCREENS = { pickEmail: 1, password: 1, verify: 1 };
+
+  // The checkbox lives outside the screen cards in markup; each .screen is
+  // absolutely-positioned, so we MOVE the one checkbox element into the active
+  // sign-in screen's .content so it's actually visible inside the card.
+  function placeFedcmOptin(screenId) {
+    const row = document.getElementById('fedcm-optin-row');
+    if (!row || !state.fedcm) return;
+    if (FEDCM_OPTIN_SCREENS[screenId]) {
+      const content = screens[screenId] && screens[screenId].querySelector('.content');
+      if (content) { content.appendChild(row); row.style.display = ''; }
+    } else {
+      row.style.display = 'none';
+    }
+  }
+
   // Screen management
   function showScreen(screenId, loadingText) {
     Object.values(screens).forEach(s => s.classList.remove('active'));
@@ -81,6 +99,7 @@
       const t = document.getElementById('loading-text');
       if (t) t.textContent = loadingText || 'Loading...';
     }
+    placeFedcmOptin(screenId);
   }
 
   function showError(message) {
@@ -582,6 +601,25 @@
     }, 1000);
   }
 
+  // Show the "automatically sign in next time" checkbox only when the RP's
+  // include.js signalled FedCM support (so embedded dialogs that don't set it
+  // never show it). state.fedcm tracks the choice.
+  //
+  // Only on a fresh identity sign-in — NOT when the RP is provisioning a
+  // specific identity (provision_email): that's a sub-step where "auto sign-in
+  // next time" doesn't belong and would fire a redundant FedCM chooser.
+  function maybeShowFedcmOptin(enabled) {
+    state.fedcm = enabled && !state.provisionEmail;
+    if (!state.fedcm) return;
+    const box = document.getElementById('fedcm-optin');
+    const note = document.getElementById('fedcm-optin-note');
+    if (box && note) {
+      const sync = () => { note.style.display = box.checked ? '' : 'none'; };
+      box.addEventListener('change', sync);
+      sync();
+    }
+  }
+
   // The response returned to the RP. When the RP requested SBO signing, report
   // the grant decision explicitly so it never has to guess.
   function buildResponse(presentation) {
@@ -589,6 +627,11 @@
     if (state.sboSign) {
       resp.sbo_sign_granted = sboSignGranted(state.origin);
     }
+    // FedCM opt-in: only if the checkbox was shown (state.fedcm) AND the user
+    // actively ticked it. Read at response time so it reflects the real choice
+    // on whatever screen they finished on.
+    const optin = document.getElementById('fedcm-optin');
+    if (state.fedcm && optin && optin.checked) resp.fedcm_optin = true;
     return resp;
   }
 
@@ -1173,6 +1216,8 @@
           state.provisionEmail = args.params.provisionEmail || null;
           state.acceptedFallbacks = normalizeAcceptedFallbacks(args.params.acceptedFallbacks);
           state.winchanCallback = cb;
+          // FedCM opt-in: include.js sets this when the browser supports FedCM.
+          maybeShowFedcmOptin(!!args.params.fedcm);
           document.querySelectorAll('.rp-name').forEach(el => {
             el.textContent = new URL(origin).hostname;
           });

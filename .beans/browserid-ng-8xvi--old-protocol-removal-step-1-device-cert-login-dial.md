@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-19T10:13:26Z
-updated_at: 2026-07-19T13:53:33Z
+updated_at: 2026-07-19T14:03:18Z
 parent: browserid-ng-oup3
 ---
 
@@ -49,3 +49,7 @@ The step-1 rewrite over-reached: it replaced the account-based dialog UX (sessio
 - include.js is the ORIGINAL navigator.id implementation again (recovered from git), ported: onlogin delivers the presentation; FedCM lanes removed; browserid.login() kept as a promise wrapper. mingo.place's watch() calls work again (its backend still needs the /verify -> /verify-access migration).
 - NEW /wsapi/auth_with_presentation (device-model auth_with_assertion, same link/transfer semantics). The dialog's primary flow does the classic dual-presentation dance so primary identities join a broker account and the chooser remembers them.
 - Deployed + verified live on browserid.me.
+
+## Assessment notes (session 3c)
+- FedCM: removed because /fedcm/assertion minted classic cert~assertion server-side (dual-impl). Re-spike on device certs is feasible (server mints a full presentation server-side; same server-custody trade-off the classic lane had). Pending user decision.
+- mingo WIP (~/src/mingo, uncommitted): KEEP. mingo-idp/src/device.rs (device_cert + access/mint, mirrors sandmill), discovery advert, device_cert_e2e conformance test vs real DeviceAgent SDK, mingo-app/src/device_login.rs (mint+present half, storage). Blockers: mingo's classic modules (agent.rs, poster.rs, verify.rs, routes.rs cert_key) don't compile against post-cutover browserid-ng main — pin bump requires stripping mingo's classic surface; well_known can use the new typed SupportDocument fields; mingo needs a device-authorization popup page; device_login can now wire to /warrant/request+poll.

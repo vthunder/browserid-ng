@@ -138,6 +138,7 @@ pub fn set_session_cookie(cookies: &Cookies, session_id: &str, secure: bool) {
         ))
         .build();
     cookies.add(cookie);
+    set_fedcm_cookie(cookies, session_id);
 }
 
 /// Helper to clear session cookie
@@ -151,4 +152,62 @@ pub fn clear_session_cookie(cookies: &Cookies) {
         .max_age(tower_cookies::cookie::time::Duration::ZERO)
         .build();
     cookies.add(cookie);
+    clear_fedcm_cookie(cookies);
+}
+
+/// The FedCM sibling of the session cookie (browserid-ng-mhyp). FedCM fetches
+/// the accounts endpoint credentialed but from the RP's (cross-site) page
+/// context, so a `SameSite=Lax` cookie is NOT sent — the accounts endpoint
+/// couldn't identify the user. We therefore mint a SEPARATE, minimal
+/// `SameSite=None` cookie carrying the same session id, scoped to `/fedcm`, and
+/// leave the CSRF-hardened `Lax` session untouched. `SameSite=None` requires
+/// `Secure`; browsers make an exception for localhost, so we always set it.
+const FEDCM_COOKIE: &str = "browserid_fedcm";
+
+fn set_fedcm_cookie(cookies: &Cookies, session_id: &str) {
+    use tower_cookies::cookie::SameSite;
+    use tower_cookies::Cookie;
+    let cookie = Cookie::build((FEDCM_COOKIE, session_id.to_string()))
+        .path("/fedcm")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::None)
+        .max_age(tower_cookies::cookie::time::Duration::seconds(
+            SESSION_MAX_AGE_SECONDS,
+        ))
+        .build();
+    cookies.add(cookie);
+}
+
+fn clear_fedcm_cookie(cookies: &Cookies) {
+    use tower_cookies::cookie::SameSite;
+    use tower_cookies::Cookie;
+    let cookie = Cookie::build((FEDCM_COOKIE, ""))
+        .path("/fedcm")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::None)
+        .max_age(tower_cookies::cookie::time::Duration::ZERO)
+        .build();
+    cookies.add(cookie);
+}
+
+/// Resolve the session for a FedCM endpoint: prefer the dedicated `SameSite=None`
+/// FedCM cookie (what a real browser sends cross-site), falling back to the
+/// regular session cookie (same-site calls and tests).
+pub fn get_fedcm_session<S: SessionStore>(
+    cookies: &Cookies,
+    session_store: &S,
+) -> Option<crate::store::Session> {
+    let raw = cookies
+        .get(FEDCM_COOKIE)
+        .or_else(|| cookies.get(SESSION_COOKIE))?;
+    let session_id = SessionId(raw.value().to_string());
+    let session = session_store.get(&session_id).ok().flatten()?;
+    let age = chrono::Utc::now() - session.created_at;
+    if age > chrono::Duration::seconds(SESSION_MAX_AGE_SECONDS) {
+        let _ = session_store.delete(&session_id);
+        return None;
+    }
+    Some(session)
 }

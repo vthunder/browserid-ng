@@ -339,6 +339,19 @@
         </div>
       </div>
     </section>
+
+    <!-- FedCM opt-in: shown across sign-in screens only when the RP's
+         include.js signals FedCM support. Ticking it banks a FedCM grant after
+         sign-in so future visits log in silently. -->
+    <div id="fedcm-optin-row" style="display:none;padding:10px 0 2px;border-top:1px solid rgba(128,128,128,.2);margin-top:8px">
+      <label style="display:flex;gap:8px;align-items:center;font-weight:normal;cursor:pointer;font-size:.88em">
+        <input type="checkbox" id="fedcm-optin" checked>
+        <span>Automatically sign in to this site next time</span>
+      </label>
+      <p id="fedcm-optin-note" style="display:none;margin:7px 0 0 26px;font-size:.8em;color:#666;line-height:1.4">
+        Just after you sign in, your browser will ask you to confirm — tap <strong>Continue</strong> to finish.
+      </p>
+    </div>
   </div>
 
   <script src="/common/js/keystore.js"></script>
