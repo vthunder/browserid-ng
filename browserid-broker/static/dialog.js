@@ -506,6 +506,9 @@
   }
 
   async function init() {
+    // Drop any classic-era client state (old identity-cert store, legacy
+    // localStorage blobs) — the device store is the only keystore now.
+    try { await Keystore.purgeLegacy(); } catch (e) { /* best-effort */ }
     document.querySelectorAll('.rp-name').forEach((el) => {
       el.textContent = new URL(state.origin).hostname;
     });

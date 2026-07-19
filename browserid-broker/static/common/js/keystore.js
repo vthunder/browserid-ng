@@ -123,28 +123,17 @@
     });
   }
 
-  // One-time migration off the legacy localStorage `emails` blob: re-import each
-  // stored JWK as a NON-EXTRACTABLE CryptoKey (the raw bytes were already
-  // exposed in localStorage; after import they're locked), then wipe the blob.
-  function migrateFromLocalStorage() {
-    var raw;
-    try { raw = JSON.parse(localStorage.getItem("emails") || "{}"); } catch (e) { return Promise.resolve(); }
-    var jobs = [];
-    Object.keys(raw).forEach(function (issuer) {
-      Object.keys(raw[issuer] || {}).forEach(function (email) {
-        var rec = raw[issuer][email];
-        if (!rec || !rec.priv || !rec.priv.d || !rec.cert) return;
-        var jwk = { kty: "OKP", crv: "Ed25519", x: rec.priv.x, d: rec.priv.d };
-        jobs.push(
-          crypto.subtle.importKey("jwk", jwk, { name: "Ed25519" }, false, ["sign"])
-            .then(function (pk) { return put(issuer, email, { privateKey: pk, publicKeyX: rec.priv.x, cert: rec.cert }); })
-            .catch(function () {})
-        );
-      });
-    });
-    return Promise.all(jobs).then(function () {
-      if (Object.keys(raw).length) { try { localStorage.removeItem("emails"); } catch (e) {} }
-    });
+  // Purge everything from the CLASSIC protocol era: the old identity-cert
+  // store, the same-tab provisioning staging area, and the legacy localStorage
+  // blobs. The device-cert model keeps only the `device` store. Idempotent —
+  // safe to call on every page boot.
+  function purgeLegacy() {
+    try { localStorage.removeItem("emails"); } catch (e) {}
+    try { localStorage.removeItem("siteInfo"); } catch (e) {}
+    var clearStore = function (name) {
+      return txOn(name, "readwrite", function (store) { store.clear(); }).catch(function () {});
+    };
+    return Promise.all([clearStore(STORE), clearStore(PENDING)]);
   }
 
   // --- Device-cert model records (device-cert login) -----------------------
@@ -197,7 +186,7 @@
 
   window.Keystore = {
     generate: generate, sign: sign, put: put, get: get, del: del,
-    forEmail: forEmail, all: all, migrateFromLocalStorage: migrateFromLocalStorage,
+    forEmail: forEmail, all: all, purgeLegacy: purgeLegacy,
     putPending: putPending, getPending: getPending, clearPending: clearPending,
     putDevice: putDevice, getDevice: getDevice, delDevice: delDevice, allDevice: allDevice
   };

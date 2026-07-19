@@ -143,9 +143,9 @@
   <div id="app" hidden>
     <div class="card">
       <h2>Your identities</h2>
-      <p class="sub">Emails you sign in with. <span class="badge active">active</span> can sign
-        right now in this browser; <span class="badge inactive">needs sign-in</span> is on your
-        account but has no key here.</p>
+      <p class="sub">Emails you sign in with. <span class="badge active">on this device</span>
+        holds device certificates in this browser; <span class="badge inactive">not on this device</span>
+        is on your account but hasn't signed in here — use any app's sign-in dialog to set it up.</p>
       <ul class="idlist" id="user-ids"></ul>
       <div id="add-email-form" class="inline-form" hidden>
         <label for="ae-email">New email</label>
@@ -167,36 +167,9 @@
       <ul class="idlist" id="agent-ids"></ul>
       <p class="status" style="margin-top:12px"><a href="/consent">Pending consent requests →</a></p>
 
-      <div id="add-agent-form" class="inline-form" hidden>
-        <label for="ag-identity">Delegate from</label>
-        <select id="ag-identity"></select>
-        <p id="ag-note" class="sub" style="margin:0 0 12px"></p>
-        <label for="ag-handle">Agent handle</label>
-        <input id="ag-handle" placeholder="e.g. researcher" maxlength="64">
-        <p class="sub" style="margin:0 0 12px">Will be <code id="ag-preview">…</code>.</p>
-        <p class="disclose" id="ag-adv-toggle">Advanced: multiple handles / patterns ▸</p>
-        <div id="ag-adv" hidden style="border-left:2px solid #eee;padding-left:12px;margin-bottom:12px">
-          <label for="ag-extra">Extra handles (comma-separated)</label>
-          <input id="ag-extra" placeholder="worker, batch">
-          <label for="ag-patterns">Subaddress patterns (&lt;handle&gt;+*)</label>
-          <input id="ag-patterns" placeholder="worker+*">
-        </div>
-        <label for="ag-label">Label</label>
-        <input id="ag-label" placeholder="e.g. ci-bot" maxlength="64">
-        <button class="primary small" id="ag-create">Create agent</button>
-        <button class="small" id="ag-cancel">Cancel</button>
-        <p class="status" id="ag-status"></p>
-        <div id="ag-cred" hidden>
-          <p class="warn" style="margin:12px 0 4px"><b>Copy this now — shown only once.</b></p>
-          <p class="sub">The agent credential (contains a private key that never left this page).
-            Downloads as <code id="ag-cred-fname">agent-credential.json</code> — its agent
-            can auto-find it in your Downloads.</p>
-          <p class="sub" id="ag-cred-identity" style="font-weight:600"></p>
-          <pre id="ag-cred-json"></pre>
-          <button class="small" id="ag-download">Download JSON</button>
-          <button class="small" id="ag-done">Done</button>
-        </div>
-      </div>
+      <p class="sub" id="add-agent-hint" hidden style="margin-top:10px">Agents pair themselves:
+        install the browserid wallet in your agent and ask it to provision an identity — you
+        approve the pairing link it shows you, right on this page.</p>
     </div>
 
     <div class="card" id="external-card" hidden>
@@ -253,7 +226,6 @@
   <p class="footer-links"><a href="/consent">Consent</a> · <a href="/">browserid.me</a></p>
 </div>
 
-<script src="/common/js/lib/jwcrypto-compat.js"></script>
 <script src="/common/js/keystore.js"></script>
 <script type="module">
 const $ = (id) => document.getElementById(id);
@@ -261,9 +233,6 @@ const enc = new TextEncoder();
 const b64urlJson = (obj) => btoa(String.fromCharCode(...enc.encode(JSON.stringify(obj))))
   .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const escapeHtml = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const sign = (key, msg) => new Promise((res, rej) => key.sign(msg, (e, s) => e ? rej(e) : res(s)));
-const genKeypair = () => new Promise((res, rej) =>
-  window.jwcrypto.generateKeypair({ algorithm: 'Ed25519' }, (e, kp) => e ? rej(e) : res(kp)));
 const nowS = () => Math.floor(Date.now() / 1000);
 
 async function api(path, opts = {}) {
@@ -278,43 +247,56 @@ const post = (path, body) => api(path, {
   body: JSON.stringify({ csrf: account.csrf, ...body }),
 });
 
-let account = { emails: [], agents: [], parentOf: {}, warrants: [], certs: [], deviceCerts: [], csrf: null };
-let idCache = []; // in-memory snapshot of the non-extractable keystore (e2fi)
+let account = { emails: [], agents: [], parentOf: {}, warrants: [], deviceCerts: [], csrf: null };
+let deviceCache = []; // this browser's DEVICE-store records (device/config certs, non-extractable keys)
 
-// -------- local identities (this browser's cached certs+keys) --------
-// Read from the in-memory snapshot of the non-extractable keystore (e2fi);
-// `privateKey` is a CryptoKey handle (crypto.subtle.sign), never raw bytes.
-function toId(rec) {
-  const p = certPayload(rec.cert);
-  return { email: rec.email, cert: rec.cert, privateKey: rec.privateKey,
-           publicKeyX: rec.publicKeyX, issuer: p?.iss, exp: p?.exp || 0 };
+// -------- local device credentials (device-cert model) --------
+async function refreshKeystore() {
+  try { deviceCache = await window.Keystore.allDevice(); } catch { deviceCache = []; }
 }
-function localIdentity(email) {
-  const rec = idCache.find(r => r.email === (email || '').toLowerCase() && r.privateKey && r.cert);
-  return rec ? toId(rec) : null;
-}
-function localIdentities() {
-  return idCache.filter(r => r.privateKey && r.cert).map(toId);
-}
-async function refreshKeystore() { idCache = await window.Keystore.all(); }
 function certPayload(cert) {
   try { return JSON.parse(atob(cert.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); } catch { return null; }
 }
-// Device-cert (DC) display: pull `subject` and the signing cert's principal out
-// of a warrant JWS. `config-cert` (authorization signer) is preferred; falls
-// back to the legacy `parent-cert` (identity-key-signed warrants).
+// exact email or single-`*` glob — mirrors browserid-core device::identity_matches
+function identityMatches(pattern, email) {
+  if (pattern === email || pattern === '*') return true;
+  const star = (pattern || '').indexOf('*');
+  if (star === -1) return false;
+  const pre = pattern.slice(0, star), post = pattern.slice(star + 1);
+  return email.length >= pre.length + post.length && email.startsWith(pre) && email.endsWith(post);
+}
+// A valid record of `kind` (device|config) stored for exactly this email.
+function deviceRec(email, kind) {
+  const want = (email || '').toLowerCase();
+  return deviceCache.find(r => r.kind === kind && r.email === want && r.privateKey && r.cert
+    && (certPayload(r.cert)?.exp || 0) > nowS() + 60) || null;
+}
+// The config (authorization) record whose cert authorizes `identity` (globs
+// included) — what signs warrants for it. Prefers the delegator's own record.
+function configFor(identity) {
+  const want = (identity || '').toLowerCase();
+  for (const r of deviceCache) {
+    if (r.kind !== 'config' || !r.privateKey || !r.cert) continue;
+    const c = certPayload(r.cert);
+    if (!c || (c.exp || 0) <= nowS() + 60) continue;
+    if (c.purpose !== 'authorization') continue;
+    if ((c.identities || []).some(p => identityMatches(p, want))) return r;
+  }
+  return null;
+}
+// Device-cert display: the warrant's subject axis + who signed it (from the
+// registry row's config cert — device warrants don't embed their signer).
 function warrantMeta(w) {
   const p = certPayload(w.warrant || '') || {};
-  const signerCert = p['config-cert'] || p['parent-cert'];
   let signer = null;
-  if (signerCert) {
-    const sp = certPayload(signerCert);
-    signer = sp?.principal?.email || sp?.iss || null;
+  if (w.config_cert) {
+    const sp = certPayload(w.config_cert);
+    signer = (sp?.identities || [])[0] || sp?.iss || null;
   }
-  return { subject: p.subject || null, signer };
+  return { subject: w.subject || p.subject || null, signer };
 }
-/// active = a cached cert with at least a minute of life left
-function isActive(email) { const id = localIdentity(email); return !!id && id.exp > nowS() + 60; }
+/// active = this browser holds a valid device+config cert pair for the email
+function isActive(email) { return !!(deviceRec(email, 'device') && deviceRec(email, 'config')); }
 
 // -------- sign-in / create: email-first with address discovery --------
 // One field to begin. On "Continue" we ask the broker about the address and
@@ -469,19 +451,16 @@ function renderUserIdentities() {
       const via = account.parentOf[email];
       const active = isActive(email);
       const badge = active
-        ? '<span class="badge active">active</span>'
-        : '<span class="badge inactive">needs sign-in</span>';
-      const act = active ? '' :
-        `<button class="small rowbtn activate" data-email="${escapeHtml(email)}">Activate</button>`;
+        ? '<span class="badge active">on this device</span>'
+        : '<span class="badge inactive">not on this device</span>';
       return `<li><div class="row"><span class="email-text">${escapeHtml(email)}${badge}
         ${via ? `<span class="email-sub">signs in via ${escapeHtml(via)}</span>` : ''}
-      </span>${act}</div></li>`;
+      </span></div></li>`;
     }).join('');
   $('user-ids').innerHTML = rows +
     `<li class="add"><button class="row" id="add-email"><span class="email-text">+ Add an email</span></button></li>`;
   $('add-email').onclick = () => { $('add-email-form').hidden = false; $('ae-email').focus(); };
-  for (const b of $('user-ids').querySelectorAll('.activate')) b.onclick = () => activate(b.dataset.email, b);
-  refreshProvisionPicker(); // keep the provision approval picker in sync after add/activate
+  refreshProvisionPicker(); // keep the provision approval picker in sync after add
 }
 
 /// A minted agent's parent (from the derived map) or, for a not-yet-minted
@@ -513,20 +492,8 @@ function agentConstraintName(delegator, idpDomain, handle) {
 
 function agentEntries() {
   const byEmail = new Map();
-  // Reserved handles from provisioning certs (may not be minted yet).
-  for (const c of account.certs) {
-    if (c.revoked) continue;
-    for (const name of (c.names || [])) {
-      const email = agentIdentityEmail(c.delegator_email, name);
-      byEmail.set(email, { email, parent: c.delegator_email, minted: false, keyId: c.id, keyLabel: c.label });
-    }
-  }
-  // Minted agent identities.
   for (const email of account.agents) {
-    const cur = byEmail.get(email) || { email, parent: account.parentOf[email], keyId: null };
-    cur.minted = true;
-    if (!cur.parent) cur.parent = account.parentOf[email];
-    byEmail.set(email, cur);
+    byEmail.set(email, { email, parent: account.parentOf[email], minted: true });
   }
   return [...byEmail.values()].sort((a, b) => a.email.localeCompare(b.email));
 }
@@ -542,9 +509,8 @@ function renderAgents() {
         <span class="email-sub">acts for ${escapeHtml(a.parent || '—')}</span></span>
       <span class="chev">›</span></button></li>`;
   }).join('');
-  $('agent-ids').innerHTML = rows +
-    `<li class="add"><button class="row" id="add-agent"><span class="email-text">+ Add an agent</span></button></li>`;
-  $('add-agent').onclick = openAddAgent;
+  $('agent-ids').innerHTML = rows;
+  $('add-agent-hint').hidden = false;
   for (const b of $('agent-ids').querySelectorAll('.agent-row')) {
     const a = entries.find(e => e.email === b.dataset.email);
     b.onclick = () => showDetail(a);
@@ -642,39 +608,6 @@ function renderDeviceCerts() {
   };
 }
 
-// -------- activate a secondary identity (issue + cache a cert) --------
-async function activate(email, btn) {
-  btn.disabled = true;
-  let info;
-  try { info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`); } catch { info = {}; }
-  // Primary identities are provisioned by their own IdP through the browserid
-  // login dialog — which runs when you sign into an *app* with this identity,
-  // not by opening the IdP's /auth shim directly (that only works inside the
-  // dialog). Point at the app; full in-place activation is bean 9rlu.
-  if (info.type === 'primary') {
-    const domain = email.split('@')[1];
-    btn.outerHTML = `<a class="small rowbtn" href="${idpUrlFor(domain)}"
-      target="_blank" rel="noopener" title="Sign in to this app with ${escapeHtml(email)}; its cert is then cached here"
-      >Sign in at ${escapeHtml(domain)} ↗</a>`;
-    return;
-  }
-  // Secondary (broker-verified): generate a key here, get a broker cert, cache it.
-  try {
-    const kp = await window.Keystore.generate(); // non-extractable (e2fi)
-    const body = await post('/wsapi/cert_key', {
-      email, pubkey: { algorithm: 'Ed25519', publicKey: kp.publicKeyX }, ephemeral: false,
-    });
-    const issuer = certPayload(body.cert)?.iss || location.host;
-    await window.Keystore.put(issuer, email, { privateKey: kp.privateKey, publicKeyX: kp.publicKeyX, cert: body.cert });
-    await refreshKeystore();
-    renderUserIdentities();
-    refreshAgentPickers();
-  } catch (e) {
-    btn.disabled = false;
-    alert('Activate failed: ' + e.message);
-  }
-}
-
 // -------- add email (Add → discover → code or primary) --------
 let aeStaged = false;
 $('ae-cancel').onclick = () => { $('add-email-form').hidden = true; aeStaged = false; $('ae-btn').textContent = 'Add'; };
@@ -704,113 +637,6 @@ $('ae-btn').onclick = async () => {
       location.reload();
     }
   } catch (e) { status.className = 'status err'; status.textContent = e.message; }
-};
-
-// -------- add agent (ported creation flow) --------
-function refreshAgentPickers() {
-  const ids = localIdentities().filter(i => i.exp > nowS());
-  const opts = ids.map(i => `<option value="${escapeHtml(i.email)}">${escapeHtml(i.email)}</option>`).join('')
-    || '<option value="">(no active identity — activate one above)</option>';
-  $('ag-identity').innerHTML = opts;
-  $('w-identity').innerHTML = opts;
-  $('ag-create').disabled = !ids.length;
-  agNote();
-}
-function agNote() {
-  const id = localIdentities().find(i => i.email === $('ag-identity').value);
-  const dom = id?.issuer || location.host;
-  $('ag-note').textContent = id ? `Minted at ${dom}.` : '';
-  $('ag-preview').textContent = `${$('ag-handle').value.trim() || 'researcher'}@${dom}`;
-}
-function openAddAgent() {
-  $('add-agent-form').hidden = false;
-  refreshAgentPickers();
-  $('ag-handle').focus();
-}
-$('ag-identity').onchange = agNote;
-$('ag-handle').oninput = agNote;
-$('ag-cancel').onclick = () => { $('add-agent-form').hidden = true; };
-$('ag-adv-toggle').onclick = () => {
-  const a = $('ag-adv'); a.hidden = !a.hidden;
-  $('ag-adv-toggle').textContent = (a.hidden ? 'Advanced: multiple handles / patterns ▸' : 'Advanced: multiple handles / patterns ▾');
-};
-
-async function reserveNames(provKey, idpDomain, idpUrl, delegation) {
-  const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
-  const payload = b64urlJson({ typ: 'browserid-provisioning-request-v1', iat: nowS(), exp: nowS() + 600, action: 'reserve', domain: idpDomain });
-  const provSk = window.jwcrypto.loadSecretKeyFromObject({ algorithm: 'Ed25519', d: provKey.secretKey._jwk.d, x: provKey.publicKey._jwk.x });
-  const sig = await sign(provSk, `${header}.${payload}`);
-  const bundle = `${delegation}~${header}.${payload}.${sig}`;
-  const { endorsement } = await post(`${location.origin}/provision/endorse`, { request_bundle: bundle });
-  const r = await fetch(`${idpUrl}/provision/reserve`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ request_bundle: bundle, endorsement }),
-  });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok || body.success === false) {
-    if (Array.isArray(body.taken) && body.taken.length)
-      throw new Error(`already taken: ${body.taken.join(', ')} — choose different handles`);
-    throw new Error('reservation failed: ' + (body.reason || `HTTP ${r.status}`));
-  }
-}
-$('ag-create').onclick = async () => {
-  const id = localIdentities().find(i => i.email === $('ag-identity').value);
-  const status = $('ag-status'); status.className = 'status muted';
-  if (!id) { status.className = 'status err'; status.textContent = 'Activate an identity first.'; return; }
-  const split = (s) => s.split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
-  const names = [$('ag-handle').value.trim().toLowerCase(), ...split($('ag-extra').value)].filter(Boolean);
-  const patterns = split($('ag-patterns').value);
-  if (!names.length && !patterns.length) { status.className = 'status err'; status.textContent = 'Enter a handle.'; return; }
-  for (const p of patterns) if (!/^[a-z0-9._-]+\+\*$/.test(p)) { status.className = 'status err'; status.textContent = `Pattern "${p}" must be <handle>+*`; return; }
-  $('ag-create').disabled = true; status.textContent = 'Creating…';
-  try {
-    const idpDomain = id.issuer || location.host, idpUrl = idpUrlFor(idpDomain);
-    // Constraint entries are full local-parts. A fallback owner's names are
-    // sub-addressed under their own email, and patterns become `<local>+*`.
-    const ownerLocal = id.email.slice(0, id.email.lastIndexOf('@'));
-    const uniqNames = [...new Set(names.map(h => agentConstraintName(id.email, idpDomain, h)))];
-    const uniqPatterns = [...new Set(patterns.map(p =>
-      isFallbackOwner(id.email, idpDomain) ? `${ownerLocal}+*` : p))];
-    const provKey = await genKeypair(); // provisioning key stays extractable (exported to the agent)
-    const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
-    const certClaims = { typ: 'browserid-provisioning-cert-v1', iss: id.email, iat: nowS(), exp: nowS() + 90*24*3600,
-      'public-key': { algorithm: 'Ed25519', publicKey: provKey.publicKey._jwk.x }, constraint: { names: uniqNames, patterns: uniqPatterns } };
-    const payload = b64urlJson(certClaims);
-    const sig = await window.Keystore.sign(id.privateKey, `${header}.${payload}`); // sign with the non-extractable identity key
-    const delegation = `${id.cert}~${header}.${payload}.${sig}`;
-    await post('/wsapi/register_provisioning_cert', { csrf: account.csrf, label: $('ag-label').value.trim() || 'agent key', bundle: delegation });
-    if (names.length) { status.textContent = 'Reserving…'; await reserveNames(provKey, idpDomain, idpUrl, delegation); }
-    // `names`/`patterns` are duplicated at the top level for human legibility;
-    // the authoritative copy is inside the delegation's provisioning cert, which
-    // is what tooling and the IdP actually enforce.
-    const credential = { secret_key: provKey.secretKey._jwk.d, delegation, broker: location.origin, idp: idpUrl,
-      names: uniqNames, patterns: uniqPatterns };
-    const json = JSON.stringify(credential, null, 2);
-    $('ag-cred-json').textContent = json;
-    const idText = uniqNames.length === 1 && !uniqPatterns.length
-      ? `Provisions as ${agentIdentityEmail(id.email, uniqNames[0])}`
-      : [uniqNames.length ? `names: ${uniqNames.join(', ')}` : '', uniqPatterns.length ? `patterns: ${uniqPatterns.join(', ')}` : '']
-          .filter(Boolean).join(' · ');
-    $('ag-cred-identity').textContent = idText + ` — at ${idpDomain}`;
-    $('ag-cred').hidden = false;
-    // Filename hints at the identity so multiple downloads don't collide as
-    // "agent-credential (N).json". Handles are [a-z0-9._+-], safe in a filename.
-    const hint = uniqNames.length
-      ? uniqNames[0] + (uniqNames.length > 1 ? `+${uniqNames.length - 1}` : '')
-      : (uniqPatterns[0] ? uniqPatterns[0].replace('+*', '') : 'agent');
-    const filename = `agent-credential-${hint}.json`;
-    $('ag-cred-fname').textContent = filename;
-    $('ag-download').onclick = () => {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
-      a.download = filename; a.click(); URL.revokeObjectURL(a.href);
-    };
-    $('ag-done').onclick = () => { $('ag-cred').hidden = true; $('add-agent-form').hidden = true; };
-    status.textContent = ''; $('ag-handle').value = ''; $('ag-extra').value = ''; $('ag-patterns').value = ''; $('ag-label').value = '';
-    await reloadAccount();
-    renderAgents();
-  } catch (e) { status.className = 'status err'; status.textContent = 'Failed: ' + e.message; }
-  finally { $('ag-create').disabled = false; }
 };
 
 // -------- agent / external-service detail + warrants --------
@@ -901,70 +727,76 @@ function renderDetailWarrants(agentEmail, external) {
       setStatus('ok', `Revoked — ${w.audience} rejects this grant within minutes.`); } catch (e) { setStatus('err', 'Revoke failed: ' + e.message); }
   };
   for (const b of $('d-warrants').querySelectorAll('.w-reissue')) b.onclick = async () => {
-    const w = byId[b.dataset.i], id = localIdentity(w.delegator_email);
-    if (!id) return setStatus('err', `The identity key for ${w.delegator_email} isn't in this browser — activate it first.`);
+    const w = byId[b.dataset.i];
+    const config = configFor(w.agent_email);
+    if (!config) return setStatus('err', `No config key covering ${w.agent_email} in this browser — sign in with ${w.delegator_email} through an app's dialog first.`);
     try {
       let statusRef = null;
       try { const alloc = await post('/wsapi/allocate_warrant_status', { csrf: account.csrf, agent_email: w.agent_email, audience: w.audience, scopes: w.scopes || [] }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
-      const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
-      const claims = { typ: 'browserid-agent-warrant-v1', iss: id.email, agent: w.agent_email, aud: w.audience, 'parent-cert': id.cert, iat: nowS(), exp: nowS() + 90*24*3600 };
-      if ((w.scopes || []).length) claims.scopes = w.scopes;
-      if (statusRef) claims.status = statusRef;
-      const payload = b64urlJson(claims);
-      const sig = await window.Keystore.sign(id.privateKey, `${header}.${payload}`);
-      const jws = `${header}.${payload}.${sig}`;
-      await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws });
-      await navigator.clipboard.writeText(jws); await reloadAccount(); renderDetailWarrants(agentEmail, external);
-      setStatus('ok', 'Reissued (fresh 90-day expiry), registered, and copied — paste into the agent.');
+      const jws = await signDeviceWarrant(config, w.agent_email, w.subject || 'agent', w.audience, w.scopes || [], statusRef);
+      await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws, config_cert: config.cert });
+      await navigator.clipboard.writeText(`${jws}~${config.cert}`); await reloadAccount(); renderDetailWarrants(agentEmail, external);
+      setStatus('ok', 'Reissued (fresh 90-day expiry), registered, and copied as warrant~config_cert — paste into the agent.');
     } catch (e) { setStatus('err', 'Reissue failed: ' + e.message); }
   };
 }
 
-// -------- advanced: manual warrant signing --------
+// -------- advanced: manual warrant signing (device model) --------
+// Signs a device-shaped warrant with the CONFIG key held in this browser and
+// registers it with its config cert. Output is `warrant~config_cert` — the
+// exact tail an agent splices into its access presentations.
+async function signDeviceWarrant(config, identifier, subject, audience, scopes, statusRef) {
+  const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+  const claims = { typ: 'browserid-warrant-v1', iat: nowS(), exp: nowS() + 90*24*3600,
+    identifier, subject, audience };
+  if ((scopes || []).length) claims.scopes = scopes;
+  if (statusRef) claims.status = statusRef;
+  const payload = b64urlJson(claims);
+  const sig = await window.Keystore.sign(config.privateKey, `${header}.${payload}`);
+  return `${header}.${payload}.${sig}`;
+}
 $('dbg-toggle').onclick = () => { const d = $('dbg'); d.hidden = !d.hidden; $('dbg-toggle').textContent = d.hidden ? 'Advanced / debug ▸' : 'Advanced / debug ▾'; };
 $('w-create').onclick = async () => {
-  const id = localIdentities().find(i => i.email === $('w-identity').value);
   const agentEmail = $('w-agent').value.trim().toLowerCase(), audience = $('w-audience').value.trim();
   const scopes = $('w-scopes').value.split(/\s+/).map(s => s.trim()).filter(Boolean);
   const status = $('w-status'); const fail = (m) => { status.className = 'status err'; status.textContent = m; };
-  if (!id) return fail('Pick an active identity.');
   if (!/^[^@\s]+@[^@\s]+$/.test(agentEmail)) return fail('Agent identity must be an email.');
   if (!audience || audience.includes('*')) return fail('Audience must be one exact value (no wildcards).');
+  const config = configFor(agentEmail);
+  if (!config) return fail(`No config key covering ${agentEmail} in this browser — sign in with the delegating identity through an app's dialog first.`);
   status.className = 'status muted'; status.textContent = 'Signing…';
   try {
     let statusRef = null;
     try { const alloc = await post('/wsapi/allocate_warrant_status', { csrf: account.csrf, agent_email: agentEmail, audience, scopes }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
-    const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
-    const claims = { typ: 'browserid-agent-warrant-v1', iss: id.email, agent: agentEmail, aud: audience, 'parent-cert': id.cert, iat: nowS(), exp: nowS() + 90*24*3600 };
-    if (scopes.length) claims.scopes = scopes;
-    if (statusRef) claims.status = statusRef;
-    const payload = b64urlJson(claims);
-    const sig = await window.Keystore.sign(id.privateKey, `${header}.${payload}`);
-    const jws = `${header}.${payload}.${sig}`;
-    try { await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws }); } catch (e) { console.warn(e); }
-    $('w-out').textContent = jws; $('w-out').hidden = false;
-    status.className = 'status ok'; status.textContent = 'Signed & registered — paste into the agent.';
+    const jws = await signDeviceWarrant(config, agentEmail, 'agent', audience, scopes, statusRef);
+    try { await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws, config_cert: config.cert }); } catch (e) { console.warn(e); }
+    $('w-out').textContent = `${jws}~${config.cert}`; $('w-out').hidden = false;
+    status.className = 'status ok'; status.textContent = 'Signed & registered — paste warrant~config_cert into the agent.';
     await reloadAccount();
   } catch (e) { fail('Failed: ' + e.message); }
 };
 
 // -------- session --------
-function clearLocal() { localStorage.removeItem('emails'); localStorage.removeItem('siteInfo'); }
-$('signout').onclick = async () => { $('out').textContent = 'Signing out…'; try { await post('/wsapi/logout', {}); } catch {} clearLocal(); location.reload(); };
-$('reset').onclick = () => { clearLocal(); renderUserIdentities(); renderAgents(); $('out').textContent = '✓ Cached certificates cleared (still signed in).'; };
+async function clearLocal() {
+  try { await window.Keystore.purgeLegacy(); } catch {}
+  for (const r of deviceCache) {
+    try { await window.Keystore.delDevice(r.issuer, r.email, r.kind); } catch {}
+  }
+  deviceCache = [];
+}
+$('signout').onclick = async () => { $('out').textContent = 'Signing out…'; try { await post('/wsapi/logout', {}); } catch {} await clearLocal(); location.reload(); };
+$('reset').onclick = async () => { await clearLocal(); renderUserIdentities(); renderAgents(); $('out').textContent = '✓ Cached device certificates cleared (still signed in).'; };
 
 // -------- boot --------
 async function reloadAccount() {
   const resp = await api('/wsapi/list_emails');
-  let warrants = [], certs = [], deviceCerts = [];
+  let warrants = [], deviceCerts = [];
   try { warrants = (await api('/wsapi/warrants')).warrants || []; } catch {}
-  try { certs = (await api('/wsapi/provisioning_certs')).certs || []; } catch {}
   try { deviceCerts = (await api('/wsapi/device_certs')).certs || []; } catch {}
   account.emails = resp.emails || [];
   account.agents = resp.agents || [];
   account.parentOf = Object.fromEntries((resp.derived || []).map(d => [d.email, d.parent_email]));
   account.warrants = warrants;
-  account.certs = certs;
   account.deviceCerts = deviceCerts;
   await refreshKeystore();
 }
@@ -975,38 +807,6 @@ async function reloadAccount() {
 // polls and picks it up. The provisioning private key stays with the agent.
 let provisionCtx = null; // { code, pubkey } while an approval is showing
 
-// Activate a secondary identity in this browser (key + cached cert) so it can
-// sign; returns the local identity. Primary identities activate via their IdP.
-async function ensureActive(email) {
-  // Reuse a cached cert only if it's still valid. A stale/expired one (e.g. left
-  // in this browser's keystore from before a server reset) must be re-minted —
-  // otherwise we'd sign a delegation with an expired U_cert and the agent's mint
-  // fails with a cert-expiry error.
-  const have = localIdentity(email);
-  if (have && isActive(email)) return have;
-  let info; try { info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`); } catch { info = {}; }
-  if (info.type === 'primary')
-    throw new Error(`Sign in to an app with ${email} first — primary identities activate through their own IdP.`);
-  const kp = await window.Keystore.generate();
-  const body = await post('/wsapi/cert_key', { email, pubkey: { algorithm: 'Ed25519', publicKey: kp.publicKeyX }, ephemeral: false });
-  const issuer = certPayload(body.cert)?.iss || location.host;
-  await window.Keystore.put(issuer, email, { privateKey: kp.privateKey, publicKeyX: kp.publicKeyX, cert: body.cert });
-  await refreshKeystore();
-  return localIdentity(email);
-}
-
-// After sign-in a broker-verified identity should be usable right away — not
-// left as "needs sign-in". Mint+cache a cert for each of the account's own
-// secondary emails that isn't active yet. Primary emails are skipped (they
-// activate through their own IdP, so ensureActive throws — we ignore it).
-async function autoActivateIdentities() {
-  const targets = account.emails.filter(e => !account.agents.includes(e) && !isActive(e));
-  let changed = false;
-  for (const email of targets) {
-    try { await ensureActive(email); changed = true; } catch { /* primary or transient */ }
-  }
-  if (changed) renderUserIdentities();
-}
 
 // The panel lists ALL of the account's identities (not just already-active
 // ones) and activates the chosen one on approve — so a user who opened the link
@@ -1040,8 +840,7 @@ function refreshProvisionPicker() {
   const sel = $('pv-identity');
   if (!sel || $('provision').hidden) return;
   const ids = account.emails.filter(e => !account.agents.includes(e));
-  sel.innerHTML = ids.map(e =>
-    `<option value="${escapeHtml(e)}">${escapeHtml(e)}${isActive(e) ? '' : ' — will activate'}</option>`).join('');
+  sel.innerHTML = ids.map(e => `<option value="${escapeHtml(e)}">${escapeHtml(e)}</option>`).join('');
   const none = ids.length === 0;
   $('pv-approve').disabled = none;
   if (none) { $('pv-status').className = 'status muted'; $('pv-status').textContent = 'Add an email below, then pick it here to authorize the agent.'; }
@@ -1082,15 +881,12 @@ async function showProvisionApproval(code) {
 }
 
 async function approveProvision(code, provPubkeyX) {
-  const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Activating identity…';
+  const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Approving…';
   try {
-    const id = await ensureActive($('pv-identity').value);
-    if (!id) throw new Error('Could not activate that identity — try another.');
-    status.textContent = 'Approving…';
     // Device-cert model: the user just approves the identity to mint under. The
     // IdP signs an AGENT DEVICE CERT over the agent-supplied key server-side for
     // the requested handle; no browser-signed delegation is involved.
-    await post('/agent-provision/complete', { code, approve: true, identity_email: id.email });
+    await post('/agent-provision/complete', { code, approve: true, identity_email: $('pv-identity').value });
     status.className = 'status ok';
     status.textContent = 'Approved — your agent is picking up its identity now. You can close this tab.';
     $('pv-approve').disabled = true; $('pv-deny').disabled = true;
@@ -1115,13 +911,12 @@ async function boot() {
     return;
   }
   account.csrf = ctx.csrf_token;
-  try { await window.Keystore.migrateFromLocalStorage(); } catch (e) { console.warn('keystore migrate:', e); }
+  try { await window.Keystore.purgeLegacy(); } catch (e) { console.warn('keystore purge:', e); }
   await reloadAccount();
   $('app').hidden = false;
   renderUserIdentities();
   renderAgents();
   renderDeviceCerts();
-  await autoActivateIdentities(); // make a just-verified identity usable now
   // Paired provisioning banner sits above the account app so add-email/activate
   // are right there for new users.
   if (provisionCode) {
