@@ -1,11 +1,11 @@
 ---
 # browserid-ng-3b8m
 title: Relocate SBO typed-signing (signSboEnvelope) off the hidden iframe
-status: todo
+status: in-progress
 type: task
 priority: normal
 created_at: 2026-07-17T22:29:06Z
-updated_at: 2026-07-20T11:12:41Z
+updated_at: 2026-07-20T18:12:28Z
 parent: browserid-ng-oup3
 blocking:
     - browserid-ng-oup3
@@ -28,3 +28,15 @@ Design decision: A (per-action broker typed-signing) is the wallet pattern; D/E 
 
 ## Iframe deleted (session 4) — d9a6baf, deploying
 Removed communication_iframe.html + start.js + the entire classic common/js Persona stack (browserid/class/crypto-loader/helpers/mediator/network/provisioning/user/xhr_transport/storage + lib/models/modules); include.js stripped of the jschannel Channel + _open_hidden_iframe + commChan (WinChan/FedCM/redirect-delivery intact); routes + CSP tier cleaned. Login e2e (popup+redirect) + 29 broker suites green. UNBLOCKS 6gs4, 4qmg. Remaining for full A: port the /sign signer surface (sbo-signer.js/sbo-sign.js) from classic-cert to the device model (mint access cert -> presentation, matching sbo verify_device_attribution), + redirect-fallback it. No live browser-signing consumer today (mingo posting = D, stubbed).
+
+## A (browser signing) built + deploying (session 4)
+- Signer ported to device model (browserid.me d7f0717, deployed): sbo-signer.js mints an access cert + builds the presentation, signs the envelope with the access key, returns the 4-object presentation as Auth-Cert. sbo-sign.js unchanged (generic). /sign joined the Dialog CSP tier. e2e green (presentation verifies via /verify-access, envelope-key binding intact).
+- mingo app.js rewired (3277ba9): signEnvelope carries the SBO db audience (sbo+raw://avail:turing:506/); certIssuer parses the presentation. Deploy pending the daemon.
+- sbo-daemon: SBO_REV bumped to ac48868 (device verifier), CI deploy in flight (run 29739911561).
+REMAINING for A end-to-end: daemon deploy lands -> deploy mingo-idp -> human test browser posting on mingo.
+
+## A LIVE end-to-end (session 4)
+Deployed + version-verified across the chain: broker signer (device-model sbo-signer.js, /sign connect-src open) on browserid.me d7f0717; sbo-daemon on the device verifier (ac48868, CI success, /health 200); mingo-idp+web a9a4a3e (dbAudience wired). Browser SBO posting on mingo.place is ready for a human test (sign in → post; signs via /sign popup on the device model). The iframe is gone and A is its device-model replacement — 3b8m's relocation goal is met. D (poster) is the remaining posting path, blocked on a design decision: the device warrant dropped the classic delegator/acting-for field, so restoring classic D (fixed mingo-poster service, user-authorized on-chain, owner=user) needs that delegation re-added to browserid-core Warrant + the verifier + sbo authorize. Awaiting Dan's go.
+
+## D blocked on the holder model (2026-07-20)
+D (mingo-poster / service posting) is blocked on the holder-based authorization redesign (browserid-ng-ykjk, docs/plans/2026-07-20-holder-authorization-model.md): the device warrant dropped the delegator/as: field, and the settled fix is opaque broker-assigned holders + warrant matchers (*/ns.*/id) rather than re-adding as:. D builds on that. A (browser signing) is live and independent.
