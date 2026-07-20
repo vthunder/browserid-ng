@@ -185,6 +185,15 @@ pub trait UserStore: Send + Sync {
     /// Soft-revoke a device cert. Scoped to the owning user; errors with
     /// `DeviceCertNotFound` if it doesn't exist or belongs to someone else.
     fn revoke_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()>;
+
+    // --- Holder namespaces (holder-authorization model) ---
+
+    /// Return the stored random prefix for this user's namespace `name`
+    /// (`browsers` / `agents` / `services` / …), creating the namespace with a
+    /// fresh random prefix on first use. The prefix is persisted (not derived)
+    /// so a future re-categorize can rotate it. Every holder the broker assigns
+    /// under this namespace is `<prefix>.<random>`.
+    fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String>;
 }
 
 /// Trait for session storage

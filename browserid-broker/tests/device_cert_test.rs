@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum_test::TestServer;
 use browserid_broker::{routes, AppState, InMemorySessionStore, InMemoryUserStore};
-use browserid_core::device::{AccessRequest, DeviceCert, Purpose, Subject};
+use browserid_core::device::{AccessRequest, DeviceCert, Holder, Purpose};
 use browserid_core::KeyPair;
 use common::{create_user, MockEmailSender};
 use serde_json::{json, Value};
@@ -71,8 +71,9 @@ async fn device_issue_then_access_mint() {
 
     // 2. Mint a fresh-key access cert with the device key.
     let access_kp = KeyPair::generate();
+    // The mint copies the device cert's holder; the request must carry the same.
     let areq = AccessRequest::create(
-        DOMAIN, email, Subject::User, &access_kp.public_key(), "nonce-1", &device_kp,
+        DOMAIN, email, device_cert.holder().clone(), &access_kp.public_key(), "nonce-1", &device_kp,
     ).unwrap();
     let body: Value = server
         .post("/access/mint")
@@ -106,7 +107,7 @@ async fn access_mint_rejects_request_not_signed_by_device_key() {
     // Access request signed by a DIFFERENT key than the device cert certifies.
     let attacker = KeyPair::generate();
     let access_kp = KeyPair::generate();
-    let areq = AccessRequest::create(DOMAIN, email, Subject::User, &access_kp.public_key(), "nonce-2", &attacker).unwrap();
+    let areq = AccessRequest::create(DOMAIN, email, Holder::new("br.x").unwrap(), &access_kp.public_key(), "nonce-2", &attacker).unwrap();
     let resp = server
         .post("/access/mint")
         .json(&json!({ "device_cert": device_cert, "access_request": areq.encoded() }))

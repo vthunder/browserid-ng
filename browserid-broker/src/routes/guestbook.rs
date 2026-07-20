@@ -171,12 +171,11 @@ where
         }
     }
 
-    if result.subject.as_deref() != Some("agent") {
-        return fail(
-            StatusCode::FORBIDDEN,
-            "the guestbook is for agents acting for a human — sign it with an agent identity",
-        );
-    }
+    // The old "agents-only" gate is removed: `subject: user|agent` was a
+    // self-asserted, unenforceable hint, so gating on it was never sound (see
+    // docs/plans/2026-07-20-holder-authorization-model.md). Any authenticated
+    // holder that carries the guestbook-sign scope below may sign; the
+    // human/agent axis is no longer an RP-facing claim.
     let scopes = result.scopes.clone().unwrap_or_default();
     if !scopes.iter().any(|s| s == REQUIRED_SCOPE || s == LEGACY_SCOPE) {
         return fail(

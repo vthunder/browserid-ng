@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tower_cookies::Cookies;
 
-use browserid_core::device::{DeviceCert, Purpose, Subject, DEVICE_CERT_VALIDITY_DAYS};
+use browserid_core::device::{DeviceCert, Purpose, DEVICE_CERT_VALIDITY_DAYS};
 use browserid_core::{PublicKey, StatusRef};
 
 use crate::consent::{public_origin, status_list_uri};
@@ -426,11 +426,26 @@ fn complete_device_cert(
         .map_err(|e| RegistrarError::ValidationError(format!("bad provisioning pubkey: {e}")))?;
     let idx = state.store.get_or_allocate_status("device", expected_pubkey)?;
     let status = StatusRef { uri: status_list_uri(&state.domain), idx };
+    // STAGE-3 PLACEHOLDER (holder-authorization model): an agent gets an
+    // isolated holder in the `agents` namespace. The full model assigns this
+    // via the broker's per-user namespace registry (randomized prefix) and
+    // warrants it with a `<id>` matcher; here we mint a fresh isolated holder so
+    // the device cert is well-formed. Revisit when D (mingo-poster) is built.
+    let holder = {
+        use rand::Rng;
+        const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyz23456789";
+        let mut rng = rand::thread_rng();
+        let suffix: String = (0..10)
+            .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+            .collect();
+        browserid_core::device::Holder::new(format!("agents.{suffix}"))
+            .map_err(|e| RegistrarError::ValidationError(format!("holder: {e}")))?
+    };
     let device_cert = DeviceCert::create(
         &state.domain,
         &device_pub,
         Purpose::Authentication,
-        Subject::Agent,
+        holder,
         vec![agent_email.clone()],
         chrono::Duration::days(DEVICE_CERT_VALIDITY_DAYS),
         &state.keypair,

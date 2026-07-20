@@ -14,7 +14,7 @@ use super::{
 use crate::error::BrokerError;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 13;
+const SCHEMA_VERSION: i32 = 14;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -100,6 +100,9 @@ impl SqliteStore {
             }
             if current_version < 13 {
                 Self::migrate_v13(conn)?;
+            }
+            if current_version < 14 {
+                Self::migrate_v14(conn)?;
             }
 
             // Update schema version
@@ -468,6 +471,32 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v14(conn: &Connection) -> Result<(), BrokerError> {
+        // Holder-authorization model: the device-cert `subject` axis
+        // (user|agent) becomes an opaque broker-assigned `holder`, and warrants
+        // carry a holder matcher instead of a subject. Rename the columns in
+        // place, and add the per-user namespace registry that stores the random
+        // prefix each holder id is minted under (persisted so re-categorize can
+        // rotate it later).
+        conn.execute_batch(
+            r#"
+            ALTER TABLE device_certs RENAME COLUMN subject TO holder;
+            ALTER TABLE warrants RENAME COLUMN subject TO holder;
+            CREATE TABLE IF NOT EXISTS namespaces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                prefix TEXT NOT NULL,
+                label TEXT NOT NULL,
+                UNIQUE(user_id, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_namespaces_user ON namespaces(user_id);
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → DeviceCertRecord mapping (DC Phase 3/4)
@@ -493,7 +522,7 @@ fn device_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceCertR
         user_id: UserId(user_id as u64),
         identities: serde_json::from_str(&identities_json).unwrap_or_default(),
         purpose: row.get(3)?,
-        subject: row.get(4)?,
+        holder: row.get(4)?,
         pubkey: row.get(5)?,
         iss: row.get(6)?,
         issued_at: parse_ts(row.get(7)?),
@@ -504,7 +533,7 @@ fn device_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceCertR
 }
 
 const DEVICE_CERT_COLUMNS: &str =
-    "id, user_id, identities, purpose, subject, pubkey, iss, issued_at, expires_at, revoked_at, status_idx";
+    "id, user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx";
 
 // Row → WarrantRecord mapping (jipx registry)
 fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantRecord> {
@@ -526,7 +555,7 @@ fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantR
         scopes: serde_json::from_str(&scopes_json).unwrap_or_default(),
         warrant: row.get(6)?,
         status_idx: status_idx.map(|i| i as u64),
-        subject: row.get(10)?,
+        holder: row.get(10)?,
         config_cert: row.get(11)?,
         signed_at: parse_ts(row.get(7)?),
         expires_at: parse_ts(row.get(8)?),
@@ -534,7 +563,7 @@ fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantR
 }
 
 const WARRANT_COLUMNS: &str =
-    "id, user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at, status_idx, subject, config_cert";
+    "id, user_id, delegator_email, agent_email, audience, scopes, warrant, signed_at, expires_at, status_idx, holder, config_cert";
 
 // Row → WarrantRequestRecord mapping
 fn warrant_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantRequestRecord> {
@@ -1181,7 +1210,7 @@ impl UserStore for SqliteStore {
     fn upsert_warrant(&self, record: WarrantRecord) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO warrants (user_id, delegator_email, agent_email, audience, scopes, scope_hash, warrant, signed_at, expires_at, status_idx, subject, config_cert)
+            "INSERT INTO warrants (user_id, delegator_email, agent_email, audience, scopes, scope_hash, warrant, signed_at, expires_at, status_idx, holder, config_cert)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(user_id, agent_email, audience, scope_hash) DO UPDATE SET
                delegator_email = excluded.delegator_email,
@@ -1190,7 +1219,7 @@ impl UserStore for SqliteStore {
                signed_at = excluded.signed_at,
                expires_at = excluded.expires_at,
                status_idx = excluded.status_idx,
-               subject = excluded.subject,
+               holder = excluded.holder,
                config_cert = excluded.config_cert",
             params![
                 record.user_id.0 as i64,
@@ -1203,7 +1232,7 @@ impl UserStore for SqliteStore {
                 record.signed_at.to_rfc3339(),
                 record.expires_at.to_rfc3339(),
                 record.status_idx.map(|i| i as i64),
-                record.subject,
+                record.holder,
                 record.config_cert,
             ],
         )
@@ -1314,12 +1343,12 @@ impl UserStore for SqliteStore {
     fn insert_device_cert(&self, mut rec: DeviceCertRecord) -> StoreResult<u64> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO device_certs (user_id, identities, purpose, subject, pubkey, iss, issued_at, expires_at, revoked_at, status_idx)
+            "INSERT INTO device_certs (user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(pubkey) DO UPDATE SET
                identities = excluded.identities,
                purpose = excluded.purpose,
-               subject = excluded.subject,
+               holder = excluded.holder,
                iss = excluded.iss,
                issued_at = excluded.issued_at,
                expires_at = excluded.expires_at,
@@ -1328,7 +1357,7 @@ impl UserStore for SqliteStore {
                 rec.user_id.0 as i64,
                 serde_json::to_string(&rec.identities).unwrap_or_else(|_| "[]".into()),
                 rec.purpose,
-                rec.subject,
+                rec.holder,
                 rec.pubkey,
                 rec.iss,
                 rec.issued_at.to_rfc3339(),
@@ -1387,6 +1416,38 @@ impl UserStore for SqliteStore {
             return Err(BrokerError::DeviceCertNotFound);
         }
         Ok(())
+    }
+
+    fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {
+        let conn = self.conn.lock().unwrap();
+        // Insert a fresh prefix on first use; ignore on conflict so concurrent
+        // callers converge on one row, then read the stored prefix back.
+        let label = title_case(name);
+        conn.execute(
+            "INSERT OR IGNORE INTO namespaces (user_id, name, prefix, label) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                user_id.0 as i64,
+                name,
+                crate::crypto::generate_namespace_prefix(),
+                label,
+            ],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        conn.query_row(
+            "SELECT prefix FROM namespaces WHERE user_id = ?1 AND name = ?2",
+            params![user_id.0 as i64, name],
+            |row| row.get(0),
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+}
+
+/// Title-case a namespace name for its default label ("browsers" → "Browsers").
+fn title_case(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
     }
 }
 
@@ -1639,6 +1700,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn revoke_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
         (**self).revoke_device_cert(user_id, cert_id)
+    }
+
+    fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {
+        (**self).get_or_create_namespace(user_id, name)
     }
 }
 

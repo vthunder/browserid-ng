@@ -7,7 +7,7 @@
 mod common;
 
 use browserid_core::device::{
-    AccessPresentation, AccessRequest, DeviceCert, Purpose, Subject, Warrant,
+    AccessPresentation, AccessRequest, DeviceCert, HolderMatcher, Purpose, Warrant,
 };
 use browserid_core::{Assertion, KeyPair, PublicKey};
 use chrono::Duration;
@@ -59,7 +59,10 @@ async fn smtp_auth_then_device_cert_issues_the_pair() {
     assert_eq!(config_cert.iss(), "localhost:3000");
     assert_eq!(device_cert.purpose(), Purpose::Authentication);
     assert_eq!(config_cert.purpose(), Purpose::Authorization);
-    assert_eq!(device_cert.subject(), Subject::User);
+    // The broker assigns an opaque `<ns>.<id>` holder, shared by both certs.
+    let holder = device_cert.holder().clone();
+    assert!(holder.as_str().contains('.'), "holder is namespaced: {}", holder.as_str());
+    assert_eq!(device_cert.holder(), config_cert.holder());
     assert!(device_cert.authorizes_identity(email));
     assert!(config_cert.authorizes_identity(email));
     // Per-device status refs, distinct per key.
@@ -85,7 +88,7 @@ async fn smtp_auth_then_device_cert_issues_the_pair() {
     let audience = "https://rp.example.com";
     let access_kp = KeyPair::generate();
     let areq = AccessRequest::create(
-        "localhost:3000", email, Subject::User, &access_kp.public_key(), "jti-fb-1", &device_kp,
+        "localhost:3000", email, holder.clone(), &access_kp.public_key(), "jti-fb-1", &device_kp,
     )
     .unwrap();
     let r = server
@@ -97,7 +100,7 @@ async fn smtp_auth_then_device_cert_issues_the_pair() {
     let access_cert = minted["access_cert"].as_str().unwrap();
 
     let warrant = Warrant::create(
-        email, Subject::User, audience, vec!["login".into()], Duration::days(90), &config_kp, None,
+        email, HolderMatcher::new(holder.as_str()).unwrap(), audience, vec!["login".into()], Duration::days(90), &config_kp, None,
     )
     .unwrap();
     let assertion = Assertion::create(audience, Duration::minutes(5), &access_kp).unwrap();
@@ -118,7 +121,7 @@ async fn smtp_auth_then_device_cert_issues_the_pair() {
         .verify(audience, |_iss| Ok(broker_key.clone()))
         .expect("full fallback-issued presentation verifies");
     assert_eq!(verified.email, email);
-    assert_eq!(verified.subject, Subject::User);
+    assert_eq!(verified.holder, holder);
     assert_eq!(verified.scopes, vec!["login".to_string()]);
 
     // 9. auth_with_presentation is for PRIMARY identities only: a broker-issued
@@ -128,7 +131,7 @@ async fn smtp_auth_then_device_cert_issues_the_pair() {
     //    issuer gate.)
     let broker_audience = "http://localhost:3000";
     let warrant_b = Warrant::create(
-        email, Subject::User, broker_audience, vec!["login".into()], Duration::days(90), &config_kp, None,
+        email, HolderMatcher::new(holder.as_str()).unwrap(), broker_audience, vec!["login".into()], Duration::days(90), &config_kp, None,
     )
     .unwrap();
     let assertion_b = Assertion::create(broker_audience, Duration::minutes(5), &access_kp).unwrap();

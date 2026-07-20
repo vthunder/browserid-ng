@@ -31,7 +31,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tower_cookies::Cookies;
 
-use browserid_core::device::{AccessCert, DeviceCert, Purpose, Subject, Warrant};
+use browserid_core::device::{AccessCert, DeviceCert, Purpose, Warrant};
 use browserid_core::Assertion;
 
 use crate::email::EmailSender;
@@ -256,22 +256,37 @@ where
     let access_kp = browserid_core::KeyPair::generate();
     let config_kp = browserid_core::KeyPair::generate();
     let validity = Duration::minutes(ASSERTION_VALIDITY_MINS);
+    // A browsers-namespace holder for this silent login; the warrant grants the
+    // whole namespace (`<prefix>.*`) so a login reuses across the user's
+    // browsers (holder-authorization model).
+    let ns_prefix = match state.user_store.get_or_create_namespace(session.user_id, "browsers") {
+        Ok(p) => p,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("namespace: {e}")),
+    };
+    let holder = match browserid_core::device::Holder::new(crate::crypto::assign_holder_id(&ns_prefix)) {
+        Ok(h) => h,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("holder: {e}")),
+    };
+    let login_matcher = match browserid_core::device::HolderMatcher::new(format!("{ns_prefix}.*")) {
+        Ok(m) => m,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("matcher: {e}")),
+    };
     let access_cert = match AccessCert::create(
-        &state.domain, email, Subject::User, &access_kp.public_key(),
+        &state.domain, email, holder.clone(), &access_kp.public_key(),
         validity, &state.keypair, None,
     ) {
         Ok(c) => c,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("access cert: {e}")),
     };
     let config_cert = match DeviceCert::create(
-        &state.domain, &config_kp.public_key(), Purpose::Authorization, Subject::User,
+        &state.domain, &config_kp.public_key(), Purpose::Authorization, holder.clone(),
         vec![email.clone()], validity, &state.keypair, None,
     ) {
         Ok(c) => c,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("config cert: {e}")),
     };
     let warrant = match Warrant::create(
-        email, Subject::User, &rp_origin, vec!["login".to_string()],
+        email, login_matcher, &rp_origin, vec!["login".to_string()],
         validity, &config_kp, None,
     ) {
         Ok(w) => w,

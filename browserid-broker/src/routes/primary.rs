@@ -64,11 +64,11 @@ where
             result.reason.unwrap_or_else(|| "verification failed".to_string()),
         ));
     }
-    if result.subject.as_deref() != Some("user") {
-        return Err(BrokerError::InvalidAssertion(
-            "only user presentations can authenticate a browser session".to_string(),
-        ));
-    }
+    // The old "user presentations only" gate is removed: `subject: user|agent`
+    // was a self-asserted hint, not an enforceable claim (see
+    // docs/plans/2026-07-20-holder-authorization-model.md). Any of the user's
+    // holders presenting a valid login warrant for this audience authenticates
+    // the browser session — they are all "you".
     let email = result
         .email
         .ok_or_else(|| BrokerError::InvalidAssertion("no email in presentation".to_string()))?;

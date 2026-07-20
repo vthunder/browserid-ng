@@ -190,9 +190,9 @@ pub struct WarrantRecord {
     pub warrant: String,
     /// The warrant's status index (from its `status` claim), when it has one
     pub status_idx: Option<u64>,
-    /// Device-cert-model subject ("user" | "agent"), when this warrant came
-    /// from the device-cert model (DC Phase 4). `None` for legacy warrants.
-    pub subject: Option<String>,
+    /// Device-cert-model holder matcher (`*` / `<ns>.*` / `<id>`), when this
+    /// warrant came from the device-cert model. `None` for legacy warrants.
+    pub holder: Option<String>,
     /// The config (authorization) device cert JWS that signed this warrant, in
     /// the device-cert model (DC Phase 4). `None` for legacy warrants.
     pub config_cert: Option<String>,
@@ -212,8 +212,8 @@ pub struct DeviceCertRecord {
     pub identities: Vec<String>,
     /// "authentication" | "authorization"
     pub purpose: String,
-    /// "user" | "agent"
-    pub subject: String,
+    /// The broker-assigned opaque holder id (`<ns>.<id>`) this device acts as.
+    pub holder: String,
     /// The device (or config) public key, base64 — UNIQUE registry key
     pub pubkey: String,
     /// Issuing IdP domain

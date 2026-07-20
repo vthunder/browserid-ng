@@ -84,7 +84,7 @@ impl Discoverer for MockDiscoverer {
 
 use browserid_broker::verifier::verify_access_with_dns;
 use browserid_core::device::{
-    AccessCert as DAccessCert, DeviceCert, Purpose, Subject, Warrant as DWarrant,
+    AccessCert as DAccessCert, DeviceCert, Holder, HolderMatcher, Purpose, Warrant as DWarrant,
 };
 
 fn device_presentation(
@@ -96,16 +96,17 @@ fn device_presentation(
 ) -> String {
     let access_key = KeyPair::generate();
     let config_key = KeyPair::generate();
+    let holder = Holder::new("br1a2b3c.main").unwrap();
     let access_cert = DAccessCert::create(
-        idp_domain, email, Subject::User, &access_key.public_key(),
+        idp_domain, email, holder.clone(), &access_key.public_key(),
         Duration::hours(24), idp, None,
     ).unwrap();
     let config_cert = DeviceCert::create(
-        config_iss, &config_key.public_key(), Purpose::Authorization, Subject::User,
+        config_iss, &config_key.public_key(), Purpose::Authorization, holder.clone(),
         vec![email.to_string()], Duration::days(90), idp, None,
     ).unwrap();
     let warrant = DWarrant::create(
-        email, Subject::User, audience, vec!["login".into()],
+        email, HolderMatcher::new("br1a2b3c.*").unwrap(), audience, vec!["login".into()],
         Duration::days(90), &config_key, None,
     ).unwrap();
     let assertion = Assertion::create(audience, Duration::minutes(5), &access_key).unwrap();
@@ -120,7 +121,7 @@ async fn verify_access_primary_conformance_okay() {
     let r = verify_access_with_dns(&pres, "https://mingo.place", &disc, &[BROKER.to_string()]).await;
     assert_eq!(r.status, "okay", "{:?}", r);
     assert_eq!(r.email.as_deref(), Some("danmills@sandmill.org"));
-    assert_eq!(r.subject.as_deref(), Some("user"));
+    assert_eq!(r.holder.as_deref(), Some("br1a2b3c.main"));
 }
 
 #[tokio::test]

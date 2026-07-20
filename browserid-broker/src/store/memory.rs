@@ -27,6 +27,8 @@ pub struct InMemoryUserStore {
     next_user_id: AtomicU64,
     device_certs: RwLock<HashMap<u64, DeviceCertRecord>>,
     next_device_cert_id: AtomicU64,
+    /// (user_id, namespace name) -> stored random prefix
+    namespaces: RwLock<HashMap<(UserId, String), String>>,
 }
 
 impl InMemoryUserStore {
@@ -43,6 +45,7 @@ impl InMemoryUserStore {
             next_user_id: AtomicU64::new(1),
             device_certs: RwLock::new(HashMap::new()),
             next_device_cert_id: AtomicU64::new(1),
+            namespaces: RwLock::new(HashMap::new()),
         }
     }
 
@@ -517,6 +520,15 @@ impl UserStore for InMemoryUserStore {
             }
             _ => Err(BrokerError::DeviceCertNotFound),
         }
+    }
+
+    fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {
+        let mut ns = self.namespaces.write().unwrap();
+        let prefix = ns
+            .entry((user_id, name.to_string()))
+            .or_insert_with(crate::crypto::generate_namespace_prefix)
+            .clone();
+        Ok(prefix)
     }
 }
 

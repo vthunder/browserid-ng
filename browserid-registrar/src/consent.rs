@@ -21,7 +21,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::Json;
 use base64::Engine;
-use browserid_core::device::{DeviceCert, Purpose, Subject, Warrant};
+use browserid_core::device::{DeviceCert, Purpose, Warrant};
 use browserid_core::{StatusList, StatusListToken};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -258,11 +258,10 @@ pub async fn respond(
                 "warrant identifier does not match the requested agent".into(),
             ));
         }
-        if claims.subject != Subject::Agent {
-            return Err(RegistrarError::ValidationError(
-                "warrant subject must be 'agent'".into(),
-            ));
-        }
+        // (holder-authorization model) The old "warrant subject must be 'agent'"
+        // gate is removed — the user/agent axis was a self-asserted hint. The
+        // warrant is bound to the agent by its `identifier` check above and, in
+        // the device-cert model, by its holder matcher.
         records.push(warrant_to_record(
             user.user_id,
             &rec.delegator_email,
@@ -312,13 +311,7 @@ fn warrant_to_record(
         scopes: claims.scopes.clone(),
         warrant: jws.to_string(),
         status_idx: claims.status.as_ref().map(|s| s.idx),
-        subject: Some(
-            match claims.subject {
-                Subject::User => "user",
-                Subject::Agent => "agent",
-            }
-            .to_string(),
-        ),
+        holder: Some(claims.holder.as_str().to_string()),
         config_cert: Some(config_cert.to_string()),
         signed_at: ts(claims.iat),
         expires_at: ts(claims.exp),
@@ -338,9 +331,9 @@ pub struct WarrantInfo {
     pub status_idx: Option<u64>,
     /// Whether this warrant's status bit is set (revoked, egr7)
     pub revoked: bool,
-    /// "user" | "agent" (the warrant's subject axis)
+    /// The warrant's holder matcher (`*` / `<ns>.*` / `<id>`)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
+    pub holder: Option<String>,
     /// The config cert that signed this warrant (4th object of a presentation)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_cert: Option<String>,
@@ -379,7 +372,7 @@ pub async fn list_warrants(
                 warrant: r.warrant,
                 status_idx: r.status_idx,
                 revoked,
-                subject: r.subject,
+                holder: r.holder,
                 config_cert: r.config_cert,
                 signed_at: r.signed_at,
                 expires_at: r.expires_at,
@@ -621,9 +614,9 @@ pub async fn warrant_request(
     if device_cert.purpose() != Purpose::Authentication {
         return Err(bad("device cert must be an authentication cert"));
     }
-    if device_cert.subject() != Subject::Agent {
-        return Err(bad("device cert subject must be 'agent'"));
-    }
+    // (holder-authorization model) The old "device cert subject must be 'agent'"
+    // gate is removed — the user/agent axis is gone; the device cert's holder
+    // (opaque) now identifies which of the user's things is acting.
     let identity = req.identity.trim().to_lowercase();
     if !device_cert.authorizes_identity(&identity) {
         return Err(bad("device cert does not authorize this identity"));

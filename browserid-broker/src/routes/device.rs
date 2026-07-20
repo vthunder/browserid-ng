@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::Json;
-use browserid_core::device::{AccessCert, AccessRequest, DeviceCert, Purpose, Subject};
+use browserid_core::device::{AccessCert, AccessRequest, DeviceCert, Purpose};
 use browserid_core::{PublicKey, StatusRef};
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
@@ -107,8 +107,14 @@ where
     let device_ref = device_status(&state, &device_pub)?;
     let config_ref = device_status(&state, &config_pub)?;
     let ttl = Duration::days(90);
+    // One device slot → one broker-assigned holder in the user's `browsers`
+    // namespace, carried by BOTH the authentication (device) and authorization
+    // (config) cert. The requester never chooses it (holder-authorization model).
+    let ns_prefix = state.user_store.get_or_create_namespace(session.user_id, "browsers")?;
+    let holder = crate::crypto::assign_holder_id(&ns_prefix);
+    let holder_id = browserid_core::device::Holder::new(holder.clone()).map_err(ce)?;
     let device_cert = DeviceCert::create(
-        &state.domain, &device_pub, Purpose::Authentication, Subject::User,
+        &state.domain, &device_pub, Purpose::Authentication, holder_id.clone(),
         vec![email.clone()], ttl, &state.keypair, Some(device_ref.clone()),
     ).map_err(ce)?;
     // The config cert also covers `+tag` sub-addresses so it can sign
@@ -118,7 +124,7 @@ where
         None => vec![email.clone()],
     };
     let config_cert = DeviceCert::create(
-        &state.domain, &config_pub, Purpose::Authorization, Subject::User,
+        &state.domain, &config_pub, Purpose::Authorization, holder_id.clone(),
         config_identities, ttl, &state.keypair, Some(config_ref.clone()),
     ).map_err(ce)?;
 
@@ -135,7 +141,7 @@ where
             user_id: session.user_id,
             identities: vec![email.clone()],
             purpose: purpose.to_string(),
-            subject: "user".to_string(),
+            holder: holder.clone(),
             pubkey: pubkey.clone(),
             iss: state.domain.clone(),
             issued_at: now,
@@ -202,13 +208,16 @@ where
     if !device_cert.authorizes_identity(&c.identity) {
         return Err(BrokerError::PolicyRefused("device cert not authorized for this identity".into()));
     }
-    if c.subject != device_cert.subject() {
-        return Err(BrokerError::PolicyRefused("subject mismatch".into()));
+    // The mint copies the DEVICE cert's holder verbatim into the access cert —
+    // the requester cannot choose a different holder (isolation guarantee). The
+    // access request's holder, if present, must equal the device's.
+    if c.holder != *device_cert.holder() {
+        return Err(BrokerError::PolicyRefused("holder mismatch".into()));
     }
     // Access cert inherits the DEVICE's status index (revoke a device → its
     // access certs die), per the B3 fix.
     let access_cert = AccessCert::create(
-        &state.domain, &c.identity, c.subject, &c.access_key,
+        &state.domain, &c.identity, device_cert.holder().clone(), &c.access_key,
         Duration::hours(24), &state.keypair, device_cert.claims().status.clone(),
     ).map_err(ce)?;
     Ok(Json(AccessMintResponse {
@@ -242,7 +251,7 @@ where
     let fetcher = match state.fallback_fetcher().await {
         Ok(f) => f,
         Err(e) => return Json(AccessVerificationResult {
-            status: "failure".into(), email: None, subject: None, scopes: None, issuer: None,
+            status: "failure".into(), email: None, holder: None, scopes: None, issuer: None,
             reason: Some(format!("fetcher: {e}")),
         }),
     };
@@ -260,8 +269,8 @@ pub struct DeviceCertView {
     pub identities: Vec<String>,
     /// "authentication" (device/agent login) | "authorization" (config, warrant signer)
     pub purpose: String,
-    /// "user" | "agent"
-    pub subject: String,
+    /// The opaque broker-assigned holder id (`<ns>.<id>`) this cert acts as.
+    pub holder: String,
     pub pubkey: String,
     pub iss: String,
     pub issued_at: String,
@@ -297,7 +306,7 @@ where
             id: r.id,
             identities: r.identities,
             purpose: r.purpose,
-            subject: r.subject,
+            holder: r.holder,
             pubkey: r.pubkey,
             iss: r.iss,
             issued_at: r.issued_at.to_rfc3339(),

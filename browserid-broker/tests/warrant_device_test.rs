@@ -12,7 +12,7 @@ use std::sync::Arc;
 use axum_test::TestServer;
 use browserid_broker::{routes, AppState, InMemorySessionStore, InMemoryUserStore};
 use browserid_core::device::{
-    AccessPresentation, AccessRequest, DeviceCert, Purpose, Subject, Warrant,
+    AccessPresentation, AccessRequest, DeviceCert, Holder, HolderMatcher, Purpose, Warrant,
 };
 use browserid_core::{Assertion, KeyPair, StatusRef};
 use chrono::Duration;
@@ -60,15 +60,18 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
     // The agent's IdP-signed authentication device cert (what paired
     // provisioning issues), and the browser's config cert covering the
     // delegator's `+` namespace (what login issuance deposits).
+    // The agent is an isolated holder in the `agents` namespace (`<id>` matcher);
+    // the delegator's browser config cert carries its own browsers holder.
+    let agent_holder = Holder::new("ag.bot").unwrap();
     let agent_kp = KeyPair::generate();
     let agent_cert = DeviceCert::create(
-        DOMAIN, &agent_kp.public_key(), Purpose::Authentication, Subject::Agent,
+        DOMAIN, &agent_kp.public_key(), Purpose::Authentication, agent_holder.clone(),
         vec![AGENT.to_string()], Duration::days(90), &idp_kp, None,
     )
     .unwrap();
     let config_kp = KeyPair::generate();
     let config_cert = DeviceCert::create(
-        DOMAIN, &config_kp.public_key(), Purpose::Authorization, Subject::User,
+        DOMAIN, &config_kp.public_key(), Purpose::Authorization, Holder::new("br.main").unwrap(),
         vec![DELEGATOR.to_string(), "alice+*@example.com".to_string()],
         Duration::days(90), &idp_kp, None,
     )
@@ -92,7 +95,7 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
     // A cert from a rogue key is refused.
     let rogue = KeyPair::generate();
     let rogue_cert = DeviceCert::create(
-        DOMAIN, &agent_kp.public_key(), Purpose::Authentication, Subject::Agent,
+        DOMAIN, &agent_kp.public_key(), Purpose::Authentication, agent_holder.clone(),
         vec![AGENT.to_string()], Duration::days(90), &rogue, None,
     )
     .unwrap();
@@ -124,7 +127,7 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
     let status_uri = listed["status_uri"].as_str().unwrap().to_string();
 
     let warrant = Warrant::create(
-        AGENT, Subject::Agent, AUDIENCE,
+        AGENT, HolderMatcher::new("ag.bot").unwrap(), AUDIENCE,
         vec!["post".into(), "read".into()], Duration::days(90), &config_kp,
         Some(StatusRef { uri: status_uri, idx: status_idx }),
     )
@@ -159,14 +162,14 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
         .json();
     let w = &warrants["warrants"][0];
     assert_eq!(w["agent_email"], AGENT);
-    assert_eq!(w["subject"], "agent");
+    assert_eq!(w["holder"], "ag.bot");
     assert_eq!(w["config_cert"], config_cert.encoded());
 
     // 6. Full presentation: mint an access cert with the agent device key,
     //    sign an assertion, splice the delivered tail, verify the join.
     let access_kp = KeyPair::generate();
     let areq = AccessRequest::create(
-        DOMAIN, AGENT, Subject::Agent, &access_kp.public_key(), "jti-w1", &agent_kp,
+        DOMAIN, AGENT, agent_holder.clone(), &access_kp.public_key(), "jti-w1", &agent_kp,
     )
     .unwrap();
     let minted: Value = server
@@ -187,6 +190,6 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
         .verify(AUDIENCE, |_| Ok(idp_kp.public_key()))
         .expect("agent presentation verifies");
     assert_eq!(verified.email, AGENT);
-    assert_eq!(verified.subject, Subject::Agent);
+    assert_eq!(verified.holder, agent_holder);
     assert_eq!(verified.scopes, vec!["post".to_string(), "read".to_string()]);
 }

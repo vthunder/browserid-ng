@@ -106,8 +106,10 @@ pub struct AccessVerificationResult {
     pub status: String, // "okay" | "failure"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// The opaque holder id the presentation carried (which of the user's
+    /// things acted). Advisory; the old user/agent subject axis is gone.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
+    pub holder: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -118,7 +120,7 @@ pub struct AccessVerificationResult {
 
 impl AccessVerificationResult {
     fn fail(reason: impl Into<String>) -> Self {
-        Self { status: "failure".into(), email: None, subject: None, scopes: None, issuer: None, reason: Some(reason.into()) }
+        Self { status: "failure".into(), email: None, holder: None, scopes: None, issuer: None, reason: Some(reason.into()) }
     }
 }
 
@@ -139,7 +141,7 @@ pub async fn verify_access_with_dns(
     discoverer: &impl crate::fallback_fetcher::Discoverer,
     accepted_fallbacks: &[String],
 ) -> AccessVerificationResult {
-    use browserid_core::device::{AccessPresentation, Subject};
+    use browserid_core::device::AccessPresentation;
 
     let pres = match AccessPresentation::parse(presentation) {
         Ok(p) => p,
@@ -194,7 +196,7 @@ pub async fn verify_access_with_dns(
         Ok(v) => AccessVerificationResult {
             status: "okay".into(),
             email: Some(v.email),
-            subject: Some(match v.subject { Subject::User => "user".into(), Subject::Agent => "agent".into() }),
+            holder: Some(v.holder.as_str().to_string()),
             scopes: Some(v.scopes),
             issuer: Some(v.issuer),
             reason: None,

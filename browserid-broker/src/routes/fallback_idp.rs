@@ -20,7 +20,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 use base64::Engine;
-use browserid_core::device::{DeviceCert, Purpose, Subject, DEVICE_CERT_VALIDITY_DAYS};
+use browserid_core::device::{DeviceCert, Purpose, DEVICE_CERT_VALIDITY_DAYS};
 use browserid_core::PublicKey;
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
@@ -329,6 +329,23 @@ where
         }
     };
     let ttl = Duration::days(DEVICE_CERT_VALIDITY_DAYS);
+    // One broker-assigned holder in the user's `browsers` namespace, shared by
+    // both certs (holder-authorization model). If a broker account owns this
+    // email, the namespace prefix is the stored per-user one (so `<prefix>.*`
+    // login warrants reuse across the user's browsers); a cookie-only fallback
+    // identity with no account gets a fresh standalone prefix.
+    let account = state.user_store.get_user_by_email(&email).ok().flatten();
+    let ns_prefix = match &account {
+        Some(user) => match state.user_store.get_or_create_namespace(user.id, "browsers") {
+            Ok(p) => p,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"success": false, "reason": format!("namespace: {e}")}))),
+        },
+        None => crate::crypto::generate_namespace_prefix(),
+    };
+    let holder = match browserid_core::device::Holder::new(crate::crypto::assign_holder_id(&ns_prefix)) {
+        Ok(h) => h,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"success": false, "reason": format!("holder: {e}")}))),
+    };
     // The config (authorization) cert also covers the email's `+tag`
     // sub-addresses, so it can sign warrants for the user's plus-named agent
     // identities (design doc Stage 3 — e.g. `dan+claude@example.com`). The
@@ -339,7 +356,7 @@ where
     };
     let issue = |pubkey: &PublicKey, purpose: Purpose, identities: Vec<String>, status: browserid_core::StatusRef| {
         DeviceCert::create(
-            &state.domain, pubkey, purpose, Subject::User,
+            &state.domain, pubkey, purpose, holder.clone(),
             identities, ttl, &state.keypair, Some(status),
         )
     };
@@ -368,7 +385,7 @@ where
                 user_id: user.id,
                 identities: vec![email.clone()],
                 purpose: purpose.to_string(),
-                subject: "user".to_string(),
+                holder: holder.as_str().to_string(),
                 pubkey: pubkey.clone(),
                 iss: state.domain.clone(),
                 issued_at: now,
