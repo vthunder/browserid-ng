@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-07-17T22:29:06Z
-updated_at: 2026-07-18T19:41:27Z
+updated_at: 2026-07-20T09:09:11Z
 parent: browserid-ng-oup3
 blocking:
     - browserid-ng-oup3
@@ -22,3 +22,6 @@ Hard PREREQUISITE for Model A Phase 4 (iframe retirement). browserid-broker/stat
 
 ## Context
 Surfaced by the Model A migration audit (see docs/plans/2026-07-18-model-a-browser-first-agent-migration-plan.md §4 + risk register). Blocks epic browserid-ng-oup3 Phase 4.
+
+## Scoped (session 4): A == this bean on the device model
+Design decision: A (per-action broker typed-signing) is the wallet pattern; D/E (server-side/agent) for delegated posting. Relocating signSboEnvelope onto the device model IS 3b8m. Existing partial relocation surface: static/sign.html + common/js/sbo-signer.js + sbo-sign.js (classic — signs with identity Certificate). Device-model port: mint access cert over a fresh signing key, sign the envelope with it, assemble access_cert~assertion~warrant(typed scopes)~config_cert — exactly what sbo verify_device_attribution now accepts. Steps: (1) port sbo-signer/sbo-sign to device model (reuse dialog buildPresentation), (2) per-action approve+render mode (wallet security surface), (3) redirect-fallback the signer surface, (4) delete communication_iframe + classic common/js stack. Open decisions with Dan: per-action-mint TTL, typed-render ownership (broker-generic vs RP-template), whether a wallet demo is in scope now. Gated on the sbo verifier (now landed).

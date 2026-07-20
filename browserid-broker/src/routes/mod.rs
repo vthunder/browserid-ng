@@ -143,11 +143,8 @@ where
         .route("/sign_in", get(sign_in_return))
         .nest_service("/relay", ServeDir::new(format!("{}/relay", static_path)))
         .route_service("/include.js", ServeFile::new(format!("{}/include.js", static_path)))
-        .route_service("/communication_iframe", ServeFile::new(format!("{}/communication_iframe.html", static_path)))
-        // Serve common JS files (for communication_iframe)
+        // Serve common JS (keystore + the SBO typed-signing surface).
         .nest_service("/common/js", ServeDir::new(format!("{}/common/js", static_path)))
-        // Serve communication_iframe scripts (explicit route to avoid conflict)
-        .route_service("/communication_iframe/start.js", ServeFile::new(format!("{}/communication_iframe/start.js", static_path)))
         // SBO signer popup (first-party broker window for cross-site typed signing)
         .route_service("/sign", ServeFile::new(format!("{}/sign.html", static_path)))
         // Agent-key management UI (tdxf) — create/list/revoke provisioning certs
@@ -226,7 +223,7 @@ where
         // CookieManagerLayer has written Set-Cookie, so it can read whether the
         // session cookie was just set/cleared to derive the login status. It also
         // denies framing everywhere except the surfaces RPs legitimately embed
-        // (communication_iframe + winchan relay); the consent page especially
+        // (the winchan relay); the consent page especially
         // must never render in an iframe (its one-click Approve signs a warrant).
         .layer(axum::middleware::from_fn(security_headers))
 }
@@ -300,13 +297,9 @@ fn csp_tier(path: &str) -> CspTier {
     if path.starts_with("/dialog/") {
         return CspTier::Dialog;
     }
-    if path.starts_with("/communication_iframe")
-        || path.starts_with("/relay")
-        // The fallback-IdP provisioning page is framed cross-origin by the
-        // mediator's dialog (apgv), exactly like a primary IdP's provision page.
-        || path == "/provision"
-        || path == "/provision.js"
-    {
+    // The winchan relay is framed cross-origin by the RP page during a dialog
+    // popup handshake — the one surface that still legitimately embeds.
+    if path.starts_with("/relay") {
         return CspTier::StrictEmbeddable;
     }
     // Demo / marketing / dev pages carry unhashed inline scripts (and demo.html
@@ -546,8 +539,6 @@ mod csp_tests {
         assert!(matches!(csp_tier("/dialog/dialog.html"), CspTier::Dialog));
         assert!(matches!(csp_tier("/wsapi/session_context"), CspTier::Strict));
         assert!(matches!(csp_tier("/sign_in"), CspTier::Strict));
-        assert!(matches!(csp_tier("/communication_iframe"), CspTier::StrictEmbeddable));
-        assert!(matches!(csp_tier("/provision"), CspTier::StrictEmbeddable));
         assert!(matches!(csp_tier("/relay/index.html"), CspTier::StrictEmbeddable));
         assert!(matches!(csp_tier("/"), CspTier::Loose));
         assert!(matches!(csp_tier("/broker-demo"), CspTier::Loose));

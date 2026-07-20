@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-19T10:13:26Z
-updated_at: 2026-07-19T14:38:32Z
+updated_at: 2026-07-20T09:09:11Z
 parent: browserid-ng-oup3
 ---
 
@@ -59,3 +59,6 @@ mingo-idp+web ported (see mingo commit): from-presentation session, device-autho
 
 ## mingo.place LIVE on the device model (session 3d)
 Deployed (mingo 154cd7f). Verified live: discovery advertises device-cert/access-cert/device-authorization; /device-authorize 200; /session/from-presentation fail-closed; poster reports disabled cleanly; classic /cert_key gone; mint CORS open for the dialog; broker address_info for @mingo.place surfaces device_auth+access_mint; SPA boots error-free and sign-in opens the browserid dialog (playwright). Remaining human check: full login click-through + handle claim.
+
+## sbo verifier migrated (session 4) — branch device-migration (ac48868)
+verify_device_attribution is the sole attribution path (4-object presentation, DNSSEC-rooted, envelope key == access-cert key). Classic Auth-Cert/Warrant verification removed; shared DNSSEC substrate kept. sbo-daemon validate.rs + authorize.rs + sbo-capture rewired; pinned to browserid-ng b2e4f82. Workspace green (354 pass, 2 ignored live). sbo-cli identity commands stubbed pending a device-cert CLI rebuild (follow-up, tracked in the mingo-follow-ups bean scope).

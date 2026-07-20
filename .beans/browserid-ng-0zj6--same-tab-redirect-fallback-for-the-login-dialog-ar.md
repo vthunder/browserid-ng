@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-19T15:21:34Z
-updated_at: 2026-07-19T15:39:53Z
+updated_at: 2026-07-19T15:47:03Z
 parent: browserid-ng-oup3
 ---
 
@@ -25,9 +25,9 @@ Full-page redirect alternative to the WinChan popup, auto-engaged when the popup
 - Certs in fragments are public objects; private keys never navigate (IndexedDB pending store).
 
 ## Order + estimate (~1 day incl. deploys)
-- [ ] 1. Redirect entry + fragment return, fallback path only (covers Arc for no-primary identities) + include.js auto-fallback timeout
-- [ ] 2. Primary same-tab hop: dialog pending/resume + return_url mode on sandmill + mingo device-authorize pages (+ deploys)
-- [ ] 3. e2e: playwright with window.open stubbed to null (popup-fail simulation), full round trip both paths
+- [x] 1. Redirect entry + fragment return + include.js auto-fallback (4s ready watchdog + popup-blocked branch + explicit request({redirect:true})); browserid.login() removed, rp-quickstart on watch()
+- [x] 2. Primary same-tab hop: keystore pending store carries the CryptoKeys across navigation; ?resume=device_auth; return_url mode on sandmill blade + mingo static pages
+- [x] 3. e2e green: full redirect create-account round trip (verified okay, fragment stripped) + mock-primary same-tab hop (device-authorize -> issue -> resume -> cross-origin mint w/ preflight -> presentation delivered). Popup mode + 29 broker suites unaffected
 - [ ] 4. Arc manual validation (Dan)
 
 ## Decision (Dan, 2026-07-19): remove browserid.login() entirely — watch()/request() is the only RP API (a .login() promise cannot survive the redirect navigation; the user would land back logged-out).
