@@ -205,6 +205,12 @@
     return nowS() + (skewS || 60) >= c.exp;
   }
 
+  // The opaque holder claim carried by a device/config cert (holder model).
+  function certHolder(jws) {
+    const c = decodeJws(jws);
+    return c ? c.holder : null;
+  }
+
   // --- device-cert keystore (IndexedDB device store) -----------------------
 
   // A stored, unexpired (device, config) cert pair for (issuer, email), or null.
@@ -246,6 +252,15 @@
   async function buildPresentation(pair, issuer, mintUrl, email, audience) {
     audience = audience || state.origin;
 
+    // The opaque broker-assigned holder this device acts as, read from the
+    // device cert (holder-authorization model). The mint copies it into the
+    // access cert; the login warrant grants the holder's whole namespace
+    // (`<prefix>.*`) so a login reuses across the user's browsers.
+    const holder = certHolder(pair.device.cert);
+    const loginMatcher = (holder && holder.includes('.'))
+      ? holder.slice(0, holder.indexOf('.')) + '.*'
+      : holder;
+
     // 1. Fresh access key + device-signed access request → IdP mint.
     const access = await Keystore.generate();
     const accessRequest = await signJws(pair.device.privateKey, {
@@ -255,7 +270,7 @@
       jti: rndHex(),
       domain: issuer,
       identity: email,
-      subject: 'user',
+      holder: holder,
       'access-key': { algorithm: 'Ed25519', publicKey: access.publicKeyX }
     });
     const minted = await postJson(mintUrl, {
@@ -264,13 +279,13 @@
     });
     if (!minted.access_cert) throw new Error(minted.reason || 'mint failed');
 
-    // 2. Login warrant, signed by the CONFIG key: (identity, user) → audience.
+    // 2. Login warrant, signed by the CONFIG key: (identity, holder-matcher) → audience.
     const warrant = await signJws(pair.config.privateKey, {
       typ: 'browserid-warrant-v1',
       iat: nowS(),
       exp: nowS() + 90 * 86400,
       identifier: email,
-      subject: 'user',
+      holder: loginMatcher,
       audience,
       scopes: ['login']
     });

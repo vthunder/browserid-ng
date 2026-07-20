@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-20T18:12:28Z
-updated_at: 2026-07-20T22:06:03Z
+updated_at: 2026-07-20T22:41:54Z
 parent: browserid-ng-oup3
 ---
 
@@ -16,8 +16,8 @@ Blocks: the device-model D (poster re-enable). A (browser signing) is already li
 - [x] Review + red-pen the design note with Dan (2026-07-20 session: rulings folded in)
 - [x] browserid-core: holder on DeviceCert/AccessCert + AccessRequest; warrant HolderMatcher (*/ns.*/id); renamed Subject→Holder; verify holder-match; conformance tests (matcher semantics, passthrough+copy, fail-closed); golden vectors regenerated
 - [~] broker 2a DONE: device_issue/fallback/fedcm assign broker holder; mint copies verbatim; namespaces table (prefix storage); login warrants <prefix>.*; gates dropped. 2b TODO: account holder-registry UI (list/labels/adopt/re-categorize)
-- [ ] registrar/warrant flow: matcher in request+registry
-- [ ] sbo: authorize/device_attribution on holders, no subject
+- [x] registrar/warrant flow (stage 3): namespace holder assignment via broker registry + hint; warrant_request persists agent holder; respond validates matcher covers holder + rejects bare *; consent.html signs <id> matcher (widenable <ns>.*); consent.html subject:'agent' fixed
+- [x] sbo (stage 4): device_attribution DeviceAttribution.subject->holder (from access_cert.holder); authorize unchanged (keys off email/owner); core rev bumped b2e4f82->b8526f6; sbo-core+daemon green. Committed sbo main 55314e9. Deploy (SBO_REV bump) pairs with stage 5 D.
 - [ ] D: mingo-poster as a warranted holder, owner=you
 - [ ] conformance: holder passthrough+copy; monitor over-broad mints
 

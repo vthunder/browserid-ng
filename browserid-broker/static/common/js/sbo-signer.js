@@ -130,7 +130,7 @@
       var areqP = signJws(pair.device.privateKey, {
         typ: "browserid-access-request-v1",
         iat: nowS(), exp: nowS() + 600, jti: rndHex(),
-        domain: domain, identity: email, subject: "user",
+        domain: domain, identity: email, holder: deviceClaims.holder,
         "access-key": { algorithm: "Ed25519", publicKey: access.publicKeyX }
       });
       return areqP.then(function (accessRequest) {
@@ -147,7 +147,7 @@
         var warrantP = signJws(pair.config.privateKey, {
           typ: "browserid-warrant-v1",
           iat: nowS(), exp: nowS() + 90 * 86400,
-          identifier: email, subject: "user", audience: audience, scopes: []
+          identifier: email, holder: deviceClaims.holder, audience: audience, scopes: []
         });
         // Assertion (access key): binds the fresh key to `audience`.
         var assertionP = signJws(access.privateKey, { exp: nowS() + 300, aud: audience });
