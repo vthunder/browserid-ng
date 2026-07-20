@@ -239,7 +239,7 @@ mod tests {
             "broker.example",
             &KeyPair::generate().public_key(),
             crate::Purpose::Authentication,
-            crate::Subject::User,
+            crate::Holder::new("br.main").unwrap(),
             vec!["a@broker.example".to_string()],
             chrono::Duration::hours(1),
             &key,

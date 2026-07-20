@@ -1,13 +1,14 @@
 //! The device-cert model — see `docs/design/browserid-end-to-end-flow.md`.
 //!
 //! Two IdP-signed device-cert *purposes* (`authentication` mints access certs;
-//! `authorization` signs warrants) crossed with a *subject* (`user` | `agent`).
-//! An authentication device cert signs an [`AccessRequest`] that the IdP
-//! exchanges for a short-lived, fresh-key [`AccessCert`]. A config cert
+//! `authorization` signs warrants) each carrying an opaque, broker-assigned
+//! [`Holder`] (which of the user's things acts). An authentication device cert
+//! signs an [`AccessRequest`] that the IdP exchanges for a short-lived,
+//! fresh-key [`AccessCert`] carrying the same holder. A config cert
 //! (`authorization`, device-resident) signs a [`Warrant`] over `(identifier,
-//! subject) → audience[+scopes]`. The RP receives an [`AccessPresentation`] —
-//! `access_cert ~ assertion ~ warrant ~ config_cert` — and joins them by
-//! `(identity, subject, audience)`.
+//! holder-matcher) → audience[+scopes]`. The RP receives an
+//! [`AccessPresentation`] — `access_cert ~ assertion ~ warrant ~ config_cert` —
+//! and joins them by `(identity, holder∈matcher, audience)`.
 //!
 //! Hardening (from the 2026-07-18 adversarial review):
 //! - the config cert MUST be issued by the identity's own IdP
@@ -17,8 +18,9 @@
 //!   carry a status ref; [`VerifiedAccess`] surfaces all three for the caller to
 //!   check **fail-closed** (revocation needs network, so it lives in the RP-side
 //!   verifier, not here);
-//! - `subject` is part of the join; unknown `purpose`/`subject` values fail
-//!   closed (serde rejects unknown variants);
+//! - the holder is part of the join (matcher-covers-holder); unknown `purpose`
+//!   values fail closed (serde rejects unknown variants), and an over-long or
+//!   empty holder/matcher is rejected at parse;
 //! - access requests carry a `jti` for single-use replay protection at the mint.
 
 use chrono::{Duration, Utc};
@@ -65,13 +67,105 @@ pub enum Purpose {
     Authorization,
 }
 
-/// Which kind of identity a cert/warrant acts for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Subject {
-    #[serde(rename = "user")]
-    User,
-    #[serde(rename = "agent")]
-    Agent,
+/// Maximum wire length of a [`Holder`] id (bytes). Generous, to leave room for
+/// other broker implementations; the reference broker uses ≈16.
+pub const HOLDER_MAX_BYTES: usize = 128;
+
+/// An opaque, broker-assigned **holder** id carried by device + access certs.
+///
+/// The wire form is a single opaque string (spec cap [`HOLDER_MAX_BYTES`]). The
+/// reference broker structures it as `<ns>.<holder>` so a warrant can wildcard a
+/// namespace, but that is a *broker convention* — this type treats the whole
+/// value as opaque. The requesting device never chooses it: the user's broker
+/// assigns it and the IdP copies it verbatim device→access at mint. It replaces
+/// the old `subject: user|agent` axis (a self-asserted, unenforceable hint).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Holder(String);
+
+impl Holder {
+    pub fn new(s: impl Into<String>) -> Result<Self> {
+        let s = s.into();
+        if s.is_empty() {
+            return Err(invalid("holder", "empty"));
+        }
+        if s.len() > HOLDER_MAX_BYTES {
+            return Err(invalid("holder", format!("exceeds {HOLDER_MAX_BYTES} bytes")));
+        }
+        Ok(Self(s))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for Holder {
+    type Error = crate::Error;
+    fn try_from(s: String) -> Result<Self> {
+        Self::new(s)
+    }
+}
+impl From<Holder> for String {
+    fn from(h: Holder) -> String {
+        h.0
+    }
+}
+
+/// A warrant's holder matcher, spanning the reuse↔isolation axis:
+/// - `*` — any of the user's holders (spec-legal; the reference broker refuses
+///   to *issue* it, but the type accepts it so a future use isn't blocked);
+/// - `<ns>.*` — any holder in a namespace (the dot-prefix before `.*`);
+/// - `<id>` — one specific holder (exact match).
+///
+/// The RP checks the presented access cert's [`Holder`] against this matcher —
+/// a trivial string test, no new crypto. Wire form is a plain opaque string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct HolderMatcher(String);
+
+impl HolderMatcher {
+    pub fn new(s: impl Into<String>) -> Result<Self> {
+        let s = s.into();
+        if s.is_empty() {
+            return Err(invalid("holder matcher", "empty"));
+        }
+        if s.len() > HOLDER_MAX_BYTES {
+            return Err(invalid("holder matcher", format!("exceeds {HOLDER_MAX_BYTES} bytes")));
+        }
+        Ok(Self(s))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    /// Does this matcher cover `holder`?
+    pub fn matches(&self, holder: &Holder) -> bool {
+        let m = self.0.as_str();
+        let h = holder.as_str();
+        if m == "*" {
+            return true;
+        }
+        if let Some(ns) = m.strip_suffix(".*") {
+            // `<ns>.*` matches a holder whose namespace prefix is exactly `ns`,
+            // i.e. the holder is `<ns>.<rest>`. Require the dot so `k3n9.*` does
+            // not match a different namespace `k3n9x.…`.
+            return h
+                .strip_prefix(ns)
+                .is_some_and(|rest| rest.starts_with('.'));
+        }
+        m == h
+    }
+}
+
+impl TryFrom<String> for HolderMatcher {
+    type Error = crate::Error;
+    fn try_from(s: String) -> Result<Self> {
+        Self::new(s)
+    }
+}
+impl From<HolderMatcher> for String {
+    fn from(m: HolderMatcher) -> String {
+        m.0
+    }
 }
 
 // ===========================================================================
@@ -86,7 +180,8 @@ pub struct DeviceCertClaims {
     pub iat: i64,
     pub exp: i64,
     pub purpose: Purpose,
-    pub subject: Subject,
+    /// The broker-assigned opaque holder this device acts as.
+    pub holder: Holder,
     /// Emails (or single-`*` globs) this device may act for.
     pub identities: Vec<String>,
     #[serde(rename = "public-key")]
@@ -108,7 +203,7 @@ impl DeviceCert {
         idp_domain: &str,
         device_pub: &PublicKey,
         purpose: Purpose,
-        subject: Subject,
+        holder: Holder,
         identities: Vec<String>,
         validity: Duration,
         idp_key: &KeyPair,
@@ -124,7 +219,7 @@ impl DeviceCert {
             iat: now.timestamp(),
             exp: (now + validity).timestamp(),
             purpose,
-            subject,
+            holder,
             identities,
             public_key: device_pub.clone(),
             status,
@@ -159,8 +254,8 @@ impl DeviceCert {
     pub fn purpose(&self) -> Purpose {
         self.claims.purpose
     }
-    pub fn subject(&self) -> Subject {
-        self.claims.subject
+    pub fn holder(&self) -> &Holder {
+        &self.claims.holder
     }
     pub fn public_key(&self) -> &PublicKey {
         &self.claims.public_key
@@ -188,7 +283,9 @@ pub struct AccessRequestClaims {
     pub domain: String,
     /// Which identity to mint an access cert for (∈ the device cert's list).
     pub identity: String,
-    pub subject: Subject,
+    /// The holder the minted access cert must carry (copied from the device
+    /// cert — the mint MUST NOT let the requester choose a different value).
+    pub holder: Holder,
     /// The fresh key to certify (never the device key).
     #[serde(rename = "access-key")]
     pub access_key: PublicKey,
@@ -204,7 +301,7 @@ impl AccessRequest {
     pub fn create(
         domain: &str,
         identity: &str,
-        subject: Subject,
+        holder: Holder,
         access_pub: &PublicKey,
         jti: &str,
         device_key: &KeyPair,
@@ -217,7 +314,7 @@ impl AccessRequest {
             jti: jti.to_string(),
             domain: domain.to_string(),
             identity: identity.to_string(),
-            subject,
+            holder,
             access_key: access_pub.clone(),
         }, device_key)
     }
@@ -259,7 +356,9 @@ pub struct AccessCertClaims {
     pub iat: i64,
     pub exp: i64,
     pub identity: String,
-    pub subject: Subject,
+    /// Copied verbatim from the issuing device cert at mint (the isolation
+    /// guarantee: the requester cannot choose or forge it).
+    pub holder: Holder,
     #[serde(rename = "public-key")]
     pub access_key: PublicKey,
     /// Revocation ref, rooted at the ISSUING DEVICE's status index (so revoking
@@ -278,7 +377,7 @@ impl AccessCert {
     pub fn create(
         idp_domain: &str,
         identity: &str,
-        subject: Subject,
+        holder: Holder,
         access_pub: &PublicKey,
         validity: Duration,
         idp_key: &KeyPair,
@@ -291,7 +390,7 @@ impl AccessCert {
             iat: now.timestamp(),
             exp: (now + validity).timestamp(),
             identity: identity.to_string(),
-            subject,
+            holder,
             access_key: access_pub.clone(),
             status,
         }, idp_key)
@@ -324,7 +423,7 @@ impl AccessCert {
 }
 
 // ===========================================================================
-// Warrant (config-cert-signed): (identifier, subject) → audience[+scopes].
+// Warrant (config-cert-signed): (identifier, holder-matcher) → audience[+scopes].
 // ===========================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -333,7 +432,8 @@ pub struct WarrantClaims {
     pub iat: i64,
     pub exp: i64,
     pub identifier: String,
-    pub subject: Subject,
+    /// Which holder(s) this warrant grants to: `*`, `<ns>.*`, or `<id>`.
+    pub holder: HolderMatcher,
     pub audience: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scopes: Vec<String>,
@@ -351,7 +451,7 @@ pub struct Warrant {
 impl Warrant {
     pub fn create(
         identifier: &str,
-        subject: Subject,
+        holder: HolderMatcher,
         audience: &str,
         scopes: Vec<String>,
         validity: Duration,
@@ -364,7 +464,7 @@ impl Warrant {
             iat: now.timestamp(),
             exp: (now + validity).timestamp(),
             identifier: identifier.to_string(),
-            subject,
+            holder,
             audience: audience.to_string(),
             scopes,
             status,
@@ -406,7 +506,9 @@ impl Warrant {
 #[derive(Debug, Clone)]
 pub struct VerifiedAccess {
     pub email: String,
-    pub subject: Subject,
+    /// The opaque holder the access cert carried (which of the user's things
+    /// acted). Advisory to the RP; the human/agent axis is gone.
+    pub holder: Holder,
     pub scopes: Vec<String>,
     pub issuer: String,
     pub access_status: Option<StatusRef>,
@@ -496,7 +598,7 @@ impl AccessPresentation {
             return Err(invalid("config cert", "not authorized for this identity"));
         }
 
-        // Warrant signed by the config cert, over this (identity, subject, audience).
+        // Warrant signed by the config cert, over this (identity, holder, audience).
         self.warrant.verify(&cc.public_key)?;
         if self.warrant.is_expired() {
             return Err(invalid("warrant", "expired"));
@@ -504,8 +606,11 @@ impl AccessPresentation {
         if wc.identifier != ac.identity {
             return Err(invalid("warrant", "identifier != access identity"));
         }
-        if wc.subject != ac.subject {
-            return Err(invalid("warrant", "subject != access subject"));
+        // The warrant's holder matcher (`*` / `<ns>.*` / `<id>`) must cover the
+        // access cert's holder — the isolation check that replaces the old
+        // subject-equality join.
+        if !wc.holder.matches(&ac.holder) {
+            return Err(invalid("warrant", "holder does not match warrant matcher"));
         }
         if wc.audience != expected_audience {
             return Err(invalid("warrant", "audience mismatch"));
@@ -513,7 +618,7 @@ impl AccessPresentation {
 
         Ok(VerifiedAccess {
             email: ac.identity.clone(),
-            subject: ac.subject,
+            holder: ac.holder.clone(),
             scopes: wc.scopes.clone(),
             issuer: ac.iss.clone(),
             access_status: ac.status.clone(),

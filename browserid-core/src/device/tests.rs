@@ -55,7 +55,7 @@ impl Fixture {
                 iat: IAT,
                 exp: IAT + 24 * HOUR,
                 identity: self.email().into(),
-                subject: Subject::User,
+                holder: Holder::new("br.main").unwrap(),
                 access_key: self.access_key.public_key(),
                 status: status("https://sandmill.org/.well-known/browserid-status", 7),
             },
@@ -71,7 +71,7 @@ impl Fixture {
                 iat: IAT,
                 exp: IAT + 90 * DAY,
                 purpose: Purpose::Authorization,
-                subject: Subject::User,
+                holder: Holder::new("br.main").unwrap(),
                 identities: vec![self.email().into()],
                 public_key: self.config_key.public_key(),
                 status: status("https://sandmill.org/.well-known/browserid-status", 2),
@@ -87,7 +87,7 @@ impl Fixture {
                 iat: IAT,
                 exp: IAT + 90 * DAY,
                 identifier: self.email().into(),
-                subject: Subject::User,
+                holder: HolderMatcher::new("br.*").unwrap(),
                 audience: self.audience().into(),
                 scopes: vec!["login".into()],
                 status: status("https://browserid.me/.well-known/browserid-status", 42),
@@ -130,7 +130,7 @@ fn full_user_login_roundtrip() {
         Ok(idp_pub.clone())
     }).unwrap();
     assert_eq!(v.email, f.email());
-    assert_eq!(v.subject, Subject::User);
+    assert_eq!(v.holder.as_str(), "br.main");
     assert_eq!(v.scopes, vec!["login".to_string()]);
     // All three revocation refs surfaced for the caller to check fail-closed.
     assert!(v.access_status.is_some() && v.config_status.is_some() && v.warrant_status.is_some());
@@ -168,7 +168,7 @@ fn config_not_authorized_for_identity_rejected() {
     let cc = DeviceCert::from_claims(
         DeviceCertClaims {
             typ: TYP_DEVICE_CERT.into(), iss: f.idp_domain().into(), iat: IAT, exp: IAT + 90 * DAY,
-            purpose: Purpose::Authorization, subject: Subject::User,
+            purpose: Purpose::Authorization, holder: Holder::new("br.main").unwrap(),
             identities: vec!["someone-else@sandmill.org".into()],
             public_key: f.config_key.public_key(), status: None,
         },
@@ -186,7 +186,7 @@ fn authentication_purpose_config_cert_rejected() {
     let cc = DeviceCert::from_claims(
         DeviceCertClaims {
             typ: TYP_DEVICE_CERT.into(), iss: f.idp_domain().into(), iat: IAT, exp: IAT + 90 * DAY,
-            purpose: Purpose::Authentication, subject: Subject::User,
+            purpose: Purpose::Authentication, holder: Holder::new("br.main").unwrap(),
             identities: vec![f.email().into()], public_key: f.config_key.public_key(), status: None,
         },
         &f.idp,
@@ -197,12 +197,68 @@ fn authentication_purpose_config_cert_rejected() {
 }
 
 #[test]
-fn unknown_purpose_or_subject_fails_closed() {
+fn unknown_purpose_fails_closed() {
     // serde rejects unknown enum variants → parse fails (fail-closed).
     assert!(serde_json::from_value::<Purpose>(json!("frobnicate")).is_err());
-    assert!(serde_json::from_value::<Subject>(json!("root")).is_err());
     assert!(serde_json::from_value::<Purpose>(json!("authentication")).is_ok());
-    assert!(serde_json::from_value::<Subject>(json!("user")).is_ok());
+}
+
+#[test]
+fn holder_validation_fails_closed() {
+    // A holder / matcher is an opaque string, but empty or over-long is rejected
+    // at parse (fail-closed), and any well-formed string round-trips.
+    assert!(serde_json::from_value::<Holder>(json!("")).is_err());
+    assert!(serde_json::from_value::<Holder>(json!("br.main")).is_ok());
+    let too_long = "x".repeat(HOLDER_MAX_BYTES + 1);
+    assert!(serde_json::from_value::<Holder>(json!(too_long)).is_err());
+    assert!(serde_json::from_value::<HolderMatcher>(json!("br.*")).is_ok());
+    assert!(serde_json::from_value::<HolderMatcher>(json!("")).is_err());
+}
+
+#[test]
+fn holder_matcher_semantics() {
+    let m = |s: &str| HolderMatcher::new(s).unwrap();
+    let h = |s: &str| Holder::new(s).unwrap();
+    // `*` — any holder.
+    assert!(m("*").matches(&h("br.main")));
+    assert!(m("*").matches(&h("svc.mingo-poster")));
+    // `<ns>.*` — same namespace only; a shared char-prefix does NOT match.
+    assert!(m("br.*").matches(&h("br.main")));
+    assert!(m("br.*").matches(&h("br.phone")));
+    assert!(!m("br.*").matches(&h("brx.main")));
+    assert!(!m("br.*").matches(&h("svc.main")));
+    // `<id>` — exact holder only.
+    assert!(m("svc.mingo-poster").matches(&h("svc.mingo-poster")));
+    assert!(!m("svc.mingo-poster").matches(&h("svc.other")));
+    assert!(!m("br.main").matches(&h("br.other")));
+}
+
+/// Checkpoint (build-sequence stage 1): the mint copies the device cert's holder
+/// verbatim into the access cert, and a warrant matcher joins against it. This
+/// is the passthrough+copy conformance property the isolation guarantee rests on.
+#[test]
+fn holder_passthrough_copy_and_isolation() {
+    let f = Fixture::new();
+    // The access cert carries exactly the device cert's holder (copied at mint).
+    assert_eq!(f.access_cert().claims().holder, f.auth_device_cert_claims().holder);
+
+    // Isolation: a warrant scoped to a DIFFERENT specific holder does not verify,
+    // even though identity + audience match — the matcher rejects the holder.
+    let isolated = Warrant::from_claims(
+        WarrantClaims {
+            typ: TYP_WARRANT.into(), iat: IAT, exp: IAT + 90 * DAY,
+            identifier: f.email().into(),
+            holder: HolderMatcher::new("svc.some-other-service").unwrap(),
+            audience: f.audience().into(), scopes: vec!["login".into()], status: None,
+        },
+        &f.config_key,
+    ).unwrap();
+    let pres = AccessPresentation {
+        access_cert: f.access_cert(), assertion: f.assertion(),
+        warrant: isolated, config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
+    };
+    let idp_pub = f.idp.public_key();
+    assert!(pres.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
 }
 
 // --- golden cross-language vectors ----------------------------------------
@@ -237,14 +293,14 @@ fn golden_vectors() {
         "warrant": { "claims": serde_json::to_value(warrant.claims()).unwrap(), "jws": warrant.encoded() },
         "accept": {
             "audience": f.audience(),
-            "expect": { "email": f.email(), "subject": "user", "scopes": ["login"] }
+            "expect": { "email": f.email(), "holder": "br.main", "scopes": ["login"] }
         },
         "reject_cases": [
             "config cert signed by an IdP other than the access cert's iss",
             "config cert with purpose=authentication",
-            "warrant/access subject mismatch",
+            "access cert holder not covered by the warrant's holder matcher",
             "audience mismatch",
-            "unknown purpose or subject value"
+            "unknown purpose value, or an empty/over-long holder or matcher"
         ]
     });
 
@@ -282,7 +338,7 @@ impl Fixture {
             iat: IAT,
             exp: IAT + 90 * DAY,
             purpose: Purpose::Authentication,
-            subject: Subject::User,
+            holder: Holder::new("br.main").unwrap(),
             identities: vec![self.email().into()],
             public_key: seed_key(2).public_key(),
             status: status("https://sandmill.org/.well-known/browserid-status", 1),

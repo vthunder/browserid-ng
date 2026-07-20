@@ -5,8 +5,8 @@
 //!   access certs) x authorization (signs warrants) — and run the headless
 //!   access-cert mint
 //! - Holders present `access_cert~assertion~warrant~config_cert` to RPs
-//! - Verifiers join the bundle by (identity, subject, audience), rooted at
-//!   the identity's own IdP key
+//! - Verifiers join the bundle by (identity, holder∈matcher, audience), rooted
+//!   at the identity's own IdP key
 
 pub mod keys;
 pub mod assertion;
@@ -23,7 +23,8 @@ pub use assertion::Assertion;
 // `device::Warrant` is not re-exported at the crate root: call it
 // `device::Warrant` at use sites, mirroring the wire object's home.
 pub use device::{
-    AccessCert, AccessPresentation, AccessRequest, DeviceCert, Purpose, Subject, VerifiedAccess,
+    AccessCert, AccessPresentation, AccessRequest, DeviceCert, Holder, HolderMatcher, Purpose,
+    VerifiedAccess,
 };
 pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;

@@ -5,7 +5,7 @@
 //! small thing: a token-exchange endpoint where a browserid **access
 //! presentation** (`access_cert~assertion~warrant~config_cert`) is swapped for
 //! the RP's own bearer token (RFC 7521-shaped; the RP still learns just "an
-//! email" + subject + scopes). Discovery is in-band and self-describing:
+//! email" + an opaque holder + scopes). Discovery is in-band and self-describing:
 //!
 //! ```text
 //! GET /data
@@ -163,12 +163,12 @@ pub struct TokenResponse {
     /// The verified email — extra response member; RPs may omit it
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
-    /// Which kind of identity authenticated: `"user"` or `"agent"` (the
-    /// presentation's verified subject axis)
+    /// The opaque holder id the presentation carried (which of the user's
+    /// things acted). Advisory; the old `user`/`agent` subject axis is gone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
+    pub holder: Option<String>,
     /// Scopes granted to this token (intersection of the warrant's scopes
-    /// with the RP's own) — present only for agent tokens
+    /// with the RP's own) — present only for scoped (warranted) tokens
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
 }
