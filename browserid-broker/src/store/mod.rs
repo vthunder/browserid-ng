@@ -9,6 +9,7 @@ pub use models::*;
 pub use sqlite::SqliteStore;
 
 use crate::error::BrokerError;
+use std::collections::HashMap;
 
 /// Result type for store operations
 pub type StoreResult<T> = Result<T, BrokerError>;
@@ -194,6 +195,28 @@ pub trait UserStore: Send + Sync {
     /// so a future re-categorize can rotate it. Every holder the broker assigns
     /// under this namespace is `<prefix>.<random>`.
     fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String>;
+
+    /// List this user's namespaces (name, stored prefix, friendly label).
+    fn list_namespaces(&self, user_id: UserId) -> StoreResult<Vec<Namespace>>;
+
+    /// Rename a namespace's friendly label (leaves the opaque prefix untouched,
+    /// so existing holders + `<prefix>.*` warrants keep matching).
+    fn set_namespace_label(&self, user_id: UserId, name: &str, label: &str) -> StoreResult<()>;
+
+    /// Create a namespace with a fresh random prefix. No-op/`Ok` if it exists.
+    fn create_namespace(&self, user_id: UserId, name: &str, label: &str) -> StoreResult<()>;
+
+    /// Delete a namespace. Refused (`PolicyRefused`) if any of this user's
+    /// device-cert holders still live under its prefix (block non-empty).
+    fn delete_namespace(&self, user_id: UserId, name: &str) -> StoreResult<()>;
+
+    /// Set the friendly label for one opaque holder id (the logical-slot name,
+    /// e.g. "Main Laptop"). Upserts.
+    fn set_holder_label(&self, user_id: UserId, holder_id: &str, label: &str) -> StoreResult<()>;
+
+    /// This user's holder-id → friendly-label map (holders without a row are
+    /// simply absent; the caller supplies a default).
+    fn get_holder_labels(&self, user_id: UserId) -> StoreResult<HashMap<String, String>>;
 }
 
 /// Trait for session storage

@@ -179,13 +179,24 @@
       <ul class="idlist" id="external-ids"></ul>
     </div>
 
-    <div class="card" id="devices-card" hidden>
-      <h2>Devices</h2>
-      <p class="sub">Certificates this account issued: <b>device / agent</b> certs (authentication —
-        what logs a device or agent in) and <b>config</b> certs (authorization — what signs your
-        warrants). Revoking a device logs it out and <b>kills the access certificates it minted</b>,
-        so anything currently signed in with it stops working.</p>
-      <ul class="idlist" id="device-certs"></ul>
+    <div class="card" id="holders-card" hidden>
+      <h2>Devices &amp; holders</h2>
+      <p class="sub">Each thing that acts for you — a browser, an agent, a service — is a
+        <b>holder</b>, grouped into namespaces you organize. <span class="badge active">trusted</span>
+        holds a config certificate (can authorize new sites); <span class="badge inactive">login-only</span>
+        can reuse existing logins but not authorize new ones. Click a holder for its warrants.
+        Revoking a holder logs it out and <b>kills the access certificates it minted</b>.</p>
+      <div id="holders-tree"></div>
+      <div id="new-namespace-form" class="inline-form" hidden>
+        <label for="nn-name">New namespace (short slug — letters, digits, hyphen)</label>
+        <input id="nn-name" placeholder="services" maxlength="32">
+        <label for="nn-label">Display name</label>
+        <input id="nn-label" placeholder="External services" maxlength="64">
+        <button class="primary small" id="nn-btn">Create</button>
+        <button class="small" id="nn-cancel">Cancel</button>
+        <p class="status" id="nn-status"></p>
+      </div>
+      <p style="margin:12px 0 0"><button class="small linkish" id="nn-add">+ New namespace</button></p>
     </div>
 
     <div class="card">
@@ -208,6 +219,22 @@
         <span class="status" id="w-status"></span>
         <pre id="w-out" hidden></pre>
       </div>
+    </div>
+  </div>
+
+  <!-- Holder detail: this holder's warrants, plus an all-warrants-by-audience slice -->
+  <div id="holder-detail" hidden>
+    <div class="card">
+      <button id="hd-back" class="small">← Back</button>
+      <h2 id="hd-label" style="word-break:break-all"></h2>
+      <p class="kv"><span id="hd-badges"></span></p>
+      <p class="sub" id="hd-id" style="font-family:ui-monospace,monospace;word-break:break-all"></p>
+      <div style="margin:8px 0 12px">
+        <button class="small primary" id="hd-tab-holder">Granted to this holder</button>
+        <button class="small" id="hd-tab-aud">By audience (all)</button>
+      </div>
+      <div id="hd-warrants"></div>
+      <p class="status" id="hd-status"></p>
     </div>
   </div>
 
@@ -247,7 +274,7 @@ const post = (path, body) => api(path, {
   body: JSON.stringify({ csrf: account.csrf, ...body }),
 });
 
-let account = { emails: [], agents: [], parentOf: {}, warrants: [], deviceCerts: [], csrf: null };
+let account = { emails: [], agents: [], parentOf: {}, warrants: [], deviceCerts: [], holders: { namespaces: [], holders_without_namespace: [] }, csrf: null };
 let deviceCache = []; // this browser's DEVICE-store records (device/config certs, non-extractable keys)
 
 // -------- local device credentials (device-cert model) --------
@@ -284,7 +311,7 @@ function configFor(identity) {
   }
   return null;
 }
-// Device-cert display: the warrant's subject axis + who signed it (from the
+// Device-cert display: the warrant's holder matcher + who signed it (from the
 // registry row's config cert — device warrants don't embed their signer).
 function warrantMeta(w) {
   const p = certPayload(w.warrant || '') || {};
@@ -293,7 +320,7 @@ function warrantMeta(w) {
     const sp = certPayload(w.config_cert);
     signer = (sp?.identities || [])[0] || sp?.iss || null;
   }
-  return { subject: w.subject || p.subject || null, signer };
+  return { holder: w.holder || p.holder || null, signer };
 }
 /// active = this browser holds a valid device+config cert pair for the email
 function isActive(email) { return !!(deviceRec(email, 'device') && deviceRec(email, 'config')); }
@@ -562,50 +589,176 @@ function renderExternalServices(agentList) {
   }
 }
 
-// -------- devices (device-cert model, DC Phase 8) --------
-// Lists this account's IdP-issued certs: authentication certs (device / agent
-// login — "what mints access certs") and authorization certs (config — "what
-// signs your warrants"). Each is revocable = "log this device/agent out";
-// revoking flips the cert's status bit so its outstanding access certs die.
-function renderDeviceCerts() {
-  const certs = account.deviceCerts || [];
-  $('devices-card').hidden = !certs.length;
-  if (!certs.length) return;
-  const now = Date.now();
-  const byId = Object.fromEntries(certs.map(c => [c.id, c]));
-  $('device-certs').innerHTML = certs.map(c => {
-    const auth = c.purpose === 'authorization';
-    const purposeBadge = auth
-      ? '<span class="badge info">config · authorization</span>'
-      : `<span class="badge active">${escapeHtml(c.subject)} · authentication</span>`;
-    const exp = Date.parse(c.expires_at);
-    const state = c.revoked
-      ? '<span class="badge revoked">revoked</span>'
-      : (exp && exp < now
-        ? '<span class="warn" style="font-size:12px">expired</span>'
-        : `<span class="muted" style="font-size:12px">until ${new Date(exp).toLocaleDateString()}</span>`);
-    const ids = (c.identities || []).map(i => `<span class="scope">${escapeHtml(i)}</span>`).join('') || '';
-    const label = auth
-      ? (c.subject === 'agent' ? 'Log this agent out' : 'Log this device out')
-      : 'Revoke config cert';
-    const action = c.revoked ? ''
-      : `<button class="small dc-revoke" data-i="${c.id}" style="color:#c53030">${label}</button>`;
-    return `<li><div class="row"><span class="email-text">${purposeBadge} ${ids}
-      <span class="email-sub" style="font-family:ui-monospace,monospace;word-break:break-all">${escapeHtml((c.pubkey || '').slice(0, 24))}… · ${escapeHtml(c.iss)}</span></span>
-      <span style="white-space:nowrap;text-align:right">${state}<br>${action}</span></div></li>`;
+// -------- devices & holders (holder-authorization model, stage 2b) --------
+// Each thing that acts for you is a HOLDER (an opaque broker-assigned id), and
+// holders group into user-organized namespaces. The tree lists namespaces →
+// holders; a holder carries a trust badge (trusted = holds a config cert;
+// login-only = authentication only) and is revocable (logs it out; its access
+// certs die). Labels are editable inline; namespaces are creatable/removable.
+
+// Mirror of browserid-core HolderMatcher::matches — `*` / `<ns>.*` / `<id>`.
+function holderMatcherMatches(matcher, holderId) {
+  if (!matcher) return false;
+  if (matcher === '*') return true;
+  if (matcher.endsWith('.*')) {
+    const ns = matcher.slice(0, -2);
+    return holderId.startsWith(ns) && holderId.slice(ns.length).startsWith('.');
+  }
+  return matcher === holderId;
+}
+
+// The holder id this browser is currently signed in under (from its local
+// device certs), so we can tag its row "(this browser)".
+function thisBrowserHolder() {
+  for (const r of deviceCache) {
+    if (!r.cert) continue;
+    const c = certPayload(r.cert);
+    if (c && c.holder && (c.exp || 0) > nowS() + 60) return c.holder;
+  }
+  return null;
+}
+
+function holderRowHtml(h, thisHolder) {
+  const trust = h.trust === 'trusted'
+    ? '<span class="badge active">trusted</span>'
+    : '<span class="badge inactive">login-only</span>';
+  const here = thisHolder && h.holder_id === thisHolder
+    ? '<span class="badge info">this browser</span>' : '';
+  const rev = h.revoked ? '<span class="badge revoked">revoked</span>' : '';
+  const issued = h.issued_at ? `issued ${new Date(Date.parse(h.issued_at)).toLocaleDateString()}` : '';
+  const wc = `${h.warrant_count} warrant${h.warrant_count === 1 ? '' : 's'}`;
+  const certs = `${h.cert_count} cert${h.cert_count === 1 ? '' : 's'}`;
+  return `<li><button class="row holder-row" data-h="${escapeHtml(h.holder_id)}">
+    <span class="email-text">${escapeHtml(h.label)} ${trust} ${here} ${rev}
+      <span class="email-sub">${[issued, certs, wc].filter(Boolean).join(' · ')}</span></span>
+    <span class="chev">›</span></button></li>`;
+}
+
+function renderHolders() {
+  const data = account.holders || { namespaces: [], holders_without_namespace: [] };
+  const nss = data.namespaces || [];
+  const orphans = data.holders_without_namespace || [];
+  $('holders-card').hidden = !(nss.length || orphans.length);
+  const thisHolder = thisBrowserHolder();
+  const groups = nss.map(ns => {
+    const rows = ns.holders.length
+      ? `<ul class="idlist">${ns.holders.map(h => holderRowHtml(h, thisHolder)).join('')}</ul>`
+      : `<p class="muted" style="font-size:13px;margin:4px 0 0">No holders yet.</p>`;
+    const del = ns.holders.length
+      ? '' // non-empty namespaces can't be deleted; revoke holders first
+      : `<button class="small linkish ns-del" data-n="${escapeHtml(ns.name)}" style="color:#c53030">delete</button>`;
+    return `<div style="margin-bottom:16px">
+      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px">
+        <b style="font-size:15px">${escapeHtml(ns.label)}</b>
+        <button class="small linkish ns-rename" data-n="${escapeHtml(ns.name)}" data-l="${escapeHtml(ns.label)}">rename</button>
+        ${del}
+        <span class="muted" style="font-size:12px;margin-left:auto;font-family:ui-monospace,monospace">${escapeHtml(ns.prefix)}.*</span>
+      </div>
+      ${rows}</div>`;
   }).join('');
-  for (const b of $('device-certs').querySelectorAll('.dc-revoke')) b.onclick = async () => {
-    const c = byId[b.dataset.i];
-    const noun = c.purpose === 'authorization' ? 'config cert'
-      : (c.subject === 'agent' ? 'agent' : 'device');
-    if (!confirm(`Revoke this ${noun}? It stops working, and any access certificates it minted die within minutes.`)) return;
-    b.disabled = true;
-    try {
-      await post('/wsapi/revoke_device_cert', { csrf: account.csrf, id: Number(b.dataset.i) });
-      await reloadAccount();
-      renderDeviceCerts();
-    } catch (e) { b.disabled = false; alert('Revoke failed: ' + e.message); }
+  const orphanGroup = orphans.length ? `<div style="margin-bottom:16px">
+    <b style="font-size:15px">Uncategorized</b>
+    <ul class="idlist">${orphans.map(h => holderRowHtml(h, thisHolder)).join('')}</ul></div>` : '';
+  $('holders-tree').innerHTML = groups + orphanGroup;
+
+  for (const b of $('holders-tree').querySelectorAll('.holder-row')) {
+    b.onclick = () => openHolder(b.dataset.h);
+  }
+  for (const b of $('holders-tree').querySelectorAll('.ns-rename')) b.onclick = async () => {
+    const label = prompt('Namespace name:', b.dataset.l);
+    if (label == null || !label.trim()) return;
+    try { await post('/wsapi/rename_namespace', { name: b.dataset.n, label: label.trim() }); await reloadAccount(); renderHolders(); }
+    catch (e) { alert('Rename failed: ' + e.message); }
   };
+  for (const b of $('holders-tree').querySelectorAll('.ns-del')) b.onclick = async () => {
+    if (!confirm(`Delete the "${b.dataset.n}" namespace?`)) return;
+    try { await post('/wsapi/delete_namespace', { name: b.dataset.n }); await reloadAccount(); renderHolders(); }
+    catch (e) { alert('Delete failed: ' + e.message); }
+  };
+}
+
+// New-namespace form
+$('nn-add').onclick = () => { $('new-namespace-form').hidden = false; $('nn-name').focus(); };
+$('nn-cancel').onclick = () => { $('new-namespace-form').hidden = true; $('nn-name').value = ''; $('nn-label').value = ''; $('nn-status').textContent = ''; };
+$('nn-btn').onclick = async () => {
+  const name = $('nn-name').value.trim(), label = $('nn-label').value.trim();
+  const status = $('nn-status');
+  if (!name) { status.className = 'status err'; status.textContent = 'Enter a slug.'; return; }
+  try {
+    await post('/wsapi/create_namespace', { name, label: label || undefined });
+    $('new-namespace-form').hidden = true; $('nn-name').value = ''; $('nn-label').value = '';
+    await reloadAccount(); renderHolders();
+  } catch (e) { status.className = 'status err'; status.textContent = e.message; }
+};
+
+// -------- holder detail: two-slice warrant view --------
+let hdCtx = null; // { holderId, slice }
+function findHolder(holderId) {
+  const d = account.holders || {};
+  for (const ns of (d.namespaces || [])) { const h = ns.holders.find(x => x.holder_id === holderId); if (h) return h; }
+  return (d.holders_without_namespace || []).find(x => x.holder_id === holderId) || null;
+}
+function openHolder(holderId) {
+  hdCtx = { holderId, slice: 'holder' };
+  history.pushState({ view: 'holder', holderId }, '', '#h:' + encodeURIComponent(holderId));
+  renderHolderDetail();
+}
+function renderHolderDetail() {
+  const h = findHolder(hdCtx.holderId);
+  if (!h) { backToMain(); return; }
+  $('app').hidden = true; $('holder-detail').hidden = false; $('detail').hidden = true;
+  $('hd-label').textContent = h.label;
+  $('hd-badges').innerHTML = (h.trust === 'trusted'
+    ? '<span class="badge active">trusted</span>' : '<span class="badge inactive">login-only</span>')
+    + ` <button class="small linkish" id="hd-rename">rename</button>`
+    + (h.revoked ? ' <span class="badge revoked">revoked</span>' : '');
+  $('hd-id').textContent = h.holder_id;
+  $('hd-rename').onclick = async () => {
+    const label = prompt('Holder name:', h.label);
+    if (label == null || !label.trim()) return;
+    try { await post('/wsapi/rename_holder', { holder_id: h.holder_id, label: label.trim() }); await reloadAccount(); renderHolderDetail(); renderHolders(); }
+    catch (e) { alert('Rename failed: ' + e.message); }
+  };
+  $('hd-tab-holder').className = 'small' + (hdCtx.slice === 'holder' ? ' primary' : '');
+  $('hd-tab-aud').className = 'small' + (hdCtx.slice === 'audience' ? ' primary' : '');
+  hdCtx.slice === 'audience' ? renderHolderByAudience() : renderHolderOwnWarrants(h);
+}
+$('hd-tab-holder').onclick = () => { hdCtx.slice = 'holder'; renderHolderDetail(); };
+$('hd-tab-aud').onclick = () => { hdCtx.slice = 'audience'; renderHolderDetail(); };
+$('hd-back').onclick = () => history.back();
+
+function warrantStateHtml(w) {
+  const now = Date.now(); const exp = Date.parse(w.expires_at);
+  return w.revoked ? '<span class="badge revoked">revoked</span>'
+    : (exp && exp < now ? '<span class="warn" style="font-size:12px">expired</span>'
+      : `<span class="muted" style="font-size:12px">until ${new Date(exp).toLocaleDateString()}</span>`);
+}
+// Slice 1: every warrant whose matcher covers THIS holder.
+function renderHolderOwnWarrants(h) {
+  const entries = account.warrants.filter(w => holderMatcherMatches(w.holder, h.holder_id));
+  if (!entries.length) {
+    $('hd-warrants').innerHTML = `<p class="muted" style="font-size:13px">No warrants cover this holder yet.</p>`;
+    return;
+  }
+  $('hd-warrants').innerHTML = `<table class="wtable">` + entries.map(w =>
+    `<tr><td><span class="aud">${escapeHtml(w.audience)}</span><br>
+      <span class="muted" style="font-size:12px">matcher <b>${escapeHtml(w.holder || '—')}</b> · acting for ${escapeHtml(w.delegator_email)}</span><br>
+      ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
+      <td style="white-space:nowrap;text-align:right">${warrantStateHtml(w)}</td></tr>`).join('') + '</table>';
+}
+// Slice 2: ALL warrants grouped by audience (who can act where).
+function renderHolderByAudience() {
+  const byAud = new Map();
+  for (const w of account.warrants) {
+    const k = w.audience || '—'; (byAud.get(k) || byAud.set(k, []).get(k)).push(w);
+  }
+  if (!byAud.size) { $('hd-warrants').innerHTML = `<p class="muted" style="font-size:13px">No warrants on record.</p>`; return; }
+  $('hd-warrants').innerHTML = [...byAud.entries()].map(([aud, ws]) =>
+    `<div style="margin-bottom:12px"><div class="aud" style="font-weight:600;margin-bottom:4px">${escapeHtml(aud)}</div>
+      <table class="wtable">${ws.map(w =>
+        `<tr><td><span class="muted" style="font-size:12px">matcher <b>${escapeHtml(w.holder || '—')}</b> · ${escapeHtml(w.delegator_email)}</span><br>
+          ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
+          <td style="white-space:nowrap;text-align:right">${warrantStateHtml(w)}</td></tr>`).join('')}</table></div>`).join('');
 }
 
 // -------- add email (Add → discover → code or primary) --------
@@ -644,13 +797,17 @@ function showDetail(a) {
   showDetailNoPush(a);
   history.pushState({ view: 'detail', email: a.email, external: !!a.external }, '', '#' + encodeURIComponent(a.email));
 }
-function backToMain() { $('detail').hidden = true; $('app').hidden = false; }
+function backToMain() { $('detail').hidden = true; $('holder-detail').hidden = true; $('app').hidden = false; }
 $('detail-back').onclick = () => history.back();
 window.addEventListener('popstate', (e) => {
   if (e.state && e.state.view === 'detail') {
     const pool = e.state.external ? externalEntries() : agentEntries();
     const a = pool.find(x => x.email === e.state.email);
     if (a) { showDetailNoPush(a); return; }
+  }
+  if (e.state && e.state.view === 'holder') {
+    hdCtx = { holderId: e.state.holderId, slice: 'holder' };
+    renderHolderDetail(); return;
   }
   backToMain();
 });
@@ -699,12 +856,12 @@ function renderDetailWarrants(agentEmail, external) {
     const delegator = external
       ? `<span class="muted" style="font-size:12px">acting for ${escapeHtml(w.delegator_email)}</span><br>`
       : '';
-    // Device-cert model (DC): surface the warrant's subject (user|agent) and
-    // which cert signed it. Read straight from the warrant JWS so it works for
-    // both legacy (identity/parent-cert) and config-cert-signed warrants.
+    // Holder model: surface the warrant's holder matcher (`*` / `<ns>.*` /
+    // `<id>`) and which cert signed it. Read straight from the warrant JWS so it
+    // works for both legacy and config-cert-signed warrants.
     const meta = warrantMeta(w);
-    const metaLine = (meta.subject || meta.signer)
-      ? `<span class="muted" style="font-size:12px">${meta.subject ? `subject <b>${escapeHtml(meta.subject)}</b>` : ''}${meta.subject && meta.signer ? ' · ' : ''}${meta.signer ? `signed by ${escapeHtml(meta.signer)}` : ''}</span><br>`
+    const metaLine = (meta.holder || meta.signer)
+      ? `<span class="muted" style="font-size:12px">${meta.holder ? `holder <b>${escapeHtml(meta.holder)}</b>` : ''}${meta.holder && meta.signer ? ' · ' : ''}${meta.signer ? `signed by ${escapeHtml(meta.signer)}` : ''}</span><br>`
       : '';
     return `<tr>
       <td><span class="aud">${escapeHtml(w.audience)}</span><br>${delegator}${metaLine}
@@ -733,7 +890,7 @@ function renderDetailWarrants(agentEmail, external) {
     try {
       let statusRef = null;
       try { const alloc = await post('/wsapi/allocate_warrant_status', { csrf: account.csrf, agent_email: w.agent_email, audience: w.audience, scopes: w.scopes || [] }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
-      const jws = await signDeviceWarrant(config, w.agent_email, w.subject || 'agent', w.audience, w.scopes || [], statusRef);
+      const jws = await signDeviceWarrant(config, w.agent_email, w.holder || '*', w.audience, w.scopes || [], statusRef);
       await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws, config_cert: config.cert });
       await navigator.clipboard.writeText(`${jws}~${config.cert}`); await reloadAccount(); renderDetailWarrants(agentEmail, external);
       setStatus('ok', 'Reissued (fresh 90-day expiry), registered, and copied as warrant~config_cert — paste into the agent.');
@@ -745,10 +902,13 @@ function renderDetailWarrants(agentEmail, external) {
 // Signs a device-shaped warrant with the CONFIG key held in this browser and
 // registers it with its config cert. Output is `warrant~config_cert` — the
 // exact tail an agent splices into its access presentations.
-async function signDeviceWarrant(config, identifier, subject, audience, scopes, statusRef) {
+// `holder` is the warrant's matcher (`*` / `<ns>.*` / `<id>`). Manually-signed
+// warrants from this debug surface default to `*` (any of your holders); the
+// broker only *forbids* issuing `*` via consent, not client-side signing.
+async function signDeviceWarrant(config, identifier, holder, audience, scopes, statusRef) {
   const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
   const claims = { typ: 'browserid-warrant-v1', iat: nowS(), exp: nowS() + 90*24*3600,
-    identifier, subject, audience };
+    identifier, holder, audience };
   if ((scopes || []).length) claims.scopes = scopes;
   if (statusRef) claims.status = statusRef;
   const payload = b64urlJson(claims);
@@ -768,7 +928,7 @@ $('w-create').onclick = async () => {
   try {
     let statusRef = null;
     try { const alloc = await post('/wsapi/allocate_warrant_status', { csrf: account.csrf, agent_email: agentEmail, audience, scopes }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
-    const jws = await signDeviceWarrant(config, agentEmail, 'agent', audience, scopes, statusRef);
+    const jws = await signDeviceWarrant(config, agentEmail, '*', audience, scopes, statusRef);
     try { await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws, config_cert: config.cert }); } catch (e) { console.warn(e); }
     $('w-out').textContent = `${jws}~${config.cert}`; $('w-out').hidden = false;
     status.className = 'status ok'; status.textContent = 'Signed & registered — paste warrant~config_cert into the agent.';
@@ -790,14 +950,16 @@ $('reset').onclick = async () => { await clearLocal(); renderUserIdentities(); r
 // -------- boot --------
 async function reloadAccount() {
   const resp = await api('/wsapi/list_emails');
-  let warrants = [], deviceCerts = [];
+  let warrants = [], deviceCerts = [], holders = { namespaces: [], holders_without_namespace: [] };
   try { warrants = (await api('/wsapi/warrants')).warrants || []; } catch {}
   try { deviceCerts = (await api('/wsapi/device_certs')).certs || []; } catch {}
+  try { holders = await api('/wsapi/holders'); } catch {}
   account.emails = resp.emails || [];
   account.agents = resp.agents || [];
   account.parentOf = Object.fromEntries((resp.derived || []).map(d => [d.email, d.parent_email]));
   account.warrants = warrants;
   account.deviceCerts = deviceCerts;
+  account.holders = holders;
   await refreshKeystore();
 }
 // -------- paired agent provisioning approval (bean 74u1) --------
@@ -916,7 +1078,7 @@ async function boot() {
   $('app').hidden = false;
   renderUserIdentities();
   renderAgents();
-  renderDeviceCerts();
+  renderHolders();
   // Paired provisioning banner sits above the account app so add-email/activate
   // are right there for new users.
   if (provisionCode) {

@@ -8,7 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    DeviceCertRecord, Email, EmailType, PendingVerification, Session, SessionId, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
+    DeviceCertRecord, Email, EmailType, Namespace, PendingVerification, Session, SessionId, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, User, UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
@@ -27,8 +27,10 @@ pub struct InMemoryUserStore {
     next_user_id: AtomicU64,
     device_certs: RwLock<HashMap<u64, DeviceCertRecord>>,
     next_device_cert_id: AtomicU64,
-    /// (user_id, namespace name) -> stored random prefix
-    namespaces: RwLock<HashMap<(UserId, String), String>>,
+    /// (user_id, namespace name) -> (stored random prefix, friendly label)
+    namespaces: RwLock<HashMap<(UserId, String), (String, String)>>,
+    /// (user_id, holder_id) -> friendly label
+    holder_labels: RwLock<HashMap<(UserId, String), String>>,
 }
 
 impl InMemoryUserStore {
@@ -46,6 +48,7 @@ impl InMemoryUserStore {
             device_certs: RwLock::new(HashMap::new()),
             next_device_cert_id: AtomicU64::new(1),
             namespaces: RwLock::new(HashMap::new()),
+            holder_labels: RwLock::new(HashMap::new()),
         }
     }
 
@@ -524,11 +527,94 @@ impl UserStore for InMemoryUserStore {
 
     fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {
         let mut ns = self.namespaces.write().unwrap();
-        let prefix = ns
+        let (prefix, _label) = ns
             .entry((user_id, name.to_string()))
-            .or_insert_with(crate::crypto::generate_namespace_prefix)
-            .clone();
-        Ok(prefix)
+            .or_insert_with(|| (crate::crypto::generate_namespace_prefix(), title_case(name)));
+        Ok(prefix.clone())
+    }
+
+    fn list_namespaces(&self, user_id: UserId) -> StoreResult<Vec<Namespace>> {
+        let ns = self.namespaces.read().unwrap();
+        let mut out: Vec<Namespace> = ns
+            .iter()
+            .filter(|((uid, _), _)| *uid == user_id)
+            .map(|((_, name), (prefix, label))| Namespace {
+                name: name.clone(),
+                prefix: prefix.clone(),
+                label: label.clone(),
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    fn set_namespace_label(&self, user_id: UserId, name: &str, label: &str) -> StoreResult<()> {
+        let mut ns = self.namespaces.write().unwrap();
+        match ns.get_mut(&(user_id, name.to_string())) {
+            Some((_, l)) => {
+                *l = label.to_string();
+                Ok(())
+            }
+            None => Err(BrokerError::PolicyRefused("no such namespace".into())),
+        }
+    }
+
+    fn create_namespace(&self, user_id: UserId, name: &str, label: &str) -> StoreResult<()> {
+        let mut ns = self.namespaces.write().unwrap();
+        ns.entry((user_id, name.to_string()))
+            .or_insert_with(|| (crate::crypto::generate_namespace_prefix(), label.to_string()));
+        Ok(())
+    }
+
+    fn delete_namespace(&self, user_id: UserId, name: &str) -> StoreResult<()> {
+        let prefix = {
+            let ns = self.namespaces.read().unwrap();
+            match ns.get(&(user_id, name.to_string())) {
+                Some((p, _)) => p.clone(),
+                None => return Err(BrokerError::PolicyRefused("no such namespace".into())),
+            }
+        };
+        let in_use = self
+            .device_certs
+            .read()
+            .unwrap()
+            .values()
+            .any(|r| r.user_id == user_id && r.holder.starts_with(&format!("{prefix}.")));
+        if in_use {
+            return Err(BrokerError::PolicyRefused(
+                "namespace is not empty — revoke its holders first".into(),
+            ));
+        }
+        self.namespaces.write().unwrap().remove(&(user_id, name.to_string()));
+        Ok(())
+    }
+
+    fn set_holder_label(&self, user_id: UserId, holder_id: &str, label: &str) -> StoreResult<()> {
+        self.holder_labels
+            .write()
+            .unwrap()
+            .insert((user_id, holder_id.to_string()), label.to_string());
+        Ok(())
+    }
+
+    fn get_holder_labels(&self, user_id: UserId) -> StoreResult<HashMap<String, String>> {
+        Ok(self
+            .holder_labels
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|((uid, _), _)| *uid == user_id)
+            .map(|((_, hid), label)| (hid.clone(), label.clone()))
+            .collect())
+    }
+}
+
+/// Title-case a namespace name for its default label ("browsers" → "Browsers").
+fn title_case(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
     }
 }
 

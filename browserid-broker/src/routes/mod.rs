@@ -7,6 +7,7 @@ mod email;
 mod fallback_idp;
 mod fedcm;
 mod guestbook;
+mod holders;
 mod primary;
 mod reset;
 pub(crate) mod session;
@@ -125,6 +126,11 @@ where
         .route("/verify-access", post(device::verify_access))
         .route("/wsapi/device_certs", get(device::device_certs))
         .route("/wsapi/revoke_device_cert", post(device::revoke_device_cert))
+        .route("/wsapi/holders", get(holders::holders))
+        .route("/wsapi/rename_holder", post(holders::rename_holder))
+        .route("/wsapi/rename_namespace", post(holders::rename_namespace))
+        .route("/wsapi/create_namespace", post(holders::create_namespace))
+        .route("/wsapi/delete_namespace", post(holders::delete_namespace))
         .route("/wsapi/account_cancel", post(account::account_cancel))
         .route("/wsapi/stage_reset", post(reset::stage_reset))
         .route("/wsapi/complete_reset", post(reset::complete_reset))
@@ -235,7 +241,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-Jfe8TALNyPRCPmIgFKGIzkLM165NWUABfy8nRkVfo/0='", // account.html
+    "'sha256-53It1FHLwLjk4moDNYawl9Vy3jRc2braVhvyrKlR3Vg='", // account.html
     "'sha256-9+THMuOYUVTvtMDrNJ5pjMH5LQ5fGfzcqLtMHJG/gN0='", // consent.html
     "'sha256-+XqUYbHj+ZXqocYeM/oRYCX1zljIPfY94AJwWAtU2Do='", // agents.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)

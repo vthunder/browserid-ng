@@ -200,6 +200,18 @@ pub struct WarrantRecord {
     pub expires_at: DateTime<Utc>,
 }
 
+/// A namespace registry row (holder-authorization model): a user-organized
+/// bucket of holders (`browsers` / `agents` / `services` / …). `prefix` is the
+/// stored random dot-prefix every holder in the namespace shares (`<prefix>.…`),
+/// so a `<prefix>.*` warrant matches the whole namespace; `label` is the
+/// user-facing name, editable without touching the opaque prefix.
+#[derive(Debug, Clone)]
+pub struct Namespace {
+    pub name: String,
+    pub prefix: String,
+    pub label: String,
+}
+
 /// A durable record of an IdP-signed device cert or config cert issued via
 /// `/device/issue` (DC Phase 3/4). Persisted so the certs are listable and
 /// revocable: revoking flips the cert's status bit (shared status-list index

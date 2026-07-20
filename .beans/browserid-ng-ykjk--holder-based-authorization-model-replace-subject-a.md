@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-20T18:12:28Z
-updated_at: 2026-07-20T21:25:02Z
+updated_at: 2026-07-20T21:46:18Z
 parent: browserid-ng-oup3
 ---
 
@@ -15,7 +15,7 @@ Blocks: the device-model D (poster re-enable). A (browser signing) is already li
 
 - [x] Review + red-pen the design note with Dan (2026-07-20 session: rulings folded in)
 - [x] browserid-core: holder on DeviceCert/AccessCert + AccessRequest; warrant HolderMatcher (*/ns.*/id); renamed Subject→Holder; verify holder-match; conformance tests (matcher semantics, passthrough+copy, fail-closed); golden vectors regenerated
-- [ ] broker: device_issue/fallback/primary-device-auth accept broker-assigned holder; mint copies it; account holder-registry (namespaces/labels/adopt/re-categorize); login warrants default *
+- [~] broker 2a DONE: device_issue/fallback/fedcm assign broker holder; mint copies verbatim; namespaces table (prefix storage); login warrants <prefix>.*; gates dropped. 2b TODO: account holder-registry UI (list/labels/adopt/re-categorize)
 - [ ] registrar/warrant flow: matcher in request+registry
 - [ ] sbo: authorize/device_attribution on holders, no subject
 - [ ] D: mingo-poster as a warranted holder, owner=you

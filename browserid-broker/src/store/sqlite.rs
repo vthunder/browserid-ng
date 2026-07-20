@@ -7,14 +7,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    DeviceCertRecord, Email, EmailType, PendingVerification, Session,
+    DeviceCertRecord, Email, EmailType, Namespace, PendingVerification, Session,
     SessionId, SessionStore, StoreResult, User, UserId, UserStore, VerificationType, WarrantRecord,
     WarrantRequestRecord, WarrantRequestStatus,
 };
 use crate::error::BrokerError;
+use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 14;
+const SCHEMA_VERSION: i32 = 15;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -103,6 +104,9 @@ impl SqliteStore {
             }
             if current_version < 14 {
                 Self::migrate_v14(conn)?;
+            }
+            if current_version < 15 {
+                Self::migrate_v15(conn)?;
             }
 
             // Update schema version
@@ -492,6 +496,25 @@ impl SqliteStore {
                 UNIQUE(user_id, name)
             );
             CREATE INDEX IF NOT EXISTS idx_namespaces_user ON namespaces(user_id);
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v15(conn: &Connection) -> Result<(), BrokerError> {
+        // Holder-authorization model, account UI (stage 2b): friendly labels for
+        // opaque holder ids — the logical-slot name ("Main Laptop"). The holder
+        // id itself lives on device_certs; this is a pure display-name side table.
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS holder_labels (
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                holder_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                UNIQUE(user_id, holder_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_holder_labels_user ON holder_labels(user_id);
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -1440,6 +1463,112 @@ impl UserStore for SqliteStore {
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))
     }
+
+    fn list_namespaces(&self, user_id: UserId) -> StoreResult<Vec<Namespace>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name, prefix, label FROM namespaces WHERE user_id = ?1 ORDER BY name")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![user_id.0 as i64], |row| {
+                Ok(Namespace { name: row.get(0)?, prefix: row.get(1)?, label: row.get(2)? })
+            })
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows)
+    }
+
+    fn set_namespace_label(&self, user_id: UserId, name: &str, label: &str) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE namespaces SET label = ?1 WHERE user_id = ?2 AND name = ?3",
+                params![label, user_id.0 as i64, name],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::PolicyRefused("no such namespace".into()));
+        }
+        Ok(())
+    }
+
+    fn create_namespace(&self, user_id: UserId, name: &str, label: &str) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO namespaces (user_id, name, prefix, label) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                user_id.0 as i64,
+                name,
+                crate::crypto::generate_namespace_prefix(),
+                label,
+            ],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn delete_namespace(&self, user_id: UserId, name: &str) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        // Block if non-empty: any device-cert holder living under this prefix.
+        let prefix: Option<String> = conn
+            .query_row(
+                "SELECT prefix FROM namespaces WHERE user_id = ?1 AND name = ?2",
+                params![user_id.0 as i64, name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let Some(prefix) = prefix else {
+            return Err(BrokerError::PolicyRefused("no such namespace".into()));
+        };
+        // Prefixes are base32 (no SQL-LIKE metacharacters), so a plain LIKE is safe.
+        let like = format!("{prefix}.%");
+        let in_use: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM device_certs WHERE user_id = ?1 AND holder LIKE ?2",
+                params![user_id.0 as i64, like],
+                |row| row.get(0),
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if in_use > 0 {
+            return Err(BrokerError::PolicyRefused(
+                "namespace is not empty — revoke its holders first".into(),
+            ));
+        }
+        conn.execute(
+            "DELETE FROM namespaces WHERE user_id = ?1 AND name = ?2",
+            params![user_id.0 as i64, name],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn set_holder_label(&self, user_id: UserId, holder_id: &str, label: &str) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO holder_labels (user_id, holder_id, label) VALUES (?1, ?2, ?3)
+             ON CONFLICT(user_id, holder_id) DO UPDATE SET label = excluded.label",
+            params![user_id.0 as i64, holder_id, label],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn get_holder_labels(&self, user_id: UserId) -> StoreResult<HashMap<String, String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT holder_id, label FROM holder_labels WHERE user_id = ?1")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![user_id.0 as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<HashMap<_, _>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows)
+    }
 }
 
 /// Title-case a namespace name for its default label ("browsers" → "Browsers").
@@ -1704,6 +1833,30 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {
         (**self).get_or_create_namespace(user_id, name)
+    }
+
+    fn list_namespaces(&self, user_id: UserId) -> StoreResult<Vec<Namespace>> {
+        (**self).list_namespaces(user_id)
+    }
+
+    fn set_namespace_label(&self, user_id: UserId, name: &str, label: &str) -> StoreResult<()> {
+        (**self).set_namespace_label(user_id, name, label)
+    }
+
+    fn create_namespace(&self, user_id: UserId, name: &str, label: &str) -> StoreResult<()> {
+        (**self).create_namespace(user_id, name, label)
+    }
+
+    fn delete_namespace(&self, user_id: UserId, name: &str) -> StoreResult<()> {
+        (**self).delete_namespace(user_id, name)
+    }
+
+    fn set_holder_label(&self, user_id: UserId, holder_id: &str, label: &str) -> StoreResult<()> {
+        (**self).set_holder_label(user_id, holder_id, label)
+    }
+
+    fn get_holder_labels(&self, user_id: UserId) -> StoreResult<HashMap<String, String>> {
+        (**self).get_holder_labels(user_id)
     }
 }
 
