@@ -95,10 +95,12 @@ async function localConfig(delegatorEmail, agentEmail) {
   return hit ? { cert: hit.rec.cert, privateKey: hit.rec.privateKey } : null;
 }
 
-/// Sign the device-model warrant with the config key: (identifier, subject
-/// agent) → audience[+scopes]. `status` ({uri, idx}, registrar-allocated)
+/// Sign the device-model warrant with the config key: (identifier,
+/// holder-matcher) → audience[+scopes]. `holder` is the matcher this grant binds
+/// to — the agent's specific holder id (`<id>` isolation) or its `<ns>.*` prefix
+/// (holder-authorization model). `status` ({uri, idx}, registrar-allocated)
 /// makes this single grant revocable.
-async function signWarrant(config, agentEmail, audience, scopes, status) {
+async function signWarrant(config, agentEmail, audience, scopes, status, holder) {
   const now = Math.floor(Date.now() / 1000);
   const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
   const claims = {
@@ -106,7 +108,7 @@ async function signWarrant(config, agentEmail, audience, scopes, status) {
     iat: now,
     exp: now + 90 * 24 * 3600,
     identifier: agentEmail,
-    subject: 'agent',
+    holder: holder,
     audience: audience,
   };
   if (scopes && scopes.length) claims.scopes = scopes;
@@ -160,6 +162,11 @@ function render(requests) {
       <p style="margin-top:0">${whoLine(r)}
         wants to act for you at${(r.grants || []).length > 1 ? ' each of' : ''}</p>
       ${(r.grants || []).map(grantBlock).join('')}
+      <p class="muted" style="font-size:.9em">
+        <label><input type="checkbox" class="widen" data-code="${escapeHtml(r.code)}">
+          Let <em>any</em> of my holders in the same group use this (instead of only this one agent)</label>
+        <br><span style="font-size:.85em">Default: isolated to this agent alone — recommended.</span>
+      </p>
       <p>
         <button class="approve" data-code="${escapeHtml(r.code)}" disabled>Approve${(r.grants || []).length > 1 ? ' all ' + r.grants.length : ''}</button>
         <button class="deny" data-code="${escapeHtml(r.code)}">Deny</button>
@@ -197,13 +204,21 @@ async function resolve(r, approve) {
         `no config key for ${r.delegator_email} in this browser — ` +
         `sign in to an app with that identity here first, then retry`);
       configCert = config.cert;
+      // Holder matcher for this grant: default to the agent's own holder id
+      // (`<id>` isolation); if the user ticked "widen", grant the whole
+      // namespace (`<prefix>.*`) so any of their holders in that group qualify.
+      // A bare `*` is never emitted (the registrar rejects it anyway).
+      const widen = card.querySelector('input.widen')?.checked;
+      const holderMatcher = (widen && r.holder && r.holder.includes('.'))
+        ? r.holder.slice(0, r.holder.indexOf('.')) + '.*'
+        : r.holder;
       // The broker records each approved warrant in the account's registry
       // (jipx) — reviewable later on /account, from any browser.
       warrants = [];
       for (const g of (r.grants || [])) {
         const status = (g.status_idx != null && statusUri)
           ? { uri: statusUri, idx: g.status_idx } : null;
-        warrants.push(await signWarrant(config, r.agent_email, g.audience, g.scopes, status));
+        warrants.push(await signWarrant(config, r.agent_email, g.audience, g.scopes, status, holderMatcher));
       }
     }
     await api('/wsapi/warrant_respond', {

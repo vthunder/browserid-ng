@@ -18,6 +18,9 @@ pub struct WarrantRequestRecord {
     pub delegator_email: String,
     /// The agent identity the warrant is for (`<name>@<idp-domain>`)
     pub agent_email: String,
+    /// The agent's opaque holder id (copied from its device cert). Consent binds
+    /// the warrant to it — `<id>` for isolation, or its `<ns>.*` prefix.
+    pub holder: String,
     /// Label of the provisioning cert that raised the request (display)
     pub label: String,
     /// The requested grants — one per RP audience, each with its own scopes

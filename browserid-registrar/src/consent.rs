@@ -67,6 +67,19 @@ pub fn warrant_status_subject(user_id: u64, agent: &str, aud: &str, scopes: &[St
 /// registrar never interprets scopes — it hashes them for keying: grant
 /// identity, registry upserts, status subjects. Empty scopes hash too, so
 /// "no scopes" is one stable identity.
+/// Mint an opaque holder id under a namespace prefix: `<prefix>.<10 rand>`.
+/// Mirrors the broker's `crypto::assign_holder_id` (kept here so the registrar
+/// doesn't depend on the broker crate). The requester never chooses the prefix.
+pub fn assign_holder_id(prefix: &str) -> String {
+    use rand::Rng;
+    const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyz23456789";
+    let mut rng = rand::thread_rng();
+    let suffix: String = (0..10)
+        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+        .collect();
+    format!("{prefix}.{suffix}")
+}
+
 pub fn scope_fingerprint(scopes: &[String]) -> String {
     use sha2::{Digest, Sha256};
     let mut sorted: Vec<&str> = scopes.iter().map(String::as_str).collect();
@@ -96,6 +109,9 @@ pub struct PendingRequestInfo {
     pub code: String,
     pub delegator_email: String,
     pub agent_email: String,
+    /// The agent's opaque holder id — the consent page defaults the signed
+    /// warrant's matcher to this (`<id>` isolation) or its `<ns>.*` prefix.
+    pub holder: String,
     pub label: String,
     /// Requested grants — one per audience, each with its scopes
     pub grants: Vec<WarrantGrantItem>,
@@ -145,6 +161,7 @@ pub async fn list_requests(
             code: r.code,
             delegator_email: r.delegator_email,
             agent_email: r.agent_email,
+            holder: r.holder,
             label: r.label,
             grants: r.grants,
             external: r.external,
@@ -260,8 +277,23 @@ pub async fn respond(
         }
         // (holder-authorization model) The old "warrant subject must be 'agent'"
         // gate is removed — the user/agent axis was a self-asserted hint. The
-        // warrant is bound to the agent by its `identifier` check above and, in
-        // the device-cert model, by its holder matcher.
+        // warrant is bound to the agent by its `identifier` check above and by
+        // its holder matcher: reject a bare `*` (over-broad, fungible across all
+        // the user's holders) and require the matcher actually cover the agent's
+        // holder (`<id>` isolation, or its `<ns>.*` prefix) — defense-in-depth
+        // against a malformed or over-broad consent.
+        if claims.holder.as_str() == "*" {
+            return Err(RegistrarError::ValidationError(
+                "over-broad holder matcher (bare `*`) not allowed".into(),
+            ));
+        }
+        let agent_holder = browserid_core::device::Holder::new(rec.holder.clone())
+            .map_err(|e| RegistrarError::ValidationError(format!("bad agent holder: {e}")))?;
+        if !claims.holder.matches(&agent_holder) {
+            return Err(RegistrarError::ValidationError(
+                "warrant holder matcher does not cover the agent's holder".into(),
+            ));
+        }
         records.push(warrant_to_record(
             user.user_id,
             &rec.delegator_email,
@@ -679,6 +711,7 @@ pub async fn warrant_request(
         user_id,
         delegator_email: delegator.clone(),
         agent_email: identity.clone(),
+        holder: device_cert.holder().as_str().to_string(),
         label: req.label.unwrap_or_else(|| identity.clone()),
         grants,
         status: WarrantRequestStatus::Pending,

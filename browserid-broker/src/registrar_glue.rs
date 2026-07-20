@@ -66,6 +66,7 @@ fn to_reg_request(r: crate::store::WarrantRequestRecord) -> reg::WarrantRequestR
         user_id: r.user_id.0,
         delegator_email: r.delegator_email,
         agent_email: r.agent_email,
+        holder: r.holder,
         label: r.label,
         grants: r.grants.into_iter().map(to_reg_grant).collect(),
         status: to_reg_status(r.status),
@@ -83,6 +84,7 @@ fn from_reg_request(r: reg::WarrantRequestRecord) -> crate::store::WarrantReques
         user_id: UserId(r.user_id),
         delegator_email: r.delegator_email,
         agent_email: r.agent_email,
+        holder: r.holder,
         label: r.label,
         grants: r.grants.into_iter().map(from_reg_grant).collect(),
         status: from_reg_status(r.status),
@@ -232,6 +234,11 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
 
     fn get_or_allocate_status(&self, kind: &str, subject: &str) -> Result<u64, RegistrarError> {
         UserStore::get_or_allocate_status(self.user_store.as_ref(), kind, subject)
+            .map_err(to_reg_err)
+    }
+
+    fn get_or_create_namespace(&self, user_id: u64, name: &str) -> Result<String, RegistrarError> {
+        UserStore::get_or_create_namespace(self.user_store.as_ref(), UserId(user_id), name)
             .map_err(to_reg_err)
     }
 

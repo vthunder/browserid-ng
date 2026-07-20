@@ -193,3 +193,73 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
     assert_eq!(verified.holder, agent_holder);
     assert_eq!(verified.scopes, vec!["post".to_string(), "read".to_string()]);
 }
+
+/// The consent-side holder guard (holder-authorization model, stage 3): a signed
+/// warrant whose matcher is a bare `*` or a *foreign* holder (one the agent's
+/// own holder isn't covered by) must be refused by `respond`, even though the
+/// warrant is validly signed for the right identifier + audience.
+#[tokio::test]
+async fn respond_rejects_overbroad_or_foreign_holder() {
+    let (server, sender, idp_kp) = make_server();
+    let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+
+    let agent_holder = Holder::new("ag.bot").unwrap();
+    let agent_kp = KeyPair::generate();
+    let agent_cert = DeviceCert::create(
+        DOMAIN, &agent_kp.public_key(), Purpose::Authentication, agent_holder.clone(),
+        vec![AGENT.to_string()], Duration::days(90), &idp_kp, None,
+    )
+    .unwrap();
+    let config_kp = KeyPair::generate();
+    let config_cert = DeviceCert::create(
+        DOMAIN, &config_kp.public_key(), Purpose::Authorization, Holder::new("br.main").unwrap(),
+        vec![DELEGATOR.to_string(), "alice+*@example.com".to_string()],
+        Duration::days(90), &idp_kp, None,
+    )
+    .unwrap();
+
+    // Raise a request; grab its code + status ref.
+    let listed_code = {
+        let r = server
+            .post("/warrant/request")
+            .json(&json!({ "device_cert": agent_cert.encoded(), "identity": AGENT,
+                "grants": [{ "audience": AUDIENCE, "scopes": ["post"] }], "label": "bot" }))
+            .await;
+        assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
+        r.json::<Value>()["code"].as_str().unwrap().to_string()
+    };
+    let listed: Value = server
+        .get("/wsapi/warrant_requests")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    let grant = &listed["requests"][0]["grants"][0];
+    let status_idx = grant["status_idx"].as_u64().unwrap();
+    let status_uri = listed["status_uri"].as_str().unwrap().to_string();
+    // The request surfaces the agent's holder for the consent page to bind to.
+    assert_eq!(listed["requests"][0]["holder"], "ag.bot");
+    let c = csrf(&server, &session).await;
+
+    // Helper: sign a warrant with the given matcher and try to respond.
+    let attempt = |matcher: &str| {
+        let w = Warrant::create(
+            AGENT, HolderMatcher::new(matcher).unwrap(), AUDIENCE, vec!["post".into()],
+            Duration::days(90), &config_kp,
+            Some(StatusRef { uri: status_uri.clone(), idx: status_idx }),
+        )
+        .unwrap();
+        server
+            .post("/wsapi/warrant_respond")
+            .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+            .json(&json!({ "csrf": c, "code": listed_code, "approve": true,
+                "warrants": [w.encoded()], "config_cert": config_cert.encoded() }))
+    };
+
+    // Bare `*` — over-broad, fungible across all the user's holders.
+    assert_ne!(attempt("*").await.status_code(), 200, "bare `*` matcher must be refused");
+    // A foreign holder / namespace the agent isn't in.
+    assert_ne!(attempt("svc.other").await.status_code(), 200, "foreign `<id>` must be refused");
+    assert_ne!(attempt("zz.*").await.status_code(), 200, "foreign `<ns>.*` must be refused");
+    // The correct isolated matcher (and its true namespace wildcard) are accepted.
+    assert_eq!(attempt("ag.bot").await.status_code(), 200, "the agent's own `<id>` is accepted");
+}

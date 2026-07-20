@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-20T18:12:28Z
-updated_at: 2026-07-20T21:46:18Z
+updated_at: 2026-07-20T22:06:03Z
 parent: browserid-ng-oup3
 ---
 
@@ -20,3 +20,5 @@ Blocks: the device-model D (poster re-enable). A (browser signing) is already li
 - [ ] sbo: authorize/device_attribution on holders, no subject
 - [ ] D: mingo-poster as a warranted holder, owner=you
 - [ ] conformance: holder passthrough+copy; monitor over-broad mints
+
+## Stage 3 known-broken (pending): consent.html signWarrant still emits subject:'agent' (no holder matcher) — the agent-authorization consent flow is malformed against new core. Fix as part of stage 3 (registrar warrant matcher + D). agent_provision.rs also mints an inline agents.<rand> placeholder holder. Both to be rerouted through the broker namespace registry with <id> matchers when D is built.

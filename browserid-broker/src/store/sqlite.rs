@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 15;
+const SCHEMA_VERSION: i32 = 16;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -107,6 +107,9 @@ impl SqliteStore {
             }
             if current_version < 15 {
                 Self::migrate_v15(conn)?;
+            }
+            if current_version < 16 {
+                Self::migrate_v16(conn)?;
             }
 
             // Update schema version
@@ -520,6 +523,18 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v16(conn: &Connection) -> Result<(), BrokerError> {
+        // Holder-authorization model (stage 3): a warrant request carries the
+        // requesting agent's opaque holder (from its device cert) so the consent
+        // page can bind the signed warrant to it (`<id>`) or its `<ns>.*` prefix.
+        conn.execute(
+            "ALTER TABLE warrant_requests ADD COLUMN holder TEXT NOT NULL DEFAULT '';",
+            [],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → DeviceCertRecord mapping (DC Phase 3/4)
@@ -617,13 +632,14 @@ fn warrant_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Warrant
             .unwrap_or(WarrantRequestStatus::Pending),
         warrants: warrants_json.and_then(|w| serde_json::from_str(&w).ok()),
         external: row.get::<_, i64>(11)? != 0,
+        holder: row.get(12)?,
         created_at: parse_ts(row.get(8)?),
         expires_at: parse_ts(row.get(9)?),
         last_polled_at: parse_ts_opt(row.get(10)?),
     })
 }
 
-const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, last_polled_at, external";
+const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, last_polled_at, external, holder";
 
 // Helper to convert VerificationType to/from string
 impl VerificationType {
@@ -1106,8 +1122,8 @@ impl UserStore for SqliteStore {
     fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO warrant_requests (code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, external)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO warrant_requests (code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, external, holder)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 req.code,
                 req.user_id.0 as i64,
@@ -1120,6 +1136,7 @@ impl UserStore for SqliteStore {
                 req.created_at.to_rfc3339(),
                 req.expires_at.to_rfc3339(),
                 req.external as i64,
+                req.holder,
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;

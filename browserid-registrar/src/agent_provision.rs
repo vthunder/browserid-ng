@@ -102,6 +102,29 @@ fn sweep() {
     m.retain(|_, r| !r.is_expired());
 }
 
+/// The holder namespace to file a provisioned agent under: a short lowercase
+/// identifier (`[a-z][a-z0-9_-]{0,31}`). Defaults to `agents`. Cosmetic — the
+/// user can re-categorize later — but validated so it can't smuggle odd bytes
+/// into a holder id.
+fn normalize_namespace(hint: Option<&str>) -> Result<String, RegistrarError> {
+    let ns = match hint.map(str::trim).filter(|s| !s.is_empty()) {
+        None => return Ok("agents".to_string()),
+        Some(s) => s.to_lowercase(),
+    };
+    let mut chars = ns.chars();
+    let ok = ns.len() <= 32
+        && chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && ns
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    if !ok {
+        return Err(RegistrarError::ValidationError(format!(
+            "bad namespace hint '{ns}'"
+        )));
+    }
+    Ok(ns)
+}
+
 // ===========================================================================
 // Agent-facing: POST /agent-provision/request + /agent-provision/poll (unauth)
 // ===========================================================================
@@ -336,6 +359,11 @@ pub struct CompleteBody {
     /// The agent identity is `<requested-name>@<its domain>`.
     #[serde(default)]
     pub identity_email: Option<String>,
+    /// Which holder namespace to file this agent/service under (holder-auth
+    /// model): the requester hints it (`agents` | `services` | …), the user
+    /// confirms here. Defaults to `agents`. Cosmetic + re-categorizable.
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -426,21 +454,16 @@ fn complete_device_cert(
         .map_err(|e| RegistrarError::ValidationError(format!("bad provisioning pubkey: {e}")))?;
     let idx = state.store.get_or_allocate_status("device", expected_pubkey)?;
     let status = StatusRef { uri: status_list_uri(&state.domain), idx };
-    // STAGE-3 PLACEHOLDER (holder-authorization model): an agent gets an
-    // isolated holder in the `agents` namespace. The full model assigns this
-    // via the broker's per-user namespace registry (randomized prefix) and
-    // warrants it with a `<id>` matcher; here we mint a fresh isolated holder so
-    // the device cert is well-formed. Revisit when D (mingo-poster) is built.
-    let holder = {
-        use rand::Rng;
-        const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyz23456789";
-        let mut rng = rand::thread_rng();
-        let suffix: String = (0..10)
-            .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
-            .collect();
-        browserid_core::device::Holder::new(format!("agents.{suffix}"))
-            .map_err(|e| RegistrarError::ValidationError(format!("holder: {e}")))?
-    };
+    // Holder-authorization model: assign an opaque holder from the user's
+    // per-user namespace registry (the broker's, via the host store). The
+    // requester hints the namespace (`agents` by default; a service hints
+    // `services`); the holder id is `<the-namespace's-random-prefix>.<rand>`, so
+    // an `<ns>.*` warrant matches on the prefix and an `<id>` warrant isolates
+    // this one agent. The requester can never choose the prefix.
+    let namespace = normalize_namespace(req.namespace.as_deref())?;
+    let prefix = state.store.get_or_create_namespace(user.user_id, &namespace)?;
+    let holder = browserid_core::device::Holder::new(crate::consent::assign_holder_id(&prefix))
+        .map_err(|e| RegistrarError::ValidationError(format!("holder: {e}")))?;
     let device_cert = DeviceCert::create(
         &state.domain,
         &device_pub,

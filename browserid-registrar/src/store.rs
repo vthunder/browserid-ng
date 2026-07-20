@@ -68,6 +68,19 @@ pub trait RegistrarStore: Send + Sync {
     /// Flip the revocation bit for `(kind, subject)`. Ok(false) if no entry.
     fn set_status_revoked(&self, kind: &str, subject: &str) -> StoreResult<bool>;
 
+    // --- Holder namespaces (holder-authorization model) ---
+
+    /// Get (or lazily create) the opaque random prefix for one of the user's
+    /// holder namespaces (e.g. `agents`, `services`). Holder ids are minted as
+    /// `<prefix>.<rand>`, and `<ns>.*` warrants match on the prefix. The broker
+    /// backs this with its per-user namespace registry; a self-hosting IdP that
+    /// doesn't run one leaves this unimplemented (default: error).
+    fn get_or_create_namespace(&self, _user_id: u64, _name: &str) -> StoreResult<String> {
+        Err(RegistrarError::Internal(
+            "holder namespace registry not supported by this host".into(),
+        ))
+    }
+
     /// Flip the revocation bit by index. Ok(false) if no entry.
     fn set_status_revoked_idx(&self, idx: u64) -> StoreResult<bool>;
 
