@@ -1,10 +1,11 @@
 ---
 # browserid-ng-ykjk
 title: 'Holder-based authorization model (replace subject + as: with opaque holders)'
-status: draft
+status: in-progress
 type: feature
+priority: normal
 created_at: 2026-07-20T18:12:28Z
-updated_at: 2026-07-20T18:12:28Z
+updated_at: 2026-07-20T21:25:02Z
 parent: browserid-ng-oup3
 ---
 
@@ -12,8 +13,8 @@ Design settled in discussion 2026-07-20, written up in docs/plans/2026-07-20-hol
 
 Blocks: the device-model D (poster re-enable). A (browser signing) is already live and unaffected.
 
-- [ ] Review + red-pen the design note with Dan
-- [ ] browserid-core: holder on DeviceCert/AccessCert; warrant matcher; drop Subject; verify holder-match
+- [x] Review + red-pen the design note with Dan (2026-07-20 session: rulings folded in)
+- [x] browserid-core: holder on DeviceCert/AccessCert + AccessRequest; warrant HolderMatcher (*/ns.*/id); renamed Subject→Holder; verify holder-match; conformance tests (matcher semantics, passthrough+copy, fail-closed); golden vectors regenerated
 - [ ] broker: device_issue/fallback/primary-device-auth accept broker-assigned holder; mint copies it; account holder-registry (namespaces/labels/adopt/re-categorize); login warrants default *
 - [ ] registrar/warrant flow: matcher in request+registry
 - [ ] sbo: authorize/device_attribution on holders, no subject
