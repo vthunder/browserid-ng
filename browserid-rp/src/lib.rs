@@ -3,8 +3,8 @@
 //! The one opt-in an API RP makes to accept browserid identities (human or
 //! agent): verify an **access presentation** once at a token-exchange
 //! endpoint, mint its **own** bearer token, and keep every other piece of its
-//! session machinery unchanged. The RP learns a verified email, the subject
-//! axis (`user` | `agent`), and the scopes the warrant grants here. Warrant
+//! session machinery unchanged. The RP learns a verified email, the opaque
+//! `holder` that acted, and the scopes the warrant grants here. Warrant
 //! enforcement is unconditional and fail-closed — a presentation without a
 //! warrant for this audience never parses/verifies.
 //!
@@ -46,7 +46,7 @@ use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
 
-use browserid_core::device::{AccessPresentation, Subject};
+use browserid_core::device::{AccessPresentation, Holder};
 use browserid_core::rp_auth::{TokenErrorResponse, GRANT_TYPE_ASSERTION};
 use browserid_core::{PublicKey, RpChallenge, StatusListToken, StatusRef, TokenRequest, TokenResponse};
 
@@ -99,8 +99,9 @@ pub struct VerifiedIdentity {
     pub email: String,
     /// The IdP that issued the access + config certs (the identity's IdP)
     pub issuer: String,
-    /// Which kind of identity authenticated
-    pub subject: Subject,
+    /// The opaque broker-assigned holder that acted (which of the user's
+    /// things); advisory — authorization keys off email + scopes, not this.
+    pub holder: Holder,
     /// The warrant's scopes, verbatim; [`exchange`] applies the RP scope
     /// policy (intersection) when issuing a token
     pub scopes: Vec<String>,
@@ -251,7 +252,7 @@ impl Verifier {
         Ok(VerifiedIdentity {
             email: verified.email,
             issuer: verified.issuer,
-            subject: verified.subject,
+            holder: verified.holder,
             scopes: verified.scopes,
         })
     }
@@ -270,8 +271,9 @@ impl Verifier {
 
 struct TokenRecord {
     email: String,
-    subject: Subject,
-    /// Granted scopes (post-intersection); `None` for user login tokens
+    /// The opaque holder that acted; `None` for a bare [`TokenStore::issue`].
+    holder: Option<String>,
+    /// Granted scopes (post-intersection); `None` for plain login tokens
     scopes: Option<Vec<String>>,
     expires_at: DateTime<Utc>,
 }
@@ -280,8 +282,9 @@ struct TokenRecord {
 #[derive(Debug, Clone)]
 pub struct TokenGrant {
     pub email: String,
-    pub subject: Subject,
-    /// Granted scopes; `None` for user login tokens
+    /// The opaque holder that acted; `None` for a bare [`TokenStore::issue`].
+    pub holder: Option<String>,
+    /// Granted scopes; `None` for plain login tokens
     pub scopes: Option<Vec<String>>,
 }
 
@@ -301,20 +304,21 @@ impl TokenStore {
         }
     }
 
-    /// Mint a bearer token for a verified email (user presentations)
+    /// Mint a bearer token for a verified email (plain login, no holder/scopes)
     pub fn issue(&self, email: &str) -> TokenResponse {
-        self.issue_with(email, Subject::User, None)
+        self.issue_with(email, None, None)
     }
 
-    /// Mint a bearer token recording the verified subject + granted scopes.
+    /// Mint a bearer token recording the acting holder + granted scopes.
     /// The token is bounded server-side by `scopes` — resolve them via
     /// [`TokenStore::grant`] in protected handlers.
     pub fn issue_with(
         &self,
         email: &str,
-        subject: Subject,
+        holder: Option<Holder>,
         scopes: Option<Vec<String>>,
     ) -> TokenResponse {
+        let holder = holder.map(|h| h.as_str().to_string());
         let mut bytes = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut bytes);
         let token = format!(
@@ -326,7 +330,7 @@ impl TokenStore {
             token.clone(),
             TokenRecord {
                 email: email.to_string(),
-                subject,
+                holder: holder.clone(),
                 scopes: scopes.clone(),
                 expires_at: Utc::now() + self.ttl,
             },
@@ -336,13 +340,7 @@ impl TokenStore {
             token_type: "Bearer".to_string(),
             expires_in: self.ttl.num_seconds(),
             email: Some(email.to_string()),
-            subject: Some(
-                match subject {
-                    Subject::User => "user",
-                    Subject::Agent => "agent",
-                }
-                .to_string(),
-            ),
+            holder,
             scopes,
         }
     }
@@ -352,7 +350,7 @@ impl TokenStore {
         self.grant(token).map(|g| g.email)
     }
 
-    /// Resolve a bearer token to its full grant (email + subject + granted
+    /// Resolve a bearer token to its full grant (email + holder + granted
     /// scopes); `None` if unknown or expired
     pub fn grant(&self, token: &str) -> Option<TokenGrant> {
         let tokens = self.tokens.read().unwrap();
@@ -362,7 +360,7 @@ impl TokenStore {
         }
         Some(TokenGrant {
             email: record.email.clone(),
-            subject: record.subject,
+            holder: record.holder.clone(),
             scopes: record.scopes.clone(),
         })
     }
@@ -386,11 +384,11 @@ impl TokenStore {
 /// issue a token. Wire it to POST `/token` in any framework; on `Err`, serve
 /// `err.to_response()` with HTTP 400.
 ///
-/// Scope policy (spec §7.3): an **agent** token is bounded by the
-/// intersection of the warrant's scopes with the RP's declared vocabulary
-/// (a scope-unqualified warrant grants the RP's full declared set — declare
-/// an empty set to grant none). A **user** token carries no scope bound —
-/// the user logged in, same as any session.
+/// Scope policy (spec §7.3): the user/agent axis is gone — a token is scoped
+/// by the warrant it presents. A warrant carrying only the `login` sentinel
+/// (or no scopes) is a plain login and carries **no** scope bound (`None`);
+/// otherwise the token is bounded by the intersection of the warrant's
+/// (non-`login`) scopes with the RP's declared vocabulary.
 pub fn exchange(
     verifier: &Verifier,
     tokens: &TokenStore,
@@ -402,11 +400,20 @@ pub fn exchange(
         ));
     }
     let identity = verifier.verify(&request.assertion)?;
-    let scopes = match identity.subject {
-        Subject::User => None,
-        Subject::Agent => Some(grant_scopes(&identity.scopes, verifier.scopes())),
+    // The `login` scope is the plain-login sentinel — filter it; what remains
+    // are the real grant scopes. No real scopes → an unscoped login token.
+    let granted: Vec<String> = identity
+        .scopes
+        .iter()
+        .filter(|s| *s != "login")
+        .cloned()
+        .collect();
+    let scopes = if granted.is_empty() {
+        None
+    } else {
+        Some(grant_scopes(&granted, verifier.scopes()))
     };
-    Ok(tokens.issue_with(&identity.email, identity.subject, scopes))
+    Ok(tokens.issue_with(&identity.email, Some(identity.holder), scopes))
 }
 
 /// Intersection of warrant scopes with the RP's declared vocabulary; an
@@ -541,7 +548,7 @@ pub fn oauth_metadata_with_scopes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use browserid_core::device::{AccessCert, DeviceCert, Purpose, Warrant};
+    use browserid_core::device::{AccessCert, DeviceCert, HolderMatcher, Purpose, Warrant};
     use browserid_core::{Assertion, KeyPair};
 
     const AUDIENCE: &str = "https://api.example.com";
@@ -552,7 +559,7 @@ mod tests {
     fn presentation(
         issuer_kp: &KeyPair,
         email: &str,
-        subject: Subject,
+        holder: &str,
         audience: &str,
         warrant_audience: &str,
         warrant_scopes: Vec<String>,
@@ -561,17 +568,17 @@ mod tests {
         let access_kp = KeyPair::generate();
         let config_kp = KeyPair::generate();
         let access_cert = AccessCert::create(
-            ISSUER, email, subject, &access_kp.public_key(),
+            ISSUER, email, Holder::new(holder).unwrap(), &access_kp.public_key(),
             Duration::hours(24), issuer_kp, status.clone(),
         )
         .unwrap();
         let config_cert = DeviceCert::create(
-            ISSUER, &config_kp.public_key(), Purpose::Authorization, subject,
+            ISSUER, &config_kp.public_key(), Purpose::Authorization, Holder::new(holder).unwrap(),
             vec![email.to_string()], Duration::days(90), issuer_kp, None,
         )
         .unwrap();
         let warrant = Warrant::create(
-            email, subject, warrant_audience, warrant_scopes,
+            email, HolderMatcher::new(holder).unwrap(), warrant_audience, warrant_scopes,
             Duration::days(90), &config_kp, None,
         )
         .unwrap();
@@ -592,7 +599,7 @@ mod tests {
         let tokens = TokenStore::new(Duration::hours(1));
 
         let request = TokenRequest::new(presentation(
-            &issuer_kp, "alice@example.com", Subject::User, AUDIENCE, AUDIENCE,
+            &issuer_kp, "alice@example.com", "br.main", AUDIENCE, AUDIENCE,
             vec!["login".into()], None,
         ));
         let response = exchange(&verifier, &tokens, &request).unwrap();
@@ -600,8 +607,8 @@ mod tests {
         assert_eq!(response.token_type, "Bearer");
         assert!(response.access_token.starts_with(TOKEN_PREFIX));
         assert_eq!(response.email.as_deref(), Some("alice@example.com"));
-        assert_eq!(response.subject.as_deref(), Some("user"));
-        assert_eq!(response.scopes, None, "user tokens carry no scope bound");
+        assert_eq!(response.holder.as_deref(), Some("br.main"));
+        assert_eq!(response.scopes, None, "a login warrant carries no scope bound");
         assert_eq!(
             tokens.authenticate(&response.access_token).as_deref(),
             Some("alice@example.com")
@@ -617,7 +624,7 @@ mod tests {
         let request = TokenRequest {
             grant_type: "authorization_code".to_string(),
             assertion: presentation(
-                &issuer_kp, "alice@example.com", Subject::User, AUDIENCE, AUDIENCE,
+                &issuer_kp, "alice@example.com", "br.main", AUDIENCE, AUDIENCE,
                 vec![], None,
             ),
         };
@@ -633,7 +640,7 @@ mod tests {
 
         // Assertion + warrant signed for someone else's audience
         let request = TokenRequest::new(presentation(
-            &issuer_kp, "alice@example.com", Subject::User,
+            &issuer_kp, "alice@example.com", "br.main",
             "https://evil.example.com", "https://evil.example.com", vec![], None,
         ));
         let err = exchange(&verifier, &tokens, &request).unwrap_err();
@@ -642,7 +649,7 @@ mod tests {
         // Issuer the RP doesn't trust (different keypair)
         let rogue_kp = KeyPair::generate();
         let request = TokenRequest::new(presentation(
-            &rogue_kp, "alice@example.com", Subject::User, AUDIENCE, AUDIENCE, vec![], None,
+            &rogue_kp, "alice@example.com", "br.main", AUDIENCE, AUDIENCE, vec![], None,
         ));
         let err = exchange(&verifier, &tokens, &request).unwrap_err();
         assert_eq!(err.oauth_error(), "invalid_grant");
@@ -656,7 +663,7 @@ mod tests {
 
         // Assertion targets us, warrant authorizes a different audience.
         let request = TokenRequest::new(presentation(
-            &issuer_kp, "bot@example.com", Subject::Agent, AUDIENCE,
+            &issuer_kp, "bot@example.com", "svc.agent", AUDIENCE,
             "https://other.example.com", vec![], None,
         ));
         let err = exchange(&verifier, &tokens, &request).unwrap_err();
@@ -673,28 +680,26 @@ mod tests {
 
         // Warrant grants post+delete; RP offers post+read+admin → token gets post.
         let request = TokenRequest::new(presentation(
-            &issuer_kp, "bot@example.com", Subject::Agent, AUDIENCE, AUDIENCE,
+            &issuer_kp, "bot@example.com", "svc.agent", AUDIENCE, AUDIENCE,
             vec!["post".into(), "delete".into()], None,
         ));
         let response = exchange(&verifier, &tokens, &request).unwrap();
         assert_eq!(response.email.as_deref(), Some("bot@example.com"));
-        assert_eq!(response.subject.as_deref(), Some("agent"));
+        assert_eq!(response.holder.as_deref(), Some("svc.agent"));
         assert_eq!(response.scopes, Some(vec!["post".to_string()]));
 
         // Server-side grant carries the same bound.
         let grant = tokens.grant(&response.access_token).unwrap();
-        assert_eq!(grant.subject, Subject::Agent);
+        assert_eq!(grant.holder.as_deref(), Some("svc.agent"));
         assert_eq!(grant.scopes, Some(vec!["post".to_string()]));
 
-        // Scope-unqualified agent warrant → full declared set.
+        // A warrant with no real (non-login) scopes is a plain login → no bound
+        // (the holder model dropped the "unqualified agent → full set" rule).
         let request = TokenRequest::new(presentation(
-            &issuer_kp, "bot@example.com", Subject::Agent, AUDIENCE, AUDIENCE, vec![], None,
+            &issuer_kp, "bot@example.com", "svc.agent", AUDIENCE, AUDIENCE, vec![], None,
         ));
         let response = exchange(&verifier, &tokens, &request).unwrap();
-        assert_eq!(
-            response.scopes,
-            Some(vec!["post".to_string(), "read".to_string(), "admin".to_string()])
-        );
+        assert_eq!(response.scopes, None);
     }
 
     #[test]
@@ -715,7 +720,7 @@ mod tests {
 
         // Presentation whose access cert carries the revoked index.
         let request = TokenRequest::new(presentation(
-            &issuer_kp, "alice@example.com", Subject::User, AUDIENCE, AUDIENCE,
+            &issuer_kp, "alice@example.com", "br.main", AUDIENCE, AUDIENCE,
             vec![], Some(StatusRef { uri: uri.into(), idx: 7 }),
         ));
         let err = exchange(&verifier, &tokens, &request).unwrap_err();
@@ -723,7 +728,7 @@ mod tests {
 
         // A clear index passes.
         let request = TokenRequest::new(presentation(
-            &issuer_kp, "alice@example.com", Subject::User, AUDIENCE, AUDIENCE,
+            &issuer_kp, "alice@example.com", "br.main", AUDIENCE, AUDIENCE,
             vec![], Some(StatusRef { uri: uri.into(), idx: 3 }),
         ));
         assert!(exchange(&verifier, &tokens, &request).is_ok());

@@ -18,7 +18,7 @@ use browserid_broker::{
     routes, AppState, ConsoleEmailSender, InMemorySessionStore, InMemoryUserStore,
 };
 use browserid_core::device::{
-    AccessPresentation, DeviceCert, Purpose, Subject, Warrant, DEVICE_CERT_VALIDITY_DAYS,
+    AccessPresentation, DeviceCert, Holder, HolderMatcher, Purpose, Warrant, DEVICE_CERT_VALIDITY_DAYS,
     WARRANT_VALIDITY_DAYS,
 };
 use browserid_core::{KeyPair, PublicKey};
@@ -69,7 +69,7 @@ async fn headless_device_cert_roundtrip() {
         &domain,
         &device_key.public_key(),
         Purpose::Authentication,
-        Subject::Agent,
+        Holder::new("svc.agent").unwrap(),
         vec![agent_email.clone()],
         Duration::days(DEVICE_CERT_VALIDITY_DAYS),
         &idp_key,
@@ -96,7 +96,7 @@ async fn headless_device_cert_roundtrip() {
         &domain,
         &config_key.public_key(),
         Purpose::Authorization,
-        Subject::Agent,
+        Holder::new("svc.agent").unwrap(),
         vec![agent_email.clone()],
         Duration::days(DEVICE_CERT_VALIDITY_DAYS),
         &idp_key, // config cert MUST be issued by the identity's own IdP
@@ -105,7 +105,7 @@ async fn headless_device_cert_roundtrip() {
     .unwrap();
     let warrant = Warrant::create(
         &agent_email,
-        Subject::Agent,
+        HolderMatcher::new("svc.agent").unwrap(),
         audience,
         vec!["post".into(), "read".into()],
         Duration::days(WARRANT_VALIDITY_DAYS),
@@ -131,7 +131,7 @@ async fn headless_device_cert_roundtrip() {
         .expect("core verify accepts the headless bundle");
 
     assert_eq!(verified.email, agent_email);
-    assert_eq!(verified.subject, Subject::Agent);
+    assert_eq!(verified.holder.as_str(), "svc.agent");
     assert_eq!(verified.scopes, vec!["post".to_string(), "read".to_string()]);
     assert_eq!(verified.issuer, domain);
 }
@@ -144,7 +144,7 @@ async fn assertion_without_warrant_is_refused() {
         &domain,
         &device_key.public_key(),
         Purpose::Authentication,
-        Subject::Agent,
+        Holder::new("svc.agent").unwrap(),
         vec!["agent@127.0.0.1".into()],
         Duration::days(DEVICE_CERT_VALIDITY_DAYS),
         &idp_key,
