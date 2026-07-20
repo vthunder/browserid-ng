@@ -43,15 +43,19 @@ const dec = (j)=>JSON.parse(Buffer.from(j.split('.')[1],'base64url').toString())
 const cc = dec(r.data.config_cert);
 must('config cert has +* glob', (cc.identities||[]).some(i=>i.includes('+*')), JSON.stringify(cc.identities));
 
-// 3. mint
+// 3. mint — the access request copies the device cert's broker-assigned holder
 const access = await gen();
-const areq = await jws(device.priv, { typ:'browserid-access-request-v1', iat:nowS(), exp:nowS()+600, jti:rnd(), domain: ctx.domain, identity: email, subject:'user', 'access-key':{ algorithm:'Ed25519', publicKey: access.x } });
+const holder = dec(r.data.device_cert).holder;
+must('device cert has holder', typeof holder==='string' && holder.length>0, holder);
+const areq = await jws(device.priv, { typ:'browserid-access-request-v1', iat:nowS(), exp:nowS()+600, jti:rnd(), domain: ctx.domain, identity: email, holder, 'access-key':{ algorithm:'Ed25519', publicKey: access.x } });
 const mint = await req('POST','/access/mint',{ device_cert: r.data.device_cert, access_request: areq });
 must('/access/mint', mint.status===200 && !!mint.data.access_cert, mint.data.reason||'');
+must('access cert copied holder', dec(mint.data.access_cert||'e30.e30.').holder===holder, dec(mint.data.access_cert||'e30.e30.').holder);
 
-// 4. warrant + assertion + verify
+// 4. warrant + assertion + verify — login warrant grants the holder's namespace
 const audience = 'https://rp.example.com';
-const warrant = await jws(config.priv, { typ:'browserid-warrant-v1', iat:nowS(), exp:nowS()+90*86400, identifier: email, subject:'user', audience, scopes:['login'] });
+const loginMatcher = holder.includes('.') ? holder.slice(0, holder.indexOf('.'))+'.*' : holder;
+const warrant = await jws(config.priv, { typ:'browserid-warrant-v1', iat:nowS(), exp:nowS()+90*86400, identifier: email, holder: loginMatcher, audience, scopes:['login'] });
 const assertion = await jws(access.priv, { exp:nowS()+300, aud:audience });
 const pres = `${mint.data.access_cert}~${assertion}~${warrant}~${r.data.config_cert}`;
 const v = await req('POST','/verify-access',{ presentation: pres, audience });
