@@ -294,7 +294,10 @@ enum CspTier {
 }
 
 fn csp_tier(path: &str) -> CspTier {
-    if path.starts_with("/dialog/") {
+    // The login dialog AND the SBO signer popup both POST cross-origin to a
+    // primary IdP's headless mint, so both need connect-src open to any web
+    // origin (Dialog tier). Both are popups → framing still denied.
+    if path.starts_with("/dialog/") || path == "/sign" {
         return CspTier::Dialog;
     }
     // The winchan relay is framed cross-origin by the RP page during a dialog
@@ -537,6 +540,7 @@ mod csp_tests {
         assert!(matches!(csp_tier("/account"), CspTier::Strict));
         assert!(matches!(csp_tier("/consent"), CspTier::Strict));
         assert!(matches!(csp_tier("/dialog/dialog.html"), CspTier::Dialog));
+        assert!(matches!(csp_tier("/sign"), CspTier::Dialog));
         assert!(matches!(csp_tier("/wsapi/session_context"), CspTier::Strict));
         assert!(matches!(csp_tier("/sign_in"), CspTier::Strict));
         assert!(matches!(csp_tier("/relay/index.html"), CspTier::StrictEmbeddable));
