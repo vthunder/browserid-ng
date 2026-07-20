@@ -1,7 +1,7 @@
 //! Headless browserid client for agents (device-cert model).
 //!
 //! An agent is a *device* holding an IdP-issued AGENT DEVICE CERT
-//! (`purpose=authentication`, `subject=agent`) that certifies its device key.
+//! (`purpose=authentication`, carrying an opaque holder) that certifies its device key.
 //! It signs an access request with the device key, POSTs the IdP's
 //! `/access/mint`, and receives a short-lived access cert for a fresh key. To
 //! present at an RP it assembles `access_cert~assertion~warrant~config_cert`,
@@ -25,7 +25,7 @@ use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use browserid_core::device::{
-    AccessCert, AccessPresentation, AccessRequest, DeviceCert, Subject, Warrant as DeviceWarrant,
+    AccessCert, AccessPresentation, AccessRequest, DeviceCert, Holder, Warrant as DeviceWarrant,
 };
 use browserid_core::{Assertion, KeyPair};
 
@@ -138,7 +138,7 @@ pub struct DeviceAgent {
     device_key: KeyPair,
     device_cert: DeviceCert,
     email: String,
-    subject: Subject,
+    holder: Holder,
     access: Option<AccessSession>,
     /// audience → (warrant signed by the user's config cert, that config cert)
     grants: std::collections::HashMap<String, (DeviceWarrant, DeviceCert)>,
@@ -154,7 +154,7 @@ impl std::fmt::Debug for DeviceAgent {
 }
 
 impl DeviceAgent {
-    /// Build from a device credential. The identity + subject are read from the
+    /// Build from a device credential. The identity + holder are read from the
     /// (signed) agent device cert, never from client metadata.
     pub fn new(credential: DeviceCredential) -> Result<Self> {
         let device_key = credential.device_keypair()?;
@@ -170,7 +170,7 @@ impl DeviceAgent {
             .first()
             .cloned()
             .ok_or_else(|| AgentError::InvalidCredential("device cert has no identity".into()))?;
-        let subject = device_cert.subject();
+        let holder = device_cert.holder().clone();
         let idp_domain = url_host(&credential.idp).to_string();
         Ok(Self {
             http: reqwest::Client::new(),
@@ -179,7 +179,7 @@ impl DeviceAgent {
             device_key,
             device_cert,
             email,
-            subject,
+            holder,
             access: None,
             grants: std::collections::HashMap::new(),
         })
@@ -191,8 +191,9 @@ impl DeviceAgent {
 
     /// Hold a config-cert-signed warrant (obtained from the principal via the
     /// warrant consent flow) plus the config cert that signed it. Returns the
-    /// audience it covers. Rejects a warrant naming a different identity/subject
-    /// or a config cert that didn't sign the warrant.
+    /// audience it covers. Rejects a warrant naming a different identity, a
+    /// holder matcher that doesn't cover this agent's holder, or a config cert
+    /// that didn't sign the warrant.
     pub fn add_grant(&mut self, warrant_encoded: &str, config_cert_encoded: &str) -> Result<String> {
         let warrant = DeviceWarrant::parse(warrant_encoded)
             .map_err(|e| AgentError::InvalidWarrant(e.to_string()))?;
@@ -205,8 +206,10 @@ impl DeviceAgent {
                 wc.identifier, self.email
             )));
         }
-        if wc.subject != self.subject {
-            return Err(AgentError::InvalidWarrant("warrant subject mismatch".into()));
+        if !wc.holder.matches(&self.holder) {
+            return Err(AgentError::InvalidWarrant(
+                "warrant holder matcher does not cover this agent's holder".into(),
+            ));
         }
         // The config cert must actually have signed this warrant.
         warrant
@@ -230,7 +233,7 @@ impl DeviceAgent {
         let request = AccessRequest::create(
             &self.idp_domain,
             &self.email,
-            self.subject,
+            self.holder.clone(),
             &access_key.public_key(),
             &jti,
             &self.device_key,
