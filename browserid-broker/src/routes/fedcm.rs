@@ -301,6 +301,30 @@ where
         access_cert.encoded(), assertion.encoded(), warrant.encoded(), config_cert.encoded()
     );
 
+    // Register the login warrant like the dialog path does, so FedCM logins
+    // also appear (and are forgettable) under "Authorized sites". Best-effort:
+    // a registry hiccup must not fail the login.
+    {
+        let now = chrono::Utc::now();
+        let rec = crate::store::WarrantRecord {
+            id: 0,
+            user_id: session.user_id,
+            delegator_email: email.clone(),
+            agent_email: email.clone(),
+            audience: rp_origin.clone(),
+            scopes: vec!["login".to_string()],
+            warrant: warrant.encoded().to_string(),
+            status_idx: None,
+            holder: Some(format!("{ns_prefix}.*")),
+            config_cert: Some(config_cert.encoded().to_string()),
+            signed_at: now,
+            expires_at: now + Duration::seconds(validity.num_seconds()),
+        };
+        if let Err(e) = state.user_store.upsert_warrant(rec) {
+            tracing::warn!("fedcm: warrant registration failed (non-fatal): {e}");
+        }
+    }
+
     // Interactive selection = the opt-in: remember it so future SILENT
     // auto-reauthns for this RP are allowed (see the is_auto gate above).
     if !is_auto {

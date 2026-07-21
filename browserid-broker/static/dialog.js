@@ -323,7 +323,7 @@
           agent_email: email, audience, scopes: ['login']
         });
         if (alloc && alloc.uri) statusRef = { uri: alloc.uri, idx: alloc.idx };
-      } catch (e) { /* unauthenticated or registrar off — sign without status */ }
+      } catch (e) { console.warn('warrant status allocation failed:', e.message || e); }
     }
     const warrantClaims = {
       typ: 'browserid-warrant-v1',
@@ -341,7 +341,7 @@
         await apiCall('/wsapi/register_warrant', 'POST', {
           warrant, config_cert: pair.config.cert
         });
-      } catch (e) { /* best-effort: login must not fail on registry hiccups */ }
+      } catch (e) { console.warn('warrant registration failed:', e.message || e); }
     }
 
     // 3. Assertion for the RP's audience, signed by the fresh access key.
