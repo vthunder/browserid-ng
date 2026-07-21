@@ -228,6 +228,17 @@
     </div>
   </div>
 
+  <div id="site-detail" hidden>
+    <div class="card">
+      <button id="sd-back" class="small">← Back</button>
+      <h2 id="sd-aud" class="aud" style="word-break:break-all"></h2>
+      <p class="sub">Every grant for this site. Revoking takes effect on the site's next
+        revocation check.</p>
+      <div id="sd-warrants"></div>
+      <p class="status" id="sd-status"></p>
+    </div>
+  </div>
+
   <p class="footer-links"><a href="/consent">Consent</a> · <a href="/">browserid.me</a></p>
 </div>
 
@@ -441,12 +452,19 @@ function idpUrlFor(domain) {
   return /^(localhost|127\.)/.test(domain) ? `http://${domain}` : `https://${domain}`;
 }
 
+// This browser holds a live device cert for the email → one-click login here.
+function localCertReady(email) {
+  return deviceCache.some(r => r.kind === 'device' && r.email === email && r.privateKey && r.cert
+    && (certPayload(r.cert)?.exp || 0) > nowS() + 60);
+}
+
 function renderUserIdentities() {
   const rows = account.emails
     .filter(e => !account.agents.includes(e))
     .map(email => {
       const via = account.parentOf[email];
-      return `<li><div class="row"><span class="email-text">${escapeHtml(email)}
+      const here = localCertReady(email) ? ' <span class="badge info">this browser</span>' : '';
+      return `<li><div class="row"><span class="email-text">${escapeHtml(email)}${here}
         ${via ? `<span class="email-sub">signs in via ${escapeHtml(via)}</span>` : ''}
       </span></div></li>`;
     }).join('');
@@ -604,9 +622,32 @@ function matcherDisplay(m) {
   return h ? escapeHtml(h.label) : `<span class="scope">${escapeHtml(m)}</span>`;
 }
 
-// Sites slice: every warrant on the account, grouped by audience — "what did I
-// authorize, where". Includes warrants whose matcher matches no recorded holder
-// (external services), so nothing becomes invisible.
+// Sites slice: every warrant on the account, grouped audience → matcher, as a
+// compact rollup ("who may act there, doing what"). Login-scoped warrants fold
+// into a "Sign in as:" line; other scopes show as a truncated chip list. The
+// full per-warrant table (with revoke/forget) lives in the site detail view.
+function nsLabelForPrefix(p) {
+  for (const ns of ((account.holders || {}).namespaces || [])) {
+    if (ns.prefix === p) return ns.label;
+  }
+  return null;
+}
+// A matcher as a group heading: "All Browsers" / "Only: Chrome on macOS" /
+// "Any of my holders" — raw mono chip when it names nothing we know.
+function matcherGroupLabel(m) {
+  if (!m || m === '*') return 'Any of my holders';
+  if (m.endsWith('.*')) {
+    const l = nsLabelForPrefix(m.slice(0, -2));
+    return l ? 'All ' + escapeHtml(l) : `All <span class="scope">${escapeHtml(m)}</span>`;
+  }
+  const h = findHolder(m);
+  return h ? 'Only: ' + escapeHtml(h.label) : `Only: <span class="scope">${escapeHtml(m)}</span>`;
+}
+// A pure login grant: no scopes beyond the `login` sentinel.
+function isLoginWarrant(w) {
+  return ((w.scopes || []).filter(s => s !== 'login')).length === 0;
+}
+
 function renderSites() {
   const byAud = new Map();
   for (const w of account.warrants) {
@@ -622,34 +663,78 @@ function renderSites() {
       grants you approve appear here, grouped by site.</p>`;
     return;
   }
+  $('sites-tree').innerHTML = '<ul class="idlist">' + [...byAud.entries()].map(([aud, ws]) => {
+    const byMatcher = new Map();
+    for (const w of ws) {
+      const m = w.holder || '*';
+      if (!byMatcher.has(m)) byMatcher.set(m, []);
+      byMatcher.get(m).push(w);
+    }
+    const groups = [...byMatcher.entries()].map(([m, mws]) => {
+      const logins = [...new Set(mws.filter(isLoginWarrant).map(w => w.agent_email))];
+      const perms = [...new Set(mws.flatMap(w => (w.scopes || []).filter(s => s !== 'login')))];
+      const shown = perms.slice(0, 3);
+      const lines = [];
+      if (logins.length) lines.push(`<span class="email-sub">Sign in as: ${logins.map(escapeHtml).join(', ')}</span>`);
+      if (perms.length) lines.push(`<span style="display:block;margin-top:2px">${
+        shown.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')}${
+        perms.length > shown.length ? `<span class="muted" style="font-size:12px"> +${perms.length - shown.length} more</span>` : ''}</span>`);
+      if (!lines.length) lines.push('<span class="email-sub">no scopes</span>');
+      return `<span style="display:block;margin:3px 0 0 12px">
+        <span style="display:block;font-size:13px;font-weight:500">${matcherGroupLabel(m)}</span>${lines.join('')}</span>`;
+    }).join('');
+    const host = aud.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    return `<li><button class="row site-row" data-a="${escapeHtml(aud)}">
+      <span class="email-text"><span class="aud" style="font-weight:600">${escapeHtml(host)}</span>${groups}</span>
+      <span class="chev">›</span></button></li>`;
+  }).join('') + '</ul>';
+  for (const b of $('sites-tree').querySelectorAll('.site-row')) {
+    b.onclick = () => openSite(b.dataset.a);
+  }
+}
+
+// -------- site detail: every grant for one audience, with revoke --------
+let sdAud = null;
+function openSite(aud) {
+  sdAud = aud;
+  history.pushState({ view: 'site', aud }, '', '#s:' + encodeURIComponent(aud));
+  renderSiteDetail();
+}
+function renderSiteDetail() {
+  const ws = account.warrants.filter(w => (w.audience || '—') === sdAud);
+  $('app').hidden = true; $('holder-detail').hidden = true; $('site-detail').hidden = false;
+  $('sd-aud').textContent = sdAud;
+  if (!ws.length) {
+    $('sd-warrants').innerHTML = '<p class="muted" style="font-size:13px">No grants left for this site.</p>';
+    return;
+  }
   const byId = {};
-  $('sites-tree').innerHTML = [...byAud.entries()].map(([aud, ws]) =>
-    `<div style="margin-bottom:14px"><div class="aud" style="font-weight:600;margin-bottom:4px">${escapeHtml(aud)}</div>
-     <table class="wtable">${ws.map(w => {
-       byId[w.id] = w;
-       const signed = w.signed_at ? `signed ${new Date(Date.parse(w.signed_at)).toLocaleDateString()}` : '';
-       const actions = w.revoked
-         ? `<button class="small sw-forget" data-i="${w.id}">Forget</button>`
-         : (w.status_idx != null
-             ? `<button class="small sw-revoke" data-i="${w.id}" style="color:#c53030">Revoke</button>`
-             : `<button class="small sw-forget" data-i="${w.id}">Forget</button>`);
-       return `<tr><td>
-         <span style="font-size:13px">${escapeHtml(w.agent_email)}</span> · ${matcherDisplay(w.holder)}<br>
-         <span class="muted" style="font-size:12px">${[`acting for ${w.delegator_email}`, signed].map(escapeHtml).filter(Boolean).join(' · ')}</span><br>
-         ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
-         <td style="white-space:nowrap;text-align:right">${warrantStateHtml(w)}<br>${actions}</td></tr>`;
-     }).join('')}</table></div>`).join('');
-  for (const b of $('sites-tree').querySelectorAll('.sw-forget')) b.onclick = async () => {
-    try { await post('/wsapi/forget_warrant', { id: Number(b.dataset.i) }); await reloadAccount(); renderHolders(); renderSites(); }
+  $('sd-warrants').innerHTML = `<table class="wtable">${ws.map(w => {
+    byId[w.id] = w;
+    const signed = w.signed_at ? `signed ${new Date(Date.parse(w.signed_at)).toLocaleDateString()}` : '';
+    const actions = w.revoked
+      ? `<button class="small sw-forget" data-i="${w.id}">Forget</button>`
+      : (w.status_idx != null
+          ? `<button class="small sw-revoke" data-i="${w.id}" style="color:#c53030">Revoke</button>`
+          : `<button class="small sw-forget" data-i="${w.id}">Forget</button>`);
+    return `<tr><td>
+      <span style="font-size:13px">${escapeHtml(w.agent_email)}</span> · ${matcherDisplay(w.holder)}<br>
+      <span class="muted" style="font-size:12px">${[`acting for ${w.delegator_email}`, signed].map(escapeHtml).filter(Boolean).join(' · ')}</span><br>
+      ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
+      <td style="white-space:nowrap;text-align:right">${warrantStateHtml(w)}<br>${actions}</td></tr>`;
+  }).join('')}</table>`;
+  for (const b of $('sd-warrants').querySelectorAll('.sw-forget')) b.onclick = async () => {
+    try { await post('/wsapi/forget_warrant', { id: Number(b.dataset.i) }); await reloadAccount(); renderHolders(); renderSites(); renderSiteDetail(); }
     catch (e) { alert('Forget failed: ' + e.message); }
   };
-  for (const b of $('sites-tree').querySelectorAll('.sw-revoke')) b.onclick = async () => {
+  for (const b of $('sd-warrants').querySelectorAll('.sw-revoke')) b.onclick = async () => {
     const w = byId[b.dataset.i];
-    if (!confirm(`Revoke access to ${w.audience}? The grant stops working within minutes at services that check revocation.`)) return;
-    try { await post('/wsapi/revoke_warrant', { id: Number(b.dataset.i) }); await reloadAccount(); renderHolders(); renderSites(); }
+    if (!confirm(`Revoke this grant for ${w.audience}? It stops working within minutes at services that check revocation.`)) return;
+    try { await post('/wsapi/revoke_warrant', { id: Number(b.dataset.i) }); await reloadAccount(); renderHolders(); renderSites(); renderSiteDetail(); }
     catch (e) { alert('Revoke failed: ' + e.message); }
   };
 }
+$('sd-back').onclick = () => history.back();
 
 // -------- holder detail: two-slice warrant view --------
 let hdCtx = null; // { holderId, slice }
@@ -666,7 +751,7 @@ function openHolder(holderId) {
 function renderHolderDetail() {
   const h = findHolder(hdCtx.holderId);
   if (!h) { backToMain(); return; }
-  $('app').hidden = true; $('holder-detail').hidden = false;
+  $('app').hidden = true; $('site-detail').hidden = true; $('holder-detail').hidden = false;
   $('hd-label').textContent = h.label;
   $('hd-badges').innerHTML = (h.trust === 'trusted'
     ? '<span class="badge active">trusted</span>' : '<span class="badge inactive">login-only</span>')
@@ -753,11 +838,17 @@ $('ae-btn').onclick = async () => {
 };
 
 // -------- navigation --------
-function backToMain() { $('holder-detail').hidden = true; $('app').hidden = false; }
+function backToMain() {
+  $('holder-detail').hidden = true; $('site-detail').hidden = true; $('app').hidden = false;
+}
 window.addEventListener('popstate', (e) => {
   if (e.state && e.state.view === 'holder') {
     hdCtx = { holderId: e.state.holderId, slice: 'holder' };
     renderHolderDetail(); return;
+  }
+  if (e.state && e.state.view === 'site') {
+    sdAud = e.state.aud;
+    renderSiteDetail(); return;
   }
   backToMain();
 });
