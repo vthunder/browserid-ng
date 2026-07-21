@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-21T21:07:04Z
-updated_at: 2026-07-21T21:28:35Z
+updated_at: 2026-07-21T21:52:53Z
 parent: browserid-ng-oup3
 ---
 
@@ -30,3 +30,5 @@ browserid-core AccessPresentation::verify enforces config_cert.iss == access_cer
 - account.html approval, for a primary-rooted delegator, hops to the primary's device-authorize popup (agent mode: pubkey+holder+agent identity) to get the cert signed, then calls complete with it.
 - mingo-idp /device_cert grows agent mode: session-authed issuance for `<handle>+<tag>@mingo.place` over a supplied pubkey + broker-assigned holder (passthrough), authentication-purpose only.
 - Poster = mingo server holding device key + mingo-signed cert + warrant; mints access at mingo's own /access/mint; assembles SBO wire server-side (sbo-core 55314e9 pinned in mingo-idp only; workspace/mingo-app stays a92886c to avoid breaking the classic CLI until its own migration).
+
+2a COMPLETE incl. as-you + primary-signed-cert extensions; see commits 440f545, 5736bdb, 5710ea6, 645d7c9. Remaining: live verification rides the D deploy (bean browserid-ng-3b8m).

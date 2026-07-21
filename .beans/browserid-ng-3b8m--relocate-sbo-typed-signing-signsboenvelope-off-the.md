@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-07-17T22:29:06Z
-updated_at: 2026-07-21T20:58:48Z
+updated_at: 2026-07-21T21:52:53Z
 parent: browserid-ng-oup3
 blocking:
     - browserid-ng-oup3
@@ -43,3 +43,16 @@ D (mingo-poster / service posting) is blocked on the holder-based authorization 
 
 ## Agent/D phase handoff (2026-07-21)
 Holder migration fully deployed+verified; D unblocked. Start here: docs/plans/2026-07-21-HANDOFF-agent-d.md (merged one-approval provisioning -> mingo-poster as warranted <id> service holder -> handle bootstrap; mingo sbo dep bump a92886c->55314e9 first).
+
+## D rebuilt (session 5, 2026-07-21) — poster on the holder model, ready to deploy
+Design correction settled from the holder-model doc: the poster is an AS-YOU SERVICE — warrant identifier IS the user (owner == attributed identity, no as: scope, no mingo-poster@ identity); isolation comes from the broker-assigned services holder. sbo authorize is strict-equality on attributed email, which forced this reading (and is what the doc specified all along).
+
+Built:
+- browserid-ng (branch holder-authorization-model, pushed): merged one-approval provisioning (browserid-ng-dzq8) incl. as-you requests, primary-signed cert acceptance in complete (issuer-consistency: config_cert.iss == access_cert.iss makes broker-signed certs unverifiable for primary-domain identities), account.html approval hop to the primary's device-authorize (agent mode), SDK request_provision/wait/into_agent + assertion_with_access_seed.
+- mingo 58ed2ea: poster.rs rebuilt (enable -> merged request; poll -> stores device_seed/cert/holder/idp + warrant tail; submit -> DeviceAgent access mint + envelope-key-bound SBO wire + fail-closed dnssec refresh); /agent_device_cert + device-authorize agent mode; store migrated; mingo-idp pinned browserid-ng 645d7c9 + sbo 55314e9 (crate-local).
+All tests green both repos (broker merged_provision_test 4, agent SDK roundtrip, mingo-idp 21).
+
+- [ ] deploy browserid.me (dokku push branch)
+- [ ] deploy mingo-idp
+- [ ] human test: enable poster on mingo.place -> approve once at browserid.me -> server-side post lands on-chain owned by dan@mingo.place
+- [ ] follow-up: mingo-app CLI still classic (pins 3b6189e + workspace sbo a92886c) — needs its own device-model migration (request_provision SDK path)
