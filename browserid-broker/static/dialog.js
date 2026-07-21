@@ -35,6 +35,7 @@
     sboSign: false,  // RP requested the SBO typed-signing capability
     pendingPresentation: null,  // presentation held while showing the SBO consent screen
     provisionEmail: null,  // RP asked to provision/sign in a SPECIFIC identity (skip the chooser)
+    loginHint: null,  // caller pre-filled the email (e.g. /account) → skip the email screen
     pendingPrimary: null,  // {email, info, keys} while waiting on tap-to-continue
     // Full-page redirect mode (Arc / blocked popups): {returnTo, state}. The
     // response navigates back to the RP with the payload in the fragment
@@ -50,6 +51,7 @@
     authenticate: '/wsapi/authenticate_user',
     listEmails: '/wsapi/list_emails',
     deviceIssue: '/device/issue',
+    browserHolder: '/wsapi/browser_holder',
     accessMint: '/access/mint',
     stageReset: '/wsapi/stage_reset',
     completeReset: '/wsapi/complete_reset',
@@ -211,6 +213,29 @@
     return c ? c.holder : null;
   }
 
+  // This browser's stable holder (holder-authorization model): one per browser,
+  // reused across every identity. It is a non-secret opaque string, so it lives
+  // in localStorage (not the keystore, which is for non-extractable keys), keyed
+  // by the account's `browsers` prefix so a second account on this browser gets
+  // its own holder. Returns null if it can't be determined (e.g. no session yet)
+  // — issuance then falls back to a broker-assigned holder.
+  async function browserHolder() {
+    let prefix;
+    try {
+      const r = await apiCall(API.browserHolder, 'GET');
+      prefix = r && r.prefix;
+    } catch (e) { return null; }
+    if (!prefix) return null;
+    const key = 'browserid:holder:' + prefix;
+    try {
+      const cached = localStorage.getItem(key);
+      if (cached) return cached;
+    } catch (e) { /* fall through */ }
+    const holder = prefix + '.' + rndHex().slice(0, 10);
+    try { localStorage.setItem(key, holder); } catch (e) { /* best-effort */ }
+    return holder;
+  }
+
   // --- device-cert keystore (IndexedDB device store) -----------------------
 
   // A stored, unexpired (device, config) cert pair for (issuer, email), or null.
@@ -235,11 +260,14 @@
   // model's replacement for the classic /wsapi/cert_key).
   async function issueDevicePair(email) {
     const keys = { device: await Keystore.generate(), config: await Keystore.generate() };
-    const certs = await apiCall(API.deviceIssue, 'POST', {
+    const holder = await browserHolder();
+    const body = {
       email,
       device_pubkey: keys.device.publicKeyX,
       config_pubkey: keys.config.publicKeyX
-    });
+    };
+    if (holder) body.holder = holder;
+    const certs = await apiCall(API.deviceIssue, 'POST', body);
     if (!certs.device_cert || !certs.config_cert) {
       throw new Error(certs.reason || 'device issuance failed');
     }
@@ -445,13 +473,14 @@
   // {device_cert, config_cert} once it posts them back. The pubkeys ride the
   // URL fragment (public values; never reach server logs); the response comes
   // via postMessage with our origin as the target.
-  function primaryPopupFlow(email, deviceAuthUrl, keys) {
+  function primaryPopupFlow(email, deviceAuthUrl, keys, holder) {
     return new Promise((resolve, reject) => {
       const idpOrigin = new URL(deviceAuthUrl).origin;
       const url = deviceAuthUrl +
         '#email=' + encodeURIComponent(email) +
         '&device_pubkey=' + encodeURIComponent(keys.device.publicKeyX) +
         '&config_pubkey=' + encodeURIComponent(keys.config.publicKeyX) +
+        (holder ? '&holder=' + encodeURIComponent(holder) : '') +
         '&return_origin=' + encodeURIComponent(window.location.origin);
 
       const popup = window.open(url, 'browserid_device_auth', 'width=600,height=700');
@@ -562,19 +591,22 @@
         showError(domain + ' runs its own identity provider, but it does not support device sign-in yet.');
         return;
       }
+      // This browser's stable holder, passed to the IdP so it passthrough-signs
+      // the same holder across all identities on this browser.
+      const holder = await browserHolder();
       // Redirect mode cannot open a popup (that is why we are here) — hop to
       // the IdP's device-authorization page in THIS tab and resume on return.
       if (state.redirect) {
-        return await primaryRedirectHop(email, addressInfo);
+        return await primaryRedirectHop(email, addressInfo, holder);
       }
       const keys = { device: await Keystore.generate(), config: await Keystore.generate() };
       let certs;
       try {
-        certs = await primaryPopupFlow(email, addressInfo.device_auth, keys);
+        certs = await primaryPopupFlow(email, addressInfo.device_auth, keys, holder);
       } catch (e) {
         if (e && e.popupBlocked) {
           // Blocked — re-run from a fresh tap gesture (mobile).
-          state.pendingPrimary = { email, info: addressInfo, keys };
+          state.pendingPrimary = { email, info: addressInfo, keys, holder };
           document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
           document.querySelectorAll('#primary-auth-continue-screen .idp-name')
             .forEach(el => { el.textContent = domain; });
@@ -597,7 +629,7 @@
   // same mechanism mingo-ytrs used), then navigate THIS tab to the IdP's
   // device-authorization page with a return_url pointing back at
   // /dialog/dialog.html?resume=device_auth.
-  async function primaryRedirectHop(email, info) {
+  async function primaryRedirectHop(email, info, holder) {
     const keys = { device: await Keystore.generate(), config: await Keystore.generate() };
     await Keystore.putPending({
       kind: 'device_auth',
@@ -624,6 +656,7 @@
       '#email=' + encodeURIComponent(email) +
       '&device_pubkey=' + encodeURIComponent(keys.device.publicKeyX) +
       '&config_pubkey=' + encodeURIComponent(keys.config.publicKeyX) +
+      (holder ? '&holder=' + encodeURIComponent(holder) : '') +
       '&return_origin=' + encodeURIComponent(window.location.origin) +
       '&return_url=' + encodeURIComponent(resume)
     );
@@ -1148,7 +1181,7 @@
       if (!p) return showScreen('email');
       state.pendingPrimary = null;
       try {
-        const certs = await primaryPopupFlow(p.email, p.info.device_auth, p.keys);
+        const certs = await primaryPopupFlow(p.email, p.info.device_auth, p.keys, p.holder);
         const pair = await finishPrimaryCerts(p.email, p.keys, certs);
         await ensureBrokerSession(p.email, pair, p.email.split('@')[1], p.info.access_mint);
         await finishSignIn(p.email, pair, p.email.split('@')[1], p.info.access_mint);
@@ -1287,6 +1320,13 @@
       handleEmailChosen(state.provisionEmail);
       return;
     }
+    // A caller (e.g. /account) pre-filled the email → skip the email screen and
+    // drive that identity straight through, instead of re-prompting.
+    if (state.loginHint) {
+      showScreen('loading');
+      handleEmailChosen(state.loginHint);
+      return;
+    }
     try {
       // Check if already authenticated
       const session = await apiCall(API.sessionContext);
@@ -1342,6 +1382,7 @@
       try { opts = b64urlParse(params.get('params') || '') || {}; } catch (e) { /* defaults */ }
       state.sboSign = !!opts.sboSign;
       state.provisionEmail = opts.provisionEmail || null;
+      state.loginHint = params.get('login_hint') || null;
       state.acceptedFallbacks = normalizeAcceptedFallbacks(opts.acceptedFallbacks);
       maybeShowFedcmOptin(!!opts.fedcm);
       document.querySelectorAll('.rp-name').forEach(el => {

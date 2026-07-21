@@ -419,6 +419,7 @@ async function siDiscover(email) {
     location.assign('/dialog/dialog.html?rp_redirect=1'
       + '&rp_origin=' + encodeURIComponent(origin)
       + '&return_to=' + encodeURIComponent(origin + '/account')
+      + '&login_hint=' + encodeURIComponent(email)
       + '&state=acct');
     return;
   }

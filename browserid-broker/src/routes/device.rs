@@ -77,6 +77,11 @@ pub struct DeviceIssueRequest {
     pub email: String,
     pub device_pubkey: String,
     pub config_pubkey: String,
+    /// The client broker's stable per-browser holder (reused across identities),
+    /// which must sit in this account's `browsers` namespace. Optional for
+    /// backward-compat: absent → the broker assigns a fresh one.
+    #[serde(default)]
+    pub holder: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -84,6 +89,31 @@ pub struct DeviceIssueResponse {
     pub success: bool,
     pub device_cert: String,
     pub config_cert: String,
+}
+
+#[derive(Serialize)]
+pub struct BrowserHolderResponse {
+    pub prefix: String,
+}
+
+/// GET /wsapi/browser_holder  (session) → the account's `browsers` namespace
+/// prefix, so the client broker can form this browser's stable holder
+/// `<prefix>.<rand>` once and reuse it across identities.
+pub async fn browser_holder<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+) -> Result<Json<BrowserHolderResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    let prefix = state
+        .user_store
+        .get_or_create_namespace(session.user_id, "browsers")?;
+    Ok(Json(BrowserHolderResponse { prefix }))
 }
 
 pub async fn device_issue<U, S, E>(
@@ -107,11 +137,27 @@ where
     let device_ref = device_status(&state, &device_pub)?;
     let config_ref = device_status(&state, &config_pub)?;
     let ttl = Duration::days(90);
-    // One device slot → one broker-assigned holder in the user's `browsers`
-    // namespace, carried by BOTH the authentication (device) and authorization
-    // (config) cert. The requester never chooses it (holder-authorization model).
+    // One device slot → one holder in the user's `browsers` namespace, carried by
+    // BOTH the authentication (device) and authorization (config) cert. The client
+    // broker supplies this browser's stable holder (reused across identities); it
+    // must sit in this account's `browsers` namespace (the requester can name a
+    // holder only *within* its own browsers namespace, never a service's). Absent
+    // → the broker assigns a fresh one (older clients / first contact).
     let ns_prefix = state.user_store.get_or_create_namespace(session.user_id, "browsers")?;
-    let holder = crate::crypto::assign_holder_id(&ns_prefix);
+    let holder = match req.holder.as_deref() {
+        Some(h) if !h.is_empty() => {
+            // Well-formed holder, and in THIS account's browsers namespace.
+            browserid_core::device::Holder::new(h.to_string()).map_err(ce)?;
+            let prefix = h.split_once('.').map(|(p, _)| p).unwrap_or("");
+            if prefix != ns_prefix {
+                return Err(BrokerError::PolicyRefused(
+                    "supplied holder is not in this account's browsers namespace".into(),
+                ));
+            }
+            h.to_string()
+        }
+        _ => crate::crypto::assign_holder_id(&ns_prefix),
+    };
     let holder_id = browserid_core::device::Holder::new(holder.clone()).map_err(ce)?;
     let device_cert = DeviceCert::create(
         &state.domain, &device_pub, Purpose::Authentication, holder_id.clone(),

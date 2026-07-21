@@ -89,6 +89,53 @@ async fn device_issue_then_access_mint() {
 }
 
 #[tokio::test]
+async fn device_issue_accepts_client_browser_holder_and_rejects_foreign() {
+    let (server, sender) = make_server();
+    let email = "human2@localhost:3000";
+    let session = create_user(&server, &sender, email, "testpassword").await;
+    let c = csrf(&server, &session).await;
+
+    // The account's browsers-namespace prefix (client broker fetches this).
+    let prefix: String = server
+        .get("/wsapi/browser_holder")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json::<Value>()["prefix"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!prefix.is_empty());
+    let holder = format!("{prefix}.mainlaptop");
+
+    let device_kp = KeyPair::generate();
+    let config_kp = KeyPair::generate();
+    let issue = |h: Value| {
+        server
+            .post("/device/issue")
+            .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+            .json(&json!({
+                "csrf": c, "email": email,
+                "device_pubkey": device_kp.public_key().to_base64(),
+                "config_pubkey": config_kp.public_key().to_base64(),
+                "holder": h,
+            }))
+    };
+
+    // Client-supplied holder in the account's browsers namespace → used verbatim
+    // on BOTH certs.
+    let body: Value = issue(json!(holder)).await.json();
+    assert_eq!(body["success"], true, "device/issue with holder: {body}");
+    let dc = DeviceCert::parse(body["device_cert"].as_str().unwrap()).unwrap();
+    let cc = DeviceCert::parse(body["config_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(dc.holder().as_str(), holder);
+    assert_eq!(cc.holder().as_str(), holder);
+
+    // A holder outside this account's browsers namespace is refused.
+    let resp = issue(json!("br-someoneelse.evil")).await;
+    assert_ne!(resp.status_code(), 200, "foreign-namespace holder must be rejected");
+}
+
+#[tokio::test]
 async fn access_mint_rejects_request_not_signed_by_device_key() {
     let (server, sender) = make_server();
     let email = "human@localhost:3000";
