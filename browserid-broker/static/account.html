@@ -684,7 +684,10 @@ function renderSites() {
       return `<span style="display:block;margin:3px 0 0 12px">
         <span style="display:block;font-size:13px;font-weight:500">${matcherGroupLabel(m)}</span>${lines.join('')}</span>`;
     }).join('');
-    const host = aud.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    // Grants at the broker's own origin (guestbook, on-broker demos) share one
+    // audience — label them so "browserid.me" doesn't read as a third-party site.
+    let host = aud.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    try { if (new URL(aud).origin === location.origin) host += ' (this broker)'; } catch (e) { /* non-URL audience */ }
     return `<li><button class="row site-row" data-a="${escapeHtml(aud)}">
       <span class="email-text"><span class="aud" style="font-weight:600">${escapeHtml(host)}</span>${groups}</span>
       <span class="chev">›</span></button></li>`;
