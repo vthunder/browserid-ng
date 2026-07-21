@@ -68,13 +68,13 @@ browserid when the handle is claimed (or on login), so browserid knows the
 relationship before it's needed. Related old context: the 2026-07-20 handoff §3
 (deferred-handle provisioning bug — the flow exists but is deferred/lazy).
 
-### Also queued (smaller, independent)
-- fallback_idp `/auth/device_cert`: accept the client-supplied holder param
-  (still self-assigns server-side).
-- Second-browser-cold `browsers`-prefix reconciliation (edge case, documented).
-- adopt-after-wipe + re-categorize UI (needs client re-provisioning flows).
-- Move user-login demo RPs off the broker origin (e.g. demo.browserid.me).
-- Merge `holder-authorization-model` → `main` in browserid-ng when convenient.
+### Also queued (smaller, independent — each has a bean)
+- `browserid-ng-kmvm` — fallback_idp client-supplied holder param.
+- `browserid-ng-rrve` — second-browser-cold `browsers`-prefix reconciliation.
+- `browserid-ng-10n1` — adopt-after-wipe + re-categorize UI.
+- `browserid-ng-lq56` — move user-login demo RPs off the broker origin.
+- `browserid-ng-129z` — merge holder branch → `main` + delete sandmill's dead
+  legacy `/browserid/auth` + `auth-complete` views.
 
 ## 3. Deploy mechanics (corrections matter)
 

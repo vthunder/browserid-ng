@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-07-17T22:29:06Z
-updated_at: 2026-07-20T18:12:28Z
+updated_at: 2026-07-21T20:58:48Z
 parent: browserid-ng-oup3
 blocking:
     - browserid-ng-oup3
@@ -40,3 +40,6 @@ Deployed + version-verified across the chain: broker signer (device-model sbo-si
 
 ## D blocked on the holder model (2026-07-20)
 D (mingo-poster / service posting) is blocked on the holder-based authorization redesign (browserid-ng-ykjk, docs/plans/2026-07-20-holder-authorization-model.md): the device warrant dropped the delegator/as: field, and the settled fix is opaque broker-assigned holders + warrant matchers (*/ns.*/id) rather than re-adding as:. D builds on that. A (browser signing) is live and independent.
+
+## Agent/D phase handoff (2026-07-21)
+Holder migration fully deployed+verified; D unblocked. Start here: docs/plans/2026-07-21-HANDOFF-agent-d.md (merged one-approval provisioning -> mingo-poster as warranted <id> service holder -> handle bootstrap; mingo sbo dep bump a92886c->55314e9 first).
