@@ -1501,6 +1501,56 @@ impl UserStore for SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))
     }
 
+    fn adopt_namespace_prefix(
+        &self,
+        user_id: UserId,
+        name: &str,
+        new_prefix: &str,
+    ) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        // Ensure the row exists (same converge-on-one-row insert as get_or_create).
+        conn.execute(
+            "INSERT OR IGNORE INTO namespaces (user_id, name, prefix, label) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                user_id.0 as i64,
+                name,
+                crate::crypto::generate_namespace_prefix(),
+                title_case(name),
+            ],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let current: String = conn
+            .query_row(
+                "SELECT prefix FROM namespaces WHERE user_id = ?1 AND name = ?2",
+                params![user_id.0 as i64, name],
+                |row| row.get(0),
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if current == new_prefix {
+            return Ok(true);
+        }
+        // Only adopt while the namespace is unused — no recorded cert carries
+        // its current prefix (a fresh account's first cold login). Otherwise
+        // existing holders/warrants under the current prefix would orphan.
+        let in_use: i64 = conn
+            .query_row(
+                // `current` is our own generated base32 prefix — no LIKE metachars.
+                "SELECT COUNT(*) FROM device_certs WHERE user_id = ?1 AND holder LIKE ?2",
+                params![user_id.0 as i64, format!("{current}.%")],
+                |row| row.get(0),
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if in_use > 0 {
+            return Ok(false);
+        }
+        conn.execute(
+            "UPDATE namespaces SET prefix = ?3 WHERE user_id = ?1 AND name = ?2",
+            params![user_id.0 as i64, name, new_prefix],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(true)
+    }
+
     fn list_namespaces(&self, user_id: UserId) -> StoreResult<Vec<Namespace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
@@ -1870,6 +1920,15 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {
         (**self).get_or_create_namespace(user_id, name)
+    }
+
+    fn adopt_namespace_prefix(
+        &self,
+        user_id: UserId,
+        name: &str,
+        new_prefix: &str,
+    ) -> StoreResult<bool> {
+        (**self).adopt_namespace_prefix(user_id, name, new_prefix)
     }
 
     fn list_namespaces(&self, user_id: UserId) -> StoreResult<Vec<Namespace>> {

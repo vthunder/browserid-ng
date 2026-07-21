@@ -533,6 +533,34 @@ impl UserStore for InMemoryUserStore {
         Ok(prefix.clone())
     }
 
+    fn adopt_namespace_prefix(
+        &self,
+        user_id: UserId,
+        name: &str,
+        new_prefix: &str,
+    ) -> StoreResult<bool> {
+        let mut ns = self.namespaces.write().unwrap();
+        let (prefix, _label) = ns
+            .entry((user_id, name.to_string()))
+            .or_insert_with(|| (crate::crypto::generate_namespace_prefix(), title_case(name)));
+        if prefix == new_prefix {
+            return Ok(true);
+        }
+        // Only adopt while unused (no recorded holder under the current prefix).
+        let want = format!("{prefix}.");
+        let in_use = self
+            .device_certs
+            .read()
+            .unwrap()
+            .values()
+            .any(|c| c.user_id == user_id && c.holder.starts_with(&want));
+        if in_use {
+            return Ok(false);
+        }
+        *prefix = new_prefix.to_string();
+        Ok(true)
+    }
+
     fn list_namespaces(&self, user_id: UserId) -> StoreResult<Vec<Namespace>> {
         let ns = self.namespaces.read().unwrap();
         let mut out: Vec<Namespace> = ns

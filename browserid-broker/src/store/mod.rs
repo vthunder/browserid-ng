@@ -196,6 +196,19 @@ pub trait UserStore: Send + Sync {
     /// under this namespace is `<prefix>.<random>`.
     fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String>;
 
+    /// Adopt `new_prefix` as the namespace's prefix — but only while the
+    /// namespace is UNUSED (no recorded device-cert holder carries its current
+    /// prefix). Covers the cold first sign-in, where the cert was issued before
+    /// a session existed to hand out the account prefix: the account-creating
+    /// login adopts the cert's prefix so the holder lands in `browsers` instead
+    /// of orphaning. Returns whether the namespace now uses `new_prefix`.
+    fn adopt_namespace_prefix(
+        &self,
+        user_id: UserId,
+        name: &str,
+        new_prefix: &str,
+    ) -> StoreResult<bool>;
+
     /// List this user's namespaces (name, stored prefix, friendly label).
     fn list_namespaces(&self, user_id: UserId) -> StoreResult<Vec<Namespace>>;
 

@@ -162,10 +162,24 @@ where
     // config cert is present in the presentation (not the auth device cert); its
     // holder is the shared device-slot holder, and recording it reads as
     // `trusted` in the UI. `insert_device_cert` upserts on pubkey, so re-login is
-    // idempotent. These primary holders carry the IdP's own random prefix, so
-    // they land in the account UI's `holders_without_namespace` bucket for now.
+    // idempotent.
+    //
+    // Cold-first-login prefix adoption: the very first (account-creating) sign-in
+    // has no session at cert-issuance time, so the client broker couldn't fetch
+    // the account's `browsers` prefix and the IdP self-assigned one. Adopt the
+    // cert's prefix as the account's `browsers` namespace while that namespace is
+    // still unused, so the holder lands in Browsers instead of orphaning.
     if let Ok(pres) = browserid_core::device::AccessPresentation::parse(&req.presentation) {
         let cc = pres.config_cert.claims();
+        if let Some((prefix, _)) = cc.holder.as_str().split_once('.') {
+            match state.user_store.adopt_namespace_prefix(user_id, "browsers", prefix) {
+                Ok(false) => tracing::debug!(
+                    "browsers namespace already in use; cert holder keeps its own prefix"
+                ),
+                Ok(true) => {}
+                Err(e) => tracing::warn!("browsers prefix adoption failed: {e}"),
+            }
+        }
         let rec = DeviceCertRecord {
             id: 0,
             user_id,

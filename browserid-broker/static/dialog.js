@@ -559,6 +559,20 @@
     if (!dc || !cc || dc.iss !== domain || cc.iss !== domain) {
       throw new Error('identity provider returned certificates for the wrong issuer');
     }
+    // Remember the issued holder as this browser's holder for its prefix. On a
+    // COLD first sign-in there was no session, so browserHolder() couldn't fetch
+    // the account prefix and the IdP self-assigned one; the broker adopts that
+    // prefix as the account's `browsers` namespace on session join. Caching it
+    // here makes every later issuance on this browser reuse the SAME holder
+    // instead of minting a sibling under the adopted prefix.
+    if (dc.holder && dc.holder.includes('.')) {
+      const p = dc.holder.slice(0, dc.holder.indexOf('.'));
+      try {
+        if (!localStorage.getItem('browserid:holder:' + p)) {
+          localStorage.setItem('browserid:holder:' + p, dc.holder);
+        }
+      } catch (e) { /* best-effort */ }
+    }
     await storeDevicePair(domain, email, keys, certs);
     return storedDevicePair(domain, email);
   }

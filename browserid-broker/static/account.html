@@ -186,6 +186,7 @@
         holds a config certificate (can authorize new sites); <span class="badge inactive">login-only</span>
         can reuse existing logins but not authorize new ones. Click a holder for its warrants.
         Revoking a holder logs it out and <b>kills the access certificates it minted</b>.</p>
+      <p class="sub" id="holders-local" style="font-family:ui-monospace,monospace"></p>
       <div id="holders-tree"></div>
       <div id="new-namespace-form" class="inline-form" hidden>
         <label for="nn-name">New namespace (short slug — letters, digits, hyphen)</label>
@@ -618,29 +619,34 @@ function holderMatcherMatches(matcher, holderId) {
   return matcher === holderId;
 }
 
-// The holder id this browser is currently signed in under (from its local
-// device certs), so we can tag its row "(this browser)".
-function thisBrowserHolder() {
+// ALL distinct holder ids found on this browser's local device certs, so we can
+// tag their rows "this browser". A set (not first-match) — transitional states
+// can leave certs under more than one holder, and any of them is "here".
+function localHolderIds() {
+  const out = new Set();
   for (const r of deviceCache) {
     if (!r.cert) continue;
     const c = certPayload(r.cert);
-    if (c && c.holder && (c.exp || 0) > nowS() + 60) return c.holder;
+    if (c && c.holder && (c.exp || 0) > nowS() + 60) out.add(c.holder);
   }
-  return null;
+  return out;
 }
 
 function holderRowHtml(h, thisHolder) {
   const trust = h.trust === 'trusted'
     ? '<span class="badge active">trusted</span>'
     : '<span class="badge inactive">login-only</span>';
-  const here = thisHolder && h.holder_id === thisHolder
+  const here = thisHolder && thisHolder.has(h.holder_id)
     ? '<span class="badge info">this browser</span>' : '';
   const rev = h.revoked ? '<span class="badge revoked">revoked</span>' : '';
   const issued = h.issued_at ? `issued ${new Date(Date.parse(h.issued_at)).toLocaleDateString()}` : '';
   const wc = `${h.warrant_count} warrant${h.warrant_count === 1 ? '' : 's'}`;
   const certs = `${h.cert_count} cert${h.cert_count === 1 ? '' : 's'}`;
+  const ids = (h.identities || []).length
+    ? `<span class="email-sub">${h.identities.map(escapeHtml).join(', ')}</span>` : '';
   return `<li><button class="row holder-row" data-h="${escapeHtml(h.holder_id)}">
     <span class="email-text">${escapeHtml(h.label)} ${trust} ${here} ${rev}
+      ${ids}
       <span class="email-sub">${[issued, certs, wc].filter(Boolean).join(' · ')}</span></span>
     <span class="chev">›</span></button></li>`;
 }
@@ -650,7 +656,12 @@ function renderHolders() {
   const nss = data.namespaces || [];
   const orphans = data.holders_without_namespace || [];
   $('holders-card').hidden = !(nss.length || orphans.length);
-  const thisHolder = thisBrowserHolder();
+  const thisHolder = localHolderIds();
+  // Debug/orientation line: what the LOCAL keystore thinks this browser's
+  // holder is (server rows tagged "this browser" match against these ids).
+  $('holders-local').textContent = thisHolder.size
+    ? 'This browser: ' + [...thisHolder].join(', ')
+    : 'This browser: no local device certificates (signed out here, or cleared)';
   const groups = nss.map(ns => {
     const rows = ns.holders.length
       ? `<ul class="idlist">${ns.holders.map(h => holderRowHtml(h, thisHolder)).join('')}</ul>`

@@ -47,6 +47,8 @@ pub struct HolderView {
     pub warrant_count: usize,
     /// True once any of this holder's certs is revoked.
     pub revoked: bool,
+    /// The identities (emails) this holder's certs act for, deduped.
+    pub identities: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -73,6 +75,7 @@ struct HolderAcc {
     latest_issued: Option<chrono::DateTime<chrono::Utc>>,
     all_revoked: bool,
     any_cert: bool,
+    identities: std::collections::BTreeSet<String>,
 }
 
 pub async fn holders<U, S, E>(
@@ -97,6 +100,7 @@ where
     for c in &certs {
         let acc = by_holder.entry(c.holder.clone()).or_default();
         acc.cert_count += 1;
+        acc.identities.extend(c.identities.iter().cloned());
         if c.purpose == "authorization" {
             acc.has_config = true;
         }
@@ -137,6 +141,7 @@ where
         issued_at: acc.latest_issued.map(|d| d.to_rfc3339()),
         warrant_count: warrant_count(holder_id),
         revoked: acc.any_cert && acc.all_revoked,
+        identities: acc.identities.iter().cloned().collect(),
     };
 
     // Bucket each holder under the namespace whose prefix it carries.
