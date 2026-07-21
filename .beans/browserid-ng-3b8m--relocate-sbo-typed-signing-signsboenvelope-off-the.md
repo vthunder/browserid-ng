@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-07-17T22:29:06Z
-updated_at: 2026-07-21T21:52:53Z
+updated_at: 2026-07-21T22:02:17Z
 parent: browserid-ng-oup3
 blocking:
     - browserid-ng-oup3
@@ -52,7 +52,7 @@ Built:
 - mingo 58ed2ea: poster.rs rebuilt (enable -> merged request; poll -> stores device_seed/cert/holder/idp + warrant tail; submit -> DeviceAgent access mint + envelope-key-bound SBO wire + fail-closed dnssec refresh); /agent_device_cert + device-authorize agent mode; store migrated; mingo-idp pinned browserid-ng 645d7c9 + sbo 55314e9 (crate-local).
 All tests green both repos (broker merged_provision_test 4, agent SDK roundtrip, mingo-idp 21).
 
-- [ ] deploy browserid.me (dokku push branch)
-- [ ] deploy mingo-idp
+- [x] deploy browserid.me (6b0eb2a released; prod holder smoke green; /agent-provision request+info verified live incl. as-you grants)
+- [x] deploy mingo-idp (58ed2ea released; poster endpoints session-gated not 503; device-authorize agent mode live)
 - [ ] human test: enable poster on mingo.place -> approve once at browserid.me -> server-side post lands on-chain owned by dan@mingo.place
 - [ ] follow-up: mingo-app CLI still classic (pins 3b6189e + workspace sbo a92886c) — needs its own device-model migration (request_provision SDK path)

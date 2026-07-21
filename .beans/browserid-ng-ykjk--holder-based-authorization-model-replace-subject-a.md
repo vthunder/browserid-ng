@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-20T18:12:28Z
-updated_at: 2026-07-21T20:38:16Z
+updated_at: 2026-07-21T22:02:44Z
 parent: browserid-ng-oup3
 ---
 
@@ -56,7 +56,7 @@ VERIFIED: prod holder chain smoke green (device_issue->mint copy->login <ns>.* w
 Shipped on browserid.me: one-holder-per-browser (cold-login prefix adoption + client holder cache); unified Devices & services card; UA-derived holder labels; identity chips + per-identity trust table in holder detail; 'active' pill on identities; compact Authorized-sites rollup (audience->matcher, Sign-in-as line, +N more) with site-detail view; login warrants now registered at sign-in (status-backed, revocable); broker-origin audiences filtered from Sites with an honest trust note (broker holds account+keys, not a per-site grant). sandmill /browserid/demo rewritten to the device model (watch/request + pinned server-side verify relay).
 
 ## Queue
-- [ ] Agent/D phase: merged one-approval provisioning (one URL -> device cert + warrant), mingo-poster server-side posting, dan@mingo.place handle bootstrap
+- [x] Agent/D phase built+deployed (2026-07-21/22): merged one-approval provisioning incl. as-you + primary-signed certs (browserid-ng-dzq8), mingo-poster rebuilt on holder model (browserid-ng-3b8m, awaiting human e2e), handle bootstrap findings -> browserid-ng-p5i0
 - [ ] FedCM silent-lane warrant registration
 - [ ] fallback_idp client-supplied holder param
 - [ ] second-browser-cold prefix reconciliation
