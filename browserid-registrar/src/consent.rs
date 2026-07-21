@@ -233,75 +233,15 @@ pub async fn respond(
     let config_jws = req.config_cert.as_deref().ok_or_else(|| {
         RegistrarError::ValidationError("approve requires the signing config cert".into())
     })?;
-    if warrant_jwss.len() != rec.grants.len() {
-        return Err(RegistrarError::ValidationError(format!(
-            "expected {} warrants (one per grant), got {}",
-            rec.grants.len(),
-            warrant_jwss.len()
-        )));
-    }
-    let config_cert = DeviceCert::parse(config_jws)
-        .map_err(|e| RegistrarError::ValidationError(format!("bad config cert: {e}")))?;
-    if config_cert.purpose() != Purpose::Authorization {
-        return Err(RegistrarError::ValidationError(
-            "signing cert is not an authorization (config) cert".into(),
-        ));
-    }
-    if config_cert.is_expired() {
-        return Err(RegistrarError::ValidationError("config cert expired".into()));
-    }
-    if !config_cert.authorizes_identity(&rec.agent_email) {
-        return Err(RegistrarError::ValidationError(
-            "config cert does not authorize the requested agent identity".into(),
-        ));
-    }
-    let mut records = Vec::with_capacity(warrant_jwss.len());
-    for (jws, grant) in warrant_jwss.iter().zip(&rec.grants) {
-        let warrant = Warrant::parse(jws)
-            .map_err(|e| RegistrarError::ValidationError(format!("bad warrant: {e}")))?;
-        warrant
-            .verify(config_cert.public_key())
-            .map_err(|_| RegistrarError::ValidationError(
-                "warrant is not signed by the presented config cert".into(),
-            ))?;
-        let claims = warrant.claims();
-        if claims.audience != grant.audience {
-            return Err(RegistrarError::ValidationError(
-                "warrant audience does not match its grant".into(),
-            ));
-        }
-        if claims.identifier != rec.agent_email {
-            return Err(RegistrarError::ValidationError(
-                "warrant identifier does not match the requested agent".into(),
-            ));
-        }
-        // (holder-authorization model) The old "warrant subject must be 'agent'"
-        // gate is removed — the user/agent axis was a self-asserted hint. The
-        // warrant is bound to the agent by its `identifier` check above and by
-        // its holder matcher: reject a bare `*` (over-broad, fungible across all
-        // the user's holders) and require the matcher actually cover the agent's
-        // holder (`<id>` isolation, or its `<ns>.*` prefix) — defense-in-depth
-        // against a malformed or over-broad consent.
-        if claims.holder.as_str() == "*" {
-            return Err(RegistrarError::ValidationError(
-                "over-broad holder matcher (bare `*`) not allowed".into(),
-            ));
-        }
-        let agent_holder = browserid_core::device::Holder::new(rec.holder.clone())
-            .map_err(|e| RegistrarError::ValidationError(format!("bad agent holder: {e}")))?;
-        if !claims.holder.matches(&agent_holder) {
-            return Err(RegistrarError::ValidationError(
-                "warrant holder matcher does not cover the agent's holder".into(),
-            ));
-        }
-        records.push(warrant_to_record(
-            user.user_id,
-            &rec.delegator_email,
-            &warrant,
-            jws,
-            config_jws,
-        ));
-    }
+    let warrants =
+        validate_grant_warrants(warrant_jwss, config_jws, &rec.agent_email, &rec.holder, &rec.grants)?;
+    let records: Vec<WarrantRecord> = warrants
+        .iter()
+        .zip(warrant_jwss)
+        .map(|(warrant, jws)| {
+            warrant_to_record(user.user_id, &rec.delegator_email, warrant, jws, config_jws)
+        })
+        .collect();
 
     // Single-delivery payload: each entry is `warrant~config_cert`, the exact
     // tail the agent splices into its access presentations.
@@ -321,11 +261,107 @@ pub async fn respond(
     Ok(Json(RespondResponse { success: true }))
 }
 
+/// Validate a consent approval's client-signed warrants against the requested
+/// grants — shared by the warrant consent flow (`respond`) and the merged
+/// agent-provisioning approval (`agent_provision::complete`). All-or-nothing,
+/// grant order: the config cert must be a live authorization cert covering the
+/// agent identity and must have signed each warrant; each warrant must match
+/// its grant's audience and name the agent identity.
+///
+/// (holder-authorization model) The old "warrant subject must be 'agent'" gate
+/// is gone — the user/agent axis was a self-asserted hint. The warrant is bound
+/// to the agent by its `identifier` and by its holder matcher: a bare `*` is
+/// rejected (over-broad, fungible across all the user's holders) and the
+/// matcher must actually cover the agent's holder (`<id>` isolation, or its
+/// `<ns>.*` prefix) — defense-in-depth against a malformed or over-broad
+/// consent. Returns the parsed warrants in grant order.
+pub(crate) fn validate_grant_warrants(
+    warrant_jwss: &[String],
+    config_jws: &str,
+    agent_email: &str,
+    agent_holder: &str,
+    grants: &[WarrantGrantItem],
+) -> Result<Vec<Warrant>, RegistrarError> {
+    if warrant_jwss.len() != grants.len() {
+        return Err(RegistrarError::ValidationError(format!(
+            "expected {} warrants (one per grant), got {}",
+            grants.len(),
+            warrant_jwss.len()
+        )));
+    }
+    let config_cert = DeviceCert::parse(config_jws)
+        .map_err(|e| RegistrarError::ValidationError(format!("bad config cert: {e}")))?;
+    if config_cert.purpose() != Purpose::Authorization {
+        return Err(RegistrarError::ValidationError(
+            "signing cert is not an authorization (config) cert".into(),
+        ));
+    }
+    if config_cert.is_expired() {
+        return Err(RegistrarError::ValidationError("config cert expired".into()));
+    }
+    if !config_cert.authorizes_identity(agent_email) {
+        return Err(RegistrarError::ValidationError(
+            "config cert does not authorize the requested agent identity".into(),
+        ));
+    }
+    let agent_holder = browserid_core::device::Holder::new(agent_holder.to_string())
+        .map_err(|e| RegistrarError::ValidationError(format!("bad agent holder: {e}")))?;
+    let mut warrants = Vec::with_capacity(warrant_jwss.len());
+    for (jws, grant) in warrant_jwss.iter().zip(grants) {
+        let warrant = Warrant::parse(jws)
+            .map_err(|e| RegistrarError::ValidationError(format!("bad warrant: {e}")))?;
+        warrant
+            .verify(config_cert.public_key())
+            .map_err(|_| RegistrarError::ValidationError(
+                "warrant is not signed by the presented config cert".into(),
+            ))?;
+        let claims = warrant.claims();
+        if claims.audience != grant.audience {
+            return Err(RegistrarError::ValidationError(
+                "warrant audience does not match its grant".into(),
+            ));
+        }
+        if claims.identifier != agent_email {
+            return Err(RegistrarError::ValidationError(
+                "warrant identifier does not match the requested agent".into(),
+            ));
+        }
+        if claims.holder.as_str() == "*" {
+            return Err(RegistrarError::ValidationError(
+                "over-broad holder matcher (bare `*`) not allowed".into(),
+            ));
+        }
+        if !claims.holder.matches(&agent_holder) {
+            return Err(RegistrarError::ValidationError(
+                "warrant holder matcher does not cover the agent's holder".into(),
+            ));
+        }
+        warrants.push(warrant);
+    }
+    Ok(warrants)
+}
+
+/// Shape check on one requested grant (audience + opaque scopes) — shared by
+/// `warrant_request` and `agent_provision::request`.
+pub(crate) fn validate_grant_shape(audience: &str, scopes: &[String]) -> Result<(), RegistrarError> {
+    if audience.is_empty()
+        || audience.contains('*')
+        || audience.len() > 512
+        || audience.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(RegistrarError::ValidationError("bad audience".into()));
+    }
+    if scopes.len() > 32 || scopes.iter().any(|s| s.len() > 128) {
+        return Err(RegistrarError::ValidationError("bad scopes".into()));
+    }
+    Ok(())
+}
+
 // ===========================================================================
 // Warrant registry (jipx): the delegator's own record of issued warrants
 // ===========================================================================
 
-fn warrant_to_record(
+pub(crate) fn warrant_to_record(
     user_id: u64,
     delegator_email: &str,
     warrant: &Warrant,
@@ -665,16 +701,7 @@ pub async fn warrant_request(
         return Err(bad("between 1 and 10 grants per request"));
     }
     for g in &req.grants {
-        if g.audience.is_empty()
-            || g.audience.contains('*')
-            || g.audience.len() > 512
-            || g.audience.chars().any(|c| c.is_whitespace() || c.is_control())
-        {
-            return Err(bad("bad audience"));
-        }
-        if g.scopes.len() > 32 || g.scopes.iter().any(|s| s.len() > 128) {
-            return Err(bad("bad scopes"));
-        }
+        validate_grant_shape(&g.audience, &g.scopes)?;
     }
 
     // Route to the delegator's account: the identity with `+tag` stripped

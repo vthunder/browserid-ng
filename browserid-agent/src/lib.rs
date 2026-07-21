@@ -63,6 +63,15 @@ pub enum AgentError {
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("provisioning denied by the user")]
+    ProvisionDenied,
+
+    #[error("provisioning request expired before approval")]
+    ProvisionExpired,
+
+    #[error("provisioning failed: {0}")]
+    ProvisionFailed(String),
 }
 
 type Result<T> = std::result::Result<T, AgentError>;
@@ -74,6 +83,191 @@ fn url_host(url: &str) -> &str {
         .or_else(|| url.strip_prefix("http://"))
         .unwrap_or(url);
     after_scheme.split('/').next().unwrap_or(after_scheme)
+}
+
+// ===========================================================================
+// Paired provisioning — the merged one-approval bootstrap.
+// ===========================================================================
+
+/// A warrant grant to bundle into the provisioning approval (merged flow):
+/// the user's single consent covers the device cert AND one warrant per grant.
+#[derive(Clone, Debug, Serialize)]
+pub struct GrantRequest {
+    pub audience: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+}
+
+/// A pairing in flight. Show [`Self::verification_uri_complete`] (plus
+/// `user_code` / `fingerprint` for cross-device confirmation) to the human,
+/// then [`Self::wait`] for the single pickup.
+pub struct PendingProvision {
+    http: reqwest::Client,
+    broker: String,
+    device_key: KeyPair,
+    pub code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub verification_uri_complete: String,
+    pub fingerprint: String,
+    pub interval_seconds: u64,
+    pub expires_in_seconds: u64,
+}
+
+/// The pickup: the device credential plus any warrants approved in the same
+/// consent — `(audience, "warrant~config_cert")` per grant.
+pub struct Provisioned {
+    pub credential: DeviceCredential,
+    pub grants: Vec<(String, String)>,
+}
+
+impl Provisioned {
+    /// A ready [`DeviceAgent`] holding every delivered grant.
+    pub fn into_agent(self) -> Result<DeviceAgent> {
+        let mut agent = DeviceAgent::new(self.credential)?;
+        for (_audience, tail) in &self.grants {
+            let (warrant, config_cert) = tail.split_once('~').ok_or_else(|| {
+                AgentError::InvalidWarrant("grant is not `warrant~config_cert`".into())
+            })?;
+            agent.add_grant(warrant, config_cert)?;
+        }
+        Ok(agent)
+    }
+}
+
+/// Start a paired provisioning request at `broker` (merged one-approval flow):
+/// generates the device keypair locally, sends only the public key + the
+/// requested `handle`, a `namespace` hint (`agents` default, `services` for a
+/// service), and the warrant `grants` to approve in the same consent. The
+/// private key never leaves this process.
+pub async fn request_provision(
+    broker: &str,
+    handle: &str,
+    namespace: Option<&str>,
+    grants: &[GrantRequest],
+    label: Option<&str>,
+) -> Result<PendingProvision> {
+    let http = reqwest::Client::new();
+    let device_key = KeyPair::generate();
+    let mut body = serde_json::json!({
+        "provisioning_pubkey": {
+            "algorithm": "Ed25519",
+            "publicKey": device_key.public_key().to_base64(),
+        },
+        "requested_handles": { "names": [handle] },
+        "grants": grants,
+    });
+    if let Some(ns) = namespace {
+        body["namespace"] = serde_json::json!(ns);
+    }
+    if let Some(l) = label {
+        body["label"] = serde_json::json!(l);
+    }
+    let broker = broker.trim_end_matches('/').to_string();
+    let response = http
+        .post(format!("{broker}/agent-provision/request"))
+        .json(&body)
+        .send()
+        .await?;
+    let status = response.status();
+    let value: serde_json::Value = response.json().await.unwrap_or_default();
+    if !status.is_success() || value["success"] != serde_json::Value::Bool(true) {
+        return Err(AgentError::Idp {
+            status: status.as_u16(),
+            reason: value["reason"].as_str().unwrap_or("no reason given").to_string(),
+        });
+    }
+    let field = |k: &str| -> Result<String> {
+        value[k]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| AgentError::InvalidStored(format!("provision response missing {k}")))
+    };
+    Ok(PendingProvision {
+        http,
+        broker,
+        device_key,
+        code: field("code")?,
+        user_code: field("user_code")?,
+        verification_uri: field("verification_uri")?,
+        verification_uri_complete: field("verification_uri_complete")?,
+        fingerprint: field("fingerprint")?,
+        interval_seconds: value["interval"].as_u64().unwrap_or(5),
+        expires_in_seconds: value["expires_in"].as_u64().unwrap_or(900),
+    })
+}
+
+impl PendingProvision {
+    /// Poll until the human resolves the approval, then return the single
+    /// pickup: the device credential + any same-consent warrants.
+    pub async fn wait(self) -> Result<Provisioned> {
+        let url = format!("{}/agent-provision/poll", self.broker);
+        let interval = std::time::Duration::from_secs(self.interval_seconds.max(1));
+        loop {
+            let response = self
+                .http
+                .post(&url)
+                .json(&serde_json::json!({ "code": self.code }))
+                .send()
+                .await?;
+            let status = response.status();
+            let value: serde_json::Value = response.json().await.unwrap_or_default();
+            match value["status"].as_str() {
+                Some("pending") => {
+                    tokio::time::sleep(interval).await;
+                    continue;
+                }
+                Some("denied") => return Err(AgentError::ProvisionDenied),
+                Some("expired") => return Err(AgentError::ProvisionExpired),
+                Some("failed") => {
+                    return Err(AgentError::ProvisionFailed(
+                        value["reason"].as_str().unwrap_or("no reason given").to_string(),
+                    ))
+                }
+                Some("completed") => {
+                    let cred = &value["credential"];
+                    let field = |k: &str| -> Result<String> {
+                        cred[k].as_str().map(str::to_string).ok_or_else(|| {
+                            AgentError::InvalidStored(format!("poll credential missing {k}"))
+                        })
+                    };
+                    let credential = DeviceCredential {
+                        device_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                            .encode(self.device_key.secret_bytes()),
+                        agent_device_cert: field("device_cert")?,
+                        idp: field("idp")?,
+                    };
+                    let grants = value["grants"]
+                        .as_array()
+                        .map(|gs| {
+                            gs.iter()
+                                .filter_map(|g| {
+                                    Some((
+                                        g["audience"].as_str()?.to_string(),
+                                        g["warrant"].as_str()?.to_string(),
+                                    ))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    return Ok(Provisioned { credential, grants });
+                }
+                // Slow-down or transient shape — retry unless the server says
+                // the code is gone.
+                _ if status.as_u16() == 410 => return Err(AgentError::ProvisionExpired),
+                _ if status.is_client_error() && status.as_u16() != 429 => {
+                    return Err(AgentError::Idp {
+                        status: status.as_u16(),
+                        reason: value["reason"].as_str().unwrap_or("no reason given").to_string(),
+                    })
+                }
+                _ => {
+                    tokio::time::sleep(interval).await;
+                    continue;
+                }
+            }
+        }
+    }
 }
 
 // ===========================================================================

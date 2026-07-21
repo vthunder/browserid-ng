@@ -140,6 +140,7 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         .route("/agent-provision/poll", post(agent_provision::poll))
         .route("/agent-provision/info", post(agent_provision::info))
         .route("/agent-provision/resolve", post(agent_provision::resolve))
+        .route("/agent-provision/prepare", post(agent_provision::prepare))
         .route("/agent-provision/complete", post(agent_provision::complete))
         // Agent-facing consent flow (device-cert model): raise + poll.
         .route("/warrant/request", post(consent::warrant_request))

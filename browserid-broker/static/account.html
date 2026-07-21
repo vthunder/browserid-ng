@@ -104,6 +104,17 @@
       <input id="pv-handles" placeholder="claude, researcher, svc+*">
       <p class="sub" style="margin:4px 0 0">Comma-separated. On a fallback account each becomes <code>&lt;you&gt;+&lt;name&gt;</code>.</p>
     </div>
+    <!-- Merged one-approval flow: grants requested alongside the identity.
+         Approving signs one warrant per place with the config key held in
+         this browser — same approval, no second consent page. -->
+    <div id="pv-grants" hidden style="margin-top:12px">
+      <p class="sub" style="margin:0 0 4px">It also asks to act for you at:</p>
+      <div id="pv-grant-list"></div>
+      <label class="sub" style="display:block;margin-top:6px">
+        <input type="checkbox" id="pv-widen">
+        Let <em>any</em> of my holders in the same group use this (instead of only this agent)
+      </label>
+    </div>
     <div style="margin-top:14px">
       <button class="primary" id="pv-approve">Approve</button>
       <button id="pv-deny" type="button">Deny</button>
@@ -992,11 +1003,22 @@ async function showProvisionApproval(code) {
   } catch (e) {
     throw new Error('This pairing request is invalid or has expired — ask your agent to start again.');
   }
-  provisionCtx = { code, pubkey: info.provisioning_pubkey };
+  provisionCtx = { code, pubkey: info.provisioning_pubkey, grants: info.grants || [], namespace: info.namespace || 'agents' };
   $('provision').hidden = false;
-  $('pv-intro').textContent = (info.label ? `“${info.label}” ` : 'An agent ') +
-    'wants its own identity, acting for you. Only approve if you just started setting up this agent.';
+  const thing = provisionCtx.namespace === 'services' ? 'service' : 'agent';
+  $('pv-intro').textContent = (info.label ? `“${info.label}” ` : `A ${thing} `) +
+    `wants its own identity, acting for you. Only approve if you just started setting up this ${thing}.`;
   $('pv-fp').textContent = 'Agent key fingerprint: ' + info.fingerprint + '  (confirm it matches what your agent shows)';
+  // Merged flow: show each requested grant with equal prominence — the one
+  // approval covers exactly the set shown.
+  const grants = provisionCtx.grants;
+  $('pv-grants').hidden = grants.length === 0;
+  $('pv-grant-list').innerHTML = grants.map(g => `
+    <p style="margin:2px 0"><code>${escapeHtml(g.audience)}</code>
+      ${(g.scopes || []).length
+        ? '<span class="sub">with scopes: ' + g.scopes.map(s => `<code>${escapeHtml(s)}</code>`).join(' ') + '</span>'
+        : '<span class="sub">(no specific scopes — site-level access)</span>'}</p>`).join('');
+  $('pv-widen').checked = false;
   refreshProvisionPicker();
   // Optimize for a single handle: the first suggestion goes in the simple input
   // (stripped of any owner prefix the agent already added); the full list is
@@ -1021,10 +1043,40 @@ async function showProvisionApproval(code) {
 async function approveProvision(code, provPubkeyX) {
   const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Approving…';
   try {
-    // Device-cert model: the user just approves the identity to mint under. The
-    // IdP signs an AGENT DEVICE CERT over the agent-supplied key server-side for
-    // the requested handle; no browser-signed delegation is involved.
-    await post('/agent-provision/complete', { code, approve: true, identity_email: $('pv-identity').value });
+    // Device-cert model: the IdP signs an AGENT DEVICE CERT over the
+    // agent-supplied key server-side for the requested handle. In the merged
+    // one-approval flow the request also carries warrant grants: `prepare`
+    // assigns the holder + status indices, this page signs one warrant per
+    // grant with the config key held in this browser (matcher = the holder's
+    // `<id>`, or its `<ns>.*` prefix if widened), and `complete` delivers
+    // cert + warrants to the agent in one pickup.
+    const identityEmail = $('pv-identity').value;
+    let warrants = null, configCert = null;
+    const grants = (provisionCtx && provisionCtx.grants) || [];
+    if (grants.length) {
+      status.textContent = 'Signing warrants…';
+      const prep = await post('/agent-provision/prepare', { code, identity_email: identityEmail });
+      const config = configFor(prep.agent_email);
+      if (!config) throw new Error(
+        `no config key covering ${prep.agent_email} in this browser — ` +
+        `sign in to an app with ${identityEmail} here first, then retry`);
+      configCert = config.cert;
+      const widen = $('pv-widen').checked;
+      const holderMatcher = (widen && prep.holder.includes('.'))
+        ? prep.holder.slice(0, prep.holder.indexOf('.')) + '.*'
+        : prep.holder;
+      warrants = [];
+      for (const g of prep.grants) {
+        const statusRef = (g.status_idx != null && prep.status_uri)
+          ? { uri: prep.status_uri, idx: g.status_idx } : null;
+        warrants.push(await signDeviceWarrant(config, prep.agent_email, holderMatcher, g.audience, g.scopes || [], statusRef));
+      }
+      status.textContent = 'Approving…';
+    }
+    await post('/agent-provision/complete', {
+      code, approve: true, identity_email: identityEmail,
+      ...(warrants ? { warrants, config_cert: configCert } : {}),
+    });
     status.className = 'status ok';
     status.textContent = 'Approved — your agent is picking up its identity now. You can close this tab.';
     $('pv-approve').disabled = true; $('pv-deny').disabled = true;
