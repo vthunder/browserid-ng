@@ -470,6 +470,21 @@ impl DeviceAgent {
         Ok(())
     }
 
+    /// Like [`Self::assertion_for`], but also returns the access key's 32-byte
+    /// seed, so the caller can sign an external payload (e.g. an SBO envelope)
+    /// with the SAME key the access cert certifies — the envelope-key binding
+    /// verifiers enforce (`signer key == access cert key`).
+    pub async fn assertion_with_access_seed(&mut self, audience: &str) -> Result<(String, [u8; 32])> {
+        let presentation = self.assertion_for(audience).await?;
+        let seed = *self
+            .access
+            .as_ref()
+            .expect("assertion_for minted an access session")
+            .key
+            .secret_bytes();
+        Ok((presentation, seed))
+    }
+
     /// Assemble an RP-facing `access_cert~assertion~warrant~config_cert` bundle
     /// for `audience`. Re-mints the access cert first if stale. Requires a held
     /// config-cert-signed warrant for `audience` ([`Self::add_grant`]).
