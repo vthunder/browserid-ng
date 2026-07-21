@@ -167,28 +167,25 @@
         holds a config certificate (can authorize new sites); <span class="badge inactive">login-only</span>
         can reuse existing logins but not authorize new ones. Click one for its warrants.
         Revoking it logs it out and <b>kills the access certificates it minted</b>.</p>
-      <div style="margin:8px 0 12px">
-        <button class="small primary" id="hc-tab-dev">Devices</button>
-        <button class="small" id="hc-tab-sites">Sites</button>
+      <p class="sub" id="holders-local" style="font-family:ui-monospace,monospace"></p>
+      <div id="holders-tree"></div>
+      <div id="new-namespace-form" class="inline-form" hidden>
+        <label for="nn-name">New namespace (short slug — letters, digits, hyphen)</label>
+        <input id="nn-name" placeholder="services" maxlength="32">
+        <label for="nn-label">Display name</label>
+        <input id="nn-label" placeholder="External services" maxlength="64">
+        <button class="primary small" id="nn-btn">Create</button>
+        <button class="small" id="nn-cancel">Cancel</button>
+        <p class="status" id="nn-status"></p>
       </div>
-      <div id="tab-devices">
-        <p class="sub" id="holders-local" style="font-family:ui-monospace,monospace"></p>
-        <div id="holders-tree"></div>
-        <div id="new-namespace-form" class="inline-form" hidden>
-          <label for="nn-name">New namespace (short slug — letters, digits, hyphen)</label>
-          <input id="nn-name" placeholder="services" maxlength="32">
-          <label for="nn-label">Display name</label>
-          <input id="nn-label" placeholder="External services" maxlength="64">
-          <button class="primary small" id="nn-btn">Create</button>
-          <button class="small" id="nn-cancel">Cancel</button>
-          <p class="status" id="nn-status"></p>
-        </div>
-        <p style="margin:12px 0 0"><button class="small linkish" id="nn-add">+ New namespace</button></p>
-      </div>
-      <div id="tab-sites" hidden>
-        <p class="sub">Every site or service you've authorized, and who may act there.</p>
-        <div id="sites-tree"></div>
-      </div>
+      <p style="margin:12px 0 0"><button class="small linkish" id="nn-add">+ New namespace</button></p>
+    </div>
+
+    <div class="card" id="sites-card" hidden>
+      <h2>Authorized sites</h2>
+      <p class="sub">Every site or service you've authorized, and who may act there.
+        Revoking a grant takes effect on the site's next check.</p>
+      <div id="sites-tree"></div>
       <p class="status" style="margin-top:12px"><a href="/consent">Pending consent requests →</a></p>
     </div>
 
@@ -540,8 +537,7 @@ function renderHolders() {
   const data = account.holders || { namespaces: [], holders_without_namespace: [] };
   const nss = data.namespaces || [];
   const orphans = data.holders_without_namespace || [];
-  // The card hosts both tabs — show it when there's anything on either.
-  $('holders-card').hidden = !(nss.length || orphans.length || account.warrants.length);
+  $('holders-card').hidden = !(nss.length || orphans.length);
   const thisHolder = localHolderIds();
   // Debug/orientation line: what the LOCAL keystore thinks this browser's
   // holder is (server rows tagged "this browser" match against these ids).
@@ -599,16 +595,6 @@ $('nn-btn').onclick = async () => {
   } catch (e) { status.className = 'status err'; status.textContent = e.message; }
 };
 
-// -------- Devices | Sites tabs --------
-function setHcTab(t) {
-  $('hc-tab-dev').className = 'small' + (t === 'dev' ? ' primary' : '');
-  $('hc-tab-sites').className = 'small' + (t === 'sites' ? ' primary' : '');
-  $('tab-devices').hidden = t !== 'dev';
-  $('tab-sites').hidden = t !== 'sites';
-}
-$('hc-tab-dev').onclick = () => setHcTab('dev');
-$('hc-tab-sites').onclick = () => setHcTab('sites');
-
 // A warrant's holder matcher, shown as the holder's friendly label when it
 // names exactly one known holder, else as the raw matcher (`*` / `<ns>.*` /
 // an unknown `<id>` — e.g. an external service whose cert we never recorded).
@@ -628,9 +614,12 @@ function renderSites() {
     if (!byAud.has(k)) byAud.set(k, []);
     byAud.get(k).push(w);
   }
+  // Own card: show it whenever signed in, with an empty state when nothing's
+  // registered yet (so the section is discoverable).
+  $('sites-card').hidden = false;
   if (!byAud.size) {
     $('sites-tree').innerHTML = `<p class="muted" style="font-size:13px">Nothing authorized yet —
-      warrants you approve appear here, grouped by site.</p>`;
+      grants you approve appear here, grouped by site.</p>`;
     return;
   }
   const byId = {};

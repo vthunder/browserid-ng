@@ -308,7 +308,23 @@
     if (!minted.access_cert) throw new Error(minted.reason || 'mint failed');
 
     // 2. Login warrant, signed by the CONFIG key: (identity, holder-matcher) → audience.
-    const warrant = await signJws(pair.config.privateKey, {
+    // Registered with the hosted broker (best-effort) so it shows up — and is
+    // revocable — on the account page's "Authorized sites", per the model
+    // ("signed once, stored, reused device-agnostically"). A status ref is
+    // allocated FIRST so the registered warrant is status-revocable; repeat
+    // logins upsert to the same row. Skipped for the broker's own audience
+    // (the session-join presentation isn't a site grant).
+    let statusRef = null;
+    const registerable = audience !== window.location.origin;
+    if (registerable) {
+      try {
+        const alloc = await apiCall('/wsapi/allocate_warrant_status', 'POST', {
+          agent_email: email, audience, scopes: ['login']
+        });
+        if (alloc && alloc.uri) statusRef = { uri: alloc.uri, idx: alloc.idx };
+      } catch (e) { /* unauthenticated or registrar off — sign without status */ }
+    }
+    const warrantClaims = {
       typ: 'browserid-warrant-v1',
       iat: nowS(),
       exp: nowS() + 90 * 86400,
@@ -316,7 +332,16 @@
       holder: loginMatcher,
       audience,
       scopes: ['login']
-    });
+    };
+    if (statusRef) warrantClaims.status = statusRef;
+    const warrant = await signJws(pair.config.privateKey, warrantClaims);
+    if (registerable) {
+      try {
+        await apiCall('/wsapi/register_warrant', 'POST', {
+          warrant, config_cert: pair.config.cert
+        });
+      } catch (e) { /* best-effort: login must not fail on registry hiccups */ }
+    }
 
     // 3. Assertion for the RP's audience, signed by the fresh access key.
     const assertion = await signJws(access.privateKey, { exp: nowS() + 300, aud: audience });
