@@ -407,9 +407,19 @@ async function siSendResetCode(email, lead) {
 async function siDiscover(email) {
   siMuted('Checking…');
   const info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`);
-  if (info.type === 'primary' && info.auth) {
+  if (info.type === 'primary') {
+    // Primary sign-in needs a cross-origin access-cert mint from the IdP, which
+    // /account's strict CSP (connect 'self') blocks. Route it through the dialog
+    // (the open-connect tier + the proven device-cert primary flow): it
+    // establishes the broker session as a side effect and redirects back here,
+    // where boot() sees us authenticated. Replaces the dead classic `info.auth`
+    // redirect (the legacy /browserid/auth page was removed with the Persona stack).
     siMuted(`Redirecting to ${info.issuer} to sign in…`);
-    location.href = info.auth;
+    const origin = location.origin;
+    location.assign('/dialog/dialog.html?rp_redirect=1'
+      + '&rp_origin=' + encodeURIComponent(origin)
+      + '&return_to=' + encodeURIComponent(origin + '/account')
+      + '&state=acct');
     return;
   }
   const hasPassword = info.state === 'known'
@@ -1064,6 +1074,9 @@ async function denyProvision(code) {
 }
 
 async function boot() {
+  // Returning from the dialog after a primary sign-in leaves a `#browserid=…`
+  // blob in the URL; the broker session cookie is already set, so just clear it.
+  if (location.hash.indexOf('browserid=') !== -1) history.replaceState(null, '', location.pathname + location.search);
   let ctx; try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
   $('gate').hidden = true;
   const provisionCode = new URLSearchParams(location.search).get('provision');
