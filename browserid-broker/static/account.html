@@ -186,7 +186,11 @@
       <p class="sub">Every site or service you've authorized, and who may act there.
         Revoking a grant takes effect on the site's next check.</p>
       <div id="sites-tree"></div>
-      <p class="status" style="margin-top:12px"><a href="/consent">Pending consent requests →</a></p>
+      <p class="sub" style="margin-top:10px">browserid.me itself isn't listed: it's your
+        broker — it holds your account and device keys, which is more than any per-site
+        grant could express. Grants scoped to the broker's own origin (like the guestbook)
+        appear on each holder's page.</p>
+      <p class="status" style="margin-top:8px"><a href="/consent">Pending consent requests →</a></p>
     </div>
 
     <div class="card">
@@ -653,6 +657,12 @@ function renderSites() {
   const byAud = new Map();
   for (const w of account.warrants) {
     const k = w.audience || '—';
+    // The broker's own origin is NOT listed as a site: showing it with a
+    // "login" grant would misleadingly understate the relationship — the
+    // broker inherently holds your account and keys, not a per-site grant.
+    // (A static note below states this; broker-origin agent grants like the
+    // guestbook remain visible/revocable on each holder's detail page.)
+    try { if (new URL(k).origin === location.origin) continue; } catch (e) { /* non-URL audience: list it */ }
     if (!byAud.has(k)) byAud.set(k, []);
     byAud.get(k).push(w);
   }
@@ -684,10 +694,7 @@ function renderSites() {
       return `<span style="display:block;margin:3px 0 0 12px">
         <span style="display:block;font-size:13px;font-weight:500">${matcherGroupLabel(m)}</span>${lines.join('')}</span>`;
     }).join('');
-    // Grants at the broker's own origin (guestbook, on-broker demos) share one
-    // audience — label them so "browserid.me" doesn't read as a third-party site.
-    let host = aud.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-    try { if (new URL(aud).origin === location.origin) host += ' (this broker)'; } catch (e) { /* non-URL audience */ }
+    const host = aud.replace(/^https?:\/\//, '').replace(/\/+$/, '');
     return `<li><button class="row site-row" data-a="${escapeHtml(aud)}">
       <span class="email-text"><span class="aud" style="font-weight:600">${escapeHtml(host)}</span>${groups}</span>
       <span class="chev">›</span></button></li>`;
