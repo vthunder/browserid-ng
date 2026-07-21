@@ -1067,13 +1067,22 @@ async function refreshProvisionAddressInfo() {
 // Agent-mode device-authorize hop: the primary signs an AUTHENTICATION cert
 // over the AGENT's key + the broker-assigned holder, authorized by the user's
 // first-party session at the IdP (same popup surface as dialog sign-in).
-function agentCertPopupFlow(popup, deviceAuthUrl, agentEmail, agentPubkey, holder) {
+// `user` (optional, combined mode) additionally asks the IdP to issue the
+// USER's own device+config cert pair in the same visit — the recovery path
+// when this browser has no config cert for the delegating identity yet.
+function agentCertPopupFlow(popup, deviceAuthUrl, agentEmail, agentPubkey, holder, user) {
   return new Promise((resolve, reject) => {
     const idpOrigin = new URL(deviceAuthUrl).origin;
     popup.location = deviceAuthUrl +
       '#agent_email=' + encodeURIComponent(agentEmail) +
       '&agent_pubkey=' + encodeURIComponent(agentPubkey) +
       '&holder=' + encodeURIComponent(holder) +
+      (user
+        ? '&email=' + encodeURIComponent(user.email) +
+          '&device_pubkey=' + encodeURIComponent(user.devicePubkey) +
+          '&config_pubkey=' + encodeURIComponent(user.configPubkey) +
+          (user.holder ? '&user_holder=' + encodeURIComponent(user.holder) : '')
+        : '') +
       '&return_origin=' + encodeURIComponent(window.location.origin);
     const TIMEOUT_MS = 3 * 60 * 1000;
     let timeoutId = null, pollId = null;
@@ -1088,7 +1097,7 @@ function agentCertPopupFlow(popup, deviceAuthUrl, agentEmail, agentPubkey, holde
       if (!d || typeof d !== 'object') return;
       if (d.type === 'browserid:agent_device_cert') {
         cleanup();
-        if (d.device_cert) resolve(d.device_cert);
+        if (d.device_cert) resolve(d);
         else reject(new Error('identity provider returned no certificate'));
       } else if (d.type === 'browserid:device_error') {
         cleanup();
@@ -1101,6 +1110,32 @@ function agentCertPopupFlow(popup, deviceAuthUrl, agentEmail, agentPubkey, holde
       if (popup.closed) { cleanup(); reject(new Error('the provider window was closed')); }
     }, 500);
   });
+}
+
+// This browser's stable holder (mirrors the dialog's browserHolder): one per
+// browser, reused across identities; localStorage-cached by namespace prefix.
+async function browserHolderForIssue() {
+  let prefix;
+  try { prefix = (await api('/wsapi/browser_holder')).prefix; } catch (e) { return null; }
+  if (!prefix) return null;
+  const key = 'browserid:holder:' + prefix;
+  try { const cached = localStorage.getItem(key); if (cached) return cached; } catch (e) {}
+  const rand = Array.from(crypto.getRandomValues(new Uint8Array(5))).map(b => b.toString(16).padStart(2, '0')).join('');
+  const holder = prefix + '.' + rand;
+  try { localStorage.setItem(key, holder); } catch (e) {}
+  return holder;
+}
+
+// Persist an issued (device, config) pair in the keystore, same shape the
+// dialog stores at sign-in, then refresh the local cache so configFor sees it.
+async function storeIssuedPair(issuer, email, keys, certs) {
+  await window.Keystore.putDevice(issuer, email, 'device', {
+    publicKeyX: keys.device.publicKeyX, privateKey: keys.device.privateKey, cert: certs.device_cert,
+  });
+  await window.Keystore.putDevice(issuer, email, 'config', {
+    publicKeyX: keys.config.publicKeyX, privateKey: keys.config.privateKey, cert: certs.config_cert,
+  });
+  await refreshKeystore();
 }
 
 async function approveProvision(code, provPubkeyX) {
@@ -1135,14 +1170,49 @@ async function approveProvision(code, provPubkeyX) {
     let warrants = null, configCert = null, deviceCert = null;
     if (grants.length || primaryHop) {
       const prep = await post('/agent-provision/prepare', { code, identity_email: identityEmail });
+      let config = grants.length ? configFor(prep.agent_email) : null;
       if (primaryHop) {
         status.textContent = 'Waiting for your identity provider…';
-        deviceCert = await agentCertPopupFlow(popup, ai.device_auth, prep.agent_email, provisionCtx.pubkey, prep.holder);
+        // No config cert for the delegating identity in this browser yet →
+        // ask the primary to issue the USER's device+config pair in the SAME
+        // visit (combined mode), so the approval never dead-ends on "sign in
+        // somewhere first".
+        let userKeys = null;
+        let userReq = null;
+        if (grants.length && !config) {
+          userKeys = { device: await window.Keystore.generate(), config: await window.Keystore.generate() };
+          userReq = {
+            email: identityEmail,
+            devicePubkey: userKeys.device.publicKeyX,
+            configPubkey: userKeys.config.publicKeyX,
+            holder: await browserHolderForIssue(),
+          };
+        }
+        const res = await agentCertPopupFlow(popup, ai.device_auth, prep.agent_email, provisionCtx.pubkey, prep.holder, userReq);
         popup = null; // closed by the flow
+        deviceCert = res.device_cert;
+        if (userKeys && res.user_device_cert && res.user_config_cert) {
+          await storeIssuedPair(identityEmail.split('@')[1], identityEmail, userKeys,
+            { device_cert: res.user_device_cert, config_cert: res.user_config_cert });
+          config = configFor(prep.agent_email);
+        }
+      } else if (grants.length && !config) {
+        // Broker-rooted identity with no local pair: the account session can
+        // issue one right here (same endpoint the dialog uses at sign-in).
+        const keys = { device: await window.Keystore.generate(), config: await window.Keystore.generate() };
+        const body = {
+          email: identityEmail,
+          device_pubkey: keys.device.publicKeyX,
+          config_pubkey: keys.config.publicKeyX,
+        };
+        const bh = await browserHolderForIssue();
+        if (bh) body.holder = bh;
+        const certs = await post('/device/issue', body);
+        await storeIssuedPair(location.host, identityEmail, keys, certs);
+        config = configFor(prep.agent_email);
       }
       if (grants.length) {
         status.textContent = 'Signing warrants…';
-        const config = configFor(prep.agent_email);
         if (!config) throw new Error(
           `no config key covering ${prep.agent_email} in this browser — ` +
           `sign in to an app with ${identityEmail} here first, then retry`);
@@ -1166,8 +1236,26 @@ async function approveProvision(code, provPubkeyX) {
       ...(deviceCert ? { device_cert: deviceCert } : {}),
     });
     status.className = 'status ok';
-    status.textContent = 'Approved — your agent is picking up its identity now. You can close this tab.';
+    status.textContent = 'Approved — your agent is picking up its identity now.';
     $('pv-approve').disabled = true; $('pv-deny').disabled = true;
+    // Hand the user back. Popup blockers force some flows to reach this page
+    // by same-tab navigation, so when there is history to return through,
+    // offer it and go back automatically after a short, announced delay; a
+    // fresh tab can just be closed (history.back() is a no-op then).
+    const back = document.createElement('p');
+    back.className = 'status muted';
+    if (history.length > 1) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = '← Return to the app';
+      b.onclick = () => history.back();
+      back.appendChild(b);
+      back.appendChild(document.createTextNode(' returning automatically…'));
+      setTimeout(() => history.back(), 1800);
+    } else {
+      back.textContent = 'All set — you can close this tab.';
+    }
+    status.insertAdjacentElement('afterend', back);
   } catch (e) {
     if (popup) { try { popup.close(); } catch (e2) { /* already closed */ } }
     status.className = 'status err'; status.textContent = 'Failed: ' + e.message;
