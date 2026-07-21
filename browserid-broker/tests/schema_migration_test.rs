@@ -251,3 +251,38 @@ fn test_warrant_upsert_keys_on_audience_and_scopes() {
     assert!(listed.iter().any(|w| w.warrant == "jws-onbehalf-2"));
     assert!(!listed.iter().any(|w| w.warrant == "jws-onbehalf"));
 }
+
+#[test]
+fn test_primary_config_cert_holder_recorded() {
+    // Design note §3: a primary identity's config (authorization) cert — recorded
+    // on join by auth_with_presentation — must surface in the holder registry
+    // (list_device_certs) with its opaque, IdP-assigned holder, so the account
+    // "Devices & holders" view can show identities the broker doesn't issue for.
+    use browserid_broker::store::DeviceCertRecord;
+    use chrono::Utc;
+
+    let (store, _dir) = create_test_store();
+    let user_id = store.create_user("hash").unwrap();
+
+    store
+        .insert_device_cert(DeviceCertRecord {
+            id: 0,
+            user_id,
+            identities: vec!["danmills@sandmill.org".into()],
+            purpose: "authorization".into(),
+            holder: "br1a2b3c.9f8e7d6c".into(), // the primary IdP's dotted holder
+            pubkey: "cfg-pubkey-base64".into(),
+            iss: "sandmill.org".into(),
+            issued_at: Utc::now(),
+            expires_at: Utc::now(),
+            revoked_at: None,
+            status_idx: Some(3),
+        })
+        .unwrap();
+
+    let listed = store.list_device_certs(user_id).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].holder, "br1a2b3c.9f8e7d6c");
+    assert_eq!(listed[0].purpose, "authorization");
+    assert_eq!(listed[0].iss, "sandmill.org");
+}

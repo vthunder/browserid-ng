@@ -19,7 +19,7 @@ use tower_cookies::Cookies;
 use crate::email::EmailSender;
 use crate::error::BrokerError;
 use crate::state::AppState;
-use crate::store::{EmailType, SessionStore, UserStore};
+use crate::store::{DeviceCertRecord, EmailType, SessionStore, UserStore};
 use crate::verifier::verify_access_with_dns;
 
 #[derive(Deserialize)]
@@ -151,6 +151,36 @@ where
                 &session.id.0,
                 super::session::cookie_secure(&state.domain),
             );
+        }
+    }
+
+    // (design note §3) Record the primary's config (authorization) device cert
+    // in the holder registry so its holder surfaces in the account "Devices &
+    // holders" view — the broker keeps a central record of every cert even for
+    // identities it does not issue for (the revocation-record goal). Best-effort:
+    // a parse/store hiccup must never fail the already-successful login. Only the
+    // config cert is present in the presentation (not the auth device cert); its
+    // holder is the shared device-slot holder, and recording it reads as
+    // `trusted` in the UI. `insert_device_cert` upserts on pubkey, so re-login is
+    // idempotent. These primary holders carry the IdP's own random prefix, so
+    // they land in the account UI's `holders_without_namespace` bucket for now.
+    if let Ok(pres) = browserid_core::device::AccessPresentation::parse(&req.presentation) {
+        let cc = pres.config_cert.claims();
+        let rec = DeviceCertRecord {
+            id: 0,
+            user_id,
+            identities: vec![email.clone()],
+            purpose: "authorization".to_string(),
+            holder: cc.holder.as_str().to_string(),
+            pubkey: cc.public_key.to_base64(),
+            iss: cc.iss.clone(),
+            issued_at: chrono::DateTime::from_timestamp(cc.iat, 0).unwrap_or_else(chrono::Utc::now),
+            expires_at: chrono::DateTime::from_timestamp(cc.exp, 0).unwrap_or_else(chrono::Utc::now),
+            revoked_at: None,
+            status_idx: cc.status.as_ref().map(|s| s.idx),
+        };
+        if let Err(e) = state.user_store.insert_device_cert(rec) {
+            tracing::warn!("failed to record primary device cert holder: {e}");
         }
     }
 

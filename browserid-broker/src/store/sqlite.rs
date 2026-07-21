@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 16;
+const SCHEMA_VERSION: i32 = 17;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -110,6 +110,9 @@ impl SqliteStore {
             }
             if current_version < 16 {
                 Self::migrate_v16(conn)?;
+            }
+            if current_version < 17 {
+                Self::migrate_v17(conn)?;
             }
 
             // Update schema version
@@ -531,6 +534,23 @@ impl SqliteStore {
         conn.execute(
             "ALTER TABLE warrant_requests ADD COLUMN holder TEXT NOT NULL DEFAULT '';",
             [],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v17(conn: &Connection) -> Result<(), BrokerError> {
+        // Holder-authorization model: drop pre-migration device-cert / warrant
+        // rows whose `holder` is the old subject value (`user`/`agent`, renamed
+        // in place by migrate_v14). Their stored JWS still carries the removed
+        // `subject` field, so they are unverifiable against the new core and only
+        // clutter the account "Devices & holders" view. Real holders are always a
+        // dotted `<prefix>.<rand>`, so this can never match a live holder.
+        conn.execute_batch(
+            r#"
+            DELETE FROM device_certs WHERE holder IN ('user', 'agent');
+            DELETE FROM warrants WHERE holder IN ('user', 'agent');
+            "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())

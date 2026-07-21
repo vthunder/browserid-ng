@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-20T18:12:28Z
-updated_at: 2026-07-20T22:41:54Z
+updated_at: 2026-07-20T23:34:17Z
 parent: browserid-ng-oup3
 ---
 
@@ -22,3 +22,18 @@ Blocks: the device-model D (poster re-enable). A (browser signing) is already li
 - [ ] conformance: holder passthrough+copy; monitor over-broad mints
 
 ## Stage 3 known-broken (pending): consent.html signWarrant still emits subject:'agent' (no holder matcher) — the agent-authorization consent flow is malformed against new core. Fix as part of stage 3 (registrar warrant matcher + D). agent_provision.rs also mints an inline agents.<rand> placeholder holder. Both to be rerouted through the broker namespace registry with <id> matchers when D is built.
+
+## Migration deployed (2026-07-20/21)
+Holder model built + deployed across all services:
+- browserid-ng: core/broker/registrar/rp/agent + client JS (dialog.js, sbo-signer.js, account.html, consent.html) all holder; workspace clean of Subject. Deployed browserid.me. Branch holder-authorization-model (b8c35b4), pushed origin.
+- sandmill (PHP primary IdP): holder-bearing device/access certs. Deployed.
+- sbo: device_attribution holder. Pushed origin main 55314e9.
+- mingo-idp: holder port. Deployed mingo.place.
+- sbo-daemon: SBO_REV bumped to 55314e9, CI deploy.
+VERIFIED: prod holder chain smoke green (device_issue->mint copy->login <ns>.* warrant->verify okay, holder 5c3idfa4.7yaiasyth7).
+
+## Remaining
+- [ ] D: mingo-poster live posting (re-enable stubbed poster as warranted <id> service; unify mingo sbo dep to holder rev). Feature, not migration.
+- [ ] sandmill primary-login redirect bug (danmills stuck): PRE-EXISTING, static paths correct, needs browser repro (redirect-mode/session). Independent of holders.
+- [ ] adopt-after-wipe + re-categorize UI (deferred client-provisioning work).
+- [ ] cleanup: stale pre-migration holder='user' rows show as Uncategorized.
