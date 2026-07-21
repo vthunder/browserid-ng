@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-07-17T22:29:06Z
-updated_at: 2026-07-21T22:02:17Z
+updated_at: 2026-07-21T22:40:56Z
 parent: browserid-ng-oup3
 blocking:
     - browserid-ng-oup3
@@ -56,3 +56,10 @@ All tests green both repos (broker merged_provision_test 4, agent SDK roundtrip,
 - [x] deploy mingo-idp (58ed2ea released; poster endpoints session-gated not 503; device-authorize agent mode live)
 - [ ] human test: enable poster on mingo.place -> approve once at browserid.me -> server-side post lands on-chain owned by dan@mingo.place
 - [ ] follow-up: mingo-app CLI still classic (pins 3b6189e + workspace sbo a92886c) — needs its own device-model migration (request_provision SDK path)
+
+## Live e2e CONFIRMED by Dan (2026-07-22) + feedback round deployed
+Dan had mingo post for him via the poster. Three issues from the run:
+1. Missing config cert for the handle identity broke warrant signing → FIXED: approval acquires the pair itself (primary: combined-mode device-authorize hop issues user device+config certs in the same visit; broker-rooted: /device/issue from the account session). Deployed browserid.me aea7f40 + mingo 7e53479.
+2. "Close this tab" dead end on same-tab arrival → FIXED: "← Return to the app" + auto history.back() (consent.html pattern).
+3. No provenance hint that a post was agent-made → design bean filed (Surface agent/service provenance on posts, draft — creator marker vs attribution badge vs public holder class; needs Dan's ruling).
+Prod smoke green post-deploy. Remaining on this bean: human re-test of the fixed approval flow from a browser lacking the handle's config cert.
