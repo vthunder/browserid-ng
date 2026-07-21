@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-20T18:12:28Z
-updated_at: 2026-07-21T00:38:10Z
+updated_at: 2026-07-21T20:38:16Z
 parent: browserid-ng-oup3
 ---
 
@@ -51,3 +51,14 @@ VERIFIED: prod holder chain smoke green (device_issue->mint copy->login <ns>.* w
 - [ ] delete sandmill dead legacy /browserid/auth + auth-complete views (unreachable now)
 - [ ] prefill email in /account->dialog handoff (minor UX)
 - [ ] D: mingo-poster server-side posting (browser signing works; server-side stubbed)
+
+## Account-UI iteration (2026-07-21, sessions 2-3)
+Shipped on browserid.me: one-holder-per-browser (cold-login prefix adoption + client holder cache); unified Devices & services card; UA-derived holder labels; identity chips + per-identity trust table in holder detail; 'active' pill on identities; compact Authorized-sites rollup (audience->matcher, Sign-in-as line, +N more) with site-detail view; login warrants now registered at sign-in (status-backed, revocable); broker-origin audiences filtered from Sites with an honest trust note (broker holds account+keys, not a per-site grant). sandmill /browserid/demo rewritten to the device model (watch/request + pinned server-side verify relay).
+
+## Queue
+- [ ] Agent/D phase: merged one-approval provisioning (one URL -> device cert + warrant), mingo-poster server-side posting, dan@mingo.place handle bootstrap
+- [ ] FedCM silent-lane warrant registration
+- [ ] fallback_idp client-supplied holder param
+- [ ] second-browser-cold prefix reconciliation
+- [ ] adopt-after-wipe + re-categorize UI
+- [ ] move any user-login demo RP off the broker origin (demo.browserid.me)
