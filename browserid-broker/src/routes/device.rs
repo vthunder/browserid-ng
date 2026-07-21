@@ -119,6 +119,7 @@ where
 pub async fn device_issue<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
+    headers: axum::http::HeaderMap,
     Json(req): Json<DeviceIssueRequest>,
 ) -> Result<Json<DeviceIssueResponse>, BrokerError>
 where
@@ -196,6 +197,11 @@ where
             status_idx: Some(status_idx),
         })?;
     }
+    // First sight of this holder → a friendly UA-derived default label
+    // ("Chrome on macOS"); never clobbers a user rename, never fails issuance.
+    super::holders::maybe_label_holder_from_ua(
+        state.user_store.as_ref(), session.user_id, &holder, &headers,
+    );
 
     Ok(Json(DeviceIssueResponse {
         success: true,

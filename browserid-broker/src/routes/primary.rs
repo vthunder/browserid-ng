@@ -40,6 +40,7 @@ pub struct AuthWithPresentationResponse {
 pub async fn auth_with_presentation<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
+    headers: axum::http::HeaderMap,
     Json(req): Json<AuthWithPresentationRequest>,
 ) -> Result<Json<AuthWithPresentationResponse>, BrokerError>
 where
@@ -196,6 +197,10 @@ where
         if let Err(e) = state.user_store.insert_device_cert(rec) {
             tracing::warn!("failed to record primary device cert holder: {e}");
         }
+        // First sight of this holder → UA-derived default label; best-effort.
+        super::holders::maybe_label_holder_from_ua(
+            state.user_store.as_ref(), user_id, cc.holder.as_str(), &headers,
+        );
     }
 
     Ok(Json(AuthWithPresentationResponse { success: true, email }))

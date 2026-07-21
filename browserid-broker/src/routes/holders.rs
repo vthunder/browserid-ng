@@ -188,6 +188,66 @@ fn default_holder_label(holder_id: &str) -> String {
     format!("holder-{short}")
 }
 
+/// A friendly holder label derived from a User-Agent, e.g. "Chrome on macOS".
+/// Order matters: Edge ships "Chrome/" too, Chrome ships "Safari/", Android
+/// ships "Linux". None when nothing recognizable — callers fall back to the
+/// generic default label.
+pub(crate) fn ua_label(ua: &str) -> Option<String> {
+    let browser = if ua.contains("Edg/") {
+        Some("Edge")
+    } else if ua.contains("Chrome/") {
+        Some("Chrome")
+    } else if ua.contains("Firefox/") {
+        Some("Firefox")
+    } else if ua.contains("Safari/") {
+        Some("Safari")
+    } else {
+        None
+    };
+    let os = if ua.contains("Windows") {
+        Some("Windows")
+    } else if ua.contains("iPhone") || ua.contains("iPad") {
+        Some("iOS")
+    } else if ua.contains("Mac OS X") {
+        Some("macOS")
+    } else if ua.contains("Android") {
+        Some("Android")
+    } else if ua.contains("Linux") {
+        Some("Linux")
+    } else {
+        None
+    };
+    match (browser, os) {
+        (Some(b), Some(o)) => Some(format!("{b} on {o}")),
+        (Some(b), None) => Some(b.to_string()),
+        (None, Some(o)) => Some(format!("Browser on {o}")),
+        (None, None) => None,
+    }
+}
+
+/// Best-effort: give `holder_id` a UA-derived default label if the user hasn't
+/// labeled it yet. Never clobbers an existing label; never fails the caller.
+pub(crate) fn maybe_label_holder_from_ua<U: UserStore>(
+    user_store: &U,
+    user_id: crate::store::UserId,
+    holder_id: &str,
+    headers: &axum::http::HeaderMap,
+) {
+    let Some(ua) = headers.get("user-agent").and_then(|v| v.to_str().ok()) else {
+        return;
+    };
+    let Some(label) = ua_label(ua) else { return };
+    match user_store.get_holder_labels(user_id) {
+        Ok(labels) if labels.contains_key(holder_id) => {} // user/default already set — keep
+        Ok(_) => {
+            if let Err(e) = user_store.set_holder_label(user_id, holder_id, &label) {
+                tracing::debug!("ua holder label skipped: {e}");
+            }
+        }
+        Err(e) => tracing::debug!("ua holder label skipped: {e}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mutations (session + CSRF, mirroring revoke_device_cert)
 // ---------------------------------------------------------------------------
@@ -339,5 +399,27 @@ fn title_case(name: &str) -> String {
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ua_label;
+
+    #[test]
+    fn ua_label_common_browsers() {
+        let chrome_mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
+        assert_eq!(ua_label(chrome_mac).as_deref(), Some("Chrome on macOS"));
+        let ff_linux = "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0";
+        assert_eq!(ua_label(ff_linux).as_deref(), Some("Firefox on Linux"));
+        let safari_ios = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+        assert_eq!(ua_label(safari_ios).as_deref(), Some("Safari on iOS"));
+        // Edge carries Chrome/ too — Edge must win.
+        let edge_win = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0";
+        assert_eq!(ua_label(edge_win).as_deref(), Some("Edge on Windows"));
+        // Android carries Linux — Android must win.
+        let chrome_android = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36";
+        assert_eq!(ua_label(chrome_android).as_deref(), Some("Chrome on Android"));
+        assert_eq!(ua_label("curl/8.7.1"), None);
     }
 }

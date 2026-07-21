@@ -282,6 +282,7 @@ pub struct FbDeviceCertRequest {
 pub async fn device_cert<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
+    headers: axum::http::HeaderMap,
     Json(req): Json<FbDeviceCertRequest>,
 ) -> (StatusCode, Json<serde_json::Value>)
 where
@@ -394,6 +395,10 @@ where
                 status_idx: Some(status_idx),
             });
         }
+        // First sight of this holder → UA-derived default label; best-effort.
+        super::holders::maybe_label_holder_from_ua(
+            state.user_store.as_ref(), user.id, holder.as_str(), &headers,
+        );
     }
 
     tracing::info!(email = %email, "fallback IdP: issued device + config certs");

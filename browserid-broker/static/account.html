@@ -55,13 +55,14 @@
     .muted { color: #888; } .err { color: #dc3545; } .ok { color: #2f855a; } .warn { color: #b7791f; }
     .scope { display: inline-block; font-family: ui-monospace, monospace; font-size: 11px;
       border: 1px solid #ccc; border-radius: 999px; padding: 1px 8px; margin: 0 3px 3px 0; color: #555; }
+    .idchip { display: inline-block; font-family: ui-monospace, monospace; font-size: 11px;
+      background: #eef2f7; border-radius: 999px; padding: 1px 8px; margin: 2px 3px 0 0; color: #55607a; }
     .wtable { width: 100%; border-collapse: collapse; font-size: 13px; }
     .wtable td { padding: 8px 6px; border-bottom: 1px solid #eee; vertical-align: top; }
     .wtable tr:last-child td { border-bottom: none; }
     .aud { font-family: ui-monospace, monospace; word-break: break-all; }
     .footer-links { text-align: center; font-size: 13px; color: #888; }
     .footer-links a { margin: 0 8px; }
-    #detail-back { margin-bottom: 12px; }
     .kv { font-size: 13px; color: #555; margin-bottom: 16px; }
     .kv b { color: #333; }
     .disclose { font-size: 13px; color: #4a90d9; cursor: pointer; user-select: none; }
@@ -143,9 +144,8 @@
   <div id="app" hidden>
     <div class="card">
       <h2>Your identities</h2>
-      <p class="sub">Emails you sign in with. <span class="badge active">on this device</span>
-        holds device certificates in this browser; <span class="badge inactive">not on this device</span>
-        is on your account but hasn't signed in here — use any app's sign-in dialog to set it up.</p>
+      <p class="sub">Emails you sign in with. Which devices hold certificates for them
+        lives under Devices &amp; services below.</p>
       <ul class="idlist" id="user-ids"></ul>
       <div id="add-email-form" class="inline-form" hidden>
         <label for="ae-email">New email</label>
@@ -160,44 +160,36 @@
       </div>
     </div>
 
-    <div class="card">
-      <h2>Agents</h2>
-      <p class="sub">Programs acting for you — each its own key and identity. Click one for its
-        details and warrants.</p>
-      <ul class="idlist" id="agent-ids"></ul>
-      <p class="status" style="margin-top:12px"><a href="/consent">Pending consent requests →</a></p>
-
-      <p class="sub" id="add-agent-hint" hidden style="margin-top:10px">Agents pair themselves:
-        install the browserid wallet in your agent and ask it to provision an identity — you
-        approve the pairing link it shows you, right on this page.</p>
-    </div>
-
-    <div class="card" id="external-card" hidden>
-      <h2>External services</h2>
-      <p class="sub">Services run by other providers that you allowed to act for you (e.g. a site
-        posting on your behalf). Click one for the warrants you signed for it.</p>
-      <ul class="idlist" id="external-ids"></ul>
-    </div>
-
     <div class="card" id="holders-card" hidden>
-      <h2>Devices &amp; holders</h2>
-      <p class="sub">Each thing that acts for you — a browser, an agent, a service — is a
-        <b>holder</b>, grouped into namespaces you organize. <span class="badge active">trusted</span>
+      <h2>Devices &amp; services</h2>
+      <p class="sub">Everything that acts for you — browsers, agents, services — grouped into
+        namespaces you organize. <span class="badge active">trusted</span>
         holds a config certificate (can authorize new sites); <span class="badge inactive">login-only</span>
-        can reuse existing logins but not authorize new ones. Click a holder for its warrants.
-        Revoking a holder logs it out and <b>kills the access certificates it minted</b>.</p>
-      <p class="sub" id="holders-local" style="font-family:ui-monospace,monospace"></p>
-      <div id="holders-tree"></div>
-      <div id="new-namespace-form" class="inline-form" hidden>
-        <label for="nn-name">New namespace (short slug — letters, digits, hyphen)</label>
-        <input id="nn-name" placeholder="services" maxlength="32">
-        <label for="nn-label">Display name</label>
-        <input id="nn-label" placeholder="External services" maxlength="64">
-        <button class="primary small" id="nn-btn">Create</button>
-        <button class="small" id="nn-cancel">Cancel</button>
-        <p class="status" id="nn-status"></p>
+        can reuse existing logins but not authorize new ones. Click one for its warrants.
+        Revoking it logs it out and <b>kills the access certificates it minted</b>.</p>
+      <div style="margin:8px 0 12px">
+        <button class="small primary" id="hc-tab-dev">Devices</button>
+        <button class="small" id="hc-tab-sites">Sites</button>
       </div>
-      <p style="margin:12px 0 0"><button class="small linkish" id="nn-add">+ New namespace</button></p>
+      <div id="tab-devices">
+        <p class="sub" id="holders-local" style="font-family:ui-monospace,monospace"></p>
+        <div id="holders-tree"></div>
+        <div id="new-namespace-form" class="inline-form" hidden>
+          <label for="nn-name">New namespace (short slug — letters, digits, hyphen)</label>
+          <input id="nn-name" placeholder="services" maxlength="32">
+          <label for="nn-label">Display name</label>
+          <input id="nn-label" placeholder="External services" maxlength="64">
+          <button class="primary small" id="nn-btn">Create</button>
+          <button class="small" id="nn-cancel">Cancel</button>
+          <p class="status" id="nn-status"></p>
+        </div>
+        <p style="margin:12px 0 0"><button class="small linkish" id="nn-add">+ New namespace</button></p>
+      </div>
+      <div id="tab-sites" hidden>
+        <p class="sub">Every site or service you've authorized, and who may act there.</p>
+        <div id="sites-tree"></div>
+      </div>
+      <p class="status" style="margin-top:12px"><a href="/consent">Pending consent requests →</a></p>
     </div>
 
     <div class="card">
@@ -236,18 +228,6 @@
       </div>
       <div id="hd-warrants"></div>
       <p class="status" id="hd-status"></p>
-    </div>
-  </div>
-
-  <!-- Agent detail -->
-  <div id="detail" hidden>
-    <div class="card">
-      <button id="detail-back" class="small">← Back</button>
-      <h2 id="d-email" style="word-break:break-all"></h2>
-      <p class="kv">Acts for <b id="d-parent"></b> <span id="d-badges"></span></p>
-      <p class="sub" id="d-sub"></p>
-      <div id="d-warrants"></div>
-      <p class="status" id="d-status"></p>
     </div>
   </div>
 
@@ -293,12 +273,6 @@ function identityMatches(pattern, email) {
   const pre = pattern.slice(0, star), post = pattern.slice(star + 1);
   return email.length >= pre.length + post.length && email.startsWith(pre) && email.endsWith(post);
 }
-// A valid record of `kind` (device|config) stored for exactly this email.
-function deviceRec(email, kind) {
-  const want = (email || '').toLowerCase();
-  return deviceCache.find(r => r.kind === kind && r.email === want && r.privateKey && r.cert
-    && (certPayload(r.cert)?.exp || 0) > nowS() + 60) || null;
-}
 // The config (authorization) record whose cert authorizes `identity` (globs
 // included) — what signs warrants for it. Prefers the delegator's own record.
 function configFor(identity) {
@@ -312,19 +286,6 @@ function configFor(identity) {
   }
   return null;
 }
-// Device-cert display: the warrant's holder matcher + who signed it (from the
-// registry row's config cert — device warrants don't embed their signer).
-function warrantMeta(w) {
-  const p = certPayload(w.warrant || '') || {};
-  let signer = null;
-  if (w.config_cert) {
-    const sp = certPayload(w.config_cert);
-    signer = (sp?.identities || [])[0] || sp?.iss || null;
-  }
-  return { holder: w.holder || p.holder || null, signer };
-}
-/// active = this browser holds a valid device+config cert pair for the email
-function isActive(email) { return !!(deviceRec(email, 'device') && deviceRec(email, 'config')); }
 
 // -------- sign-in / create: email-first with address discovery --------
 // One field to begin. On "Continue" we ask the broker about the address and
@@ -488,11 +449,7 @@ function renderUserIdentities() {
     .filter(e => !account.agents.includes(e))
     .map(email => {
       const via = account.parentOf[email];
-      const active = isActive(email);
-      const badge = active
-        ? '<span class="badge active">on this device</span>'
-        : '<span class="badge inactive">not on this device</span>';
-      return `<li><div class="row"><span class="email-text">${escapeHtml(email)}${badge}
+      return `<li><div class="row"><span class="email-text">${escapeHtml(email)}
         ${via ? `<span class="email-sub">signs in via ${escapeHtml(via)}</span>` : ''}
       </span></div></li>`;
     }).join('');
@@ -527,78 +484,6 @@ function agentConstraintName(delegator, idpDomain, handle) {
   return isFallbackOwner(delegator, idpDomain) && !handle.startsWith(local + '+')
     ? `${local}+${handle}`
     : handle;
-}
-
-function agentEntries() {
-  const byEmail = new Map();
-  for (const email of account.agents) {
-    byEmail.set(email, { email, parent: account.parentOf[email], minted: true });
-  }
-  return [...byEmail.values()].sort((a, b) => a.email.localeCompare(b.email));
-}
-
-function renderAgents() {
-  const entries = agentEntries();
-  const rows = entries.map(a => {
-    const badge = a.minted
-      ? '<span class="badge active">active</span>'
-      : '<span class="badge info">reserved</span>';
-    return `<li><button class="row agent-row" data-email="${escapeHtml(a.email)}">
-      <span class="email-text">${escapeHtml(a.email)}${badge}
-        <span class="email-sub">acts for ${escapeHtml(a.parent || '—')}</span></span>
-      <span class="chev">›</span></button></li>`;
-  }).join('');
-  $('agent-ids').innerHTML = rows;
-  $('add-agent-hint').hidden = false;
-  for (const b of $('agent-ids').querySelectorAll('.agent-row')) {
-    const a = entries.find(e => e.email === b.dataset.email);
-    b.onclick = () => showDetail(a);
-  }
-  renderExternalServices(entries);
-}
-
-// -------- external services (§6.6) --------
-// A warrant whose agent is NOT one of this account's own agents was granted
-// to a service someone else runs (e.g. mingo-poster@mingo.place). Those don't
-// belong under "Agents" (the key isn't yours), so they get their own list —
-// one row per service, mirroring Agents; click into it for that service's
-// warrants (revocable per grant with the ordinary warrant machinery).
-function externalEntries(agentList) {
-  const own = new Set((agentList || agentEntries()).map(a => a.email.toLowerCase()));
-  const now = Date.now();
-  const bySvc = new Map();
-  for (const w of account.warrants) {
-    const key = (w.agent_email || '').toLowerCase();
-    if (!key || own.has(key)) continue;
-    const cur = bySvc.get(key)
-      || { email: w.agent_email, external: true, delegators: new Set(), live: 0 };
-    cur.delegators.add(w.delegator_email);
-    const exp = Date.parse(w.expires_at);
-    if (!w.revoked && !(exp && exp < now)) cur.live++;
-    bySvc.set(key, cur);
-  }
-  return [...bySvc.values()]
-    .map(s => ({ ...s, parent: [...s.delegators].join(', ') }))
-    .sort((a, b) => a.email.localeCompare(b.email));
-}
-
-function renderExternalServices(agentList) {
-  const entries = externalEntries(agentList);
-  $('external-card').hidden = !entries.length;
-  if (!entries.length) return;
-  $('external-ids').innerHTML = entries.map(s => {
-    const badge = s.live
-      ? `<span class="badge active">${s.live} grant${s.live === 1 ? '' : 's'}</span>`
-      : '<span class="badge revoked">no live grants</span>';
-    return `<li><button class="row ext-row" data-email="${escapeHtml(s.email)}">
-      <span class="email-text">${escapeHtml(s.email)}${badge}
-        <span class="email-sub">acting for ${escapeHtml(s.parent)}</span></span>
-      <span class="chev">›</span></button></li>`;
-  }).join('');
-  for (const b of $('external-ids').querySelectorAll('.ext-row')) {
-    const s = entries.find(e => e.email === b.dataset.email);
-    b.onclick = () => showDetail(s);
-  }
 }
 
 // -------- devices & holders (holder-authorization model, stage 2b) --------
@@ -643,7 +528,7 @@ function holderRowHtml(h, thisHolder) {
   const wc = `${h.warrant_count} warrant${h.warrant_count === 1 ? '' : 's'}`;
   const certs = `${h.cert_count} cert${h.cert_count === 1 ? '' : 's'}`;
   const ids = (h.identities || []).length
-    ? `<span class="email-sub">${h.identities.map(escapeHtml).join(', ')}</span>` : '';
+    ? `<span class="email-sub">${h.identities.map(i => `<span class="idchip">${escapeHtml(i)}</span>`).join('')}</span>` : '';
   return `<li><button class="row holder-row" data-h="${escapeHtml(h.holder_id)}">
     <span class="email-text">${escapeHtml(h.label)} ${trust} ${here} ${rev}
       ${ids}
@@ -655,7 +540,8 @@ function renderHolders() {
   const data = account.holders || { namespaces: [], holders_without_namespace: [] };
   const nss = data.namespaces || [];
   const orphans = data.holders_without_namespace || [];
-  $('holders-card').hidden = !(nss.length || orphans.length);
+  // The card hosts both tabs — show it when there's anything on either.
+  $('holders-card').hidden = !(nss.length || orphans.length || account.warrants.length);
   const thisHolder = localHolderIds();
   // Debug/orientation line: what the LOCAL keystore thinks this browser's
   // holder is (server rows tagged "this browser" match against these ids).
@@ -713,6 +599,69 @@ $('nn-btn').onclick = async () => {
   } catch (e) { status.className = 'status err'; status.textContent = e.message; }
 };
 
+// -------- Devices | Sites tabs --------
+function setHcTab(t) {
+  $('hc-tab-dev').className = 'small' + (t === 'dev' ? ' primary' : '');
+  $('hc-tab-sites').className = 'small' + (t === 'sites' ? ' primary' : '');
+  $('tab-devices').hidden = t !== 'dev';
+  $('tab-sites').hidden = t !== 'sites';
+}
+$('hc-tab-dev').onclick = () => setHcTab('dev');
+$('hc-tab-sites').onclick = () => setHcTab('sites');
+
+// A warrant's holder matcher, shown as the holder's friendly label when it
+// names exactly one known holder, else as the raw matcher (`*` / `<ns>.*` /
+// an unknown `<id>` — e.g. an external service whose cert we never recorded).
+function matcherDisplay(m) {
+  if (!m) return '<span class="muted" style="font-size:12px">any holder</span>';
+  const h = findHolder(m);
+  return h ? escapeHtml(h.label) : `<span class="scope">${escapeHtml(m)}</span>`;
+}
+
+// Sites slice: every warrant on the account, grouped by audience — "what did I
+// authorize, where". Includes warrants whose matcher matches no recorded holder
+// (external services), so nothing becomes invisible.
+function renderSites() {
+  const byAud = new Map();
+  for (const w of account.warrants) {
+    const k = w.audience || '—';
+    if (!byAud.has(k)) byAud.set(k, []);
+    byAud.get(k).push(w);
+  }
+  if (!byAud.size) {
+    $('sites-tree').innerHTML = `<p class="muted" style="font-size:13px">Nothing authorized yet —
+      warrants you approve appear here, grouped by site.</p>`;
+    return;
+  }
+  const byId = {};
+  $('sites-tree').innerHTML = [...byAud.entries()].map(([aud, ws]) =>
+    `<div style="margin-bottom:14px"><div class="aud" style="font-weight:600;margin-bottom:4px">${escapeHtml(aud)}</div>
+     <table class="wtable">${ws.map(w => {
+       byId[w.id] = w;
+       const signed = w.signed_at ? `signed ${new Date(Date.parse(w.signed_at)).toLocaleDateString()}` : '';
+       const actions = w.revoked
+         ? `<button class="small sw-forget" data-i="${w.id}">Forget</button>`
+         : (w.status_idx != null
+             ? `<button class="small sw-revoke" data-i="${w.id}" style="color:#c53030">Revoke</button>`
+             : `<button class="small sw-forget" data-i="${w.id}">Forget</button>`);
+       return `<tr><td>
+         <span style="font-size:13px">${escapeHtml(w.agent_email)}</span> · ${matcherDisplay(w.holder)}<br>
+         <span class="muted" style="font-size:12px">${[`acting for ${w.delegator_email}`, signed].map(escapeHtml).filter(Boolean).join(' · ')}</span><br>
+         ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
+         <td style="white-space:nowrap;text-align:right">${warrantStateHtml(w)}<br>${actions}</td></tr>`;
+     }).join('')}</table></div>`).join('');
+  for (const b of $('sites-tree').querySelectorAll('.sw-forget')) b.onclick = async () => {
+    try { await post('/wsapi/forget_warrant', { id: Number(b.dataset.i) }); await reloadAccount(); renderHolders(); renderSites(); }
+    catch (e) { alert('Forget failed: ' + e.message); }
+  };
+  for (const b of $('sites-tree').querySelectorAll('.sw-revoke')) b.onclick = async () => {
+    const w = byId[b.dataset.i];
+    if (!confirm(`Revoke access to ${w.audience}? The grant stops working within minutes at services that check revocation.`)) return;
+    try { await post('/wsapi/revoke_warrant', { id: Number(b.dataset.i) }); await reloadAccount(); renderHolders(); renderSites(); }
+    catch (e) { alert('Revoke failed: ' + e.message); }
+  };
+}
+
 // -------- holder detail: two-slice warrant view --------
 let hdCtx = null; // { holderId, slice }
 function findHolder(holderId) {
@@ -728,7 +677,7 @@ function openHolder(holderId) {
 function renderHolderDetail() {
   const h = findHolder(hdCtx.holderId);
   if (!h) { backToMain(); return; }
-  $('app').hidden = true; $('holder-detail').hidden = false; $('detail').hidden = true;
+  $('app').hidden = true; $('holder-detail').hidden = false;
   $('hd-label').textContent = h.label;
   $('hd-badges').innerHTML = (h.trust === 'trusted'
     ? '<span class="badge active">trusted</span>' : '<span class="badge inactive">login-only</span>')
@@ -814,112 +763,15 @@ $('ae-btn').onclick = async () => {
   } catch (e) { status.className = 'status err'; status.textContent = e.message; }
 };
 
-// -------- agent / external-service detail + warrants --------
-function showDetail(a) {
-  showDetailNoPush(a);
-  history.pushState({ view: 'detail', email: a.email, external: !!a.external }, '', '#' + encodeURIComponent(a.email));
-}
-function backToMain() { $('detail').hidden = true; $('holder-detail').hidden = true; $('app').hidden = false; }
-$('detail-back').onclick = () => history.back();
+// -------- navigation --------
+function backToMain() { $('holder-detail').hidden = true; $('app').hidden = false; }
 window.addEventListener('popstate', (e) => {
-  if (e.state && e.state.view === 'detail') {
-    const pool = e.state.external ? externalEntries() : agentEntries();
-    const a = pool.find(x => x.email === e.state.email);
-    if (a) { showDetailNoPush(a); return; }
-  }
   if (e.state && e.state.view === 'holder') {
     hdCtx = { holderId: e.state.holderId, slice: 'holder' };
     renderHolderDetail(); return;
   }
   backToMain();
 });
-function showDetailNoPush(a) {
-  $('app').hidden = true; $('detail').hidden = false;
-  $('d-email').textContent = a.email; $('d-parent').textContent = a.parent || 'unknown';
-  $('d-badges').innerHTML = a.external
-    ? '<span class="badge info">external service</span>'
-    : a.minted ? '<span class="badge active">active</span>' : '<span class="badge info">reserved (not yet minted)</span>';
-  $('d-sub').innerHTML = a.external
-    ? `Every warrant you signed for this service. <strong>Revoke</strong> kills one grant
-       within minutes at services that check revocation; the service keeps working wherever
-       its other grants remain.`
-    : `Every warrant on record for this agent. <strong>Revoke</strong> kills one grant
-       within minutes at services that check revocation. To cut this agent off everywhere, revoke
-       its key (Advanced / debug).`;
-  renderDetailWarrants(a.email, !!a.external);
-}
-
-function renderDetailWarrants(agentEmail, external) {
-  const now = Date.now();
-  const entries = account.warrants.filter(w => (w.agent_email || '').toLowerCase() === agentEmail.toLowerCase());
-  if (!entries.length) {
-    $('d-warrants').innerHTML = `<p class="muted" style="font-size:13px">No warrants on record.
-      Approve requests on the <a href="/consent">consent page</a>, or sign one in Advanced / debug.</p>`;
-    return;
-  }
-  const byId = Object.fromEntries(entries.map(w => [w.id, w]));
-  $('d-warrants').innerHTML = `<table class="wtable">` + entries.map(w => {
-    const exp = Date.parse(w.expires_at);
-    const state = w.revoked ? '<span class="badge revoked">revoked</span>'
-      : (exp && exp < now ? '<span class="warn" style="font-size:12px">expired</span>'
-        : `<span class="muted" style="font-size:12px">until ${new Date(exp).toLocaleDateString()}</span>`);
-    // Copy/Reissue assume YOU operate the agent and can paste the JWS into it;
-    // an external service holds its own warrant (it picks approvals up itself),
-    // so those two make no sense there — Revoke/Forget only.
-    const actions = w.revoked
-      ? `<button class="small w-forget" data-i="${w.id}">Forget</button>`
-      : `${external ? '' : `<button class="small w-copy" data-i="${w.id}">Copy</button>
-         <button class="small w-reissue" data-i="${w.id}">Reissue</button>`}
-         ${w.status_idx != null
-           ? `<button class="small w-revoke" data-i="${w.id}" style="color:#c53030">Revoke</button>`
-           : `<button class="small w-forget" data-i="${w.id}">Forget</button>`}`;
-    // A service can act for more than one of your identities (e.g. your email
-    // and a handle) — say which one each grant delegates.
-    const delegator = external
-      ? `<span class="muted" style="font-size:12px">acting for ${escapeHtml(w.delegator_email)}</span><br>`
-      : '';
-    // Holder model: surface the warrant's holder matcher (`*` / `<ns>.*` /
-    // `<id>`) and which cert signed it. Read straight from the warrant JWS so it
-    // works for both legacy and config-cert-signed warrants.
-    const meta = warrantMeta(w);
-    const metaLine = (meta.holder || meta.signer)
-      ? `<span class="muted" style="font-size:12px">${meta.holder ? `holder <b>${escapeHtml(meta.holder)}</b>` : ''}${meta.holder && meta.signer ? ' · ' : ''}${meta.signer ? `signed by ${escapeHtml(meta.signer)}` : ''}</span><br>`
-      : '';
-    return `<tr>
-      <td><span class="aud">${escapeHtml(w.audience)}</span><br>${delegator}${metaLine}
-        ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
-      <td style="white-space:nowrap;text-align:right">${state}<br>${actions}</td></tr>`;
-  }).join('') + '</table>';
-
-  const setStatus = (cls, msg) => { $('d-status').className = 'status ' + cls; $('d-status').textContent = msg; };
-  for (const b of $('d-warrants').querySelectorAll('.w-copy')) b.onclick = async () => {
-    await navigator.clipboard.writeText(byId[b.dataset.i].warrant); setStatus('ok', 'Copied — paste into the agent (add_warrant).');
-  };
-  for (const b of $('d-warrants').querySelectorAll('.w-forget')) b.onclick = async () => {
-    try { await post('/wsapi/forget_warrant', { csrf: account.csrf, id: Number(b.dataset.i) }); await reloadAccount(); renderDetailWarrants(agentEmail, external);
-      setStatus('muted', 'Removed from the registry.'); } catch (e) { setStatus('err', 'Forget failed: ' + e.message); }
-  };
-  for (const b of $('d-warrants').querySelectorAll('.w-revoke')) b.onclick = async () => {
-    const w = byId[b.dataset.i];
-    if (!confirm(`Revoke this agent's access to ${w.audience}? It stops working there within minutes at services that check revocation.`)) return;
-    try { await post('/wsapi/revoke_warrant', { csrf: account.csrf, id: Number(b.dataset.i) }); await reloadAccount(); renderDetailWarrants(agentEmail, external);
-      setStatus('ok', `Revoked — ${w.audience} rejects this grant within minutes.`); } catch (e) { setStatus('err', 'Revoke failed: ' + e.message); }
-  };
-  for (const b of $('d-warrants').querySelectorAll('.w-reissue')) b.onclick = async () => {
-    const w = byId[b.dataset.i];
-    const config = configFor(w.agent_email);
-    if (!config) return setStatus('err', `No config key covering ${w.agent_email} in this browser — sign in with ${w.delegator_email} through an app's dialog first.`);
-    try {
-      let statusRef = null;
-      try { const alloc = await post('/wsapi/allocate_warrant_status', { csrf: account.csrf, agent_email: w.agent_email, audience: w.audience, scopes: w.scopes || [] }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
-      const jws = await signDeviceWarrant(config, w.agent_email, w.holder || '*', w.audience, w.scopes || [], statusRef);
-      await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws, config_cert: config.cert });
-      await navigator.clipboard.writeText(`${jws}~${config.cert}`); await reloadAccount(); renderDetailWarrants(agentEmail, external);
-      setStatus('ok', 'Reissued (fresh 90-day expiry), registered, and copied as warrant~config_cert — paste into the agent.');
-    } catch (e) { setStatus('err', 'Reissue failed: ' + e.message); }
-  };
-}
-
 // -------- advanced: manual warrant signing (device model) --------
 // Signs a device-shaped warrant with the CONFIG key held in this browser and
 // registers it with its config cert. Output is `warrant~config_cert` — the
@@ -967,7 +819,7 @@ async function clearLocal() {
   deviceCache = [];
 }
 $('signout').onclick = async () => { $('out').textContent = 'Signing out…'; try { await post('/wsapi/logout', {}); } catch {} await clearLocal(); location.reload(); };
-$('reset').onclick = async () => { await clearLocal(); renderUserIdentities(); renderAgents(); $('out').textContent = '✓ Cached device certificates cleared (still signed in).'; };
+$('reset').onclick = async () => { await clearLocal(); renderUserIdentities(); renderHolders(); $('out').textContent = '✓ Cached device certificates cleared (still signed in).'; };
 
 // -------- boot --------
 async function reloadAccount() {
@@ -1102,8 +954,8 @@ async function boot() {
   await reloadAccount();
   $('app').hidden = false;
   renderUserIdentities();
-  renderAgents();
   renderHolders();
+  renderSites();
   // Paired provisioning banner sits above the account app so add-email/activate
   // are right there for new users.
   if (provisionCode) {
