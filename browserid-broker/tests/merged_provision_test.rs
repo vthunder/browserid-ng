@@ -394,6 +394,100 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
     assert_eq!(verified.holder.as_str(), holder);
 }
 
+/// As-you service (holder model): no requested handle → the service holds the
+/// delegating identity ITSELF, isolated by its broker-assigned holder; the
+/// warrant names the user, so writes stay owned by + attributed to the user.
+#[tokio::test]
+async fn as_you_service_provisions_under_the_users_own_identity() {
+    let (server, sender, idp_kp) = make_server();
+    let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+
+    let config_kp = KeyPair::generate();
+    let config_cert = DeviceCert::create(
+        DOMAIN, &config_kp.public_key(), Purpose::Authorization, Holder::new("br.main").unwrap(),
+        vec![DELEGATOR.to_string()], Duration::days(90), &idp_kp, None,
+    )
+    .unwrap();
+
+    let device_kp = KeyPair::generate();
+    let r = server
+        .post("/agent-provision/request")
+        .json(&json!({
+            "provisioning_pubkey": { "algorithm": "Ed25519", "publicKey": device_kp.public_key().to_base64() },
+            "namespace": "services",
+            "grants": [{ "audience": AUDIENCE, "scopes": ["action:post"] }],
+            "label": "mingo poster",
+        }))
+        .await;
+    assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
+    let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
+
+    let c = csrf(&server, &session).await;
+    let prep: Value = server
+        .post("/agent-provision/prepare")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code, "identity_email": DELEGATOR }))
+        .await
+        .json();
+    assert_eq!(prep["success"], true, "prepare: {prep}");
+    // The service's identity IS the user's own.
+    assert_eq!(prep["agent_email"], DELEGATOR);
+    let holder = prep["holder"].as_str().unwrap().to_string();
+    let status_uri = prep["status_uri"].as_str().unwrap().to_string();
+    let status_idx = prep["grants"][0]["status_idx"].as_u64().unwrap();
+
+    let warrant = Warrant::create(
+        DELEGATOR, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
+        Duration::days(90), &config_kp,
+        Some(StatusRef { uri: status_uri, idx: status_idx }),
+    )
+    .unwrap();
+    let r = server
+        .post("/agent-provision/complete")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code, "approve": true, "identity_email": DELEGATOR,
+            "warrants": [warrant.encoded()], "config_cert": config_cert.encoded() }))
+        .await;
+    assert_eq!(r.status_code(), 200, "complete: {:?}", r.text());
+
+    let poll: Value = server
+        .post("/agent-provision/poll")
+        .json(&json!({ "code": code }))
+        .await
+        .json();
+    assert_eq!(poll["status"], "completed", "{poll}");
+    assert_eq!(poll["credential"]["identity"], DELEGATOR);
+    let device_cert = DeviceCert::parse(poll["credential"]["device_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(device_cert.holder().as_str(), holder);
+    let tail = poll["grants"][0]["warrant"].as_str().unwrap().to_string();
+
+    // Full presentation attributes to the USER (owner=you), on the service holder.
+    let access_kp = KeyPair::generate();
+    let areq = AccessRequest::create(
+        DOMAIN, DELEGATOR, Holder::new(holder.clone()).unwrap(), &access_kp.public_key(), "jti-s1", &device_kp,
+    )
+    .unwrap();
+    let minted: Value = server
+        .post("/access/mint")
+        .json(&json!({ "device_cert": poll["credential"]["device_cert"], "access_request": areq.encoded() }))
+        .await
+        .json();
+    assert_eq!(minted["success"], true, "mint: {minted}");
+    let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &access_kp).unwrap();
+    let presentation = format!(
+        "{}~{}~{}",
+        minted["access_cert"].as_str().unwrap(),
+        assertion.encoded(),
+        tail
+    );
+    let verified = AccessPresentation::parse(&presentation)
+        .unwrap()
+        .verify(AUDIENCE, |_| Ok(idp_kp.public_key()))
+        .expect("as-you service presentation verifies");
+    assert_eq!(verified.email, DELEGATOR);
+    assert_eq!(verified.holder.as_str(), holder);
+}
+
 /// A grant-less request keeps today's shape: no prepare needed, `complete`
 /// assigns the holder itself, poll delivers just the credential.
 #[tokio::test]

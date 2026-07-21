@@ -418,19 +418,26 @@ pub async fn resolve(
 /// The identity/handle policy shared by `prepare` and `complete`: the session
 /// must own the delegating identity, and the requested handle must be one this
 /// owner may mint. Returns `(name, agent_email)`.
+///
+/// No requested handle = an **as-you service** (holder-authorization model):
+/// the requester asks to hold the delegating identity ITSELF — writes stay
+/// owned by and attributed to the user — isolated by its broker-assigned
+/// holder rather than by a sub-address identity. The warrants it can ever use
+/// are exactly those matched to that holder.
 fn resolve_agent_identity(
     state: &Arc<RegistrarState>,
     user: &AuthedUser,
     identity_email: &str,
     requested_name: Option<String>,
-) -> Result<(String, String), RegistrarError> {
-    let name = requested_name
-        .ok_or_else(|| RegistrarError::ValidationError("no requested agent handle".into()))?;
+) -> Result<(Option<String>, String), RegistrarError> {
     if !state.host.owns_verified_email(user.user_id, identity_email).unwrap_or(false) {
         return Err(RegistrarError::PolicyRefused(
             "you don't own the delegating identity".into(),
         ));
     }
+    let Some(name) = requested_name else {
+        return Ok((None, identity_email.to_lowercase()));
+    };
     // Anti-squatting: the handle must be one this owner may mint (same rule the
     // legacy path enforces via the signed provisioning cert).
     if !agent_name_allowed(&name, identity_email, &state.domain) {
@@ -439,7 +446,7 @@ fn resolve_agent_identity(
         ));
     }
     let agent_email = agent_identity_email(identity_email, &name);
-    Ok((name, agent_email))
+    Ok((Some(name), agent_email))
 }
 
 #[derive(Deserialize)]
@@ -681,12 +688,15 @@ async fn complete_device_cert(
     };
 
     // Reserve the handle NOW (session-authenticated), same as the legacy path.
-    if let Err(e) = state.host.reserve_agent_names(user.user_id, &identity_email, &[name.clone()]) {
-        if let Some(rec) = PROVISIONS.lock().unwrap().get_mut(&req.code) {
-            rec.status = Status::Failed;
-            rec.fail_reason = Some(e.to_string());
+    // An as-you service has no handle to reserve — its identity IS the user's.
+    if let Some(name) = &name {
+        if let Err(e) = state.host.reserve_agent_names(user.user_id, &identity_email, &[name.clone()]) {
+            if let Some(rec) = PROVISIONS.lock().unwrap().get_mut(&req.code) {
+                rec.status = Status::Failed;
+                rec.fail_reason = Some(e.to_string());
+            }
+            return Err(e);
         }
-        return Err(e);
     }
 
     let device_pub = PublicKey::from_base64(&snapshot.provisioning_pubkey)
