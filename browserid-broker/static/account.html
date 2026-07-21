@@ -219,6 +219,7 @@
       <h2 id="hd-label" style="word-break:break-all"></h2>
       <p class="kv"><span id="hd-badges"></span></p>
       <p class="sub" id="hd-id" style="font-family:ui-monospace,monospace;word-break:break-all"></p>
+      <div id="hd-identities" style="margin-bottom:12px"></div>
       <div style="margin:8px 0 12px">
         <button class="small primary" id="hd-tab-holder">Granted to this holder</button>
         <button class="small" id="hd-tab-aud">By audience (all)</button>
@@ -463,7 +464,7 @@ function renderUserIdentities() {
     .filter(e => !account.agents.includes(e))
     .map(email => {
       const via = account.parentOf[email];
-      const here = localCertReady(email) ? ' <span class="badge info">this browser</span>' : '';
+      const here = localCertReady(email) ? ' <span class="badge active">active</span>' : '';
       return `<li><div class="row"><span class="email-text">${escapeHtml(email)}${here}
         ${via ? `<span class="email-sub">signs in via ${escapeHtml(via)}</span>` : ''}
       </span></div></li>`;
@@ -758,6 +759,21 @@ function renderHolderDetail() {
     + ` <button class="small linkish" id="hd-rename">rename</button>`
     + (h.revoked ? ' <span class="badge revoked">revoked</span>' : '');
   $('hd-id').textContent = h.holder_id;
+  // Per-identity trust: config certs are per-identity, so one device can be
+  // trusted for identity A while only login-capable for identity B. The
+  // summary pill shows the at-least-one rollup; this is the real breakdown.
+  const hcerts = account.deviceCerts.filter(c => c.holder === h.holder_id && !c.revoked);
+  const hids = [...new Set(hcerts.flatMap(c => c.identities.filter(i => !i.includes('*'))))].sort();
+  $('hd-identities').innerHTML = hids.length
+    ? `<table class="wtable">${hids.map(email => {
+        const trusted = hcerts.some(c => c.purpose === 'authorization'
+          && c.identities.some(p => identityMatches(p, email)));
+        return `<tr><td style="font-size:13px">${escapeHtml(email)}</td>
+          <td style="text-align:right">${trusted
+            ? '<span class="badge active">trusted</span>'
+            : '<span class="badge inactive">login-only</span>'}</td></tr>`;
+      }).join('')}</table>`
+    : '';
   $('hd-rename').onclick = async () => {
     const label = prompt('Holder name:', h.label);
     if (label == null || !label.trim()) return;

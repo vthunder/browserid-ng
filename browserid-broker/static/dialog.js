@@ -277,7 +277,7 @@
 
   // Mint + warrant + assertion → the 4-object presentation for `audience`
   // (the RP's origin, or the broker's own origin for the session join).
-  async function buildPresentation(pair, issuer, mintUrl, email, audience) {
+  async function buildPresentation(pair, issuer, mintUrl, email, audience, noRegister) {
     audience = audience || state.origin;
 
     // The opaque broker-assigned holder this device acts as, read from the
@@ -312,10 +312,11 @@
     // revocable — on the account page's "Authorized sites", per the model
     // ("signed once, stored, reused device-agnostically"). A status ref is
     // allocated FIRST so the registered warrant is status-revocable; repeat
-    // logins upsert to the same row. Skipped for the broker's own audience
-    // (the session-join presentation isn't a site grant).
+    // logins upsert to the same row. `noRegister` is set only by the internal
+    // session-join presentation (not a site grant) — an RP hosted on the
+    // broker's own origin (e.g. /broker-demo) still registers.
     let statusRef = null;
-    const registerable = audience !== window.location.origin;
+    const registerable = !noRegister;
     if (registerable) {
       try {
         const alloc = await apiCall('/wsapi/allocate_warrant_status', 'POST', {
@@ -566,7 +567,7 @@
     try {
       if (state.emails.indexOf(email) !== -1) return; // already on the account
       const brokerPresentation = await buildPresentation(
-        pair, issuer, mintUrl, email, window.location.origin);
+        pair, issuer, mintUrl, email, window.location.origin, /* noRegister */ true);
       await apiCall('/wsapi/auth_with_presentation', 'POST', {
         presentation: brokerPresentation,
         ephemeral: false
