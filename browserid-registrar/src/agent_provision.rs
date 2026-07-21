@@ -559,6 +559,15 @@ pub struct CompleteBody {
     /// The config (authorization) device cert whose key signed the warrants.
     #[serde(default)]
     pub config_cert: Option<String>,
+    /// A PRIMARY-signed agent device cert, when the delegating identity is
+    /// rooted at its own IdP: the presentation's issuer-consistency rule
+    /// (`config_cert.iss == access_cert.iss`) means a primary-domain agent's
+    /// cert must come from the primary, so the approval page hops to the
+    /// primary's device-authorize surface (agent mode) with the broker-assigned
+    /// holder and hands the signed cert back here instead of having the
+    /// registrar sign one.
+    #[serde(default)]
+    pub device_cert: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -594,7 +603,7 @@ pub async fn complete(
         return Ok(Json(CompleteResponse { success: true }));
     }
 
-    complete_device_cert(&state, &user, &req, snapshot)
+    complete_device_cert(&state, &user, &req, snapshot).await
 }
 
 /// Device-cert approval: the IdP (this registrar's keypair) signs an AGENT
@@ -604,7 +613,7 @@ pub async fn complete(
 /// the page-signed warrants are validated against them here — all-or-nothing —
 /// and recorded in the warrant registry; the poll delivers cert + warrants
 /// together.
-fn complete_device_cert(
+async fn complete_device_cert(
     state: &Arc<RegistrarState>,
     user: &AuthedUser,
     req: &CompleteBody,
@@ -623,15 +632,17 @@ fn complete_device_cert(
 
     // Holder-authorization model: the holder comes from `prepare` (which
     // assigned it from the user's namespace registry so the page could sign
-    // matchers against it). A grant-less request may skip `prepare`; assign
-    // here in that case. The requester never chooses the prefix either way.
+    // matchers against it). A grant-less, registrar-signed request may skip
+    // `prepare`; assign here in that case. The requester never chooses the
+    // prefix either way — and a page-supplied primary cert must carry the
+    // prepared holder, so that path always requires `prepare` too.
     let prepared = snapshot
         .holder
         .clone()
         .filter(|_| snapshot.prepared_identity.as_deref() == Some(identity_email.as_str()));
     let holder_id = match prepared {
         Some(h) => h,
-        None if snapshot.grants.is_empty() => {
+        None if snapshot.grants.is_empty() && req.device_cert.is_none() => {
             let namespace = match req.namespace.as_deref() {
                 Some(ns) => normalize_namespace(Some(ns))?,
                 None => snapshot.namespace.clone(),
@@ -641,7 +652,7 @@ fn complete_device_cert(
         }
         None => {
             return Err(RegistrarError::ValidationError(
-                "request carries grants — call /agent-provision/prepare for this identity first".into(),
+                "call /agent-provision/prepare for this identity first".into(),
             ))
         }
     };
@@ -678,23 +689,80 @@ fn complete_device_cert(
         return Err(e);
     }
 
-    // Sign the agent device cert with the IdP key over the agent's provisioning
-    // key. A per-device status ref means revoking it logs the agent out.
     let device_pub = PublicKey::from_base64(&snapshot.provisioning_pubkey)
         .map_err(|e| RegistrarError::ValidationError(format!("bad provisioning pubkey: {e}")))?;
-    let idx = state.store.get_or_allocate_status("device", &snapshot.provisioning_pubkey)?;
-    let status = StatusRef { uri: status_list_uri(&state.domain), idx };
-    let device_cert = DeviceCert::create(
-        &state.domain,
-        &device_pub,
-        Purpose::Authentication,
-        holder,
-        vec![agent_email.clone()],
-        chrono::Duration::days(DEVICE_CERT_VALIDITY_DAYS),
-        &state.keypair,
-        Some(status),
-    )
-    .map_err(|e| RegistrarError::ValidationError(format!("device cert: {e}")))?;
+    let (device_cert_jws, idp_origin) = match req.device_cert.as_deref() {
+        // Primary-signed cert from the page's device-authorize hop: verify it
+        // certifies exactly this pairing — the request's pubkey, the approved
+        // agent identity, the PREPARED holder — and that its issuer is the
+        // identity's own domain, with a signature that checks out against the
+        // primary's published key. The primary carries its own status ref.
+        Some(jws) => {
+            let cert = DeviceCert::parse(jws)
+                .map_err(|e| RegistrarError::ValidationError(format!("bad device cert: {e}")))?;
+            let claims = cert.claims();
+            if cert.purpose() != Purpose::Authentication {
+                return Err(RegistrarError::ValidationError(
+                    "supplied device cert must be an authentication cert".into(),
+                ));
+            }
+            if cert.is_expired() {
+                return Err(RegistrarError::ValidationError("supplied device cert expired".into()));
+            }
+            if cert.public_key() != &device_pub {
+                return Err(RegistrarError::ValidationError(
+                    "supplied device cert does not certify the request's key".into(),
+                ));
+            }
+            if !claims.identities.iter().any(|i| i == &agent_email) {
+                return Err(RegistrarError::ValidationError(
+                    "supplied device cert does not name the approved agent identity".into(),
+                ));
+            }
+            if cert.holder().as_str() != holder.as_str() {
+                return Err(RegistrarError::ValidationError(
+                    "supplied device cert does not carry the prepared holder".into(),
+                ));
+            }
+            let agent_domain = agent_email.rsplit('@').next().unwrap_or_default();
+            if claims.iss != agent_domain {
+                return Err(RegistrarError::ValidationError(
+                    "supplied device cert issuer is not the identity's own domain".into(),
+                ));
+            }
+            let resolver = state.issuer_resolver.as_ref().ok_or_else(|| {
+                RegistrarError::ValidationError(
+                    "primary-signed agent certs are not accepted here (no issuer discovery)".into(),
+                )
+            })?;
+            let idp_key = resolver.resolve_issuer_key(&claims.iss).await?;
+            cert.verify(&idp_key).map_err(|_| {
+                RegistrarError::ValidationError(
+                    "supplied device cert is not signed by its domain's IdP".into(),
+                )
+            })?;
+            (jws.to_string(), public_origin(&claims.iss))
+        }
+        // Registrar-signed (fallback-domain agents): sign with the IdP key over
+        // the agent's provisioning key. A per-device status ref means revoking
+        // it logs the agent out.
+        None => {
+            let idx = state.store.get_or_allocate_status("device", &snapshot.provisioning_pubkey)?;
+            let status = StatusRef { uri: status_list_uri(&state.domain), idx };
+            let device_cert = DeviceCert::create(
+                &state.domain,
+                &device_pub,
+                Purpose::Authentication,
+                holder,
+                vec![agent_email.clone()],
+                chrono::Duration::days(DEVICE_CERT_VALIDITY_DAYS),
+                &state.keypair,
+                Some(status),
+            )
+            .map_err(|e| RegistrarError::ValidationError(format!("device cert: {e}")))?;
+            (device_cert.encoded().to_string(), public_origin(&state.domain))
+        }
+    };
 
     // Registry (jipx) + delivery payload for the merged grants.
     let delivery = if let Some((warrant_jwss, config_jws, warrants)) = signed_warrants {
@@ -717,8 +785,8 @@ fn complete_device_cert(
         .get_mut(&req.code)
         .filter(|r| r.status == Status::Pending)
         .ok_or(RegistrarError::ProvisionRequestNotFound)?;
-    rec.device_cert = Some(device_cert.encoded().to_string());
-    rec.idp = Some(public_origin(&state.domain));
+    rec.device_cert = Some(device_cert_jws);
+    rec.idp = Some(idp_origin);
     rec.agent_email = Some(agent_email);
     rec.warrants = delivery;
     rec.status = Status::Completed;

@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-21T21:07:04Z
-updated_at: 2026-07-21T21:21:35Z
+updated_at: 2026-07-21T21:28:35Z
 parent: browserid-ng-oup3
 ---
 
@@ -21,3 +21,12 @@ Design: /agent-provision/request gains namespace hint + grants[audience+scopes];
 - [x] CSP hash update + guard green
 - [x] tests: end-to-end merged flow in broker integration tests
 - [x] browserid-agent SDK: provisioning bootstrap (request/poll -> DeviceCredential + grants)
+
+## Design finding (session 5): primary-domain agents need primary-signed certs
+browserid-core AccessPresentation::verify enforces config_cert.iss == access_cert.iss (device.rs:568). The warrant for a mingo-domain agent (dan+poster@mingo.place) is signed by the MINGO-issued config cert in the broker keystore, so the poster's device/access certs must ALSO be mingo-issued — a broker-signed agent cert would provision fine but fail verification at the sbo daemon. The sbo authority rule (email domain == iss OR pinned broker) is not the binding constraint; issuer consistency is.
+
+=> 2b architecture (Option M, honors "one URL one approval" + rule 1):
+- registrar `complete` accepts an optional page-supplied `device_cert` (primary-signed): validated to certify the request's pubkey, agent identity, PREPARED holder, purpose=authentication, iss == identity domain.
+- account.html approval, for a primary-rooted delegator, hops to the primary's device-authorize popup (agent mode: pubkey+holder+agent identity) to get the cert signed, then calls complete with it.
+- mingo-idp /device_cert grows agent mode: session-authed issuance for `<handle>+<tag>@mingo.place` over a supplied pubkey + broker-assigned holder (passthrough), authentication-purpose only.
+- Poster = mingo server holding device key + mingo-signed cert + warrant; mints access at mingo's own /access/mint; assembles SBO wire server-side (sbo-core 55314e9 pinned in mingo-idp only; workspace/mingo-app stays a92886c to avoid breaking the classic CLI until its own migration).

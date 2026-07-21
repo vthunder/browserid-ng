@@ -1029,7 +1029,8 @@ async function showProvisionApproval(code) {
   $('pv-handles').value = suggests.join(', ');
   $('pv-adv').hidden = true;
   updateProvisionPrefix();
-  $('pv-identity').onchange = updateProvisionPrefix;
+  refreshProvisionAddressInfo();
+  $('pv-identity').onchange = () => { updateProvisionPrefix(); refreshProvisionAddressInfo(); };
   $('pv-handle').oninput = updateProvisionPreview;
   $('pv-adv-toggle').onclick = () => {
     const adv = $('pv-adv'); adv.hidden = !adv.hidden;
@@ -1040,47 +1041,124 @@ async function showProvisionApproval(code) {
   $('pv-deny').onclick = () => denyProvision(code);
 }
 
+// The delegating identity's IdP info — decides whether the agent's cert must
+// be signed by a PRIMARY (issuer-consistency: the warrant's config cert and
+// the agent's certs must share one issuer). Prefetched so the approve click
+// can open the hop popup synchronously (popup blockers).
+async function refreshProvisionAddressInfo() {
+  if (!provisionCtx) return;
+  provisionCtx.addressInfo = null;
+  const email = $('pv-identity').value;
+  if (!email) return;
+  try { provisionCtx.addressInfo = await api('/wsapi/address_info?email=' + encodeURIComponent(email)); } catch {}
+}
+
+// Agent-mode device-authorize hop: the primary signs an AUTHENTICATION cert
+// over the AGENT's key + the broker-assigned holder, authorized by the user's
+// first-party session at the IdP (same popup surface as dialog sign-in).
+function agentCertPopupFlow(popup, deviceAuthUrl, agentEmail, agentPubkey, holder) {
+  return new Promise((resolve, reject) => {
+    const idpOrigin = new URL(deviceAuthUrl).origin;
+    popup.location = deviceAuthUrl +
+      '#agent_email=' + encodeURIComponent(agentEmail) +
+      '&agent_pubkey=' + encodeURIComponent(agentPubkey) +
+      '&holder=' + encodeURIComponent(holder) +
+      '&return_origin=' + encodeURIComponent(window.location.origin);
+    const TIMEOUT_MS = 3 * 60 * 1000;
+    let timeoutId = null, pollId = null;
+    function cleanup() {
+      clearTimeout(timeoutId); clearInterval(pollId);
+      window.removeEventListener('message', onMessage);
+      try { popup.close(); } catch (e) { /* already closed */ }
+    }
+    function onMessage(ev) {
+      if (ev.origin !== idpOrigin) return;
+      const d = ev.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.type === 'browserid:agent_device_cert') {
+        cleanup();
+        if (d.device_cert) resolve(d.device_cert);
+        else reject(new Error('identity provider returned no certificate'));
+      } else if (d.type === 'browserid:device_error') {
+        cleanup();
+        reject(new Error(d.reason || 'identity provider refused'));
+      }
+    }
+    window.addEventListener('message', onMessage);
+    timeoutId = setTimeout(() => { cleanup(); reject(new Error('the provider window timed out')); }, TIMEOUT_MS);
+    pollId = setInterval(() => {
+      if (popup.closed) { cleanup(); reject(new Error('the provider window was closed')); }
+    }, 500);
+  });
+}
+
 async function approveProvision(code, provPubkeyX) {
   const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Approving…';
+  // Primary-rooted delegator → the agent's cert comes from the primary via a
+  // popup hop. Open the window NOW, inside the click gesture, before any
+  // await — then navigate it once `prepare` returns the holder.
+  const identityEmail = $('pv-identity').value;
+  const ai = provisionCtx && provisionCtx.addressInfo;
+  const primaryHop = ai && ai.type === 'primary';
+  let popup = null;
+  if (primaryHop) {
+    if (!ai.device_auth) {
+      status.className = 'status err';
+      status.textContent = `${identityEmail.split('@')[1]} runs its own identity provider, but it does not support device sign-in yet.`;
+      return;
+    }
+    popup = window.open('about:blank', 'browserid_agent_auth', 'width=600,height=700');
+    if (!popup) {
+      status.className = 'status err';
+      status.textContent = 'Popup blocked — allow popups for this site and retry (your identity provider must sign the agent’s certificate).';
+      return;
+    }
+  }
   try {
-    // Device-cert model: the IdP signs an AGENT DEVICE CERT over the
-    // agent-supplied key server-side for the requested handle. In the merged
-    // one-approval flow the request also carries warrant grants: `prepare`
-    // assigns the holder + status indices, this page signs one warrant per
-    // grant with the config key held in this browser (matcher = the holder's
-    // `<id>`, or its `<ns>.*` prefix if widened), and `complete` delivers
-    // cert + warrants to the agent in one pickup.
-    const identityEmail = $('pv-identity').value;
-    let warrants = null, configCert = null;
+    // Merged one-approval flow: `prepare` assigns the holder + status indices;
+    // this page signs one warrant per grant with the config key held in this
+    // browser (matcher = the holder's `<id>`, or its `<ns>.*` prefix if
+    // widened); for a primary identity the popup hop returns the
+    // primary-signed agent cert; `complete` delivers everything in one pickup.
     const grants = (provisionCtx && provisionCtx.grants) || [];
-    if (grants.length) {
-      status.textContent = 'Signing warrants…';
+    let warrants = null, configCert = null, deviceCert = null;
+    if (grants.length || primaryHop) {
       const prep = await post('/agent-provision/prepare', { code, identity_email: identityEmail });
-      const config = configFor(prep.agent_email);
-      if (!config) throw new Error(
-        `no config key covering ${prep.agent_email} in this browser — ` +
-        `sign in to an app with ${identityEmail} here first, then retry`);
-      configCert = config.cert;
-      const widen = $('pv-widen').checked;
-      const holderMatcher = (widen && prep.holder.includes('.'))
-        ? prep.holder.slice(0, prep.holder.indexOf('.')) + '.*'
-        : prep.holder;
-      warrants = [];
-      for (const g of prep.grants) {
-        const statusRef = (g.status_idx != null && prep.status_uri)
-          ? { uri: prep.status_uri, idx: g.status_idx } : null;
-        warrants.push(await signDeviceWarrant(config, prep.agent_email, holderMatcher, g.audience, g.scopes || [], statusRef));
+      if (primaryHop) {
+        status.textContent = 'Waiting for your identity provider…';
+        deviceCert = await agentCertPopupFlow(popup, ai.device_auth, prep.agent_email, provisionCtx.pubkey, prep.holder);
+        popup = null; // closed by the flow
+      }
+      if (grants.length) {
+        status.textContent = 'Signing warrants…';
+        const config = configFor(prep.agent_email);
+        if (!config) throw new Error(
+          `no config key covering ${prep.agent_email} in this browser — ` +
+          `sign in to an app with ${identityEmail} here first, then retry`);
+        configCert = config.cert;
+        const widen = $('pv-widen').checked;
+        const holderMatcher = (widen && prep.holder.includes('.'))
+          ? prep.holder.slice(0, prep.holder.indexOf('.')) + '.*'
+          : prep.holder;
+        warrants = [];
+        for (const g of prep.grants) {
+          const statusRef = (g.status_idx != null && prep.status_uri)
+            ? { uri: prep.status_uri, idx: g.status_idx } : null;
+          warrants.push(await signDeviceWarrant(config, prep.agent_email, holderMatcher, g.audience, g.scopes || [], statusRef));
+        }
       }
       status.textContent = 'Approving…';
     }
     await post('/agent-provision/complete', {
       code, approve: true, identity_email: identityEmail,
       ...(warrants ? { warrants, config_cert: configCert } : {}),
+      ...(deviceCert ? { device_cert: deviceCert } : {}),
     });
     status.className = 'status ok';
     status.textContent = 'Approved — your agent is picking up its identity now. You can close this tab.';
     $('pv-approve').disabled = true; $('pv-deny').disabled = true;
   } catch (e) {
+    if (popup) { try { popup.close(); } catch (e2) { /* already closed */ } }
     status.className = 'status err'; status.textContent = 'Failed: ' + e.message;
   }
 }

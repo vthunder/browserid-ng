@@ -14,9 +14,11 @@ use std::sync::Arc;
 use axum_test::TestServer;
 use browserid_broker::{routes, AppState, InMemorySessionStore, InMemoryUserStore};
 use browserid_core::device::{
-    AccessPresentation, AccessRequest, DeviceCert, Holder, HolderMatcher, Purpose, Warrant,
+    AccessCert, AccessPresentation, AccessRequest, DeviceCert, Holder, HolderMatcher, Purpose,
+    Warrant,
 };
-use browserid_core::{Assertion, KeyPair, StatusRef};
+use browserid_core::{Assertion, KeyPair, PublicKey, StatusRef};
+use browserid_registrar::{IssuerKeyResolver, RegistrarError};
 use chrono::Duration;
 use common::{create_user, MockEmailSender};
 use serde_json::{json, Value};
@@ -209,6 +211,187 @@ async fn merged_request_prepare_approve_single_pickup() {
     assert_eq!(verified.email, AGENT);
     assert_eq!(verified.holder.as_str(), holder);
     assert_eq!(verified.scopes, vec!["action:post".to_string()]);
+}
+
+/// A fixed "primary IdP key directory" for the primary-signed-cert path: the
+/// registrar discovers `mingo.test`'s key through its issuer resolver.
+struct StubResolver {
+    domain: String,
+    key: PublicKey,
+}
+impl IssuerKeyResolver for StubResolver {
+    fn resolve_issuer_key<'a>(
+        &'a self,
+        domain: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<PublicKey, RegistrarError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            if domain == self.domain {
+                Ok(self.key.clone())
+            } else {
+                Err(RegistrarError::ValidationError(format!("unknown issuer '{domain}'")))
+            }
+        })
+    }
+}
+
+/// Primary-domain agent (issuer-consistency rule): the approval page hands
+/// `complete` a PRIMARY-signed device cert carrying the prepared holder; the
+/// registrar verifies it against the primary's discovered key and delivers it
+/// (with the primary as the credential's IdP) instead of signing its own.
+#[tokio::test]
+async fn primary_signed_device_cert_is_validated_and_delivered() {
+    const PRIMARY: &str = "mingo.test";
+    const P_DELEGATOR: &str = "dan@mingo.test";
+    const P_AGENT: &str = "dan+poster@mingo.test";
+
+    let primary_kp = KeyPair::generate();
+    let keypair = KeyPair::generate();
+    let email_sender = Arc::new(MockEmailSender::new());
+    let mut state = AppState::new_with_arcs(
+        keypair,
+        DOMAIN.to_string(),
+        Arc::new(InMemoryUserStore::new()),
+        Arc::new(InMemorySessionStore::new()),
+        email_sender.clone(),
+    );
+    state.agent_provisioning_enabled = true;
+    state.issuer_resolver_override = Some(Arc::new(StubResolver {
+        domain: PRIMARY.to_string(),
+        key: primary_kp.public_key(),
+    }));
+    let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
+    let sender = MockEmailSender { sent: email_sender.sent.clone() };
+    let session = create_user(&server, &sender, P_DELEGATOR, "testpassword").await;
+
+    // The user's config cert for the primary identity — issued by the PRIMARY
+    // (deposited at dialog login), covering the `+` namespace.
+    let config_kp = KeyPair::generate();
+    let config_cert = DeviceCert::create(
+        PRIMARY, &config_kp.public_key(), Purpose::Authorization, Holder::new("br.main").unwrap(),
+        vec![P_DELEGATOR.to_string(), "dan+*@mingo.test".to_string()],
+        Duration::days(90), &primary_kp, None,
+    )
+    .unwrap();
+
+    let device_kp = KeyPair::generate();
+    let r = server
+        .post("/agent-provision/request")
+        .json(&json!({
+            "provisioning_pubkey": { "algorithm": "Ed25519", "publicKey": device_kp.public_key().to_base64() },
+            "requested_handles": { "names": ["dan+poster"] },
+            "namespace": "services",
+            "grants": [{ "audience": AUDIENCE, "scopes": ["action:post"] }],
+        }))
+        .await;
+    assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
+    let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
+
+    let c = csrf(&server, &session).await;
+    let prep: Value = server
+        .post("/agent-provision/prepare")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code, "identity_email": P_DELEGATOR }))
+        .await
+        .json();
+    assert_eq!(prep["success"], true, "prepare: {prep}");
+    assert_eq!(prep["agent_email"], P_AGENT);
+    let holder = prep["holder"].as_str().unwrap().to_string();
+    let status_uri = prep["status_uri"].as_str().unwrap().to_string();
+    let status_idx = prep["grants"][0]["status_idx"].as_u64().unwrap();
+
+    // The primary signs the agent cert over the request's key + PREPARED holder
+    // (what its device-authorize agent mode does during the page's hop).
+    let primary_cert = DeviceCert::create(
+        PRIMARY, &device_kp.public_key(), Purpose::Authentication,
+        Holder::new(holder.clone()).unwrap(), vec![P_AGENT.to_string()],
+        Duration::days(90), &primary_kp, None,
+    )
+    .unwrap();
+    let warrant = Warrant::create(
+        P_AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
+        Duration::days(90), &config_kp,
+        Some(StatusRef { uri: status_uri, idx: status_idx }),
+    )
+    .unwrap();
+
+    // A cert carrying a DIFFERENT holder than prepared is refused (rule 1: the
+    // broker assigned the holder; nobody swaps in another).
+    let wrong_holder_cert = DeviceCert::create(
+        PRIMARY, &device_kp.public_key(), Purpose::Authentication,
+        Holder::new("zz.rogue").unwrap(), vec![P_AGENT.to_string()],
+        Duration::days(90), &primary_kp, None,
+    )
+    .unwrap();
+    let r = server
+        .post("/agent-provision/complete")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code, "approve": true, "identity_email": P_DELEGATOR,
+            "warrants": [warrant.encoded()], "config_cert": config_cert.encoded(),
+            "device_cert": wrong_holder_cert.encoded() }))
+        .await;
+    assert_ne!(r.status_code(), 200, "wrong-holder primary cert must be refused");
+
+    // A cert signed by a key that isn't the primary's discovered key is refused.
+    let rogue_kp = KeyPair::generate();
+    let rogue_cert = DeviceCert::create(
+        PRIMARY, &device_kp.public_key(), Purpose::Authentication,
+        Holder::new(holder.clone()).unwrap(), vec![P_AGENT.to_string()],
+        Duration::days(90), &rogue_kp, None,
+    )
+    .unwrap();
+    let r = server
+        .post("/agent-provision/complete")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code, "approve": true, "identity_email": P_DELEGATOR,
+            "warrants": [warrant.encoded()], "config_cert": config_cert.encoded(),
+            "device_cert": rogue_cert.encoded() }))
+        .await;
+    assert_ne!(r.status_code(), 200, "rogue-signed primary cert must be refused");
+
+    // The genuine primary cert is accepted; poll delivers it with the primary
+    // as the credential's IdP.
+    let r = server
+        .post("/agent-provision/complete")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code, "approve": true, "identity_email": P_DELEGATOR,
+            "warrants": [warrant.encoded()], "config_cert": config_cert.encoded(),
+            "device_cert": primary_cert.encoded() }))
+        .await;
+    assert_eq!(r.status_code(), 200, "complete: {:?}", r.text());
+
+    let poll: Value = server
+        .post("/agent-provision/poll")
+        .json(&json!({ "code": code }))
+        .await
+        .json();
+    assert_eq!(poll["status"], "completed", "{poll}");
+    assert_eq!(poll["credential"]["device_cert"], primary_cert.encoded());
+    assert_eq!(poll["credential"]["idp"], format!("https://{PRIMARY}"));
+    let tail = poll["grants"][0]["warrant"].as_str().unwrap().to_string();
+
+    // The full presentation — access cert minted BY THE PRIMARY (as the agent
+    // would at the primary's /access/mint) + the delivered warrant tail —
+    // verifies with a single consistent issuer.
+    let access_kp = KeyPair::generate();
+    let access_cert = AccessCert::create(
+        PRIMARY, P_AGENT, Holder::new(holder.clone()).unwrap(), &access_kp.public_key(),
+        Duration::minutes(10), &primary_kp, None,
+    )
+    .unwrap();
+    let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &access_kp).unwrap();
+    let presentation = format!("{}~{}~{}", access_cert.encoded(), assertion.encoded(), tail);
+    let verified = AccessPresentation::parse(&presentation)
+        .unwrap()
+        .verify(AUDIENCE, |iss| {
+            if iss == PRIMARY { Ok(primary_kp.public_key()) } else {
+                Err(browserid_core::Error::InvalidCertificate(format!("unknown issuer {iss}")))
+            }
+        })
+        .expect("primary-rooted service presentation verifies");
+    assert_eq!(verified.email, P_AGENT);
+    assert_eq!(verified.holder.as_str(), holder);
 }
 
 /// A grant-less request keeps today's shape: no prepare needed, `complete`
