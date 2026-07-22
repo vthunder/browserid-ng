@@ -499,7 +499,15 @@
   // {device_cert, config_cert} once it posts them back. The pubkeys ride the
   // URL fragment (public values; never reach server logs); the response comes
   // via postMessage with our origin as the target.
-  function primaryPopupFlow(email, deviceAuthUrl, keys, holder) {
+  //
+  // `hold` (cold logins): ask the IdP page to STAY OPEN after posting the
+  // certs, so that — once the broker session join reveals the account's
+  // canonical `browsers` prefix — the SAME user gesture can re-sign the same
+  // keys under the corrected holder (browserid-ng-rrve: a cold-issued holder
+  // otherwise orphans a duplicate namespace). The resolved object then also
+  // carries `reissue(holder)` and `done()`; an IdP that predates hold support
+  // just closes itself, and `reissue` rejects immediately (non-fatal).
+  function primaryPopupFlow(email, deviceAuthUrl, keys, holder, hold) {
     return new Promise((resolve, reject) => {
       const idpOrigin = new URL(deviceAuthUrl).origin;
       const url = deviceAuthUrl +
@@ -507,6 +515,7 @@
         '&device_pubkey=' + encodeURIComponent(keys.device.publicKeyX) +
         '&config_pubkey=' + encodeURIComponent(keys.config.publicKeyX) +
         (holder ? '&holder=' + encodeURIComponent(holder) : '') +
+        (hold ? '&hold=1' : '') +
         '&return_origin=' + encodeURIComponent(window.location.origin);
 
       const popup = window.open(url, 'browserid_device_auth', 'width=600,height=700');
@@ -526,15 +535,61 @@
         window.removeEventListener('message', onMessage);
       }
 
+      function reissue(newHolder) {
+        return new Promise((res, rej) => {
+          if (popup.closed) { rej(new Error('the provider window is gone')); return; }
+          let tid = null;
+          function onMsg(ev) {
+            if (ev.origin !== idpOrigin) return;
+            const d = ev.data;
+            if (!d || typeof d !== 'object') return;
+            if (d.type === 'browserid:device_certs') {
+              clearTimeout(tid);
+              window.removeEventListener('message', onMsg);
+              try { popup.close(); } catch (e) { /* already closed */ }
+              if (d.device_cert && d.config_cert) res({ device_cert: d.device_cert, config_cert: d.config_cert });
+              else rej(new Error('identity provider returned no certificates'));
+            } else if (d.type === 'browserid:device_error') {
+              clearTimeout(tid);
+              window.removeEventListener('message', onMsg);
+              try { popup.close(); } catch (e) { /* already closed */ }
+              rej(new Error(d.reason || 'identity provider refused'));
+            }
+          }
+          window.addEventListener('message', onMsg);
+          popup.postMessage({ type: 'browserid:reissue', holder: newHolder }, idpOrigin);
+          tid = setTimeout(() => {
+            window.removeEventListener('message', onMsg);
+            try { popup.close(); } catch (e) { /* already closed */ }
+            rej(new Error('holder re-issue timed out'));
+          }, 20 * 1000);
+        });
+      }
+
+      function release() {
+        try { popup.postMessage({ type: 'browserid:done' }, idpOrigin); } catch (e) { /* gone */ }
+        try { popup.close(); } catch (e) { /* already closed */ }
+      }
+
       function onMessage(ev) {
         if (ev.origin !== idpOrigin) return;
         const d = ev.data;
         if (!d || typeof d !== 'object') return;
         if (d.type === 'browserid:device_certs') {
           cleanup();
-          try { popup.close(); } catch (e) { /* already closed */ }
-          if (d.device_cert && d.config_cert) resolve({ device_cert: d.device_cert, config_cert: d.config_cert });
-          else reject(new Error('identity provider returned no certificates'));
+          if (!d.device_cert || !d.config_cert) {
+            try { popup.close(); } catch (e) { /* already closed */ }
+            reject(new Error('identity provider returned no certificates'));
+            return;
+          }
+          if (hold) {
+            // Popup stays open for one optional re-issue; the caller MUST end
+            // with reissue() or done().
+            resolve({ device_cert: d.device_cert, config_cert: d.config_cert, reissue, done: release });
+          } else {
+            try { popup.close(); } catch (e) { /* already closed */ }
+            resolve({ device_cert: d.device_cert, config_cert: d.config_cert });
+          }
         } else if (d.type === 'browserid:device_error') {
           cleanup();
           try { popup.close(); } catch (e) { /* already closed */ }
@@ -556,6 +611,47 @@
         }
       }, 500);
     });
+  }
+
+  // Cold-login browser-holder reconciliation (browserid-ng-rrve). At cold
+  // primary login there was no broker session, so the IdP self-assigned a
+  // holder under a fresh prefix. The join either ADOPTED that prefix as the
+  // account's `browsers` namespace (first-ever device — nothing to fix) or
+  // could not (another device already owns `browsers`) — in which case the
+  // issued certs sit in an orphan namespace. Now that the session exists,
+  // fetch the canonical browsers holder and, on mismatch, have the still-open
+  // authorize popup re-sign the SAME keys under it, replace the stored pair,
+  // and re-join so the broker records the corrected cert. Best-effort: any
+  // failure keeps the initial (working, if mislabeled) pair.
+  async function reconcileBrowserHolder(email, domain, keys, certs, pair, mintUrl) {
+    try {
+      const canonical = await browserHolder(); // session exists after the join
+      const issued = certHolder(pair.device.cert);
+      const issuedPrefix = issued && issued.includes('.') ? issued.slice(0, issued.indexOf('.')) : null;
+      const canonicalPrefix = canonical && canonical.includes('.') ? canonical.slice(0, canonical.indexOf('.')) : null;
+      if (!canonicalPrefix || !issuedPrefix || issuedPrefix === canonicalPrefix) {
+        certs.done();
+        return pair;
+      }
+      const fresh = await certs.reissue(canonical);
+      // The cold cert cached its (orphan) prefix as this browser's holder —
+      // drop that so only the canonical entry remains.
+      try { localStorage.removeItem('browserid:holder:' + issuedPrefix); } catch (e) { /* best-effort */ }
+      const newPair = await finishPrimaryCerts(email, keys, fresh);
+      // Re-join so the broker's holder registry records the corrected config
+      // cert (upsert on pubkey replaces the orphan-holder row).
+      try {
+        const p = await buildPresentation(newPair, domain, mintUrl, email, window.location.origin, /* noRegister */ true);
+        await apiCall('/wsapi/auth_with_presentation', 'POST', { presentation: p, ephemeral: false });
+      } catch (e) {
+        console.warn('holder reconcile re-join failed (non-fatal):', e.message || e);
+      }
+      return newPair;
+    } catch (e) {
+      console.warn('browser-holder reconciliation failed (non-fatal):', e.message || e);
+      try { if (certs.done) certs.done(); } catch (e2) { /* gone */ }
+      return pair;
+    }
   }
 
   // Classic dual-assertion dance, on device certs: a primary identity has no
@@ -642,7 +738,10 @@
       const keys = { device: await Keystore.generate(), config: await Keystore.generate() };
       let certs;
       try {
-        certs = await primaryPopupFlow(email, addressInfo.device_auth, keys, holder);
+        // No known browser holder = cold login: hold the popup open so the
+        // post-join reconciliation can re-issue under the canonical prefix
+        // without a second gesture.
+        certs = await primaryPopupFlow(email, addressInfo.device_auth, keys, holder, /* hold */ !holder);
       } catch (e) {
         if (e && e.popupBlocked) {
           // Blocked — re-run from a fresh tap gesture (mobile).
@@ -655,8 +754,11 @@
         }
         throw e;
       }
-      const pair = await finishPrimaryCerts(email, keys, certs);
+      let pair = await finishPrimaryCerts(email, keys, certs);
       await ensureBrokerSession(email, pair, domain, mintUrl);
+      if (certs.reissue) {
+        pair = await reconcileBrowserHolder(email, domain, keys, certs, pair, mintUrl);
+      }
       await finishSignIn(email, pair, domain, mintUrl);
     } catch (e) {
       showError('Sign-in with your email provider failed: ' + (e.message || e));
@@ -1221,9 +1323,12 @@
       if (!p) return showScreen('email');
       state.pendingPrimary = null;
       try {
-        const certs = await primaryPopupFlow(p.email, p.info.device_auth, p.keys, p.holder);
-        const pair = await finishPrimaryCerts(p.email, p.keys, certs);
+        const certs = await primaryPopupFlow(p.email, p.info.device_auth, p.keys, p.holder, /* hold */ !p.holder);
+        let pair = await finishPrimaryCerts(p.email, p.keys, certs);
         await ensureBrokerSession(p.email, pair, p.email.split('@')[1], p.info.access_mint);
+        if (certs.reissue) {
+          pair = await reconcileBrowserHolder(p.email, p.email.split('@')[1], p.keys, certs, pair, p.info.access_mint);
+        }
         await finishSignIn(p.email, pair, p.email.split('@')[1], p.info.access_mint);
       } catch (err) {
         if (err && err.popupBlocked) {
