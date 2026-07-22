@@ -345,3 +345,25 @@ impl Fixture {
         }
     }
 }
+
+/// RFC-style subaddressing as a protocol rule: a cert naming the BASE identity
+/// authorizes its `+tag` sub-addresses — no glob needed — while never matching
+/// a different local part, a bare-vs-base mixup, or a foreign domain.
+#[test]
+fn base_identity_authorizes_subaddresses() {
+    assert!(super::identity_matches("dan@mingo.place", "dan+claude@mingo.place"));
+    assert!(super::identity_matches("dan@mingo.place", "dan+a+b@mingo.place"));
+    // Exact still matches; the base never matches a DIFFERENT base.
+    assert!(super::identity_matches("dan@mingo.place", "dan@mingo.place"));
+    assert!(!super::identity_matches("dan@mingo.place", "daniel@mingo.place"));
+    assert!(!super::identity_matches("dan@mingo.place", "danny+x@mingo.place"));
+    // A sub-address does NOT authorize its base or siblings (only the base
+    // implies downward, never upward/sideways).
+    assert!(!super::identity_matches("dan+claude@mingo.place", "dan@mingo.place"));
+    assert!(!super::identity_matches("dan+claude@mingo.place", "dan+other@mingo.place"));
+    // Domain must match exactly.
+    assert!(!super::identity_matches("dan@mingo.place", "dan+x@evil.place"));
+    // Degenerate empty tag ("dan+@") matches the base rule — harmless: the
+    // warrant identifier still pins the exact presentable identity.
+    assert!(super::identity_matches("dan@mingo.place", "dan+@mingo.place"));
+}

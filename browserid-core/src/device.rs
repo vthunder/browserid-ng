@@ -55,6 +55,22 @@ fn identity_matches(pattern: &str, email: &str) -> bool {
             && email.starts_with(pre)
             && email.ends_with(post);
     }
+    // RFC-style subaddressing is a PROTOCOL rule, not per-cert data: owning
+    // `user@domain` implies owning `user+anything@domain` (agent identities
+    // are `+tags` by definition — the same convention `delegator_of` inverts).
+    // A cert naming the base identity therefore authorizes its sub-addresses;
+    // no `user+*@domain` glob is needed. The identity an agent may PRESENT as
+    // stays pinned elsewhere: the warrant's identifier must exactly equal the
+    // access-cert identity, so a base-identity cert without a matching warrant
+    // authorizes nothing at any verifier.
+    if let Some((p_local, p_domain)) = pattern.split_once('@') {
+        if let Some((e_local, e_domain)) = email.split_once('@') {
+            return p_domain == e_domain
+                && e_local.len() > p_local.len()
+                && e_local.starts_with(p_local)
+                && e_local.as_bytes()[p_local.len()] == b'+';
+        }
+    }
     false
 }
 

@@ -82,6 +82,7 @@ async fn headless_device_cert_roundtrip() {
         agent_device_cert: agent_device_cert.encoded().to_string(),
         idp: base.clone(),
         access_mint: None,
+        identity: None,
     };
 
     // --- Headless: build the agent, mint an access cert via the broker. ---
@@ -157,6 +158,7 @@ async fn assertion_without_warrant_is_refused() {
         agent_device_cert: agent_device_cert.encoded().to_string(),
         idp: base,
         access_mint: None,
+        identity: None,
     })
     .unwrap();
     // No held warrant → assertion_for must refuse (it still minted an access cert).

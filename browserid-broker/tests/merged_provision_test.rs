@@ -301,11 +301,13 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
     let status_uri = prep["status_uri"].as_str().unwrap().to_string();
     let status_idx = prep["grants"][0]["status_idx"].as_u64().unwrap();
 
-    // The primary signs the agent cert over the request's key + PREPARED holder
-    // (what its device-authorize agent mode does during the page's hop).
+    // The primary signs a cert over the request's key + PREPARED holder,
+    // naming the SESSION (base) identity — the standard user-mode hop. The
+    // protocol's subaddress rule (base covers its +tags) makes it authorize
+    // the named agent; no agent-mode issuance or glob is needed.
     let primary_cert = DeviceCert::create(
         PRIMARY, &device_kp.public_key(), Purpose::Authentication,
-        Holder::new(holder.clone()).unwrap(), vec![P_AGENT.to_string()],
+        Holder::new(holder.clone()).unwrap(), vec![P_DELEGATOR.to_string()],
         Duration::days(90), &primary_kp, None,
     )
     .unwrap();

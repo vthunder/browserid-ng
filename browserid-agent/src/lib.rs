@@ -240,6 +240,7 @@ impl PendingProvision {
                         agent_device_cert: field("device_cert")?,
                         idp: field("idp")?,
                         access_mint: cred["access_mint"].as_str().map(str::to_string),
+                        identity: cred["identity"].as_str().map(str::to_string),
                     };
                     let grants = value["grants"]
                         .as_array()
@@ -294,6 +295,12 @@ pub struct DeviceCredential {
     /// (primaries publish arbitrary paths via discovery).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_mint: Option<String>,
+    /// The identity this agent acts as. A cert naming the BASE identity
+    /// authorizes its `+tag` sub-addresses (RFC subaddressing is a protocol
+    /// rule), so the cert alone no longer pins the identity. Absent → the
+    /// cert's first identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
 }
 
 impl std::fmt::Debug for DeviceCredential {
@@ -366,12 +373,22 @@ impl DeviceAgent {
                 "device cert does not certify the held device key".into(),
             ));
         }
-        let email = device_cert
-            .claims()
-            .identities
-            .first()
-            .cloned()
-            .ok_or_else(|| AgentError::InvalidCredential("device cert has no identity".into()))?;
+        let email = match credential.identity.clone() {
+            Some(id) => {
+                if !device_cert.authorizes_identity(&id) {
+                    return Err(AgentError::InvalidCredential(format!(
+                        "device cert does not authorize the credential identity '{id}'"
+                    )));
+                }
+                id
+            }
+            None => device_cert
+                .claims()
+                .identities
+                .first()
+                .cloned()
+                .ok_or_else(|| AgentError::InvalidCredential("device cert has no identity".into()))?,
+        };
         let holder = device_cert.holder().clone();
         let idp_domain = url_host(&credential.idp).to_string();
         Ok(Self {

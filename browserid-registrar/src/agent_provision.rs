@@ -778,9 +778,13 @@ async fn complete_device_cert(
                     "supplied device cert does not certify the request's key".into(),
                 ));
             }
-            if !claims.identities.iter().any(|i| i == &agent_email) {
+            // The cert must AUTHORIZE the approved agent identity — exact,
+            // or the base identity covering its `+tag` sub-address (RFC
+            // subaddressing is a protocol rule; the warrant still pins the
+            // exact presentable identity).
+            if !cert.authorizes_identity(&agent_email) {
                 return Err(RegistrarError::ValidationError(
-                    "supplied device cert does not name the approved agent identity".into(),
+                    "supplied device cert does not authorize the approved agent identity".into(),
                 ));
             }
             if cert.holder().as_str() != holder.as_str() {
