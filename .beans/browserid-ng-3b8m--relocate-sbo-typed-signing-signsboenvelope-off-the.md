@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-07-17T22:29:06Z
-updated_at: 2026-07-21T22:40:56Z
+updated_at: 2026-07-22T16:08:30Z
 parent: browserid-ng-oup3
 blocking:
     - browserid-ng-oup3
@@ -55,7 +55,7 @@ All tests green both repos (broker merged_provision_test 4, agent SDK roundtrip,
 - [x] deploy browserid.me (6b0eb2a released; prod holder smoke green; /agent-provision request+info verified live incl. as-you grants)
 - [x] deploy mingo-idp (58ed2ea released; poster endpoints session-gated not 503; device-authorize agent mode live)
 - [ ] human test: enable poster on mingo.place -> approve once at browserid.me -> server-side post lands on-chain owned by dan@mingo.place
-- [ ] follow-up: mingo-app CLI still classic (pins 3b6189e + workspace sbo a92886c) — needs its own device-model migration (request_provision SDK path)
+- [x] mingo-app CLI ported to the holder model (mingo main: as-you merged provisioning via request_provision, device presentation posting, seed agent-lane retired, pins unified e7c1197 + sbo 55314e9; 67 tests green). NOTE: CLI as-you login for @sandmill.org identities needs sandmill device-authorize agent-mode support (mingo.place + broker-rooted identities work today). Wire-compat with live daemon now exact (same sbo rev).
 
 ## Live e2e CONFIRMED by Dan (2026-07-22) + feedback round deployed
 Dan had mingo post for him via the poster. Three issues from the run:
