@@ -294,6 +294,53 @@ where
 }
 
 #[derive(Deserialize)]
+pub struct ForgetHolderRequest {
+    pub csrf: String,
+    pub holder_id: String,
+}
+
+/// POST /wsapi/forget_holder — remove a device/service from the account: flip
+/// every one of the holder's cert status bits (outstanding access certs
+/// fail-closed at verifiers — "log it out"), then delete the cert rows + label
+/// so it leaves the account view. A holder id is baked into its signed certs,
+/// so this is the only "remove" there is; the device can always sign in again,
+/// which records a fresh entry (under the canonical namespace, post-rrve).
+/// Warrants matched to the holder become unusable (no cert can present) but
+/// stay listed under Sites until revoked/forgotten there.
+pub async fn forget_holder<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<ForgetHolderRequest>,
+) -> Result<Json<OkResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    super::session::require_csrf(&session, &req.csrf)?;
+    let certs: Vec<_> = state
+        .user_store
+        .list_device_certs(session.user_id)?
+        .into_iter()
+        .filter(|c| c.holder == req.holder_id)
+        .collect();
+    if certs.is_empty() {
+        return Err(BrokerError::PolicyRefused("no such holder".into()));
+    }
+    // Revoke BEFORE deleting: deletion alone would leave live signed certs
+    // verifying at RPs that don't know the rows are gone.
+    for cert in &certs {
+        if let Some(idx) = cert.status_idx {
+            state.user_store.set_status_revoked_idx(idx)?;
+        }
+    }
+    state.user_store.forget_holder(session.user_id, &req.holder_id)?;
+    Ok(Json(OkResponse { success: true }))
+}
+
+#[derive(Deserialize)]
 pub struct RenameNamespaceRequest {
     pub csrf: String,
     pub name: String,

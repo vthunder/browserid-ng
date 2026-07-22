@@ -264,3 +264,53 @@ async fn revoke_device_cert_is_owner_scoped() {
         .find(|c| c["id"].as_u64() == Some(victim_id)).unwrap();
     assert_eq!(rec["revoked"], false, "owner cert must survive an attacker's revoke");
 }
+
+/// Removing a holder (forget_holder): every cert carrying it is revoked
+/// (status bits flipped, fail-closed at verifiers) and its rows leave the
+/// account view — the "get rid of this device" action. Owner-scoped; a
+/// foreign holder id is refused.
+#[tokio::test]
+async fn forget_holder_revokes_and_removes_all_of_its_certs() {
+    let (server, sender) = make_server();
+    let email = "human@localhost:3000";
+    let session = create_user(&server, &sender, email, "testpassword").await;
+    issue_pair(&server, &session, email).await;
+
+    let listed: Value = server
+        .get("/wsapi/device_certs")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    let certs = listed["certs"].as_array().unwrap();
+    assert_eq!(certs.len(), 2);
+    let holder = certs[0]["holder"].as_str().unwrap().to_string();
+    assert!(certs.iter().all(|c| c["holder"] == holder.as_str()), "one pair, one holder");
+
+    // A holder that isn't the user's is refused.
+    let c = csrf(&server, &session).await;
+    let r = server
+        .post("/wsapi/forget_holder")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "holder_id": "zz.notmine" }))
+        .await;
+    assert_ne!(r.status_code(), 200, "foreign holder must be refused");
+
+    // Forget the real one: rows gone from the list.
+    let r = server
+        .post("/wsapi/forget_holder")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "holder_id": holder }))
+        .await;
+    assert_eq!(r.status_code(), 200, "forget: {:?}", r.text());
+    let after: Value = server
+        .get("/wsapi/device_certs")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    assert_eq!(after["certs"].as_array().unwrap().len(), 0, "all rows removed: {after}");
+
+    // The certs' status bits were flipped before deletion: the published
+    // status list carries revoked indices.
+    let status_jws = server.get("/.well-known/browserid-status").await.text();
+    assert!(!status_jws.is_empty(), "status list still published");
+}

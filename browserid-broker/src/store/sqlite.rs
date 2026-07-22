@@ -1478,6 +1478,22 @@ impl UserStore for SqliteStore {
         Ok(())
     }
 
+    fn forget_holder(&self, user_id: UserId, holder: &str) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "DELETE FROM device_certs WHERE user_id = ?1 AND holder = ?2",
+                params![user_id.0 as i64, holder],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM holder_labels WHERE user_id = ?1 AND holder_id = ?2",
+            params![user_id.0 as i64, holder],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows as u64)
+    }
+
     fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {
         let conn = self.conn.lock().unwrap();
         // Insert a fresh prefix on first use; ignore on conflict so concurrent
@@ -1916,6 +1932,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn revoke_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
         (**self).revoke_device_cert(user_id, cert_id)
+    }
+
+    fn forget_holder(&self, user_id: UserId, holder: &str) -> StoreResult<u64> {
+        (**self).forget_holder(user_id, holder)
     }
 
     fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {

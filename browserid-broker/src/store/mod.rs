@@ -187,6 +187,14 @@ pub trait UserStore: Send + Sync {
     /// `DeviceCertNotFound` if it doesn't exist or belongs to someone else.
     fn revoke_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()>;
 
+    /// Forget a holder: delete the user's device-cert rows carrying this
+    /// holder id (revocation bits are the CALLER's job first — deletion alone
+    /// does not invalidate live certs) plus its label. Returns the number of
+    /// cert rows removed. A holder id is baked into its signed certs, so
+    /// "removing a device" = revoke + forget; the device can always sign in
+    /// again, which simply records a fresh entry.
+    fn forget_holder(&self, user_id: UserId, holder: &str) -> StoreResult<u64>;
+
     // --- Holder namespaces (holder-authorization model) ---
 
     /// Return the stored random prefix for this user's namespace `name`

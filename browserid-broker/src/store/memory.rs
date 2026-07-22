@@ -525,6 +525,23 @@ impl UserStore for InMemoryUserStore {
         }
     }
 
+    fn forget_holder(&self, user_id: UserId, holder: &str) -> StoreResult<u64> {
+        let mut certs = self.device_certs.write().unwrap();
+        let ids: Vec<u64> = certs
+            .values()
+            .filter(|c| c.user_id == user_id && c.holder == holder)
+            .map(|c| c.id)
+            .collect();
+        for id in &ids {
+            certs.remove(id);
+        }
+        self.holder_labels
+            .write()
+            .unwrap()
+            .remove(&(user_id, holder.to_string()));
+        Ok(ids.len() as u64)
+    }
+
     fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {
         let mut ns = self.namespaces.write().unwrap();
         let (prefix, _label) = ns

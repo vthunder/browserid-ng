@@ -776,6 +776,7 @@ function renderHolderDetail() {
   $('hd-badges').innerHTML = (h.trust === 'trusted'
     ? '<span class="badge active">trusted</span>' : '<span class="badge inactive">login-only</span>')
     + ` <button class="small linkish" id="hd-rename">rename</button>`
+    + ` <button class="small linkish" id="hd-remove" style="color:#c53030">remove</button>`
     + (h.revoked ? ' <span class="badge revoked">revoked</span>' : '');
   $('hd-id').textContent = h.holder_id;
   // Per-identity trust: config certs are per-identity, so one device can be
@@ -798,6 +799,16 @@ function renderHolderDetail() {
     if (label == null || !label.trim()) return;
     try { await post('/wsapi/rename_holder', { holder_id: h.holder_id, label: label.trim() }); await reloadAccount(); renderHolderDetail(); renderHolders(); }
     catch (e) { alert('Rename failed: ' + e.message); }
+  };
+  // A holder id is signed into its certs, so "remove" = revoke every cert
+  // (fail-closed at verifiers within minutes) + delete the records. The
+  // device itself can sign in again later — that just records a fresh entry.
+  $('hd-remove').onclick = async () => {
+    if (!confirm(`Remove “${h.label}”? This signs it out everywhere (its certificates are revoked) and deletes it from this list. If it is a browser you still use, it can simply sign in again.`)) return;
+    try {
+      await post('/wsapi/forget_holder', { holder_id: h.holder_id });
+      await reloadAccount(); renderHolders(); renderSites(); backToMain();
+    } catch (e) { alert('Remove failed: ' + e.message); }
   };
   $('hd-tab-holder').className = 'small' + (hdCtx.slice === 'holder' ? ' primary' : '');
   $('hd-tab-aud').className = 'small' + (hdCtx.slice === 'audience' ? ' primary' : '');
