@@ -303,6 +303,45 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
             })
     }
 
+    fn record_agent_device_cert(
+        &self,
+        user_id: u64,
+        identity: &str,
+        holder: &str,
+        pubkey: &str,
+        iss: &str,
+        issued_at: i64,
+        expires_at: i64,
+        status_idx: Option<u64>,
+        label: Option<&str>,
+    ) {
+        let ts = |secs: i64| {
+            chrono::DateTime::from_timestamp(secs, 0).unwrap_or_else(chrono::Utc::now)
+        };
+        let rec = crate::store::DeviceCertRecord {
+            id: 0,
+            user_id: UserId(user_id),
+            identities: vec![identity.to_string()],
+            purpose: "authentication".to_string(),
+            holder: holder.to_string(),
+            pubkey: pubkey.to_string(),
+            iss: iss.to_string(),
+            issued_at: ts(issued_at),
+            expires_at: ts(expires_at),
+            revoked_at: None,
+            status_idx,
+        };
+        if let Err(e) = self.user_store.insert_device_cert(rec) {
+            tracing::warn!("recording agent device cert failed: {e}");
+        }
+        if let Some(label) = label.map(str::trim).filter(|l| !l.is_empty()) {
+            let label: String = label.chars().take(64).collect();
+            if let Err(e) = self.user_store.set_holder_label(UserId(user_id), holder, &label) {
+                tracing::warn!("labeling agent holder failed: {e}");
+            }
+        }
+    }
+
     fn owns_verified_email(&self, user_id: u64, email: &str) -> Result<bool, RegistrarError> {
         Ok(self
             .user_store

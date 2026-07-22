@@ -239,6 +239,7 @@ impl PendingProvision {
                             .encode(self.device_key.secret_bytes()),
                         agent_device_cert: field("device_cert")?,
                         idp: field("idp")?,
+                        access_mint: cred["access_mint"].as_str().map(str::to_string),
                     };
                     let grants = value["grants"]
                         .as_array()
@@ -287,8 +288,12 @@ pub struct DeviceCredential {
     pub device_key: String,
     /// The IdP-signed agent device cert (encoded JWS)
     pub agent_device_cert: String,
-    /// IdP base URL (mints access certs), e.g. `https://browserid.me`
+    /// IdP base URL, e.g. `https://browserid.me`
     pub idp: String,
+    /// Full access-mint URL when the IdP's differs from `<idp>/access/mint`
+    /// (primaries publish arbitrary paths via discovery).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_mint: Option<String>,
 }
 
 impl std::fmt::Debug for DeviceCredential {
@@ -435,9 +440,14 @@ impl DeviceAgent {
             &jti,
             &self.device_key,
         )?;
+        let mint_url = self
+            .credential
+            .access_mint
+            .clone()
+            .unwrap_or_else(|| format!("{}/access/mint", self.credential.idp.trim_end_matches('/')));
         let response = self
             .http
-            .post(format!("{}/access/mint", self.credential.idp.trim_end_matches('/')))
+            .post(mint_url)
             .json(&serde_json::json!({
                 "device_cert": self.device_cert.encoded(),
                 "access_request": request.encoded(),

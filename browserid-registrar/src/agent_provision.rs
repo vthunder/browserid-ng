@@ -75,6 +75,9 @@ struct Record {
     // CERT for the agent's key.
     device_cert: Option<String>,
     agent_email: Option<String>,
+    /// Where the agent mints access certs — the IdP's discovered mint URL
+    /// (primaries publish arbitrary paths; never assume `/access/mint`).
+    access_mint: Option<String>,
     /// `warrant~config_cert` per grant (grant order), signed client-side with
     /// the user's config cert on approval.
     warrants: Option<Vec<String>>,
@@ -244,6 +247,7 @@ pub async fn request(
         prepared_identity: None,
         device_cert: None,
         agent_email: None,
+        access_mint: None,
         warrants: None,
         expires_at: Utc::now() + Duration::seconds(REQUEST_VALIDITY_SECONDS),
         last_polled_at: None,
@@ -319,6 +323,7 @@ pub async fn poll(State(state): State<Arc<RegistrarState>>, Json(req): Json<Poll
                     "device_cert": rec.device_cert,
                     "idp": rec.idp,
                     "identity": rec.agent_email,
+                    "access_mint": rec.access_mint,
                 },
                 "grants": grants,
             }))
@@ -575,6 +580,13 @@ pub struct CompleteBody {
     /// registrar sign one.
     #[serde(default)]
     pub device_cert: Option<String>,
+    /// The primary's access-mint URL (from the broker's discovery of the
+    /// identity's IdP) — primaries publish arbitrary paths, so the agent must
+    /// be told where to mint rather than assuming `/access/mint`. Only
+    /// honored with a primary-signed `device_cert`, and only when it sits on
+    /// the cert issuer's own origin.
+    #[serde(default)]
+    pub access_mint: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -701,7 +713,7 @@ async fn complete_device_cert(
 
     let device_pub = PublicKey::from_base64(&snapshot.provisioning_pubkey)
         .map_err(|e| RegistrarError::ValidationError(format!("bad provisioning pubkey: {e}")))?;
-    let (device_cert_jws, idp_origin) = match req.device_cert.as_deref() {
+    let (device_cert_jws, idp_origin, access_mint) = match req.device_cert.as_deref() {
         // Primary-signed cert from the page's device-authorize hop: verify it
         // certifies exactly this pairing — the request's pubkey, the approved
         // agent identity, the PREPARED holder — and that its issuer is the
@@ -751,7 +763,20 @@ async fn complete_device_cert(
                     "supplied device cert is not signed by its domain's IdP".into(),
                 )
             })?;
-            (jws.to_string(), public_origin(&claims.iss))
+            let idp_origin = public_origin(&claims.iss);
+            // Where this agent mints: the primary's discovered mint URL,
+            // pinned to the issuer's own origin so a page can't point the
+            // agent elsewhere.
+            let access_mint = match req.access_mint.as_deref() {
+                Some(url) if url.starts_with(&format!("{idp_origin}/")) => url.to_string(),
+                Some(_) => {
+                    return Err(RegistrarError::ValidationError(
+                        "access_mint must be on the cert issuer's origin".into(),
+                    ))
+                }
+                None => format!("{idp_origin}/access/mint"),
+            };
+            (jws.to_string(), idp_origin, access_mint)
         }
         // Registrar-signed (fallback-domain agents): sign with the IdP key over
         // the agent's provisioning key. A per-device status ref means revoking
@@ -770,7 +795,9 @@ async fn complete_device_cert(
                 Some(status),
             )
             .map_err(|e| RegistrarError::ValidationError(format!("device cert: {e}")))?;
-            (device_cert.encoded().to_string(), public_origin(&state.domain))
+            let origin = public_origin(&state.domain);
+            let access_mint = format!("{origin}/access/mint");
+            (device_cert.encoded().to_string(), origin, access_mint)
         }
     };
 
@@ -790,6 +817,33 @@ async fn complete_device_cert(
         None
     };
 
+    // Holder registry: the account's "Devices & services" view derives from
+    // recorded cert rows — without this the provisioned agent is invisible.
+    // Best-effort; a registry hiccup must not fail the approval. The status
+    // index is ours only for registrar-signed certs (a primary's status ref
+    // points at its own list).
+    {
+        let parsed = DeviceCert::parse(&device_cert_jws)
+            .map_err(|e| RegistrarError::ValidationError(format!("device cert: {e}")))?;
+        let claims = parsed.claims();
+        let own_status_idx = claims
+            .status
+            .as_ref()
+            .filter(|s| s.uri == status_list_uri(&state.domain))
+            .map(|s| s.idx);
+        state.host.record_agent_device_cert(
+            user.user_id,
+            &agent_email,
+            &holder_id,
+            &snapshot.provisioning_pubkey,
+            &claims.iss,
+            claims.iat,
+            claims.exp,
+            own_status_idx,
+            Some(&snapshot.label),
+        );
+    }
+
     let mut m = PROVISIONS.lock().unwrap();
     let rec = m
         .get_mut(&req.code)
@@ -798,6 +852,7 @@ async fn complete_device_cert(
     rec.device_cert = Some(device_cert_jws);
     rec.idp = Some(idp_origin);
     rec.agent_email = Some(agent_email);
+    rec.access_mint = Some(access_mint);
     rec.warrants = delivery;
     rec.status = Status::Completed;
     Ok(Json(CompleteResponse { success: true }))

@@ -352,12 +352,24 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
 
     // The genuine primary cert is accepted; poll delivers it with the primary
     // as the credential's IdP.
+    // A mint URL off the issuer's origin is refused.
     let r = server
         .post("/agent-provision/complete")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .json(&json!({ "csrf": c, "code": code, "approve": true, "identity_email": P_DELEGATOR,
             "warrants": [warrant.encoded()], "config_cert": config_cert.encoded(),
-            "device_cert": primary_cert.encoded() }))
+            "device_cert": primary_cert.encoded(),
+            "access_mint": "https://evil.test/access/mint" }))
+        .await;
+    assert_ne!(r.status_code(), 200, "foreign-origin access_mint must be refused");
+
+    let r = server
+        .post("/agent-provision/complete")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code, "approve": true, "identity_email": P_DELEGATOR,
+            "warrants": [warrant.encoded()], "config_cert": config_cert.encoded(),
+            "device_cert": primary_cert.encoded(),
+            "access_mint": "https://mingo.test/api/browserid/access_cert" }))
         .await;
     assert_eq!(r.status_code(), 200, "complete: {:?}", r.text());
 
@@ -369,7 +381,27 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
     assert_eq!(poll["status"], "completed", "{poll}");
     assert_eq!(poll["credential"]["device_cert"], primary_cert.encoded());
     assert_eq!(poll["credential"]["idp"], format!("https://{PRIMARY}"));
+    assert_eq!(
+        poll["credential"]["access_mint"],
+        "https://mingo.test/api/browserid/access_cert",
+        "the agent is told the primary's discovered mint URL"
+    );
     let tail = poll["grants"][0]["warrant"].as_str().unwrap().to_string();
+
+    // The provisioned service is visible in the holder registry (account
+    // "Devices & services") under its holder, labeled from the request.
+    let holders: Value = server
+        .get("/wsapi/holders")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    let all: Vec<Value> = holders["namespaces"].as_array().unwrap().iter()
+        .flat_map(|n| n["holders"].as_array().unwrap().clone())
+        .chain(holders["holders_without_namespace"].as_array().unwrap().clone())
+        .collect();
+    let row = all.iter().find(|h| h["holder_id"] == holder.as_str())
+        .expect("provisioned holder listed in the registry");
+    assert_eq!(row["identities"][0], P_AGENT);
 
     // The full presentation — access cert minted BY THE PRIMARY (as the agent
     // would at the primary's /access/mint) + the delivered warrant tail —
@@ -457,6 +489,7 @@ async fn as_you_service_provisions_under_the_users_own_identity() {
         .json();
     assert_eq!(poll["status"], "completed", "{poll}");
     assert_eq!(poll["credential"]["identity"], DELEGATOR);
+    assert_eq!(poll["credential"]["access_mint"], format!("http://{DOMAIN}/access/mint"));
     let device_cert = DeviceCert::parse(poll["credential"]["device_cert"].as_str().unwrap()).unwrap();
     assert_eq!(device_cert.holder().as_str(), holder);
     let tail = poll["grants"][0]["warrant"].as_str().unwrap().to_string();

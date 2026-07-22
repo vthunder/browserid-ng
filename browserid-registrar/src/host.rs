@@ -53,6 +53,26 @@ pub trait RegistrarHost: Send + Sync {
         delegator: &str,
         names: &[String],
     ) -> Result<(), RegistrarError>;
+
+    /// Record a provisioned agent/service device cert in the host's holder
+    /// registry (what the account "Devices & services" view lists), with an
+    /// optional friendly label for its holder. Best-effort — a recording
+    /// failure must not fail the approval — and a default no-op for hosts
+    /// without a registry.
+    #[allow(clippy::too_many_arguments)]
+    fn record_agent_device_cert(
+        &self,
+        _user_id: u64,
+        _identity: &str,
+        _holder: &str,
+        _pubkey: &str,
+        _iss: &str,
+        _issued_at: i64,
+        _expires_at: i64,
+        _status_idx: Option<u64>,
+        _label: Option<&str>,
+    ) {
+    }
 }
 
 /// Require that the caller presented the session's CSRF token.

@@ -1302,7 +1302,9 @@ async function approveProvision(code, provPubkeyX) {
     await post('/agent-provision/complete', {
       code, approve: true, identity_email: identityEmail,
       ...(warrants ? { warrants, config_cert: configCert } : {}),
-      ...(deviceCert ? { device_cert: deviceCert } : {}),
+      // Primary-signed cert: also relay where that IdP mints access certs
+      // (discovered path — never assume /access/mint).
+      ...(deviceCert ? { device_cert: deviceCert, ...(ai.access_mint ? { access_mint: ai.access_mint } : {}) } : {}),
     });
     status.className = 'status ok';
     status.textContent = 'Approved — your agent is picking up its identity now.';
