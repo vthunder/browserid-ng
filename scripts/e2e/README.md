@@ -13,8 +13,9 @@ npm install playwright && npx playwright install chromium
 ## Local broker (most scripts)
 ```
 cd browserid-ng
-cargo build
-DISABLE_SMTP=1 BROKER_PORT=3199 ./target/debug/browserid-broker > /tmp/broker.log 2>&1 &
+# NB: dev machines set a shared cargo target dir (~/.cargo/config.toml), so the
+# binary is NOT under ./target — `cargo run` resolves it wherever it lives.
+DISABLE_SMTP=1 BROKER_PORT=3199 cargo run --bin browserid-broker > /tmp/broker.log 2>&1 &
 ```
 `DISABLE_SMTP=1` prints verification codes to the log (the scripts scrape them)
 and enables the `/wsapi/test/*` mock-IdP routes. Scripts expect the log at a
