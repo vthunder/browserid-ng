@@ -137,12 +137,13 @@ impl Provisioned {
 
 /// Start a paired provisioning request at `broker` (merged one-approval flow):
 /// generates the device keypair locally, sends only the public key + the
-/// requested `handle`, a `namespace` hint (`agents` default, `services` for a
-/// service), and the warrant `grants` to approve in the same consent. The
-/// private key never leaves this process.
+/// requested `handle` (`None` = an **as-you** service/agent: it holds the
+/// approving identity itself, isolated by its holder), a `namespace` hint
+/// (`agents` default, `services` for a service), and the warrant `grants` to
+/// approve in the same consent. The private key never leaves this process.
 pub async fn request_provision(
     broker: &str,
-    handle: &str,
+    handle: Option<&str>,
     namespace: Option<&str>,
     grants: &[GrantRequest],
     label: Option<&str>,
@@ -154,9 +155,11 @@ pub async fn request_provision(
             "algorithm": "Ed25519",
             "publicKey": device_key.public_key().to_base64(),
         },
-        "requested_handles": { "names": [handle] },
         "grants": grants,
     });
+    if let Some(h) = handle {
+        body["requested_handles"] = serde_json::json!({ "names": [h] });
+    }
     if let Some(ns) = namespace {
         body["namespace"] = serde_json::json!(ns);
     }

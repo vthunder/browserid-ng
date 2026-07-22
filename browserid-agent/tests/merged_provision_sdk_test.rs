@@ -104,7 +104,7 @@ async fn sdk_merged_provision_roundtrip() {
     // 1. The service (SDK side) starts pairing with a bundled grant.
     let pending = request_provision(
         &base,
-        "alice+poster",
+        Some("alice+poster"),
         Some("services"),
         &[GrantRequest { audience: AUDIENCE.into(), scopes: vec!["action:post".into()] }],
         Some("mingo poster"),
