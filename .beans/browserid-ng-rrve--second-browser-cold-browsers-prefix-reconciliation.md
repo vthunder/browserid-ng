@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: low
 created_at: 2026-07-21T21:02:32Z
-updated_at: 2026-07-22T13:45:30Z
+updated_at: 2026-07-22T14:19:12Z
 parent: browserid-ng-oup3
 ---
 
@@ -20,6 +20,6 @@ Implementation (popup lane):
 - mingo device-authorize: hold mode implemented (postMessage certs, await browserid:reissue/done from return_origin, one re-issue, close; 60s auto-close).
 
 Remaining:
-- [ ] sandmill PHP device-authorize: hold support (until then sandmill cold logins keep today's orphan behavior, gracefully)
+- [x] lazy-IdP robustness (Dan's ask): reissue falls back to RE-OPENING the authorize popup with the canonical holder as an explicit param — plain passthrough all IdPs already implement, so sandmill cold logins reconcile WITHOUT sandmill changes; hold mode is now just an optimization (no second popup flash). Popup-blocked re-open degrades to today's behavior. sandmill hold support = optional nice-to-have.
 - [ ] redirect-mode lane (primaryRedirectHop resume) + FedCM lane reconciliation
 - [ ] cleanup: existing orphaned namespaces from pre-fix cold logins (re-categorize UI bean 10n1 overlaps)

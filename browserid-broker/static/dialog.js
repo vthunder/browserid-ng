@@ -619,11 +619,15 @@
   // account's `browsers` namespace (first-ever device — nothing to fix) or
   // could not (another device already owns `browsers`) — in which case the
   // issued certs sit in an orphan namespace. Now that the session exists,
-  // fetch the canonical browsers holder and, on mismatch, have the still-open
-  // authorize popup re-sign the SAME keys under it, replace the stored pair,
-  // and re-join so the broker records the corrected cert. Best-effort: any
-  // failure keeps the initial (working, if mislabeled) pair.
-  async function reconcileBrowserHolder(email, domain, keys, certs, pair, mintUrl) {
+  // fetch the canonical browsers holder and, on mismatch, re-sign the SAME
+  // keys under it: through the still-open hold-mode popup when the IdP
+  // supports it, else by RE-OPENING the authorize popup with the canonical
+  // holder as an explicit param — plain passthrough every device-model IdP
+  // already implements, so lazy IdPs reconcile too. Then replace the stored
+  // pair and re-join so the broker records the corrected cert. Best-effort:
+  // any failure (e.g. the re-open popup is blocked) keeps the initial
+  // (working, if mislabeled) pair.
+  async function reconcileBrowserHolder(email, domain, keys, certs, pair, mintUrl, deviceAuthUrl) {
     try {
       const canonical = await browserHolder(); // session exists after the join
       const issued = certHolder(pair.device.cert);
@@ -633,7 +637,18 @@
         certs.done();
         return pair;
       }
-      const fresh = await certs.reissue(canonical);
+      let fresh;
+      try {
+        fresh = await certs.reissue(canonical);
+      } catch (holdErr) {
+        // The IdP didn't hold the popup open (or the re-issue died there).
+        // Fall back to a fresh authorize popup with the holder pinned — the
+        // user just finished interacting with this flow's popup, so an
+        // immediate re-open is generally allowed. The IdP session is warm, so
+        // it auto-issues and the window closes itself in a blink.
+        if (!deviceAuthUrl) throw holdErr;
+        fresh = await primaryPopupFlow(email, deviceAuthUrl, keys, canonical);
+      }
       // The cold cert cached its (orphan) prefix as this browser's holder —
       // drop that so only the canonical entry remains.
       try { localStorage.removeItem('browserid:holder:' + issuedPrefix); } catch (e) { /* best-effort */ }
@@ -757,7 +772,7 @@
       let pair = await finishPrimaryCerts(email, keys, certs);
       await ensureBrokerSession(email, pair, domain, mintUrl);
       if (certs.reissue) {
-        pair = await reconcileBrowserHolder(email, domain, keys, certs, pair, mintUrl);
+        pair = await reconcileBrowserHolder(email, domain, keys, certs, pair, mintUrl, addressInfo.device_auth);
       }
       await finishSignIn(email, pair, domain, mintUrl);
     } catch (e) {
@@ -1327,7 +1342,7 @@
         let pair = await finishPrimaryCerts(p.email, p.keys, certs);
         await ensureBrokerSession(p.email, pair, p.email.split('@')[1], p.info.access_mint);
         if (certs.reissue) {
-          pair = await reconcileBrowserHolder(p.email, p.email.split('@')[1], p.keys, certs, pair, p.info.access_mint);
+          pair = await reconcileBrowserHolder(p.email, p.email.split('@')[1], p.keys, certs, pair, p.info.access_mint, p.info.device_auth);
         }
         await finishSignIn(p.email, pair, p.email.split('@')[1], p.info.access_mint);
       } catch (err) {
