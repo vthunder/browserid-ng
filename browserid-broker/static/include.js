@@ -656,7 +656,10 @@
         pendingRedirectReturn = null;
         setTimeout(function () {
           if (observers.login) {
-            try { observers.login(pr.presentation); } catch (clientError) { console.log(clientError); }
+            // Second arg: the dialog's full response (email, sbo_sign_granted,
+            // …) so RPs never have to guess a grant decision. Existing
+            // single-arg observers just ignore it.
+            try { observers.login(pr.presentation, pr); } catch (clientError) { console.log(clientError); }
           }
           if (pr.fedcm_optin && fedcmAvailable()) establishFedCMGrant();
         }, 0);
@@ -799,7 +802,7 @@
         w = undefined;
         if (!err && r && r.presentation) {
           try {
-            if (observers.login) observers.login(r.presentation);
+            if (observers.login) observers.login(r.presentation, r);
           } catch(clientError) {
             // client's observer threw an exception
             // help developers debug by logging the error

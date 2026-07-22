@@ -1324,7 +1324,14 @@ async function approveProvision(code, provPubkeyX) {
       back.appendChild(document.createTextNode(' returning automatically…'));
       setTimeout(() => history.back(), 1800);
     } else {
-      back.textContent = 'All set — you can close this tab.';
+      // A fresh tab: when the app opened it via window.open, this page may
+      // close itself — try after an announced delay; if the browser refuses
+      // (user-opened tab), the message stays as the fallback.
+      back.textContent = 'All set — closing this tab…';
+      setTimeout(() => {
+        try { window.close(); } catch (e) { /* not allowed */ }
+        back.textContent = 'All set — you can close this tab.';
+      }, 1500);
     }
     status.insertAdjacentElement('afterend', back);
   } catch (e) {
