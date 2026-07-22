@@ -314,3 +314,96 @@ async fn forget_holder_revokes_and_removes_all_of_its_certs() {
     let status_jws = server.get("/.well-known/browserid-status").await.text();
     assert!(!status_jws.is_empty(), "status list still published");
 }
+
+/// Account-driven namespace move (revoke-up-front): moving a holder revokes
+/// its certs immediately, records a permanent redirect, reports the pending
+/// move, silently redirects a stale client's issuance to the target, and
+/// cleans up the old rows once the device re-registers.
+#[tokio::test]
+async fn move_holder_revokes_up_front_and_redirects_reissue() {
+    let (server, sender) = make_server();
+    let email = "human@localhost:3000";
+    let session = create_user(&server, &sender, email, "testpassword").await;
+    issue_pair(&server, &session, email).await;
+
+    let listed: Value = server
+        .get("/wsapi/device_certs")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    let certs = listed["certs"].as_array().unwrap();
+    let old_holder = certs[0]["holder"].as_str().unwrap().to_string();
+    // Keep the device's real pubkeys: re-issue must be for the SAME keys.
+    let device_pub = certs.iter().find(|c| c["purpose"] == "authentication").unwrap()["pubkey"]
+        .as_str().unwrap().to_string();
+    let config_pub = certs.iter().find(|c| c["purpose"] == "authorization").unwrap()["pubkey"]
+        .as_str().unwrap().to_string();
+
+    // Move to a new namespace.
+    let c = csrf(&server, &session).await;
+    let moved: Value = server
+        .post("/wsapi/move_holder")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "holder_id": old_holder, "namespace": "laptops" }))
+        .await
+        .json();
+    assert_eq!(moved["success"], true, "move: {moved}");
+    let new_holder = moved["new_holder"].as_str().unwrap().to_string();
+    assert_ne!(new_holder, old_holder);
+
+    // Revoked UP FRONT: the old certs read back revoked immediately.
+    let after: Value = server
+        .get("/wsapi/device_certs")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    assert!(after["certs"].as_array().unwrap().iter().all(|c| c["revoked"] == true),
+        "old certs must be revoked at move time: {after}");
+
+    // The device's next check sees the reassignment.
+    let assign: Value = server
+        .get(&format!("/wsapi/holder_assignment?holder={old_holder}"))
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    assert_eq!(assign["status"], "moved", "{assign}");
+    assert_eq!(assign["new_holder"], new_holder.as_str());
+
+    // Holders view reports the pending move.
+    let holders: Value = server
+        .get("/wsapi/holders")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    let all = holders["namespaces"].as_array().unwrap().iter()
+        .flat_map(|n| n["holders"].as_array().unwrap().clone())
+        .chain(holders["holders_without_namespace"].as_array().unwrap().clone())
+        .collect::<Vec<_>>();
+    let row = all.iter().find(|h| h["holder_id"] == old_holder.as_str()).expect("old holder listed");
+    assert!(row["moving_to"].is_string(), "pending move surfaced: {row}");
+
+    // A STALE client re-issuing with the old holder is silently redirected.
+    let c = csrf(&server, &session).await;
+    let reissued: Value = server
+        .post("/device/issue")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "email": email,
+            "device_pubkey": device_pub, "config_pubkey": config_pub,
+            "holder": old_holder }))
+        .await
+        .json();
+    assert_eq!(reissued["success"], true, "redirected reissue: {reissued}");
+    let dc = DeviceCert::parse(reissued["device_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(dc.holder().as_str(), new_holder, "issuance lands on the move target");
+
+    // Completion cleanup: the old holder's rows are gone; the device appears
+    // exactly once, under the new holder, unrevoked.
+    let after2: Value = server
+        .get("/wsapi/device_certs")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    let rows = after2["certs"].as_array().unwrap();
+    assert!(rows.iter().all(|c| c["holder"] == new_holder.as_str()), "only the new holder remains: {after2}");
+    assert!(rows.iter().all(|c| c["revoked"] == false), "fresh certs are live: {after2}");
+}

@@ -49,6 +49,11 @@ pub struct HolderView {
     pub revoked: bool,
     /// The identities (emails) this holder's certs act for, deduped.
     pub identities: Vec<String>,
+    /// Set while an account-driven namespace move is pending: the label of
+    /// the target namespace. The device's certs were revoked at move time; it
+    /// re-registers under the target next time it's online.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub moving_to: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -130,6 +135,23 @@ where
         }
     };
 
+    // Pending namespace moves: old holder → target-namespace label (for the
+    // "moving to X" badge; rows disappear from here once the device re-issues).
+    let moves = state.user_store.list_holder_moves(session.user_id)?;
+    let ns_label_of_prefix = |prefix: &str| -> String {
+        namespaces
+            .iter()
+            .find(|n| n.prefix == prefix)
+            .map(|n| n.label.clone())
+            .unwrap_or_else(|| prefix.to_string())
+    };
+    let moving_to = |holder_id: &str| -> Option<String> {
+        moves
+            .iter()
+            .find(|(old, _)| old == holder_id)
+            .map(|(_, new)| ns_label_of_prefix(holder_prefix(new)))
+    };
+
     let make_view = |holder_id: &str, acc: &HolderAcc| HolderView {
         holder_id: holder_id.to_string(),
         label: labels
@@ -142,6 +164,7 @@ where
         warrant_count: warrant_count(holder_id),
         revoked: acc.any_cert && acc.all_revoked,
         identities: acc.identities.iter().cloned().collect(),
+        moving_to: moving_to(holder_id),
     };
 
     // Bucket each holder under the namespace whose prefix it carries.
@@ -291,6 +314,154 @@ where
         .user_store
         .set_holder_label(session.user_id, &req.holder_id, &label)?;
     Ok(Json(OkResponse { success: true }))
+}
+
+#[derive(Deserialize)]
+pub struct MoveHolderRequest {
+    pub csrf: String,
+    pub holder_id: String,
+    /// Target namespace name (`browsers` / `services` / a custom one).
+    pub namespace: String,
+}
+
+#[derive(Serialize)]
+pub struct MoveHolderResponse {
+    pub success: bool,
+    /// The broker-assigned holder id the device will carry after re-issue.
+    pub new_holder: String,
+}
+
+/// POST /wsapi/move_holder — move a device/service to another namespace,
+/// FORCEFULLY: the old holder's certs are revoked up front (their status bits
+/// flip, so the old namespace's warrants stop applying to this device within a
+/// status-cache window — not lazily), and a PERMANENT redirect
+/// `old → broker-assigned new holder` is recorded. The device completes the
+/// move next time it's online: its next sign-in re-issues the same keys under
+/// the target (the dialog checks `/wsapi/holder_assignment`; a stale client
+/// supplying the old holder at `/device/issue` is silently redirected).
+///
+/// Caveat (tracked): primary-issued certs carry no status ref today, so the
+/// up-front revocation only bites certs with one (broker-issued); for
+/// primary-rooted devices immediacy is bounded by the primary's own
+/// revocation story until primaries issue status-backed certs.
+pub async fn move_holder<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<MoveHolderRequest>,
+) -> Result<Json<MoveHolderResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    super::session::require_csrf(&session, &req.csrf)?;
+    let ns = req.namespace.trim().to_lowercase();
+    let ok = ns.len() <= 32
+        && ns.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && ns.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    if !ok {
+        return Err(BrokerError::PolicyRefused("bad namespace name".into()));
+    }
+    let certs: Vec<_> = state
+        .user_store
+        .list_device_certs(session.user_id)?
+        .into_iter()
+        .filter(|c| c.holder == req.holder_id)
+        .collect();
+    if certs.is_empty() {
+        return Err(BrokerError::PolicyRefused("no such holder".into()));
+    }
+    let prefix = state.user_store.get_or_create_namespace(session.user_id, &ns)?;
+    if req.holder_id.split_once('.').map(|(p, _)| p) == Some(prefix.as_str()) {
+        return Err(BrokerError::PolicyRefused("holder is already in that namespace".into()));
+    }
+    let new_holder = crate::crypto::assign_holder_id(&prefix);
+
+    // Revoke up front: the old namespace's warrants must stop applying to
+    // this device NOW, not when it happens to come back online.
+    for cert in &certs {
+        state.user_store.revoke_device_cert(session.user_id, cert.id)?;
+        if let Some(idx) = cert.status_idx {
+            state.user_store.set_status_revoked_idx(idx)?;
+        }
+    }
+    state
+        .user_store
+        .set_holder_move(session.user_id, &req.holder_id, &new_holder)?;
+    // Carry the friendly label over so the device keeps its name in the UI.
+    if let Some(label) = state
+        .user_store
+        .get_holder_labels(session.user_id)?
+        .get(&req.holder_id)
+        .cloned()
+    {
+        state.user_store.set_holder_label(session.user_id, &new_holder, &label)?;
+    }
+    Ok(Json(MoveHolderResponse { success: true, new_holder }))
+}
+
+#[derive(Deserialize)]
+pub struct HolderAssignmentQuery {
+    pub holder: String,
+}
+
+#[derive(Serialize)]
+pub struct HolderAssignmentResponse {
+    pub success: bool,
+    /// "current" | "moved"
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_holder: Option<String>,
+}
+
+/// GET /wsapi/holder_assignment?holder=… — is this holder still current, or
+/// has the account moved it? The dialog checks at sign-in and re-issues the
+/// device's certs under the target when moved.
+pub async fn holder_assignment<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    axum::extract::Query(q): axum::extract::Query<HolderAssignmentQuery>,
+) -> Result<Json<HolderAssignmentResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    match state.user_store.resolve_holder_move(session.user_id, &q.holder)? {
+        Some(new_holder) => Ok(Json(HolderAssignmentResponse {
+            success: true,
+            status: "moved".into(),
+            new_holder: Some(new_holder),
+        })),
+        None => Ok(Json(HolderAssignmentResponse {
+            success: true,
+            status: "current".into(),
+            new_holder: None,
+        })),
+    }
+}
+
+/// Completion hook, called from issuance paths when certs land under `holder`:
+/// if it is the target of a pending move, the old holder's rows are deleted
+/// (they were revoked at move time) so the device appears exactly once.
+pub fn finish_holder_move<U: UserStore>(store: &U, user_id: crate::store::UserId, holder: &str) {
+    let moved_from: Vec<String> = match store.list_holder_moves(user_id) {
+        Ok(moves) => moves
+            .into_iter()
+            .filter(|(_, new)| new == holder)
+            .map(|(old, _)| old)
+            .collect(),
+        Err(_) => return,
+    };
+    for old in moved_from {
+        if let Err(e) = store.forget_holder(user_id, &old) {
+            tracing::warn!("holder move cleanup for '{old}' failed: {e}");
+        }
+    }
 }
 
 #[derive(Deserialize)]

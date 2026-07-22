@@ -195,6 +195,22 @@ pub trait UserStore: Send + Sync {
     /// again, which simply records a fresh entry.
     fn forget_holder(&self, user_id: UserId, holder: &str) -> StoreResult<u64>;
 
+    // --- Holder moves (account-driven re-organization) ---
+
+    /// Record a PERMANENT redirect `old_holder → new_holder` (upsert on the
+    /// old id). The move revokes the old certs up front (caller's job); the
+    /// redirect makes every later path converge on the target: the device
+    /// re-issues under it, and a stale client supplying the old holder is
+    /// redirected at issuance.
+    fn set_holder_move(&self, user_id: UserId, old_holder: &str, new_holder: &str) -> StoreResult<()>;
+
+    /// Where `holder` points now, following the redirect chain to its end
+    /// (bounded). `None` when the holder was never moved.
+    fn resolve_holder_move(&self, user_id: UserId, holder: &str) -> StoreResult<Option<String>>;
+
+    /// All of the user's redirects as `(old_holder, new_holder)` pairs.
+    fn list_holder_moves(&self, user_id: UserId) -> StoreResult<Vec<(String, String)>>;
+
     // --- Holder namespaces (holder-authorization model) ---
 
     /// Return the stored random prefix for this user's namespace `name`

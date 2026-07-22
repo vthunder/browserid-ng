@@ -147,15 +147,35 @@ where
     let ns_prefix = state.user_store.get_or_create_namespace(session.user_id, "browsers")?;
     let holder = match req.holder.as_deref() {
         Some(h) if !h.is_empty() => {
-            // Well-formed holder, and in THIS account's browsers namespace.
             browserid_core::device::Holder::new(h.to_string()).map_err(ce)?;
-            let prefix = h.split_once('.').map(|(p, _)| p).unwrap_or("");
-            if prefix != ns_prefix {
-                return Err(BrokerError::PolicyRefused(
-                    "supplied holder is not in this account's browsers namespace".into(),
-                ));
+            // Account-driven namespace move: a stale client supplying its old
+            // holder is silently redirected to the broker-assigned target —
+            // the device heals at its next issuance without knowing the move
+            // happened (its old certs were revoked at move time).
+            let resolved = state
+                .user_store
+                .resolve_holder_move(session.user_id, h)?;
+            match resolved {
+                Some(target) => target,
+                None => {
+                    // Well-formed holder, and in THIS account's browsers
+                    // namespace — OR the exact target of a recorded move
+                    // (which may sit in any of the user's namespaces; the id
+                    // was broker-assigned at move time, never client-chosen).
+                    let prefix = h.split_once('.').map(|(p, _)| p).unwrap_or("");
+                    let is_move_target = state
+                        .user_store
+                        .list_holder_moves(session.user_id)?
+                        .iter()
+                        .any(|(_, new)| new == h);
+                    if prefix != ns_prefix && !is_move_target {
+                        return Err(BrokerError::PolicyRefused(
+                            "supplied holder is not in this account's browsers namespace".into(),
+                        ));
+                    }
+                    h.to_string()
+                }
             }
-            h.to_string()
         }
         _ => crate::crypto::assign_holder_id(&ns_prefix),
     };
@@ -202,6 +222,9 @@ where
     super::holders::maybe_label_holder_from_ua(
         state.user_store.as_ref(), session.user_id, &holder, &headers,
     );
+    // If this issuance completed an account-driven namespace move, drop the
+    // old holder's (already-revoked) rows so the device appears exactly once.
+    super::holders::finish_holder_move(state.user_store.as_ref(), session.user_id, &holder);
 
     Ok(Json(DeviceIssueResponse {
         success: true,

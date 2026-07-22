@@ -272,6 +272,16 @@
       throw new Error(certs.reason || 'device issuance failed');
     }
     await storeDevicePair(state.brokerDomain, email, keys, certs);
+    // The account may have MOVED this device: the server silently redirects a
+    // stale supplied holder to the move target. Follow it in the local cache
+    // so future issuance asks for the right holder directly.
+    const issuedHolder = certHolder(certs.device_cert);
+    if (holder && issuedHolder && issuedHolder !== holder) {
+      try {
+        const r = await apiCall(API.browserHolder, 'GET');
+        if (r && r.prefix) localStorage.setItem('browserid:holder:' + r.prefix, issuedHolder);
+      } catch (e) { /* best-effort */ }
+    }
     return storedDevicePair(state.brokerDomain, email);
   }
 
@@ -714,6 +724,67 @@
     return storedDevicePair(domain, email);
   }
 
+  // Account-driven namespace move: is this device's holder still current, or
+  // has the account reassigned it? (The move revoked the old certs up front;
+  // this check is how the device heals.)
+  async function pendingHolderMove(holder) {
+    if (!holder) return null;
+    try {
+      const r = await apiCall('/wsapi/holder_assignment?holder=' + encodeURIComponent(holder), 'GET');
+      return (r && r.status === 'moved' && r.new_holder) ? r.new_holder : null;
+    } catch (e) { return null; } // no session / hiccup → check again next login
+  }
+
+  // Complete a pending move: re-issue the SAME keys under the broker-assigned
+  // target holder — /device/issue for broker-rooted identities, the
+  // device-authorize popup (explicit holder passthrough) for primary ones —
+  // store the new pair, follow the move in the browser-holder cache, and
+  // (primary) re-join so the broker records the corrected cert and cleans up
+  // the old rows. Best-effort: on failure the old pair is returned (its certs
+  // were revoked at move time, so sign-in may fail until a later attempt
+  // completes the move).
+  async function maybeCompleteHolderMove(email, issuer, pair, mintUrl, deviceAuthUrl) {
+    try {
+      const holder = certHolder(pair.device.cert);
+      const target = await pendingHolderMove(holder);
+      if (!target) return pair;
+      if (issuer === (state.brokerDomain || location.hostname)) {
+        const certs = await apiCall(API.deviceIssue, 'POST', {
+          email,
+          device_pubkey: pair.device.publicKeyX,
+          config_pubkey: pair.config.publicKeyX,
+          holder: target
+        });
+        if (!certs.device_cert || !certs.config_cert) {
+          throw new Error(certs.reason || 'device issuance failed');
+        }
+        await storeDevicePair(issuer, email, pair, certs);
+      } else {
+        if (!deviceAuthUrl) return pair;
+        const certs = await primaryPopupFlow(email, deviceAuthUrl, pair, target);
+        await storeDevicePair(issuer, email, pair, certs);
+        // Re-join so the broker records the corrected cert (which also
+        // deletes the old holder's rows server-side).
+        try {
+          const moved = await storedDevicePair(issuer, email);
+          const p = await buildPresentation(moved, issuer, mintUrl, email, window.location.origin, /* noRegister */ true);
+          await apiCall('/wsapi/auth_with_presentation', 'POST', { presentation: p, ephemeral: false });
+        } catch (e) {
+          console.warn('holder move re-join failed (non-fatal):', e.message || e);
+        }
+      }
+      // This browser's holder cache follows the move.
+      try {
+        const r = await apiCall(API.browserHolder, 'GET');
+        if (r && r.prefix) localStorage.setItem('browserid:holder:' + r.prefix, target);
+      } catch (e) { /* best-effort */ }
+      return (await storedDevicePair(issuer, email)) || pair;
+    } catch (e) {
+      console.warn('holder move completion failed (non-fatal):', e.message || e);
+      return pair;
+    }
+  }
+
   // Handle primary IdP flow: reuse a stored pair, else run the popup.
   async function handlePrimaryIdP(email, addressInfo) {
     showScreen('loading');
@@ -730,7 +801,8 @@
       if (stored) {
         try {
           await ensureBrokerSession(email, stored, domain, mintUrl);
-          return await finishSignIn(email, stored, domain, mintUrl);
+          const current = await maybeCompleteHolderMove(email, domain, stored, mintUrl, addressInfo.device_auth);
+          return await finishSignIn(email, current, domain, mintUrl);
         } catch (e) {
           // Mint refused (revoked / IdP policy) — drop the pair and re-authorize.
           await Keystore.delDevice(domain, email, 'device');
@@ -875,6 +947,7 @@
       if (!pair) {
         pair = await issueDevicePair(email);
       }
+      pair = await maybeCompleteHolderMove(email, issuer, pair, API.accessMint, null);
       await finishSignIn(email, pair, issuer, API.accessMint);
     } catch (e) {
       showError('Failed to sign in: ' + e.message);

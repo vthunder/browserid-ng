@@ -31,6 +31,7 @@ pub struct InMemoryUserStore {
     namespaces: RwLock<HashMap<(UserId, String), (String, String)>>,
     /// (user_id, holder_id) -> friendly label
     holder_labels: RwLock<HashMap<(UserId, String), String>>,
+    holder_moves: RwLock<HashMap<(UserId, String), String>>,
 }
 
 impl InMemoryUserStore {
@@ -49,6 +50,7 @@ impl InMemoryUserStore {
             next_device_cert_id: AtomicU64::new(1),
             namespaces: RwLock::new(HashMap::new()),
             holder_labels: RwLock::new(HashMap::new()),
+            holder_moves: RwLock::new(HashMap::new()),
         }
     }
 
@@ -540,6 +542,39 @@ impl UserStore for InMemoryUserStore {
             .unwrap()
             .remove(&(user_id, holder.to_string()));
         Ok(ids.len() as u64)
+    }
+
+    fn set_holder_move(&self, user_id: UserId, old_holder: &str, new_holder: &str) -> StoreResult<()> {
+        self.holder_moves
+            .write()
+            .unwrap()
+            .insert((user_id, old_holder.to_string()), new_holder.to_string());
+        Ok(())
+    }
+
+    fn resolve_holder_move(&self, user_id: UserId, holder: &str) -> StoreResult<Option<String>> {
+        let moves = self.holder_moves.read().unwrap();
+        let mut current = holder.to_string();
+        let mut hops = 0;
+        while let Some(next) = moves.get(&(user_id, current.clone())) {
+            current = next.clone();
+            hops += 1;
+            if hops > 8 {
+                break; // defensive: never loop on a malformed chain
+            }
+        }
+        Ok(if current == holder { None } else { Some(current) })
+    }
+
+    fn list_holder_moves(&self, user_id: UserId) -> StoreResult<Vec<(String, String)>> {
+        Ok(self
+            .holder_moves
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|((u, _), _)| *u == user_id)
+            .map(|((_, old), new)| (old.clone(), new.clone()))
+            .collect())
     }
 
     fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {

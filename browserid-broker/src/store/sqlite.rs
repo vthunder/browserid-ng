@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 17;
+const SCHEMA_VERSION: i32 = 18;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -113,6 +113,9 @@ impl SqliteStore {
             }
             if current_version < 17 {
                 Self::migrate_v17(conn)?;
+            }
+            if current_version < 18 {
+                Self::migrate_v18(conn)?;
             }
 
             // Update schema version
@@ -550,6 +553,28 @@ impl SqliteStore {
             r#"
             DELETE FROM device_certs WHERE holder IN ('user', 'agent');
             DELETE FROM warrants WHERE holder IN ('user', 'agent');
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v18(conn: &Connection) -> Result<(), BrokerError> {
+        // Holder moves (account-driven re-organization): a PERMANENT redirect
+        // `old_holder -> new_holder` recorded when the user moves a device to
+        // another namespace. The move revokes the old holder's certs up front;
+        // the device re-issues under the target next time it's online, and any
+        // stale client supplying the old holder is redirected at issuance.
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS holder_moves (
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                old_holder TEXT NOT NULL,
+                new_holder TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(user_id, old_holder)
+            );
+            CREATE INDEX IF NOT EXISTS idx_holder_moves_user ON holder_moves(user_id);
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -1494,6 +1519,58 @@ impl UserStore for SqliteStore {
         Ok(rows as u64)
     }
 
+    fn set_holder_move(&self, user_id: UserId, old_holder: &str, new_holder: &str) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO holder_moves (user_id, old_holder, new_holder, created_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(user_id, old_holder) DO UPDATE SET new_holder = excluded.new_holder",
+            params![user_id.0 as i64, old_holder, new_holder, Utc::now().to_rfc3339()],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn resolve_holder_move(&self, user_id: UserId, holder: &str) -> StoreResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut current = holder.to_string();
+        let mut hops = 0;
+        loop {
+            let next: Option<String> = conn
+                .query_row(
+                    "SELECT new_holder FROM holder_moves WHERE user_id = ?1 AND old_holder = ?2",
+                    params![user_id.0 as i64, current],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            match next {
+                Some(n) => {
+                    current = n;
+                    hops += 1;
+                    if hops > 8 {
+                        break; // defensive: never loop on a malformed chain
+                    }
+                }
+                None => break,
+            }
+        }
+        Ok(if current == holder { None } else { Some(current) })
+    }
+
+    fn list_holder_moves(&self, user_id: UserId) -> StoreResult<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT old_holder, new_holder FROM holder_moves WHERE user_id = ?1")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![user_id.0 as i64], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows)
+    }
+
     fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {
         let conn = self.conn.lock().unwrap();
         // Insert a fresh prefix on first use; ignore on conflict so concurrent
@@ -1936,6 +2013,18 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn forget_holder(&self, user_id: UserId, holder: &str) -> StoreResult<u64> {
         (**self).forget_holder(user_id, holder)
+    }
+
+    fn set_holder_move(&self, user_id: UserId, old_holder: &str, new_holder: &str) -> StoreResult<()> {
+        (**self).set_holder_move(user_id, old_holder, new_holder)
+    }
+
+    fn resolve_holder_move(&self, user_id: UserId, holder: &str) -> StoreResult<Option<String>> {
+        (**self).resolve_holder_move(user_id, holder)
+    }
+
+    fn list_holder_moves(&self, user_id: UserId) -> StoreResult<Vec<(String, String)>> {
+        (**self).list_holder_moves(user_id)
     }
 
     fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {

@@ -172,6 +172,16 @@ where
     // still unused, so the holder lands in Browsers instead of orphaning.
     if let Ok(pres) = browserid_core::device::AccessPresentation::parse(&req.presentation) {
         let cc = pres.config_cert.claims();
+        // Account-driven namespace move: a stale device presenting its OLD
+        // (moved-away, revoked-at-move) holder must not resurrect the old
+        // registry row — skip recording; the dialog's holder_assignment check
+        // re-issues it. A presentation under the move TARGET completes the
+        // move (old rows deleted).
+        if let Ok(Some(_)) = state.user_store.resolve_holder_move(user_id, cc.holder.as_str()) {
+            tracing::debug!("presented holder was moved; not re-recording the old row");
+            return Ok(Json(AuthWithPresentationResponse { success: true, email }));
+        }
+        super::holders::finish_holder_move(state.user_store.as_ref(), user_id, cc.holder.as_str());
         if let Some((prefix, _)) = cc.holder.as_str().split_once('.') {
             match state.user_store.adopt_namespace_prefix(user_id, "browsers", prefix) {
                 Ok(false) => tracing::debug!(
