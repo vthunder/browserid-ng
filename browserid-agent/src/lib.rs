@@ -456,17 +456,20 @@ impl DeviceAgent {
             .await?;
         let status = response.status();
         let value: serde_json::Value = response.json().await.unwrap_or_default();
-        if !status.is_success() || value["success"] != serde_json::Value::Bool(true) {
-            return Err(AgentError::Idp {
-                status: status.as_u16(),
-                reason: value["reason"].as_str().unwrap_or("no reason given").to_string(),
-            });
-        }
-        let cert = AccessCert::parse(
-            value["access_cert"]
+        // Success = HTTP ok + an access cert in the body. IdP response shapes
+        // vary: the broker/mingo send `{success: true, access_cert}`, sandmill
+        // sends bare `{access_cert}` (and `{error}` on failure) — don't demand
+        // a `success` field that isn't part of the contract.
+        let cert_jws = value["access_cert"].as_str();
+        if !status.is_success() || cert_jws.is_none() {
+            let reason = value["reason"]
                 .as_str()
-                .ok_or_else(|| AgentError::InvalidStored("mint response missing access_cert".into()))?,
-        )?;
+                .or_else(|| value["error"].as_str())
+                .unwrap_or("no reason given")
+                .to_string();
+            return Err(AgentError::Idp { status: status.as_u16(), reason });
+        }
+        let cert = AccessCert::parse(cert_jws.expect("checked above"))?;
         self.access = Some(AccessSession { key: access_key, cert });
         Ok(())
     }
