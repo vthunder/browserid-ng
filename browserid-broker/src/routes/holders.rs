@@ -167,13 +167,24 @@ where
         moving_to: moving_to(holder_id),
     };
 
-    // Bucket each holder under the namespace whose prefix it carries.
+    // Bucket each holder under the namespace whose prefix it carries — except
+    // a pending-moved holder, which is shown under its TARGET namespace
+    // immediately (the user already decided where it lives; the device just
+    // hasn't re-registered yet — the badge says so).
+    let effective_prefix = |holder_id: &str| -> String {
+        let target = moves
+            .iter()
+            .find(|(old, _)| old == holder_id)
+            .map(|(_, new)| new.as_str())
+            .unwrap_or(holder_id);
+        holder_prefix(target).to_string()
+    };
     let mut ns_views: Vec<NamespaceView> = Vec::new();
     let mut placed: std::collections::HashSet<String> = std::collections::HashSet::new();
     for ns in &namespaces {
         let mut holders = Vec::new();
         for (holder_id, acc) in &by_holder {
-            if holder_prefix(holder_id) == ns.prefix {
+            if effective_prefix(holder_id) == ns.prefix {
                 holders.push(make_view(holder_id, acc));
                 placed.insert(holder_id.clone());
             }
@@ -445,6 +456,28 @@ where
     }
 }
 
+/// Revoke + drop the warrants ISOLATED to `holder` (exact `<id>` matcher):
+/// with the holder gone they can never be presented again, and leaving them
+/// makes Sites list grants for "a removed device" forever. Group (`<ns>.*`)
+/// matchers cover other holders and are left alone. Best-effort.
+fn cleanup_holder_warrants<U: UserStore>(store: &U, user_id: crate::store::UserId, holder: &str) {
+    let warrants = match store.list_warrants(user_id) {
+        Ok(w) => w,
+        Err(_) => return,
+    };
+    for w in warrants {
+        if w.holder.as_deref() != Some(holder) {
+            continue;
+        }
+        if let Some(idx) = w.status_idx {
+            let _ = store.set_status_revoked_idx(idx);
+        }
+        if let Err(e) = store.delete_warrant(user_id, w.id) {
+            tracing::warn!("dropping warrant {} for removed holder failed: {e}", w.id);
+        }
+    }
+}
+
 /// Completion hook, called from issuance paths when certs land under `holder`:
 /// if it is the target of a pending move, the old holder's rows are deleted
 /// (they were revoked at move time) so the device appears exactly once.
@@ -458,6 +491,7 @@ pub fn finish_holder_move<U: UserStore>(store: &U, user_id: crate::store::UserId
         Err(_) => return,
     };
     for old in moved_from {
+        cleanup_holder_warrants(store, user_id, &old);
         if let Err(e) = store.forget_holder(user_id, &old) {
             tracing::warn!("holder move cleanup for '{old}' failed: {e}");
         }
@@ -507,6 +541,7 @@ where
             state.user_store.set_status_revoked_idx(idx)?;
         }
     }
+    cleanup_holder_warrants(state.user_store.as_ref(), session.user_id, &req.holder_id);
     state.user_store.forget_holder(session.user_id, &req.holder_id)?;
     Ok(Json(OkResponse { success: true }))
 }

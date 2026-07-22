@@ -15,6 +15,13 @@
     .brand { text-align: center; margin-bottom: 20px; }
     .brand a { color: #333; text-decoration: none; font-weight: 600; font-size: 16px; }
     .brand .me { color: #4a90d9; }
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45);
+      display: flex; align-items: center; justify-content: center; z-index: 50; }
+    .modal { background: #fff; color: #1a1a1a; border-radius: 12px;
+      padding: 16px 20px; max-width: 26rem; width: 90%;
+      box-shadow: 0 12px 40px rgba(0,0,0,.25); }
+    .modal input[type=radio] { width: auto; display: inline-block;
+      margin: 0 6px 0 0; vertical-align: middle; }
     .card { background: #fff; border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,.08);
       padding: 24px; margin-bottom: 20px; }
     h2 { margin: 0 0 4px 0; font-size: 18px; font-weight: 600; color: #1a1a1a; }
@@ -175,11 +182,8 @@
 
     <div class="card" id="holders-card" hidden>
       <h2>Devices &amp; services</h2>
-      <p class="sub">Everything that acts for you — browsers, agents, services — grouped into
-        namespaces you organize. <span class="badge active">trusted</span>
-        holds a config certificate (can authorize new sites); <span class="badge inactive">login-only</span>
-        can reuse existing logins but not authorize new ones. Click one for its warrants.
-        Revoking it logs it out and <b>kills the access certificates it minted</b>.</p>
+      <p class="sub">Browsers, agents and services connected to your account.
+        Click one to see and manage what it can do.</p>
       <div id="holders-tree"></div>
       <div id="new-namespace-form" class="inline-form" hidden>
         <label for="nn-name">New namespace (short slug — letters, digits, hyphen)</label>
@@ -231,7 +235,6 @@
       <h2 id="hd-label" style="word-break:break-all"></h2>
       <p class="kv"><span id="hd-badges"></span></p>
       <div id="hd-identities" style="margin-bottom:12px"></div>
-      <div id="hd-move-form" class="inline-form" hidden style="margin:8px 0 12px"></div>
       <div id="hd-warrants" style="margin-top:8px"></div>
       <p class="status" id="hd-status"></p>
     </div>
@@ -547,13 +550,11 @@ function localHolderIds() {
 }
 
 function holderRowHtml(h, thisHolder) {
-  const trust = h.trust === 'trusted'
-    ? '<span class="badge active">trusted</span>'
-    : '<span class="badge inactive">login-only</span>';
+  const trust = h.trust === 'trusted' ? '<span class="badge active">trusted</span>' : '';
   const here = thisHolder && thisHolder.has(h.holder_id)
     ? '<span class="badge info">this browser</span>' : '';
   const moving = h.moving_to
-    ? `<span class="badge info">moving to ${escapeHtml(h.moving_to)}</span>` : '';
+    ? `<span class="badge info">arrives on next sign-in</span>` : '';
   const rev = (h.revoked && !h.moving_to) ? '<span class="badge revoked">revoked</span>' : '';
   const issued = h.issued_at ? `issued ${new Date(Date.parse(h.issued_at)).toLocaleDateString()}` : '';
   const wc = `${h.warrant_count} warrant${h.warrant_count === 1 ? '' : 's'}`;
@@ -774,11 +775,11 @@ function renderHolderDetail() {
   $('app').hidden = true; $('site-detail').hidden = true; $('holder-detail').hidden = false;
   $('hd-label').textContent = h.label;
   $('hd-badges').innerHTML = (h.trust === 'trusted'
-    ? '<span class="badge active">trusted</span>' : '<span class="badge inactive">login-only</span>')
-    + ` <button class="small linkish" id="hd-rename">rename</button>`
+    ? '<span class="badge active">trusted</span> ' : '')
+    + `<button class="small linkish" id="hd-rename">rename</button>`
     + ` <button class="small linkish" id="hd-move">move</button>`
     + ` <button class="small linkish" id="hd-remove" style="color:#c53030">remove</button>`
-    + (h.moving_to ? ` <span class="badge info">moving to ${escapeHtml(h.moving_to)}</span>` : '')
+    + (h.moving_to ? ` <span class="badge info">moved to ${escapeHtml(h.moving_to)} — arrives on next sign-in</span>` : '')
     + (h.revoked && !h.moving_to ? ' <span class="badge revoked">revoked</span>' : '');
   // Per-identity trust: config certs are per-identity, so one device can be
   // trusted for identity A while only login-capable for identity B. The
@@ -791,8 +792,7 @@ function renderHolderDetail() {
           && c.identities.some(p => identityMatches(p, email)));
         return `<tr><td style="font-size:13px">${escapeHtml(email)}</td>
           <td style="text-align:right">${trusted
-            ? '<span class="badge active">trusted</span>'
-            : '<span class="badge inactive">login-only</span>'}</td></tr>`;
+            ? '<span class="badge active">trusted</span>' : ''}</td></tr>`;
       }).join('')}</table>`
     : '';
   $('hd-rename').onclick = async () => {
@@ -806,40 +806,46 @@ function renderHolderDetail() {
   // window) and the device re-registers under the broker-assigned target
   // holder next time it signs in — no need to touch the device.
   $('hd-move').onclick = () => {
-    const form = $('hd-move-form');
-    if (!form.hidden) { form.hidden = true; return; }
     const myPrefix = holderPrefix(h.holder_id);
     const options = (account.holders.namespaces || [])
       .filter(ns => ns.prefix !== myPrefix)
-      .map(ns => `<label style="display:block;margin:2px 0"><input type="radio" name="mv-ns" value="${escapeHtml(ns.name)}"> ${escapeHtml(ns.label)}</label>`)
+      .map(ns => `<label style="display:block;margin:4px 0"><input type="radio" name="mv-ns" value="${escapeHtml(ns.name)}">${escapeHtml(ns.label)}</label>`)
       .join('');
     const warn = h.warrant_count
-      ? `<p class="sub" style="color:#b7791f">Its ${h.warrant_count} grant${h.warrant_count === 1 ? '' : 's'} will stop working and need re-approval under the new group.</p>`
+      ? `<p class="sub" style="color:#b7791f;margin:8px 0 0">Its ${h.warrant_count} grant${h.warrant_count === 1 ? '' : 's'} will stop working and need re-approval under the new group.</p>`
       : '';
-    form.innerHTML = `<p class="sub" style="margin:0 0 4px"><b>Move “${escapeHtml(h.label)}”</b> to:</p>
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<div class="modal">
+      <h3 style="margin:0 0 8px">Move “${escapeHtml(h.label)}”</h3>
       ${options || ''}
-      <label style="display:block;margin:2px 0"><input type="radio" name="mv-ns" value=""> A new group:
-        <input id="mv-new" placeholder="e.g. laptops" maxlength="32" style="width:10em"></label>
+      <label style="display:block;margin:4px 0"><input type="radio" name="mv-ns" value="">A new group:
+        <input id="mv-new" placeholder="e.g. laptops" maxlength="32" style="width:10em;display:inline-block"></label>
       ${warn}
-      <p class="sub">Its current certificates are revoked immediately; the device re-registers itself the next time it signs in.</p>
-      <button class="primary small" id="mv-go">Move</button>
-      <button class="small" id="mv-cancel">Cancel</button>
-      <span class="status" id="mv-status"></span>`;
-    form.hidden = false;
-    form.querySelector('#mv-cancel').onclick = () => { form.hidden = true; };
-    form.querySelector('#mv-new').onfocus = () => {
-      const r = form.querySelector('input[name="mv-ns"][value=""]'); if (r) r.checked = true;
+      <p class="sub" style="margin:8px 0">The device is signed out now and rejoins under the new group the next time it signs in.</p>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="primary small" id="mv-go">Move</button>
+        <button class="small" id="mv-cancel">Cancel</button>
+        <span class="status" id="mv-status" style="margin:0"></span>
+      </div></div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#mv-cancel').onclick = () => overlay.remove();
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.querySelector('#mv-new').onfocus = () => {
+      const r = overlay.querySelector('input[name="mv-ns"][value=""]'); if (r) r.checked = true;
     };
-    form.querySelector('#mv-go').onclick = async () => {
-      const st = form.querySelector('#mv-status');
-      const picked = form.querySelector('input[name="mv-ns"]:checked');
+    overlay.querySelector('#mv-go').onclick = async () => {
+      const st = overlay.querySelector('#mv-status');
+      const picked = overlay.querySelector('input[name="mv-ns"]:checked');
       let ns = picked ? picked.value : '';
-      if (picked && !ns) ns = form.querySelector('#mv-new').value.trim().toLowerCase();
+      if (picked && !ns) ns = overlay.querySelector('#mv-new').value.trim().toLowerCase();
       if (!ns) { st.className = 'status err'; st.textContent = 'Pick a group (or name a new one).'; return; }
       st.className = 'status muted'; st.textContent = 'Moving…';
       try {
         await post('/wsapi/move_holder', { holder_id: h.holder_id, namespace: ns });
-        await reloadAccount(); renderHolders(); renderSites(); renderHolderDetail();
+        overlay.remove();
+        await reloadAccount(); renderHolders(); renderSites();
+        backToMain(); // the holder now shows under its new group with an "arrives" badge
       } catch (e) { st.className = 'status err'; st.textContent = 'Move failed: ' + e.message; }
     };
   };
