@@ -180,7 +180,6 @@
         holds a config certificate (can authorize new sites); <span class="badge inactive">login-only</span>
         can reuse existing logins but not authorize new ones. Click one for its warrants.
         Revoking it logs it out and <b>kills the access certificates it minted</b>.</p>
-      <p class="sub" id="holders-local" style="font-family:ui-monospace,monospace"></p>
       <div id="holders-tree"></div>
       <div id="new-namespace-form" class="inline-form" hidden>
         <label for="nn-name">New namespace (short slug — letters, digits, hyphen)</label>
@@ -231,13 +230,9 @@
       <button id="hd-back" class="small">← Back</button>
       <h2 id="hd-label" style="word-break:break-all"></h2>
       <p class="kv"><span id="hd-badges"></span></p>
-      <p class="sub" id="hd-id" style="font-family:ui-monospace,monospace;word-break:break-all"></p>
       <div id="hd-identities" style="margin-bottom:12px"></div>
-      <div style="margin:8px 0 12px">
-        <button class="small primary" id="hd-tab-holder">Granted to this holder</button>
-        <button class="small" id="hd-tab-aud">By audience (all)</button>
-      </div>
-      <div id="hd-warrants"></div>
+      <div id="hd-move-form" class="inline-form" hidden style="margin:8px 0 12px"></div>
+      <div id="hd-warrants" style="margin-top:8px"></div>
       <p class="status" id="hd-status"></p>
     </div>
   </div>
@@ -522,6 +517,7 @@ function agentConstraintName(delegator, idpDomain, handle) {
 // login-only = authentication only) and is revocable (logs it out; its access
 // certs die). Labels are editable inline; namespaces are creatable/removable.
 
+const holderPrefix = (id) => (id && id.includes('.')) ? id.slice(0, id.indexOf('.')) : null;
 // Mirror of browserid-core HolderMatcher::matches — `*` / `<ns>.*` / `<id>`.
 function holderMatcherMatches(matcher, holderId) {
   if (!matcher) return false;
@@ -539,7 +535,11 @@ function holderMatcherMatches(matcher, holderId) {
 function localHolderIds() {
   const out = new Set();
   for (const r of deviceCache) {
-    if (!r.cert) continue;
+    // Only AUTHENTICATION (device) records mark "this browser": a deposited
+    // config-only record can carry a foreign holder (e.g. the as-you recovery
+    // pairs the user's config key with the SERVICE's holder in one IdP visit)
+    // and must not tag that holder as this browser.
+    if (r.kind !== 'device' || !r.cert) continue;
     const c = certPayload(r.cert);
     if (c && c.holder && (c.exp || 0) > nowS() + 60) out.add(c.holder);
   }
@@ -573,11 +573,6 @@ function renderHolders() {
   const orphans = data.holders_without_namespace || [];
   $('holders-card').hidden = !(nss.length || orphans.length);
   const thisHolder = localHolderIds();
-  // Debug/orientation line: what the LOCAL keystore thinks this browser's
-  // holder is (server rows tagged "this browser" match against these ids).
-  $('holders-local').textContent = thisHolder.size
-    ? 'This browser: ' + [...thisHolder].join(', ')
-    : 'This browser: no local device certificates (signed out here, or cleared)';
   const groups = nss.map(ns => {
     const rows = ns.holders.length
       ? `<ul class="idlist">${ns.holders.map(h => holderRowHtml(h, thisHolder)).join('')}</ul>`
@@ -590,7 +585,6 @@ function renderHolders() {
         <b style="font-size:15px">${escapeHtml(ns.label)}</b>
         <button class="small linkish ns-rename" data-n="${escapeHtml(ns.name)}" data-l="${escapeHtml(ns.label)}">rename</button>
         ${del}
-        <span class="muted" style="font-size:12px;margin-left:auto;font-family:ui-monospace,monospace">${escapeHtml(ns.prefix)}.*</span>
       </div>
       ${rows}</div>`;
   }).join('');
@@ -633,9 +627,13 @@ $('nn-btn').onclick = async () => {
 // names exactly one known holder, else as the raw matcher (`*` / `<ns>.*` /
 // an unknown `<id>` — e.g. an external service whose cert we never recorded).
 function matcherDisplay(m) {
-  if (!m) return '<span class="muted" style="font-size:12px">any holder</span>';
+  if (!m || m === '*') return '<span class="muted" style="font-size:12px">any of my devices</span>';
+  if (m.endsWith('.*')) {
+    const l = nsLabelForPrefix(m.slice(0, -2));
+    return l ? escapeHtml('all ' + l) : '<span class="muted" style="font-size:12px">a whole group</span>';
+  }
   const h = findHolder(m);
-  return h ? escapeHtml(h.label) : `<span class="scope">${escapeHtml(m)}</span>`;
+  return h ? escapeHtml(h.label) : '<span class="muted" style="font-size:12px">a removed device</span>';
 }
 
 // Sites slice: every warrant on the account, grouped audience → matcher, as a
@@ -654,10 +652,10 @@ function matcherGroupLabel(m) {
   if (!m || m === '*') return 'Any of my holders';
   if (m.endsWith('.*')) {
     const l = nsLabelForPrefix(m.slice(0, -2));
-    return l ? 'All ' + escapeHtml(l) : `All <span class="scope">${escapeHtml(m)}</span>`;
+    return l ? 'All ' + escapeHtml(l) : 'A previous group';
   }
   const h = findHolder(m);
-  return h ? 'Only: ' + escapeHtml(h.label) : `Only: <span class="scope">${escapeHtml(m)}</span>`;
+  return h ? 'Only: ' + escapeHtml(h.label) : 'Only: a removed device';
 }
 // A pure login grant: no scopes beyond the `login` sentinel.
 function isLoginWarrant(w) {
@@ -782,7 +780,6 @@ function renderHolderDetail() {
     + ` <button class="small linkish" id="hd-remove" style="color:#c53030">remove</button>`
     + (h.moving_to ? ` <span class="badge info">moving to ${escapeHtml(h.moving_to)}</span>` : '')
     + (h.revoked && !h.moving_to ? ' <span class="badge revoked">revoked</span>' : '');
-  $('hd-id').textContent = h.holder_id;
   // Per-identity trust: config certs are per-identity, so one device can be
   // trusted for identity A while only login-capable for identity B. The
   // summary pill shows the at-least-one rollup; this is the real breakdown.
@@ -808,18 +805,43 @@ function renderHolderDetail() {
   // old namespace's warrants stop applying to this device within a status
   // window) and the device re-registers under the broker-assigned target
   // holder next time it signs in — no need to touch the device.
-  $('hd-move').onclick = async () => {
-    const existing = (account.holders.namespaces || []).map(n => n.name).join(', ');
-    const ns = prompt(`Move “${h.label}” to which group? Existing: ${existing || '(none)'} — or type a new name (lowercase).`);
-    if (ns == null || !ns.trim()) return;
+  $('hd-move').onclick = () => {
+    const form = $('hd-move-form');
+    if (!form.hidden) { form.hidden = true; return; }
+    const myPrefix = holderPrefix(h.holder_id);
+    const options = (account.holders.namespaces || [])
+      .filter(ns => ns.prefix !== myPrefix)
+      .map(ns => `<label style="display:block;margin:2px 0"><input type="radio" name="mv-ns" value="${escapeHtml(ns.name)}"> ${escapeHtml(ns.label)}</label>`)
+      .join('');
     const warn = h.warrant_count
-      ? ` Its ${h.warrant_count} grant${h.warrant_count === 1 ? '' : 's'} will stop working and need re-approval under the new group.`
+      ? `<p class="sub" style="color:#b7791f">Its ${h.warrant_count} grant${h.warrant_count === 1 ? '' : 's'} will stop working and need re-approval under the new group.</p>`
       : '';
-    if (!confirm(`Move “${h.label}” to “${ns.trim()}”? Its current certificates are revoked immediately; the device re-registers automatically the next time it signs in.${warn}`)) return;
-    try {
-      await post('/wsapi/move_holder', { holder_id: h.holder_id, namespace: ns.trim().toLowerCase() });
-      await reloadAccount(); renderHolders(); renderSites(); renderHolderDetail();
-    } catch (e) { alert('Move failed: ' + e.message); }
+    form.innerHTML = `<p class="sub" style="margin:0 0 4px"><b>Move “${escapeHtml(h.label)}”</b> to:</p>
+      ${options || ''}
+      <label style="display:block;margin:2px 0"><input type="radio" name="mv-ns" value=""> A new group:
+        <input id="mv-new" placeholder="e.g. laptops" maxlength="32" style="width:10em"></label>
+      ${warn}
+      <p class="sub">Its current certificates are revoked immediately; the device re-registers itself the next time it signs in.</p>
+      <button class="primary small" id="mv-go">Move</button>
+      <button class="small" id="mv-cancel">Cancel</button>
+      <span class="status" id="mv-status"></span>`;
+    form.hidden = false;
+    form.querySelector('#mv-cancel').onclick = () => { form.hidden = true; };
+    form.querySelector('#mv-new').onfocus = () => {
+      const r = form.querySelector('input[name="mv-ns"][value=""]'); if (r) r.checked = true;
+    };
+    form.querySelector('#mv-go').onclick = async () => {
+      const st = form.querySelector('#mv-status');
+      const picked = form.querySelector('input[name="mv-ns"]:checked');
+      let ns = picked ? picked.value : '';
+      if (picked && !ns) ns = form.querySelector('#mv-new').value.trim().toLowerCase();
+      if (!ns) { st.className = 'status err'; st.textContent = 'Pick a group (or name a new one).'; return; }
+      st.className = 'status muted'; st.textContent = 'Moving…';
+      try {
+        await post('/wsapi/move_holder', { holder_id: h.holder_id, namespace: ns });
+        await reloadAccount(); renderHolders(); renderSites(); renderHolderDetail();
+      } catch (e) { st.className = 'status err'; st.textContent = 'Move failed: ' + e.message; }
+    };
   };
   // A holder id is signed into its certs, so "remove" = revoke every cert
   // (fail-closed at verifiers within minutes) + delete the records. The
@@ -831,12 +853,8 @@ function renderHolderDetail() {
       await reloadAccount(); renderHolders(); renderSites(); backToMain();
     } catch (e) { alert('Remove failed: ' + e.message); }
   };
-  $('hd-tab-holder').className = 'small' + (hdCtx.slice === 'holder' ? ' primary' : '');
-  $('hd-tab-aud').className = 'small' + (hdCtx.slice === 'audience' ? ' primary' : '');
-  hdCtx.slice === 'audience' ? renderHolderByAudience() : renderHolderOwnWarrants(h);
+  renderHolderOwnWarrants(h);
 }
-$('hd-tab-holder').onclick = () => { hdCtx.slice = 'holder'; renderHolderDetail(); };
-$('hd-tab-aud').onclick = () => { hdCtx.slice = 'audience'; renderHolderDetail(); };
 $('hd-back').onclick = () => history.back();
 
 function warrantStateHtml(w) {
@@ -845,32 +863,31 @@ function warrantStateHtml(w) {
     : (exp && exp < now ? '<span class="warn" style="font-size:12px">expired</span>'
       : `<span class="muted" style="font-size:12px">until ${new Date(exp).toLocaleDateString()}</span>`);
 }
-// Slice 1: every warrant whose matcher covers THIS holder.
+// Every warrant whose matcher covers THIS holder, sectioned by HOW it
+// applies — never by raw matcher id: grants to the whole group ("All
+// Browsers"), grants to any holder, and grants isolated to this one device.
 function renderHolderOwnWarrants(h) {
   const entries = account.warrants.filter(w => holderMatcherMatches(w.holder, h.holder_id));
   if (!entries.length) {
-    $('hd-warrants').innerHTML = `<p class="muted" style="font-size:13px">No warrants cover this holder yet.</p>`;
+    $('hd-warrants').innerHTML = `<p class="muted" style="font-size:13px">No grants apply to this device yet.</p>`;
     return;
   }
-  $('hd-warrants').innerHTML = `<table class="wtable">` + entries.map(w =>
+  const sections = [];
+  const only = entries.filter(w => w.holder === h.holder_id);
+  const group = entries.filter(w => w.holder && w.holder.endsWith('.*'));
+  const any = entries.filter(w => !w.holder || w.holder === '*');
+  const nsLabel = nsLabelForPrefix(holderPrefix(h.holder_id));
+  if (group.length) sections.push([nsLabel ? `All ${nsLabel}` : 'Its whole group', group]);
+  if (any.length) sections.push(['Any of my devices', any]);
+  if (only.length) sections.push(['Only this device', only]);
+  const row = (w) =>
     `<tr><td><span class="aud">${escapeHtml(w.audience)}</span><br>
-      <span class="muted" style="font-size:12px">matcher <b>${escapeHtml(w.holder || '—')}</b> · acting for ${escapeHtml(w.delegator_email)}</span><br>
+      <span class="muted" style="font-size:12px">acting for ${escapeHtml(w.delegator_email)}</span><br>
       ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
-      <td style="white-space:nowrap;text-align:right">${warrantStateHtml(w)}</td></tr>`).join('') + '</table>';
-}
-// Slice 2: ALL warrants grouped by audience (who can act where).
-function renderHolderByAudience() {
-  const byAud = new Map();
-  for (const w of account.warrants) {
-    const k = w.audience || '—'; (byAud.get(k) || byAud.set(k, []).get(k)).push(w);
-  }
-  if (!byAud.size) { $('hd-warrants').innerHTML = `<p class="muted" style="font-size:13px">No warrants on record.</p>`; return; }
-  $('hd-warrants').innerHTML = [...byAud.entries()].map(([aud, ws]) =>
-    `<div style="margin-bottom:12px"><div class="aud" style="font-weight:600;margin-bottom:4px">${escapeHtml(aud)}</div>
-      <table class="wtable">${ws.map(w =>
-        `<tr><td><span class="muted" style="font-size:12px">matcher <b>${escapeHtml(w.holder || '—')}</b> · ${escapeHtml(w.delegator_email)}</span><br>
-          ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
-          <td style="white-space:nowrap;text-align:right">${warrantStateHtml(w)}</td></tr>`).join('')}</table></div>`).join('');
+      <td style="white-space:nowrap;text-align:right">${warrantStateHtml(w)}</td></tr>`;
+  $('hd-warrants').innerHTML = sections.map(([title, ws]) =>
+    `<div style="margin-bottom:12px"><div style="font-weight:600;font-size:13px;margin-bottom:4px">${title}</div>
+      <table class="wtable">${ws.map(row).join('')}</table></div>`).join('');
 }
 
 // -------- add email (Add → discover → code or primary) --------
