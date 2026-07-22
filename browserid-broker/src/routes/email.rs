@@ -375,6 +375,12 @@ pub struct AddressInfoResponse {
     /// Headless access-cert mint URL (primary IdP, device-cert model).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_mint: Option<String>,
+    /// Agent-mode device-authorization URL (primary IdP): where the approval
+    /// page has NAMED-agent certs signed. Absent on a primary = named agents
+    /// unsupported there (secondary identities are registrar-signed and always
+    /// support them).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_device_auth: Option<String>,
 }
 
 /// Determine state based on password_known, last_used_as, current_type
@@ -431,6 +437,7 @@ where
     // Determine type and URLs based on mock or DNS discovery
     let mut device_auth = None;
     let mut access_mint = None;
+    let mut agent_device_auth = None;
     let (addr_type, current_type, auth, prov, issuer) = if let Some(mock) = mock_idp {
         // Mock primary IdP configured for testing
         tracing::debug!("Using mock primary IdP for domain: {}", domain);
@@ -486,6 +493,11 @@ where
                     .access_cert
                     .as_ref()
                     .map(|path| format!("https://{}{}", domain, path));
+                agent_device_auth = result
+                    .document
+                    .agent_device_authorization
+                    .as_ref()
+                    .map(|path| format!("https://{}{}", domain, path));
                 (
                     "primary",
                     EmailType::Primary,
@@ -525,6 +537,7 @@ where
         prov,
         device_auth,
         access_mint,
+        agent_device_auth,
     }))
 }
 

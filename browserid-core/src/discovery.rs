@@ -53,6 +53,15 @@ pub struct SupportDocument {
     /// `window.opener` (targetOrigin = return_origin), then closes.
     #[serde(rename = "device-authorization", skip_serializing_if = "Option::is_none")]
     pub device_authorization: Option<String>,
+
+    /// Path to the device-authorization page's AGENT mode (merged
+    /// provisioning): the broker's approval page opens it with
+    /// `#agent_email=…&agent_pubkey=…&holder=…` to have this IdP sign a
+    /// NAMED-agent device cert (an identity differing from the session's, e.g.
+    /// a `+tag` sub-address). Absent = named agents unsupported here; as-you
+    /// agents need no support (they are indistinguishable from devices).
+    #[serde(rename = "agent-device-authorization", skip_serializing_if = "Option::is_none")]
+    pub agent_device_authorization: Option<String>,
 }
 
 impl SupportDocument {
@@ -66,6 +75,7 @@ impl SupportDocument {
             device_cert: None,
             access_cert: None,
             device_authorization: None,
+            agent_device_authorization: None,
         }
     }
 
@@ -99,6 +109,11 @@ impl SupportDocument {
         self
     }
 
+    pub fn with_agent_device_authorization(mut self, path: impl Into<String>) -> Self {
+        self.agent_device_authorization = Some(path.into());
+        self
+    }
+
     /// Create a delegation document
     pub fn delegate(authority: impl Into<String>) -> Self {
         Self {
@@ -109,6 +124,7 @@ impl SupportDocument {
             device_cert: None,
             access_cert: None,
             device_authorization: None,
+            agent_device_authorization: None,
         }
     }
 

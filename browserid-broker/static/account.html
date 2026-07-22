@@ -15,6 +15,7 @@
     .brand { text-align: center; margin-bottom: 20px; }
     .brand a { color: #333; text-decoration: none; font-weight: 600; font-size: 16px; }
     .brand .me { color: #4a90d9; }
+    input.pv-inline { width: auto; display: inline-block; margin: 0 6px 0 0; vertical-align: middle; }
     .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45);
       display: flex; align-items: center; justify-content: center; z-index: 50; }
     .modal { background: #fff; color: #1a1a1a; border-radius: 12px;
@@ -100,28 +101,33 @@
     <p class="sub" id="pv-fp" style="font-family:ui-monospace,monospace"></p>
     <label for="pv-identity">Which identity should it act for?</label>
     <select id="pv-identity"></select>
-    <div id="pv-handle-block">
-      <label for="pv-handle" style="margin-top:10px;display:block">Handle it will use</label>
-      <div class="handle-row">
-        <span id="pv-prefix" class="handle-prefix" hidden></span>
-        <input id="pv-handle" placeholder="claude">
-      </div>
-      <p class="handle-preview" id="pv-preview"></p>
-      <button type="button" id="pv-adv-toggle" class="linkish">Advanced — multiple handles / patterns</button>
-      <div id="pv-adv" hidden style="margin-top:6px">
-        <input id="pv-handles" placeholder="claude, researcher, svc+*">
-        <p class="sub" style="margin:4px 0 0">Comma-separated. On a fallback account each becomes <code>&lt;you&gt;+&lt;name&gt;</code>.</p>
-      </div>
+    <!-- How the agent acts — the approving user's choice, always offered:
+         as-you (holds the base identity), a named sub-handle (default for
+         agents), or a top-level handle (needs IdP support; none yet). -->
+    <div id="pv-mode" style="margin-top:10px">
+      <label style="display:block;margin:4px 0">
+        <input type="radio" name="pv-mode" value="handle" class="pv-inline">
+        With its own handle: <span id="pv-prefix" class="handle-prefix"></span><input id="pv-handle" placeholder="agent" maxlength="48" style="width:9em;display:inline-block">
+      </label>
+      <p class="sub" id="pv-self-warn" hidden style="color:#b7791f;margin:2px 0 4px 22px"></p>
+      <label style="display:block;margin:4px 0">
+        <input type="radio" name="pv-mode" value="self" class="pv-inline">
+        As me — it acts directly as <b id="pv-self-id"></b>
+      </label>
+      <label style="display:block;margin:4px 0;opacity:.55" title="No identity provider supports top-level agent handles yet">
+        <input type="radio" name="pv-mode" value="toplevel" class="pv-inline" disabled>
+        With a top-level handle (e.g. bot@domain) — not supported by your provider yet
+      </label>
     </div>
     <!-- Merged one-approval flow: grants requested alongside the identity.
          Approving signs one warrant per place with the config key held in
          this browser — same approval, no second consent page. -->
     <div id="pv-grants" hidden style="margin-top:12px">
-      <p class="sub" style="margin:0 0 4px">It also asks to act for you at:</p>
+      <p class="sub" style="margin:0 0 4px">It asks to act for you at:</p>
       <div id="pv-grant-list"></div>
-      <label class="sub" style="display:block;margin-top:6px">
-        <input type="checkbox" id="pv-widen">
-        Let <em>any</em> of my holders in the same group use this (instead of only this agent)
+      <label class="sub" style="display:block;margin-top:8px">
+        <input type="checkbox" id="pv-widen" class="pv-inline">
+        Let <em>any</em> device in the same group use this (instead of only this agent)
       </label>
     </div>
     <div style="margin-top:14px">
@@ -1022,24 +1028,42 @@ function stripOwnerPrefix(handle, email) {
   const p = ownerLocalOf(email) + '+';
   return handle.startsWith(p) ? handle.slice(p.length) : handle;
 }
-// Fallback owners are scoped to `<you>+…`; show that as a fixed prefix chip so
-// the human just types the short handle. Primary owners type a bare name.
-function updateProvisionPrefix() {
-  const email = $('pv-identity').value;
-  const advOpen = !$('pv-adv').hidden;
-  const prefixEl = $('pv-prefix');
-  // The chip only applies to the simple single-handle input, and only for a
-  // fallback owner. In advanced mode the human types full names.
-  prefixEl.hidden = advOpen || !(email && isFallbackOwner(email, location.host));
-  if (!prefixEl.hidden) prefixEl.textContent = ownerLocalOf(email) + '+';
-  updateProvisionPreview();
+// All agent identities the account already has (agent emails + warrant
+// identifiers) — the pool the unique-handle suggestion must avoid.
+function knownAgentEmails() {
+  const out = new Set(account.agents.map(a => a.toLowerCase()));
+  for (const w of account.warrants) if (w.agent_email) out.add(w.agent_email.toLowerCase());
+  return out;
 }
-function updateProvisionPreview() {
-  const email = $('pv-identity').value, handle = $('pv-handle').value.trim().toLowerCase();
-  const prev = $('pv-preview');
-  if (!email || !handle || !$('pv-adv').hidden) { prev.textContent = ''; return; }
-  const name = agentConstraintName(email, location.host, handle);
-  prev.textContent = `→ ${agentIdentityEmail(email, name)}`;
+// A unique handle TAG for `email`: `base`, else base2, base3, …, judged by the
+// full agent identity it would produce.
+function uniqueHandleTag(email, base) {
+  base = (base || 'agent').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 24) || 'agent';
+  const known = knownAgentEmails();
+  const idFor = (tag) => `${ownerLocalOf(email)}+${tag}@${email.split('@')[1]}`.toLowerCase();
+  if (!known.has(idFor(base))) return base;
+  for (let n = 2; n < 100; n++) {
+    if (!known.has(idFor(base + n))) return base + n;
+  }
+  return base + Math.floor(Math.random() * 10000);
+}
+// The mode selector state: prefix chip, "as me" identity, the as-me warning.
+function updateProvisionMode() {
+  const email = $('pv-identity').value;
+  $('pv-prefix').textContent = email ? ownerLocalOf(email) + '+' : '';
+  $('pv-self-id').textContent = email || 'you';
+  const mode = document.querySelector('input[name="pv-mode"]:checked');
+  const isSelf = mode && mode.value === 'self';
+  const warn = $('pv-self-warn');
+  if (isSelf) {
+    const scopes = [...new Set((provisionCtx.grants || []).flatMap(g => g.scopes || []))];
+    warn.textContent = scopes.length
+      ? `It will act AS you — anything it does (${scopes.join(', ')}) appears as you, indistinguishable from your own actions.`
+      : 'It will act AS you — anything its grants allow appears as you, indistinguishable from your own actions.';
+  }
+  warn.hidden = !isSelf;
+  // Warning sits under the selector; show it near whichever is relevant.
+  $('pv-handle').disabled = isSelf;
 }
 
 function refreshProvisionPicker() {
@@ -1050,7 +1074,7 @@ function refreshProvisionPicker() {
   const none = ids.length === 0;
   $('pv-approve').disabled = none;
   if (none) { $('pv-status').className = 'status muted'; $('pv-status').textContent = 'Add an email below, then pick it here to authorize the agent.'; }
-  updateProvisionPrefix();
+  updateProvisionMode();
 }
 
 async function showProvisionApproval(code) {
@@ -1063,45 +1087,43 @@ async function showProvisionApproval(code) {
   provisionCtx = { code, pubkey: info.provisioning_pubkey, grants: info.grants || [], namespace: info.namespace || 'agents' };
   $('provision').hidden = false;
   const thing = provisionCtx.namespace === 'services' ? 'service' : 'agent';
-  // No requested handle = an as-you service (holder model): it holds YOUR
-  // identity — writes stay owned by and attributed to you — isolated by its
-  // own holder, so the grants shown are the only things it can ever do.
-  const asYou = !((info.requested_names || []).length || (info.requested_patterns || []).length);
-  provisionCtx.asYou = asYou;
-  $('pv-intro').textContent = asYou
-    ? (info.label ? `“${info.label}” ` : `A ${thing} `) +
-      `wants to act as you — using your identity directly, limited to exactly the access shown below. Only approve if you just started setting up this ${thing}.`
-    : (info.label ? `“${info.label}” ` : `A ${thing} `) +
-      `wants its own identity, acting for you. Only approve if you just started setting up this ${thing}.`;
+  $('pv-intro').textContent = (info.label ? `“${info.label}” ` : `A ${thing} `) +
+    `wants to act for you. Choose how it appears; only approve if you just started setting up this ${thing}.`;
   $('pv-fp').textContent = 'Agent key fingerprint: ' + info.fingerprint + '  (confirm it matches what your agent shows)';
   // Merged flow: show each requested grant with equal prominence — the one
-  // approval covers exactly the set shown.
+  // approval covers exactly the set shown. One audience per block, scopes as
+  // their own wrapped chip row.
   const grants = provisionCtx.grants;
   $('pv-grants').hidden = grants.length === 0;
   $('pv-grant-list').innerHTML = grants.map(g => `
-    <p style="margin:2px 0"><code>${escapeHtml(g.audience)}</code>
-      ${(g.scopes || []).length
-        ? '<span class="sub">with scopes: ' + g.scopes.map(s => `<code>${escapeHtml(s)}</code>`).join(' ') + '</span>'
-        : '<span class="sub">(no specific scopes — site-level access)</span>'}</p>`).join('');
+    <div style="margin:6px 0"><code>${escapeHtml(g.audience)}</code>
+      <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">${(g.scopes || []).length
+        ? g.scopes.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')
+        : '<span class="sub">no specific scopes — site-level access</span>'}</div></div>`).join('');
   $('pv-widen').checked = false;
-  $('pv-handle-block').hidden = asYou;
   refreshProvisionPicker();
-  // Optimize for a single handle: the first suggestion goes in the simple input
-  // (stripped of any owner prefix the agent already added); the full list is
-  // available under "Advanced".
-  const suggests = (info.requested_names && info.requested_names.length)
-    ? info.requested_names : (info.requested_patterns || []);
-  $('pv-handle').value = stripOwnerPrefix((suggests[0] || '').toLowerCase(), $('pv-identity').value);
-  $('pv-handles').value = suggests.join(', ');
-  $('pv-adv').hidden = true;
-  updateProvisionPrefix();
+  // Default mode: services act AS you (that is their point — e.g. the poster
+  // posts as you); agents default to their own sub-handle. The suggestion is
+  // the requester's proposed tag (owner prefix stripped) or its label, made
+  // unique against the account's existing agents.
+  const requested = ((info.requested_names || [])[0] || '').toLowerCase();
+  const base = stripOwnerPrefix(requested, $('pv-identity').value)
+    || (info.label || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').split('-')[0]
+    || 'agent';
+  $('pv-handle').value = uniqueHandleTag($('pv-identity').value, base);
+  const defaultMode = provisionCtx.namespace === 'services' && !requested ? 'self' : 'handle';
+  document.querySelector(`input[name="pv-mode"][value="${defaultMode}"]`).checked = true;
+  updateProvisionMode();
   refreshProvisionAddressInfo();
-  $('pv-identity').onchange = () => { updateProvisionPrefix(); refreshProvisionAddressInfo(); };
-  $('pv-handle').oninput = updateProvisionPreview;
-  $('pv-adv-toggle').onclick = () => {
-    const adv = $('pv-adv'); adv.hidden = !adv.hidden;
-    if (!adv.hidden && !$('pv-handles').value) $('pv-handles').value = $('pv-handle').value; // seed advanced from simple
-    updateProvisionPrefix();
+  $('pv-identity').onchange = () => {
+    $('pv-handle').value = uniqueHandleTag($('pv-identity').value, base);
+    updateProvisionMode();
+    refreshProvisionAddressInfo();
+  };
+  for (const r of document.querySelectorAll('input[name="pv-mode"]')) r.onchange = updateProvisionMode;
+  $('pv-handle').onfocus = () => {
+    const r = document.querySelector('input[name="pv-mode"][value="handle"]');
+    if (r && !r.checked) { r.checked = true; updateProvisionMode(); }
   };
   $('pv-approve').onclick = () => approveProvision(code, info.provisioning_pubkey);
   $('pv-deny').onclick = () => denyProvision(code);
@@ -1117,6 +1139,18 @@ async function refreshProvisionAddressInfo() {
   const email = $('pv-identity').value;
   if (!email) return;
   try { provisionCtx.addressInfo = await api('/wsapi/address_info?email=' + encodeURIComponent(email)); } catch {}
+  // Named agents need the IdP's agent mode on primaries; registrar-signed
+  // (secondary) identities always support them.
+  const ai = provisionCtx.addressInfo;
+  const namedOk = !ai || ai.type !== 'primary' || !!ai.agent_device_auth;
+  const handleRadio = document.querySelector('input[name="pv-mode"][value="handle"]');
+  handleRadio.disabled = !namedOk;
+  handleRadio.parentElement.style.opacity = namedOk ? '' : '.55';
+  handleRadio.parentElement.title = namedOk ? '' : 'This identity’s provider does not support named agents yet';
+  if (!namedOk && handleRadio.checked) {
+    document.querySelector('input[name="pv-mode"][value="self"]').checked = true;
+    updateProvisionMode();
+  }
 }
 
 // Device-authorize hop for provisioning approval. Two shapes:
@@ -1216,12 +1250,28 @@ async function storeIssuedPair(issuer, email, keys, certs) {
 
 async function approveProvision(code, provPubkeyX) {
   const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Approving…';
-  // Primary-rooted delegator → the agent's cert comes from the primary via a
-  // popup hop. Open the window NOW, inside the click gesture, before any
-  // await — then navigate it once `prepare` returns the holder.
   const identityEmail = $('pv-identity').value;
   const ai = provisionCtx && provisionCtx.addressInfo;
   const primaryHop = ai && ai.type === 'primary';
+  // The user's choice of how the agent acts.
+  const modeEl = document.querySelector('input[name="pv-mode"]:checked');
+  const asMe = modeEl && modeEl.value === 'self';
+  const handleTag = $('pv-handle').value.trim().toLowerCase();
+  if (!asMe && !handleTag) {
+    status.className = 'status err'; status.textContent = 'Pick a handle (or choose "As me").';
+    return;
+  }
+  // The NAME sent to the broker: fallback identities must sub-address the
+  // owner; primaries use the same `<local>+<tag>` shape (their agent mode
+  // enforces it too).
+  const chosenName = asMe ? null : `${ownerLocalOf(identityEmail)}+${handleTag}`;
+  // Named agents on a primary need the primary's agent-mode page; as-you needs
+  // nothing special (indistinguishable from a device sign-in).
+  if (primaryHop && !asMe && !ai.agent_device_auth) {
+    status.className = 'status err';
+    status.textContent = `${identityEmail.split('@')[1]} does not support named agents yet — choose "As me", or use a different identity.`;
+    return;
+  }
   let popup = null;
   if (primaryHop) {
     if (!ai.device_auth) {
@@ -1245,7 +1295,11 @@ async function approveProvision(code, provPubkeyX) {
     const grants = (provisionCtx && provisionCtx.grants) || [];
     let warrants = null, configCert = null, deviceCert = null;
     if (grants.length || primaryHop) {
-      const prep = await post('/agent-provision/prepare', { code, identity_email: identityEmail });
+      const prep = await post('/agent-provision/prepare', {
+        code, identity_email: identityEmail,
+        identity_mode: asMe ? 'self' : 'handle',
+        ...(asMe ? {} : { handle: chosenName }),
+      });
       let config = grants.length ? configFor(prep.agent_email) : null;
       if (primaryHop) {
         status.textContent = 'Waiting for your identity provider…';
@@ -1254,7 +1308,7 @@ async function approveProvision(code, provPubkeyX) {
         // paired config key is a fresh keystore key: deposited below when
         // this browser lacked a config cert, discarded otherwise.
         let asYouReq = null;
-        if (provisionCtx.asYou) {
+        if (asMe) {
           const k = await window.Keystore.generate();
           asYouReq = { keys: k, configPubkey: k.publicKeyX };
         }
@@ -1263,7 +1317,7 @@ async function approveProvision(code, provPubkeyX) {
         // no config cert yet, so approval never dead-ends.
         let userKeys = null;
         let userReq = null;
-        if (!provisionCtx.asYou && grants.length && !config) {
+        if (!asMe && grants.length && !config) {
           userKeys = { device: await window.Keystore.generate(), config: await window.Keystore.generate() };
           userReq = {
             email: identityEmail,
@@ -1272,7 +1326,8 @@ async function approveProvision(code, provPubkeyX) {
             holder: await browserHolderForIssue(),
           };
         }
-        const res = await agentCertPopupFlow(popup, ai.device_auth, prep.agent_email, provisionCtx.pubkey, prep.holder, userReq, asYouReq);
+        const hopUrl = asMe ? ai.device_auth : ai.agent_device_auth;
+        const res = await agentCertPopupFlow(popup, hopUrl, prep.agent_email, provisionCtx.pubkey, prep.holder, userReq, asYouReq);
         popup = null; // closed by the flow
         deviceCert = res.device_cert;
         if (userKeys && res.user_device_cert && res.user_config_cert) {
@@ -1324,6 +1379,8 @@ async function approveProvision(code, provPubkeyX) {
     }
     await post('/agent-provision/complete', {
       code, approve: true, identity_email: identityEmail,
+      identity_mode: asMe ? 'self' : 'handle',
+      ...(asMe ? {} : { handle: chosenName }),
       ...(warrants ? { warrants, config_cert: configCert } : {}),
       // Primary-signed cert: also relay where that IdP mints access certs
       // (discovered path — never assume /access/mint).

@@ -421,18 +421,23 @@ pub async fn resolve(
 // ===========================================================================
 
 /// The identity/handle policy shared by `prepare` and `complete`: the session
-/// must own the delegating identity, and the requested handle must be one this
-/// owner may mint. Returns `(name, agent_email)`.
+/// must own the delegating identity, and the handle must be one this owner may
+/// mint. Returns `(name, agent_email)`.
 ///
-/// No requested handle = an **as-you service** (holder-authorization model):
-/// the requester asks to hold the delegating identity ITSELF — writes stay
-/// owned by and attributed to the user — isolated by its broker-assigned
-/// holder rather than by a sub-address identity. The warrants it can ever use
-/// are exactly those matched to that holder.
+/// The approving USER chooses how the agent acts (`identity_mode`):
+/// - `"self"` — an **as-you** agent: it holds the delegating identity ITSELF
+///   (writes stay owned by and attributed to the user), isolated by its
+///   broker-assigned holder. Overrides any handle the requester asked for.
+/// - `"handle"` — a named agent under `chosen_handle` (the page's pick, which
+///   may differ from what the requester suggested).
+/// - absent — legacy behavior: the requester's first suggested name, else
+///   as-you.
 fn resolve_agent_identity(
     state: &Arc<RegistrarState>,
     user: &AuthedUser,
     identity_email: &str,
+    identity_mode: Option<&str>,
+    chosen_handle: Option<&str>,
     requested_name: Option<String>,
 ) -> Result<(Option<String>, String), RegistrarError> {
     if !state.host.owns_verified_email(user.user_id, identity_email).unwrap_or(false) {
@@ -440,7 +445,24 @@ fn resolve_agent_identity(
             "you don't own the delegating identity".into(),
         ));
     }
-    let Some(name) = requested_name else {
+    let name = match identity_mode {
+        Some("self") => None,
+        Some("handle") => Some(
+            chosen_handle
+                .map(|h| h.trim().to_lowercase())
+                .filter(|h| !h.is_empty())
+                .ok_or_else(|| {
+                    RegistrarError::ValidationError("identity_mode 'handle' needs a handle".into())
+                })?,
+        ),
+        Some(other) => {
+            return Err(RegistrarError::ValidationError(format!(
+                "unknown identity_mode '{other}'"
+            )))
+        }
+        None => requested_name,
+    };
+    let Some(name) = name else {
         return Ok((None, identity_email.to_lowercase()));
     };
     // Anti-squatting: the handle must be one this owner may mint (same rule the
@@ -463,6 +485,13 @@ pub struct PrepareBody {
     /// Namespace override (defaults to the requester's hint).
     #[serde(default)]
     pub namespace: Option<String>,
+    /// How the agent acts: "self" (as-you) or "handle" (named). Absent =
+    /// legacy (requester's suggestion, else as-you). MUST match `complete`.
+    #[serde(default)]
+    pub identity_mode: Option<String>,
+    /// The chosen handle when `identity_mode` is "handle".
+    #[serde(default)]
+    pub handle: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -505,7 +534,10 @@ pub async fn prepare(
             rec.prepared_identity.clone().zip(rec.holder.clone()),
         )
     };
-    let (_, agent_email) = resolve_agent_identity(&state, &user, &req.identity_email, requested_name)?;
+    let (_, agent_email) = resolve_agent_identity(
+        &state, &user, &req.identity_email,
+        req.identity_mode.as_deref(), req.handle.as_deref(), requested_name,
+    )?;
 
     // Assign (or reuse) the holder: `<ns-prefix>.<rand>` from the user's
     // namespace registry. The requester hinted the namespace; the user's page
@@ -563,6 +595,14 @@ pub struct CompleteBody {
     /// confirms here. Defaults to `agents`. Cosmetic + re-categorizable.
     #[serde(default)]
     pub namespace: Option<String>,
+    /// How the agent acts: "self" (as-you) or "handle" (named) — the approving
+    /// user's choice, overriding the requester's suggestion. Same values as
+    /// passed to `prepare`.
+    #[serde(default)]
+    pub identity_mode: Option<String>,
+    /// The chosen handle when `identity_mode` is "handle".
+    #[serde(default)]
+    pub handle: Option<String>,
     /// The warrant JWSs the approval page signed client-side with the config
     /// key, one per requested grant in grant order (required iff the request
     /// carries grants).
@@ -646,6 +686,8 @@ async fn complete_device_cert(
         state,
         user,
         &identity_email,
+        req.identity_mode.as_deref(),
+        req.handle.as_deref(),
         snapshot.requested_names.first().cloned(),
     )?;
 

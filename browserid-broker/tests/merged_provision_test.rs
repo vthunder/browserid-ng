@@ -558,3 +558,69 @@ async fn grantless_request_still_completes_without_prepare() {
     // Default namespace: the holder sits under the user's `agents` prefix.
     assert!(device_cert.holder().as_str().contains('.'));
 }
+
+/// The approving USER chooses how the agent acts, overriding the request:
+/// `identity_mode: "self"` turns a handle-suggesting request into an as-you
+/// agent; `identity_mode: "handle"` names a handle-less request.
+#[tokio::test]
+async fn user_chosen_identity_mode_overrides_the_request() {
+    let (server, sender, _idp) = make_server();
+    let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let c = csrf(&server, &session).await;
+
+    // Request SUGGESTS a handle; the user chooses "as me".
+    let kp1 = KeyPair::generate();
+    let r = server
+        .post("/agent-provision/request")
+        .json(&json!({
+            "provisioning_pubkey": { "algorithm": "Ed25519", "publicKey": kp1.public_key().to_base64() },
+            "requested_handles": { "names": ["alice+suggested"] },
+        }))
+        .await;
+    let code1 = r.json::<Value>()["code"].as_str().unwrap().to_string();
+    let r = server
+        .post("/agent-provision/complete")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code1, "approve": true,
+            "identity_email": DELEGATOR, "identity_mode": "self" }))
+        .await;
+    assert_eq!(r.status_code(), 200, "self-override complete: {:?}", r.text());
+    let poll: Value = server.post("/agent-provision/poll").json(&json!({ "code": code1 })).await.json();
+    assert_eq!(poll["credential"]["identity"], DELEGATOR, "self overrides the suggestion");
+
+    // Request suggests NOTHING; the user picks a handle.
+    let kp2 = KeyPair::generate();
+    let r = server
+        .post("/agent-provision/request")
+        .json(&json!({
+            "provisioning_pubkey": { "algorithm": "Ed25519", "publicKey": kp2.public_key().to_base64() },
+        }))
+        .await;
+    let code2 = r.json::<Value>()["code"].as_str().unwrap().to_string();
+    let r = server
+        .post("/agent-provision/complete")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code2, "approve": true,
+            "identity_email": DELEGATOR, "identity_mode": "handle", "handle": "alice+picked" }))
+        .await;
+    assert_eq!(r.status_code(), 200, "handle-pick complete: {:?}", r.text());
+    let poll: Value = server.post("/agent-provision/poll").json(&json!({ "code": code2 })).await.json();
+    assert_eq!(poll["credential"]["identity"], "alice+picked@example.com");
+
+    // "handle" mode without a handle is refused.
+    let kp3 = KeyPair::generate();
+    let r = server
+        .post("/agent-provision/request")
+        .json(&json!({
+            "provisioning_pubkey": { "algorithm": "Ed25519", "publicKey": kp3.public_key().to_base64() },
+        }))
+        .await;
+    let code3 = r.json::<Value>()["code"].as_str().unwrap().to_string();
+    let r = server
+        .post("/agent-provision/complete")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code3, "approve": true,
+            "identity_email": DELEGATOR, "identity_mode": "handle" }))
+        .await;
+    assert_ne!(r.status_code(), 200, "handle mode without a handle must be refused");
+}
