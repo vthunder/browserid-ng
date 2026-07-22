@@ -1096,26 +1096,38 @@ async function refreshProvisionAddressInfo() {
   try { provisionCtx.addressInfo = await api('/wsapi/address_info?email=' + encodeURIComponent(email)); } catch {}
 }
 
-// Agent-mode device-authorize hop: the primary signs an AUTHENTICATION cert
-// over the AGENT's key + the broker-assigned holder, authorized by the user's
-// first-party session at the IdP (same popup surface as dialog sign-in).
-// `user` (optional, combined mode) additionally asks the IdP to issue the
-// USER's own device+config cert pair in the same visit — the recovery path
-// when this browser has no config cert for the delegating identity yet.
-function agentCertPopupFlow(popup, deviceAuthUrl, agentEmail, agentPubkey, holder, user) {
+// Device-authorize hop for provisioning approval. Two shapes:
+//
+// `asYou` — the agent holds the USER'S OWN identity. To the IdP this is
+// indistinguishable from a normal device sign-in (that's the point of the
+// holder model): standard user-mode fragment, `device_pubkey` = the AGENT's
+// key, holder = the broker-assigned one, plus a config pubkey the IdP pairs
+// with it. Works against ANY device-model primary — no agent-mode support
+// needed (sandmill works today).
+//
+// Named (+tag) agents — the cert's identity differs from the session's, so
+// the IdP must knowingly sign a sub-address: the agent-mode fragment, only on
+// IdPs that implement it (mingo). `user` (optional, combined mode) rides
+// along to also issue the user's own pair in the same visit.
+function agentCertPopupFlow(popup, deviceAuthUrl, agentEmail, agentPubkey, holder, user, asYou) {
   return new Promise((resolve, reject) => {
     const idpOrigin = new URL(deviceAuthUrl).origin;
-    popup.location = deviceAuthUrl +
-      '#agent_email=' + encodeURIComponent(agentEmail) +
-      '&agent_pubkey=' + encodeURIComponent(agentPubkey) +
-      '&holder=' + encodeURIComponent(holder) +
-      (user
-        ? '&email=' + encodeURIComponent(user.email) +
-          '&device_pubkey=' + encodeURIComponent(user.devicePubkey) +
-          '&config_pubkey=' + encodeURIComponent(user.configPubkey) +
-          (user.holder ? '&user_holder=' + encodeURIComponent(user.holder) : '')
-        : '') +
-      '&return_origin=' + encodeURIComponent(window.location.origin);
+    popup.location = deviceAuthUrl + (asYou
+      ? '#email=' + encodeURIComponent(agentEmail) +
+        '&device_pubkey=' + encodeURIComponent(agentPubkey) +
+        '&config_pubkey=' + encodeURIComponent(asYou.configPubkey) +
+        '&holder=' + encodeURIComponent(holder) +
+        '&return_origin=' + encodeURIComponent(window.location.origin)
+      : '#agent_email=' + encodeURIComponent(agentEmail) +
+        '&agent_pubkey=' + encodeURIComponent(agentPubkey) +
+        '&holder=' + encodeURIComponent(holder) +
+        (user
+          ? '&email=' + encodeURIComponent(user.email) +
+            '&device_pubkey=' + encodeURIComponent(user.devicePubkey) +
+            '&config_pubkey=' + encodeURIComponent(user.configPubkey) +
+            (user.holder ? '&user_holder=' + encodeURIComponent(user.holder) : '')
+          : '') +
+        '&return_origin=' + encodeURIComponent(window.location.origin));
     const TIMEOUT_MS = 3 * 60 * 1000;
     let timeoutId = null, pollId = null;
     function cleanup() {
@@ -1127,10 +1139,19 @@ function agentCertPopupFlow(popup, deviceAuthUrl, agentEmail, agentPubkey, holde
       if (ev.origin !== idpOrigin) return;
       const d = ev.data;
       if (!d || typeof d !== 'object') return;
-      if (d.type === 'browserid:agent_device_cert') {
+      // 'device_certs' is the user-mode response (as-you path); the config
+      // cert rides back as user_config_cert either way.
+      if (d.type === 'browserid:agent_device_cert' || d.type === 'browserid:device_certs') {
         cleanup();
-        if (d.device_cert) resolve(d);
-        else reject(new Error('identity provider returned no certificate'));
+        if (d.device_cert) {
+          resolve({
+            device_cert: d.device_cert,
+            user_device_cert: d.user_device_cert || null,
+            user_config_cert: d.user_config_cert || d.config_cert || null,
+          });
+        } else {
+          reject(new Error('identity provider returned no certificate'));
+        }
       } else if (d.type === 'browserid:device_error') {
         cleanup();
         reject(new Error(d.reason || 'identity provider refused'));
@@ -1205,13 +1226,21 @@ async function approveProvision(code, provPubkeyX) {
       let config = grants.length ? configFor(prep.agent_email) : null;
       if (primaryHop) {
         status.textContent = 'Waiting for your identity provider…';
-        // No config cert for the delegating identity in this browser yet →
-        // ask the primary to issue the USER's device+config pair in the SAME
-        // visit (combined mode), so the approval never dead-ends on "sign in
-        // somewhere first".
+        // As-you: a standard user-mode visit (works on ANY device-model
+        // primary — the IdP can't tell an agent key from a browser key). The
+        // paired config key is a fresh keystore key: deposited below when
+        // this browser lacked a config cert, discarded otherwise.
+        let asYouReq = null;
+        if (provisionCtx.asYou) {
+          const k = await window.Keystore.generate();
+          asYouReq = { keys: k, configPubkey: k.publicKeyX };
+        }
+        // Named (+tag) agent on an agent-mode IdP: combined mode issues the
+        // USER's device+config pair in the same visit when this browser has
+        // no config cert yet, so approval never dead-ends.
         let userKeys = null;
         let userReq = null;
-        if (grants.length && !config) {
+        if (!provisionCtx.asYou && grants.length && !config) {
           userKeys = { device: await window.Keystore.generate(), config: await window.Keystore.generate() };
           userReq = {
             email: identityEmail,
@@ -1220,12 +1249,20 @@ async function approveProvision(code, provPubkeyX) {
             holder: await browserHolderForIssue(),
           };
         }
-        const res = await agentCertPopupFlow(popup, ai.device_auth, prep.agent_email, provisionCtx.pubkey, prep.holder, userReq);
+        const res = await agentCertPopupFlow(popup, ai.device_auth, prep.agent_email, provisionCtx.pubkey, prep.holder, userReq, asYouReq);
         popup = null; // closed by the flow
         deviceCert = res.device_cert;
         if (userKeys && res.user_device_cert && res.user_config_cert) {
           await storeIssuedPair(identityEmail.split('@')[1], identityEmail, userKeys,
             { device_cert: res.user_device_cert, config_cert: res.user_config_cert });
+          config = configFor(prep.agent_email);
+        } else if (asYouReq && grants.length && !config && res.user_config_cert) {
+          // Deposit ONLY the config record: the device cert from this visit
+          // certifies the AGENT's key, not a key this browser holds.
+          await window.Keystore.putDevice(identityEmail.split('@')[1], identityEmail, 'config', {
+            publicKeyX: asYouReq.keys.publicKeyX, privateKey: asYouReq.keys.privateKey, cert: res.user_config_cert,
+          });
+          await refreshKeystore();
           config = configFor(prep.agent_email);
         }
       } else if (grants.length && !config) {
