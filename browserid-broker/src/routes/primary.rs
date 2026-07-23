@@ -57,8 +57,16 @@ where
     // broker (a login here roots in a primary or this broker's own fallback).
     let audience = browserid_registrar::consent::public_origin(&state.domain);
     let accepted = vec![state.domain.clone()];
+    let is_own_revoked =
+        |idx: u64| state.user_store.is_status_revoked_idx(idx).map_err(|e| e.to_string());
+    let status = crate::verifier::StatusCtx {
+        own_uri: browserid_registrar::consent::status_list_uri(&state.domain),
+        is_own_revoked: &is_own_revoked,
+        cache: &state.foreign_status_lists,
+    };
     let result =
-        verify_access_with_dns(&req.presentation, &audience, fetcher.as_ref(), &accepted).await;
+        verify_access_with_dns(&req.presentation, &audience, fetcher.as_ref(), &accepted, status)
+            .await;
 
     if result.status != "okay" {
         return Err(BrokerError::InvalidAssertion(

@@ -5,9 +5,11 @@
 
 use browserid_core::{
     discovery::{SupportDocument, SupportDocumentFetcher},
-    Error as CoreError, Result as CoreResult,
+    Error as CoreError, Result as CoreResult, StatusListToken, StatusRef,
 };
 use reqwest::blocking::Client;
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
 
@@ -124,6 +126,101 @@ impl AccessVerificationResult {
     }
 }
 
+/// Where a verifier resolves revocation status (core §6.4) — all three
+/// checks fail-closed.
+///
+/// A ref whose `uri` is this deployment's **own** status list is checked
+/// authoritatively against the local store (no network, no staleness). Any
+/// other ref is a **foreign** list: fetched over HTTPS, bound to its
+/// publishing authority (the list's `iss` claim MUST be the URI's host, and
+/// the signature MUST verify under that domain's discovered key), and cached
+/// while fresh. An unreachable, stale, or unverifiable list rejects the
+/// presentation — "cannot prove unrevoked" is a failure, per spec §6.4.
+pub struct StatusCtx<'a> {
+    /// This deployment's own status-list URI
+    /// (`browserid_registrar::consent::status_list_uri`)
+    pub own_uri: String,
+    /// Authoritative local check: is `idx` revoked on our own list?
+    pub is_own_revoked: &'a (dyn Fn(u64) -> Result<bool, String> + Send + Sync),
+    /// Cache of verified foreign list tokens, keyed by URI (see
+    /// `AppState::status_lists`)
+    pub cache: &'a RwLock<HashMap<String, StatusListToken>>,
+}
+
+fn status_http() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("failed to build status HTTP client")
+    })
+}
+
+/// The list's signer must be the URI's own host — the credential's issuer
+/// chose the URI, and a list served there is only authoritative if signed by
+/// that host's key (else a compromised host could serve someone else's
+/// all-clear list).
+fn uri_matches_issuer(uri: &str, iss: &str) -> bool {
+    let Ok(u) = reqwest::Url::parse(uri) else { return false };
+    let Some(host) = u.host_str() else { return false };
+    match u.port() {
+        Some(p) => format!("{host}:{p}") == iss,
+        None => host == iss,
+    }
+}
+
+/// Check a foreign status ref fail-closed: `Ok(revoked)`, or `Err` when the
+/// check cannot be made (which the caller MUST treat as a rejection).
+async fn check_foreign_status(
+    r: &StatusRef,
+    discoverer: &impl crate::fallback_fetcher::Discoverer,
+    cache: &RwLock<HashMap<String, StatusListToken>>,
+) -> Result<bool, String> {
+    // Fresh cached list → answer without network. (Scoped: the guard must not
+    // live across an await.)
+    {
+        let lists = cache.read().unwrap();
+        if let Some(tok) = lists.get(&r.uri) {
+            if tok.is_fresh(0) {
+                return Ok(tok.is_revoked(r.idx));
+            }
+        }
+    }
+
+    let body = status_http()
+        .get(&r.uri)
+        .send()
+        .await
+        .and_then(|resp| resp.error_for_status())
+        .map_err(|e| format!("fetch {}: {e}", r.uri))?
+        .text()
+        .await
+        .map_err(|e| format!("read {}: {e}", r.uri))?;
+    let token = StatusListToken::parse(body.trim()).map_err(|e| e.to_string())?;
+
+    let iss = token.claims().iss.clone();
+    if !uri_matches_issuer(&r.uri, &iss) {
+        return Err(format!("list at {} signed by non-authoritative issuer '{iss}'", r.uri));
+    }
+    let disc = discoverer
+        .discover(&iss)
+        .await
+        .map_err(|e| format!("status issuer discovery '{iss}': {e}"))?;
+    let key = disc
+        .document
+        .public_key
+        .ok_or_else(|| format!("status issuer '{iss}' has no key"))?;
+    token.verify(&key, &r.uri).map_err(|e| e.to_string())?;
+    if !token.is_fresh(0) {
+        return Err(format!("status list {} is stale", r.uri));
+    }
+
+    let revoked = token.is_revoked(r.idx);
+    cache.write().unwrap().insert(r.uri.clone(), token);
+    Ok(revoked)
+}
+
 /// Verify a device-cert `access_cert~assertion~warrant~config_cert` bundle.
 ///
 /// Enforces conformance: the access cert AND config cert must be issued by the
@@ -132,14 +229,16 @@ impl AccessVerificationResult {
 /// share one `iss`, we resolve that single issuer key up front (async) and hand it
 /// to the sync join.
 ///
-/// NOTE (P6 hardening TODO): the three status refs returned by the core verify are
-/// not yet fetched fail-closed here — foreign status-list fetch (`StatusCache`)
-/// lands with the warrant registry (P4). Revocation is therefore not yet enforced.
+/// Revocation (core §6.4): after the cryptographic join, the three status
+/// refs (access cert, config cert, warrant) are checked **fail-closed**
+/// through `status` — own-list refs against the local store, foreign refs by
+/// authenticated fetch. A revoked bit or an uncheckable ref rejects.
 pub async fn verify_access_with_dns(
     presentation: &str,
     audience: &str,
     discoverer: &impl crate::fallback_fetcher::Discoverer,
     accepted_fallbacks: &[String],
+    status: StatusCtx<'_>,
 ) -> AccessVerificationResult {
     use browserid_core::device::AccessPresentation;
 
@@ -186,21 +285,46 @@ pub async fn verify_access_with_dns(
         None => return AccessVerificationResult::fail("issuer has no key"),
     };
 
-    match pres.verify(audience, |req_iss| {
+    let v = match pres.verify(audience, |req_iss| {
         if req_iss == iss {
             Ok(idp_key.clone())
         } else {
             Err(browserid_core::Error::InvalidProvisioning(format!("issuer '{req_iss}' not authoritative")))
         }
     }) {
-        Ok(v) => AccessVerificationResult {
-            status: "okay".into(),
-            email: Some(v.email),
-            holder: Some(v.holder.as_str().to_string()),
-            scopes: Some(v.scopes),
-            issuer: Some(v.issuer),
-            reason: None,
-        },
-        Err(e) => AccessVerificationResult::fail(e.to_string()),
+        Ok(v) => v,
+        Err(e) => return AccessVerificationResult::fail(e.to_string()),
+    };
+
+    // Three fail-closed status authorities (§6.4, §6.2 step 8).
+    for (label, r) in [
+        ("access cert", &v.access_status),
+        ("config cert", &v.config_status),
+        ("warrant", &v.warrant_status),
+    ] {
+        let Some(r) = r else { continue };
+        let revoked = if r.uri == status.own_uri {
+            (status.is_own_revoked)(r.idx)
+        } else {
+            check_foreign_status(r, discoverer, status.cache).await
+        };
+        match revoked {
+            Ok(false) => {}
+            Ok(true) => return AccessVerificationResult::fail(format!("{label} revoked")),
+            Err(e) => {
+                return AccessVerificationResult::fail(format!(
+                    "{label} status unavailable (fail-closed): {e}"
+                ))
+            }
+        }
+    }
+
+    AccessVerificationResult {
+        status: "okay".into(),
+        email: Some(v.email),
+        holder: Some(v.holder.as_str().to_string()),
+        scopes: Some(v.scopes),
+        issuer: Some(v.issuer),
+        reason: None,
     }
 }

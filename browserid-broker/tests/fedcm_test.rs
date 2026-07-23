@@ -46,6 +46,21 @@ fn sec_fetch_dest() -> (HeaderName, HeaderValue) {
     )
 }
 
+fn never_revoked(_idx: u64) -> Result<bool, String> {
+    Ok(false)
+}
+
+/// StatusCtx matching the test broker's own status URI, nothing revoked.
+macro_rules! own_status_ctx {
+    ($cache:expr) => {
+        browserid_broker::verifier::StatusCtx {
+            own_uri: browserid_registrar::consent::status_list_uri(BROKER),
+            is_own_revoked: &never_revoked,
+            cache: $cache,
+        }
+    };
+}
+
 #[tokio::test]
 async fn fedcm_mints_verifiable_assertion() {
     let (server, email_sender) = create_test_server();
@@ -107,19 +122,25 @@ async fn fedcm_mints_verifiable_assertion() {
     // THE proof: the token verifies through the UNCHANGED RP verifier path
     // (verify_assertion_with_dns + accepted_fallbacks), yielding the right email.
     let disc = BrokerFallback { key: broker_pub.clone() };
-    let ok = verify_access_with_dns(&token, AUDIENCE, &disc, &[BROKER.to_string()]).await;
+    let cache = std::sync::RwLock::new(std::collections::HashMap::new());
+    let ok =
+        verify_access_with_dns(&token, AUDIENCE, &disc, &[BROKER.to_string()], own_status_ctx!(&cache))
+            .await;
     assert_eq!(ok.status, "okay", "reason: {:?}", ok.reason);
     assert_eq!(ok.email.as_deref(), Some("alice@example.com"));
 
     // Audience binding: the same token must NOT verify for a different RP.
-    let wrong_aud =
-        verify_access_with_dns(&token, "https://evil.example.com", &disc, &[BROKER.to_string()])
-            .await;
+    let wrong_aud = verify_access_with_dns(
+        &token, "https://evil.example.com", &disc, &[BROKER.to_string()], own_status_ctx!(&cache),
+    )
+    .await;
     assert_eq!(wrong_aud.status, "failure");
 
     // Fallback gate: an RP that does NOT accept this broker as a fallback rejects it.
-    let not_accepted =
-        verify_access_with_dns(&token, AUDIENCE, &disc, &["other.example".to_string()]).await;
+    let not_accepted = verify_access_with_dns(
+        &token, AUDIENCE, &disc, &["other.example".to_string()], own_status_ctx!(&cache),
+    )
+    .await;
     assert_eq!(not_accepted.status, "failure");
 }
 

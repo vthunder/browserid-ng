@@ -150,25 +150,20 @@ where
     };
     let audience = guestbook_audience(&state.domain);
     let accepted = vec![state.domain.clone()];
-    let result = verify_access_with_dns(&req.presentation, &audience, fetcher.as_ref(), &accepted).await;
+    // Status refs (own + foreign) are checked fail-closed inside the verifier.
+    let is_own_revoked =
+        |idx: u64| state.user_store.is_status_revoked_idx(idx).map_err(|e| e.to_string());
+    let status_ctx = crate::verifier::StatusCtx {
+        own_uri: browserid_registrar::consent::status_list_uri(&state.domain),
+        is_own_revoked: &is_own_revoked,
+        cache: &state.foreign_status_lists,
+    };
+    let result =
+        verify_access_with_dns(&req.presentation, &audience, fetcher.as_ref(), &accepted, status_ctx)
+            .await;
 
     if result.status != "okay" {
         return fail(StatusCode::UNAUTHORIZED, &result.reason.unwrap_or_else(|| "verification failed".into()));
-    }
-    // Revocation against our OWN status list (the general fail-closed foreign
-    // status fetch lands with the verifier's StatusCache work).
-    if let Ok(pres) = browserid_core::device::AccessPresentation::parse(&req.presentation) {
-        let own_uri = browserid_registrar::consent::status_list_uri(&state.domain);
-        let refs = [
-            pres.access_cert.claims().status.clone(),
-            pres.config_cert.claims().status.clone(),
-            pres.warrant.claims().status.clone(),
-        ];
-        for r in refs.into_iter().flatten() {
-            if r.uri == own_uri && matches!(state.user_store.is_status_revoked_idx(r.idx), Ok(true)) {
-                return fail(StatusCode::UNAUTHORIZED, "credential revoked");
-            }
-        }
     }
 
     // The old "agents-only" gate is removed: `subject: user|agent` was a

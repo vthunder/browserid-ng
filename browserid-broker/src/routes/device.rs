@@ -331,7 +331,17 @@ where
         }),
     };
     let accepted = req.accepted_fallbacks.unwrap_or_else(|| vec![state.domain.clone()]);
-    Json(verify_access_with_dns(&req.presentation, &req.audience, fetcher.as_ref(), &accepted).await)
+    let is_own_revoked =
+        |idx: u64| state.user_store.is_status_revoked_idx(idx).map_err(|e| e.to_string());
+    let status = crate::verifier::StatusCtx {
+        own_uri: browserid_registrar::consent::status_list_uri(&state.domain),
+        is_own_revoked: &is_own_revoked,
+        cache: &state.foreign_status_lists,
+    };
+    Json(
+        verify_access_with_dns(&req.presentation, &req.audience, fetcher.as_ref(), &accepted, status)
+            .await,
+    )
 }
 
 // ---------------------------------------------------------------------------

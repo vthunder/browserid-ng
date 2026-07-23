@@ -121,6 +121,11 @@ pub struct Verifier {
     /// Revocation status cache (core §6.4); when set, presented credentials
     /// carrying `status` claims are checked against it
     status_cache: Option<std::sync::Arc<StatusCache>>,
+    /// Spec §6.4 makes the three status checks mandatory and fail-closed, so
+    /// by default a presentation carrying a `status` ref is rejected unless a
+    /// [`StatusCache`] is configured to check it. `without_status_checks()`
+    /// opts out (dev/test only — non-conformant).
+    require_status_checks: bool,
 }
 
 impl Verifier {
@@ -132,12 +137,23 @@ impl Verifier {
             issuer_keys: HashMap::new(),
             scopes: Vec::new(),
             status_cache: None,
+            require_status_checks: true,
         }
     }
 
+    /// Accept presentations whose credentials carry `status` refs even when no
+    /// [`StatusCache`] is configured to check them. **Non-conformant** (spec
+    /// §6.4 requires the three checks, fail-closed) — dev/test only.
+    pub fn without_status_checks(mut self) -> Self {
+        self.require_status_checks = false;
+        self
+    }
+
     /// Check presented credentials against a revocation status cache
-    /// (core §6.4). Refresh the cache out of band (`StatusCache::refresh`);
-    /// verification itself stays synchronous.
+    /// (core §6.4). Refresh the cache out of band ([`Verifier::refresh_status`]
+    /// or `StatusCache::refresh`); verification itself stays synchronous.
+    /// Without a cache, a presentation carrying a `status` ref is rejected
+    /// fail-closed (unless `without_status_checks()` opted out).
     pub fn with_status_cache(mut self, cache: std::sync::Arc<StatusCache>) -> Self {
         self.status_cache = Some(cache);
         self
@@ -197,6 +213,31 @@ impl Verifier {
         &self.audience
     }
 
+    /// Fetch a status list from `uri`, verify it against this RP's trusted
+    /// issuer table (the list's `iss` claim must be a trusted issuer), and
+    /// cache it. Call at startup and on a refresh timer (reference: the
+    /// list's `ttl`, 5 min) — [`Verifier::verify`] stays synchronous and
+    /// rejects fail-closed while a needed list is missing or stale.
+    pub async fn refresh_status(&self, uri: &str) -> Result<(), RpError> {
+        let cache = self.status_cache.as_ref().ok_or_else(|| {
+            RpError::WellKnown("no status cache configured (Verifier::with_status_cache)".into())
+        })?;
+        let body = reqwest::get(uri).await?.error_for_status()?.text().await?;
+        let token = StatusListToken::parse(body.trim())
+            .map_err(|e| RpError::WellKnown(format!("status list: {e}")))?;
+        let key = self.issuer_keys.get(&token.claims().iss).ok_or_else(|| {
+            RpError::WellKnown(format!(
+                "status list at {uri} is signed by '{}', not a trusted issuer",
+                token.claims().iss
+            ))
+        })?;
+        token
+            .verify(key, uri)
+            .map_err(|e| RpError::WellKnown(format!("status list: {e}")))?;
+        cache.insert(uri, token);
+        Ok(())
+    }
+
     /// Verify an access presentation
     /// (`access_cert~assertion~warrant~config_cert`): audience, expiry, the
     /// full cryptographic join (assertion ← access cert; warrant ← config
@@ -219,34 +260,45 @@ impl Verifier {
             })
             .map_err(|e| ExchangeError::InvalidAssertion(e.to_string()))?;
 
-        // Revocation status (core §6.4): revoked → reject; unknown/stale is
-        // policy — fail-open by default (degrades to TTL semantics),
-        // fail-closed when the cache says so.
-        if let Some(cache) = &self.status_cache {
-            let refs: Vec<&StatusRef> = [
-                verified.access_status.as_ref(),
-                verified.config_status.as_ref(),
-                verified.warrant_status.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
-            for r in refs {
-                match cache.check(r) {
-                    StatusVerdict::Revoked => {
-                        return Err(ExchangeError::InvalidAssertion(
-                            "credential revoked (status list)".into(),
-                        ));
+        // Revocation status (core §6.4): the three checks are mandatory and
+        // fail-closed. Revoked → reject; unknown/stale → reject unless the
+        // cache was explicitly built `fail_open()`; refs present with no
+        // cache at all → reject unless `without_status_checks()` opted out.
+        let refs: Vec<&StatusRef> = [
+            verified.access_status.as_ref(),
+            verified.config_status.as_ref(),
+            verified.warrant_status.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        match &self.status_cache {
+            Some(cache) => {
+                for r in refs {
+                    match cache.check(r) {
+                        StatusVerdict::Revoked => {
+                            return Err(ExchangeError::InvalidAssertion(
+                                "credential revoked (status list)".into(),
+                            ));
+                        }
+                        StatusVerdict::Valid => {}
+                        StatusVerdict::Unknown if cache.is_fail_closed() => {
+                            return Err(ExchangeError::InvalidAssertion(
+                                "credential status unavailable (fail-closed policy)".into(),
+                            ));
+                        }
+                        StatusVerdict::Unknown => {}
                     }
-                    StatusVerdict::Valid => {}
-                    StatusVerdict::Unknown if cache.is_fail_closed() => {
-                        return Err(ExchangeError::InvalidAssertion(
-                            "credential status unavailable (fail-closed policy)".into(),
-                        ));
-                    }
-                    StatusVerdict::Unknown => {}
                 }
             }
+            None if self.require_status_checks && !refs.is_empty() => {
+                return Err(ExchangeError::InvalidAssertion(
+                    "credential carries a status ref but this RP has no status cache \
+                     configured (fail-closed; see Verifier::with_status_cache)"
+                        .into(),
+                ));
+            }
+            None => {}
         }
 
         Ok(VerifiedIdentity {
@@ -484,16 +536,26 @@ impl StatusCache {
     pub fn new() -> Self {
         Self {
             lists: RwLock::new(HashMap::new()),
-            fail_closed: false,
-            // Reference default: a short fail-open grace beyond ttl before
-            // entries go Unknown (then policy applies).
+            // Spec §6.4: an unreachable/stale status authority is "cannot
+            // prove unrevoked" → reject. Fail-open is an explicit opt-out.
+            fail_closed: true,
+            // A short grace beyond the advertised ttl before entries go
+            // Unknown (then policy applies) — absorbs refresh jitter.
             grace_seconds: 600,
         }
     }
 
-    /// Treat `Unknown` (missing/stale list) as a rejection
+    /// Treat `Unknown` (missing/stale list) as a rejection — the default.
     pub fn fail_closed(mut self) -> Self {
         self.fail_closed = true;
+        self
+    }
+
+    /// Treat `Unknown` (missing/stale list) as acceptable, degrading to
+    /// TTL-only semantics. **Non-conformant** (spec §6.4) — use only where
+    /// availability is worth more than revocation latency.
+    pub fn fail_open(mut self) -> Self {
+        self.fail_closed = false;
         self
     }
 
@@ -732,6 +794,53 @@ mod tests {
             vec![], Some(StatusRef { uri: uri.into(), idx: 3 }),
         ));
         assert!(exchange(&verifier, &tokens, &request).is_ok());
+    }
+
+    #[test]
+    fn status_ref_without_cache_rejected_by_default() {
+        let issuer_kp = KeyPair::generate();
+        let uri = "https://browserid.example/.well-known/browserid-status";
+        let pres = presentation(
+            &issuer_kp, "alice@example.com", "br.main", AUDIENCE, AUDIENCE,
+            vec![], Some(StatusRef { uri: uri.into(), idx: 3 }),
+        );
+
+        // No cache configured → a status-carrying presentation fails closed.
+        let verifier = Verifier::new(AUDIENCE).trust_issuer(ISSUER, issuer_kp.public_key());
+        let err = verifier.verify(&pres).unwrap_err();
+        assert!(err.to_string().contains("no status cache"), "{err}");
+
+        // Explicit (non-conformant) opt-out accepts it.
+        let verifier = Verifier::new(AUDIENCE)
+            .trust_issuer(ISSUER, issuer_kp.public_key())
+            .without_status_checks();
+        assert!(verifier.verify(&pres).is_ok());
+    }
+
+    #[test]
+    fn unknown_status_fails_closed_by_default_and_fail_open_opts_out() {
+        let issuer_kp = KeyPair::generate();
+        let uri = "https://browserid.example/.well-known/browserid-status";
+        let pres = presentation(
+            &issuer_kp, "alice@example.com", "br.main", AUDIENCE, AUDIENCE,
+            vec![], Some(StatusRef { uri: uri.into(), idx: 3 }),
+        );
+
+        // Cache configured but has no list for the uri → Unknown → reject.
+        let cache = std::sync::Arc::new(StatusCache::new());
+        assert!(cache.is_fail_closed(), "fail-closed is the default");
+        let verifier = Verifier::new(AUDIENCE)
+            .trust_issuer(ISSUER, issuer_kp.public_key())
+            .with_status_cache(cache);
+        let err = verifier.verify(&pres).unwrap_err();
+        assert!(err.to_string().contains("fail-closed"), "{err}");
+
+        // fail_open() degrades Unknown to TTL semantics.
+        let cache = std::sync::Arc::new(StatusCache::new().fail_open());
+        let verifier = Verifier::new(AUDIENCE)
+            .trust_issuer(ISSUER, issuer_kp.public_key())
+            .with_status_cache(cache);
+        assert!(verifier.verify(&pres).is_ok());
     }
 
     #[test]

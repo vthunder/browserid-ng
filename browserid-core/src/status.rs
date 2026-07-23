@@ -15,8 +15,11 @@
 //! Properties worth noting:
 //! - Fetching the whole list reveals nothing about *which* credential the
 //!   verifier is checking (no OCSP-style privacy leak).
-//! - The dependency is soft: an unreachable list degrades to TTL-only
-//!   semantics; fail-open vs fail-closed is verifier policy.
+//! - Verifiers MUST treat the checks as **fail-closed** (spec §6.4): an
+//!   unreachable or stale list is "cannot prove unrevoked" → reject.
+//!   Degrading to TTL-only semantics (fail-open) is a non-conformant,
+//!   explicit opt-out for consumers that choose availability over
+//!   revocation latency.
 //! - A list token is a portable artifact — a detached snapshot can travel
 //!   with detached DNSSEC proofs (§6.3) for offline "valid as of T"
 //!   verification.

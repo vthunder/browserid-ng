@@ -74,6 +74,12 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// warrant requests, §6.6). Production leaves this `None` and gets the
     /// DNSSEC-rooted fallback fetcher.
     pub issuer_resolver_override: Option<Arc<dyn browserid_registrar::IssuerKeyResolver>>,
+    /// Cache of verified **foreign** status-list tokens (core §6.4), keyed by
+    /// list URI. Populated/refreshed by the fail-closed status check in
+    /// `verifier::verify_access_with_dns`; own-list refs never land here
+    /// (they are checked authoritatively against the store). std RwLock:
+    /// never held across an await.
+    pub foreign_status_lists: std::sync::RwLock<HashMap<String, browserid_core::StatusListToken>>,
 }
 
 /// Default per-user agent identity quota
@@ -106,6 +112,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             analytics: crate::analytics::Analytics::disabled(),
             fedcm_autologin: RwLock::new(HashMap::new()),
             issuer_resolver_override: None,
+            foreign_status_lists: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
@@ -133,6 +140,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             analytics: crate::analytics::Analytics::disabled(),
             fedcm_autologin: RwLock::new(HashMap::new()),
             issuer_resolver_override: None,
+            foreign_status_lists: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
