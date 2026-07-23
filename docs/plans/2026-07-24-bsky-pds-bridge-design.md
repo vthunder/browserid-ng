@@ -1,7 +1,7 @@
 # Bluesky PDS bridge (B1) — design
 
 **Date:** 2026-07-24
-**Status:** design accepted (B1 shape); handle-zone naming still open
+**Status:** design accepted (B1 shape); handles under `*.at.browserid.me`
 **Bean:** see `browserid-ng` bean "Bluesky bridge (B1)" (filed with this doc)
 **Context:** option-B discussion 2026-07-23/24; audit doc
 `2026-07-23-spec-code-divergence-audit.md` (deps noted in Security).
@@ -187,30 +187,30 @@ bridge token — from its point of view this is just a PDS.
   bridge dashboard additionally lists per-agent receipts and offers account
   deletion (PDS `deleteAccount` + PLC tombstone).
 
-## Handle zone (open decision)
+## Handle zone (decided: `*.at.browserid.me`)
 
-Proposal on the table: user handles under `*.bsky.browserid.me`
-(`@dan.bsky.browserid.me`). Considerations:
+User handles live under `*.at.browserid.me` (`@dan.at.browserid.me` — reads
+naturally, app-neutral). The service origin stays `bsky.browserid.me` (infra
+naming, not user identity).
 
-- A dedicated sub-zone (rather than apex `*.browserid.me`) is clearly right
+- A dedicated sub-zone (rather than apex `*.browserid.me`) is right
   operationally: no interaction with existing broker vhosts, and no
   reserved-label/phishing management on the apex (`login.browserid.me` as a
   user handle would be bad). Wildcard DNS for the zone points at the bridge,
   which serves `/.well-known/atproto-did` per handle.
-- Against the literal label "bsky": (1) mild implied-affiliation optics with
-  Bluesky PBC's own bsky.app/bsky.social (though community `bsky.*` domains
-  are common); (2) a handle is network-wide atproto identity, not
-  Bluesky-app-specific — baking one app's name into every user's public name
-  is a small misnomer; (3) length.
-- Neutral alternative: `*.at.browserid.me` (`@dan.at.browserid.me` — reads
-  naturally, app-neutral, same ops profile).
+- "at" over "bsky": a handle is network-wide atproto identity, not
+  Bluesky-app-specific, and "bsky" carries mild implied-affiliation optics
+  with Bluesky PBC's own domains.
+- Known wrinkle, accepted: if browserid later mints email identifiers under
+  handle domains, they'd read `<label>@<handle>.at.browserid.me` — a double
+  "at". Cosmetic only; and such domains would need `_browserid` DNS records
+  under the zone, which we control.
 - Stakes are low: handles are mutable atop the stable DID, so the zone can be
   revisited without stranding anyone. Users with their own domains can use
   them as handles regardless (`_atproto` TXT beside their `_browserid`).
 
-Service origin stays `bsky.browserid.me` either way (infra naming, not user
-identity). Reserved labels within whatever zone: `www`, `api`, `pds`,
-`admin`, `xrpc`, plus a profanity/impersonation list.
+Reserved labels within the zone: `www`, `api`, `pds`, `admin`, `xrpc`, plus
+a profanity/impersonation list.
 
 ## Security considerations
 
@@ -253,7 +253,6 @@ identity). Reserved labels within whatever zone: `www`, `api`, `pds`,
 
 ## Open questions
 
-- Handle zone label (above) — `bsky` vs `at` vs other.
 - Human client credential story: per-account password now; adopt atproto
   OAuth AS role later so Bluesky clients can log in without a stored
   password?

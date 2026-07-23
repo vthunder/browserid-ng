@@ -3,14 +3,15 @@
 title: 'Bluesky bridge (B1): delegated agent posting via hosted PDS at bsky.browserid.me'
 status: todo
 type: feature
+priority: normal
 created_at: 2026-07-23T22:07:39Z
-updated_at: 2026-07-23T22:07:39Z
+updated_at: 2026-07-23T22:16:01Z
 ---
 
 Run a stock @atproto/pds plus a Rust pds-bridge sidecar (browserid-rp) at bsky.browserid.me: browserid-provisioned Bluesky accounts, agent warrants with atproto granular scopes (repo:app.bsky.feed.post?action=create, blob:image/*), RFC 7521 bundle->token exchange verified fail-closed, scoped XRPC proxy, receipts + revocation. Design: docs/plans/2026-07-24-bsky-pds-bridge-design.md
 
 Decisions locked: separate service (not in broker); B1 shape (stock PDS + proxy); service origin bsky.browserid.me; granular scope syntax from the start.
-Open: handle zone label (*.bsky.browserid.me vs *.at.browserid.me — low stakes, handles are mutable atop the DID).
+Decided: handles under *.at.browserid.me (service origin stays bsky.browserid.me).
 
 Related: pv9b (browserid.me-rooted handles), 4lxl (fail-closed status — bridge opts in regardless), 68av (jti replay), i9rr (not blocking — bridge verifies via core, so cross-issuer grantees work).
 
