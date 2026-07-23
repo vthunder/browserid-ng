@@ -1126,25 +1126,27 @@ function renderDelegatedApproval(code, info) {
   $('pv-fp').hidden = true;
   $('pv-mode').hidden = true; // no as-you/handle choice — the actor is fixed
 
-  // Plain-language "Can … · On …" per grant, with the raw audience + scopes
-  // tucked behind a collapsible "technical details".
+  // Plain-language "Can … on …" per grant (raw audience + scopes go to the
+  // separate, lower technical-details block). Hide the owned card's static
+  // "It asks to act for you at:" header — the wording here is different.
   const grants = provisionCtx.grants || [];
   $('pv-grants').hidden = grants.length === 0;
+  const gh = $('pv-grants').querySelector('p.sub');
+  if (gh) gh.style.display = 'none';
   $('pv-grant-list').innerHTML = grants.map(g => {
-    const acts = (g.actions && g.actions.length) ? g.actions : humanizeScopes(g.scopes);
+    // Derive from the AUTHORITATIVE scopes, and show the real audience URI as
+    // the location — never a requester-asserted name it can't be held to.
+    const acts = humanizeScopes(g.scopes);
     const can = acts.length
       ? acts.map(a => `<b>${escapeHtml(a)}</b>`).join(' · ')
       : '<b>site-level access</b>';
-    const on = g.app ? ` on <b>${escapeHtml(g.app)}</b>` : '';
-    const details =
-      `<details style="margin-top:6px"><summary class="sub" style="cursor:pointer">technical details</summary>` +
-      `<div class="tiny" style="margin-top:4px">Audience: <code>${escapeHtml(g.audience)}</code></div>` +
-      `<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">` +
-      `${(g.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')}</div></details>`;
-    return `<div style="margin:6px 0">Can ${can}${on}${details}</div>`;
+    return `<div style="margin:6px 0">Can ${can}` +
+      `<div class="tiny" style="margin-top:4px">at <code style="word-break:break-all">${escapeHtml(g.audience)}</code></div></div>`;
   }).join('');
 
-  // "Acting as" identity: prominent when pinned/single, chooser when multiple.
+  // The grantor (who it acts ON BEHALF OF): distinct from the grantee here (a
+  // delegated grant), so "on behalf of" — never "acts as". Prominent when
+  // pinned/single, a chooser when the approver has several identities.
   const pin = provisionCtx.grantorPin;
   const ids = (account.emails || []).filter(e => !account.agents.includes(e))
     .filter(e => pin === '*' || e.toLowerCase() === pin.toLowerCase());
@@ -1157,13 +1159,13 @@ function renderDelegatedApproval(code, info) {
   provisionCtx.fixedGrantor = null;
   if (ids.length === 1) {
     sel.style.display = 'none';
-    idLabel.innerHTML = `Acting as <b>${escapeHtml(ids[0])}</b>`;
+    idLabel.innerHTML = `On behalf of <b>${escapeHtml(ids[0])}</b>`;
     provisionCtx.fixedGrantor = ids[0];
     $('pv-approve').disabled = false;
   } else if (ids.length > 1) {
     sel.style.display = '';
     sel.innerHTML = ids.map(e => `<option value="${escapeHtml(e)}">${escapeHtml(e)}</option>`).join('');
-    idLabel.textContent = 'Acting as which of your identities?';
+    idLabel.textContent = 'On behalf of which of your identities?';
     $('pv-approve').disabled = false;
   } else {
     sel.style.display = 'none';
@@ -1174,10 +1176,26 @@ function renderDelegatedApproval(code, info) {
       : `This grant must be authorized by ${pin}. Sign in as ${pin} here first.`;
     $('pv-approve').disabled = true;
   }
-  // Order: service → Can/On (grants) → Acting as (identity) → revoke → buttons.
+
+  // Technical details (raw audience + scope tokens) as a separate collapsible,
+  // built fresh and placed LOW — below the summary, above the revoke line.
+  document.getElementById('pv-tech')?.remove();
+  const tech = document.createElement('details');
+  tech.id = 'pv-tech';
+  tech.style.margin = '10px 0 0';
+  tech.innerHTML = `<summary class="sub" style="cursor:pointer">technical details (exact scopes)</summary>` +
+    grants.map(g =>
+      `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">` +
+      `${(g.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')}</div>`).join('');
+
+  // Order: service → on behalf of (identity, stays high) → can (scopes) →
+  // technical details → revoke note → buttons. Move grants/tech/note down to
+  // just above the buttons, in that sequence.
   const card = $('provision');
-  card.insertBefore($('pv-grants'), $('pv-identity-label'));
-  card.insertBefore(note, $('pv-approve').parentNode);
+  const buttons = $('pv-approve').parentNode;
+  card.insertBefore($('pv-grants'), buttons);
+  card.insertBefore(tech, buttons);
+  card.insertBefore(note, buttons);
 
   $('pv-approve').onclick = () => approveDelegated(code);
   $('pv-deny').onclick = () => denyProvision(code);
@@ -1264,6 +1282,7 @@ async function showProvisionApproval(code) {
   // their own wrapped chip row.
   const grants = provisionCtx.grants;
   $('pv-grants').hidden = grants.length === 0;
+  { const gh = $('pv-grants').querySelector('p.sub'); if (gh) gh.style.display = ''; }
   $('pv-grant-list').innerHTML = grants.map(g => `
     <div style="margin:6px 0"><code>${escapeHtml(g.audience)}</code>
       <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">${(g.scopes || []).length
