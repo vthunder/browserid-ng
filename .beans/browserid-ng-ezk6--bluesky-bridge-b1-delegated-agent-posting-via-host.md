@@ -1,11 +1,11 @@
 ---
 # browserid-ng-ezk6
 title: 'Bluesky bridge (B1): delegated agent posting via hosted PDS at bsky.browserid.me'
-status: todo
+status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-23T22:07:39Z
-updated_at: 2026-07-23T22:16:01Z
+updated_at: 2026-07-23T23:06:27Z
 ---
 
 Run a stock @atproto/pds plus a Rust pds-bridge sidecar (browserid-rp) at bsky.browserid.me: browserid-provisioned Bluesky accounts, agent warrants with atproto granular scopes (repo:app.bsky.feed.post?action=create, blob:image/*), RFC 7521 bundle->token exchange verified fail-closed, scoped XRPC proxy, receipts + revocation. Design: docs/plans/2026-07-24-bsky-pds-bridge-design.md
@@ -16,7 +16,10 @@ Decided: handles under *.at.browserid.me (service origin stays bsky.browserid.me
 Related: pv9b (browserid.me-rooted handles), 4lxl (fail-closed status — bridge opts in regardless), 68av (jti replay), i9rr (not blocking — bridge verifies via core, so cross-issuer grantees work).
 
 ## Phases
-- [ ] P1: pds-bridge crate (axum): provision + token exchange + scoped XRPC proxy; stock PDS deploy; wallet demo posts to Bluesky; receipts in dashboard
+- [x] P1a: pds-bridge crate (axum): provision + token exchange + scoped XRPC proxy + live fail-closed warrant re-check; scope grammar (repo:/rpc:/blob:) allowlist parser; sqlite store (bindings, hashed tokens, audit log); Dockerfiles (own app + workspace-manifest fix in broker Dockerfile); 12 tests incl. end-to-end vs mock PDS
+- [ ] P1b: run against a real stock @atproto/pds locally; fix impedance (createAccount shape, session refresh, invite policy)
+- [ ] P1c: wallet MCP demo posts via the bridge; receipts surfaced (dashboard or CLI)
+- [ ] P1d: deploy — bsky.browserid.me dokku app + internal PDS app + wildcard DNS for *.at.browserid.me; websocket passthrough for relay firehose
 - [ ] P2: provenance — linkage attestation (repo record + alsoKnownAs), me.browserid.provenance receipts and/or labeler
 - [ ] P3: evaluate rsky-pds in-process integration (collapse the proxy)
 - [ ] P4: upstream proposal to atproto community (bundle-native delegation)

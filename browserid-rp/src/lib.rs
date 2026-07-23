@@ -96,15 +96,24 @@ impl ExchangeError {
 /// A verified presentation: what the RP learns
 #[derive(Debug, Clone)]
 pub struct VerifiedIdentity {
+    /// The **grantor** — the identity the action attributes to
     pub email: String,
-    /// The IdP that issued the access + config certs (the identity's IdP)
+    /// The IdP that issued the grantor's config cert
     pub issuer: String,
+    /// The **grantee** — the identity that acted (== `email` for plain
+    /// logins; a distinct agent/service identity for delegated grants)
+    pub grantee: String,
+    /// The IdP that issued the grantee's access cert
+    pub grantee_issuer: String,
     /// The opaque broker-assigned holder that acted (which of the user's
     /// things); advisory — authorization keys off email + scopes, not this.
     pub holder: Holder,
     /// The warrant's scopes, verbatim; [`exchange`] applies the RP scope
     /// policy (intersection) when issuing a token
     pub scopes: Vec<String>,
+    /// The warrant's revocation ref, for RPs that re-check long-lived
+    /// sessions out of band (the verify itself already checked it)
+    pub warrant_status: Option<StatusRef>,
 }
 
 /// Presentation verifier for one RP audience, trusting an explicit set of
@@ -304,8 +313,11 @@ impl Verifier {
         Ok(VerifiedIdentity {
             email: verified.email,
             issuer: verified.issuer,
+            grantee: verified.grantee,
+            grantee_issuer: verified.grantee_issuer,
             holder: verified.holder,
             scopes: verified.scopes,
+            warrant_status: verified.warrant_status,
         })
     }
 

@@ -1,10 +1,13 @@
+# pds-bridge — the Bluesky bridge (bean ezk6). Its own dokku app beside the
+# broker; build from the repo root: docker build -f pds-bridge/Dockerfile .
+
 # Stage 1: Build
 FROM rust:1.85-bookworm AS builder
 
 WORKDIR /build
 
 # Copy manifests first for better caching (all workspace members must be
-# present for cargo to resolve the workspace, even when only building the broker)
+# present for cargo to resolve the workspace)
 COPY Cargo.toml Cargo.lock ./
 COPY browserid-core/Cargo.toml browserid-core/
 COPY browserid-registrar/Cargo.toml browserid-registrar/
@@ -22,7 +25,7 @@ RUN mkdir -p browserid-core/src browserid-registrar/src browserid-broker/src bro
     echo "pub fn dummy() {}" > pds-bridge/src/lib.rs && \
     echo "fn main() {}" > pds-bridge/src/main.rs && \
     echo "fn main() {}" > browserid-broker/src/main.rs && \
-    cargo build --release --package browserid-broker && \
+    cargo build --release --package pds-bridge && \
     rm -rf browserid-core/src browserid-registrar/src browserid-broker/src browserid-agent/src browserid-rp/src pds-bridge/src
 
 # Copy actual source code
@@ -31,10 +34,11 @@ COPY browserid-registrar/src browserid-registrar/src
 COPY browserid-agent/src browserid-agent/src
 COPY browserid-rp/src browserid-rp/src
 COPY browserid-broker/src browserid-broker/src
+COPY pds-bridge/src pds-bridge/src
 
 # Touch files to invalidate cache and rebuild
-RUN touch browserid-core/src/lib.rs browserid-registrar/src/lib.rs browserid-agent/src/lib.rs browserid-rp/src/lib.rs browserid-broker/src/main.rs && \
-    cargo build --release --package browserid-broker
+RUN touch browserid-core/src/lib.rs browserid-registrar/src/lib.rs browserid-agent/src/lib.rs browserid-rp/src/lib.rs pds-bridge/src/main.rs && \
+    cargo build --release --package pds-bridge
 
 # Stage 2: Runtime
 FROM debian:bookworm-slim
@@ -45,19 +49,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy binary
-COPY --from=builder /build/target/release/browserid-broker /app/
+COPY --from=builder /build/target/release/pds-bridge /app/
 
-# Copy static files
-COPY browserid-broker/static /app/static
-
-# Create data directory
 RUN mkdir -p /data
 
-ENV BROKER_PORT=5000
-ENV DATABASE_PATH=/data/browserid.db
-ENV BROKER_KEY_FILE=/data/broker-key.json
+ENV BRIDGE_PORT=5000
+ENV BRIDGE_DB=/data/pds-bridge.db
 
 EXPOSE 5000
 
-CMD ["/app/browserid-broker"]
+CMD ["/app/pds-bridge"]
