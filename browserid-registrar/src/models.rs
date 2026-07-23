@@ -52,6 +52,15 @@ pub struct WarrantGrantItem {
     /// embeds it in the warrant it signs
     #[serde(default)]
     pub status_idx: Option<u64>,
+    /// Display-only (never part of the warrant): a human name for the audience
+    /// (e.g. "mingo") the requester supplies so the consent card can read in
+    /// plain language instead of a raw `sbo+raw://…` URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    /// Display-only human verbs for the scopes (e.g. ["post","comment"]) the
+    /// requester supplies; the card falls back to humanizing scope tokens itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actions: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -789,8 +789,11 @@ function renderHolderDetail() {
   $('hd-label').textContent = h.label;
   $('hd-badges').innerHTML = (h.trust === 'trusted'
     ? '<span class="badge active">trusted</span> ' : '')
+    + (h.external ? '<span class="badge info">external service</span> ' : '')
     + `<button class="small linkish" id="hd-rename">rename</button>`
-    + ` <button class="small linkish" id="hd-move">move</button>`
+    // An external service's holder is bound to its warrant — it can't be moved
+    // without revoking (re-authorize from the app to relocate). Hide "move".
+    + (h.external ? '' : ` <button class="small linkish" id="hd-move">move</button>`)
     + ` <button class="small linkish" id="hd-remove" style="color:#c53030">remove</button>`
     + (h.moving_to ? ` <span class="badge info">moved to ${escapeHtml(h.moving_to)} — arrives on next sign-in</span>` : '')
     + (h.revoked && !h.moving_to ? ' <span class="badge revoked">revoked</span>' : '');
@@ -818,7 +821,7 @@ function renderHolderDetail() {
   // old namespace's warrants stop applying to this device within a status
   // window) and the device re-registers under the broker-assigned target
   // holder next time it signs in — no need to touch the device.
-  $('hd-move').onclick = () => {
+  if ($('hd-move')) $('hd-move').onclick = () => {
     const myPrefix = holderPrefix(h.holder_id);
     const options = (account.holders.namespaces || [])
       .filter(ns => ns.prefix !== myPrefix)
@@ -1095,25 +1098,53 @@ function approverOwns(id) {
 // service acting on your behalf; you sign a warrant delegating from one of your
 // identities (the grantor). Provenance is intrinsic — its posts show as the
 // service, attributed to you — so this INFORMS rather than warns.
+// Fallback humanizer: turn raw scope tokens into plain verbs when the requester
+// didn't supply `actions` (e.g. `action:post` → "post", `schema:reaction.v1` →
+// "react"). Deduped, order-stable.
+function humanizeScopes(scopes) {
+  const out = [];
+  const add = (v) => { if (v && !out.includes(v)) out.push(v); };
+  for (const s of scopes || []) {
+    const i = s.indexOf(':');
+    const dim = i < 0 ? s : s.slice(0, i);
+    const val = i < 0 ? '' : s.slice(i + 1);
+    if (dim === 'action') add(val);
+    else if (dim === 'schema') { const b = val.split('.')[0]; add(b === 'reaction' ? 'react' : b); }
+  }
+  return out;
+}
+
 function renderDelegatedApproval(code, info) {
   const grantee = provisionCtx.grantee;
+  const granteeDomain = grantee.split('@')[1] || '';
   const nick = info.label ? ` (“${escapeHtml(info.label)}”)` : '';
-  $('pv-intro').innerHTML = `<b>${escapeHtml(grantee)}</b>${nick} wants to act on your behalf.`;
+  const h2 = $('provision').querySelector('h2');
+  if (h2) h2.textContent = 'Authorize a service';
+  $('pv-intro').innerHTML =
+    `<b>${escapeHtml(grantee)}</b>${nick}` +
+    `<div class="sub" style="margin-top:2px">a service run by ${escapeHtml(granteeDomain)}</div>`;
   $('pv-fp').hidden = true;
   $('pv-mode').hidden = true; // no as-you/handle choice — the actor is fixed
 
-  // Compact "At / With these permissions" per requested grant.
+  // Plain-language "Can … · On …" per grant, with the raw audience + scopes
+  // tucked behind a collapsible "technical details".
   const grants = provisionCtx.grants || [];
   $('pv-grants').hidden = grants.length === 0;
-  $('pv-grant-list').innerHTML = grants.map(g => `
-    <div style="margin:6px 0">At: <code>${escapeHtml(g.audience)}</code>
-      <div class="sub" style="margin-top:4px">With these permissions:</div>
-      <div style="margin-top:2px;display:flex;flex-wrap:wrap;gap:4px">${(g.scopes || []).length
-        ? g.scopes.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')
-        : '<span class="sub">site-level access</span>'}</div></div>`).join('');
+  $('pv-grant-list').innerHTML = grants.map(g => {
+    const acts = (g.actions && g.actions.length) ? g.actions : humanizeScopes(g.scopes);
+    const can = acts.length
+      ? acts.map(a => `<b>${escapeHtml(a)}</b>`).join(' · ')
+      : '<b>site-level access</b>';
+    const on = g.app ? ` on <b>${escapeHtml(g.app)}</b>` : '';
+    const details =
+      `<details style="margin-top:6px"><summary class="sub" style="cursor:pointer">technical details</summary>` +
+      `<div class="tiny" style="margin-top:4px">Audience: <code>${escapeHtml(g.audience)}</code></div>` +
+      `<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">` +
+      `${(g.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')}</div></details>`;
+    return `<div style="margin:6px 0">Can ${can}${on}${details}</div>`;
+  }).join('');
 
-  // The grantor (who it acts on behalf of): pinned/single → shown prominently,
-  // not a dropdown; multiple owned identities → a chooser.
+  // "Acting as" identity: prominent when pinned/single, chooser when multiple.
   const pin = provisionCtx.grantorPin;
   const ids = (account.emails || []).filter(e => !account.agents.includes(e))
     .filter(e => pin === '*' || e.toLowerCase() === pin.toLowerCase());
@@ -1126,13 +1157,13 @@ function renderDelegatedApproval(code, info) {
   provisionCtx.fixedGrantor = null;
   if (ids.length === 1) {
     sel.style.display = 'none';
-    idLabel.innerHTML = `On behalf of: <b>${escapeHtml(ids[0])}</b>`;
+    idLabel.innerHTML = `Acting as <b>${escapeHtml(ids[0])}</b>`;
     provisionCtx.fixedGrantor = ids[0];
     $('pv-approve').disabled = false;
   } else if (ids.length > 1) {
     sel.style.display = '';
     sel.innerHTML = ids.map(e => `<option value="${escapeHtml(e)}">${escapeHtml(e)}</option>`).join('');
-    idLabel.textContent = 'On behalf of which identity?';
+    idLabel.textContent = 'Acting as which of your identities?';
     $('pv-approve').disabled = false;
   } else {
     sel.style.display = 'none';
@@ -1143,8 +1174,7 @@ function renderDelegatedApproval(code, info) {
       : `This grant must be authorized by ${pin}. Sign in as ${pin} here first.`;
     $('pv-approve').disabled = true;
   }
-  // Order for the delegated card: intro → what it may do (grants) → on behalf of
-  // (identity) → revoke note → buttons.
+  // Order: service → Can/On (grants) → Acting as (identity) → revoke → buttons.
   const card = $('provision');
   card.insertBefore($('pv-grants'), $('pv-identity-label'));
   card.insertBefore(note, $('pv-approve').parentNode);
@@ -1212,6 +1242,7 @@ async function showProvisionApproval(code) {
   }
   provisionCtx = { code, pubkey: info.provisioning_pubkey, grants: info.grants || [], namespace: info.namespace || 'agents' };
   $('provision').hidden = false;
+  { const h2 = $('provision').querySelector('h2'); if (h2) h2.textContent = 'Authorize an agent'; }
   const thing = provisionCtx.namespace === 'services' ? 'service' : 'agent';
 
   // Delegated (foreign grantee): a distinct service, minted by its OWN provider,

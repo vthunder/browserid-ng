@@ -738,6 +738,8 @@ pub async fn warrant_request(
                 audience: g.audience.clone(),
                 scopes: g.scopes.clone(),
                 status_idx: Some(idx),
+                app: None,
+                actions: None,
             })
         })
         .collect::<Result<_, RegistrarError>>()?;

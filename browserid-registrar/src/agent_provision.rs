@@ -176,6 +176,12 @@ pub struct GrantReq {
     pub audience: String,
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// Display-only: a human name for the audience (e.g. "mingo") + human verbs
+    /// for the scopes, so the consent card reads in plain language.
+    #[serde(default)]
+    pub app: Option<String>,
+    #[serde(default)]
+    pub actions: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -275,7 +281,13 @@ pub async fn request(
     let grants: Vec<WarrantGrantItem> = req
         .grants
         .into_iter()
-        .map(|g| WarrantGrantItem { audience: g.audience, scopes: g.scopes, status_idx: None })
+        .map(|g| WarrantGrantItem {
+            audience: g.audience,
+            scopes: g.scopes,
+            status_idx: None,
+            app: g.app,
+            actions: g.actions,
+        })
         .collect();
     let code = new_code();
     let user_code = new_user_code();

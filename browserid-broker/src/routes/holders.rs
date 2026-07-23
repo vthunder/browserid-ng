@@ -47,6 +47,9 @@ pub struct HolderView {
     pub warrant_count: usize,
     /// True once any of this holder's certs is revoked.
     pub revoked: bool,
+    /// A foreign service (holds its own cert): its holder is bound to a warrant,
+    /// so it can't be re-categorized without revoking — the UI hides "move".
+    pub external: bool,
     /// The identities (emails) this holder's certs act for, deduped.
     pub identities: Vec<String>,
     /// Set while an account-driven namespace move is pending: the label of
@@ -81,6 +84,10 @@ struct HolderAcc {
     all_revoked: bool,
     any_cert: bool,
     identities: std::collections::BTreeSet<String>,
+    /// A FOREIGN service: recorded with an empty pubkey (it holds its own cert at
+    /// its own issuer). Its holder id is bound to a warrant, so it can't be moved
+    /// without revoking — the UI hides "move" for it.
+    external: bool,
 }
 
 pub async fn holders<U, S, E>(
@@ -106,6 +113,9 @@ where
         let acc = by_holder.entry(c.holder.clone()).or_default();
         acc.cert_count += 1;
         acc.identities.extend(c.identities.iter().cloned());
+        if c.pubkey.is_empty() {
+            acc.external = true;
+        }
         if c.purpose == "authorization" {
             acc.has_config = true;
         }
@@ -163,6 +173,7 @@ where
         issued_at: acc.latest_issued.map(|d| d.to_rfc3339()),
         warrant_count: warrant_count(holder_id),
         revoked: acc.any_cert && acc.all_revoked,
+        external: acc.external,
         identities: acc.identities.iter().cloned().collect(),
         moving_to: moving_to(holder_id),
     };
@@ -383,6 +394,14 @@ where
         .collect();
     if certs.is_empty() {
         return Err(BrokerError::PolicyRefused("no such holder".into()));
+    }
+    // A foreign service holds its own cert; its holder is bound to the warrant,
+    // so a move would revoke the grant with nothing to re-issue. Refuse — the
+    // service must be re-authorized from the app if you want to relocate it.
+    if certs.iter().any(|c| c.pubkey.is_empty()) {
+        return Err(BrokerError::PolicyRefused(
+            "an external service can't be moved — re-authorize it from the app instead".into(),
+        ));
     }
     let prefix = state.user_store.get_or_create_namespace(session.user_id, &ns)?;
     if req.holder_id.split_once('.').map(|(p, _)| p) == Some(prefix.as_str()) {
