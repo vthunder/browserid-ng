@@ -58,6 +58,13 @@ struct Record {
     requested_patterns: Vec<String>,
     /// Normalized holder-namespace hint from the request (`agents` default).
     namespace: String,
+    /// GRANTOR pin: `<id>` (pinned attributed identity) or `*` (approver picks).
+    grantor: String,
+    /// GRANTEE pin: `<id>` (pinned actor), `*` (approver picks/mints), or empty
+    /// (as-you required, grantee ≡ grantor).
+    grantee: String,
+    /// A concrete foreign grantee's own holder (see [`RequestBody::grantee_holder`]).
+    grantee_holder: Option<String>,
     /// Warrant grants requested alongside the device cert (merged one-approval
     /// flow) — `status_idx` filled by `prepare`.
     grants: Vec<WarrantGrantItem>,
@@ -186,6 +193,39 @@ pub struct RequestBody {
     pub grants: Vec<GrantReq>,
     #[serde(default)]
     pub label: Option<String>,
+    /// GRANTOR pin (warrant semantics): the identity the write attributes to.
+    /// `<id>` pins it; `*` (or absent → `*`) lets the approver choose which of
+    /// their identities delegates.
+    #[serde(default)]
+    pub grantor: Option<String>,
+    /// GRANTEE pin: the actor identity. `<id>` pins it (a foreign service like
+    /// `mingo-poster@…`, or an owned sub-identity); `*` lets the approver
+    /// choose/mint one; empty/absent means **as-you required** (grantee ≡
+    /// grantor) — the broker warns.
+    #[serde(default)]
+    pub grantee: Option<String>,
+    /// A concrete FOREIGN grantee's holder (broker-assigned by the grantee's own
+    /// issuer, e.g. mingo). Required when `grantee` names an identity the approver
+    /// does not own — the warrant matcher binds to it (`<id>`). Ignored for owned
+    /// grantees (the broker assigns their holder).
+    #[serde(default)]
+    pub grantee_holder: Option<String>,
+}
+
+/// Normalize a `grantor`/`grantee` pin: absent → the field's default sentinel.
+/// grantor absent → `*` (any); grantee absent/empty → `` (as-you required).
+fn norm_grantor(p: Option<&str>) -> String {
+    match p.map(str::trim).filter(|s| !s.is_empty()) {
+        None => "*".to_string(),
+        Some(s) => s.to_lowercase(),
+    }
+}
+fn norm_grantee(p: Option<&str>) -> String {
+    match p.map(str::trim) {
+        None | Some("") => String::new(), // as-you required
+        Some("*") => "*".to_string(),
+        Some(s) => s.to_lowercase(),
+    }
 }
 
 #[derive(Serialize)]
@@ -217,6 +257,15 @@ pub async fn request(
     }
     let handles = req.requested_handles.unwrap_or_default();
     let namespace = normalize_namespace(req.namespace.as_deref())?;
+    let grantor = norm_grantor(req.grantor.as_deref());
+    let grantee = norm_grantee(req.grantee.as_deref());
+    // A concrete foreign grantee must carry its holder (the warrant binds to it).
+    let grantee_holder = req
+        .grantee_holder
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     if req.grants.len() > 10 {
         return Err(RegistrarError::ValidationError("at most 10 grants per request".into()));
     }
@@ -237,6 +286,9 @@ pub async fn request(
         requested_names: handles.names,
         requested_patterns: handles.patterns,
         namespace,
+        grantor,
+        grantee,
+        grantee_holder,
         grants,
         label: req.label.unwrap_or_default(),
         fingerprint: fp.clone(),
@@ -351,6 +403,11 @@ pub struct InfoResponse {
     pub requested_patterns: Vec<String>,
     /// Holder namespace the requester hinted (`agents` / `services`).
     pub namespace: String,
+    /// GRANTOR pin (`<id>` or `*`) — who the write attributes to.
+    pub grantor: String,
+    /// GRANTEE pin (`<id>`, `*`, or empty for as-you-required) — the actor. The
+    /// card derives owned-vs-foreign from the approver's own identities.
+    pub grantee: String,
     /// Warrant grants asked for in the same approval (merged flow).
     pub grants: Vec<WarrantGrantItem>,
 }
@@ -375,6 +432,8 @@ pub async fn info(
         requested_names: rec.requested_names.clone(),
         requested_patterns: rec.requested_patterns.clone(),
         namespace: rec.namespace.clone(),
+        grantor: rec.grantor.clone(),
+        grantee: rec.grantee.clone(),
         grants: rec.grants.clone(),
     }))
 }
@@ -476,6 +535,45 @@ fn resolve_agent_identity(
     Ok((Some(name), agent_email))
 }
 
+/// Gate the approver's chosen identity against the request's GRANTOR pin: a
+/// concrete pin must equal it (case-insensitive); `*` accepts any (ownership is
+/// checked separately).
+fn check_grantor_pin(pin: &str, identity_email: &str) -> Result<(), RegistrarError> {
+    if pin == "*" || pin.eq_ignore_ascii_case(identity_email) {
+        Ok(())
+    } else {
+        Err(RegistrarError::PolicyRefused(format!(
+            "this grant must be authorized by '{pin}', not '{identity_email}'"
+        )))
+    }
+}
+
+/// Whether the approver owns `id`: an exact verified email, or a `+tag`
+/// sub-address of one they own and may mint. A grantee they do NOT own is
+/// FOREIGN — browser mints no cert for it (it holds its own from its issuer) and
+/// the approval is warrant-only (delegated attribution).
+fn approver_owns_identity(state: &Arc<RegistrarState>, user: &AuthedUser, id: &str) -> bool {
+    if state.host.owns_verified_email(user.user_id, id).unwrap_or(false) {
+        return true;
+    }
+    if let Some((local, domain)) = id.split_once('@') {
+        if let Some((base_local, tag)) = local.split_once('+') {
+            let base = format!("{base_local}@{domain}");
+            return state.host.owns_verified_email(user.user_id, &base).unwrap_or(false)
+                && agent_name_allowed(tag, &base, &state.domain);
+        }
+    }
+    false
+}
+
+/// A concrete grantee pin the approver does NOT own → a delegated (foreign)
+/// grant. Empty (`as-you`) and `*` (approver picks/mints an owned one) are not
+/// foreign — they resolve to an owned grantee at approval.
+fn grantee_is_foreign(state: &Arc<RegistrarState>, user: &AuthedUser, rec: &Record) -> bool {
+    let g = rec.grantee.trim();
+    !g.is_empty() && g != "*" && !approver_owns_identity(state, user, g)
+}
+
 #[derive(Deserialize)]
 pub struct PrepareBody {
     pub csrf: String,
@@ -522,36 +620,53 @@ pub async fn prepare(
     let user = require_session(&state, &cookies)?;
     require_csrf(&user, &req.csrf)?;
 
-    let (rec_namespace, requested_name, existing) = {
+    let snapshot = {
         let m = PROVISIONS.lock().unwrap();
-        let rec = m
-            .get(&req.code)
+        m.get(&req.code)
             .filter(|r| !r.is_expired() && r.status == Status::Pending)
-            .ok_or(RegistrarError::ProvisionRequestNotFound)?;
-        (
-            rec.namespace.clone(),
-            rec.requested_names.first().cloned(),
-            rec.prepared_identity.clone().zip(rec.holder.clone()),
-        )
+            .cloned()
+            .ok_or(RegistrarError::ProvisionRequestNotFound)?
     };
-    let (_, agent_email) = resolve_agent_identity(
-        &state, &user, &req.identity_email,
-        req.identity_mode.as_deref(), req.handle.as_deref(), requested_name,
-    )?;
+    // The approver's chosen identity is the GRANTOR: it must be one they own and
+    // satisfy the request's grantor pin.
+    if !state.host.owns_verified_email(user.user_id, &req.identity_email).unwrap_or(false) {
+        return Err(RegistrarError::PolicyRefused(
+            "you don't own the delegating identity".into(),
+        ));
+    }
+    check_grantor_pin(&snapshot.grantor, &req.identity_email)?;
 
-    // Assign (or reuse) the holder: `<ns-prefix>.<rand>` from the user's
-    // namespace registry. The requester hinted the namespace; the user's page
-    // may override it; the id itself is never requester-chosen.
-    let holder = match existing {
-        Some((identity, holder)) if identity == req.identity_email => holder,
-        _ => {
-            let namespace = match req.namespace.as_deref() {
-                Some(ns) => normalize_namespace(Some(ns))?,
-                None => rec_namespace,
-            };
-            let prefix = state.store.get_or_create_namespace(user.user_id, &namespace)?;
-            crate::consent::assign_holder_id(&prefix)
-        }
+    // Delegated (foreign grantee): the grantee is a distinct service that holds
+    // its OWN device cert + holder from its issuer. browser assigns no holder —
+    // it uses the one the request supplied, and the warrant matcher binds to it.
+    let (agent_email, holder) = if grantee_is_foreign(&state, &user, &snapshot) {
+        let holder = snapshot.grantee_holder.clone().ok_or_else(|| {
+            RegistrarError::ValidationError("a foreign grantee must supply its holder".into())
+        })?;
+        browserid_core::device::Holder::new(holder.clone())
+            .map_err(|e| RegistrarError::ValidationError(format!("bad grantee holder: {e}")))?;
+        (snapshot.grantee.clone(), holder)
+    } else {
+        // Owned path: the approver picks an as-you / named agent identity, and
+        // the broker assigns its holder from the approver's namespace registry.
+        let (_, agent_email) = resolve_agent_identity(
+            &state, &user, &req.identity_email,
+            req.identity_mode.as_deref(), req.handle.as_deref(),
+            snapshot.requested_names.first().cloned(),
+        )?;
+        let existing = snapshot.prepared_identity.clone().zip(snapshot.holder.clone());
+        let holder = match existing {
+            Some((identity, holder)) if identity == req.identity_email => holder,
+            _ => {
+                let namespace = match req.namespace.as_deref() {
+                    Some(ns) => normalize_namespace(Some(ns))?,
+                    None => snapshot.namespace.clone(),
+                };
+                let prefix = state.store.get_or_create_namespace(user.user_id, &namespace)?;
+                crate::consent::assign_holder_id(&prefix)
+            }
+        };
+        (agent_email, holder)
     };
 
     // Stable per-grant status indices (same subject rule as the consent flow).
@@ -662,7 +777,78 @@ pub async fn complete(
         return Ok(Json(CompleteResponse { success: true }));
     }
 
-    complete_device_cert(&state, &user, &req, snapshot).await
+    // Enforce the GRANTOR pin against the approver's chosen identity (both paths).
+    if let Some(identity) = req.identity_email.as_deref() {
+        check_grantor_pin(&snapshot.grantor, identity)?;
+    }
+
+    // Delegated (foreign grantee) vs owned (as-you / named agent) approval.
+    if grantee_is_foreign(&state, &user, &snapshot) {
+        complete_delegated_warrant(&state, &user, &req, snapshot).await
+    } else {
+        complete_device_cert(&state, &user, &req, snapshot).await
+    }
+}
+
+/// Delegated approval (foreign grantee): the approver signs a warrant delegating
+/// to a service identity minted by ITS OWN issuer. The registrar issues NO cert
+/// — it validates the page-signed warrant(s) (config authorizes the grantor;
+/// grantor/grantee/holder match) and records them; the poll delivers only
+/// `warrant~config` (the grantee already holds its own device cert + mint).
+async fn complete_delegated_warrant(
+    state: &Arc<RegistrarState>,
+    user: &AuthedUser,
+    req: &CompleteBody,
+    snapshot: Record,
+) -> Result<Json<CompleteResponse>, RegistrarError> {
+    let grantor = req.identity_email.clone().ok_or_else(|| {
+        RegistrarError::ValidationError("identity_email required to approve".into())
+    })?;
+    if !state.host.owns_verified_email(user.user_id, &grantor).unwrap_or(false) {
+        return Err(RegistrarError::PolicyRefused(
+            "you don't own the delegating identity".into(),
+        ));
+    }
+    let grantee = snapshot.grantee.clone();
+    let holder = snapshot.grantee_holder.clone().ok_or_else(|| {
+        RegistrarError::ValidationError("a foreign grantee must supply its holder".into())
+    })?;
+    if snapshot.grants.is_empty() {
+        return Err(RegistrarError::ValidationError(
+            "a delegated grant needs at least one warrant grant".into(),
+        ));
+    }
+    let warrant_jwss = req.warrants.as_deref().ok_or_else(|| {
+        RegistrarError::ValidationError("approve requires the signed warrants".into())
+    })?;
+    let config_jws = req.config_cert.as_deref().ok_or_else(|| {
+        RegistrarError::ValidationError("approve requires the signing config cert".into())
+    })?;
+    let warrants = validate_grant_warrants(
+        warrant_jwss, config_jws, &grantor, &grantee, &holder, &snapshot.grants,
+    )?;
+
+    // Record each warrant in the approver's registry (an "external service").
+    for (warrant, jws) in warrants.iter().zip(warrant_jwss) {
+        state.store.upsert_warrant(warrant_to_record(
+            user.user_id, &grantor, warrant, jws, config_jws,
+        ))?;
+    }
+    let delivery: Vec<String> = warrant_jwss
+        .iter()
+        .map(|w| format!("{w}~{config_jws}"))
+        .collect();
+
+    let mut m = PROVISIONS.lock().unwrap();
+    let rec = m
+        .get_mut(&req.code)
+        .filter(|r| r.status == Status::Pending)
+        .ok_or(RegistrarError::ProvisionRequestNotFound)?;
+    rec.agent_email = Some(grantee);
+    rec.warrants = Some(delivery);
+    // No device_cert / idp / access_mint: the grantee holds its own from its issuer.
+    rec.status = Status::Completed;
+    Ok(Json(CompleteResponse { success: true }))
 }
 
 /// Device-cert approval: the IdP (this registrar's keypair) signs an AGENT
@@ -731,9 +917,11 @@ async fn complete_device_cert(
         let config_jws = req.config_cert.as_deref().ok_or_else(|| {
             RegistrarError::ValidationError("approve requires the signing config cert".into())
         })?;
+        // Owned path: an as-you / named agent acts as itself — grantor == grantee.
         let warrants = validate_grant_warrants(
             warrant_jwss,
             config_jws,
+            &agent_email,
             &agent_email,
             &holder_id,
             &snapshot.grants,

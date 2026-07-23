@@ -626,3 +626,109 @@ async fn user_chosen_identity_mode_overrides_the_request() {
         .await;
     assert_ne!(r.status_code(), 200, "handle mode without a handle must be refused");
 }
+
+/// Delegated (model-A) provisioning: the approver authorizes a DISTINCT foreign
+/// grantee (a service minted by its own IdP, which the approver does not own) to
+/// act on their behalf. The registrar issues NO cert — it validates + records
+/// the grantor-signed warrant and the poll delivers only `warrant~config`.
+#[tokio::test]
+async fn delegated_foreign_grantee_is_warrant_only() {
+    let (server, sender, idp_kp) = make_server();
+    let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+
+    // The approver's config cert (covers their identity).
+    let config_kp = KeyPair::generate();
+    let config_cert = DeviceCert::create(
+        DOMAIN, &config_kp.public_key(), Purpose::Authorization, Holder::new("br.main").unwrap(),
+        vec![DELEGATOR.to_string()], Duration::days(90), &idp_kp, None,
+    )
+    .unwrap();
+
+    // The foreign service names ITSELF as grantee + supplies its own holder
+    // (minted by its issuer, mingo.place). It pins the grantor to the approver.
+    const GRANTEE: &str = "mingo-poster@mingo.place";
+    const GRANTEE_HOLDER: &str = "svc.poster1";
+    let device_kp = KeyPair::generate(); // unused for a foreign grantee (no cert minted)
+    let r = server
+        .post("/agent-provision/request")
+        .json(&json!({
+            "provisioning_pubkey": { "algorithm": "Ed25519", "publicKey": device_kp.public_key().to_base64() },
+            "grantor": DELEGATOR,
+            "grantee": GRANTEE,
+            "grantee_holder": GRANTEE_HOLDER,
+            "grants": [{ "audience": AUDIENCE, "scopes": ["action:post"] }],
+            "label": "mingo poster",
+        }))
+        .await;
+    assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
+    let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
+
+    // info surfaces the pinned grantor/grantee.
+    let info: Value = server.post("/agent-provision/info").json(&json!({ "code": code })).await.json();
+    assert_eq!(info["grantee"], GRANTEE);
+    assert_eq!(info["grantor"], DELEGATOR);
+
+    let c = csrf(&server, &session).await;
+
+    // prepare: agent_email is the foreign grantee; holder is the SUPPLIED one
+    // (not broker-assigned).
+    let prep: Value = server
+        .post("/agent-provision/prepare")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code, "identity_email": DELEGATOR }))
+        .await
+        .json();
+    assert_eq!(prep["success"], true, "prepare: {prep}");
+    assert_eq!(prep["agent_email"], GRANTEE);
+    assert_eq!(prep["holder"], GRANTEE_HOLDER);
+    let status_uri = prep["status_uri"].as_str().unwrap().to_string();
+    let status_idx = prep["grants"][0]["status_idx"].as_u64().unwrap();
+
+    // The approver signs a DELEGATED warrant: grantor=self, grantee=the service.
+    let warrant = Warrant::create(
+        DELEGATOR, GRANTEE, HolderMatcher::new(GRANTEE_HOLDER).unwrap(), AUDIENCE,
+        vec!["action:post".into()], Duration::days(90), &config_kp,
+        Some(StatusRef { uri: status_uri, idx: status_idx }),
+    )
+    .unwrap();
+    let r = server
+        .post("/agent-provision/complete")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code, "approve": true, "identity_email": DELEGATOR,
+            "warrants": [warrant.encoded()], "config_cert": config_cert.encoded() }))
+        .await;
+    assert_eq!(r.status_code(), 200, "delegated complete: {:?}", r.text());
+
+    // poll delivers ONLY the warrant~config tail — no device cert (the grantee
+    // holds its own).
+    let poll: Value = server.post("/agent-provision/poll").json(&json!({ "code": code })).await.json();
+    assert_eq!(poll["status"], "completed", "{poll}");
+    assert!(poll["credential"]["device_cert"].is_null(), "no cert for a foreign grantee: {poll}");
+    let tail = poll["grants"][0]["warrant"].as_str().unwrap();
+    assert_eq!(tail, format!("{}~{}", warrant.encoded(), config_cert.encoded()));
+
+    // A warrant naming a DIFFERENT grantee than pinned is refused.
+    let (server2, sender2, idp2) = make_server();
+    let s2 = create_user(&server2, &sender2, DELEGATOR, "testpassword").await;
+    let cfg2 = DeviceCert::create(
+        DOMAIN, &config_kp.public_key(), Purpose::Authorization, Holder::new("br.main").unwrap(),
+        vec![DELEGATOR.to_string()], Duration::days(90), &idp2, None,
+    ).unwrap();
+    let r = server2.post("/agent-provision/request").json(&json!({
+        "provisioning_pubkey": { "algorithm": "Ed25519", "publicKey": device_kp.public_key().to_base64() },
+        "grantor": DELEGATOR, "grantee": GRANTEE, "grantee_holder": GRANTEE_HOLDER,
+        "grants": [{ "audience": AUDIENCE, "scopes": ["action:post"] }],
+    })).await;
+    let code2 = r.json::<Value>()["code"].as_str().unwrap().to_string();
+    let c2 = csrf(&server2, &s2).await;
+    server2.post("/agent-provision/prepare").add_cookie(cookie::Cookie::new("browserid_session", s2.clone()))
+        .json(&json!({ "csrf": c2, "code": code2, "identity_email": DELEGATOR })).await;
+    let wrong = Warrant::create(
+        DELEGATOR, "someone-else@mingo.place", HolderMatcher::new(GRANTEE_HOLDER).unwrap(), AUDIENCE,
+        vec!["action:post".into()], Duration::days(90), &config_kp, None,
+    ).unwrap();
+    let r = server2.post("/agent-provision/complete").add_cookie(cookie::Cookie::new("browserid_session", s2))
+        .json(&json!({ "csrf": c2, "code": code2, "approve": true, "identity_email": DELEGATOR,
+            "warrants": [wrong.encoded()], "config_cert": cfg2.encoded() })).await;
+    assert_ne!(r.status_code(), 200, "warrant grantee != pinned grantee must be refused");
+}

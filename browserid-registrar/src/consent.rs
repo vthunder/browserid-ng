@@ -233,8 +233,10 @@ pub async fn respond(
     let config_jws = req.config_cert.as_deref().ok_or_else(|| {
         RegistrarError::ValidationError("approve requires the signing config cert".into())
     })?;
-    let warrants =
-        validate_grant_warrants(warrant_jwss, config_jws, &rec.agent_email, &rec.holder, &rec.grants)?;
+    // This consent flow provisions an as-you agent: grantor == grantee.
+    let warrants = validate_grant_warrants(
+        warrant_jwss, config_jws, &rec.agent_email, &rec.agent_email, &rec.holder, &rec.grants,
+    )?;
     let records: Vec<WarrantRecord> = warrants
         .iter()
         .zip(warrant_jwss)
@@ -278,7 +280,8 @@ pub async fn respond(
 pub(crate) fn validate_grant_warrants(
     warrant_jwss: &[String],
     config_jws: &str,
-    agent_email: &str,
+    grantor: &str,
+    grantee: &str,
     agent_holder: &str,
     grants: &[WarrantGrantItem],
 ) -> Result<Vec<Warrant>, RegistrarError> {
@@ -299,9 +302,12 @@ pub(crate) fn validate_grant_warrants(
     if config_cert.is_expired() {
         return Err(RegistrarError::ValidationError("config cert expired".into()));
     }
-    if !config_cert.authorizes_identity(agent_email) {
+    // The config cert must be authoritative for the GRANTOR (the attributed
+    // identity that authorizes the grant) — NOT the grantee, which may be a
+    // distinct/foreign service in a delegated grant.
+    if !config_cert.authorizes_identity(grantor) {
         return Err(RegistrarError::ValidationError(
-            "config cert does not authorize the requested agent identity".into(),
+            "config cert does not authorize the warrant grantor".into(),
         ));
     }
     let agent_holder = browserid_core::device::Holder::new(agent_holder.to_string())
@@ -321,9 +327,14 @@ pub(crate) fn validate_grant_warrants(
                 "warrant audience does not match its grant".into(),
             ));
         }
-        if claims.grantee != agent_email {
+        if claims.grantor != grantor {
             return Err(RegistrarError::ValidationError(
-                "warrant grantee does not match the requested agent".into(),
+                "warrant grantor does not match the approving identity".into(),
+            ));
+        }
+        if claims.grantee != grantee {
+            return Err(RegistrarError::ValidationError(
+                "warrant grantee does not match the requested actor".into(),
             ));
         }
         if claims.holder.as_str() == "*" {
