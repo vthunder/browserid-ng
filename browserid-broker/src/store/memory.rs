@@ -469,6 +469,17 @@ impl UserStore for InMemoryUserStore {
         Ok(false)
     }
 
+    fn set_status_active_idx(&self, idx: u64) -> StoreResult<bool> {
+        let mut entries = self.status_entries.write().unwrap();
+        for e in entries.values_mut() {
+            if e.0 == idx {
+                e.1 = false;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn is_status_revoked_idx(&self, idx: u64) -> StoreResult<bool> {
         Ok(self
             .status_entries

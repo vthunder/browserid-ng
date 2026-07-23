@@ -84,6 +84,11 @@ pub trait RegistrarStore: Send + Sync {
     /// Flip the revocation bit by index. Ok(false) if no entry.
     fn set_status_revoked_idx(&self, idx: u64) -> StoreResult<bool>;
 
+    /// Clear the revocation bit by index (reactivate on re-authorization). The
+    /// status subject/index is stable across reissues, so a fresh grant must
+    /// un-revoke a bit a prior revoke may have set. Ok(false) if no entry.
+    fn set_status_active_idx(&self, idx: u64) -> StoreResult<bool>;
+
     /// Whether an index is revoked (issuer-local authoritative check)
     fn is_status_revoked_idx(&self, idx: u64) -> StoreResult<bool>;
 

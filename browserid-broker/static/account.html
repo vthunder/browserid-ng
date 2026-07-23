@@ -1097,20 +1097,20 @@ function approverOwns(id) {
 // service, attributed to you — so this INFORMS rather than warns.
 function renderDelegatedApproval(code, info) {
   const grantee = provisionCtx.grantee;
-  const granteeDomain = grantee.split('@')[1] || '';
-  $('pv-intro').innerHTML = (info.label ? `“${escapeHtml(info.label)}” ` : `<b>${escapeHtml(grantee)}</b> `) +
-    `wants to act on your behalf.`;
+  const nick = info.label ? ` (“${escapeHtml(info.label)}”)` : '';
+  $('pv-intro').innerHTML = `<b>${escapeHtml(grantee)}</b>${nick} wants to act on your behalf.`;
   $('pv-fp').hidden = true;
   $('pv-mode').hidden = true; // no as-you/handle choice — the actor is fixed
 
-  // The capabilities it's asking for (scopes), same rendering as the owned card.
+  // Compact "At / With these permissions" per requested grant.
   const grants = provisionCtx.grants || [];
   $('pv-grants').hidden = grants.length === 0;
   $('pv-grant-list').innerHTML = grants.map(g => `
-    <div style="margin:6px 0"><code>${escapeHtml(g.audience)}</code>
-      <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">${(g.scopes || []).length
+    <div style="margin:6px 0">At: <code>${escapeHtml(g.audience)}</code>
+      <div class="sub" style="margin-top:4px">With these permissions:</div>
+      <div style="margin-top:2px;display:flex;flex-wrap:wrap;gap:4px">${(g.scopes || []).length
         ? g.scopes.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')
-        : '<span class="sub">no specific scopes — site-level access</span>'}</div></div>`).join('');
+        : '<span class="sub">site-level access</span>'}</div></div>`).join('');
 
   // The grantor (who it acts on behalf of): pinned/single → shown prominently,
   // not a dropdown; multiple owned identities → a chooser.
@@ -1118,34 +1118,26 @@ function renderDelegatedApproval(code, info) {
   const ids = (account.emails || []).filter(e => !account.agents.includes(e))
     .filter(e => pin === '*' || e.toLowerCase() === pin.toLowerCase());
   const sel = $('pv-identity');
-  const label = $('pv-identity-label');
+  const idLabel = $('pv-identity-label');
   const note = $('pv-delegate-note');
-  const renderNote = (grantor) => {
-    note.hidden = false; note.style.color = '#555';
-    note.innerHTML = `<b>${escapeHtml(grantee)}</b> is a service run by ` +
-      `<b>${escapeHtml(granteeDomain)}</b>. Approving lets it act ` +
-      `<b>on behalf of ${escapeHtml(grantor)}</b> — its actions are recorded as the ` +
-      `service acting for you, not as you directly. You can revoke this anytime ` +
-      `under “Devices &amp; services”.`;
-  };
+  note.hidden = false;
+  note.style.color = '#555';
+  note.innerHTML = 'You can revoke this anytime under “Devices &amp; services”.';
   provisionCtx.fixedGrantor = null;
   if (ids.length === 1) {
     sel.style.display = 'none';
-    label.innerHTML = `On behalf of <b>${escapeHtml(ids[0])}</b>`;
+    idLabel.innerHTML = `On behalf of: <b>${escapeHtml(ids[0])}</b>`;
     provisionCtx.fixedGrantor = ids[0];
-    renderNote(ids[0]);
     $('pv-approve').disabled = false;
   } else if (ids.length > 1) {
     sel.style.display = '';
     sel.innerHTML = ids.map(e => `<option value="${escapeHtml(e)}">${escapeHtml(e)}</option>`).join('');
-    label.textContent = 'On behalf of which identity?';
-    renderNote(sel.value);
-    sel.onchange = () => renderNote(sel.value);
+    idLabel.textContent = 'On behalf of which identity?';
     $('pv-approve').disabled = false;
   } else {
     sel.style.display = 'none';
-    label.textContent = '';
-    note.hidden = false; note.style.color = '#b7791f';
+    idLabel.textContent = '';
+    note.style.color = '#b7791f';
     note.textContent = pin === '*'
       ? 'Sign in to an identity here first, then approve.'
       : `This grant must be authorized by ${pin}. Sign in as ${pin} here first.`;

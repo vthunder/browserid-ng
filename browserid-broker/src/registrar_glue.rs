@@ -250,6 +250,10 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
         UserStore::set_status_revoked_idx(self.user_store.as_ref(), idx).map_err(to_reg_err)
     }
 
+    fn set_status_active_idx(&self, idx: u64) -> Result<bool, RegistrarError> {
+        UserStore::set_status_active_idx(self.user_store.as_ref(), idx).map_err(to_reg_err)
+    }
+
     fn is_status_revoked_idx(&self, idx: u64) -> Result<bool, RegistrarError> {
         UserStore::is_status_revoked_idx(self.user_store.as_ref(), idx).map_err(to_reg_err)
     }

@@ -782,6 +782,15 @@ pub async fn complete(
         check_grantor_pin(&snapshot.grantor, identity)?;
     }
 
+    // Re-authorization: the warrant status index is stable per subject, so a
+    // prior revoke may have left it set. A fresh approval must reactivate it, or
+    // the reissued warrant would verify as already-revoked.
+    for g in &snapshot.grants {
+        if let Some(idx) = g.status_idx {
+            let _ = state.store.set_status_active_idx(idx);
+        }
+    }
+
     // Delegated (foreign grantee) vs owned (as-you / named agent) approval.
     if grantee_is_foreign(&state, &user, &snapshot) {
         complete_delegated_warrant(&state, &user, &req, snapshot).await
@@ -838,6 +847,20 @@ async fn complete_delegated_warrant(
         .iter()
         .map(|w| format!("{w}~{config_jws}"))
         .collect();
+
+    // Record the foreign grantee as a SERVICE entry so it shows under "Devices &
+    // services" (labeled + revocable — removing the holder revokes its warrants
+    // by holder match). It holds its own cert at its issuer, so there is no local
+    // key: an empty pubkey marks it external.
+    let grantee_iss = grantee.rsplit('@').next().unwrap_or_default().to_string();
+    let (iat, exp) = warrants
+        .first()
+        .map(|w| (w.claims().iat, w.claims().exp))
+        .unwrap_or((0, 0));
+    let label = Some(snapshot.label.as_str()).filter(|l| !l.trim().is_empty());
+    state.host.record_agent_device_cert(
+        user.user_id, &grantee, &holder, "", &grantee_iss, iat, exp, None, label,
+    );
 
     let mut m = PROVISIONS.lock().unwrap();
     let rec = m

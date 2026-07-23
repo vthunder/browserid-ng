@@ -1393,6 +1393,17 @@ impl UserStore for SqliteStore {
         Ok(rows > 0)
     }
 
+    fn set_status_active_idx(&self, idx: u64) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE status_entries SET revoked_at = NULL WHERE idx = ?1",
+                params![idx as i64],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows > 0)
+    }
+
     fn is_status_revoked_idx(&self, idx: u64) -> StoreResult<bool> {
         let conn = self.conn.lock().unwrap();
         let revoked: Option<Option<String>> = conn
@@ -1985,6 +1996,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn set_status_revoked_idx(&self, idx: u64) -> StoreResult<bool> {
         (**self).set_status_revoked_idx(idx)
+    }
+
+    fn set_status_active_idx(&self, idx: u64) -> StoreResult<bool> {
+        (**self).set_status_active_idx(idx)
     }
 
     fn is_status_revoked_idx(&self, idx: u64) -> StoreResult<bool> {

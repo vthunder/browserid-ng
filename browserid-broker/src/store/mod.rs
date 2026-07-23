@@ -165,6 +165,11 @@ pub trait UserStore: Send + Sync {
     /// Flip the revocation bit by index. Ok(false) if no entry.
     fn set_status_revoked_idx(&self, idx: u64) -> StoreResult<bool>;
 
+    /// Clear the revocation bit by index (reactivate) — used when a subject is
+    /// RE-authorized after a prior revoke (the status subject/index is stable, so
+    /// a fresh grant must un-revoke the shared bit). Ok(false) if no entry.
+    fn set_status_active_idx(&self, idx: u64) -> StoreResult<bool>;
+
     /// Whether an index is revoked (issuer-local authoritative check)
     fn is_status_revoked_idx(&self, idx: u64) -> StoreResult<bool>;
 
