@@ -30,14 +30,21 @@ surface, not the data plane. (Single-origin can be revisited at P3.)
 
 ## Stage 1 — steps
 
+**Decisions (2026-07-24, with Dan):** two-hostname topology confirmed;
+CI-image deploys (repo is public → free minutes + public GHCR); same dokku
+host as browserid.me for now (disk can grow later — monitor PDS blob
+growth); DNS is **Namecheap** (see stage-2 handle analysis below).
+
 1. **Build via CI, not on the host** (per the mingo `sbo-daemon` lesson:
-   dokku host builds cold-recompile Rust for 40+ min). Reuse the
-   `deploy-daemon.yml` pattern: GitHub Actions builds
-   `pds-bridge/Dockerfile` → pushes `ghcr.io/vthunder/bsky-bridge:<sha>`
-   (public package) → `ssh dokku@HOST git:from-image bsky-bridge <image>`.
-   One-time: `DOKKU_SSH_KEY` secret, `packages: write` permission,
-   `dokku builder:set bsky-bridge selected dockerfile` not needed
-   (from-image), GHCR package public.
+   dokku host builds cold-recompile Rust for 40+ min). Implemented:
+   `.github/workflows/deploy-bridge.yml` builds `pds-bridge/Dockerfile` →
+   pushes `ghcr.io/vthunder/bsky-bridge:<sha>` →
+   `ssh dokku@HOST git:from-image bsky-bridge <image>`.
+   One-time setup: repo secret `DOKKU_SSH_KEY` (reuse the existing deploy
+   key), repo variable `DOKKU_HOST`, and after the first push flip the
+   GHCR package to **public**. Gotcha (from mingo): `git:from-image` is a
+   no-op that exits 1 on an unchanged digest — only bites when
+   re-deploying the same commit.
 2. **PDS app**: run the stock container
    (`ghcr.io/bluesky-social/pds:latest`) as dokku app `bsky-pds` with a
    persistent volume for `/pds`. Required env: `PDS_HOSTNAME`,
@@ -86,25 +93,91 @@ surface, not the data plane. (Single-origin can be revisited at P3.)
    `bsky.network` naming `pds.bsky.browserid.me`. Posts then flow to the
    AppView and show on bsky.app profiles.
 2. **Handle verification** for `*.at.browserid.me` — the fiddly bit.
-   Options, pick one:
-   - **(a) Wildcard vhost + wildcard cert**: point `*.at.browserid.me` at
-     the PDS (it answers `/.well-known/atproto-did` per Host for its
-     service handle domains). Needs a wildcard TLS cert → DNS-01 challenge
-     → depends on the DNS provider's API (dokku letsencrypt won't do it;
-     acme.sh with provider hook will).
-   - **(b) DNS TXT automation**: bridge writes
-     `_atproto.<label>.at.browserid.me TXT "did=<did>"` at provisioning via
-     the DNS provider API. No wildcard cert needed; requires API access to
-     the browserid.me zone.
+   DNS is Namecheap, and that changes the calculus: Namecheap's
+   `setHosts` API call **replaces the entire zone's records** on every
+   write, and browserid.me's apex zone carries the DNSSEC-load-bearing
+   `_browserid` record — a bad automated write there is protocol-fatal.
+   So: **no recurring API writes against the apex zone.**
+   - **(a) RECOMMENDED — wildcard vhost + wildcard cert, alias-mode
+     DNS-01**: one-time *manual* Namecheap records: `*.at.browserid.me` A
+     → the host, and `_acme-challenge.at.browserid.me` CNAME → an
+     `_acme-challenge` name in a throwaway zone on an API-friendly free
+     DNS host (e.g. deSEC). acme.sh (DNS alias mode) then renews the
+     wildcard cert writing TXT only in that zone; Namecheap is never
+     touched by automation. `*.at.browserid.me` is added as dokku domains
+     on `bsky-pds`, which answers `/.well-known/atproto-did` per Host for
+     `PDS_SERVICE_HANDLE_DOMAINS`.
+   - **(b) Per-handle DNS TXT automation** (`_atproto.<label>… TXT`): only
+     safe if `at.browserid.me` is first **delegated as a subzone** (manual
+     one-time NS records at Namecheap) to a host with a sane API — deSEC,
+     or self-hosted PowerDNS. The nexys-system/namecheap-sdk wraps the
+     Namecheap API and does read-modify-write, but the blast radius of a
+     bug is still the whole apex zone; use it (if at all) only for
+     one-time IaC of the static records, never in the provisioning path.
    - Until one lands, accounts work but bsky.app shows `handle.invalid` —
      harmless for stage-1 testing.
 3. **Email**: the PDS wants SMTP for its own account emails
    (`PDS_EMAIL_SMTP_URL`) — optional for testing, needed before real users.
 
-## Open items / decisions for Dan
+## Host runbook (stage 1, run on the dokku host)
 
-- Confirm two-hostname topology (vs building websocket passthrough now).
-- Confirm CI-image deploys (repo/package public on GHCR?).
-- DNS provider for browserid.me — decides handle option (a) vs (b).
-- Same dokku host as browserid.me, or elsewhere? (PDS blob storage grows;
-  the host is disk-constrained per the mingo lesson.)
+Verify exact PDS env/image details against
+github.com/bluesky-social/pds at execution time; shapes below are the
+plan of record. The PDS container listens on 3000; the bridge on 5000.
+
+```sh
+# --- bsky-pds: stock image, no build ---
+dokku apps:create bsky-pds
+sudo mkdir -p /var/lib/dokku/data/storage/bsky-pds
+dokku storage:mount bsky-pds /var/lib/dokku/data/storage/bsky-pds:/pds
+dokku config:set bsky-pds \
+  PDS_HOSTNAME=pds.bsky.browserid.me \
+  PDS_JWT_SECRET="$(openssl rand -hex 32)" \
+  PDS_ADMIN_PASSWORD="$(openssl rand -hex 24)" \
+  PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX="$(openssl ecparam -name secp256k1 -genkey -noout -outform DER | tail -c +8 | head -c 32 | xxd -p -c 32)" \
+  PDS_DID_PLC_URL=https://plc.directory \
+  PDS_DATA_DIRECTORY=/pds \
+  PDS_BLOBSTORE_DISK_LOCATION=/pds/blocks \
+  PDS_SERVICE_HANDLE_DOMAINS=.at.browserid.me
+dokku ports:set bsky-pds http:80:3000
+dokku git:from-image bsky-pds ghcr.io/bluesky-social/pds:0.4
+dokku domains:set bsky-pds pds.bsky.browserid.me
+dokku letsencrypt:enable bsky-pds
+
+# --- bsky-bridge: deployed by CI (deploy-bridge.yml); configure first ---
+dokku apps:create bsky-bridge
+sudo mkdir -p /var/lib/dokku/data/storage/bsky-bridge
+dokku storage:mount bsky-bridge /var/lib/dokku/data/storage/bsky-bridge:/data
+dokku config:set bsky-bridge \
+  BRIDGE_ORIGIN=https://bsky.browserid.me \
+  HANDLE_DOMAIN=at.browserid.me \
+  BROKER_URL=https://browserid.me \
+  PDS_URL=https://pds.bsky.browserid.me \
+  PDS_ADMIN_PASSWORD=<same as bsky-pds>
+dokku ports:set bsky-bridge http:80:5000
+dokku domains:set bsky-bridge bsky.browserid.me
+# first deploy: push to main (CI) or manually:
+#   dokku git:from-image bsky-bridge ghcr.io/vthunder/bsky-bridge:<sha>
+dokku letsencrypt:enable bsky-bridge
+```
+
+`PDS_URL` uses the public PDS origin for stage 1 (simplest; loops through
+nginx). Internal dokku networking is a later optimization.
+
+## One-time setup checklist (Dan)
+
+- [ ] Namecheap: A records `bsky.browserid.me` and `pds.bsky.browserid.me`
+      → the dokku host (manual, dashboard).
+- [ ] GitHub: repo secret `DOKKU_SSH_KEY` (reuse the dokku deploy key),
+      repo variable `DOKKU_HOST`.
+- [ ] After first CI push: make the `bsky-bridge` GHCR package public.
+- [ ] Run the host runbook above.
+
+## Decided (2026-07-24)
+
+- Two-hostname topology (bridge = audience; PDS direct for data plane).
+- CI-image deploys via GHCR (`.github/workflows/deploy-bridge.yml`).
+- Same dokku host as browserid.me; grow disk if PDS blobs demand it.
+- DNS: Namecheap; no automated writes against the apex zone ever
+  (`setHosts` replaces the whole zone and `_browserid` DNSSEC records live
+  there). Stage-2 handles via option (a) alias-mode wildcard cert.
