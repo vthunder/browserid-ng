@@ -1098,37 +1098,58 @@ function approverOwns(id) {
 function renderDelegatedApproval(code, info) {
   const grantee = provisionCtx.grantee;
   const granteeDomain = grantee.split('@')[1] || '';
-  $('pv-intro').textContent = (info.label ? `“${info.label}” ` : `${grantee} `) +
-    `wants to post on your behalf.`;
+  $('pv-intro').innerHTML = (info.label ? `“${escapeHtml(info.label)}” ` : `<b>${escapeHtml(grantee)}</b> `) +
+    `wants to act on your behalf.`;
   $('pv-fp').hidden = true;
   $('pv-mode').hidden = true; // no as-you/handle choice — the actor is fixed
-  // Constrain the grantor picker to owned identities (and to the pin if set).
+
+  // The capabilities it's asking for (scopes), same rendering as the owned card.
+  const grants = provisionCtx.grants || [];
+  $('pv-grants').hidden = grants.length === 0;
+  $('pv-grant-list').innerHTML = grants.map(g => `
+    <div style="margin:6px 0"><code>${escapeHtml(g.audience)}</code>
+      <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">${(g.scopes || []).length
+        ? g.scopes.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')
+        : '<span class="sub">no specific scopes — site-level access</span>'}</div></div>`).join('');
+
+  // The grantor (who it acts on behalf of): pinned/single → shown prominently,
+  // not a dropdown; multiple owned identities → a chooser.
   const pin = provisionCtx.grantorPin;
   const ids = (account.emails || []).filter(e => !account.agents.includes(e))
     .filter(e => pin === '*' || e.toLowerCase() === pin.toLowerCase());
   const sel = $('pv-identity');
-  sel.innerHTML = ids.map(e => `<option value="${escapeHtml(e)}">${escapeHtml(e)}</option>`).join('');
-  $('pv-identity-label').textContent = 'Post as which of your identities?';
+  const label = $('pv-identity-label');
   const note = $('pv-delegate-note');
-  note.hidden = false;
-  note.style.color = '#555';
-  const renderNote = () => {
-    const grantor = sel.value || 'you';
+  const renderNote = (grantor) => {
+    note.hidden = false; note.style.color = '#555';
     note.innerHTML = `<b>${escapeHtml(grantee)}</b> is a service run by ` +
-      `<b>${escapeHtml(granteeDomain)}</b>. Approving lets it post as ` +
-      `<b>${escapeHtml(grantor)}</b> — its posts are marked as coming from the ` +
-      `service, on your behalf. You can revoke this anytime under “Devices &amp; services”.`;
+      `<b>${escapeHtml(granteeDomain)}</b>. Approving lets it act ` +
+      `<b>on behalf of ${escapeHtml(grantor)}</b> — its actions are recorded as the ` +
+      `service acting for you, not as you directly. You can revoke this anytime ` +
+      `under “Devices &amp; services”.`;
   };
-  renderNote();
-  sel.onchange = renderNote;
-  if (ids.length === 0) {
-    $('pv-approve').disabled = true;
-    $('pv-status').className = 'status err';
-    $('pv-status').textContent = pin === '*'
+  provisionCtx.fixedGrantor = null;
+  if (ids.length === 1) {
+    sel.style.display = 'none';
+    label.innerHTML = `On behalf of <b>${escapeHtml(ids[0])}</b>`;
+    provisionCtx.fixedGrantor = ids[0];
+    renderNote(ids[0]);
+    $('pv-approve').disabled = false;
+  } else if (ids.length > 1) {
+    sel.style.display = '';
+    sel.innerHTML = ids.map(e => `<option value="${escapeHtml(e)}">${escapeHtml(e)}</option>`).join('');
+    label.textContent = 'On behalf of which identity?';
+    renderNote(sel.value);
+    sel.onchange = () => renderNote(sel.value);
+    $('pv-approve').disabled = false;
+  } else {
+    sel.style.display = 'none';
+    label.textContent = '';
+    note.hidden = false; note.style.color = '#b7791f';
+    note.textContent = pin === '*'
       ? 'Sign in to an identity here first, then approve.'
       : `This grant must be authorized by ${pin}. Sign in as ${pin} here first.`;
-  } else {
-    $('pv-approve').disabled = false;
+    $('pv-approve').disabled = true;
   }
   $('pv-approve').onclick = () => approveDelegated(code);
   $('pv-deny').onclick = () => denyProvision(code);
@@ -1139,7 +1160,7 @@ function renderDelegatedApproval(code, info) {
 // issuance — the service holds its own from its provider.
 async function approveDelegated(code) {
   const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Approving…';
-  const grantor = $('pv-identity').value;
+  const grantor = provisionCtx.fixedGrantor || $('pv-identity').value;
   const grantee = provisionCtx.grantee;
   try {
     const prep = await post('/agent-provision/prepare', { code, identity_email: grantor });
@@ -1169,7 +1190,7 @@ async function approveDelegated(code) {
       code, approve: true, identity_email: grantor, warrants, config_cert: config.cert,
     });
     status.className = 'status ok';
-    status.textContent = `Approved — ${grantee} can now post as ${grantor}.`;
+    status.textContent = `Approved — ${grantee} can now act on behalf of ${grantor}.`;
     $('pv-approve').disabled = true; $('pv-deny').disabled = true;
     const back = document.createElement('p'); back.className = 'status muted';
     if (history.length > 1) {

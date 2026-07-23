@@ -1,11 +1,11 @@
 ---
 # browserid-ng-nrwd
 title: 'M-A step 3: registrar/broker/account distinct-grantee warrant request + approval'
-status: in-progress
+status: completed
 type: task
 priority: high
 created_at: 2026-07-23T14:02:51Z
-updated_at: 2026-07-23T17:06:33Z
+updated_at: 2026-07-23T17:42:40Z
 parent: browserid-ng-atge
 blocked_by:
     - browserid-ng-ztkh
@@ -31,3 +31,5 @@ Extend /agent-provision with an `external_grantee` branch (reuses the pending-re
 ## Backend DONE (2026-07-23, committed 5ffe436, pushed)
 Registrar grantor/grantee pins + delegated foreign-grantee warrant-only path built + integration-tested (delegated_foreign_grantee_is_warrant_only). validate_grant_warrants splits grantor/grantee. Owned flows + full suite green.
 REMAINING on step 3: account.html approval card — render the delegated case (foreign grantee derived from account.emails), as-you warning, sign grantor!=grantee warrant + delegated complete. Needs a CSP inline-hash bump. Not yet built.
+
+## DONE + deploying (2026-07-23). Registrar backend + account.html delegated card built, tested, pushed. Deploying browserid.me.

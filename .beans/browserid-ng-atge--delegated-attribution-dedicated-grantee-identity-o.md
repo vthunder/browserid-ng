@@ -1,11 +1,11 @@
 ---
 # browserid-ng-atge
 title: 'Delegated attribution: dedicated grantee identity + on-chain acting-for (model A)'
-status: in-progress
+status: completed
 type: epic
 priority: high
 created_at: 2026-07-23T13:32:55Z
-updated_at: 2026-07-23T14:02:34Z
+updated_at: 2026-07-23T18:17:51Z
 blocked_by:
     - browserid-ng-yhcx
 ---
@@ -79,3 +79,10 @@ Milestone 2 — CROSS-ISSUER (external-email grantors, e.g. dan@sandmill.org →
 - config authorizes GRANTOR (was access.identity); config verified under cc.iss key; access under ac.iss key; drop the iss-equality check.
 - wc.grantee == ac.identity (the actor/signer). holder matcher still vs ac.holder.
 - VerifiedAccess: email = grantor; issuer = cc.iss (grantor's issuer, for domain-binding of the attributed identity); ADD grantee (+ grantee issuer) for provenance.
+
+## SHIPPED (2026-07-23) — all 4 steps built, tested, deployed
+- Step 1 core grantor/grantee (browserid-ng 2582555)
+- Step 2 sbo delegated attribution + two-issuer (sbo ae1a998)
+- Step 3 registrar delegated approval + account card (browserid-ng, deployed 7a9960f)
+- Step 4 mingo-poster@mingo.place delegated service identity (mingo c7a9169)
+Deployed + verified live: browserid.me (broker+registrar) 200, mingo.place 200, sbo-daemon ae1a998 health 200. Live smoke: deployed registrar accepts grantor/grantee delegated request + echoes pins. Coordinated breaking wire-format flip complete. Awaiting Dan's interactive poster e2e.
