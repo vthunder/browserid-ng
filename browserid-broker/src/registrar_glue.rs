@@ -33,9 +33,6 @@ fn to_reg_grant(g: crate::store::WarrantGrantItem) -> reg::WarrantGrantItem {
         audience: g.audience,
         scopes: g.scopes,
         status_idx: g.status_idx,
-        // Display-only card metadata; not persisted in the broker warrant store.
-        app: None,
-        actions: None,
     }
 }
 
