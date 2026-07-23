@@ -86,7 +86,8 @@ impl Fixture {
                 typ: TYP_WARRANT.into(),
                 iat: IAT,
                 exp: IAT + 90 * DAY,
-                identifier: self.email().into(),
+                grantor: self.email().into(),
+                grantee: self.email().into(),
                 holder: HolderMatcher::new("br.*").unwrap(),
                 audience: self.audience().into(),
                 scopes: vec!["login".into()],
@@ -247,7 +248,8 @@ fn holder_passthrough_copy_and_isolation() {
     let isolated = Warrant::from_claims(
         WarrantClaims {
             typ: TYP_WARRANT.into(), iat: IAT, exp: IAT + 90 * DAY,
-            identifier: f.email().into(),
+            grantor: f.email().into(),
+            grantee: f.email().into(),
             holder: HolderMatcher::new("svc.some-other-service").unwrap(),
             audience: f.audience().into(), scopes: vec!["login".into()], status: None,
         },
@@ -296,7 +298,8 @@ fn golden_vectors() {
             "expect": { "email": f.email(), "holder": "br.main", "scopes": ["login"] }
         },
         "reject_cases": [
-            "config cert signed by an IdP other than the access cert's iss",
+            "warrant grantee does not equal the access cert identity",
+            "config cert not authoritative for the warrant grantor",
             "config cert with purpose=authentication",
             "access cert holder not covered by the warrant's holder matcher",
             "audience mismatch",

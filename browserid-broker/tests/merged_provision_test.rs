@@ -129,7 +129,7 @@ async fn merged_request_prepare_approve_single_pickup() {
     // 5. A warrant with a matcher that doesn't cover the assigned holder is
     //    refused all-or-nothing at complete.
     let foreign = Warrant::create(
-        AGENT, HolderMatcher::new("zz.other").unwrap(), AUDIENCE, vec!["action:post".into()],
+        AGENT, AGENT, HolderMatcher::new("zz.other").unwrap(), AUDIENCE, vec!["action:post".into()],
         Duration::days(90), &config_kp,
         Some(StatusRef { uri: status_uri.clone(), idx: status_idx }),
     )
@@ -144,7 +144,7 @@ async fn merged_request_prepare_approve_single_pickup() {
 
     // 6. The page signs the warrant against the assigned holder and approves.
     let warrant = Warrant::create(
-        AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
+        AGENT, AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
         Duration::days(90), &config_kp,
         Some(StatusRef { uri: status_uri.clone(), idx: status_idx }),
     )
@@ -312,7 +312,7 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
     )
     .unwrap();
     let warrant = Warrant::create(
-        P_AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
+        P_AGENT, P_AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
         Duration::days(90), &config_kp,
         Some(StatusRef { uri: status_uri, idx: status_idx }),
     )
@@ -471,7 +471,7 @@ async fn as_you_service_provisions_under_the_users_own_identity() {
     let status_idx = prep["grants"][0]["status_idx"].as_u64().unwrap();
 
     let warrant = Warrant::create(
-        DELEGATOR, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
+        DELEGATOR, DELEGATOR, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
         Duration::days(90), &config_kp,
         Some(StatusRef { uri: status_uri, idx: status_idx }),
     )

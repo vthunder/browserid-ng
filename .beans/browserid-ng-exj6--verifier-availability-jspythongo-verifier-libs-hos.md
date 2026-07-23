@@ -1,11 +1,11 @@
 ---
 # browserid-ng-exj6
 title: Verifier availability — JS/Python/Go verifier libs + hosted /verify
-status: in-progress
+status: todo
 type: feature
 priority: normal
 created_at: 2026-07-10T15:24:41Z
-updated_at: 2026-07-11T23:10:23Z
+updated_at: 2026-07-23T11:02:42Z
 ---
 
 GTM: Rust-only verification is a silent adoption ceiling. "Add agent auth" must be five minutes in any stack. Plan: `docs/plans/2026-07-10-agent-identity-v3-and-gtm-plan.md` (§7).

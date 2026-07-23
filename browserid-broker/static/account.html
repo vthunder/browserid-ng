@@ -959,10 +959,11 @@ window.addEventListener('popstate', (e) => {
 // `holder` is the warrant's matcher (`*` / `<ns>.*` / `<id>`). Manually-signed
 // warrants from this debug surface default to `*` (any of your holders); the
 // broker only *forbids* issuing `*` via consent, not client-side signing.
-async function signDeviceWarrant(config, identifier, holder, audience, scopes, statusRef) {
+async function signDeviceWarrant(config, identity, holder, audience, scopes, statusRef) {
   const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+  // As-you grant from this surface: grantor (attributed) == grantee (actor).
   const claims = { typ: 'browserid-warrant-v1', iat: nowS(), exp: nowS() + 90*24*3600,
-    identifier, holder, audience };
+    grantor: identity, grantee: identity, holder, audience };
   if ((scopes || []).length) claims.scopes = scopes;
   if (statusRef) claims.status = statusRef;
   const payload = b64urlJson(claims);

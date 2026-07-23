@@ -321,9 +321,9 @@ pub(crate) fn validate_grant_warrants(
                 "warrant audience does not match its grant".into(),
             ));
         }
-        if claims.identifier != agent_email {
+        if claims.grantee != agent_email {
             return Err(RegistrarError::ValidationError(
-                "warrant identifier does not match the requested agent".into(),
+                "warrant grantee does not match the requested agent".into(),
             ));
         }
         if claims.holder.as_str() == "*" {
@@ -374,7 +374,7 @@ pub(crate) fn warrant_to_record(
         id: 0, // assigned by the store
         user_id,
         delegator_email: delegator_email.to_string(),
-        agent_email: claims.identifier.clone(),
+        agent_email: claims.grantee.clone(),
         audience: claims.audience.clone(),
         scopes: claims.scopes.clone(),
         warrant: jws.to_string(),
@@ -486,13 +486,13 @@ pub async fn register_warrant(
         .map_err(|_| RegistrarError::ValidationError(
             "warrant is not signed by the presented config cert".into(),
         ))?;
-    let identifier = &warrant.claims().identifier;
-    if !config_cert.authorizes_identity(identifier) {
+    let grantor = &warrant.claims().grantor;
+    if !config_cert.authorizes_identity(grantor) {
         return Err(RegistrarError::ValidationError(
-            "config cert does not authorize the warrant's identifier".into(),
+            "config cert does not authorize the warrant's grantor".into(),
         ));
     }
-    let delegator = delegator_of(identifier);
+    let delegator = delegator_of(grantor);
     if !state.host.owns_verified_email(user.user_id, &delegator)? {
         return Err(RegistrarError::ValidationError(
             "the warrant's delegator is not a verified email on this account".into(),

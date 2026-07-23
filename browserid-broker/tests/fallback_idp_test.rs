@@ -100,7 +100,7 @@ async fn smtp_auth_then_device_cert_issues_the_pair() {
     let access_cert = minted["access_cert"].as_str().unwrap();
 
     let warrant = Warrant::create(
-        email, HolderMatcher::new(holder.as_str()).unwrap(), audience, vec!["login".into()], Duration::days(90), &config_kp, None,
+        email, email, HolderMatcher::new(holder.as_str()).unwrap(), audience, vec!["login".into()], Duration::days(90), &config_kp, None,
     )
     .unwrap();
     let assertion = Assertion::create(audience, Duration::minutes(5), &access_kp).unwrap();
@@ -131,7 +131,7 @@ async fn smtp_auth_then_device_cert_issues_the_pair() {
     //    issuer gate.)
     let broker_audience = "http://localhost:3000";
     let warrant_b = Warrant::create(
-        email, HolderMatcher::new(holder.as_str()).unwrap(), broker_audience, vec!["login".into()], Duration::days(90), &config_kp, None,
+        email, email, HolderMatcher::new(holder.as_str()).unwrap(), broker_audience, vec!["login".into()], Duration::days(90), &config_kp, None,
     )
     .unwrap();
     let assertion_b = Assertion::create(broker_audience, Duration::minutes(5), &access_kp).unwrap();

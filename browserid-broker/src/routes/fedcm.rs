@@ -286,7 +286,7 @@ where
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("config cert: {e}")),
     };
     let warrant = match Warrant::create(
-        email, login_matcher, &rp_origin, vec!["login".to_string()],
+        email, email, login_matcher, &rp_origin, vec!["login".to_string()],
         validity, &config_kp, None,
     ) {
         Ok(w) => w,

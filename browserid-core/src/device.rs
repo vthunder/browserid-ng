@@ -5,8 +5,9 @@
 //! [`Holder`] (which of the user's things acts). An authentication device cert
 //! signs an [`AccessRequest`] that the IdP exchanges for a short-lived,
 //! fresh-key [`AccessCert`] carrying the same holder. A config cert
-//! (`authorization`, device-resident) signs a [`Warrant`] over `(identifier,
-//! holder-matcher) → audience[+scopes]`. The RP receives an
+//! (`authorization`, device-resident) signs a [`Warrant`] delegating from a
+//! `grantor` (the attributed identity) to a `grantee` (the actor) over
+//! `(holder-matcher) → audience[+scopes]`. The RP receives an
 //! [`AccessPresentation`] — `access_cert ~ assertion ~ warrant ~ config_cert` —
 //! and joins them by `(identity, holder∈matcher, audience)`.
 //!
@@ -60,7 +61,7 @@ fn identity_matches(pattern: &str, email: &str) -> bool {
     // are `+tags` by definition — the same convention `delegator_of` inverts).
     // A cert naming the base identity therefore authorizes its sub-addresses;
     // no `user+*@domain` glob is needed. The identity an agent may PRESENT as
-    // stays pinned elsewhere: the warrant's identifier must exactly equal the
+    // stays pinned elsewhere: the warrant's grantee must exactly equal the
     // access-cert identity, so a base-identity cert without a matching warrant
     // authorizes nothing at any verifier.
     if let Some((p_local, p_domain)) = pattern.split_once('@') {
@@ -439,7 +440,7 @@ impl AccessCert {
 }
 
 // ===========================================================================
-// Warrant (config-cert-signed): (identifier, holder-matcher) → audience[+scopes].
+// Warrant (config-cert-signed): grantor delegates to grantee → audience[+scopes].
 // ===========================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -447,8 +448,17 @@ pub struct WarrantClaims {
     pub typ: String,
     pub iat: i64,
     pub exp: i64,
-    pub identifier: String,
-    /// Which holder(s) this warrant grants to: `*`, `<ns>.*`, or `<id>`.
+    /// Who authorizes the grant AND who the write is attributed to (the effective
+    /// author). The signing config cert must be authoritative for this identity.
+    pub grantor: String,
+    /// Who wields the grant — the identity that mints the access cert and signs
+    /// on-chain (must equal the presented access cert's identity). When it equals
+    /// `grantor` this is an "as-you" grant (the service acts as the user); when it
+    /// differs it is delegated on-behalf (e.g. `mingo-poster@…` acting for a user),
+    /// and the write attributes to `grantor` while `grantee` is the actor of record.
+    pub grantee: String,
+    /// Which holder(s) this warrant grants to: `*`, `<ns>.*`, or `<id>` — checked
+    /// against the GRANTEE's access cert holder (anti-fungibility).
     pub holder: HolderMatcher,
     pub audience: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -465,8 +475,10 @@ pub struct Warrant {
 }
 
 impl Warrant {
+    #[allow(clippy::too_many_arguments)]
     pub fn create(
-        identifier: &str,
+        grantor: &str,
+        grantee: &str,
         holder: HolderMatcher,
         audience: &str,
         scopes: Vec<String>,
@@ -479,7 +491,8 @@ impl Warrant {
             typ: TYP_WARRANT.to_string(),
             iat: now.timestamp(),
             exp: (now + validity).timestamp(),
-            identifier: identifier.to_string(),
+            grantor: grantor.to_string(),
+            grantee: grantee.to_string(),
             holder,
             audience: audience.to_string(),
             scopes,
@@ -521,12 +534,25 @@ impl Warrant {
 /// verifier MUST check **fail-closed** (access→IdP, config→IdP, warrant→broker).
 #[derive(Debug, Clone)]
 pub struct VerifiedAccess {
+    /// The EFFECTIVE author: the warrant grantor (whom the write attributes to).
+    /// For an as-you grant this equals the actor; for a delegated grant it is the
+    /// user the grantee acted for.
     pub email: String,
-    /// The opaque holder the access cert carried (which of the user's things
+    /// The ACTOR of record: the identity that minted the access cert and signed
+    /// (the warrant grantee == access cert identity). Equals `email` for as-you
+    /// grants; differs for delegated on-behalf grants (provenance).
+    pub grantee: String,
+    /// The IdP domain that vouches for the ATTRIBUTED identity (`email`) — the
+    /// grantor's issuer (the config cert's `iss`). Used for domain-binding of the
+    /// attributed identity.
+    pub issuer: String,
+    /// The grantee/actor's issuer (the access cert's `iss`). Equals `issuer` for
+    /// as-you grants; may differ for a cross-issuer delegated grant.
+    pub grantee_issuer: String,
+    /// The opaque holder the access cert carried (which of the grantee's things
     /// acted). Advisory to the RP; the human/agent axis is gone.
     pub holder: Holder,
     pub scopes: Vec<String>,
-    pub issuer: String,
     pub access_status: Option<StatusRef>,
     pub config_status: Option<StatusRef>,
     pub warrant_status: Option<StatusRef>,
@@ -578,18 +604,23 @@ impl AccessPresentation {
         let cc = self.config_cert.claims();
         let wc = self.warrant.claims();
 
-        // Config cert MUST be issued by the SAME IdP as the access cert — i.e.
-        // the identity's own IdP. Without this an RP would trust a warrant signed
-        // by any authorization cert from any IdP (privilege escalation).
-        if cc.iss != ac.iss {
-            return Err(invalid(
-                "presentation",
-                "config cert issuer must equal the access cert issuer (identity's IdP)",
-            ));
-        }
-        let idp_key = get_idp_key(&ac.iss)?;
-        self.access_cert.verify(&idp_key)?;
-        self.config_cert.verify(&idp_key)?;
+        // Two independent issuer roots, each DNSSEC-proven via the caller's
+        // resolver: the ACCESS cert (the actor/grantee) under its own issuer, the
+        // CONFIG cert (which authorizes the grantor and signs the warrant) under
+        // ITS issuer. They coincide for an as-you grant and may differ for a
+        // cross-issuer delegated grant. This is safe WITHOUT the old
+        // `config.iss == access.iss` rule because the write attributes to the
+        // GRANTOR (the config cert's identity): a warrant signed by issuer X's
+        // authorization cert can only ever attribute to an identity X vouches for,
+        // so no cross-IdP privilege escalation is possible.
+        let access_idp_key = get_idp_key(&ac.iss)?;
+        self.access_cert.verify(&access_idp_key)?;
+        let config_idp_key = if cc.iss == ac.iss {
+            access_idp_key.clone()
+        } else {
+            get_idp_key(&cc.iss)?
+        };
+        self.config_cert.verify(&config_idp_key)?;
         if self.access_cert.is_expired() {
             return Err(invalid("access cert", "expired"));
         }
@@ -606,25 +637,29 @@ impl AccessPresentation {
             return Err(invalid("assertion", "audience mismatch"));
         }
 
-        // Config cert must be an authorization cert authoritative for the identity.
+        // Config cert must be an authorization cert authoritative for the GRANTOR
+        // (the attributed identity) — this is what makes the cross-issuer split
+        // safe: the config cert's IdP vouches for the identity the write lands on.
         if cc.purpose != Purpose::Authorization {
             return Err(invalid("config cert", "not an authorization cert"));
         }
-        if !self.config_cert.authorizes_identity(&ac.identity) {
-            return Err(invalid("config cert", "not authorized for this identity"));
+        if !self.config_cert.authorizes_identity(&wc.grantor) {
+            return Err(invalid("config cert", "not authorized for the warrant grantor"));
         }
 
-        // Warrant signed by the config cert, over this (identity, holder, audience).
+        // Warrant signed by the config cert (so the grantor authorized it).
         self.warrant.verify(&cc.public_key)?;
         if self.warrant.is_expired() {
             return Err(invalid("warrant", "expired"));
         }
-        if wc.identifier != ac.identity {
-            return Err(invalid("warrant", "identifier != access identity"));
+        // The grantee is the actor: it must be the identity the access cert
+        // certifies (and whose fresh key signed the assertion above).
+        if wc.grantee != ac.identity {
+            return Err(invalid("warrant", "grantee != access identity"));
         }
         // The warrant's holder matcher (`*` / `<ns>.*` / `<id>`) must cover the
-        // access cert's holder — the isolation check that replaces the old
-        // subject-equality join.
+        // access cert's holder — anti-fungibility: the grant binds to the
+        // grantee's specific credential, not merely its identity.
         if !wc.holder.matches(&ac.holder) {
             return Err(invalid("warrant", "holder does not match warrant matcher"));
         }
@@ -633,10 +668,12 @@ impl AccessPresentation {
         }
 
         Ok(VerifiedAccess {
-            email: ac.identity.clone(),
+            email: wc.grantor.clone(),
+            grantee: ac.identity.clone(),
+            issuer: cc.iss.clone(),
+            grantee_issuer: ac.iss.clone(),
             holder: ac.holder.clone(),
             scopes: wc.scopes.clone(),
-            issuer: ac.iss.clone(),
             access_status: ac.status.clone(),
             config_status: cc.status.clone(),
             warrant_status: wc.status.clone(),

@@ -147,7 +147,7 @@
         var warrantP = signJws(pair.config.privateKey, {
           typ: "browserid-warrant-v1",
           iat: nowS(), exp: nowS() + 90 * 86400,
-          identifier: email, holder: deviceClaims.holder, audience: audience, scopes: []
+          grantor: email, grantee: email, holder: deviceClaims.holder, audience: audience, scopes: []
         });
         // Assertion (access key): binds the fresh key to `audience`.
         var assertionP = signJws(access.privateKey, { exp: nowS() + 300, aud: audience });

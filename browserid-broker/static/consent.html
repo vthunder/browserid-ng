@@ -95,8 +95,9 @@ async function localConfig(delegatorEmail, agentEmail) {
   return hit ? { cert: hit.rec.cert, privateKey: hit.rec.privateKey } : null;
 }
 
-/// Sign the device-model warrant with the config key: (identifier,
-/// holder-matcher) → audience[+scopes]. `holder` is the matcher this grant binds
+/// Sign the device-model warrant with the config key: grantor delegates to
+/// grantee (equal here — an as-you agent grant) over (holder-matcher) →
+/// audience[+scopes]. `holder` is the matcher this grant binds
 /// to — the agent's specific holder id (`<id>` isolation) or its `<ns>.*` prefix
 /// (holder-authorization model). `status` ({uri, idx}, registrar-allocated)
 /// makes this single grant revocable.
@@ -107,7 +108,8 @@ async function signWarrant(config, agentEmail, audience, scopes, status, holder)
     typ: 'browserid-warrant-v1',
     iat: now,
     exp: now + 90 * 24 * 3600,
-    identifier: agentEmail,
+    grantor: agentEmail,
+    grantee: agentEmail,
     holder: holder,
     audience: audience,
   };

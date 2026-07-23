@@ -419,10 +419,12 @@ impl DeviceAgent {
         let config_cert = DeviceCert::parse(config_cert_encoded)
             .map_err(|e| AgentError::InvalidWarrant(format!("config cert: {e}")))?;
         let wc = warrant.claims();
-        if wc.identifier != self.email {
+        // This agent is the grant's GRANTEE (the actor that mints the access cert
+        // and signs); the warrant's grantee must be the identity it presents as.
+        if wc.grantee != self.email {
             return Err(AgentError::InvalidWarrant(format!(
-                "warrant is for '{}', this identity is '{}'",
-                wc.identifier, self.email
+                "warrant grantee is '{}', this identity is '{}'",
+                wc.grantee, self.email
             )));
         }
         if !wc.holder.matches(&self.holder) {

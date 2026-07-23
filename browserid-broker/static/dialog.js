@@ -339,7 +339,8 @@
       typ: 'browserid-warrant-v1',
       iat: nowS(),
       exp: nowS() + 90 * 86400,
-      identifier: email,
+      grantor: email,
+      grantee: email,
       holder: loginMatcher,
       audience,
       scopes: ['login']

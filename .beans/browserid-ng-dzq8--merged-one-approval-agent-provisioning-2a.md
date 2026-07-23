@@ -1,11 +1,11 @@
 ---
 # browserid-ng-dzq8
 title: Merged one-approval agent provisioning (2a)
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-07-21T21:07:04Z
-updated_at: 2026-07-21T21:52:53Z
+updated_at: 2026-07-23T11:02:41Z
 parent: browserid-ng-oup3
 ---
 
@@ -32,3 +32,6 @@ browserid-core AccessPresentation::verify enforces config_cert.iss == access_cer
 - Poster = mingo server holding device key + mingo-signed cert + warrant; mints access at mingo's own /access/mint; assembles SBO wire server-side (sbo-core 55314e9 pinned in mingo-idp only; workspace/mingo-app stays a92886c to avoid breaking the classic CLI until its own migration).
 
 2a COMPLETE incl. as-you + primary-signed-cert extensions; see commits 440f545, 5736bdb, 5710ea6, 645d7c9. Remaining: live verification rides the D deploy (bean browserid-ng-3b8m).
+
+## Landed
+2a merged to main as part of the holder-branch landing (bean 129z, 2026-07-23). Live verification rides the D deploy (3b8m).

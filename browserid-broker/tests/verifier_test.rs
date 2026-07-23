@@ -106,7 +106,7 @@ fn device_presentation(
         vec![email.to_string()], Duration::days(90), idp, None,
     ).unwrap();
     let warrant = DWarrant::create(
-        email, HolderMatcher::new("br1a2b3c.*").unwrap(), audience, vec!["login".into()],
+        email, email, HolderMatcher::new("br1a2b3c.*").unwrap(), audience, vec!["login".into()],
         Duration::days(90), &config_key, None,
     ).unwrap();
     let assertion = Assertion::create(audience, Duration::minutes(5), &access_key).unwrap();

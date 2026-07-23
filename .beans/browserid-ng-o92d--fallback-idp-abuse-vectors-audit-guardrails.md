@@ -1,11 +1,11 @@
 ---
 # browserid-ng-o92d
 title: Fallback-IdP abuse vectors — audit + guardrails
-status: in-progress
+status: todo
 type: task
 priority: high
 created_at: 2026-07-11T20:37:12Z
-updated_at: 2026-07-11T20:39:50Z
+updated_at: 2026-07-23T11:02:41Z
 ---
 
 The fallback IdP exposes public, unauthenticated endpoints (/auth/send emails a code to any address; /auth/verify; /cert_key). Audit the abuse surface and put guardrails in place. Registration/API keys are NOT the answer (the broker holds RP attribution from mediation; keys were an Auth0-shaped mistake) — the fix is rate limiting + template hygiene.

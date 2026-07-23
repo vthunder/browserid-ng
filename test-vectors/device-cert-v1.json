@@ -82,7 +82,8 @@
   },
   "note": "Frozen wire vectors. The `jws` field of each object is AUTHORITATIVE — a conformant impl (Rust/JS/PHP) signing the same claims with the same seed key MUST reproduce that exact JWS string. To learn the canonical signed bytes, base64url-DECODE the jws payload: field order is struct-declaration order, compact JSON, no whitespace. The `claims` objects below are alphabetically SORTED for human readability and are NOT the signed byte order — do not sign them as shown. Ed25519 (RFC 8032) signatures are deterministic, so the JWS is reproducible.",
   "reject_cases": [
-    "config cert signed by an IdP other than the access cert's iss",
+    "warrant grantee does not equal the access cert identity",
+    "config cert not authoritative for the warrant grantor",
     "config cert with purpose=authentication",
     "access cert holder not covered by the warrant's holder matcher",
     "audience mismatch",
@@ -93,9 +94,10 @@
     "claims": {
       "audience": "https://mingo.place",
       "exp": 1807776000,
+      "grantee": "danmills@sandmill.org",
+      "grantor": "danmills@sandmill.org",
       "holder": "br.*",
       "iat": 1800000000,
-      "identifier": "danmills@sandmill.org",
       "scopes": [
         "login"
       ],
@@ -105,6 +107,6 @@
       },
       "typ": "browserid-warrant-v1"
     },
-    "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJ0eXAiOiJicm93c2VyaWQtd2FycmFudC12MSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODA3Nzc2MDAwLCJpZGVudGlmaWVyIjoiZGFubWlsbHNAc2FuZG1pbGwub3JnIiwiaG9sZGVyIjoiYnIuKiIsImF1ZGllbmNlIjoiaHR0cHM6Ly9taW5nby5wbGFjZSIsInNjb3BlcyI6WyJsb2dpbiJdLCJzdGF0dXMiOnsidXJpIjoiaHR0cHM6Ly9icm93c2VyaWQubWUvLndlbGwta25vd24vYnJvd3NlcmlkLXN0YXR1cyIsImlkeCI6NDJ9fQ.epWWSKt5bOmI4waMcIBlYaA_Yhp323pndUCxvBbuEB4LsfZclIlS-4gfMgGbuYHofvz3oRnJYfFO7eRIWTbHDw"
+    "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJ0eXAiOiJicm93c2VyaWQtd2FycmFudC12MSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODA3Nzc2MDAwLCJncmFudG9yIjoiZGFubWlsbHNAc2FuZG1pbGwub3JnIiwiZ3JhbnRlZSI6ImRhbm1pbGxzQHNhbmRtaWxsLm9yZyIsImhvbGRlciI6ImJyLioiLCJhdWRpZW5jZSI6Imh0dHBzOi8vbWluZ28ucGxhY2UiLCJzY29wZXMiOlsibG9naW4iXSwic3RhdHVzIjp7InVyaSI6Imh0dHBzOi8vYnJvd3NlcmlkLm1lLy53ZWxsLWtub3duL2Jyb3dzZXJpZC1zdGF0dXMiLCJpZHgiOjQyfX0.WA8a7k04US1urX48ejVA7RJhOJ6-seLb556RoEPWyqdokbji1oraeG4rvd3K5KZN3NaZmy9lRh4KHPRTZuBeAw"
   }
 }

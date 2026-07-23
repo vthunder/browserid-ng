@@ -127,7 +127,7 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
     let status_uri = listed["status_uri"].as_str().unwrap().to_string();
 
     let warrant = Warrant::create(
-        AGENT, HolderMatcher::new("ag.bot").unwrap(), AUDIENCE,
+        AGENT, AGENT, HolderMatcher::new("ag.bot").unwrap(), AUDIENCE,
         vec!["post".into(), "read".into()], Duration::days(90), &config_kp,
         Some(StatusRef { uri: status_uri, idx: status_idx }),
     )
@@ -243,7 +243,7 @@ async fn respond_rejects_overbroad_or_foreign_holder() {
     // Helper: sign a warrant with the given matcher and try to respond.
     let attempt = |matcher: &str| {
         let w = Warrant::create(
-            AGENT, HolderMatcher::new(matcher).unwrap(), AUDIENCE, vec!["post".into()],
+            AGENT, AGENT, HolderMatcher::new(matcher).unwrap(), AUDIENCE, vec!["post".into()],
             Duration::days(90), &config_kp,
             Some(StatusRef { uri: status_uri.clone(), idx: status_idx }),
         )

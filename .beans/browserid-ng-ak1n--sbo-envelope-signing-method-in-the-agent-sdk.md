@@ -1,11 +1,11 @@
 ---
 # browserid-ng-ak1n
 title: SBO-envelope signing method in the agent SDK
-status: in-progress
+status: todo
 type: task
 priority: normal
 created_at: 2026-07-14T16:51:27Z
-updated_at: 2026-07-14T17:02:19Z
+updated_at: 2026-07-23T11:02:42Z
 ---
 
 Enabling gap for delegated server-side SBO posting (see mingo-poster agent

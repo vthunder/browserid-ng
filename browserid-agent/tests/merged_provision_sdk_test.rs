@@ -152,7 +152,7 @@ async fn sdk_merged_provision_roundtrip() {
     )
     .unwrap();
     let warrant = Warrant::create(
-        AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
+        AGENT, AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
         Duration::days(90), &config_kp,
         Some(StatusRef { uri: status_uri, idx: status_idx }),
     )

@@ -578,7 +578,7 @@ mod tests {
         )
         .unwrap();
         let warrant = Warrant::create(
-            email, HolderMatcher::new(holder).unwrap(), warrant_audience, warrant_scopes,
+            email, email, HolderMatcher::new(holder).unwrap(), warrant_audience, warrant_scopes,
             Duration::days(90), &config_kp, None,
         )
         .unwrap();

@@ -107,6 +107,7 @@ async fn headless_device_cert_roundtrip() {
     .unwrap();
     let warrant = Warrant::create(
         &agent_email,
+        &agent_email,
         HolderMatcher::new("svc.agent").unwrap(),
         audience,
         vec!["post".into(), "read".into()],
