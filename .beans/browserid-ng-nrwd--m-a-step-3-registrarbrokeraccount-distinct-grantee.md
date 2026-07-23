@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: high
 created_at: 2026-07-23T14:02:51Z
-updated_at: 2026-07-23T15:02:02Z
+updated_at: 2026-07-23T17:06:33Z
 parent: browserid-ng-atge
 blocked_by:
     - browserid-ng-ztkh
@@ -25,3 +25,9 @@ Account UI: signDeviceWarrant(config, identity,...) signs grantor==grantee today
 
 ## OPEN FORK for Dan
 Extend /agent-provision with an `external_grantee` branch (reuses the pending-record + poll plumbing) vs a dedicated /warrant/external endpoint (activate the inert consent.rs `external` scaffold). Lean: extend agent-provision — least new surface, reuses the poster's existing enable/poll. And confirm the consent framing for delegating to a foreign service identity.
+
+
+
+## Backend DONE (2026-07-23, committed 5ffe436, pushed)
+Registrar grantor/grantee pins + delegated foreign-grantee warrant-only path built + integration-tested (delegated_foreign_grantee_is_warrant_only). validate_grant_warrants splits grantor/grantee. Owned flows + full suite green.
+REMAINING on step 3: account.html approval card — render the delegated case (foreign grantee derived from account.emails), as-you warning, sign grantor!=grantee warrant + delegated complete. Needs a CSP inline-hash bump. Not yet built.

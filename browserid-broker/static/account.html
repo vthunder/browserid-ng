@@ -99,8 +99,11 @@
     <h2>Authorize an agent</h2>
     <p class="sub" id="pv-intro"></p>
     <p class="sub" id="pv-fp" style="font-family:ui-monospace,monospace"></p>
-    <label for="pv-identity">Which identity should it act for?</label>
+    <label for="pv-identity" id="pv-identity-label">Which identity should it act for?</label>
     <select id="pv-identity"></select>
+    <!-- Delegated (foreign-grantee) trust note: a distinct service, minted by
+         its own provider, acting on your behalf with visible provenance. -->
+    <p class="sub" id="pv-delegate-note" hidden style="margin:8px 0"></p>
     <!-- How the agent acts — the approving user's choice, always offered:
          as-you (holds the base identity), a named sub-handle (default for
          agents), or a top-level handle (needs IdP support; none yet). -->
@@ -959,11 +962,12 @@ window.addEventListener('popstate', (e) => {
 // `holder` is the warrant's matcher (`*` / `<ns>.*` / `<id>`). Manually-signed
 // warrants from this debug surface default to `*` (any of your holders); the
 // broker only *forbids* issuing `*` via consent, not client-side signing.
-async function signDeviceWarrant(config, identity, holder, audience, scopes, statusRef) {
+async function signDeviceWarrant(config, grantor, grantee, holder, audience, scopes, statusRef) {
   const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
-  // As-you grant from this surface: grantor (attributed) == grantee (actor).
+  // grantor = attributed identity (the config cert is authoritative for it);
+  // grantee = the actor. Equal for an as-you grant; distinct for delegation.
   const claims = { typ: 'browserid-warrant-v1', iat: nowS(), exp: nowS() + 90*24*3600,
-    grantor: identity, grantee: identity, holder, audience };
+    grantor, grantee, holder, audience };
   if ((scopes || []).length) claims.scopes = scopes;
   if (statusRef) claims.status = statusRef;
   const payload = b64urlJson(claims);
@@ -1074,6 +1078,112 @@ function refreshProvisionPicker() {
   updateProvisionMode();
 }
 
+// Does the approver own `id` — an exact identity, or a `+tag` sub-address of
+// one? A grantee they do NOT own is a FOREIGN service (delegated attribution).
+function approverOwns(id) {
+  id = (id || '').toLowerCase();
+  const emails = (account.emails || []).map(e => e.toLowerCase());
+  if (emails.includes(id)) return true;
+  const at = id.indexOf('@');
+  if (at < 0) return false;
+  const local = id.slice(0, at), dom = id.slice(at);
+  const plus = local.indexOf('+');
+  return plus >= 0 && emails.includes(local.slice(0, plus) + dom);
+}
+
+// Render the delegated (foreign-grantee) approval: `grantee` is a distinct
+// service acting on your behalf; you sign a warrant delegating from one of your
+// identities (the grantor). Provenance is intrinsic — its posts show as the
+// service, attributed to you — so this INFORMS rather than warns.
+function renderDelegatedApproval(code, info) {
+  const grantee = provisionCtx.grantee;
+  const granteeDomain = grantee.split('@')[1] || '';
+  $('pv-intro').textContent = (info.label ? `“${info.label}” ` : `${grantee} `) +
+    `wants to post on your behalf.`;
+  $('pv-fp').hidden = true;
+  $('pv-mode').hidden = true; // no as-you/handle choice — the actor is fixed
+  // Constrain the grantor picker to owned identities (and to the pin if set).
+  const pin = provisionCtx.grantorPin;
+  const ids = (account.emails || []).filter(e => !account.agents.includes(e))
+    .filter(e => pin === '*' || e.toLowerCase() === pin.toLowerCase());
+  const sel = $('pv-identity');
+  sel.innerHTML = ids.map(e => `<option value="${escapeHtml(e)}">${escapeHtml(e)}</option>`).join('');
+  $('pv-identity-label').textContent = 'Post as which of your identities?';
+  const note = $('pv-delegate-note');
+  note.hidden = false;
+  note.style.color = '#555';
+  const renderNote = () => {
+    const grantor = sel.value || 'you';
+    note.innerHTML = `<b>${escapeHtml(grantee)}</b> is a service run by ` +
+      `<b>${escapeHtml(granteeDomain)}</b>. Approving lets it post as ` +
+      `<b>${escapeHtml(grantor)}</b> — its posts are marked as coming from the ` +
+      `service, on your behalf. You can revoke this anytime under “Devices &amp; services”.`;
+  };
+  renderNote();
+  sel.onchange = renderNote;
+  if (ids.length === 0) {
+    $('pv-approve').disabled = true;
+    $('pv-status').className = 'status err';
+    $('pv-status').textContent = pin === '*'
+      ? 'Sign in to an identity here first, then approve.'
+      : `This grant must be authorized by ${pin}. Sign in as ${pin} here first.`;
+  } else {
+    $('pv-approve').disabled = false;
+  }
+  $('pv-approve').onclick = () => approveDelegated(code);
+  $('pv-deny').onclick = () => denyProvision(code);
+}
+
+// Approve a delegated grant: sign a warrant (grantor = your chosen identity,
+// grantee = the foreign service) with your config cert and record it. No cert
+// issuance — the service holds its own from its provider.
+async function approveDelegated(code) {
+  const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Approving…';
+  const grantor = $('pv-identity').value;
+  const grantee = provisionCtx.grantee;
+  try {
+    const prep = await post('/agent-provision/prepare', { code, identity_email: grantor });
+    let config = configFor(grantor);
+    if (!config) {
+      // Broker-rooted identity with no local pair: issue one from the session.
+      const keys = { device: await window.Keystore.generate(), config: await window.Keystore.generate() };
+      const body = { email: grantor, device_pubkey: keys.device.publicKeyX, config_pubkey: keys.config.publicKeyX };
+      const bh = await browserHolderForIssue();
+      if (bh) body.holder = bh;
+      try {
+        const certs = await post('/device/issue', body);
+        await storeIssuedPair(location.host, grantor, keys, certs);
+        config = configFor(grantor);
+      } catch (e) { /* primary-rooted: fall through to the guidance below */ }
+    }
+    if (!config) throw new Error(
+      `No signing key for ${grantor} in this browser — sign in as ${grantor} here first, then retry.`);
+    status.textContent = 'Signing…';
+    const warrants = [];
+    for (const g of prep.grants) {
+      const statusRef = (g.status_idx != null && prep.status_uri)
+        ? { uri: prep.status_uri, idx: g.status_idx } : null;
+      warrants.push(await signDeviceWarrant(config, grantor, grantee, prep.holder, g.audience, g.scopes || [], statusRef));
+    }
+    await post('/agent-provision/complete', {
+      code, approve: true, identity_email: grantor, warrants, config_cert: config.cert,
+    });
+    status.className = 'status ok';
+    status.textContent = `Approved — ${grantee} can now post as ${grantor}.`;
+    $('pv-approve').disabled = true; $('pv-deny').disabled = true;
+    const back = document.createElement('p'); back.className = 'status muted';
+    if (history.length > 1) {
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = '← Return to the app';
+      b.onclick = () => history.back(); back.appendChild(b);
+      setTimeout(() => { try { history.back(); } catch (e) {} }, 1500);
+    } else { back.textContent = 'You can close this tab.'; }
+    $('pv-status').after(back);
+    reloadAccount();
+  } catch (e) {
+    status.className = 'status err'; status.textContent = e.message || 'Approval failed.';
+  }
+}
+
 async function showProvisionApproval(code) {
   let info;
   try {
@@ -1084,6 +1194,18 @@ async function showProvisionApproval(code) {
   provisionCtx = { code, pubkey: info.provisioning_pubkey, grants: info.grants || [], namespace: info.namespace || 'agents' };
   $('provision').hidden = false;
   const thing = provisionCtx.namespace === 'services' ? 'service' : 'agent';
+
+  // Delegated (foreign grantee): a distinct service, minted by its OWN provider,
+  // acting on your behalf. Derived here — the grantee is a concrete identity you
+  // do not own. Renders a trust note + a locked/chooser grantor, no as-you mode.
+  const granteePin = (info.grantee || '').trim();
+  const grantorPin = (info.grantor || '*').trim();
+  const delegated = !!granteePin && granteePin !== '*' && !approverOwns(granteePin);
+  provisionCtx.delegated = delegated;
+  provisionCtx.grantee = granteePin;
+  provisionCtx.grantorPin = grantorPin;
+  if (delegated) return renderDelegatedApproval(code, info);
+
   $('pv-intro').textContent = (info.label ? `“${info.label}” ` : `A ${thing} `) +
     `wants to act for you. Choose how it appears; only approve if you just started setting up this ${thing}.`;
   $('pv-fp').textContent = 'Agent key fingerprint: ' + info.fingerprint + '  (confirm it matches what your agent shows)';
@@ -1335,7 +1457,7 @@ async function approveProvision(code, provPubkeyX) {
         for (const g of prep.grants) {
           const statusRef = (g.status_idx != null && prep.status_uri)
             ? { uri: prep.status_uri, idx: g.status_idx } : null;
-          warrants.push(await signDeviceWarrant(config, prep.agent_email, holderMatcher, g.audience, g.scopes || [], statusRef));
+          warrants.push(await signDeviceWarrant(config, prep.agent_email, prep.agent_email, holderMatcher, g.audience, g.scopes || [], statusRef));
         }
       }
       status.textContent = 'Approving…';
