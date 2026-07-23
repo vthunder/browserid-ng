@@ -848,6 +848,16 @@ async fn complete_delegated_warrant(
         .map(|w| format!("{w}~{config_jws}"))
         .collect();
 
+    // Land the service under a "services" namespace by default: adopt its holder
+    // prefix onto a fresh `services` namespace (a no-op if that namespace already
+    // has holders under another prefix — then it falls back to Uncategorized).
+    let prefix = holder
+        .split_once('.')
+        .map(|(p, _)| p.to_string())
+        .unwrap_or_else(|| holder.clone());
+    let _ = state.store.get_or_create_namespace(user.user_id, "services");
+    let _ = state.store.adopt_namespace_prefix(user.user_id, "services", &prefix);
+
     // Record the foreign grantee as a SERVICE entry so it shows under "Devices &
     // services" (labeled + revocable — removing the holder revokes its warrants
     // by holder match). It holds its own cert at its issuer, so there is no local

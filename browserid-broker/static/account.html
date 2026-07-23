@@ -1143,6 +1143,12 @@ function renderDelegatedApproval(code, info) {
       : `This grant must be authorized by ${pin}. Sign in as ${pin} here first.`;
     $('pv-approve').disabled = true;
   }
+  // Order for the delegated card: intro → what it may do (grants) → on behalf of
+  // (identity) → revoke note → buttons.
+  const card = $('provision');
+  card.insertBefore($('pv-grants'), $('pv-identity-label'));
+  card.insertBefore(note, $('pv-approve').parentNode);
+
   $('pv-approve').onclick = () => approveDelegated(code);
   $('pv-deny').onclick = () => denyProvision(code);
 }

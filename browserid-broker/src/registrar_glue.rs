@@ -242,6 +242,11 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
             .map_err(to_reg_err)
     }
 
+    fn adopt_namespace_prefix(&self, user_id: u64, name: &str, new_prefix: &str) -> Result<bool, RegistrarError> {
+        UserStore::adopt_namespace_prefix(self.user_store.as_ref(), UserId(user_id), name, new_prefix)
+            .map_err(to_reg_err)
+    }
+
     fn set_status_revoked(&self, kind: &str, subject: &str) -> Result<bool, RegistrarError> {
         UserStore::set_status_revoked(self.user_store.as_ref(), kind, subject).map_err(to_reg_err)
     }

@@ -81,6 +81,13 @@ pub trait RegistrarStore: Send + Sync {
         ))
     }
 
+    /// Adopt `new_prefix` for a namespace while it is still unused (see the broker
+    /// store's `adopt_namespace_prefix`). Used to default a foreign service's
+    /// holder prefix into a `services` namespace. Default: no-op (`false`).
+    fn adopt_namespace_prefix(&self, _user_id: u64, _name: &str, _new_prefix: &str) -> StoreResult<bool> {
+        Ok(false)
+    }
+
     /// Flip the revocation bit by index. Ok(false) if no entry.
     fn set_status_revoked_idx(&self, idx: u64) -> StoreResult<bool>;
 
