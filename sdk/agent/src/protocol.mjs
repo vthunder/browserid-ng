@@ -42,9 +42,37 @@ export function assertion(agentKey, audience) {
   return agentKey.jws(HEADER, { exp, aud: audience });
 }
 
-/** The backed presentation the RP verifies. */
+/** The backed presentation the RP verifies (legacy provisioning-cert path). */
 export function backedPresentation({ cert, warrant, assertion: assn }) {
   return warrant ? `${cert}~${warrant}~${assn}` : `${cert}~${assn}`;
+}
+
+// ---- device-cert path (the current protocol) -------------------------------
+
+const ACCESS_REQUEST_VALIDITY_S = 10 * 60;
+
+/** A `browserid-access-request-v1`, signed with the DEVICE key: "certify this
+ *  fresh access key for this identity". The holder is copied from the device
+ *  cert — the mint must not let a requester choose a different one. */
+export function accessRequest(deviceKey, { domain, identity, holder, accessKeyB64, jti }) {
+  const iat = nowS();
+  return deviceKey.jws(HEADER, {
+    typ: "browserid-access-request-v1",
+    iat,
+    exp: iat + ACCESS_REQUEST_VALIDITY_S,
+    jti,
+    domain,
+    identity,
+    holder,
+    "access-key": publicKeyField(accessKeyB64),
+  });
+}
+
+/** The four-part presentation an RP verifies:
+ *  `access_cert ~ assertion ~ warrant ~ config_cert`. Order matters —
+ *  browserid-core's AccessPresentation parses positionally. */
+export function accessPresentation({ accessCert, assertion: assn, warrant, configCert }) {
+  return `${accessCert}~${assn}~${warrant}~${configCert}`;
 }
 
 // ---- parsing (claims only; the RP does the cryptographic verification) -----

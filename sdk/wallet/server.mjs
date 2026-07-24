@@ -21,9 +21,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
-  Agent, NeedCredentialError, AmbiguousNameError, NoWarrantError,
-  WarrantDeniedError, WarrantExpiredError, RequestError,
+  requestProvision, requestWarrants, DeviceAgent,
+  AgentError, NoWarrantError, RequestError,
 } from "@browserid-ng/agent";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -32,8 +33,9 @@ import { mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 const BROKER = (process.env.BROWSERID_BROKER || "https://browserid.me").replace(/\/$/, "");
 const HOME = process.env.BROWSERID_HOME || join(homedir(), ".browserid");
 const GUESTBOOK_URL = process.env.GUESTBOOK_URL || `${BROKER}/guestbook`;
+// One file now: the device credential AND the warrants held against it.
 const CREDENTIAL = join(HOME, "agent-credential.json");
-const IDENTITY = join(HOME, "agent.identity.json");
+const IDENTITY = join(HOME, "agent.identity.json"); // legacy; removed by `forget`
 // The home dir + files hold private keys — keep them owner-only (700 / 600).
 mkdirSync(HOME, { recursive: true, mode: 0o700 });
 try { chmodSync(HOME, 0o700); } catch {}
@@ -60,8 +62,8 @@ let readyAgent = null; // the resolved Agent, once available
 let pendingProvisionUrl = null; // set while a provision awaits approval
 let provisionError = null; // a failed background provision, surfaced on next call
 
-/** Raised (non-blocking) when a provision is started but not yet approved. */
-class PendingProvision extends Error {
+/** Raised (non-blocking) when an approval is started but not yet resolved. */
+class PendingApproval extends Error {
   constructor(url) {
     super("provisioning pending");
     this.url = url;
@@ -85,14 +87,39 @@ async function loadAgent() {
     }
     if (readyAgent) return readyAgent;
     if (provisionError) throwProvErr();
-    if (pendingProvisionUrl) throw new PendingProvision(pendingProvisionUrl);
+    if (pendingProvisionUrl) throw new PendingApproval(pendingProvisionUrl);
   }
-  readyAgent = await Agent.open(CREDENTIAL, IDENTITY, { name: process.env.AGENT_NAME });
+  readyAgent = openStored();
   return readyAgent;
 }
 
+/** Load the stored device credential + any saved warrants. */
+function openStored() {
+  let stored;
+  try {
+    stored = JSON.parse(readFileSync(CREDENTIAL, "utf8"));
+  } catch {
+    throw new NeedCredential();
+  }
+  const agent = new DeviceAgent(stored.credential ?? stored);
+  for (const g of stored.grants ?? []) {
+    try { agent.addGrant(g.grant); } catch {}
+  }
+  return agent;
+}
+
+/** Persist the credential and every held warrant, 0600. */
+function saveAgent(agent) {
+  writePrivate(CREDENTIAL, { credential: agent.credential, grants: agent.storedGrants() });
+}
+
+/** No identity yet — the agent should call `provision`. */
+class NeedCredential extends Error {
+  constructor() { super("no identity yet"); }
+}
+
 function explain(e) {
-  if (e instanceof PendingProvision)
+  if (e instanceof PendingApproval)
     return text(
       `STILL WAITING for the human to approve — this is normal. Keep this link visible and call your ` +
         `tool AGAIN to keep waiting (each call polls ~45s):\n${e.url}`
@@ -103,40 +130,45 @@ function explain(e) {
         (/quota/i.test(e.reason) ? "The human has too many agent identities — they can revoke old ones at https://browserid.me/account. " : "") +
         "Fix that, then call provision again."
     );
-  if (e instanceof NeedCredentialError)
+  if (e instanceof NeedCredential)
     return text("NEED_CREDENTIAL: no identity yet. Call the `provision` tool to pair one — the human approves a link, nothing to download.");
-  if (e instanceof AmbiguousNameError)
-    return text(
-      `AMBIGUOUS_NAME: the credential reserves several names [${e.names.join(", ")}]. ` +
-        `Call provision again with a SINGLE handle, e.g. handles: ["${e.names[0]}"].`
-    );
-  if (e instanceof WarrantDeniedError) return text("DENIED: the human declined.");
-  if (e instanceof WarrantExpiredError) return text("EXPIRED: the request expired; try again.");
+  if (e instanceof AgentError && /refused/.test(e.message)) return text("DENIED: the human declined.");
+  if (e instanceof AgentError && /expired/.test(e.message)) return text("EXPIRED: the request expired; try again.");
   return null;
 }
 
 // Non-blocking. { ready } if held; { approveUrl } to show the human; { pending }
-// if approval is still in flight. Approval is polled in the background — once the
-// human approves, `warrantCovers` becomes true and a retry proceeds.
+// if approval is still in flight. Approval is polled in the BACKGROUND — once
+// the human approves, the warrant lands and a retry proceeds.
 async function ensureWarrant(agent, audience, scopes) {
-  if (agent.warrantCovers(audience, scopes)) return { ready: true };
+  if (agent.warrantedAudiences().includes(audience)) return { ready: true };
   const inflight = pendingWarrants.get(audience);
   if (inflight) {
-    // Wait (bounded) for the human to approve the warrant, so we auto-proceed.
     const deadline = Date.now() + APPROVAL_WAIT_MS;
     while (Date.now() < deadline) {
       await sleep(1500);
-      if (agent.warrantCovers(audience, scopes)) return { ready: true };
+      if (agent.warrantedAudiences().includes(audience)) return { ready: true };
       if (!pendingWarrants.has(audience)) break; // settled (approved/denied/expired)
     }
-    if (agent.warrantCovers(audience, scopes)) return { ready: true };
+    if (agent.warrantedAudiences().includes(audience)) return { ready: true };
     return { pending: true, approveUrl: inflight.approveUrl };
   }
-  const { approveUrl, approved } = await agent.requestWarrant(audience, scopes);
-  if (!approveUrl) return { ready: true };
-  pendingWarrants.set(audience, { approveUrl });
-  approved.then(() => agent.save(IDENTITY)).catch(() => {}).finally(() => pendingWarrants.delete(audience));
-  return { approveUrl };
+  const pending = await requestWarrants(BROKER, {
+    deviceCert: agent.deviceCert,
+    identity: agent.email,
+    grants: [{ audience, scopes }],
+    label: process.env.AGENT_NAME || "agent",
+  });
+  pendingWarrants.set(audience, { approveUrl: pending.verificationUriComplete });
+  pending
+    .wait()
+    .then((grants) => {
+      for (const g of grants) agent.addGrant(g.grant);
+      saveAgent(agent);
+    })
+    .catch(() => {})
+    .finally(() => pendingWarrants.delete(audience));
+  return { approveUrl: pending.verificationUriComplete };
 }
 
 const server = new McpServer({ name: "browserid-wallet", version: "0.1.0" });
@@ -153,19 +185,21 @@ server.registerTool(
   },
   async ({ handles, label }) => {
     try {
-      const pairing = await Agent.bootstrap({
-        broker: BROKER,
-        requestedHandles: handles?.length ? { names: handles } : undefined,
+      const pairing = await requestProvision(BROKER, {
+        handle: handles?.[0],
         label: label || "agent",
-        name: process.env.AGENT_NAME || handles?.[0], // mint as this handle — no env-var dance
       });
       pendingProvisionUrl = pairing.verificationUriComplete;
       // Pick up the identity in the BACKGROUND when the human approves.
       provisionError = null;
-      pairing.ready
-        .then(async (agent) => {
-          writePrivate(CREDENTIAL, agent.credential.toJSON());
-          await agent.save(IDENTITY); // 0600, array format (sdk/agent)
+      pairing
+        .wait()
+        .then(({ credential, grants }) => {
+          const agent = new DeviceAgent(credential);
+          for (const g of grants) {
+            try { agent.addGrant(g.grant); } catch {}
+          }
+          saveAgent(agent);
           readyAgent = agent;
         })
         .catch((e) => { provisionError = e; })
@@ -175,7 +209,7 @@ server.registerTool(
           `(or go to ${pairing.verificationUri} and enter code ${pairing.userCode})\n` +
           `Agent key fingerprint: ${pairing.fingerprint}\n\n` +
           `⚠ Show the human this APPROVE_URL and ask them to open it and approve. ` +
-          `Then IMMEDIATELY call your next tool (e.g. sign_guestbook, or identity) — it waits for their ` +
+          `Then IMMEDIATELY call your next tool (e.g. identity) — it waits for their ` +
           `approval and continues automatically. Do NOT wait for the human to tell you; just call the next tool.`
       );
     } catch (e) {
@@ -213,11 +247,10 @@ server.registerTool(
   async () => {
     try {
       const agent = await loadAgent();
-      const id = agent.identity();
+      const auds = agent.warrantedAudiences();
       return text(
-        `Acting as ${agent.email}.` +
-          (id.names.length ? ` Reserved: ${id.names.join(", ")}.` : "") +
-          (agent.warrantedAudiences().length ? ` Warrants for: ${agent.warrantedAudiences().join(", ")}.` : "")
+        `Acting as ${agent.email} (holder ${agent.holder}).` +
+          (auds.length ? ` Warrants for: ${auds.join(", ")}.` : " No warrants yet — call authorize.")
       );
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);
@@ -258,7 +291,7 @@ server.registerTool(
     try {
       const agent = await loadAgent();
       const assertion = await agent.assertionFor(audience);
-      await agent.save(IDENTITY);
+      saveAgent(agent);
       return text("ASSERTION: " + assertion);
     } catch (e) {
       if (e instanceof NoWarrantError) return text(`PENDING — no warrant for ${audience}. Call authorize first.`);
@@ -287,7 +320,7 @@ server.registerTool(
         );
 
       const assertion = await agent.assertionFor(GUESTBOOK_URL);
-      await agent.save(IDENTITY);
+      saveAgent(agent);
       const res = await fetch(GUESTBOOK_URL, {
         method: "POST",
         headers: { "content-type": "application/json" },
