@@ -1,17 +1,39 @@
 {
   "name": "@browserid-ng/agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Agent-side SDK for browserid-ng: provision a delegated identity, obtain human-approved warrants, and mint warrant-backed assertions.",
   "type": "module",
   "main": "./index.mjs",
   "types": "./index.d.ts",
   "exports": {
-    ".": { "types": "./index.d.ts", "import": "./index.mjs" }
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs"
+    }
   },
-  "files": ["index.mjs", "index.d.ts", "src/", "README.md"],
-  "engines": { "node": ">=18" },
-  "scripts": { "test": "node --test" },
-  "keywords": ["browserid", "identity", "agent", "delegation", "warrant", "mcp"],
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "src/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "browserid",
+    "identity",
+    "agent",
+    "delegation",
+    "warrant",
+    "mcp"
+  ],
   "license": "MPL-2.0",
-  "repository": { "type": "git", "url": "https://github.com/vthunder/browserid-ng" }
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vthunder/browserid-ng"
+  }
 }

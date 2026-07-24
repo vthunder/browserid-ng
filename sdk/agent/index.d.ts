@@ -117,3 +117,111 @@ export class RequestError extends AgentError { status: number; reason: string; }
 export class WarrantExpiredError extends AgentError {}
 export class WarrantDeniedError extends AgentError {}
 export class NoWarrantError extends AgentError { audience: string; }
+
+// ---------------------------------------------------------------------------
+// The current protocol: device certs, access certs, four-part presentations.
+// ---------------------------------------------------------------------------
+
+export interface DeviceCredential {
+  /** base64url Ed25519 seed of the device key */
+  device_key: string;
+  /** the IdP-signed device cert certifying it */
+  agent_device_cert: string;
+  idp: string;
+  access_mint?: string;
+  identity?: string;
+}
+
+/** A held warrant, as `warrant~config_cert` — feed `grant` back to `addGrant`. */
+export interface StoredGrant {
+  audience: string;
+  grant: string;
+}
+
+export interface GrantRequest {
+  audience: string;
+  scopes?: string[];
+}
+
+export class PendingProvision {
+  /** Show these to the human — nothing proceeds until they approve. */
+  verificationUri: string;
+  verificationUriComplete: string;
+  userCode: string;
+  fingerprint: string;
+  /** Poll until approved. Single delivery: persist the result immediately. */
+  wait(opts?: { signal?: AbortSignal }): Promise<{ credential: DeviceCredential; grants: StoredGrant[] }>;
+}
+
+export class PendingWarrants {
+  verificationUri: string;
+  verificationUriComplete: string;
+  wait(opts?: { signal?: AbortSignal }): Promise<StoredGrant[]>;
+}
+
+/** Ask a broker to provision a device identity, with grants approved in the
+ *  same consent. */
+export function requestProvision(
+  broker: string,
+  opts?: {
+    handle?: string;
+    namespace?: string;
+    grants?: GrantRequest[];
+    label?: string;
+    http?: typeof fetch;
+  }
+): Promise<PendingProvision>;
+
+/** A second consent round for new audiences, once already provisioned. */
+export function requestWarrants(
+  broker: string,
+  opts: {
+    deviceCert: string;
+    identity: string;
+    grants: GrantRequest[];
+    label?: string;
+    http?: typeof fetch;
+  }
+): Promise<PendingWarrants>;
+
+export class DeviceAgent {
+  constructor(credential: DeviceCredential, opts?: { http?: typeof fetch });
+  /** Read from the SIGNED device cert, never from caller metadata. */
+  email: string;
+  holder: string;
+  deviceCert: string;
+  credential: DeviceCredential;
+  /** Accepts `warrant~config_cert` or the two parts separately. */
+  addGrant(warrantOrPair: string, configCert?: string): string;
+  warrantedAudiences(): string[];
+  storedGrants(): StoredGrant[];
+  /** Mint (or re-mint) an access cert over a fresh key. */
+  mint(): Promise<string>;
+  /** `access_cert ~ assertion ~ warrant ~ config_cert` for `audience`. */
+  assertionFor(audience: string): Promise<string>;
+  /** The presentation plus the access key that signed it, for binding an
+   *  external payload to the same cert. */
+  assertionWithAccessKey(audience: string): Promise<{
+    presentation: string;
+    accessKey: KeyPair;
+    accessCert: string;
+  }>;
+}
+
+export class KeyPair {
+  static generate(): KeyPair;
+  static fromSeed(seed: Uint8Array | Buffer): KeyPair;
+  publicKeyB64: string;
+  seed: Uint8Array;
+  /** base64url Ed25519 signature over `message`. */
+  sign(message: string | Uint8Array): string;
+  signRaw(message: string | Uint8Array): Uint8Array;
+  jws(header: object, payload: object): string;
+}
+
+export class PublicKey {
+  static fromB64u(s: string): PublicKey;
+  static fromRaw(raw: Uint8Array | Buffer): PublicKey;
+  publicKeyB64: string;
+  verify(message: string | Uint8Array, sigB64u: string): boolean;
+}
