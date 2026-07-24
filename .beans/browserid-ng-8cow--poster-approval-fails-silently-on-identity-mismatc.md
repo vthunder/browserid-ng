@@ -1,11 +1,11 @@
 ---
 # browserid-ng-8cow
 title: Poster approval fails silently on identity mismatch — make it legible
-status: in-progress
+status: completed
 type: bug
 priority: high
 created_at: 2026-07-23T13:32:55Z
-updated_at: 2026-07-23T13:35:47Z
+updated_at: 2026-07-23T21:10:21Z
 parent: browserid-ng-atge
 ---
 
@@ -19,3 +19,6 @@ Concrete case observed (2026-07-22/23): poster requests as-you dan@mingo.place; 
 - [~] account-page prevention folded into point 2 (identity pinning) — legibility above already ends the silent dead-end; interim account.html change would be throwaway once the approval respects pins. NOT deployed yet.
 
 Note: under model A the poster will pin a DIVERGENT grantee (mingo-poster@mingo.place), so the "default to As-me" idea is NOT the fix here — the durable fix is (a) legible failure + (b) the request pinning identities (point 2). This bean is just the legibility half so the current deployed flow stops dead-ending.
+
+## Closed (2026-07-23)
+Legible failure shipped + deployed (mingo poll returns a structured {status:mismatch,...} the SPA explains). And superseded structurally: model A pins the grantee (mingo-poster@mingo.place), so the dan+mingo@ drift can't happen. Account-page prevention folded into the delegated approval (point 2) which shipped in browserid-ng-nrwd.

@@ -1,10 +1,11 @@
 ---
 # browserid-ng-esuk
 title: Surface agent/service provenance on posts (receipts + warrant hints)
-status: draft
+status: completed
 type: feature
+priority: normal
 created_at: 2026-07-21T22:35:59Z
-updated_at: 2026-07-21T22:35:59Z
+updated_at: 2026-07-23T21:10:04Z
 parent: browserid-ng-oup3
 ---
 
@@ -18,3 +19,6 @@ Directions to weigh (needs a design ruling):
 - Scope heuristic: service warrants are action:-scoped, browser logins are login-scoped — weak/implicit, probably not enough alone.
 - Public holder class: a namespace-class prefix on holders (brw/svc/agt) would make provenance third-party-visible but cuts against the private-namespace design (guess-block). Explicit trade-off to decide.
 - Self-view only: mingo tags posts it made server-side in its own store — cheap, but not protocol-level and invisible to other clients.
+
+## Shipped (2026-07-23) via model A delegated attribution
+Provenance is now INTRINSIC and on-chain, not a bolted-on badge: a delegated post is signed by a distinct grantee (mingo-poster@mingo.place) and attributed to the grantor. The mingo receipt parses the presentation and shows an 'Acting service' section (the grantee, its own cert + signing key) with 'on behalf of <author>' and a full 'Who did what' chain. Delivered as part of epic browserid-ng-atge.
