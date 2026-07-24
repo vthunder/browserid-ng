@@ -1,0 +1,103 @@
+---
+# browserid-ng-8v6c
+title: 'Approval UI: intent-first grantor/grantee selection (4 delegation shapes)'
+status: todo
+type: feature
+priority: high
+created_at: 2026-07-24T22:48:01Z
+updated_at: 2026-07-24T22:48:01Z
+---
+
+Design with Dan 2026-07-25, after the bsky on-behalf test hit a wall. Parent
+problem: the approval page has ONE identity picker and a single boolean
+(account.html: `asMe ? 'self' : 'handle'`), so of the delegation shapes the
+protocol supports, only two are reachable.
+
+## The three axes (naming these makes case 2 tractable)
+
+- ATTRIBUTION = the warrant's `grantor`. Who is answerable for the action.
+- ACTOR = the warrant's `grantee`. Who performed it.
+- RESOURCE = whose stuff is touched. NOT in the warrant — each RP derives it.
+  The bsky bridge derives it from the grantor (account bound to grantor email),
+  which is why attribution and resource are welded together there.
+
+## The shapes (Dan's list, refined)
+
+1. "An agent acts on my behalf / uses my stuff" — grantor = an identity I
+   choose, grantee = an agent identity (chosen or created), DISTINCT.
+   Expressible in the protocol today; NOT reachable in the UI. This is the
+   important one and the flagship bsky demo needs it.
+
+2. "The agent acts as itself, but attributed to me" — Dan: the protocol
+   doesn't neatly allow this. Agreed, and the axes say why. It splits in two:
+   2a. Reader sees the agent as executor, action lands in MY account,
+       attribution mine -> that IS shape 1. What people usually mean.
+   2b. Action lands in the AGENT's OWN account while claiming my
+       authorization -> needs the RP to decouple RESOURCE from ATTRIBUTION.
+       Not a warrant shape and not a UI gap; the bridge deliberately binds the
+       account to the grantor. Out of scope for the UI.
+   So the UI should NOT offer 2 as a mode. It should make shape 1's DISPLAY
+   explicit ("written by X, attributed to you"), which is what 2 is reaching
+   for.
+
+3. "The agent acts as itself, no attribution to me" — grantor == grantee == an
+   agent sub-identity. Legitimate; the blast-radius argument is real. Honest
+   caveat worth showing: a `+tag` of the user's address is PSEUDONYMOUS, not
+   anonymous — anyone who knows the convention reads the base identity off it.
+   This is what the current "with its own handle" produces.
+
+4. "The agent impersonates me" — grantor == grantee == a root / non-agent
+   identity. Today's "as me". Must warn, and the warning should say what is
+   actually lost: nothing can distinguish the agent's actions from the human's
+   afterwards, and revoking the agent means revoking themselves.
+
+Plus the EXTERNAL variant of 1: grantee is an identity the approver does NOT
+own (a service holding its own cert from its own issuer). Same shape as 1,
+but the page must collect/resolve `grantee_holder`, and no cert is minted.
+
+## Why this bit us
+
+Also note "owned" is NARROWER than "a +tag of my verified email":
+approver_owns_identity() additionally requires agent_name_allowed(tag), so
+`danmills+bsky@sandmill.org` was FOREIGN, and the approval failed at
+complete-time with "a foreign grantee must supply its holder". The page should
+tell the user that up front ("that's an external service, not you") instead of
+failing after they approve.
+
+## UI proposal: ask the INTENT, then only the identities it needs
+
+Two pickers presented cold make the user solve a 2-axis puzzle. Instead:
+
+Step 1 — pick a shape in plain language, each with its consequence:
+  - "Act on my behalf"      -> a post will say: written by <agent>, attributed to <you>
+  - "Act as its own identity" -> nothing traces back to you (pseudonymous, not anonymous)
+  - "Act as me"             -> ⚠ indistinguishable from you; revoking it revokes you
+  - "Grant to an external service" -> <service> acts, attributed to <you>
+Step 2 — show ONLY the pickers that shape needs; each with use-existing /
+  create-new inline (creation is why sub-identities exist).
+Step 3 — confirm with a sentence, not field names:
+  "Posts will be attributed to danmills@sandmill.org and written by
+   danmills+poster@sandmill.org. You can revoke this at any time."
+
+Requester pins: when a request pins grantor/grantee, preselect and LOCK them,
+name who must approve, and REFUSE IMMEDIATELY with a reason if the signed-in
+user cannot satisfy the pin — never silently substitute, and never leave the
+requester polling for 15 minutes (what happened today: the failure surfaced as
+"expired").
+
+## Server changes this needs
+
+1. agent_provision.rs:953 — the owned path hardcodes
+   `validate_grant_warrants(..., &agent_email, &agent_email, ...)`, so a named
+   agent ALWAYS acts as itself. It must pass grantor = identity_email,
+   grantee = agent_email (equal only in the self/as-me mode), and the page
+   must sign the warrant to match (warrants are signed client-side).
+2. `grantee: "*"` should mean "mint a distinct agent identity" (shape 1) —
+   today it collapses to shape 3.
+3. Sub-identities must be selectable as the DELEGATING identity (bean y9xm).
+4. Validate a foreign grantee's holder at /agent-provision/request time, so
+   the requester learns before the human is asked.
+5. The poll's terminal states should carry `reason` so a client can report it.
+
+Blocks the on-behalf half of browserid-bsky-nr8p. Supersedes the framing in
+browserid-ng-wwec (keep that for the pin-honouring detail).

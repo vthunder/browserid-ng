@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-24T22:02:14Z
-updated_at: 2026-07-24T22:08:18Z
+updated_at: 2026-07-24T22:48:11Z
 ---
 
 Raised by Dan 2026-07-25, testing the bsky on-behalf flow.
@@ -73,3 +73,17 @@ What remains genuinely worth doing, downgraded from "missing feature":
 
 The hard blocker is browserid-ng-y9xm alone (cannot approve AS a sub-identity,
 so an account owned by one can never delegate).
+
+## Superseded for the design question 2026-07-25
+
+The full delegation-shape design now lives in browserid-ng-8v6c (four shapes,
+intent-first UI, the server changes each needs). Keep THIS bean for the
+narrower rule it states: a request's grantor/grantee pins must be honoured or
+REFUSED, never silently substituted, and the refusal reason must reach the
+requester (today a policy failure reaches the client as "expired", which is
+how we lost 15 minutes and a real diagnosis).
+
+New evidence for that: pinning grantee=danmills+bsky@sandmill.org routed into
+the FOREIGN path (agent_name_allowed() makes "owned" narrower than "+tag of a
+verified email") and failed at complete-time with "a foreign grantee must
+supply its holder" — after the human had already approved.

@@ -5,7 +5,9 @@ status: todo
 type: bug
 priority: high
 created_at: 2026-07-24T22:01:55Z
-updated_at: 2026-07-24T22:08:18Z
+updated_at: 2026-07-24T22:48:11Z
+blocking:
+    - browserid-ng-8v6c
 ---
 
 Found 2026-07-25 while testing the bsky on-behalf flow (browserid-bsky-nr8p).
