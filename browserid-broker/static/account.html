@@ -112,6 +112,22 @@
         <input type="radio" name="pv-mode" value="handle" class="pv-inline">
         With its own handle: <span id="pv-prefix" class="handle-prefix" style="display:inline-flex;margin-bottom:0;vertical-align:middle"></span><input id="pv-handle" placeholder="agent" maxlength="48" style="width:9em;display:inline-block;margin-bottom:0;vertical-align:middle;border-radius:0 4px 4px 0">
       </label>
+      <!-- WHO IS ANSWERABLE. The handle decides who ACTS; this decides who the
+           action is attributed to. Phrased as the consequence, not the field:
+           people can reason about "attributed to me", not about "grantor". -->
+      <div id="pv-attrib" hidden style="margin:2px 0 6px 22px">
+        <label style="display:block;margin:2px 0">
+          <input type="radio" name="pv-attrib" value="onbehalf" class="pv-inline" checked>
+          On my behalf — attributed to <b id="pv-attrib-id"></b>, done by the agent
+        </label>
+        <label style="display:block;margin:2px 0">
+          <input type="radio" name="pv-attrib" value="standalone" class="pv-inline">
+          On its own — attributed to the agent, not to me
+        </label>
+        <p class="sub" id="pv-standalone-note" hidden style="margin:2px 0 0 22px">
+          Nothing it does will point back to you in the record. (Its handle still
+          contains your address, so anyone who reads handles can guess the link.)</p>
+      </div>
       <label style="display:block;margin:4px 0">
         <input type="radio" name="pv-mode" value="self" class="pv-inline">
         As me — it acts directly as <b id="pv-self-id"></b>
@@ -1059,6 +1075,30 @@ function uniqueHandleTag(email, base) {
   }
   return base + Math.floor(Math.random() * 10000);
 }
+/** Which attribution the human picked (only meaningful in handle mode). */
+function pvStandalone() {
+  const el = document.querySelector('input[name="pv-attrib"]:checked');
+  return !!el && el.value === 'standalone';
+}
+
+/** Reflect the attribution choice: only offered for a named agent, since
+ *  "as me" has nobody else to attribute to. */
+function pvSyncAttrib() {
+  const asMe = (document.querySelector('input[name="pv-mode"]:checked') || {}).value === 'self';
+  const box = $('pv-attrib');
+  if (box) box.hidden = asMe;
+  const note = $('pv-standalone-note');
+  if (note) note.hidden = !pvStandalone();
+  const id = $('pv-attrib-id');
+  const chosen = $('pv-identity');
+  if (id && chosen) id.textContent = chosen.value || '';
+}
+document.addEventListener('change', (e) => {
+  if (e.target && (e.target.name === 'pv-mode' || e.target.name === 'pv-attrib' || e.target.id === 'pv-identity')) {
+    pvSyncAttrib();
+  }
+});
+
 // The mode selector state: prefix chip, "as me" identity, the as-me warning.
 function updateProvisionMode() {
   const email = $('pv-identity').value;
@@ -1466,7 +1506,7 @@ async function approveProvision(code, provPubkeyX) {
     if (grants.length || primaryHop) {
       const prep = await post('/agent-provision/prepare', {
         code, identity_email: identityEmail,
-        identity_mode: asMe ? 'self' : 'handle',
+        identity_mode: asMe ? 'self' : (pvStandalone() ? 'standalone' : 'handle'),
         ...(asMe ? {} : { handle: chosenName }),
       });
       let config = grants.length ? configFor(prep.agent_email) : null;
@@ -1526,14 +1566,18 @@ async function approveProvision(code, provPubkeyX) {
         for (const g of prep.grants) {
           const statusRef = (g.status_idx != null && prep.status_uri)
             ? { uri: prep.status_uri, idx: g.status_idx } : null;
-          warrants.push(await signDeviceWarrant(config, prep.agent_email, prep.agent_email, holderMatcher, g.audience, g.scopes || [], statusRef));
+          // WHO IS ANSWERABLE: the identity being approved with, unless the
+          // human chose "standalone" (the agent answers for itself). For
+          // as-you, agent_email IS identityEmail, so both come out equal.
+          const grantorEmail = pvStandalone() ? prep.agent_email : identityEmail;
+          warrants.push(await signDeviceWarrant(config, grantorEmail, prep.agent_email, holderMatcher, g.audience, g.scopes || [], statusRef));
         }
       }
       status.textContent = 'Approving…';
     }
     await post('/agent-provision/complete', {
       code, approve: true, identity_email: identityEmail,
-      identity_mode: asMe ? 'self' : 'handle',
+      identity_mode: asMe ? 'self' : (pvStandalone() ? 'standalone' : 'handle'),
       ...(asMe ? {} : { handle: chosenName }),
       ...(warrants ? { warrants, config_cert: configCert } : {}),
       // Primary-signed cert: also relay where that IdP mints access certs

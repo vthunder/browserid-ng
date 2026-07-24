@@ -60,8 +60,23 @@ function urlHost(u) {
  *
  * `grants` is `[{ audience, scopes: [...] }]` — permissions requested in the
  * same consent, so the human approves identity and authority in one step.
+ *
+ * WHO ACTS FOR WHOM — the two pins that decide it:
+ * - `grantor`: the identity a write is ATTRIBUTED to. Omit (or `"*"`) to let
+ *   the approver choose which of their identities delegates.
+ * - `grantee`: the identity that ACTS. Omit for **as-you** (grantee ≡ grantor,
+ *   which is what provisioning an account at an RP requires). Pass `"*"` to
+ *   have the approver mint a distinct actor — that is what produces an
+ *   ON-BEHALF-OF warrant. Pass a concrete id for a foreign actor, and then
+ *   `granteeHolder` is required, since the warrant binds to that holder.
+ *
+ * `handle` is the browserid identity handle to request — NOT an application's
+ * account name. Don't pass an RP-side handle here.
  */
-export async function requestProvision(broker, { handle, namespace, grants = [], label, http = fetch } = {}) {
+export async function requestProvision(
+  broker,
+  { handle, namespace, grants = [], label, grantor, grantee, granteeHolder, http = fetch } = {},
+) {
   const deviceKey = KeyPair.generate();
   const body = {
     provisioning_pubkey: publicKeyField(deviceKey.publicKeyB64),
@@ -70,6 +85,9 @@ export async function requestProvision(broker, { handle, namespace, grants = [],
   if (handle) body.requested_handles = { names: [handle] };
   if (namespace) body.namespace = namespace;
   if (label) body.label = label;
+  if (grantor) body.grantor = grantor;
+  if (grantee) body.grantee = grantee;
+  if (granteeHolder) body.grantee_holder = granteeHolder;
 
   const base = trim(broker);
   const { res, json } = await postJson(http, `${base}/agent-provision/request`, body);
@@ -137,7 +155,14 @@ export class PendingProvision {
         case "denied":
           throw new AgentError("the human refused the request");
         case "expired":
-          throw new AgentError("the approval expired before it was resolved");
+          // A policy refusal at the page can clear the record, so surface any
+          // reason the server gave rather than reporting a bare timeout — that
+          // masking cost a real diagnosis once.
+          throw new AgentError(
+            json.reason
+              ? `the request was resolved without a credential: ${json.reason}`
+              : "the approval expired before it was resolved",
+          );
         case "failed":
           throw new AgentError(`provisioning failed: ${json.reason || "no reason given"}`);
         case "pending":
@@ -146,7 +171,13 @@ export class PendingProvision {
         default:
           // 410 means the code is gone; other 4xx (except rate limiting) are
           // terminal. Anything else is transient — keep polling.
-          if (res.status === 410) throw new AgentError("the approval expired before it was resolved");
+          if (res.status === 410) {
+            throw new AgentError(
+              json.reason
+                ? `the request is gone: ${json.reason}`
+                : "the approval expired before it was resolved",
+            );
+          }
           if (res.status >= 400 && res.status < 500 && res.status !== 429) {
             throw new RequestError("provision poll", res.status, json.reason || "no reason given");
           }

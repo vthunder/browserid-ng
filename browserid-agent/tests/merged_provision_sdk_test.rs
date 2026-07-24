@@ -151,8 +151,12 @@ async fn sdk_merged_provision_roundtrip() {
         Duration::days(90), &idp_key, None,
     )
     .unwrap();
+    // The page signs grantor = the APPROVING identity, grantee = the agent —
+    // a named agent acts ON BEHALF OF the human who approved it. (It used to
+    // sign AGENT for both, which made the on-behalf shape unreachable; the
+    // registrar now rejects that mismatch. Bean browserid-ng-8v6c.)
     let warrant = Warrant::create(
-        AGENT, AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
+        DELEGATOR, AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
         Duration::days(90), &config_kp,
         Some(StatusRef { uri: status_uri, idx: status_idx }),
     )
@@ -184,7 +188,11 @@ async fn sdk_merged_provision_roundtrip() {
         .unwrap()
         .verify(AUDIENCE, |_| Ok(idp_key.public_key()))
         .expect("presentation verifies");
-    assert_eq!(verified.email, AGENT);
+    // The two roles the core has always modelled, now actually distinct: the
+    // write is ATTRIBUTED to the human who approved, and the ACTOR of record is
+    // the agent that signed.
+    assert_eq!(verified.email, DELEGATOR, "attributed to the approving identity");
+    assert_eq!(verified.grantee, AGENT, "acted by the agent");
     assert_eq!(verified.holder.as_str(), holder);
     assert_eq!(verified.scopes, vec!["action:post".to_string()]);
 }

@@ -164,10 +164,18 @@ export class PendingWarrants {
 export function requestProvision(
   broker: string,
   opts?: {
+    /** browserid identity handle to request — NOT an RP-side account name. */
     handle?: string;
     namespace?: string;
     grants?: GrantRequest[];
     label?: string;
+    /** Identity a write is attributed to; omit/"*" lets the approver choose. */
+    grantor?: string;
+    /** Identity that acts. Omit for as-you (grantee ≡ grantor); "*" has the
+     *  approver mint a distinct actor — an ON-BEHALF-OF warrant. */
+    grantee?: string;
+    /** Required when `grantee` names an identity the approver does not own. */
+    granteeHolder?: string;
     http?: typeof fetch;
   }
 ): Promise<PendingProvision>;

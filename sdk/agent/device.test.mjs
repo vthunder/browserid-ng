@@ -211,3 +211,26 @@ test("a credential round-trips through storage with its warrants", async () => {
   assert.deepEqual(reloaded.warrantedAudiences(), [AUD]);
   assert.equal((await reloaded.assertionFor(AUD)).split("~").length, 4);
 });
+
+test("the grantor/grantee pins ride along, and as-you omits them", async () => {
+  const { http, state } = mockServer();
+  await requestProvision(BROKER, { grants: [{ audience: AUD }], http });
+  assert.equal(state.seen.request.grantee, undefined, "as-you: no grantee pin");
+  assert.equal(state.seen.request.grantor, undefined);
+
+  // On-behalf: the approver mints a distinct actor for a chosen grantor.
+  await requestProvision(BROKER, { grants: [{ audience: AUD }], grantee: "*", http });
+  assert.equal(state.seen.request.grantee, "*");
+
+  // A foreign actor must carry the holder its own issuer assigned.
+  await requestProvision(BROKER, {
+    grants: [{ audience: AUD }],
+    grantor: "alice@idp.test",
+    grantee: "poster@other.test",
+    granteeHolder: "abc.def",
+    http,
+  });
+  assert.equal(state.seen.request.grantor, "alice@idp.test");
+  assert.equal(state.seen.request.grantee, "poster@other.test");
+  assert.equal(state.seen.request.grantee_holder, "abc.def");
+});

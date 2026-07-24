@@ -506,7 +506,10 @@ fn resolve_agent_identity(
     }
     let name = match identity_mode {
         Some("self") => None,
-        Some("handle") => Some(
+        // "handle" (attributed to the approver — an on-behalf agent) and
+        // "standalone" (the agent is answerable for itself) both name an agent
+        // identity; they differ only in the warrant's GRANTOR, decided below.
+        Some("handle") | Some("standalone") => Some(
             chosen_handle
                 .map(|h| h.trim().to_lowercase())
                 .filter(|h| !h.is_empty())
@@ -710,9 +713,13 @@ pub struct CompleteBody {
     /// confirms here. Defaults to `agents`. Cosmetic + re-categorizable.
     #[serde(default)]
     pub namespace: Option<String>,
-    /// How the agent acts: "self" (as-you) or "handle" (named) — the approving
-    /// user's choice, overriding the requester's suggestion. Same values as
-    /// passed to `prepare`.
+    /// How the agent acts, the approving user's choice (overriding the
+    /// requester's suggestion; same values as `prepare`):
+    /// - `self`       — as-you: the agent IS this identity
+    /// - `handle`     — a named agent acting ON BEHALF OF this identity
+    ///                  (grantor = this identity, grantee = the agent)
+    /// - `standalone` — a named agent answerable for ITSELF (grantor ==
+    ///                  grantee == the agent); nothing is attributed here
     #[serde(default)]
     pub identity_mode: Option<String>,
     /// The chosen handle when `identity_mode` is "handle".
@@ -950,11 +957,20 @@ async fn complete_device_cert(
         let config_jws = req.config_cert.as_deref().ok_or_else(|| {
             RegistrarError::ValidationError("approve requires the signing config cert".into())
         })?;
-        // Owned path: an as-you / named agent acts as itself — grantor == grantee.
+        // Owned path. WHO IS ANSWERABLE is the approver's chosen identity, not
+        // the agent's — otherwise a named agent can only ever act as itself and
+        // the on-behalf shape is unreachable (which it was; see bean 8v6c).
+        // Three shapes land here:
+        //   self       -> agent_email == identity_email, so grantor == grantee
+        //   handle     -> grantor = the human, grantee = the agent  (ON BEHALF OF)
+        //   standalone -> grantor == grantee == the agent, deliberately NOT
+        //                 attributed to the human (a segregated identity)
+        let standalone = req.identity_mode.as_deref() == Some("standalone");
+        let grantor = if standalone { &agent_email } else { &identity_email };
         let warrants = validate_grant_warrants(
             warrant_jwss,
             config_jws,
-            &agent_email,
+            grantor,
             &agent_email,
             &holder_id,
             &snapshot.grants,
@@ -1138,6 +1154,37 @@ mod tests {
         assert!(fp.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
         // deterministic
         assert_eq!(fingerprint(pubkey), fp);
+    }
+
+    /// The three owned shapes differ ONLY in the warrant's grantor, so pin that
+    /// mapping here: a named agent defaults to acting FOR the approver, and
+    /// only an explicit "standalone" makes the agent answerable for itself.
+    /// Getting this wrong is invisible until an RP reports the wrong author
+    /// (it was wrong for months — see bean browserid-ng-8v6c).
+    #[test]
+    fn grantor_follows_the_identity_mode() {
+        let identity = "danmills@sandmill.org".to_string();
+        let agent = "danmills+poster@sandmill.org".to_string();
+        // The expression under test, as it appears in complete_device_cert.
+        let grantor_for = |mode: Option<&str>, agent_email: &str| -> String {
+            let standalone = mode == Some("standalone");
+            if standalone { agent_email.to_string() } else { identity.clone() }
+        };
+
+        // as-you: resolve_agent_identity returns the identity itself, so both
+        // sides coincide without special-casing.
+        assert_eq!(grantor_for(Some("self"), &identity), identity);
+
+        // named agent, attributed to the human -> ON BEHALF OF
+        assert_eq!(grantor_for(Some("handle"), &agent), identity);
+        assert_ne!(grantor_for(Some("handle"), &agent), agent, "must not collapse to the agent");
+
+        // named agent answerable for itself
+        assert_eq!(grantor_for(Some("standalone"), &agent), agent);
+
+        // Absent mode (requester supplied a name, human didn't re-choose):
+        // default to attributing to the human, never silently to the agent.
+        assert_eq!(grantor_for(None, &agent), identity);
     }
 
     #[test]
