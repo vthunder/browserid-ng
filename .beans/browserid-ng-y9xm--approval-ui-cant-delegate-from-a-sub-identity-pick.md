@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: high
 created_at: 2026-07-24T22:01:55Z
-updated_at: 2026-07-24T22:01:55Z
+updated_at: 2026-07-24T22:08:18Z
 ---
 
 Found 2026-07-25 while testing the bsky on-behalf flow (browserid-bsky-nr8p).
@@ -33,3 +33,19 @@ danmills+bskyjs@ is permanently stuck as-itself.
 Fix direction: the picker should list owned sub-addresses too (the
 `approver_owns_identity` rule already says a +tag of a verified email is
 owned), or accept a typed identity validated against that same rule.
+
+## Refinement 2026-07-25
+
+The dead end is narrower than first written, and still real. The page CAN mint
+a sub-identity and use it as grantor+grantee ("with its own handle"), and CAN
+act as a root identity ("as me"). What it cannot do is DELEGATE FROM an
+existing sub-identity: the picker for the delegating identity lists roots only.
+
+So: an account provisioned under "with its own handle" is owned by a minted
+sub-identity and can never afterwards delegate to a separate actor — the
+grantor pin naming it is unapprovable. Accounts provisioned "as me" (root
+grantor) CAN delegate, because the root is selectable.
+
+Practical consequence for callers: pin `grantor` at provisioning time if the
+account should ever delegate later. browserid-bsky's agent-cli now takes
+`setup --for <identity>` for exactly this.

@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-24T22:02:14Z
-updated_at: 2026-07-24T22:02:14Z
+updated_at: 2026-07-24T22:08:18Z
 ---
 
 Raised by Dan 2026-07-25, testing the bsky on-behalf flow.
@@ -49,3 +49,27 @@ Sketches worth weighing:
 Blocks the on-behalf half of browserid-bsky-nr8p. Related: browserid-ng-y9xm
 (the picker only lists root identities, so A is unapprovable whenever the
 grantor is a sub-identity).
+
+## CORRECTION 2026-07-25 — the UI does expose the axis; my request was wrong
+
+Dan: the approval page offers "as me" vs "with its own handle". That IS the
+grantor/grantee axis, so the original framing ("the UI cannot express it") is
+wrong and this bean is NOT a blocker on its own.
+
+What actually happened: the provisioning request left `grantor` OPEN (absent →
+`*`). Omitting `grantee` pins grantee ≡ grantor but says nothing about WHICH
+identity fills both slots, so "with its own handle" legitimately minted
+danmills+bluesky2@ and used it for both. No silent collapse of a pin — there
+was no pin to collapse. The requester's bug, not the page's.
+
+What remains genuinely worth doing, downgraded from "missing feature":
+- When a request PINS `grantor`, the page should say so and constrain the
+  choice, rather than letting the human pick an identity that will fail
+  check_grantor_pin() at complete-time.
+- "as me" / "with its own handle" is good phrasing for the axis, but it does
+  not say what it MEANS for attribution — a reader of the resulting post sees
+  either "Dan said this" or "this agent said this". Worth surfacing.
+- Still worth refusing rather than proceeding when a pin cannot be honored.
+
+The hard blocker is browserid-ng-y9xm alone (cannot approve AS a sub-identity,
+so an account owned by one can never delegate).
