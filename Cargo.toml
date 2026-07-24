@@ -6,7 +6,6 @@ members = [
     "browserid-broker",
     "browserid-agent",
     "browserid-rp",
-    "pds-bridge",
 ]
 
 [workspace.package]

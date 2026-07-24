@@ -1594,29 +1594,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pds-bridge"
-version = "0.1.0"
-dependencies = [
- "axum",
- "axum-test",
- "base64 0.22.1",
- "browserid-core",
- "browserid-rp",
- "chrono",
- "rand",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
- "tokio",
- "tower",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "pem"
 version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -11,19 +11,16 @@ COPY browserid-registrar/Cargo.toml browserid-registrar/
 COPY browserid-broker/Cargo.toml browserid-broker/
 COPY browserid-agent/Cargo.toml browserid-agent/
 COPY browserid-rp/Cargo.toml browserid-rp/
-COPY pds-bridge/Cargo.toml pds-bridge/
 
 # Create dummy source files to cache dependencies
-RUN mkdir -p browserid-core/src browserid-registrar/src browserid-broker/src browserid-agent/src browserid-rp/src pds-bridge/src && \
+RUN mkdir -p browserid-core/src browserid-registrar/src browserid-broker/src browserid-agent/src browserid-rp/src && \
     echo "pub fn dummy() {}" > browserid-core/src/lib.rs && \
     echo "pub fn dummy() {}" > browserid-registrar/src/lib.rs && \
     echo "pub fn dummy() {}" > browserid-agent/src/lib.rs && \
     echo "pub fn dummy() {}" > browserid-rp/src/lib.rs && \
-    echo "pub fn dummy() {}" > pds-bridge/src/lib.rs && \
-    echo "fn main() {}" > pds-bridge/src/main.rs && \
     echo "fn main() {}" > browserid-broker/src/main.rs && \
     cargo build --release --package browserid-broker && \
-    rm -rf browserid-core/src browserid-registrar/src browserid-broker/src browserid-agent/src browserid-rp/src pds-bridge/src
+    rm -rf browserid-core/src browserid-registrar/src browserid-broker/src browserid-agent/src browserid-rp/src
 
 # Copy actual source code
 COPY browserid-core/src browserid-core/src

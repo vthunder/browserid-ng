@@ -1,11 +1,11 @@
 ---
 # browserid-ng-ezk6
 title: 'Bluesky bridge (B1): delegated agent posting via hosted PDS at bsky.browserid.me'
-status: in-progress
+status: scrapped
 type: feature
 priority: normal
 created_at: 2026-07-23T22:07:39Z
-updated_at: 2026-07-23T23:37:51Z
+updated_at: 2026-07-24T12:01:28Z
 ---
 
 Run a stock @atproto/pds plus a Rust pds-bridge sidecar (browserid-rp) at bsky.browserid.me: browserid-provisioned Bluesky accounts, agent warrants with atproto granular scopes (repo:app.bsky.feed.post?action=create, blob:image/*), RFC 7521 bundle->token exchange verified fail-closed, scoped XRPC proxy, receipts + revocation. Design: docs/plans/2026-07-24-bsky-pds-bridge-design.md
@@ -23,3 +23,7 @@ Related: pv9b (browserid.me-rooted handles), 4lxl (fail-closed status — bridge
 - [ ] P2: provenance — linkage attestation (repo record + alsoKnownAs), me.browserid.provenance receipts and/or labeler
 - [ ] P3: evaluate rsky-pds in-process integration (collapse the proxy)
 - [ ] P4: upstream proposal to atproto community (bundle-native delegation)
+
+## Reasons for Scrapping
+
+Not abandoned — MOVED. The bridge (and all bsky work) now lives in its own public repo: https://github.com/vthunder/browserid-bsky (code, design doc, deploy plan, CI). Tracking continues as bean browserid-bsky-aa7g there. browserid-ng stays bsky-free; the bridge consumes browserid-core/browserid-rp as git dependencies.
