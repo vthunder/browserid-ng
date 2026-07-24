@@ -1,0 +1,75 @@
+# Build the broker in CI and deploy the IMAGE to dokku, so the host never
+# compiles Rust. A 136-commit fast-forward took 90+ minutes on-host, because
+# dokku keeps no persistent BuildKit cache and the box is disk-constrained;
+# the same pattern took the bsky bridge from 40+ min to ~70s.
+#
+# This is the pattern that used to live here as deploy-bridge.yml — it left
+# with the Bluesky bridge in 7b78bec, and the broker was never covered.
+#
+# One-time setup (do these BEFORE the first push, see the runbook below):
+# - repo secret   DOKKU_SSH_KEY : private key authorized for the dokku user
+# - repo variable DOKKU_HOST    : the dokku host (sandmill.org)
+# - on the host:  dokku builder:set id selected dockerfile
+#     `git:from-image` generates its OWN root Dockerfile; without the builder
+#     pinned, dokku can fall back to herokuish and fail to detect a buildpack.
+# - after the first push: make the ghcr.io package PUBLIC, or dokku cannot
+#     pull it (no registry credentials on the host).
+#
+# Note: `git:from-image` is a no-op on an unchanged image digest ("No changes
+# detected", exit 1). That only bites when re-deploying the same commit.
+
+name: deploy-broker
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/vthunder/browserid-ng/broker
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The Dockerfile builds browserid-broker and copies
+      # browserid-broker/static, so page changes ship with the image.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to dokku
+        if: ${{ vars.DOKKU_HOST != '' }}
+        env:
+          DOKKU_SSH_KEY: ${{ secrets.DOKKU_SSH_KEY }}
+          DOKKU_HOST: ${{ vars.DOKKU_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DOKKU_SSH_KEY" > ~/.ssh/dokku_key
+          chmod 600 ~/.ssh/dokku_key
+          # The dokku user's forced command turns these args into a dokku
+          # command; git:from-image pulls the image and releases it.
+          ssh -i ~/.ssh/dokku_key -o StrictHostKeyChecking=accept-new \
+            "dokku@$DOKKU_HOST" git:from-image id "$IMAGE:$GITHUB_SHA"
