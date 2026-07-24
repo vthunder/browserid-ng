@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-24T22:48:01Z
-updated_at: 2026-07-24T22:48:01Z
+updated_at: 2026-07-24T23:20:51Z
 ---
 
 Design with Dan 2026-07-25, after the bsky on-behalf test hit a wall. Parent
@@ -101,3 +101,41 @@ requester polling for 15 minutes (what happened today: the failure surfaced as
 
 Blocks the on-behalf half of browserid-bsky-nr8p. Supersedes the framing in
 browserid-ng-wwec (keep that for the pin-honouring detail).
+
+## Server + page fix LANDED 2026-07-25 (shapes 1/3/4 reachable)
+
+complete_device_cert no longer collapses the grantor. `identity_mode` now has
+three values and the grantor follows it:
+  self       -> agent_email == identity_email (grantor == grantee)
+  handle     -> grantor = the approving human, grantee = the agent (ON BEHALF OF)
+  standalone -> grantor == grantee == the agent (segregated identity, shape 3)
+
+account.html signs to match and offers the choice as a CONSEQUENCE, not
+protocol vocabulary:
+  "On my behalf — attributed to <you>, done by the agent"
+  "On its own — attributed to the agent, not to me"
+plus the honest note that the agent's handle still contains the user's address,
+so the link is guessable by anyone who reads handles.
+
+Warrants are signed client-side, so page and registrar had to move together —
+the SDK round-trip test (browserid-agent/tests/merged_provision_sdk_test.rs)
+was signing the old shape and caught exactly that. It now asserts BOTH roles:
+verified.email == the approving identity, verified.grantee == the agent.
+New registrar unit test pins the mode -> grantor mapping.
+
+Note browserid-core already modelled the two roles correctly
+(VerifiedAccess.email = attributed, .grantee = actor). Only the registrar was
+conflating them, so no core change was needed.
+
+Also: an RP that read `verified.email` expecting the AGENT's identity will now
+see the human's for a named agent. That is the point, but it is a
+behaviour change for existing consumers.
+
+STILL OPEN here: the intent-first UI rework (ask the shape in plain language,
+then show only the pickers it needs), the pin-honouring rules (bean wwec),
+sub-identity as delegator (y9xm), and validating a foreign grantee's holder at
+request time instead of after approval.
+
+NOT YET TESTED LIVE: browserid.me was 136 commits behind; the deploy is in
+flight (on-host Rust build, 2h+ — hence the new CI image pipeline in
+094cfc0). The on-behalf test resumes once it lands.
