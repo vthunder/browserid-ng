@@ -99,46 +99,78 @@
     <h2>Authorize an agent</h2>
     <p class="sub" id="pv-intro"></p>
     <p class="sub" id="pv-fp" style="font-family:ui-monospace,monospace"></p>
-    <label for="pv-identity" id="pv-identity-label">Which identity should it act for?</label>
-    <select id="pv-identity"></select>
+    <!-- INTENT FIRST. Two identity pickers presented cold make the human solve
+         a two-axis puzzle (who is answerable vs who acts). So ask what the
+         agent is FOR, in plain language with its consequence, then reveal only
+         the controls that intent needs. Each intent maps to an identity_mode:
+           acts for me  -> handle      (grantor = you, grantee = the agent)
+           on its own   -> standalone  (grantor == grantee == the agent)
+           as me        -> self        (the agent IS you)  ⚠ -->
+    <div id="pv-intent" style="margin-top:4px">
+      <label style="display:block;margin:6px 0">
+        <input type="radio" name="pv-intent" value="onbehalf" class="pv-inline" checked>
+        <b>Do things for me</b>
+        <span class="sub" style="display:block;margin-left:22px">
+          Its actions are attributed to <b class="pv-grantor-name"></b> and carried out by the agent.
+          Revoking it does not affect you.</span>
+      </label>
+      <label style="display:block;margin:6px 0">
+        <input type="radio" name="pv-intent" value="standalone" class="pv-inline">
+        <b>Act as its own identity</b>
+        <span class="sub" style="display:block;margin-left:22px">
+          Its actions are attributed to the agent, not to you.</span>
+      </label>
+      <label style="display:block;margin:6px 0">
+        <input type="radio" name="pv-intent" value="self" class="pv-inline">
+        <b>Act as me</b>
+        <span class="sub" style="display:block;margin-left:22px">
+          It becomes <b class="pv-grantor-name"></b>. Nothing will distinguish its
+          actions from yours.</span>
+      </label>
+      <label style="display:block;margin:6px 0;opacity:.55" title="No identity provider supports top-level agent handles yet">
+        <input type="radio" name="pv-intent" value="toplevel" class="pv-inline" disabled>
+        <b>Use a top-level handle</b> (e.g. bot@domain)
+        <span class="sub" style="display:block;margin-left:22px">Not supported by your provider yet.</span>
+      </label>
+    </div>
+
+    <!-- WHOSE authority. Hidden for "act as me", where there is nobody else to
+         act for. Kept a picker because a request may pin it. -->
+    <div id="pv-grantor-row" style="margin-top:12px">
+      <label for="pv-identity" id="pv-identity-label">Acting for</label>
+      <select id="pv-identity"></select>
+    </div>
+
+    <!-- WHICH agent. A new sub-handle, or one of this account's existing agent
+         identities — creating identities is most of why sub-identities exist. -->
+    <div id="pv-agent-row" style="margin-top:12px">
+      <label id="pv-agent-label">The agent's identity</label>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <label class="pv-inline" style="margin:0">
+          <input type="radio" name="pv-agent-src" value="new" class="pv-inline" checked> new:
+        </label>
+        <span id="pv-prefix" class="handle-prefix" style="display:inline-flex;margin-bottom:0;vertical-align:middle"></span><input id="pv-handle" placeholder="agent" maxlength="48" style="width:9em;display:inline-block;margin-bottom:0;vertical-align:middle;border-radius:0 4px 4px 0">
+        <label class="pv-inline" id="pv-existing-wrap" hidden style="margin:0 0 0 8px">
+          <input type="radio" name="pv-agent-src" value="existing" class="pv-inline"> existing:
+        </label>
+        <select id="pv-existing" hidden style="width:auto;margin:0"></select>
+      </div>
+    </div>
+
+    <!-- The confirmation, as a sentence rather than field names: the thing a
+         reader of the resulting action would see. -->
+    <p id="pv-summary" class="sub" style="margin:12px 0 0;padding:8px 10px;border-left:3px solid #cbd5e1;background:#f8fafc"></p>
+    <p class="sub" id="pv-self-warn" hidden style="color:#b7791f;margin:6px 0 0">
+      ⚠ It will act as you — everything it does will appear as your own actions,
+      and revoking it means revoking yourself.</p>
+    <p class="sub" id="pv-standalone-note" hidden style="margin:6px 0 0">
+      Nothing it does will point back to you in the record. Its handle still
+      contains your address, so anyone who reads handles can guess the link —
+      this is separation of blast radius, not anonymity.</p>
     <!-- Delegated (foreign-grantee) trust note: a distinct service, minted by
          its own provider, acting on your behalf with visible provenance. -->
     <p class="sub" id="pv-delegate-note" hidden style="margin:8px 0"></p>
-    <!-- How the agent acts — the approving user's choice, always offered:
-         as-you (holds the base identity), a named sub-handle (default for
-         agents), or a top-level handle (needs IdP support; none yet). -->
-    <div id="pv-mode" style="margin-top:10px">
-      <label style="display:block;margin:4px 0">
-        <input type="radio" name="pv-mode" value="handle" class="pv-inline">
-        With its own handle: <span id="pv-prefix" class="handle-prefix" style="display:inline-flex;margin-bottom:0;vertical-align:middle"></span><input id="pv-handle" placeholder="agent" maxlength="48" style="width:9em;display:inline-block;margin-bottom:0;vertical-align:middle;border-radius:0 4px 4px 0">
-      </label>
-      <!-- WHO IS ANSWERABLE. The handle decides who ACTS; this decides who the
-           action is attributed to. Phrased as the consequence, not the field:
-           people can reason about "attributed to me", not about "grantor". -->
-      <div id="pv-attrib" hidden style="margin:2px 0 6px 22px">
-        <label style="display:block;margin:2px 0">
-          <input type="radio" name="pv-attrib" value="onbehalf" class="pv-inline" checked>
-          On my behalf — attributed to <b id="pv-attrib-id"></b>, done by the agent
-        </label>
-        <label style="display:block;margin:2px 0">
-          <input type="radio" name="pv-attrib" value="standalone" class="pv-inline">
-          On its own — attributed to the agent, not to me
-        </label>
-        <p class="sub" id="pv-standalone-note" hidden style="margin:2px 0 0 22px">
-          Nothing it does will point back to you in the record. (Its handle still
-          contains your address, so anyone who reads handles can guess the link.)</p>
-      </div>
-      <label style="display:block;margin:4px 0">
-        <input type="radio" name="pv-mode" value="self" class="pv-inline">
-        As me — it acts directly as <b id="pv-self-id"></b>
-      </label>
-      <p class="sub" id="pv-self-warn" hidden style="color:#b7791f;margin:2px 0 4px 22px">
-        It will act as you — everything it does will appear as your own actions.</p>
-      <label style="display:block;margin:4px 0;opacity:.55" title="No identity provider supports top-level agent handles yet">
-        <input type="radio" name="pv-mode" value="toplevel" class="pv-inline" disabled>
-        With a top-level handle (e.g. bot@domain) — not supported by your provider yet
-      </label>
-    </div>
+
     <!-- Merged one-approval flow: grants requested alongside the identity.
          Approving signs one warrant per place with the config key held in
          this browser — same approval, no second consent page. -->
@@ -1075,39 +1107,86 @@ function uniqueHandleTag(email, base) {
   }
   return base + Math.floor(Math.random() * 10000);
 }
-/** Which attribution the human picked (only meaningful in handle mode). */
-function pvStandalone() {
-  const el = document.querySelector('input[name="pv-attrib"]:checked');
-  return !!el && el.value === 'standalone';
+/** The chosen intent: onbehalf | standalone | self. */
+function pvIntent() {
+  const el = document.querySelector('input[name="pv-intent"]:checked');
+  return (el && el.value) || 'onbehalf';
 }
 
-/** Reflect the attribution choice: only offered for a named agent, since
- *  "as me" has nobody else to attribute to. */
-function pvSyncAttrib() {
-  const asMe = (document.querySelector('input[name="pv-mode"]:checked') || {}).value === 'self';
-  const box = $('pv-attrib');
-  if (box) box.hidden = asMe;
-  const note = $('pv-standalone-note');
-  if (note) note.hidden = !pvStandalone();
-  const id = $('pv-attrib-id');
-  const chosen = $('pv-identity');
-  if (id && chosen) id.textContent = chosen.value || '';
+/** The identity_mode the registrar expects for the chosen intent. */
+function pvIdentityMode() {
+  const intent = pvIntent();
+  return intent === 'self' ? 'self' : (intent === 'standalone' ? 'standalone' : 'handle');
 }
-document.addEventListener('change', (e) => {
-  if (e.target && (e.target.name === 'pv-mode' || e.target.name === 'pv-attrib' || e.target.id === 'pv-identity')) {
-    pvSyncAttrib();
+
+/** The agent handle the human settled on — a new sub-handle or an existing
+ *  agent identity's tag. Empty in "act as me" (there is no separate agent). */
+function pvHandle() {
+  if (pvIntent() === 'self') return '';
+  const src = document.querySelector('input[name="pv-agent-src"]:checked');
+  if (src && src.value === 'existing') {
+    const chosen = $('pv-existing').value || '';
+    const local = chosen.split('@')[0] || '';
+    return local.includes('+') ? local.slice(local.indexOf('+') + 1) : local;
   }
-});
+  return $('pv-handle').value.trim().toLowerCase();
+}
 
-// The mode selector state: prefix chip, "as me" identity, the as-me warning.
+/** Existing agent identities that belong to the selected grantor, offered so
+ *  the human can REUSE an agent instead of minting one per app. */
+function pvExistingAgents(grantor) {
+  const base = grantor ? ownerLocalOf(grantor) + '+' : null;
+  if (!base) return [];
+  return (account.agents || []).filter((a) => a.startsWith(base));
+}
+
+// The card's whole state: intent decides which controls exist, then a sentence
+// spells out the consequence. Called on render AND on every change, so first
+// paint is never stale.
 function updateProvisionMode() {
   const email = $('pv-identity').value;
+  const intent = pvIntent();
+  const isSelf = intent === 'self';
+
+  for (const el of document.querySelectorAll('.pv-grantor-name')) el.textContent = email || 'you';
   $('pv-prefix').textContent = email ? ownerLocalOf(email) + '+' : '';
-  $('pv-self-id').textContent = email || 'you';
-  const mode = document.querySelector('input[name="pv-mode"]:checked');
-  const isSelf = mode && mode.value === 'self';
+
+  // "Act as me" needs neither an agent identity nor a separate authority.
+  $('pv-agent-row').hidden = isSelf;
   $('pv-self-warn').hidden = !isSelf;
-  $('pv-handle').disabled = isSelf;
+  $('pv-standalone-note').hidden = intent !== 'standalone';
+
+  // Offer existing agents only when there are any for this identity.
+  const existing = pvExistingAgents(email);
+  const sel = $('pv-existing');
+  const wrap = $('pv-existing-wrap');
+  if (existing.length) {
+    wrap.hidden = false;
+    sel.hidden = false;
+    const keep = sel.value;
+    sel.innerHTML = existing.map((a) => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+    if (existing.includes(keep)) sel.value = keep;
+  } else {
+    wrap.hidden = true;
+    sel.hidden = true;
+    const src = document.querySelector('input[name="pv-agent-src"][value="new"]');
+    if (src) src.checked = true;
+  }
+  const usingExisting = (document.querySelector('input[name="pv-agent-src"]:checked') || {}).value === 'existing';
+  $('pv-handle').disabled = isSelf || usingExisting;
+  $('pv-prefix').style.opacity = $('pv-handle').disabled ? '.5' : '1';
+
+  $('pv-summary').innerHTML = pvSummary(email, intent);
+}
+
+/** What a reader of the resulting action would see — the confirmation. */
+function pvSummary(grantor, intent) {
+  const who = escapeHtml(grantor || 'you');
+  if (intent === 'self') return `Its actions will be indistinguishable from <b>${who}</b>'s own.`;
+  const tag = pvHandle();
+  const agent = tag && grantor ? escapeHtml(ownerLocalOf(grantor) + '+' + tag + '@' + grantor.split('@')[1]) : '<i>the agent</i>';
+  if (intent === 'standalone') return `Actions will be attributed to <b>${agent}</b> — not to you.`;
+  return `Actions will be attributed to <b>${who}</b> and recorded as carried out by <b>${agent}</b>.`;
 }
 
 function refreshProvisionPicker() {
@@ -1164,7 +1243,11 @@ function renderDelegatedApproval(code, info) {
     `<b>${escapeHtml(grantee)}</b>${nick}` +
     `<div class="sub" style="margin-top:2px">a service run by ${escapeHtml(granteeDomain)}</div>`;
   $('pv-fp').hidden = true;
-  $('pv-mode').hidden = true; // no as-you/handle choice — the actor is fixed
+  // A foreign grantee IS the actor, so there is nothing to choose: no intent,
+  // no agent identity. Only "who are you acting for" remains.
+  $('pv-intent').hidden = true;
+  $('pv-agent-row').hidden = true;
+  $('pv-summary').hidden = true;
 
   // Plain-language "Can … on …" per grant (raw audience + scopes go to the
   // separate, lower technical-details block). Hide the owned card's static
@@ -1339,9 +1422,9 @@ async function showProvisionApproval(code) {
     || (info.label || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').split('-')[0]
     || 'agent';
   $('pv-handle').value = uniqueHandleTag($('pv-identity').value, base);
-  // Simple, predictable default: a handle of its own. (A service that needs
-  // to act AS you — e.g. the mingo poster — asks the user to pick "As me".)
-  document.querySelector('input[name="pv-mode"][value="handle"]').checked = true;
+  // Default intent: do things for me. (A service that must act AS you — e.g.
+  // the mingo poster — asks the user to pick "Act as me".)
+  document.querySelector('input[name="pv-intent"][value="onbehalf"]').checked = true;
   updateProvisionMode();
   refreshProvisionAddressInfo();
   $('pv-identity').onchange = () => {
@@ -1349,10 +1432,20 @@ async function showProvisionApproval(code) {
     updateProvisionMode();
     refreshProvisionAddressInfo();
   };
-  for (const r of document.querySelectorAll('input[name="pv-mode"]')) r.onchange = updateProvisionMode;
+  for (const r of document.querySelectorAll('input[name="pv-intent"], input[name="pv-agent-src"]')) {
+    r.onchange = updateProvisionMode;
+  }
+  // The summary quotes the handle as it is typed / the agent as it is picked.
+  $('pv-handle').oninput = updateProvisionMode;
+  $('pv-existing').onchange = updateProvisionMode;
+  // Typing a handle implies wanting a separate agent, not "act as me".
   $('pv-handle').onfocus = () => {
-    const r = document.querySelector('input[name="pv-mode"][value="handle"]');
-    if (r && !r.checked) { r.checked = true; updateProvisionMode(); }
+    if (pvIntent() === 'self') {
+      document.querySelector('input[name="pv-intent"][value="onbehalf"]').checked = true;
+    }
+    const src = document.querySelector('input[name="pv-agent-src"][value="new"]');
+    if (src) src.checked = true;
+    updateProvisionMode();
   };
   $('pv-approve').onclick = () => approveProvision(code, info.provisioning_pubkey);
   $('pv-deny').onclick = () => denyProvision(code);
@@ -1470,12 +1563,12 @@ async function approveProvision(code, provPubkeyX) {
   const identityEmail = $('pv-identity').value;
   const ai = provisionCtx && provisionCtx.addressInfo;
   const primaryHop = ai && ai.type === 'primary';
-  // The user's choice of how the agent acts.
-  const modeEl = document.querySelector('input[name="pv-mode"]:checked');
-  const asMe = modeEl && modeEl.value === 'self';
-  const handleTag = $('pv-handle').value.trim().toLowerCase();
+  // The user's choice of what the agent is FOR (see pvIntent/pvHandle).
+  const asMe = pvIntent() === 'self';
+  const handleTag = pvHandle();
   if (!asMe && !handleTag) {
-    status.className = 'status err'; status.textContent = 'Pick a handle (or choose "As me").';
+    status.className = 'status err';
+    status.textContent = 'Name the agent\u2019s handle, or choose "Act as me".';
     return;
   }
   // The NAME sent to the broker: agent identities sub-address the owner
@@ -1506,7 +1599,7 @@ async function approveProvision(code, provPubkeyX) {
     if (grants.length || primaryHop) {
       const prep = await post('/agent-provision/prepare', {
         code, identity_email: identityEmail,
-        identity_mode: asMe ? 'self' : (pvStandalone() ? 'standalone' : 'handle'),
+        identity_mode: pvIdentityMode(),
         ...(asMe ? {} : { handle: chosenName }),
       });
       let config = grants.length ? configFor(prep.agent_email) : null;
@@ -1569,7 +1662,7 @@ async function approveProvision(code, provPubkeyX) {
           // WHO IS ANSWERABLE: the identity being approved with, unless the
           // human chose "standalone" (the agent answers for itself). For
           // as-you, agent_email IS identityEmail, so both come out equal.
-          const grantorEmail = pvStandalone() ? prep.agent_email : identityEmail;
+          const grantorEmail = pvIntent() === 'standalone' ? prep.agent_email : identityEmail;
           warrants.push(await signDeviceWarrant(config, grantorEmail, prep.agent_email, holderMatcher, g.audience, g.scopes || [], statusRef));
         }
       }
@@ -1577,7 +1670,7 @@ async function approveProvision(code, provPubkeyX) {
     }
     await post('/agent-provision/complete', {
       code, approve: true, identity_email: identityEmail,
-      identity_mode: asMe ? 'self' : (pvStandalone() ? 'standalone' : 'handle'),
+      identity_mode: pvIdentityMode(),
       ...(asMe ? {} : { handle: chosenName }),
       ...(warrants ? { warrants, config_cert: configCert } : {}),
       // Primary-signed cert: also relay where that IdP mints access certs

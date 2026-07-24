@@ -143,8 +143,10 @@ async fn merged_request_prepare_approve_single_pickup() {
     assert_ne!(r.status_code(), 200, "foreign holder matcher must be refused");
 
     // 6. The page signs the warrant against the assigned holder and approves.
+    // A named agent acts ON BEHALF OF its approver: grantor = the approving
+    // identity, grantee = the agent (bean browserid-ng-8v6c).
     let warrant = Warrant::create(
-        AGENT, AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
+        DELEGATOR, AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
         Duration::days(90), &config_kp,
         Some(StatusRef { uri: status_uri.clone(), idx: status_idx }),
     )
@@ -312,7 +314,7 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
     )
     .unwrap();
     let warrant = Warrant::create(
-        P_AGENT, P_AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
+        P_DELEGATOR, P_AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
         Duration::days(90), &config_kp,
         Some(StatusRef { uri: status_uri, idx: status_idx }),
     )
