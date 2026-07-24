@@ -127,11 +127,6 @@
           It becomes <b class="pv-grantor-name"></b>. Nothing will distinguish its
           actions from yours.</span>
       </label>
-      <label style="display:block;margin:6px 0;opacity:.55" title="No identity provider supports top-level agent handles yet">
-        <input type="radio" name="pv-intent" value="toplevel" class="pv-inline" disabled>
-        <b>Use a top-level handle</b> (e.g. bot@domain)
-        <span class="sub" style="display:block;margin-left:22px">Not supported by your provider yet.</span>
-      </label>
     </div>
 
     <!-- WHOSE authority. Hidden for "act as me", where there is nobody else to
@@ -155,6 +150,14 @@
         </label>
         <select id="pv-existing" hidden style="width:auto;margin:0"></select>
       </div>
+      <!-- A third FORM the agent's identity could take (not a different
+           delegation shape): its own top-level address rather than a
+           sub-address of the owner's. Needs IdP support; none yet. -->
+      <label class="pv-inline" style="margin:6px 0 0;opacity:.55"
+             title="No identity provider supports top-level agent handles yet">
+        <input type="radio" name="pv-agent-src" value="toplevel" class="pv-inline" disabled>
+        a top-level handle (e.g. <code>bot@domain</code>) — not supported by your provider yet
+      </label>
     </div>
 
     <!-- The confirmation, as a sentence rather than field names: the thing a
