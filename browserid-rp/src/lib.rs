@@ -124,6 +124,12 @@ pub struct VerifiedIdentity {
 pub struct Verifier {
     audience: String,
     issuer_keys: HashMap<String, PublicKey>,
+    /// Trusted issuers that are **primaries**: authoritative for exactly
+    /// their own domain's identities, never anyone else's (spec §8
+    /// conformance). Issuers in `issuer_keys` but not here are accepted
+    /// **fallbacks**: they may vouch for identities at domains that have no
+    /// declared primary.
+    primaries: std::collections::HashSet<String>,
     /// The RP's own scope vocabulary — advertised in the challenge, and the
     /// upper bound on what an agent token is granted
     scopes: Vec<String>,
@@ -144,6 +150,7 @@ impl Verifier {
         Self {
             audience: audience.into(),
             issuer_keys: HashMap::new(),
+            primaries: std::collections::HashSet::new(),
             scopes: Vec::new(),
             status_cache: None,
             require_status_checks: true,
@@ -181,40 +188,51 @@ impl Verifier {
         &self.scopes
     }
 
-    /// Trust `domain`-issued presentations signed by `key` (pinned)
+    /// Trust `domain` as an accepted **fallback** issuer signed by `key`
+    /// (pinned): it may vouch for identities at any domain that has no
+    /// primary declared via [`Verifier::trust_primary`].
     pub fn trust_issuer(mut self, domain: impl Into<String>, key: PublicKey) -> Self {
         self.issuer_keys.insert(domain.into(), key);
         self
     }
 
-    /// Trust an IdP by fetching its `/.well-known/browserid` support
-    /// document. The trusted domain is the URL's host (with port, if any).
-    pub async fn trust_issuer_from_well_known(self, idp_base: &str) -> Result<Self, RpError> {
-        let idp_base = idp_base.trim_end_matches('/');
-        let url = format!("{idp_base}/.well-known/browserid");
-        let doc: browserid_core::discovery::SupportDocument = reqwest::Client::new()
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+    /// Trust `domain` as a **primary** IdP signed by `key` (pinned):
+    /// authoritative for exactly `*@domain` — presentations it issues for
+    /// any other domain are rejected, and once a primary is declared for a
+    /// domain, no fallback may vouch for that domain either.
+    pub fn trust_primary(mut self, domain: impl Into<String>, key: PublicKey) -> Self {
+        let domain = domain.into();
+        self.primaries.insert(domain.clone());
+        self.issuer_keys.insert(domain, key);
+        self
+    }
 
-        let domain = idp_base
-            .strip_prefix("https://")
-            .or_else(|| idp_base.strip_prefix("http://"))
-            .ok_or_else(|| RpError::WellKnown(format!("idp_base must be a URL: {idp_base}")))?
-            .to_string();
-        if domain.contains('/') {
-            return Err(RpError::WellKnown(format!(
-                "idp_base must be an origin with no path: {idp_base}"
-            )));
+    /// [`Verifier::trust_primary`], fetching the key from the IdP's
+    /// `/.well-known/browserid` support document.
+    pub async fn trust_primary_from_well_known(self, idp_base: &str) -> Result<Self, RpError> {
+        let (domain, key) = fetch_well_known_key(idp_base).await?;
+        Ok(self.trust_primary(domain, key))
+    }
+
+    /// Is `iss` authoritative for `identity` under this RP's trust policy?
+    /// A primary vouches only for its own domain; a domain with a declared
+    /// primary accepts nothing else; otherwise any trusted fallback vouches.
+    fn issuer_conformant(&self, identity: &str, iss: &str) -> bool {
+        let Some(domain) = identity.split('@').nth(1) else {
+            return false;
+        };
+        if self.primaries.contains(domain) || self.primaries.contains(iss) {
+            return iss == domain;
         }
+        self.issuer_keys.contains_key(iss)
+    }
 
-        let public_key = doc.public_key.ok_or_else(|| {
-            RpError::WellKnown(format!("{idp_base} published no public key"))
-        })?;
-        Ok(self.trust_issuer(domain, public_key))
+    /// Trust an IdP as an accepted **fallback** by fetching its
+    /// `/.well-known/browserid` support document. The trusted domain is the
+    /// URL's host (with port, if any).
+    pub async fn trust_issuer_from_well_known(self, idp_base: &str) -> Result<Self, RpError> {
+        let (domain, key) = fetch_well_known_key(idp_base).await?;
+        Ok(self.trust_issuer(domain, key))
     }
 
     /// The audience this verifier (and its challenge) is bound to
@@ -308,6 +326,21 @@ impl Verifier {
                 ));
             }
             None => {}
+        }
+
+        // Issuer conformance (spec §6.2/§8): each identity's issuer must be
+        // authoritative for THAT identity — the grantor's config-cert issuer
+        // and the grantee's access-cert issuer independently. Without this,
+        // any trusted key could vouch for any identity.
+        for (identity, iss) in [
+            (&verified.email, &verified.issuer),
+            (&verified.grantee, &verified.grantee_issuer),
+        ] {
+            if !self.issuer_conformant(identity, iss) {
+                return Err(ExchangeError::InvalidAssertion(format!(
+                    "issuer '{iss}' is not authoritative for '{identity}'"
+                )));
+            }
         }
 
         Ok(VerifiedIdentity {
@@ -494,6 +527,36 @@ fn grant_scopes(warrant_scopes: &[String], rp_scopes: &[String]) -> Vec<String> 
     }
 }
 
+/// Fetch an IdP's key from its `/.well-known/browserid`; returns
+/// `(domain, key)` where domain is the URL's host (with port, if any).
+async fn fetch_well_known_key(idp_base: &str) -> Result<(String, PublicKey), RpError> {
+    let idp_base = idp_base.trim_end_matches('/');
+    let url = format!("{idp_base}/.well-known/browserid");
+    let doc: browserid_core::discovery::SupportDocument = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let domain = idp_base
+        .strip_prefix("https://")
+        .or_else(|| idp_base.strip_prefix("http://"))
+        .ok_or_else(|| RpError::WellKnown(format!("idp_base must be a URL: {idp_base}")))?
+        .to_string();
+    if domain.contains('/') {
+        return Err(RpError::WellKnown(format!(
+            "idp_base must be an origin with no path: {idp_base}"
+        )));
+    }
+
+    let public_key = doc
+        .public_key
+        .ok_or_else(|| RpError::WellKnown(format!("{idp_base} published no public key")))?;
+    Ok((domain, public_key))
+}
+
 /// RFC 8414 authorization-server metadata for out-of-band discovery. Serve
 /// as JSON at `/.well-known/oauth-authorization-server`. `issuer` is the
 /// RP's base URL.
@@ -639,15 +702,29 @@ mod tests {
         warrant_scopes: Vec<String>,
         status: Option<StatusRef>,
     ) -> String {
+        presentation_from(ISSUER, issuer_kp, email, holder, audience, warrant_audience, warrant_scopes, status)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn presentation_from(
+        issuer: &str,
+        issuer_kp: &KeyPair,
+        email: &str,
+        holder: &str,
+        audience: &str,
+        warrant_audience: &str,
+        warrant_scopes: Vec<String>,
+        status: Option<StatusRef>,
+    ) -> String {
         let access_kp = KeyPair::generate();
         let config_kp = KeyPair::generate();
         let access_cert = AccessCert::create(
-            ISSUER, email, Holder::new(holder).unwrap(), &access_kp.public_key(),
+            issuer, email, Holder::new(holder).unwrap(), &access_kp.public_key(),
             Duration::hours(24), issuer_kp, status.clone(),
         )
         .unwrap();
         let config_cert = DeviceCert::create(
-            ISSUER, &config_kp.public_key(), Purpose::Authorization, Holder::new(holder).unwrap(),
+            issuer, &config_kp.public_key(), Purpose::Authorization, Holder::new(holder).unwrap(),
             vec![email.to_string()], Duration::days(90), issuer_kp, None,
         )
         .unwrap();
@@ -806,6 +883,51 @@ mod tests {
             vec![], Some(StatusRef { uri: uri.into(), idx: 3 }),
         ));
         assert!(exchange(&verifier, &tokens, &request).is_ok());
+    }
+
+    #[test]
+    fn primary_vouches_only_for_its_own_domain() {
+        let primary_kp = KeyPair::generate();
+        let verifier = Verifier::new(AUDIENCE).trust_primary("sandmill.example", primary_kp.public_key());
+
+        // Its own domain: fine.
+        let own = presentation_from(
+            "sandmill.example", &primary_kp, "dan@sandmill.example", "br.main",
+            AUDIENCE, AUDIENCE, vec![], None,
+        );
+        assert!(verifier.verify(&own).is_ok());
+
+        // A perfectly-signed presentation for someone ELSE's domain: refused.
+        let foreign = presentation_from(
+            "sandmill.example", &primary_kp, "alice@gmail.example", "br.main",
+            AUDIENCE, AUDIENCE, vec![], None,
+        );
+        let err = verifier.verify(&foreign).unwrap_err();
+        assert!(err.to_string().contains("not authoritative"), "{err}");
+    }
+
+    #[test]
+    fn declared_primary_domain_rejects_fallback_vouching() {
+        let fallback_kp = KeyPair::generate();
+        let primary_kp = KeyPair::generate();
+        let verifier = Verifier::new(AUDIENCE)
+            .trust_issuer("browserid.example", fallback_kp.public_key())
+            .trust_primary("sandmill.example", primary_kp.public_key());
+
+        // The fallback may vouch for a domain with no declared primary…
+        let ok = presentation_from(
+            "browserid.example", &fallback_kp, "bob@other.example", "br.main",
+            AUDIENCE, AUDIENCE, vec![], None,
+        );
+        assert!(verifier.verify(&ok).is_ok());
+
+        // …but not for a domain the RP knows runs a primary.
+        let bad = presentation_from(
+            "browserid.example", &fallback_kp, "dan@sandmill.example", "br.main",
+            AUDIENCE, AUDIENCE, vec![], None,
+        );
+        let err = verifier.verify(&bad).unwrap_err();
+        assert!(err.to_string().contains("not authoritative"), "{err}");
     }
 
     #[test]
