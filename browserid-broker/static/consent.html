@@ -4,44 +4,85 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>browserid.me — agent consent</title>
+  <!-- Surface B of the agent-authorization design (flows B1–B4, bean k0s9):
+       later permission requests for an agent whose identity is already
+       settled. The cards STATE the identity relation — which card you get is
+       decided by what kind of agent is asking, never by asking the user. -->
   <style>
-    :root { color-scheme: light dark; }
-    body { font: 16px/1.6 system-ui, -apple-system, sans-serif; max-width: 44rem;
-      margin: 4rem auto; padding: 0 1.25rem; color: #1a1a1a; }
-    @media (prefers-color-scheme: dark) { body { color: #e8e8e8; background: #161616; } }
-    h1 { font-size: 1.6rem; margin-bottom: .25rem; }
-    .muted { opacity: .65; }
-    code { font-family: ui-monospace, monospace; background: rgba(127,127,127,.18);
-      padding: .12em .4em; border-radius: 5px; font-size: .9em; }
-    .card { border: 1px solid rgba(127,127,127,.3); border-radius: 12px;
-      padding: 1rem 1.25rem; margin-top: 1.5rem; }
-    .card.hot { border-color: #2b6cb0; box-shadow: 0 0 0 2px rgba(43,108,176,.25); }
-    button { font: inherit; padding: .5rem .9rem; border-radius: 9px;
-      border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; cursor: pointer; }
-    button.approve { background: #2f855a; color: #fff; border-color: #2f855a; }
-    button:disabled { opacity: .5; cursor: default; }
-    .origin { font-family: ui-monospace, monospace; font-weight: 700; font-size: 1.05em;
-      word-break: break-all; }
-    .scope { display: inline-block; font-family: ui-monospace, monospace; font-size: .82em;
-      border: 1px solid rgba(127,127,127,.45); border-radius: 999px; padding: .1em .6em; margin: 0 .25em .25em 0; }
-    .who { font-family: ui-monospace, monospace; }
-    .warn { color: #b7791f; } .err { color: #c53030; } .ok { color: #2f855a; }
-    .row-status { font-size: .9em; margin-top: .5rem; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 32px 16px 48px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 14px; line-height: 1.5; color: #333; background-color: #f5f5f5; }
+    .wrap { max-width: 440px; margin: 0 auto; }
+    .brand { text-align: center; margin-bottom: 20px; }
+    .brand a { color: #333; text-decoration: none; font-weight: 600; font-size: 16px; }
+    .brand .me { color: #4a90d9; }
+    .footer-links { text-align: center; font-size: 13px; color: #888; }
+    .footer-links a { margin: 0 8px; color: #4a90d9; text-decoration: none; }
+    .footer-links a:hover { text-decoration: underline; }
+    .status { font-size: 13px; margin-top: 8px; }
+    .muted { color: #888; } .err { color: #dc3545; } .ok { color: #2f855a; }
+    .mono { font-family: ui-monospace, Menlo, monospace; }
+
+    /* Design-board card language — mirrors account.html's .pv* rules. */
+    .pvcard { background: #fff; border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,.08);
+      padding: 24px 22px 20px; margin-bottom: 20px; color: #17171a; border: 1px solid rgba(0,0,0,.09); }
+    .pvcard.danger { border-color: rgba(157,47,38,.24); }
+    .pvcard.hot { box-shadow: 0 0 0 2px rgba(31,111,235,.35), 0 4px 24px rgba(0,0,0,.08); }
+    .pv-head { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+    .pv-mark { width: 15px; height: 15px; border-radius: 4px; background: #17171a; }
+    .pv-brand { font-weight: 600; font-size: 12px; color: #17171a; }
+    .pv-corner { margin-left: auto; font: 11px/1 ui-monospace, Menlo, monospace; color: #8a8a93; word-break: break-all; text-align: right; }
+    .pv-title { font: 400 20px/1.4 system-ui, sans-serif; letter-spacing: -.01em; margin: 0 0 12px; color: #17171a; text-wrap: pretty; }
+    .pv-note { font: 13px/1.65 system-ui, sans-serif; color: #6b6b74; margin: 0 0 14px; }
+    .pv-note b, .pv-note .mono { color: #17171a; }
+    .pv-panel { border: 1px solid rgba(0,0,0,.11); border-radius: 9px; padding: 12px 13px; margin-bottom: 8px; }
+    .pv-label { font: 10.5px/1.3 system-ui, sans-serif; color: #8a8a93; margin-bottom: 3px; }
+    .pv-hint { font: 11px/1.5 system-ui, sans-serif; color: #8a8a93; margin: 0 0 14px; }
+    .pv-aud { font: 12.5px/1.5 ui-monospace, Menlo, monospace; color: #17171a; word-break: break-all; margin-bottom: 8px; }
+    .pv-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+    .pv-chip { font: 10px/1.3 ui-monospace, Menlo, monospace; color: #6b6b74; border: 1px solid rgba(0,0,0,.14); border-radius: 20px; padding: 4px 8px; word-break: break-all; }
+    .pv-chip.warn { color: #b7791f; border-color: rgba(183,121,31,.4); }
+    .pv-table { border: 1px solid rgba(0,0,0,.1); border-radius: 9px; overflow: hidden; margin-bottom: 6px; }
+    .pv-row { padding: 11px 13px; background: #faf9f7; display: flex; gap: 10px; }
+    .pv-row + .pv-row { border-top: 1px solid rgba(0,0,0,.07); }
+    .pv-rowlabel { font: 11px/1.4 system-ui, sans-serif; color: #8a8a93; flex: none; width: 40px; }
+    .pv-rowmain { font: 12px/1.4 ui-monospace, Menlo, monospace; color: #17171a; word-break: break-all; }
+    .pv-rowsub { font: 10.5px/1.4 system-ui, sans-serif; color: #8a8a93; margin-top: 2px; }
+    .pv-callout { padding: 12px 14px; background: #f4f6fb; border-left: 2px solid #1f6feb; border-radius: 0 8px 8px 0;
+      font: 13px/1.6 system-ui, sans-serif; color: #33333a; margin: 0 0 9px; }
+    .pv-callout.danger { background: #fdf6f5; border-left-color: #9d2f26; color: #5c3a36; }
+    .pv-actions { display: flex; flex-direction: column; gap: 9px; margin-top: 14px; }
+    .pv-btn { font: 600 15px/1 system-ui, sans-serif; color: #fff; background: #17171a; border: none; border-radius: 9px;
+      padding: 14px; text-align: center; cursor: pointer; width: 100%; }
+    .pv-btn:hover:not(:disabled) { background: #000; }
+    .pv-btn:disabled { opacity: .55; cursor: not-allowed; }
+    .pv-btn2 { font: 600 14.5px/1 system-ui, sans-serif; color: #17171a; background: #fff; border: 1px solid rgba(0,0,0,.18);
+      border-radius: 9px; padding: 13px; text-align: center; cursor: pointer; width: 100%; }
+    .pv-btn2:hover:not(:disabled) { background: #faf9f7; }
+    .pv-btn2:disabled { opacity: .55; cursor: not-allowed; }
+    .pv-ghost { font: 500 13px/1 system-ui, sans-serif; color: #6b6b74; background: none; border: none; padding: 7px;
+      text-align: center; cursor: pointer; width: 100%; }
+    .pv-ghost:hover:not(:disabled) { color: #17171a; }
+    .pv-ghost:disabled { opacity: .55; cursor: not-allowed; }
+    .pv-foot { margin-top: 15px; padding-top: 12px; border-top: 1px solid rgba(0,0,0,.08); display: flex; gap: 7px; align-items: flex-start; }
+    .pv-badge { font: 9.5px/1.4 ui-monospace, Menlo, monospace; letter-spacing: .06em; color: #8a8a93;
+      border: 1px solid rgba(0,0,0,.16); border-radius: 4px; padding: 2px 5px; flex: none; margin-top: 1px; }
+    .pv-footnote { font: 11.5px/1.5 system-ui, sans-serif; color: #8a8a93; }
+    details.pv-signed { margin: 0 0 9px; }
+    details.pv-signed summary { font: 12px/1.4 system-ui, sans-serif; color: #1f6feb; cursor: pointer; list-style: none; }
+    details.pv-signed summary::-webkit-details-marker { display: none; }
   </style>
 </head>
 <body>
-  <h1>Agent consent</h1>
-  <p class="muted">An agent acting for you is asking to sign in somewhere new. Approving
-  signs a <strong>warrant</strong> with your config key (issued by your identity provider,
-  held only in this browser) — one per place shown, each valid <em>only there</em>, with
-  <em>only the scopes shown</em>, for <strong>90 days</strong>, revocable at any time from
-  your account page. Nothing is shared with any other site.</p>
+<div class="wrap">
+  <div class="brand"><a href="/">browserid<span class="me">.me</span></a></div>
 
-  <div id="auth-gate" class="card"><p>Checking your session…</p></div>
+  <div id="auth-gate" class="pvcard"><p style="margin:0" class="muted">Checking your session…</p></div>
   <div id="list" hidden></div>
 
-  <p class="muted" style="margin-top:2rem">
-    <a href="/account">Manage agents &amp; warrants</a> · <a href="/">← browserid.me</a></p>
+  <p class="footer-links"><a href="/account">Manage agents &amp; grants</a> · <a href="/">browserid.me</a></p>
+</div>
 
 <script src="/common/js/keystore.js"></script>
 <script type="module">
@@ -54,6 +95,9 @@ const escapeHtml = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&
 
 let csrf = null;
 let statusUri = null;
+// The account's registered warrants, used to state (not ask) each agent's
+// established relation: how it was authorized is how later grants are signed.
+let registry = [];
 // Deep-linked code from /consent/<code>, if any.
 const linkedCode = location.pathname.match(/^\/consent\/(.+)$/)?.[1] || null;
 
@@ -64,21 +108,30 @@ async function api(path, opts = {}) {
   return body;
 }
 
-/// Whether a device-cert identities entry (exact email or single-`*` glob)
-/// covers `email` — mirrors browserid-core device::identity_matches.
+/// Whether a device-cert identities entry covers `email`: exact, single-`*`
+/// glob, or the protocol's subaddress rule (a cert naming the base identity
+/// authorizes its `+tag` sub-addresses) — mirrors browserid-core
+/// device::identity_matches.
 function identityMatches(pattern, email) {
   if (pattern === email || pattern === '*') return true;
   const star = pattern.indexOf('*');
-  if (star === -1) return false;
-  const pre = pattern.slice(0, star), post = pattern.slice(star + 1);
-  return email.length >= pre.length + post.length
-    && email.startsWith(pre) && email.endsWith(post);
+  if (star !== -1) {
+    const pre = pattern.slice(0, star), post = pattern.slice(star + 1);
+    return email.length >= pre.length + post.length
+      && email.startsWith(pre) && email.endsWith(post);
+  }
+  const pa = pattern.indexOf('@'), ea = email.indexOf('@');
+  if (pa < 0 || ea < 0) return false;
+  const pLocal = pattern.slice(0, pa), eLocal = email.slice(0, ea);
+  return pattern.slice(pa) === email.slice(ea)
+    && eLocal.length > pLocal.length && eLocal.startsWith(pLocal) && eLocal[pLocal.length] === '+';
 }
 
 /// The CONFIG (authorization) device cert + non-extractable key in this
-/// browser's keystore that can sign warrants for `agentEmail`, preferring one
+/// browser's keystore that can sign warrants naming `grantorEmail` — the
+/// attributed identity, which the cert must be authoritative for. Prefers one
 /// stored for `delegatorEmail`. Deposited by the login dialog at sign-in.
-async function localConfig(delegatorEmail, agentEmail) {
+async function localConfig(delegatorEmail, grantorEmail) {
   const recs = (await window.Keystore.allDevice()).filter(r => r.kind === 'config' && r.cert && r.privateKey);
   const now = Math.floor(Date.now() / 1000);
   const candidates = [];
@@ -87,7 +140,7 @@ async function localConfig(delegatorEmail, agentEmail) {
     try { claims = b64urlToJson(rec.cert.split('.')[1]); } catch { continue; }
     if (!claims.exp || claims.exp <= now + 60) continue;
     if (claims.purpose !== 'authorization') continue;
-    if (!(claims.identities || []).some(p => identityMatches(p, agentEmail))) continue;
+    if (!(claims.identities || []).some(p => identityMatches(p, grantorEmail))) continue;
     candidates.push({ rec, claims });
   }
   candidates.sort((a, b) => (a.rec.email === delegatorEmail ? -1 : 0) - (b.rec.email === delegatorEmail ? -1 : 0));
@@ -95,21 +148,19 @@ async function localConfig(delegatorEmail, agentEmail) {
   return hit ? { cert: hit.rec.cert, privateKey: hit.rec.privateKey } : null;
 }
 
-/// Sign the device-model warrant with the config key: grantor delegates to
-/// grantee (equal here — an as-you agent grant) over (holder-matcher) →
-/// audience[+scopes]. `holder` is the matcher this grant binds
-/// to — the agent's specific holder id (`<id>` isolation) or its `<ns>.*` prefix
-/// (holder-authorization model). `status` ({uri, idx}, registrar-allocated)
-/// makes this single grant revocable.
-async function signWarrant(config, agentEmail, audience, scopes, status, holder) {
+/// Sign one device-model warrant with the config key: `grantor` (the
+/// attributed identity) delegates to `grantee` (the actor) over
+/// (holder-matcher) → audience[+scopes]. `status` ({uri, idx},
+/// registrar-allocated) makes the single grant revocable.
+async function signWarrant(config, grantor, grantee, audience, scopes, status, holder) {
   const now = Math.floor(Date.now() / 1000);
   const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
   const claims = {
     typ: 'browserid-warrant-v1',
     iat: now,
     exp: now + 90 * 24 * 3600,
-    grantor: agentEmail,
-    grantee: agentEmail,
+    grantor: grantor,
+    grantee: grantee,
     holder: holder,
     audience: audience,
   };
@@ -120,117 +171,275 @@ async function signWarrant(config, agentEmail, audience, scopes, status, holder)
   return `${header}.${payload}.${sig}`;
 }
 
+// ---- classification ------------------------------------------------------
+// The identity question was settled when the agent was authorized (surface
+// A); here it is only restated. Server facts pick the card:
+//   external              → B3: a foreign service — you must be the authority
+//   agent == delegator    → B2: an agent that IS you (provisioned as-you)
+//   otherwise             → B1: a +tag agent, relation read from the registry
+
+/// The agent's established relation, read from its registered warrants:
+/// 'onbehalf' when any existing warrant names a distinct grantor, else
+/// 'standalone' when it only ever acted as itself, else the on-behalf
+/// default (the A1 default — how new agents are authorized).
+function establishedRelation(agentEmail) {
+  let sawSelf = false;
+  for (const w of registry) {
+    if ((w.agent_email || '').toLowerCase() !== agentEmail.toLowerCase()) continue;
+    let claims;
+    try { claims = b64urlToJson(w.warrant.split('.')[1]); } catch { continue; }
+    if (claims.grantor && claims.grantee && claims.grantor !== claims.grantee) return 'onbehalf';
+    if (claims.grantor && claims.grantor === claims.grantee) sawSelf = true;
+  }
+  return sawSelf ? 'standalone' : 'onbehalf';
+}
+
+/// When this agent was first authorized, from the registry (if we have it).
+function authorizedSince(agentEmail) {
+  let first = null;
+  for (const w of registry) {
+    if ((w.agent_email || '').toLowerCase() !== agentEmail.toLowerCase()) continue;
+    const t = Date.parse(w.signed_at);
+    if (t && (!first || t < first)) first = t;
+  }
+  return first ? new Date(first).toLocaleDateString(undefined, { month: 'long', day: 'numeric' }) : null;
+}
+
+// ---- card fragments ------------------------------------------------------
+
+const PV_FORBY_HINT = '“For” — whose account the actions count against. “By” — who does them. ' +
+  'The approval itself is signed by the account shown top-right.';
+
+function pvHead(corner) {
+  return `<div class="pv-head"><div class="pv-mark"></div><span class="pv-brand">browserid</span>` +
+    (corner ? `<span class="pv-corner">${escapeHtml(corner)}</span>` : '') + `</div>`;
+}
+
+// The audience is a requester-supplied string. A non-web identifier must not
+// pass as a URL at a glance; plain http gets a lighter note.
+function audienceWarn(aud) {
+  try {
+    const u = new URL(aud);
+    if (u.protocol === 'https:') return null;
+    if (u.protocol === 'http:') return 'not an https site';
+  } catch (e) { /* not URL-shaped */ }
+  return 'not a web address — recognize it, or deny';
+}
+
+function grantBlocks(grants) {
+  return (grants || []).map(g => {
+    const warn = audienceWarn(g.audience);
+    const chips = (g.scopes || []).map(s => `<span class="pv-chip">${escapeHtml(s)}</span>`).join('')
+      || '<span class="pv-chip">site-level access</span>';
+    return `<div class="pv-panel"><div class="pv-aud">${escapeHtml(g.audience)}</div>
+      <div class="pv-chips">${chips}${warn ? `<span class="pv-chip warn">${escapeHtml(warn)}</span>` : ''}</div></div>`;
+  }).join('');
+}
+
+function unverifiedFoot(text) {
+  return `<div class="pv-foot"><span class="pv-badge">UNVERIFIED</span>
+    <div class="pv-footnote">${text}</div></div>`;
+}
+
+function expiryLine(r) {
+  return `<p class="pv-footnote" style="text-align:center;margin:6px 0 0">warrant lasts 90 days ·
+    request expires ${escapeHtml(new Date(r.expires_at).toLocaleTimeString())}</p>`;
+}
+
+// "What gets signed →" — the exact roles, stated before the button.
+function whatGetsSigned(r, grantor) {
+  return `<details class="pv-signed"><summary>What gets signed →</summary>
+    <div class="pv-table" style="margin-top:8px">
+      <div class="pv-row"><span class="pv-rowlabel">For</span><div style="min-width:0;flex:1">
+        <div class="pv-rowmain">${escapeHtml(grantor)}</div></div></div>
+      <div class="pv-row"><span class="pv-rowlabel">By</span><div style="min-width:0;flex:1">
+        <div class="pv-rowmain">${escapeHtml(r.agent_email)}</div></div></div>
+    </div><p class="pv-hint" style="margin-top:6px">${PV_FORBY_HINT}</p></details>`;
+}
+
+function approveLabel(r, text) {
+  const n = (r.grants || []).length;
+  return n > 2 ? `${text} all ${n}` : n === 2 ? `${text} both` : text;
+}
+
+// B1 — the common case: a +tag agent, relation as established at first
+// authorization. Multiple grants in one request are normal; equal weight.
+function cardB1(r) {
+  const relation = establishedRelation(r.agent_email);
+  const grantor = relation === 'standalone' ? r.agent_email : r.delegator_email;
+  const n = (r.grants || []).length;
+  const since = authorizedSince(r.agent_email);
+  const agentLocal = r.agent_email.split('@')[0];
+  const callout = relation === 'standalone'
+    ? `At ${n === 1 ? 'this site' : n === 2 ? 'both sites' : 'these sites'}, actions are <b>by</b> this agent,
+       <b>as itself</b> — not attributed to you, same as your existing grants.`
+    : `At ${n === 1 ? 'this site' : n === 2 ? 'both sites' : 'these sites'}, actions are <b>by</b> this agent,
+       <b>for</b> you — same as your existing grants.`;
+  return {
+    grantor,
+    html: pvHead(r.delegator_email) +
+      `<div class="pv-title" style="margin-bottom:8px">Your agent wants access to
+        ${n === 1 ? 'a new site' : n === 2 ? 'two more sites' : n + ' more sites'}.</div>
+      <p class="pv-note" style="font-size:12.5px;margin-bottom:16px"><span class="mono" style="color:#17171a">${escapeHtml(agentLocal)}</span>${since ? ` — authorized ${escapeHtml(since)}` : ''}</p>` +
+      grantBlocks(r.grants) +
+      `<p class="pv-hint" style="margin-top:0">The permissions the agent is requesting at each site.
+        ${n > 1 ? `Approving covers ${n === 2 ? 'both' : `all ${n}`}, or none.` : ''}</p>
+      <div class="pv-callout">${callout}</div>` +
+      whatGetsSigned(r, grantor) +
+      `<div class="pv-actions">
+        <button class="pv-btn approve" data-code="${escapeHtml(r.code)}" disabled>${approveLabel(r, 'Approve')}</button>
+        <button class="pv-ghost deny" data-code="${escapeHtml(r.code)}">Deny</button></div>` +
+      expiryLine(r) +
+      `<p class="status" id="status-${escapeHtml(r.code)}"></p>`,
+  };
+}
+
+// B2 — an agent that IS you (provisioned as-you): grantor and grantee are
+// both you no matter what. Nothing to choose; the card reports it and offers
+// the only real lever.
+function cardB2(r) {
+  return {
+    grantor: r.agent_email,
+    danger: true,
+    html: pvHead(r.delegator_email) +
+      `<div class="pv-title">An agent acting as you wants more access.</div>
+      <p class="pv-note">It already holds <span class="mono">${escapeHtml(r.agent_email)}</span> —
+        it <b>is</b> you, by your choice. It's asking for
+        ${(r.grants || []).length === 1 ? 'a permission' : 'permissions'} it doesn't have yet.
+        Anything it does with ${(r.grants || []).length === 1 ? 'it' : 'them'} is recorded as you.</p>` +
+      grantBlocks(r.grants) +
+      `<div class="pv-callout danger" style="margin-top:6px;font-size:12.5px">If that isn't what you want,
+        it can't be fixed here — the identity was fixed when the agent was authorized.</div>
+      <div class="pv-actions">
+        <button class="pv-btn approve" data-code="${escapeHtml(r.code)}" disabled>Approve — as me</button>
+        <button class="pv-btn2 reauth" data-code="${escapeHtml(r.code)}">Re-authorize with its own address</button>
+        <button class="pv-ghost deny" data-code="${escapeHtml(r.code)}">Deny</button></div>` +
+      expiryLine(r) +
+      `<p class="status" id="status-${escapeHtml(r.code)}"></p>`,
+  };
+}
+
+// B3 — a service you don't run: the actor is foreign, so you must be the
+// authority or the warrant means nothing. Grantor = you, grantee = it.
+function cardB3(r) {
+  const domain = r.agent_email.split('@')[1] || '';
+  const label = (r.label || '').trim();
+  const showLabel = label && label.toLowerCase() !== r.agent_email.toLowerCase();
+  return {
+    grantor: r.delegator_email,
+    html: pvHead(r.delegator_email) +
+      `<div class="pv-title">A service you don't run wants to act in your name.</div>
+      <p class="pv-note"><span class="mono">${escapeHtml(r.agent_email)}</span> holds its own credentials
+        from its own provider. You aren't giving it an address — you're lending it your name at
+        ${(r.grants || []).length === 1 ? 'one site' : 'the sites below'}.</p>
+      <div class="pv-table">
+        <div class="pv-row"><span class="pv-rowlabel">For</span><div style="min-width:0;flex:1">
+          <div class="pv-rowmain">${escapeHtml(r.delegator_email)}</div>
+          <div class="pv-rowsub">you — nothing else is possible here</div></div></div>
+        <div class="pv-row"><span class="pv-rowlabel">By</span><div style="min-width:0;flex:1">
+          <div class="pv-rowmain">${escapeHtml(r.agent_email)}</div>
+          <div class="pv-rowsub">not yours · certified by ${escapeHtml(domain)}</div></div></div>
+      </div>
+      <p class="pv-hint" style="margin-top:6px">${PV_FORBY_HINT}</p>` +
+      grantBlocks(r.grants) +
+      `<div class="pv-callout" style="margin-top:6px">Only at
+        ${(r.grants || []).length === 1 ? 'this location' : 'these locations'}, only the listed
+        permissions, for 90 days.</div>
+      <div class="pv-actions">
+        <button class="pv-btn approve" data-code="${escapeHtml(r.code)}" disabled>Approve</button>
+        <button class="pv-ghost deny" data-code="${escapeHtml(r.code)}">Deny</button></div>` +
+      expiryLine(r) +
+      `<p class="status" id="status-${escapeHtml(r.code)}"></p>` +
+      (showLabel ? unverifiedFoot(`Calls itself “${escapeHtml(label)}”. Not checked by browserid.`) : ''),
+  };
+}
+
+// B4 — nothing waiting: the state people hit most often, from a stale link.
+function cardB4() {
+  return `<div class="pvcard">` + pvHead('') +
+    `<div class="pv-title">Nothing is waiting for you.</div>
+    <p class="pv-note" style="margin-bottom:18px">Requests only stay open about fifteen minutes.
+      If your agent is still waiting, ask it to try again and keep this page open.</p>
+    <div class="pv-actions" style="margin-top:0">
+      <button class="pv-btn2" id="see-agents">See my agents</button></div></div>`;
+}
+
 function render(requests) {
   const list = $('list');
   list.hidden = false;
   if (!requests.length) {
-    list.innerHTML = `<div class="card"><p class="muted">No pending requests. When an agent
-      asks to sign in somewhere new, it appears here.</p></div>`;
+    list.innerHTML = cardB4();
+    $('see-agents').onclick = () => location.assign('/account');
     return;
   }
-  // Every grant in a batch is rendered with equal prominence — approval
-  // covers exactly the set shown, nothing folded away.
-  //
-  // The audience is an attacker-supplied string. If it isn't a plain https
-  // origin, say so out loud rather than letting a URL-shaped string pass as
-  // one at a glance.
-  const audienceNote = (aud) => {
-    try {
-      const u = new URL(aud);
-      // Any https URL is a normal web audience — a path (e.g. /guestbook) just
-      // scopes the grant more tightly than a bare origin, which is fine.
-      if (u.protocol === 'https:') return '';
-      if (u.protocol === 'http:') return '<span class="warn"> ⚠ not an https site</span>';
-    } catch {}
-    return '<span class="warn"> ⚠ not a standard web origin — approve only if you recognize this exact identifier</span>';
-  };
-  const grantBlock = (g) => `
-      <p class="origin" style="margin-bottom:.15rem">${escapeHtml(g.audience)}${audienceNote(g.audience)}</p>
-      <p style="margin-top:0">${(g.scopes || []).length
-          ? 'with scopes: ' + g.scopes.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')
-          : '<span class="muted">no specific scopes requested (site-level access)</span>'}</p>`;
-  // An external request (§6.6) is a service you don't run — certified by its
-  // own provider — asking to act for one of your identities. Say so plainly.
-  const whoLine = (r) => r.external
-    ? `<span class="who">${escapeHtml(r.agent_email)}</span>
-        <span class="muted">— an <strong>external service</strong> run by
-        <span class="who">${escapeHtml(r.label)}</span> — asks to act for
-        <span class="who">${escapeHtml(r.delegator_email)}</span></span><br>`
-    : `<span class="who">${escapeHtml(r.agent_email)}</span>
-        <span class="muted">(${escapeHtml(r.label)}, acting for
-        <span class="who">${escapeHtml(r.delegator_email)}</span>)</span><br>`;
-  list.innerHTML = requests.map(r => `
-    <div class="card ${r.code === linkedCode ? 'hot' : ''}" id="req-${escapeHtml(r.code)}">
-      <p style="margin-top:0">${whoLine(r)}
-        wants to act for you at${(r.grants || []).length > 1 ? ' each of' : ''}</p>
-      ${(r.grants || []).map(grantBlock).join('')}
-      <p class="muted" style="font-size:.9em">
-        <label><input type="checkbox" class="widen" data-code="${escapeHtml(r.code)}">
-          Let <em>any</em> of my holders in the same group use this (instead of only this one agent)</label>
-        <br><span style="font-size:.85em">Default: isolated to this agent alone — recommended.</span>
-      </p>
-      <p>
-        <button class="approve" data-code="${escapeHtml(r.code)}" disabled>Approve${(r.grants || []).length > 1 ? ' all ' + r.grants.length : ''}</button>
-        <button class="deny" data-code="${escapeHtml(r.code)}">Deny</button>
-        <span class="muted" style="font-size:.85em">warrant lasts 90 days · request expires ${new Date(r.expires_at).toLocaleTimeString()}</span>
-      </p>
-      <p class="row-status" id="status-${escapeHtml(r.code)}"></p>
-    </div>`).join('');
+  const byCode = {};
+  list.innerHTML = requests.map(r => {
+    const card = r.external ? cardB3(r)
+      : r.agent_email.toLowerCase() === r.delegator_email.toLowerCase() ? cardB2(r)
+      : cardB1(r);
+    byCode[r.code] = { r, grantor: card.grantor };
+    const classes = ['pvcard', card.danger ? 'danger' : '', r.code === linkedCode ? 'hot' : ''].filter(Boolean);
+    return `<div class="${classes.join(' ')}" id="req-${escapeHtml(r.code)}">${card.html}</div>`;
+  }).join('');
 
-  const byCode = Object.fromEntries(requests.map(r => [r.code, r]));
   for (const b of list.querySelectorAll('button.approve')) {
-    b.onclick = () => resolve(byCode[b.dataset.code], true);
+    const e = byCode[b.dataset.code];
+    b.onclick = () => resolve(e.r, true, e.grantor);
     // Brief arming delay: no reflex-click or scripted-focus approval the
     // instant the page paints (complements the frame-ancestors denial).
     setTimeout(() => { b.disabled = false; }, 800);
   }
   for (const b of list.querySelectorAll('button.deny')) {
-    b.onclick = () => resolve(byCode[b.dataset.code], false);
+    b.onclick = () => resolve(byCode[b.dataset.code].r, false, null);
+  }
+  // "Re-authorize with its own address" can't be granted here — the identity
+  // was fixed at authorization. It denies this request and says what to do.
+  for (const b of list.querySelectorAll('button.reauth')) {
+    b.onclick = () => resolve(byCode[b.dataset.code].r, false, null,
+      'Denied. Ask the agent to request authorization again — the new request lets you give it its own address.');
   }
   if (linkedCode && byCode[linkedCode]) {
     document.getElementById(`req-${linkedCode}`)?.scrollIntoView({ behavior: 'smooth' });
   }
 }
 
-async function resolve(r, approve) {
+async function resolve(r, approve, grantor, deniedNote) {
   const status = $(`status-${r.code}`);
   const card = document.getElementById(`req-${r.code}`);
   for (const b of card.querySelectorAll('button')) b.disabled = true;
   try {
     let warrants = null, configCert = null;
     if (approve) {
-      status.className = 'row-status muted';
-      status.textContent = 'Signing warrants…';
-      const config = await localConfig(r.delegator_email, r.agent_email);
+      status.className = 'status muted';
+      status.textContent = 'Signing…';
+      const config = await localConfig(r.delegator_email, grantor);
       if (!config) throw new Error(
-        `no config key for ${r.delegator_email} in this browser — ` +
+        `no signing key for ${grantor} in this browser — ` +
         `sign in to an app with that identity here first, then retry`);
       configCert = config.cert;
-      // Holder matcher for this grant: default to the agent's own holder id
-      // (`<id>` isolation); if the user ticked "widen", grant the whole
-      // namespace (`<prefix>.*`) so any of their holders in that group qualify.
-      // A bare `*` is never emitted (the registrar rejects it anyway).
-      const widen = card.querySelector('input.widen')?.checked;
-      const holderMatcher = (widen && r.holder && r.holder.includes('.'))
-        ? r.holder.slice(0, r.holder.indexOf('.')) + '.*'
-        : r.holder;
-      // The broker records each approved warrant in the account's registry
-      // (jipx) — reviewable later on /account, from any browser.
+      // Holder matcher: isolated to the agent's own holder id, always —
+      // group-widening is deliberately not offered here.
       warrants = [];
       for (const g of (r.grants || [])) {
-        const status = (g.status_idx != null && statusUri)
+        const st = (g.status_idx != null && statusUri)
           ? { uri: statusUri, idx: g.status_idx } : null;
-        warrants.push(await signWarrant(config, r.agent_email, g.audience, g.scopes, status, holderMatcher));
+        warrants.push(await signWarrant(config, grantor, r.agent_email, g.audience, g.scopes, st, r.holder));
       }
     }
     await api('/wsapi/warrant_respond', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ csrf, code: r.code, approve, warrants, config_cert: configCert }),
+      body: JSON.stringify({
+        csrf, code: r.code, approve, warrants, config_cert: configCert,
+        // Only sent when the attributed identity differs from the agent —
+        // the on-behalf/foreign shapes (the server defaults to the agent).
+        ...(approve && grantor && grantor.toLowerCase() !== r.agent_email.toLowerCase()
+          ? { grantor } : {}),
+      }),
     });
-    status.className = approve ? 'row-status ok' : 'row-status muted';
+    status.className = approve ? 'status ok' : 'status muted';
     status.textContent = approve
-      ? `Approved${(r.grants || []).length > 1 ? ' (' + r.grants.length + ' warrants)' : ''} — the agent will pick this up within a few seconds.`
-      : 'Denied.';
+      ? `Approved${(r.grants || []).length > 1 ? ' (' + r.grants.length + ' grants)' : ''} — the agent picks this up within a few seconds.`
+      : (deniedNote || 'Denied — the agent is told immediately, so it isn’t waiting.');
     // Done here — hand the user back. Popup blockers force some mobile
     // browsers to reach this page by same-tab navigation, so when there is
     // history to return through, offer it; a fresh tab can just be closed.
@@ -239,9 +448,11 @@ async function resolve(r, approve) {
     // no-op if the browser has nothing to go back to). Denials never
     // auto-navigate: the user may want to look at what they just refused.
     const back = document.createElement('p');
-    back.className = 'row-status muted';
+    back.className = 'status muted';
     if (history.length > 1) {
       const b = document.createElement('button');
+      b.className = 'pv-ghost';
+      b.style.width = 'auto';
       b.textContent = '← Return to the app';
       b.onclick = () => history.back();
       back.appendChild(b);
@@ -254,7 +465,7 @@ async function resolve(r, approve) {
     }
     card.appendChild(back);
   } catch (e) {
-    status.className = 'row-status err';
+    status.className = 'status err';
     status.textContent = 'Failed: ' + e.message;
     for (const b of card.querySelectorAll('button')) b.disabled = false;
   }
@@ -264,25 +475,29 @@ async function boot() {
   let ctx;
   try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
   if (!ctx.authenticated) {
-    $('auth-gate').innerHTML = `<p>You are not signed in. Consent requests are approved from
-      your browser­id session — sign in through any app's login dialog first, then reload.</p>`;
+    $('auth-gate').innerHTML = `<p class="pv-note" style="margin:0">You are not signed in.
+      Consent requests are approved from your browserid session — sign in through any app's
+      login dialog or <a href="/account">your account page</a> first, then reload.</p>`;
     return;
   }
   if (!window.Keystore || !window.crypto?.subtle) {
-    $('auth-gate').innerHTML = `<p class="err">This browser lacks the crypto needed to sign warrants.</p>`;
+    $('auth-gate').innerHTML = `<p class="err" style="margin:0">This browser lacks the crypto needed to sign grants.</p>`;
     return;
   }
   csrf = ctx.csrf_token;
   $('auth-gate').hidden = true;
   // External requests are redirect-tied: they surface ONLY via their
   // /consent/<code> deep link, so pass the code through when we have one.
-  const resp = await api('/wsapi/warrant_requests'
-    + (linkedCode ? '?code=' + encodeURIComponent(linkedCode) : ''));
+  const [resp, reg] = await Promise.all([
+    api('/wsapi/warrant_requests' + (linkedCode ? '?code=' + encodeURIComponent(linkedCode) : '')),
+    api('/wsapi/warrants').catch(() => ({ warrants: [] })),
+  ]);
   statusUri = resp.status_uri || null;
+  registry = reg.warrants || [];
   render(resp.requests);
 }
 
-boot().catch(e => { $('auth-gate').innerHTML = `<p class="err">Error: ${escapeHtml(e.message)}</p>`; });
+boot().catch(e => { $('auth-gate').hidden = false; $('auth-gate').innerHTML = `<p class="err" style="margin:0">Error: ${escapeHtml(e.message)}</p>`; });
 </script>
 </body>
 </html>

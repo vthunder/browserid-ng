@@ -408,6 +408,11 @@ pub struct InfoResponse {
     /// GRANTEE pin (`<id>`, `*`, or empty for as-you-required) — the actor. The
     /// card derives owned-vs-foreign from the approver's own identities.
     pub grantee: String,
+    /// A concrete foreign grantee's holder, when the request supplied one. Its
+    /// absence on a foreign-grantee request lets the page refuse up front
+    /// ("a foreign grantee must supply its holder") instead of failing only
+    /// after the human approves.
+    pub grantee_holder: Option<String>,
     /// Warrant grants asked for in the same approval (merged flow).
     pub grants: Vec<WarrantGrantItem>,
 }
@@ -434,6 +439,7 @@ pub async fn info(
         namespace: rec.namespace.clone(),
         grantor: rec.grantor.clone(),
         grantee: rec.grantee.clone(),
+        grantee_holder: rec.grantee_holder.clone(),
         grants: rec.grants.clone(),
     }))
 }

@@ -210,7 +210,10 @@ async fn merged_request_prepare_approve_single_pickup() {
         .unwrap()
         .verify(AUDIENCE, |_| Ok(idp_kp.public_key()))
         .expect("merged-provisioned service presentation verifies");
-    assert_eq!(verified.email, AGENT);
+    // Two roles (bean 8v6c): the ATTRIBUTED identity is the approving human,
+    // the ACTOR is the agent.
+    assert_eq!(verified.email, DELEGATOR);
+    assert_eq!(verified.grantee, AGENT);
     assert_eq!(verified.holder.as_str(), holder);
     assert_eq!(verified.scopes, vec!["action:post".to_string()]);
 }
@@ -426,7 +429,9 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
             }
         })
         .expect("primary-rooted service presentation verifies");
-    assert_eq!(verified.email, P_AGENT);
+    // Two roles (bean 8v6c): attributed to the human, acted by the agent.
+    assert_eq!(verified.email, P_DELEGATOR);
+    assert_eq!(verified.grantee, P_AGENT);
     assert_eq!(verified.holder.as_str(), holder);
 }
 

@@ -1,11 +1,11 @@
 ---
 # browserid-ng-8v6c
 title: 'Approval UI: intent-first grantor/grantee selection (4 delegation shapes)'
-status: todo
+status: completed
 type: feature
 priority: high
 created_at: 2026-07-24T22:48:01Z
-updated_at: 2026-07-25T00:13:28Z
+updated_at: 2026-07-25T22:17:56Z
 ---
 
 Design with Dan 2026-07-25, after the bsky on-behalf test hit a wall. Parent
@@ -162,3 +162,7 @@ brief supersedes the UI sketches in this bean.
 Also still open here: pin-honouring (wwec), sub-identity as delegator (y9xm),
 and validating a foreign grantee's holder at request time — that one bit us
 live, failing AFTER approval with "a foreign grantee must supply its holder".
+
+## Closed 2026-07-26 — UI rework shipped (browserid-ng-k0s9)
+
+The 'nearly unusable' card is replaced: the design round produced the 'Agent flows' board (A0–A8 / B1–B4) and k0s9 implemented it — on-behalf is the silent default, branches are server facts, pins lock or refuse (never substitute), and the as-you shape is a guarded danger path. Pin-honouring from wwec is in (A3/A4/A6). A foreign grantee without its holder now surfaces on the card BEFORE approval (info exposes grantee_holder); true request-time validation for the requester is follow-up bean form: see k0s9 summary. Sub-identity as delegator remains open as y9xm.

@@ -12,7 +12,6 @@ import { test, expect } from '@playwright/test';
 import { Agent } from '../../sdk/agent/index.mjs';
 
 const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
-const brokerDomain = baseUrl.replace(/^https?:\/\//, '');
 
 // A verified broker account with a password, via the test-only endpoints.
 async function createAccount(request: any) {
@@ -54,18 +53,22 @@ test.describe('Paired agent provisioning (74u1)', () => {
     expect(pairing.verificationUriComplete).toContain('/account?provision=');
     expect(pairing.fingerprint).toMatch(/^[0-9A-F]{2}-[0-9A-F]{2}-[0-9A-F]{2}$/);
 
-    // HUMAN SIDE: open the approval page and approve.
+    // HUMAN SIDE: open the approval page and approve. The common case (A1)
+    // asks nothing: the requested handle is prefilled in the "By" row and
+    // one click approves.
     await page.goto(pairing.verificationUriComplete);
     await expect(page.locator('#provision')).toBeVisible();
     await page.selectOption('#pv-identity', email);
-    await page.fill('#pv-handles', handle);
     await page.click('#pv-approve');
-    await expect(page.locator('#pv-status')).toContainText('Approved', { timeout: 20000 });
+    await expect(page.locator('#provision')).toContainText('Your agent has an address now', { timeout: 20000 });
 
-    // AGENT SIDE: the bootstrap picks up the delegation and mints.
+    // AGENT SIDE: the bootstrap picks up the delegation and mints. Agent
+    // identities sub-address their owner: `<owner-local>+<tag>@<owner-domain>`.
+    const local = email.split('@')[0];
+    const domain = email.split('@')[1];
     const agent = await pairing.ready;
-    expect(agent.email).toBe(`${handle}@${brokerDomain}`);
-    expect(agent.identity().names).toContain(handle);
+    expect(agent.email).toBe(`${local}+${handle}@${domain}`);
+    expect(agent.identity().names).toContain(`${local}+${handle}`);
   });
 
   test('deny → the agent bootstrap rejects', async ({ page, request }) => {
@@ -78,7 +81,7 @@ test.describe('Paired agent provisioning (74u1)', () => {
     await page.goto(pairing.verificationUriComplete);
     await expect(page.locator('#provision')).toBeVisible();
     await page.click('#pv-deny');
-    await expect(page.locator('#pv-status')).toContainText('Denied');
+    await expect(page.locator('#provision')).toContainText('Nothing was authorized');
 
     await expect(pairing.ready).rejects.toThrow();
   });

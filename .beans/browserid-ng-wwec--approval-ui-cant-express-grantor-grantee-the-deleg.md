@@ -1,11 +1,11 @@
 ---
 # browserid-ng-wwec
 title: Approval UI can't express grantor != grantee (the delegation axis is invisible)
-status: todo
+status: completed
 type: feature
 priority: high
 created_at: 2026-07-24T22:02:14Z
-updated_at: 2026-07-24T22:48:11Z
+updated_at: 2026-07-25T22:17:56Z
 ---
 
 Raised by Dan 2026-07-25, testing the bsky on-behalf flow.
@@ -87,3 +87,7 @@ New evidence for that: pinning grantee=danmills+bsky@sandmill.org routed into
 the FOREIGN path (agent_name_allowed() makes "owned" narrower than "+tag of a
 verified email") and failed at complete-time with "a foreign grantee must
 supply its holder" — after the human had already approved.
+
+## Closed 2026-07-26 — delivered by browserid-ng-k0s9
+
+The redesigned cards state both roles as a For/By table ('For — whose account the actions count against. By — who does them'), the same-value choice (as-me) is an explicit guarded act (A5: checkbox + red confirm), and pins are never silently collapsed: an owned pin locks the row and says who fixed it (A3), an unsatisfiable grantor pin refuses with the reason and tells the requester immediately (A4), contradictory pins land on the generic invalid screen with a verbatim copyable reason (A6). Consent-side (surface B) now signs the established relation: RespondBody.grantor lets a later grant stay on-behalf instead of collapsing to grantor==grantee. Remaining adjacent gap is y9xm (sub-identity as delegator).

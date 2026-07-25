@@ -188,6 +188,12 @@ pub struct RespondBody {
     /// (approve only) — stored + delivered with them; the agent presents it
     /// as the 4th object of the access presentation
     pub config_cert: Option<String>,
+    /// The warrant GRANTOR the page signed with — who the actions are
+    /// attributed to. Absent = the agent itself (grantor == grantee, the
+    /// original shape). A named grantor must be an identity this account
+    /// owns: the consent page uses it to keep an on-behalf agent on-behalf
+    /// (grantor = the human) instead of silently collapsing both roles.
+    pub grantor: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -233,9 +239,26 @@ pub async fn respond(
     let config_jws = req.config_cert.as_deref().ok_or_else(|| {
         RegistrarError::ValidationError("approve requires the signing config cert".into())
     })?;
-    // This consent flow provisions an as-you agent: grantor == grantee.
+    // The grantee (actor) is always the requesting agent. The grantor
+    // (attributed identity) defaults to the agent too — the original as-you
+    // shape — but the page may name one of the account's own identities so a
+    // later grant matches how the agent was authorized (on-behalf, bean 8v6c).
+    let grantor = match req.grantor.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => rec.agent_email.clone(),
+        Some(g) => {
+            let g = g.to_lowercase();
+            if g != rec.agent_email
+                && !state.host.owns_verified_email(user.user_id, &delegator_of(&g))?
+            {
+                return Err(RegistrarError::ValidationError(
+                    "the warrant grantor must be the agent or an identity on this account".into(),
+                ));
+            }
+            g
+        }
+    };
     let warrants = validate_grant_warrants(
-        warrant_jwss, config_jws, &rec.agent_email, &rec.agent_email, &rec.holder, &rec.grants,
+        warrant_jwss, config_jws, &grantor, &rec.agent_email, &rec.holder, &rec.grants,
     )?;
     let records: Vec<WarrantRecord> = warrants
         .iter()
@@ -896,5 +919,35 @@ mod tests {
         let base = warrant_status_subject(7, "a@x", "https://rp", &[]);
         let scoped = warrant_status_subject(7, "a@x", "https://rp", &["post".into()]);
         assert_ne!(base, scoped, "same audience, different scopes = different grant");
+    }
+
+    /// The optional grantor on a consent response (bean k0s9): absent keeps
+    /// the original grantor == grantee shape; a named grantor is gated on
+    /// account ownership of its delegator. Pin the decision table here — the
+    /// respond() handler applies it against the store.
+    #[test]
+    fn respond_grantor_defaults_and_ownership_gate() {
+        let agent = "danmills+bsky@sandmill.org";
+        // The expression under test, as it appears in respond(): which
+        // identity must pass the owns_verified_email gate for a given input.
+        let gate_for = |requested: Option<&str>| -> Option<String> {
+            match requested.map(str::trim).filter(|s| !s.is_empty()) {
+                None => None, // default: the agent itself, no ownership gate
+                Some(g) => {
+                    let g = g.to_lowercase();
+                    if g == agent { None } else { Some(delegator_of(&g)) }
+                }
+            }
+        };
+        // Absent / empty / whitespace → today's shape, nothing to check.
+        assert_eq!(gate_for(None), None);
+        assert_eq!(gate_for(Some("")), None);
+        assert_eq!(gate_for(Some("  ")), None);
+        // Naming the agent itself is the same as the default.
+        assert_eq!(gate_for(Some("danmills+bsky@sandmill.org")), None);
+        // An on-behalf grantor is gated on owning it.
+        assert_eq!(gate_for(Some("danmills@sandmill.org")), Some("danmills@sandmill.org".into()));
+        // A +tag grantor is gated on owning its base identity.
+        assert_eq!(gate_for(Some("danmills+other@sandmill.org")), Some("danmills@sandmill.org".into()));
     }
 }

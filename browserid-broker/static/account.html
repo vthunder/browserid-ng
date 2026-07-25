@@ -86,6 +86,72 @@
     .handle-preview { font-family: ui-monospace, monospace; font-size: 12px; color: #888; margin: -6px 0 8px; min-height: 14px; }
     .linkish { background: none; border: none; color: #4a90d9; cursor: pointer; padding: 0; font-size: 13px; }
     .linkish:hover { text-decoration: underline; background: none; }
+
+    /* Agent authorization card (surface A) — design-board language: near-black
+       ink, quiet grays, one accent blue for info, one red for danger. */
+    .pvcard { padding: 24px 22px 20px; color: #17171a; border: 1px solid rgba(0,0,0,.09); }
+    .pvcard.danger { border-color: rgba(157,47,38,.3); }
+    .pv-head { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+    .pv-mark { width: 15px; height: 15px; border-radius: 4px; background: #17171a; }
+    .pv-brand { font-weight: 600; font-size: 12px; color: #17171a; }
+    .pv-corner { margin-left: auto; font: 11px/1 ui-monospace, Menlo, monospace; color: #8a8a93; word-break: break-all; text-align: right; }
+    .pv-title { font: 400 20px/1.4 system-ui, sans-serif; letter-spacing: -.01em; margin: 0 0 16px; color: #17171a; text-wrap: pretty; }
+    .pv-title.danger { color: #9d2f26; }
+    .pv-note { font: 13px/1.65 system-ui, sans-serif; color: #6b6b74; margin: 0 0 16px; }
+    .pv-note b, .pv-note .mono { color: #17171a; }
+    .mono { font-family: ui-monospace, Menlo, monospace; }
+    .pv-panel { border: 1px solid rgba(0,0,0,.11); border-radius: 9px; padding: 11px 13px; margin-bottom: 8px; }
+    .pv-label { font: 10.5px/1.3 system-ui, sans-serif; color: #8a8a93; margin-bottom: 3px; }
+    .pv-fp { font: 600 19px/1 ui-monospace, Menlo, monospace; letter-spacing: .07em; color: #17171a; }
+    .pv-hint { font: 11px/1.5 system-ui, sans-serif; color: #8a8a93; margin: 0 0 14px; }
+    .pv-aud { font: 12.5px/1.5 ui-monospace, Menlo, monospace; color: #17171a; word-break: break-all; margin-bottom: 8px; }
+    .pv-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+    .pv-chip { font: 10px/1.3 ui-monospace, Menlo, monospace; color: #6b6b74; border: 1px solid rgba(0,0,0,.14); border-radius: 20px; padding: 4px 8px; word-break: break-all; }
+    .pv-chip.warn { color: #b7791f; border-color: rgba(183,121,31,.4); }
+    .pv-table { border: 1px solid rgba(0,0,0,.1); border-radius: 9px; overflow: hidden; margin-bottom: 6px; }
+    .pv-row { padding: 11px 13px; background: #faf9f7; display: flex; gap: 10px; }
+    .pv-row + .pv-row { border-top: 1px solid rgba(0,0,0,.07); }
+    .pv-rowlabel { font: 11px/1.4 system-ui, sans-serif; color: #8a8a93; flex: none; width: 40px; }
+    .pv-rowmain { font: 12px/1.4 ui-monospace, Menlo, monospace; color: #17171a; word-break: break-all; }
+    .pv-rowsub { font: 10.5px/1.4 system-ui, sans-serif; color: #8a8a93; margin-top: 2px; }
+    .pv-idsel { font: 12px/1.4 ui-monospace, Menlo, monospace; color: #17171a; border: 1px solid rgba(0,0,0,.13);
+      border-radius: 6px; background: #fff; padding: 3px 4px; margin: 0; width: auto; max-width: 100%; }
+    .pv-callout { padding: 12px 14px; background: #f4f6fb; border-left: 2px solid #1f6feb; border-radius: 0 8px 8px 0;
+      font: 13px/1.6 system-ui, sans-serif; color: #33333a; margin: 0 0 9px; }
+    .pv-callout.danger { background: #fdf6f5; border-left-color: #9d2f26; color: #5c3a36; }
+    .pv-link { font: 12px/1.4 system-ui, sans-serif; color: #1f6feb; background: none; border: none; padding: 0; cursor: pointer; text-align: left; border-radius: 0; }
+    .pv-link:hover { text-decoration: underline; background: none; }
+    .pv-actions { display: flex; flex-direction: column; gap: 9px; margin-top: 14px; }
+    .pv-btn { font: 600 15px/1 system-ui, sans-serif; color: #fff; background: #17171a; border: none; border-radius: 9px;
+      padding: 14px; text-align: center; cursor: pointer; width: 100%; }
+    .pv-btn:hover:not(:disabled) { background: #000; }
+    .pv-btn:disabled { opacity: .55; cursor: not-allowed; }
+    .pv-btn2 { font: 600 14.5px/1 system-ui, sans-serif; color: #17171a; background: #fff; border: 1px solid rgba(0,0,0,.18);
+      border-radius: 9px; padding: 13px; text-align: center; cursor: pointer; width: 100%; }
+    .pv-btn2:hover:not(:disabled) { background: #faf9f7; }
+    .pv-ghost { font: 500 13px/1 system-ui, sans-serif; color: #6b6b74; background: none; border: none; padding: 7px;
+      text-align: center; cursor: pointer; width: 100%; border-radius: 0; }
+    .pv-ghost:hover { color: #17171a; background: none; }
+    .pv-dangerlink { font: 11.5px/1.4 system-ui, sans-serif; color: #9d2f26; background: none; border: none;
+      padding: 0; cursor: pointer; text-align: center; width: 100%; }
+    .pv-dangerlink:hover { text-decoration: underline; background: none; }
+    .pv-dangerbox { margin-top: 14px; border: 1px solid rgba(157,47,38,.32); background: #fdf6f5; border-radius: 9px; padding: 13px; }
+    .pv-dangerbox label { display: flex; gap: 9px; align-items: flex-start; font: 12.5px/1.55 system-ui, sans-serif;
+      color: #5c3a36; margin: 0 0 11px; font-weight: 400; }
+    .pv-dangerbox input[type=checkbox] { width: auto; margin: 2px 0 0; accent-color: #9d2f26; }
+    .pv-dangerbtn { font: 600 13px/1 system-ui, sans-serif; color: #fff; background: #9d2f26; border: none;
+      border-radius: 8px; padding: 12px; text-align: center; cursor: pointer; width: 100%; }
+    .pv-dangerbtn:disabled { opacity: .5; cursor: not-allowed; }
+    .pv-foot { margin-top: 15px; padding-top: 12px; border-top: 1px solid rgba(0,0,0,.08); display: flex; gap: 7px; align-items: flex-start; }
+    .pv-badge { font: 9.5px/1.4 ui-monospace, Menlo, monospace; letter-spacing: .06em; color: #8a8a93;
+      border: 1px solid rgba(0,0,0,.16); border-radius: 4px; padding: 2px 5px; flex: none; margin-top: 1px; }
+    .pv-footnote { font: 11.5px/1.5 system-ui, sans-serif; color: #8a8a93; }
+    .pv-tagedit { display: flex; align-items: center; border: 1px solid rgba(0,0,0,.14); border-radius: 7px; overflow: hidden; background: #fff; }
+    .pv-tagedit .pv-tagfix { font: 12.5px ui-monospace, Menlo, monospace; color: #8a8a93; padding: 9px 2px; white-space: nowrap; }
+    .pv-tagedit .pv-tagfix:first-child { padding-left: 10px; }
+    .pv-tagedit .pv-tagfix:last-child { padding-right: 10px; }
+    .pv-tagedit input { font: 12.5px ui-monospace, Menlo, monospace; color: #17171a; border: none; outline: none;
+      box-shadow: none; padding: 9px 3px; margin: 0; width: 7em; min-width: 3em; background: none; border-radius: 0; }
   </style>
 </head>
 <body>
@@ -94,106 +160,12 @@
 
   <div id="gate" class="card"><p style="margin:0">Checking your session…</p></div>
 
-  <!-- Paired agent provisioning approval (bean 74u1) -->
-  <div id="provision" class="card" hidden>
-    <h2>Authorize an agent</h2>
-    <p class="sub" id="pv-intro"></p>
-    <p class="sub" id="pv-fp" style="font-family:ui-monospace,monospace"></p>
-    <!-- INTENT FIRST. Two identity pickers presented cold make the human solve
-         a two-axis puzzle (who is answerable vs who acts). So ask what the
-         agent is FOR, in plain language with its consequence, then reveal only
-         the controls that intent needs. Each intent maps to an identity_mode:
-           acts for me  -> handle      (grantor = you, grantee = the agent)
-           on its own   -> standalone  (grantor == grantee == the agent)
-           as me        -> self        (the agent IS you)  ⚠ -->
-    <div id="pv-intent" style="margin-top:4px">
-      <label style="display:block;margin:6px 0">
-        <input type="radio" name="pv-intent" value="onbehalf" class="pv-inline" checked>
-        <b>Do things for me</b>
-        <span class="sub" style="display:block;margin-left:22px">
-          Its actions are attributed to <b class="pv-grantor-name"></b> and carried out by the agent.
-          Revoking it does not affect you.</span>
-      </label>
-      <label style="display:block;margin:6px 0">
-        <input type="radio" name="pv-intent" value="standalone" class="pv-inline">
-        <b>Act as its own identity</b>
-        <span class="sub" style="display:block;margin-left:22px">
-          Its actions are attributed to the agent, not to you.</span>
-      </label>
-      <label style="display:block;margin:6px 0">
-        <input type="radio" name="pv-intent" value="self" class="pv-inline">
-        <b>Act as me</b>
-        <span class="sub" style="display:block;margin-left:22px">
-          It becomes <b class="pv-grantor-name"></b>. Nothing will distinguish its
-          actions from yours.</span>
-      </label>
-    </div>
-
-    <!-- WHOSE authority. Hidden for "act as me", where there is nobody else to
-         act for. Kept a picker because a request may pin it. -->
-    <div id="pv-grantor-row" style="margin-top:12px">
-      <label for="pv-identity" id="pv-identity-label">Acting for</label>
-      <select id="pv-identity"></select>
-    </div>
-
-    <!-- WHICH agent. A new sub-handle, or one of this account's existing agent
-         identities — creating identities is most of why sub-identities exist. -->
-    <div id="pv-agent-row" style="margin-top:12px">
-      <label id="pv-agent-label">The agent's identity</label>
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <label class="pv-inline" style="margin:0">
-          <input type="radio" name="pv-agent-src" value="new" class="pv-inline" checked> new:
-        </label>
-        <span id="pv-prefix" class="handle-prefix" style="display:inline-flex;margin-bottom:0;vertical-align:middle"></span><input id="pv-handle" placeholder="agent" maxlength="48" style="width:9em;display:inline-block;margin-bottom:0;vertical-align:middle;border-radius:0 4px 4px 0">
-        <label class="pv-inline" id="pv-existing-wrap" hidden style="margin:0 0 0 8px">
-          <input type="radio" name="pv-agent-src" value="existing" class="pv-inline"> existing:
-        </label>
-        <select id="pv-existing" hidden style="width:auto;margin:0"></select>
-      </div>
-      <!-- A third FORM the agent's identity could take (not a different
-           delegation shape): its own top-level address rather than a
-           sub-address of the owner's. Needs IdP support; none yet. -->
-      <label class="pv-inline" style="margin:6px 0 0;opacity:.55"
-             title="No identity provider supports top-level agent handles yet">
-        <input type="radio" name="pv-agent-src" value="toplevel" class="pv-inline" disabled>
-        a top-level handle (e.g. <code>bot@domain</code>) — not supported by your provider yet
-      </label>
-    </div>
-
-    <!-- The confirmation, as a sentence rather than field names: the thing a
-         reader of the resulting action would see. -->
-    <p id="pv-summary" class="sub" style="margin:12px 0 0;padding:8px 10px;border-left:3px solid #cbd5e1;background:#f8fafc"></p>
-    <p class="sub" id="pv-self-warn" hidden style="color:#b7791f;margin:6px 0 0">
-      ⚠ It will act as you — everything it does will appear as your own actions,
-      and revoking it means revoking yourself.</p>
-    <p class="sub" id="pv-standalone-note" hidden style="margin:6px 0 0">
-      Nothing it does will point back to you in the record. Its handle still
-      contains your address, so anyone who reads handles can guess the link —
-      this is separation of blast radius, not anonymity.</p>
-    <!-- Delegated (foreign-grantee) trust note: a distinct service, minted by
-         its own provider, acting on your behalf with visible provenance. -->
-    <p class="sub" id="pv-delegate-note" hidden style="margin:8px 0"></p>
-
-    <!-- Merged one-approval flow: grants requested alongside the identity.
-         Approving signs one warrant per place with the config key held in
-         this browser — same approval, no second consent page. -->
-    <div id="pv-grants" hidden style="margin-top:12px">
-      <p class="sub" style="margin:0 0 4px">It asks to act for you at:</p>
-      <div id="pv-grant-list"></div>
-      <!-- The group-widening choice is intentionally hidden: isolated-to-this-
-           agent is the right default essentially always; the machinery stays
-           for a future advanced surface. -->
-      <label class="sub" hidden style="display:none">
-        <input type="checkbox" id="pv-widen" class="pv-inline">
-        Let <em>any</em> device in the same group use this (instead of only this agent)
-      </label>
-    </div>
-    <div style="margin-top:14px">
-      <button class="primary" id="pv-approve">Approve</button>
-      <button id="pv-deny" type="button">Deny</button>
-    </div>
-    <p class="status" id="pv-status"></p>
-  </div>
+  <!-- Agent authorization (surface A, flows A0–A8 — bean k0s9). Fully
+       JS-rendered: which card appears is decided by server facts (the shape
+       of the request + what this account owns), never by asking the user to
+       classify. See the design board "Agent flows" / docs/design/
+       2026-07-25-approval-dialog-brief.md. -->
+  <div id="provision" class="card pvcard" hidden></div>
 
   <!-- Sign-in / create — email-first: one field, then discover what to ask. -->
   <div id="signin" class="card" hidden>
@@ -349,13 +321,21 @@ async function refreshKeystore() {
 function certPayload(cert) {
   try { return JSON.parse(atob(cert.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); } catch { return null; }
 }
-// exact email or single-`*` glob — mirrors browserid-core device::identity_matches
+// exact email, single-`*` glob, or the protocol's subaddress rule (a cert
+// naming the base identity authorizes its `+tag` sub-addresses) — mirrors
+// browserid-core device::identity_matches
 function identityMatches(pattern, email) {
   if (pattern === email || pattern === '*') return true;
   const star = (pattern || '').indexOf('*');
-  if (star === -1) return false;
-  const pre = pattern.slice(0, star), post = pattern.slice(star + 1);
-  return email.length >= pre.length + post.length && email.startsWith(pre) && email.endsWith(post);
+  if (star !== -1) {
+    const pre = pattern.slice(0, star), post = pattern.slice(star + 1);
+    return email.length >= pre.length + post.length && email.startsWith(pre) && email.endsWith(post);
+  }
+  const pa = pattern.indexOf('@'), ea = email.indexOf('@');
+  if (pa < 0 || ea < 0) return false;
+  const pLocal = pattern.slice(0, pa), eLocal = email.slice(0, ea);
+  return pattern.slice(pa) === email.slice(ea)
+    && eLocal.length > pLocal.length && eLocal.startsWith(pLocal) && eLocal[pLocal.length] === '+';
 }
 // The config (authorization) record whose cert authorizes `identity` (globs
 // included) — what signs warrants for it. Prefers the delegator's own record.
@@ -547,7 +527,6 @@ function renderUserIdentities() {
   $('user-ids').innerHTML = rows +
     `<li class="add"><button class="row" id="add-email"><span class="email-text">+ Add an email</span></button></li>`;
   $('add-email').onclick = () => { $('add-email-form').hidden = false; $('ae-email').focus(); };
-  refreshProvisionPicker(); // keep the provision approval picker in sync after add
 }
 
 /// A minted agent's parent (from the derived map) or, for a not-yet-minted
@@ -1075,17 +1054,21 @@ async function reloadAccount() {
   account.holders = holders;
   await refreshKeystore();
 }
-// -------- paired agent provisioning approval (bean 74u1) --------
+// -------- agent authorization: surface A, flows A0–A8 (beans 74u1, k0s9) ----
 // Reached as /account?provision=<code> (the agent's one-click URL). The human
-// signs a delegation over the AGENT-supplied provisioning key with their
-// identity key, registers it, and hands it to the pending record; the agent
-// polls and picks it up. The provisioning private key stays with the agent.
-let provisionCtx = null; // { code, pubkey } while an approval is showing
-
-
-// The panel lists ALL of the account's identities (not just already-active
-// ones) and activates the chosen one on approve — so a user who opened the link
-// in a fresh browser, or just added an email below, can proceed.
+// approves; the page signs the warrants client-side with keys held in this
+// browser and the agent polls the result. Which card renders is decided by
+// SERVER FACTS (the shape of the request + what this account owns) — the user
+// is never asked to classify the request:
+//   main        A1/A3 — on-behalf, the common case; pins lock rows in place
+//   standalone  A2    — "not in my name", reached only from A1's escape hatch
+//   asyou       A5    — the request demands the bare identity (empty grantee
+//                       pin, no suggested handle — the legacy as-you shape)
+//   foreign     —     — a grantee this account doesn't own (a service holding
+//                       its own issuer's cert); B3's shape on this surface
+//   pinmismatch A4    — grantor pinned to an identity this account lacks
+//   invalid A6 · approved A7 · denied A8 — terminal screens
+let pv = null;
 const ownerLocalOf = (email) => (email || '').slice(0, (email || '').lastIndexOf('@'));
 function stripOwnerPrefix(handle, email) {
   const p = ownerLocalOf(email) + '+';
@@ -1110,31 +1093,6 @@ function uniqueHandleTag(email, base) {
   }
   return base + Math.floor(Math.random() * 10000);
 }
-/** The chosen intent: onbehalf | standalone | self. */
-function pvIntent() {
-  const el = document.querySelector('input[name="pv-intent"]:checked');
-  return (el && el.value) || 'onbehalf';
-}
-
-/** The identity_mode the registrar expects for the chosen intent. */
-function pvIdentityMode() {
-  const intent = pvIntent();
-  return intent === 'self' ? 'self' : (intent === 'standalone' ? 'standalone' : 'handle');
-}
-
-/** The agent handle the human settled on — a new sub-handle or an existing
- *  agent identity's tag. Empty in "act as me" (there is no separate agent). */
-function pvHandle() {
-  if (pvIntent() === 'self') return '';
-  const src = document.querySelector('input[name="pv-agent-src"]:checked');
-  if (src && src.value === 'existing') {
-    const chosen = $('pv-existing').value || '';
-    const local = chosen.split('@')[0] || '';
-    return local.includes('+') ? local.slice(local.indexOf('+') + 1) : local;
-  }
-  return $('pv-handle').value.trim().toLowerCase();
-}
-
 /** Existing agent identities that belong to the selected grantor, offered so
  *  the human can REUSE an agent instead of minting one per app. */
 function pvExistingAgents(grantor) {
@@ -1143,64 +1101,369 @@ function pvExistingAgents(grantor) {
   return (account.agents || []).filter((a) => a.startsWith(base));
 }
 
-// The card's whole state: intent decides which controls exist, then a sentence
-// spells out the consequence. Called on render AND on every change, so first
-// paint is never stale.
-function updateProvisionMode() {
-  const email = $('pv-identity').value;
-  const intent = pvIntent();
-  const isSelf = intent === 'self';
+/** The account's root (non-agent) identities — the pool "For" picks from. */
+const pvRootIds = () => account.emails.filter(e => !account.agents.includes(e));
 
-  for (const el of document.querySelectorAll('.pv-grantor-name')) el.textContent = email || 'you';
-  $('pv-prefix').textContent = email ? ownerLocalOf(email) + '+' : '';
+/** The full agent identity the current choice produces. */
+function pvAgentEmail() {
+  if (!pv || !pv.grantor) return '';
+  return `${ownerLocalOf(pv.grantor)}+${pv.tag}@${pv.grantor.split('@')[1]}`;
+}
 
-  // "Act as me" needs neither an agent identity nor a separate authority.
-  $('pv-agent-row').hidden = isSelf;
-  $('pv-self-warn').hidden = !isSelf;
-  $('pv-standalone-note').hidden = intent !== 'standalone';
+// ---- card fragments ------------------------------------------------------
+// Trust rule (design board): only the fingerprint, the account's own
+// addresses, and owned-vs-foreign are trustworthy. Anything the requester
+// typed (its label) is quoted and marked UNVERIFIED, at the bottom.
 
-  // Offer existing agents only when there are any for this identity.
-  const existing = pvExistingAgents(email);
-  const sel = $('pv-existing');
-  const wrap = $('pv-existing-wrap');
-  if (existing.length) {
-    wrap.hidden = false;
-    sel.hidden = false;
-    const keep = sel.value;
-    sel.innerHTML = existing.map((a) => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
-    if (existing.includes(keep)) sel.value = keep;
-  } else {
-    wrap.hidden = true;
-    sel.hidden = true;
-    const src = document.querySelector('input[name="pv-agent-src"][value="new"]');
-    if (src) src.checked = true;
+function pvHead(corner) {
+  if (corner === undefined) corner = (pv && pv.grantor) || pvRootIds()[0] || '';
+  return `<div class="pv-head"><div class="pv-mark"></div><span class="pv-brand">browserid</span>` +
+    (corner ? `<span class="pv-corner">${escapeHtml(corner)}</span>` : '') + `</div>`;
+}
+
+function pvFpBlock() {
+  return `<div class="pv-panel"><div class="pv-label">Your agent should be showing</div>
+    <div class="pv-fp">${escapeHtml(pv.info.fingerprint || '')}</div></div>
+    <p class="pv-hint" style="margin-bottom:18px">If those don't match, stop — you're not talking to your agent.</p>`;
+}
+
+// The audience is a requester-supplied string. A non-web identifier must not
+// pass as a URL at a glance; plain http gets a lighter note.
+function pvAudienceWarn(aud) {
+  try {
+    const u = new URL(aud);
+    if (u.protocol === 'https:') return null;
+    if (u.protocol === 'http:') return 'not an https site';
+  } catch (e) { /* not URL-shaped */ }
+  return 'not a web address — recognize it, or deny';
+}
+
+function pvGrantBlocks(hint) {
+  if (!pv.grants.length) return '';
+  const blocks = pv.grants.map(g => {
+    const warn = pvAudienceWarn(g.audience);
+    const chips = (g.scopes || []).map(s => `<span class="pv-chip">${escapeHtml(s)}</span>`).join('')
+      || '<span class="pv-chip">site-level access</span>';
+    return `<div class="pv-panel" style="padding:12px 13px"><div class="pv-aud">${escapeHtml(g.audience)}</div>
+      <div class="pv-chips">${chips}${warn ? `<span class="pv-chip warn">${escapeHtml(warn)}</span>` : ''}</div></div>`;
+  }).join('');
+  return blocks + (hint ? `<p class="pv-hint" style="margin-bottom:18px">${hint}</p>` : '');
+}
+
+const PV_FORBY_HINT = '“For” — whose account the actions count against. “By” — who does them. ' +
+  'The approval itself is signed by the account shown top-right.';
+
+function pvForByTable(forCell, byCell) {
+  return `<div class="pv-table">
+      <div class="pv-row"><span class="pv-rowlabel">For</span><div style="min-width:0;flex:1">${forCell}</div></div>
+      <div class="pv-row"><span class="pv-rowlabel">By</span><div style="min-width:0;flex:1">${byCell}</div></div>
+    </div><p class="pv-hint" style="margin-top:6px">${PV_FORBY_HINT}</p>`;
+}
+
+function pvForCell() {
+  const roots = pvRootIds();
+  if (pv.grantorLocked || roots.length === 0) {
+    const sub = pv.grantorLocked && pv.grantorPin !== '*'
+      ? 'requested · verified yours' : 'you — its actions land on your account';
+    return `<div class="pv-rowmain">${escapeHtml(pv.grantor || '—')}</div><div class="pv-rowsub">${sub}</div>`;
   }
-  const usingExisting = (document.querySelector('input[name="pv-agent-src"]:checked') || {}).value === 'existing';
-  $('pv-handle').disabled = isSelf || usingExisting;
-  $('pv-prefix').style.opacity = $('pv-handle').disabled ? '.5' : '1';
-
-  $('pv-summary').innerHTML = pvSummary(email, intent);
+  return `<select id="pv-identity" class="pv-idsel">${roots.map(e =>
+      `<option value="${escapeHtml(e)}"${e === pv.grantor ? ' selected' : ''}>${escapeHtml(e)}</option>`).join('')}</select>
+    <div class="pv-rowsub">you — its actions land on your account</div>`;
 }
 
-/** What a reader of the resulting action would see — the confirmation. */
-function pvSummary(grantor, intent) {
-  const who = escapeHtml(grantor || 'you');
-  if (intent === 'self') return `Its actions will be indistinguishable from <b>${who}</b>'s own.`;
-  const tag = pvHandle();
-  const agent = tag && grantor ? escapeHtml(ownerLocalOf(grantor) + '+' + tag + '@' + grantor.split('@')[1]) : '<i>the agent</i>';
-  if (intent === 'standalone') return `Actions will be attributed to <b>${agent}</b> — not to you.`;
-  return `Actions will be attributed to <b>${who}</b> and recorded as carried out by <b>${agent}</b>.`;
+function pvBySubText() {
+  if (pv.granteeLocked) return 'requested · an address of yours';
+  return knownAgentEmails().has(pvAgentEmail().toLowerCase())
+    ? 'an agent you already have — reused' : 'a new address, created for the agent';
 }
 
-function refreshProvisionPicker() {
+function pvByCell() {
+  const email = pvAgentEmail();
+  if (pv.granteeLocked) {
+    return `<div class="pv-rowmain">${escapeHtml(email)}</div><div class="pv-rowsub">${pvBySubText()}</div>`;
+  }
+  if (pv.editingTag) {
+    const local = ownerLocalOf(pv.grantor), domain = (pv.grantor || '').split('@')[1] || '';
+    const reuse = pvExistingAgents(pv.grantor).filter(a => a.toLowerCase() !== email.toLowerCase());
+    return `<div class="pv-tagedit"><span class="pv-tagfix">${escapeHtml(local)}+</span><input id="pv-handle"
+        value="${escapeHtml(pv.tag)}" maxlength="48" autocomplete="off" spellcheck="false"><span class="pv-tagfix">@${escapeHtml(domain)}</span></div>` +
+      (reuse.length ? `<div class="pv-rowsub">or reuse: ${reuse.map(a =>
+        `<button type="button" class="pv-link pv-reuse" data-a="${escapeHtml(a)}" style="font-size:10.5px">${escapeHtml(a)}</button>`).join(' · ')}</div>` : '') +
+      `<div class="pv-rowsub" id="pv-bysub">${pvBySubText()}</div>`;
+  }
+  return `<div class="pv-rowmain">${escapeHtml(email)}<button type="button" id="pv-change" class="pv-link"
+      style="margin-left:7px;font-size:11px;white-space:nowrap">change</button></div>
+    <div class="pv-rowsub" id="pv-bysub">${pvBySubText()}</div>`;
+}
+
+function pvUnverifiedFoot(text) {
+  return `<div class="pv-foot"><span class="pv-badge">UNVERIFIED</span>
+    <div class="pv-footnote">${text}</div></div>`;
+}
+
+function pvCloseAction(btn, fallback) {
+  btn.onclick = () => {
+    try { window.close(); } catch (e) { /* not allowed */ }
+    btn.textContent = fallback || 'You can close this tab.';
+    btn.disabled = true;
+  };
+}
+
+// ---- the card state machine ---------------------------------------------
+
+function pvRender() {
+  const card = $('provision');
+  if (!pv) { card.hidden = true; return; }
+  card.hidden = false;
+  card.classList.toggle('danger', pv.view === 'asyou' || pv.view === 'pinmismatch' || pv.view === 'invalid');
+  ({ main: pvRenderMain, standalone: pvRenderStandalone, foreign: pvRenderForeign,
+     asyou: pvRenderAsYou, pinmismatch: pvRenderPinMismatch, invalid: pvRenderInvalid,
+     approved: pvRenderApproved, denied: pvRenderDenied }[pv.view] || pvRenderInvalid)(card);
+}
+
+// Shared wiring for the main/foreign tables + approve/deny buttons.
+function pvWireCommon(approve) {
   const sel = $('pv-identity');
-  if (!sel || $('provision').hidden) return;
-  const ids = account.emails.filter(e => !account.agents.includes(e));
-  sel.innerHTML = ids.map(e => `<option value="${escapeHtml(e)}">${escapeHtml(e)}</option>`).join('');
-  const none = ids.length === 0;
-  $('pv-approve').disabled = none;
-  if (none) { $('pv-status').className = 'status muted'; $('pv-status').textContent = 'Add an email below, then pick it here to authorize the agent.'; }
-  updateProvisionMode();
+  if (sel) sel.onchange = () => {
+    pv.grantor = sel.value;
+    if (!pv.granteeLocked) pv.tag = uniqueHandleTag(pv.grantor, pv.baseTag);
+    pvRender();
+    refreshProvisionAddressInfo();
+  };
+  const chg = $('pv-change');
+  if (chg) chg.onclick = () => { pv.editingTag = true; pvRender(); const i = $('pv-handle'); if (i) { i.focus(); i.select(); } };
+  const inp = $('pv-handle');
+  if (inp) inp.oninput = () => {
+    pv.tag = inp.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+    const s = $('pv-bysub'); if (s) s.textContent = pvBySubText();
+  };
+  for (const b of document.querySelectorAll('.pv-reuse')) b.onclick = () => {
+    const local = (b.dataset.a || '').split('@')[0];
+    pv.tag = local.includes('+') ? local.slice(local.indexOf('+') + 1) : local;
+    pv.editingTag = false;
+    pvRender();
+  };
+  const ap = $('pv-approve'); if (ap) ap.onclick = approve;
+  const dn = $('pv-deny'); if (dn) dn.onclick = () => pvDeny();
+}
+
+// A1 (common case) and A3 (pinned by the requester) — one renderer, pins
+// decide whether rows are pickers or statements.
+function pvRenderMain(card) {
+  const pinnedBoth = pv.grantorLocked && pv.granteeLocked;
+  const none = pvRootIds().length === 0;
+  const parts = [pvHead(), `<div class="pv-title">An agent wants to act for you.</div>`];
+  if (pinnedBoth) parts.push(`<p class="pv-note" style="margin:-6px 0 16px">Check the two addresses below are what you expect, then approve or deny.</p>`);
+  parts.push(pvFpBlock());
+  const grants = pvGrantBlocks('The permissions the agent is requesting.');
+  const table = pvForByTable(pvForCell(), pvByCell());
+  // The happy path reads request → who; a fully pinned card leads with the who.
+  if (pinnedBoth) { parts.push(table, grants); } else { parts.push(grants, table); }
+  parts.push(pinnedBoth
+    ? `<div class="pv-callout">Recorded as <strong>you</strong>, carried out by <span class="mono">${escapeHtml((pvAgentEmail().split('@')[0]) || '')}</span>.</div>`
+    : `<div class="pv-callout">Each site decides how this is shown — some mark the agent's actions, some show only your name. Revoking the agent later leaves your own access alone.</div>`);
+  if (!pv.granteeLocked) {
+    parts.push(`<button type="button" id="pv-notme" class="pv-link" style="margin-bottom:9px">I don't want this on my account →</button>`);
+  }
+  parts.push(`<div class="pv-actions">
+      <button class="pv-btn" id="pv-approve"${none ? ' disabled' : ''}>Approve</button>
+      <button class="pv-ghost" id="pv-deny" type="button">Deny</button></div>
+    <p class="status" id="pv-status">${none ? 'Add an email below, then come back here to authorize the agent.' : ''}</p>`);
+  if (pv.label) parts.push(pvUnverifiedFoot(`Labels itself “${escapeHtml(pv.label)}”. Not checked by browserid.`));
+  card.innerHTML = parts.join('');
+  pvWireCommon(() => pvApprove('handle'));
+  const nm = $('pv-notme');
+  if (nm) nm.onclick = () => { pv.view = 'standalone'; pvRender(); };
+}
+
+// A2 — "…not in my name". The one escape hatch from A1; opens in place.
+function pvRenderStandalone(card) {
+  const local = ownerLocalOf(pv.grantor), domain = (pv.grantor || '').split('@')[1] || '';
+  const suggested = pv.baseTag && pv.baseTag !== 'agent'
+    ? `it suggested “${escapeHtml(pv.baseTag)}”, you decide` : 'you decide';
+  card.innerHTML = pvHead() +
+    `<div class="pv-title" style="margin-bottom:14px">Then it acts as itself.</div>
+    <p class="pv-note" style="color:#4a4a52;margin-bottom:14px">It acts under its own address,
+      <span class="mono" style="color:#17171a">${escapeHtml(local)}+${escapeHtml(pv.tag)}</span> — everything it does is
+      <b>for</b> itself and <b>by</b> itself. Nothing is put in your name, though the address still
+      shows the account is yours — pseudonymous, not anonymous.</p>
+    <p class="pv-hint" style="margin:-6px 0 14px">${PV_FORBY_HINT}</p>
+    <div class="pv-panel" style="padding:12px 13px;margin-bottom:14px">
+      <div class="pv-label" style="margin-bottom:6px">Its address — ${suggested}</div>
+      <div class="pv-tagedit"><span class="pv-tagfix">${escapeHtml(local)}+</span><input id="pv-handle"
+        value="${escapeHtml(pv.tag)}" maxlength="48" autocomplete="off" spellcheck="false"><span class="pv-tagfix">@${escapeHtml(domain)}</span></div>
+    </div>
+    <div class="pv-panel" style="background:#faf9f7;border-color:rgba(0,0,0,.07);padding:12px 14px;margin-bottom:18px;
+      font:12.5px/1.6 system-ui,sans-serif;color:#6b6b74">Same site, same permissions. Only the name on it changes.</div>
+    <div class="pv-actions">
+      <button class="pv-btn" id="pv-approve">Approve under its own name</button>
+      <button class="pv-ghost" id="pv-back" type="button">Back</button></div>
+    <p class="status" id="pv-status"></p>`;
+  const inp = $('pv-handle');
+  inp.oninput = () => { pv.tag = inp.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, ''); };
+  $('pv-approve').onclick = () => pvApprove('standalone');
+  $('pv-back').onclick = () => { pv.view = 'main'; pvRender(); };
+}
+
+// A5 — the request demands the bare identity. Can't hide behind Advanced;
+// the default action offers it an address instead.
+function pvRenderAsYou(card) {
+  const id = pv.grantor || pvRootIds()[0] || 'your identity';
+  card.innerHTML = pvHead(id) +
+    `<div class="pv-title danger" style="margin-bottom:12px">An agent is asking to become you.</div>
+    <p class="pv-note" style="color:#4a4a52;margin-bottom:14px">It wants to hold
+      <span class="mono" style="color:#17171a">${escapeHtml(id)}</span> itself, not an address of its own.
+      It would appear exactly as you — indistinguishable, and revoking it signs you out too.
+      ${pv.grants.length ? 'Its only limit is the list below.' : ''}</p>
+    <p class="pv-hint" style="margin:-6px 0 14px">${PV_FORBY_HINT}</p>` +
+    pvFpBlock() +
+    pvGrantBlocks('The permissions the agent is requesting.') +
+    `<div class="pv-actions" style="margin-top:0">
+      <button class="pv-btn2" id="pv-offer">Offer it its own address instead</button>
+      <div class="pv-footnote" style="text-align:center">Most agents accept this. If it refuses, it will say so.</div>
+      <button class="pv-ghost" id="pv-deny" type="button" style="padding:5px">Deny</button>
+      <button class="pv-dangerlink" id="pv-really" type="button">I really do want it to be me →</button>
+    </div>
+    <div class="pv-dangerbox" id="pv-selfbox" hidden>
+      <label><input type="checkbox" id="pv-selfck">I understand its actions can never be told apart from mine.</label>
+      <button class="pv-dangerbtn" id="pv-selfgo" disabled>Let it become ${escapeHtml(id)}</button>
+    </div>
+    <p class="status" id="pv-status"></p>`;
+  $('pv-offer').onclick = () => {
+    // The safe path: same request, but the agent gets its own address (A1).
+    pv.view = 'main';
+    if (!pv.tag) pv.tag = pv.grantor ? uniqueHandleTag(pv.grantor, pv.baseTag) : pv.baseTag;
+    pvRender();
+  };
+  $('pv-deny').onclick = () => pvDeny();
+  $('pv-really').onclick = () => { $('pv-selfbox').hidden = false; $('pv-really').style.visibility = 'hidden'; };
+  $('pv-selfck').onchange = () => { $('pv-selfgo').disabled = !$('pv-selfck').checked; };
+  $('pv-selfgo').onclick = () => pvApprove('self');
+}
+
+// Foreign grantee — a service you don't run, holding its own issuer's cert.
+// You aren't giving it an address; you're lending it your name at one site.
+function pvRenderForeign(card) {
+  const grantee = pv.granteePin;
+  const granteeDomain = grantee.split('@')[1] || '';
+  const roots = pvRootIds();
+  const forSub = pv.grantorLocked || roots.length <= 1
+    ? 'you — nothing else is possible here' : 'you — its actions land on your account';
+  const forCell = (pv.grantorLocked || roots.length <= 1)
+    ? `<div class="pv-rowmain">${escapeHtml(pv.grantor || '—')}</div><div class="pv-rowsub">${forSub}</div>`
+    : `<select id="pv-identity" class="pv-idsel">${roots.map(e =>
+        `<option value="${escapeHtml(e)}"${e === pv.grantor ? ' selected' : ''}>${escapeHtml(e)}</option>`).join('')}</select>
+      <div class="pv-rowsub">${forSub}</div>`;
+  const byCell = `<div class="pv-rowmain">${escapeHtml(grantee)}</div>
+    <div class="pv-rowsub">not yours · certified by ${escapeHtml(granteeDomain)}</div>`;
+  card.innerHTML = pvHead() +
+    `<div class="pv-title" style="margin-bottom:12px">A service you don't run wants to act in your name.</div>
+    <p class="pv-note" style="margin-bottom:14px"><span class="mono" style="color:#17171a">${escapeHtml(grantee)}</span>
+      holds its own credentials from its own provider. You aren't giving it an address —
+      you're lending it your name at one site.</p>` +
+    pvForByTable(forCell, byCell) +
+    pvGrantBlocks('') +
+    `<div class="pv-callout" style="margin:6px 0 18px">Only at ${pv.grants.length === 1 ? 'this location' : 'these locations'},
+      only the listed permissions, for 90 days.</div>
+    <div class="pv-actions" style="margin-top:0">
+      <button class="pv-btn" id="pv-approve"${pv.grantor ? '' : ' disabled'}>Approve</button>
+      <button class="pv-ghost" id="pv-deny" type="button">Deny</button></div>
+    <p class="status" id="pv-status">${pv.grantor ? '' : 'Add an email below, then come back here to approve.'}</p>` +
+    (pv.label ? pvUnverifiedFoot(`Calls itself “${escapeHtml(pv.label)}”. Not checked by browserid.`) : '');
+  pvWireCommon(() => pvApproveDelegated());
+}
+
+// A4 — the pinned grantor isn't an address this account owns. No approve
+// button exists: identities are never silently substituted.
+function pvRenderPinMismatch(card) {
+  const you = pvRootIds()[0] || 'this account';
+  card.innerHTML = pvHead(you) +
+    `<div class="pv-title" style="margin-bottom:12px">This request is for a different account.</div>
+    <p class="pv-note" style="margin-bottom:18px">It asks specifically for
+      <span class="mono" style="color:#17171a">${escapeHtml(pv.pin)}</span>. You're signed in as
+      <span class="mono" style="color:#17171a">${escapeHtml(you)}</span>, which isn't the same person
+      as far as we can tell — so it can't be approved here.</p>
+    <div class="pv-actions" style="margin-top:0">
+      <button class="pv-btn2" id="pv-switch">Sign in as ${escapeHtml(pv.pin)}</button>
+      <button class="pv-ghost" id="pv-deny" type="button">Close and tell it this failed</button></div>
+    <p class="status" id="pv-status"></p>
+    <div class="pv-foot"><div class="pv-footnote">The agent is told the reason immediately —
+      it won't sit waiting until the request expires.</div></div>`;
+  $('pv-switch').onclick = async () => {
+    try { sessionStorage.setItem('pv-si-hint', pv.pin); } catch (e) { /* private mode */ }
+    try { await post('/wsapi/logout', {}); } catch (e) { /* already gone */ }
+    location.reload();
+  };
+  $('pv-deny').onclick = () => pvDeny();
+}
+
+// A6 — one generic screen for every malformed request. The human copy never
+// changes; the machine reason is shown verbatim and copyable.
+function pvRenderInvalid(card) {
+  const reason = pv.reason || 'unknown error';
+  card.innerHTML = pvHead() +
+    `<div class="pv-title" style="margin-bottom:12px">This request is invalid.</div>
+    <p class="pv-note">Something is wrong with the request itself. It isn't anything you did,
+      and there's nothing here for you to fix — it's safe to close this page.</p>
+    <div class="pv-panel" style="background:#faf9f7;margin-bottom:18px">
+      <div class="pv-label" style="margin-bottom:5px">Tell whoever runs the agent</div>
+      <div class="mono" style="font-size:11.5px;line-height:1.6;color:#4a4a52;word-break:break-all">${escapeHtml(reason)}</div></div>
+    <div class="pv-actions" style="margin-top:0">
+      <button class="pv-btn2" id="pv-copy">Copy the reason</button>
+      <button class="pv-ghost" id="pv-close" type="button">Close</button></div>`;
+  $('pv-copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(reason); $('pv-copy').textContent = 'Copied ✓'; }
+    catch (e) { $('pv-copy').textContent = 'Copy failed — select the text above'; }
+  };
+  pvCloseAction($('pv-close'));
+}
+
+// A7 — names what now exists and where to undo it.
+function pvRenderApproved(card) {
+  const a = pv.approved;
+  const hosts = pv.grants.map(g => g.audience.replace(/^https?:\/\//, '').replace(/\/+$/, ''));
+  const at = hosts.length
+    ? ` at ${hosts.map(h => `<span class="mono">${escapeHtml(h)}</span>`).join(', ')} · 90 days` : '';
+  const title = a.mode === 'self' ? 'Your agent now acts as you.'
+    : a.mode === 'foreign' ? 'The service can act for you now.'
+    : 'Your agent has an address now.';
+  const relation = a.mode === 'self' ? 'Acts as you'
+    : a.mode === 'standalone' ? 'Acts as itself' : 'Acts for you';
+  const note = a.mode === 'self'
+    ? 'You can end this at any time from your account page. Anything else it wants later comes back to you as a new request.'
+    : "You can end this at any time from your account page, and that won't touch your own access. Anything else it wants later comes back to you as a new request.";
+  card.innerHTML = pvHead() +
+    `<div class="pv-title" style="margin-bottom:12px">${title}</div>
+    <div class="pv-panel" style="padding:13px;margin-bottom:14px">
+      <div class="pv-aud" style="font-size:13px;margin-bottom:7px">${escapeHtml(a.agentEmail)}</div>
+      <div class="pv-footnote">${relation}${at}</div></div>
+    <p class="pv-note" style="margin-bottom:18px">${note}</p>
+    <div class="pv-actions" style="margin-top:0">
+      <button class="pv-btn2" id="pv-seeagents">See my agents</button>
+      <button class="pv-ghost" id="pv-done" type="button">${history.length > 1 ? '← Return to the app' : 'Done'}</button></div>`;
+  $('pv-seeagents').onclick = () => {
+    history.replaceState(null, '', location.pathname);
+    pv = null; pvRender();
+    const hc = $('holders-card');
+    if (hc) hc.scrollIntoView({ behavior: 'smooth' });
+  };
+  const done = $('pv-done');
+  if (history.length > 1) done.onclick = () => history.back();
+  else pvCloseAction(done, 'All set — you can close this tab.');
+}
+
+// A8 — nothing exists and nothing is waiting. Also the landing spot for a
+// phishing attempt that got this far.
+function pvRenderDenied(card) {
+  card.innerHTML = pvHead() +
+    `<div class="pv-title" style="margin-bottom:12px">Nothing was authorized.</div>
+    <p class="pv-note" style="margin-bottom:14px">No address was created and nothing can act in your name.
+      We've told the requester you declined, so it isn't waiting.</p>
+    <p class="pv-note" style="font-size:12.5px;color:#8a8a93;margin-bottom:18px">If you didn't start this,
+      someone else may have sent you the link. Closing this page is enough.</p>
+    <div class="pv-actions" style="margin-top:0"><button class="pv-btn2" id="pv-close">Close</button></div>`;
+  pvCloseAction($('pv-close'));
 }
 
 // Does the approver own `id` — an exact identity, or a `+tag` sub-address of
@@ -1216,126 +1479,153 @@ function approverOwns(id) {
   return plus >= 0 && emails.includes(local.slice(0, plus) + dom);
 }
 
-// Render the delegated (foreign-grantee) approval: `grantee` is a distinct
-// service acting on your behalf; you sign a warrant delegating from one of your
-// identities (the grantor). Provenance is intrinsic — its posts show as the
-// service, attributed to you — so this INFORMS rather than warns.
-// Fallback humanizer: turn raw scope tokens into plain verbs when the requester
-// didn't supply `actions` (e.g. `action:post` → "post", `schema:reaction.v1` →
-// "react"). Deduped, order-stable.
-function humanizeScopes(scopes) {
-  const out = [];
-  const add = (v) => { if (v && !out.includes(v)) out.push(v); };
-  for (const s of scopes || []) {
-    const i = s.indexOf(':');
-    const dim = i < 0 ? s : s.slice(0, i);
-    const val = i < 0 ? '' : s.slice(i + 1);
-    if (dim === 'action') add(val);
-    else if (dim === 'schema') { const b = val.split('.')[0]; add(b === 'reaction' ? 'react' : b); }
-  }
-  return out;
-}
-
-function renderDelegatedApproval(code, info) {
-  const grantee = provisionCtx.grantee;
-  const granteeDomain = grantee.split('@')[1] || '';
-  const nick = info.label ? ` (“${escapeHtml(info.label)}”)` : '';
-  const h2 = $('provision').querySelector('h2');
-  if (h2) h2.textContent = 'Authorize a service';
-  $('pv-intro').innerHTML =
-    `<b>${escapeHtml(grantee)}</b>${nick}` +
-    `<div class="sub" style="margin-top:2px">a service run by ${escapeHtml(granteeDomain)}</div>`;
-  $('pv-fp').hidden = true;
-  // A foreign grantee IS the actor, so there is nothing to choose: no intent,
-  // no agent identity. Only "who are you acting for" remains.
-  $('pv-intent').hidden = true;
-  $('pv-agent-row').hidden = true;
-  $('pv-summary').hidden = true;
-
-  // Plain-language "Can … on …" per grant (raw audience + scopes go to the
-  // separate, lower technical-details block). Hide the owned card's static
-  // "It asks to act for you at:" header — the wording here is different.
-  const grants = provisionCtx.grants || [];
-  $('pv-grants').hidden = grants.length === 0;
-  const gh = $('pv-grants').querySelector('p.sub');
-  if (gh) gh.style.display = 'none';
-  $('pv-grant-list').innerHTML = grants.map(g => {
-    // Derive from the AUTHORITATIVE scopes, and show the real audience URI as
-    // the location — never a requester-asserted name it can't be held to.
-    const acts = humanizeScopes(g.scopes);
-    const can = acts.length
-      ? acts.map(a => `<b>${escapeHtml(a)}</b>`).join(' · ')
-      : '<b>site-level access</b>';
-    return `<div style="margin:6px 0">Can ${can}` +
-      `<div class="tiny" style="margin-top:4px">at <code style="word-break:break-all">${escapeHtml(g.audience)}</code></div></div>`;
-  }).join('');
-
-  // The grantor (who it acts ON BEHALF OF): distinct from the grantee here (a
-  // delegated grant), so "on behalf of" — never "acts as". Prominent when
-  // pinned/single, a chooser when the approver has several identities.
-  const pin = provisionCtx.grantorPin;
-  const ids = (account.emails || []).filter(e => !account.agents.includes(e))
-    .filter(e => pin === '*' || e.toLowerCase() === pin.toLowerCase());
-  const sel = $('pv-identity');
-  const idLabel = $('pv-identity-label');
-  const note = $('pv-delegate-note');
-  note.hidden = false;
-  note.style.color = '#555';
-  note.innerHTML = 'You can revoke this anytime under “Devices &amp; services”.';
-  provisionCtx.fixedGrantor = null;
-  if (ids.length === 1) {
-    sel.style.display = 'none';
-    idLabel.innerHTML = `On behalf of <b>${escapeHtml(ids[0])}</b>`;
-    provisionCtx.fixedGrantor = ids[0];
-    $('pv-approve').disabled = false;
-  } else if (ids.length > 1) {
-    sel.style.display = '';
-    sel.innerHTML = ids.map(e => `<option value="${escapeHtml(e)}">${escapeHtml(e)}</option>`).join('');
-    idLabel.textContent = 'On behalf of which of your identities?';
-    $('pv-approve').disabled = false;
-  } else {
-    sel.style.display = 'none';
-    idLabel.textContent = '';
-    note.style.color = '#b7791f';
-    note.textContent = pin === '*'
-      ? 'Sign in to an identity here first, then approve.'
-      : `This grant must be authorized by ${pin}. Sign in as ${pin} here first.`;
-    $('pv-approve').disabled = true;
-  }
-
-  // Technical details (raw audience + scope tokens) as a separate collapsible,
-  // built fresh and placed LOW — below the summary, above the revoke line.
-  document.getElementById('pv-tech')?.remove();
-  const tech = document.createElement('details');
-  tech.id = 'pv-tech';
-  tech.style.margin = '10px 0 0';
-  tech.innerHTML = `<summary class="sub" style="cursor:pointer">technical details (exact scopes)</summary>` +
-    grants.map(g =>
-      `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">` +
-      `${(g.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')}</div>`).join('');
-
-  // Order: service → on behalf of (identity, stays high) → can (scopes) →
-  // technical details → revoke note → buttons. Move grants/tech/note down to
-  // just above the buttons, in that sequence.
-  const card = $('provision');
-  const buttons = $('pv-approve').parentNode;
-  card.insertBefore($('pv-grants'), buttons);
-  card.insertBefore(tech, buttons);
-  card.insertBefore(note, buttons);
-
-  $('pv-approve').onclick = () => approveDelegated(code);
-  $('pv-deny').onclick = () => denyProvision(code);
-}
-
-// Approve a delegated grant: sign a warrant (grantor = your chosen identity,
-// grantee = the foreign service) with your config cert and record it. No cert
-// issuance — the service holds its own from its provider.
-async function approveDelegated(code) {
-  const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Approving…';
-  const grantor = provisionCtx.fixedGrantor || $('pv-identity').value;
-  const grantee = provisionCtx.grantee;
+// Classify the pending request into a card. Order matters: foreignness and
+// pins are checked before defaults, and every contradiction lands on the one
+// generic invalid screen (A6) with the machine reason shown verbatim.
+async function showProvisionApproval(code) {
+  let info;
   try {
-    const prep = await post('/agent-provision/prepare', { code, identity_email: grantor });
+    info = await post('/agent-provision/info', { code });
+  } catch (e) {
+    pv = { code, view: 'invalid', reason: e.message || 'request not found or expired' };
+    pvRender();
+    return;
+  }
+  const roots = pvRootIds();
+  const ownRoot = (id) => roots.some(e => e.toLowerCase() === id);
+  const granteePin = (info.grantee || '').trim().toLowerCase();
+  const grantorPin = (((info.grantor || '*').trim()) || '*').toLowerCase();
+  const requested = ((info.requested_names || [])[0] || '').toLowerCase();
+  const concreteGrantor = grantorPin !== '*';
+  const concreteGrantee = !!granteePin && granteePin !== '*';
+
+  pv = {
+    code, info,
+    grants: info.grants || [],
+    pubkey: info.provisioning_pubkey,
+    label: (info.label || '').trim(),
+    namespace: info.namespace || 'agents',
+    grantorPin, granteePin,
+    grantor: null, grantorLocked: false, granteeLocked: false,
+    tag: '', baseTag: 'agent', editingTag: false,
+    view: 'main', addressInfo: null, approved: null, pin: null, reason: null,
+  };
+
+  const invalid = (reason) => { pv.view = 'invalid'; pv.reason = reason; pvRender(); };
+
+  // Foreign grantee — a service this account doesn't own. It must have
+  // brought its own holder, or nothing signed here could ever bind to it.
+  if (concreteGrantee && !approverOwns(granteePin)) {
+    if (!info.grantee_holder) {
+      return invalid('a foreign grantee must supply its holder (grantee_holder missing)');
+    }
+    if (concreteGrantor && !ownRoot(grantorPin)) {
+      pv.view = 'pinmismatch'; pv.pin = grantorPin; pvRender(); return;
+    }
+    pv.view = 'foreign';
+    pv.grantorLocked = concreteGrantor;
+    pv.grantor = concreteGrantor ? roots.find(e => e.toLowerCase() === grantorPin) : (roots[0] || null);
+    pvRender(); refreshProvisionAddressInfo(); return;
+  }
+
+  // A grantor pin this account can't satisfy — refuse, never substitute (A4).
+  if (concreteGrantor && !ownRoot(grantorPin)) {
+    pv.view = 'pinmismatch'; pv.pin = grantorPin; pvRender(); return;
+  }
+
+  // A grantee pin equal to one of YOUR bare addresses demands being you (A5).
+  if (concreteGrantee && ownRoot(granteePin)) {
+    if (concreteGrantor && grantorPin !== granteePin) {
+      return invalid(`contradictory pins: grantee '${granteePin}' is a bare identity but grantor is '${grantorPin}'`);
+    }
+    pv.view = 'asyou';
+    pv.grantor = roots.find(e => e.toLowerCase() === granteePin) || null;
+    pv.grantorLocked = true;
+    pv.baseTag = pv.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').split('-')[0] || 'agent';
+    pvRender(); refreshProvisionAddressInfo(); return;
+  }
+
+  // An owned +tag grantee pin fixes both rows: the grantor is forced to the
+  // tag's base identity, so nothing is left to choose (A3).
+  if (concreteGrantee) {
+    const base = granteePin.replace(/\+[^@]*@/, '@');
+    if (concreteGrantor && grantorPin !== base) {
+      return invalid(`contradictory pins: grantee '${granteePin}' belongs to '${base}', but grantor is '${grantorPin}'`);
+    }
+    if (!ownRoot(base)) {
+      return invalid(`grantee '${granteePin}' is a sub-address of '${base}', which this account doesn't hold`);
+    }
+    pv.view = 'main';
+    pv.grantorLocked = true; pv.granteeLocked = true;
+    pv.grantor = roots.find(e => e.toLowerCase() === base) || null;
+    const local = granteePin.split('@')[0];
+    pv.tag = local.includes('+') ? local.slice(local.indexOf('+') + 1) : local;
+    pvRender(); refreshProvisionAddressInfo(); return;
+  }
+
+  // Empty grantee AND no suggested handle = the legacy as-you shape: the
+  // request demands the bare identity (A5). A suggested handle or `*` means
+  // the requester expects an address of its own — the common case (A1).
+  if (granteePin === '' && !requested) {
+    pv.view = 'asyou';
+    pv.grantorLocked = concreteGrantor;
+    pv.grantor = concreteGrantor ? roots.find(e => e.toLowerCase() === grantorPin) : (roots[0] || null);
+    pv.baseTag = pv.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').split('-')[0] || 'agent';
+    pvRender(); refreshProvisionAddressInfo(); return;
+  }
+
+  // A1 — the common case: on-behalf, one sentence, nothing to configure.
+  pv.grantorLocked = concreteGrantor;
+  pv.grantor = concreteGrantor ? roots.find(e => e.toLowerCase() === grantorPin) : (roots[0] || null);
+  pv.baseTag = stripOwnerPrefix(requested, pv.grantor || '')
+    || pv.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').split('-')[0]
+    || 'agent';
+  pv.tag = pv.grantor ? uniqueHandleTag(pv.grantor, pv.baseTag) : pv.baseTag;
+  pvRender();
+  refreshProvisionAddressInfo();
+}
+
+// A0 — a pending request seen while signed out: keep it on screen so the
+// stranger arriving from an agent's link knows why they're being asked.
+async function showProvisionGate(code) {
+  let info;
+  try {
+    info = await post('/agent-provision/info', { code });
+  } catch (e) {
+    $('signin').hidden = true;
+    pv = { code, view: 'invalid', reason: e.message || 'request not found or expired' };
+    pvRender();
+    return;
+  }
+  const auds = (info.grants || []).map(g => g.audience);
+  const what = auds.length
+    ? `wants access to <span class="mono">${escapeHtml(auds[0])}</span>${auds.length > 1 ? ` and ${auds.length - 1} more` : ''}`
+    : 'wants an address under your account';
+  const card = $('provision');
+  card.hidden = false;
+  card.innerHTML = pvHead('') +
+    `<div class="pv-panel" style="background:#faf9f7;border-color:rgba(0,0,0,.09);padding:13px;margin-bottom:0">
+      <div class="pv-label" style="margin-bottom:6px">Waiting for approval</div>
+      <div style="font:13px/1.55 system-ui,sans-serif;color:#17171a">An agent showing
+        <span class="mono">${escapeHtml(info.fingerprint)}</span> ${what}.</div></div>`;
+  const h2 = $('signin').querySelector('h2');
+  if (h2) h2.textContent = 'First, which email is you?';
+  $('si-lead').textContent = 'browserid is how you say “that agent is mine” — and how you take it back later. ' +
+    "We'll bring you straight back here.";
+}
+
+// Approve a foreign-grantee (delegated) grant: sign warrants delegating from
+// your chosen identity to the service. No cert is minted — the service holds
+// its own from its issuer.
+async function pvApproveDelegated() {
+  const status = $('pv-status');
+  const fail = (m) => { status.className = 'status err'; status.textContent = m; };
+  status.className = 'status muted'; status.textContent = 'Approving…';
+  const grantor = pv.grantor;
+  const grantee = pv.granteePin;
+  if (!grantor) return fail('Add an email below first.');
+  try {
+    const prep = await post('/agent-provision/prepare', { code: pv.code, identity_email: grantor });
     let config = configFor(grantor);
     if (!config) {
       // Broker-rooted identity with no local pair: issue one from the session.
@@ -1359,99 +1649,15 @@ async function approveDelegated(code) {
       warrants.push(await signDeviceWarrant(config, grantor, grantee, prep.holder, g.audience, g.scopes || [], statusRef));
     }
     await post('/agent-provision/complete', {
-      code, approve: true, identity_email: grantor, warrants, config_cert: config.cert,
+      code: pv.code, approve: true, identity_email: grantor, warrants, config_cert: config.cert,
     });
-    status.className = 'status ok';
-    status.textContent = `Approved — ${grantee} can now act on behalf of ${grantor}.`;
-    $('pv-approve').disabled = true; $('pv-deny').disabled = true;
-    const back = document.createElement('p'); back.className = 'status muted';
-    if (history.length > 1) {
-      const b = document.createElement('button'); b.type = 'button'; b.textContent = '← Return to the app';
-      b.onclick = () => history.back(); back.appendChild(b);
-      setTimeout(() => { try { history.back(); } catch (e) {} }, 1500);
-    } else { back.textContent = 'You can close this tab.'; }
-    $('pv-status').after(back);
-    reloadAccount();
+    pv.approved = { mode: 'foreign', agentEmail: grantee };
+    pv.view = 'approved';
+    pvRender();
+    reloadAccount().then(() => { renderUserIdentities(); renderHolders(); renderSites(); }).catch(() => {});
   } catch (e) {
-    status.className = 'status err'; status.textContent = e.message || 'Approval failed.';
+    fail(e.message || 'Approval failed.');
   }
-}
-
-async function showProvisionApproval(code) {
-  let info;
-  try {
-    info = await post('/agent-provision/info', { code });
-  } catch (e) {
-    throw new Error('This pairing request is invalid or has expired — ask your agent to start again.');
-  }
-  provisionCtx = { code, pubkey: info.provisioning_pubkey, grants: info.grants || [], namespace: info.namespace || 'agents' };
-  $('provision').hidden = false;
-  { const h2 = $('provision').querySelector('h2'); if (h2) h2.textContent = 'Authorize an agent'; }
-  const thing = provisionCtx.namespace === 'services' ? 'service' : 'agent';
-
-  // Delegated (foreign grantee): a distinct service, minted by its OWN provider,
-  // acting on your behalf. Derived here — the grantee is a concrete identity you
-  // do not own. Renders a trust note + a locked/chooser grantor, no as-you mode.
-  const granteePin = (info.grantee || '').trim();
-  const grantorPin = (info.grantor || '*').trim();
-  const delegated = !!granteePin && granteePin !== '*' && !approverOwns(granteePin);
-  provisionCtx.delegated = delegated;
-  provisionCtx.grantee = granteePin;
-  provisionCtx.grantorPin = grantorPin;
-  if (delegated) return renderDelegatedApproval(code, info);
-
-  $('pv-intro').textContent = (info.label ? `“${info.label}” ` : `A ${thing} `) +
-    `wants to act for you. Choose how it appears; only approve if you just started setting up this ${thing}.`;
-  $('pv-fp').textContent = 'Agent key fingerprint: ' + info.fingerprint + '  (confirm it matches what your agent shows)';
-  // Merged flow: show each requested grant with equal prominence — the one
-  // approval covers exactly the set shown. One audience per block, scopes as
-  // their own wrapped chip row.
-  const grants = provisionCtx.grants;
-  $('pv-grants').hidden = grants.length === 0;
-  { const gh = $('pv-grants').querySelector('p.sub'); if (gh) gh.style.display = ''; }
-  $('pv-grant-list').innerHTML = grants.map(g => `
-    <div style="margin:6px 0"><code>${escapeHtml(g.audience)}</code>
-      <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">${(g.scopes || []).length
-        ? g.scopes.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')
-        : '<span class="sub">no specific scopes — site-level access</span>'}</div></div>`).join('');
-  $('pv-widen').checked = false;
-  refreshProvisionPicker();
-  // Default mode: services act AS you (that is their point — e.g. the poster
-  // posts as you); agents default to their own sub-handle. The suggestion is
-  // the requester's proposed tag (owner prefix stripped) or its label, made
-  // unique against the account's existing agents.
-  const requested = ((info.requested_names || [])[0] || '').toLowerCase();
-  const base = stripOwnerPrefix(requested, $('pv-identity').value)
-    || (info.label || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').split('-')[0]
-    || 'agent';
-  $('pv-handle').value = uniqueHandleTag($('pv-identity').value, base);
-  // Default intent: do things for me. (A service that must act AS you — e.g.
-  // the mingo poster — asks the user to pick "Act as me".)
-  document.querySelector('input[name="pv-intent"][value="onbehalf"]').checked = true;
-  updateProvisionMode();
-  refreshProvisionAddressInfo();
-  $('pv-identity').onchange = () => {
-    $('pv-handle').value = uniqueHandleTag($('pv-identity').value, base);
-    updateProvisionMode();
-    refreshProvisionAddressInfo();
-  };
-  for (const r of document.querySelectorAll('input[name="pv-intent"], input[name="pv-agent-src"]')) {
-    r.onchange = updateProvisionMode;
-  }
-  // The summary quotes the handle as it is typed / the agent as it is picked.
-  $('pv-handle').oninput = updateProvisionMode;
-  $('pv-existing').onchange = updateProvisionMode;
-  // Typing a handle implies wanting a separate agent, not "act as me".
-  $('pv-handle').onfocus = () => {
-    if (pvIntent() === 'self') {
-      document.querySelector('input[name="pv-intent"][value="onbehalf"]').checked = true;
-    }
-    const src = document.querySelector('input[name="pv-agent-src"][value="new"]');
-    if (src) src.checked = true;
-    updateProvisionMode();
-  };
-  $('pv-approve').onclick = () => approveProvision(code, info.provisioning_pubkey);
-  $('pv-deny').onclick = () => denyProvision(code);
 }
 
 // The delegating identity's IdP info — decides whether the agent's cert must
@@ -1459,11 +1665,11 @@ async function showProvisionApproval(code) {
 // the agent's certs must share one issuer). Prefetched so the approve click
 // can open the hop popup synchronously (popup blockers).
 async function refreshProvisionAddressInfo() {
-  if (!provisionCtx) return;
-  provisionCtx.addressInfo = null;
-  const email = $('pv-identity').value;
+  if (!pv) return;
+  pv.addressInfo = null;
+  const email = pv.grantor;
   if (!email) return;
-  try { provisionCtx.addressInfo = await api('/wsapi/address_info?email=' + encodeURIComponent(email)); } catch {}
+  try { pv.addressInfo = await api('/wsapi/address_info?email=' + encodeURIComponent(email)); } catch {}
 }
 
 // Device-authorize hop for provisioning approval. Two shapes:
@@ -1561,17 +1767,24 @@ async function storeIssuedPair(issuer, email, keys, certs) {
   await refreshKeystore();
 }
 
-async function approveProvision(code, provPubkeyX) {
+// Approve an owned-grantee authorization. `mode` is the identity_mode the
+// card decided: 'handle' (on-behalf, A1/A3), 'standalone' (A2), 'self' (A5's
+// confirmed red path). The user never sees those words.
+async function pvApprove(mode) {
   const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Approving…';
-  const identityEmail = $('pv-identity').value;
-  const ai = provisionCtx && provisionCtx.addressInfo;
+  const identityEmail = pv.grantor;
+  const ai = pv.addressInfo;
   const primaryHop = ai && ai.type === 'primary';
-  // The user's choice of what the agent is FOR (see pvIntent/pvHandle).
-  const asMe = pvIntent() === 'self';
-  const handleTag = pvHandle();
+  const asMe = mode === 'self';
+  const handleTag = (pv.tag || '').trim().toLowerCase();
+  if (!identityEmail) {
+    status.className = 'status err';
+    status.textContent = 'Add an email below first.';
+    return;
+  }
   if (!asMe && !handleTag) {
     status.className = 'status err';
-    status.textContent = 'Name the agent\u2019s handle, or choose "Act as me".';
+    status.textContent = 'Name the agent\u2019s address first.';
     return;
   }
   // The NAME sent to the broker: agent identities sub-address the owner
@@ -1597,15 +1810,21 @@ async function approveProvision(code, provPubkeyX) {
     // browser (matcher = the holder's `<id>`, or its `<ns>.*` prefix if
     // widened); for a primary identity the popup hop returns the
     // primary-signed agent cert; `complete` delivers everything in one pickup.
-    const grants = (provisionCtx && provisionCtx.grants) || [];
+    const grants = pv.grants;
+    // WHO IS ANSWERABLE (the warrant's grantor): the approving identity,
+    // unless the human chose "not in my name" (the agent answers for itself).
+    // For as-you, agent_email IS identityEmail, so both come out equal.
     let warrants = null, configCert = null, deviceCert = null;
+    let agentEmail = asMe ? identityEmail : `${chosenName}@${identityEmail.split('@')[1]}`;
     if (grants.length || primaryHop) {
       const prep = await post('/agent-provision/prepare', {
-        code, identity_email: identityEmail,
-        identity_mode: pvIdentityMode(),
+        code: pv.code, identity_email: identityEmail,
+        identity_mode: mode,
         ...(asMe ? {} : { handle: chosenName }),
       });
-      let config = grants.length ? configFor(prep.agent_email) : null;
+      agentEmail = prep.agent_email;
+      const grantorEmail = mode === 'standalone' ? prep.agent_email : identityEmail;
+      let config = grants.length ? configFor(grantorEmail) : null;
       if (primaryHop) {
         status.textContent = 'Waiting for your identity provider…';
         // As-you: a standard user-mode visit (works on ANY device-model
@@ -1621,7 +1840,7 @@ async function approveProvision(code, provPubkeyX) {
         // browser lacked a config cert, discarded otherwise.
         const k = await window.Keystore.generate();
         const hopReq = { keys: k, configPubkey: k.publicKeyX };
-        const res = await agentCertPopupFlow(popup, ai.device_auth, identityEmail, provisionCtx.pubkey, prep.holder, null, hopReq);
+        const res = await agentCertPopupFlow(popup, ai.device_auth, identityEmail, pv.pubkey, prep.holder, null, hopReq);
         popup = null; // closed by the flow
         deviceCert = res.device_cert;
         if (grants.length && !config && res.user_config_cert) {
@@ -1631,7 +1850,7 @@ async function approveProvision(code, provPubkeyX) {
             publicKeyX: hopReq.keys.publicKeyX, privateKey: hopReq.keys.privateKey, cert: res.user_config_cert,
           });
           await refreshKeystore();
-          config = configFor(prep.agent_email);
+          config = configFor(grantorEmail);
         }
       } else if (grants.length && !config) {
         // Broker-rooted identity with no local pair: the account session can
@@ -1646,78 +1865,50 @@ async function approveProvision(code, provPubkeyX) {
         if (bh) body.holder = bh;
         const certs = await post('/device/issue', body);
         await storeIssuedPair(location.host, identityEmail, keys, certs);
-        config = configFor(prep.agent_email);
+        config = configFor(grantorEmail);
       }
       if (grants.length) {
         status.textContent = 'Signing warrants…';
         if (!config) throw new Error(
-          `no config key covering ${prep.agent_email} in this browser — ` +
+          `no config key covering ${grantorEmail} in this browser — ` +
           `sign in to an app with ${identityEmail} here first, then retry`);
         configCert = config.cert;
-        const widen = $('pv-widen').checked;
-        const holderMatcher = (widen && prep.holder.includes('.'))
-          ? prep.holder.slice(0, prep.holder.indexOf('.')) + '.*'
-          : prep.holder;
+        // Isolated to this agent's holder, always — group-widening is
+        // deliberately not offered here.
         warrants = [];
         for (const g of prep.grants) {
           const statusRef = (g.status_idx != null && prep.status_uri)
             ? { uri: prep.status_uri, idx: g.status_idx } : null;
-          // WHO IS ANSWERABLE: the identity being approved with, unless the
-          // human chose "standalone" (the agent answers for itself). For
-          // as-you, agent_email IS identityEmail, so both come out equal.
-          const grantorEmail = pvIntent() === 'standalone' ? prep.agent_email : identityEmail;
-          warrants.push(await signDeviceWarrant(config, grantorEmail, prep.agent_email, holderMatcher, g.audience, g.scopes || [], statusRef));
+          warrants.push(await signDeviceWarrant(config, grantorEmail, prep.agent_email, prep.holder, g.audience, g.scopes || [], statusRef));
         }
       }
       status.textContent = 'Approving…';
     }
     await post('/agent-provision/complete', {
-      code, approve: true, identity_email: identityEmail,
-      identity_mode: pvIdentityMode(),
+      code: pv.code, approve: true, identity_email: identityEmail,
+      identity_mode: mode,
       ...(asMe ? {} : { handle: chosenName }),
       ...(warrants ? { warrants, config_cert: configCert } : {}),
       // Primary-signed cert: also relay where that IdP mints access certs
       // (discovered path — never assume /access/mint).
       ...(deviceCert ? { device_cert: deviceCert, ...(ai.access_mint ? { access_mint: ai.access_mint } : {}) } : {}),
     });
-    status.className = 'status ok';
-    status.textContent = 'Approved — your agent is picking up its identity now.';
-    $('pv-approve').disabled = true; $('pv-deny').disabled = true;
-    // Hand the user back. Popup blockers force some flows to reach this page
-    // by same-tab navigation, so when there is history to return through,
-    // offer it and go back automatically after a short, announced delay; a
-    // fresh tab can just be closed (history.back() is a no-op then).
-    const back = document.createElement('p');
-    back.className = 'status muted';
-    if (history.length > 1) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = '← Return to the app';
-      b.onclick = () => history.back();
-      back.appendChild(b);
-      back.appendChild(document.createTextNode(' returning automatically…'));
-      setTimeout(() => history.back(), 1800);
-    } else {
-      // A fresh tab: when the app opened it via window.open, this page may
-      // close itself — try after an announced delay; if the browser refuses
-      // (user-opened tab), the message stays as the fallback.
-      back.textContent = 'All set — closing this tab…';
-      setTimeout(() => {
-        try { window.close(); } catch (e) { /* not allowed */ }
-        back.textContent = 'All set — you can close this tab.';
-      }, 1500);
-    }
-    status.insertAdjacentElement('afterend', back);
+    pv.approved = { mode, agentEmail };
+    pv.view = 'approved';
+    pvRender();
+    reloadAccount().then(() => { renderUserIdentities(); renderHolders(); renderSites(); }).catch(() => {});
   } catch (e) {
     if (popup) { try { popup.close(); } catch (e2) { /* already closed */ } }
     status.className = 'status err'; status.textContent = 'Failed: ' + e.message;
   }
 }
 
-async function denyProvision(code) {
-  try { await post('/agent-provision/complete', { code, approve: false }); } catch {}
-  $('pv-status').className = 'status muted'; $('pv-status').textContent = 'Denied.';
-  $('pv-approve').disabled = true; $('pv-deny').disabled = true;
+// Deny (A8): the requester is told immediately via its poll — it never sits
+// waiting for the request to expire.
+async function pvDeny() {
+  try { await post('/agent-provision/complete', { code: pv.code, approve: false }); } catch (e) { /* best effort */ }
+  pv.view = 'denied';
+  pvRender();
 }
 
 async function boot() {
@@ -1728,8 +1919,16 @@ async function boot() {
   $('gate').hidden = true;
   const provisionCode = new URLSearchParams(location.search).get('provision');
   if (!ctx.authenticated) {
-    // Preserve the pairing code across sign-in so we resume after auth.
+    // A0: the pairing code survives sign-in (it's in the URL), and the
+    // pending request stays on screen so the stranger arriving from an
+    // agent's link knows why they're being asked. A "sign in as X" hop
+    // (A4) prefills the address it asked for.
     $('signin').hidden = false;
+    try {
+      const hint = sessionStorage.getItem('pv-si-hint');
+      if (hint) { sessionStorage.removeItem('pv-si-hint'); $('si-email').value = hint; }
+    } catch (e) { /* private mode */ }
+    if (provisionCode) await showProvisionGate(provisionCode);
     return;
   }
   account.csrf = ctx.csrf_token;
@@ -1739,12 +1938,12 @@ async function boot() {
   renderUserIdentities();
   renderHolders();
   renderSites();
-  // Paired provisioning banner sits above the account app so add-email/activate
-  // are right there for new users.
+  // The authorization card sits above the account app so add-email is right
+  // there for new users who need another address first.
   if (provisionCode) {
     showProvisionApproval(provisionCode).catch(e => {
-      $('provision').hidden = false;
-      $('pv-status').className = 'status err'; $('pv-status').textContent = e.message;
+      pv = { code: provisionCode, view: 'invalid', reason: e.message };
+      pvRender();
     });
   }
 }
