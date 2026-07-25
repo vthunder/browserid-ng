@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-24T22:48:01Z
-updated_at: 2026-07-24T23:20:51Z
+updated_at: 2026-07-25T00:13:28Z
 ---
 
 Design with Dan 2026-07-25, after the bsky on-behalf test hit a wall. Parent
@@ -139,3 +139,26 @@ request time instead of after approval.
 NOT YET TESTED LIVE: browserid.me was 136 commits behind; the deploy is in
 flight (on-host Rust build, 2h+ — hence the new CI image pipeline in
 094cfc0). The on-behalf test resumes once it lands.
+
+## Verified live 2026-07-25
+
+The fix is deployed on browserid.me and produced a real on-behalf warrant from
+a normal choice ("Do things for me"), not a workaround:
+  grantor danmills@sandmill.org, grantee danmills+bsky@sandmill.org
+The bsky bridge accepted it, the verifier passed all 12 checks, and the labeler
+emitted browserid-on-behalf (browserid-bsky-nr8p).
+
+The intent-first card is live too: three intents (attributed to you /
+attributed to the agent / indistinguishable from you), the agent identity as a
+separate choice (new sub-handle, existing agent, or top-level — Dan: a
+top-level handle is a FORM the grantee identity takes, not a fourth shape), and
+a live summary sentence.
+
+STILL OPEN, and now the priority: the card is functional but nearly unusable —
+9 inputs, 8 labels, protocol vocabulary. Design brief written at
+docs/design/2026-07-25-approval-dialog-brief.md, to be taken to design. That
+brief supersedes the UI sketches in this bean.
+
+Also still open here: pin-honouring (wwec), sub-identity as delegator (y9xm),
+and validating a foreign grantee's holder at request time — that one bit us
+live, failing AFTER approval with "a foreign grantee must supply its holder".
