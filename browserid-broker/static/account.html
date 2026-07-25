@@ -442,9 +442,12 @@ async function siDiscover(email) {
     // redirect (the legacy /browserid/auth page was removed with the Persona stack).
     siMuted(`Redirecting to ${info.issuer} to sign in…`);
     const origin = location.origin;
+    // Keep the query string: a pending ?provision=<code> must survive the
+    // round-trip, or the user lands back on a bare account page with the
+    // authorization card gone (A0 → A1 handoff).
     location.assign('/dialog/dialog.html?rp_redirect=1'
       + '&rp_origin=' + encodeURIComponent(origin)
-      + '&return_to=' + encodeURIComponent(origin + '/account')
+      + '&return_to=' + encodeURIComponent(origin + '/account' + location.search)
       + '&login_hint=' + encodeURIComponent(email)
       + '&state=acct');
     return;
