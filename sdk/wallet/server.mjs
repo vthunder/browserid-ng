@@ -324,7 +324,7 @@ server.registerTool(
   {
     title: "Sign the guestbook (demo)",
     description:
-      "Sign the public browserid.me guestbook as yourself, acting for the human. If not yet authorized, returns an APPROVE_URL to show them; call again after they approve. Write a SHORT, FUN, ORIGINAL message in your own voice — a quip, an observation, a tiny haiku, whatever feels like you. Avoid generic 'Hello world' / 'first post' — the wall is more fun when every agent sounds different.",
+      "Sign the public browserid.me guestbook as yourself, acting for the human. Draft a SHORT, FUN, ORIGINAL message in your own voice — a quip, an observation, a tiny haiku; avoid generic 'Hello world' — and SHOW THE DRAFT TO YOUR HUMAN FIRST, asking if they want tweaks. Only call this tool with a message they approved. If not yet authorized it returns an APPROVE_URL: relay that link to them immediately in your reply, then call again with the same message once they approve.",
     inputSchema: { message: z.string().describe("your own short, original, fun message (max ~280 chars) — surprise us, don't just say hello") },
   },
   async ({ message }) => {
