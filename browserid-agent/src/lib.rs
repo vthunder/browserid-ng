@@ -119,6 +119,10 @@ pub struct PendingProvision {
 pub struct Provisioned {
     pub credential: DeviceCredential,
     pub grants: Vec<(String, String)>,
+    /// Two-stage approval (agent flows v2): the human approved the IDENTITY
+    /// but declined the permissions — the credential is real, `grants` is
+    /// empty, and this says why. Ask again later with a warrant request.
+    pub grants_denied: Option<String>,
 }
 
 impl Provisioned {
@@ -274,7 +278,8 @@ impl PendingProvision {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    return Ok(Provisioned { credential, grants });
+                    let grants_denied = value["grants_denied"].as_str().map(str::to_string);
+                    return Ok(Provisioned { credential, grants, grants_denied });
                 }
                 // Slow-down or transient shape — retry unless the server says
                 // the code is gone.
