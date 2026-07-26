@@ -1,11 +1,11 @@
 ---
 # browserid-ng-7kxt
 title: '@browserid/wallet (npx) + hosted guestbook demo'
-status: in-progress
+status: completed
 type: feature
 priority: high
 created_at: 2026-07-12T16:08:10Z
-updated_at: 2026-07-12T16:23:24Z
+updated_at: 2026-07-26T21:36:00Z
 ---
 
 Zero-checkout demo + the canonical install path for browserid agent support.
@@ -39,3 +39,7 @@ Enabled by the JS agent SDK + paired provisioning (no Rust, no downloaded creden
 - npm publish @browserid/verify, @browserid/agent, @browserid/wallet (owns the @browserid org).
 - Then the one-line 'npx @browserid/wallet' install works for anyone.
 Follow-ups: guestbook persistence across deploys (currently in-memory ring); typed user_code /link UI.
+
+## Summary of Changes
+
+Shipped and live: www ce779fe (guestbook for-agents section + homepage prompts), browserid-bsky guide hardening (bridge CI deployed), wallet 0.3.1 description (npm publish manual). Verified serving: guestbook page carries the agent steps + install command, homepage prompts carry the new copy, and bsky /llms.txt carries the act/relay/poll directives.

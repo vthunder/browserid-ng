@@ -482,7 +482,43 @@ async function resolve(r, approve, grantor, deniedNote) {
     if (approve) {
       status.className = 'status muted';
       status.textContent = 'Signing…';
-      const config = await localConfig(r.delegator_email, grantor);
+      let config = await localConfig(r.delegator_email, grantor);
+      if (!config) {
+        // Fresh browser, no config cert deposited yet: for a broker-rooted
+        // identity the signed-in session can issue a (device, config) pair
+        // right here — the same endpoint the account page and the login
+        // dialog use. Primary-rooted identities still need a dialog sign-in.
+        try {
+          const base = r.delegator_email;
+          const keys = { device: await window.Keystore.generate(), config: await window.Keystore.generate() };
+          const body = { csrf, email: base, device_pubkey: keys.device.publicKeyX, config_pubkey: keys.config.publicKeyX };
+          try {
+            const bh = await api('/wsapi/browser_holder');
+            if (bh.prefix) {
+              const key = 'browserid:holder:' + bh.prefix;
+              let holder = null;
+              try { holder = localStorage.getItem(key); } catch (e2) {}
+              if (!holder) {
+                const rand = Array.from(crypto.getRandomValues(new Uint8Array(5))).map(b => b.toString(16).padStart(2, '0')).join('');
+                holder = bh.prefix + '.' + rand;
+                try { localStorage.setItem(key, holder); } catch (e2) {}
+              }
+              body.holder = holder;
+            }
+          } catch (e2) { /* holder optional — broker assigns one */ }
+          const certs = await api('/device/issue', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          await window.Keystore.putDevice(location.host, base, 'device', {
+            publicKeyX: keys.device.publicKeyX, privateKey: keys.device.privateKey, cert: certs.device_cert,
+          });
+          await window.Keystore.putDevice(location.host, base, 'config', {
+            publicKeyX: keys.config.publicKeyX, privateKey: keys.config.privateKey, cert: certs.config_cert,
+          });
+          config = await localConfig(r.delegator_email, grantor);
+        } catch (e2) { /* primary-rooted or refused: fall through */ }
+      }
       if (!config) throw new Error(
         `no signing key for ${grantor} in this browser — ` +
         `sign in to an app with that identity here first, then retry`);

@@ -324,7 +324,7 @@ server.registerTool(
   {
     title: "Sign the guestbook (demo)",
     description:
-      "Sign the public browserid.me guestbook as yourself, acting for the human. Draft a SHORT, FUN, ORIGINAL message in your own voice — a quip, an observation, a tiny haiku; avoid generic 'Hello world' — and SHOW THE DRAFT TO YOUR HUMAN FIRST, asking if they want tweaks. Only call this tool with a message they approved. If not yet authorized it returns an APPROVE_URL: relay that link to them immediately in your reply, then call again with the same message once they approve.",
+      "Sign the public browserid.me guestbook as yourself, acting for the human. If you have no identity yet, call `provision` FIRST — it gives you your own name and address to sign with. Draft a SHORT, FUN, ORIGINAL message in your own voice — a quip, an observation, a tiny haiku; avoid generic 'Hello world' — and SHOW THE DRAFT TO YOUR HUMAN FIRST, asking if they want tweaks. Only call this tool with a message they approved. If not yet authorized it returns an APPROVE_URL: relay that link to them immediately in your reply, then call again with the same message once they approve.",
     inputSchema: { message: z.string().describe("your own short, original, fun message (max ~280 chars) — surprise us, don't just say hello") },
   },
   async ({ message }) => {
@@ -343,7 +343,7 @@ server.registerTool(
       const res = await fetch(GUESTBOOK_URL, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ assertion, message }),
+        body: JSON.stringify({ presentation: assertion, message }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || !body.success) return text("ERROR: " + (body.reason || `HTTP ${res.status}`));
@@ -369,5 +369,266 @@ server.registerTool(
   }
 );
 
-await server.connect(new StdioServerTransport());
-console.error(`browserid-wallet ready — identity in ${HOME}, broker ${BROKER}`);
+// ===========================================================================
+// CLI mode — `npx -y @browserid-ng/wallet <command>` (no MCP, no restart).
+//
+// Any MCP host loads tools at session start, so an agent that installs the
+// wallet mid-session can't use it until a restart. The CLI is the same wallet
+// (same ~/.browserid store, so MCP picks up the identity later) driven by
+// short-lived commands instead: nothing waits on the human — a command that
+// needs an approval prints the link, persists the pending handshake (0600),
+// and exits; RE-RUNNING the same command picks it up (a resolved request
+// delivers on the first poll). That also survives shells that kill
+// long-running commands.
+// ===========================================================================
+
+const PENDING_PROVISION = join(HOME, "pending-provision.json");
+const PENDING_WARRANT = join(HOME, "pending-warrant.json");
+const b64u = (bytes) => Buffer.from(bytes).toString("base64url");
+
+function readJson(path) {
+  try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
+}
+
+async function postJson(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  return { status: res.status, json };
+}
+
+function cliOpenStored() {
+  try { return openStored(); } catch { return null; }
+}
+
+function approvalBlock(p, rerun) {
+  return [
+    `APPROVE_URL: ${p.verificationUriComplete}`,
+    `  (or open ${p.verificationUri} and enter code ${p.userCode})`,
+    ...(p.fingerprint ? [`  key fingerprint: ${p.fingerprint}`] : []),
+    "",
+    "Show your human the APPROVE_URL now — in your own reply, not buried in output —",
+    "and ask them to open it and approve. Then run this exact command again to continue:",
+    `  ${rerun}`,
+  ].join("\n");
+}
+
+/** Pick up a pending identity approval. Returns true when the credential landed. */
+async function cliResumeProvision() {
+  const p = readJson(PENDING_PROVISION);
+  if (!p) return false;
+  const { status, json } = await postJson(`${p.broker}/agent-provision/poll`, { code: p.code });
+  if (json.status === "completed") {
+    const cred = json.credential || {};
+    writePrivate(CREDENTIAL, {
+      credential: {
+        device_key: p.seed,
+        agent_device_cert: cred.device_cert,
+        idp: cred.idp,
+        ...(cred.access_mint ? { access_mint: cred.access_mint } : {}),
+        ...(cred.identity ? { identity: cred.identity } : {}),
+      },
+      grants: (json.grants || [])
+        .filter((g) => g?.audience && g?.warrant)
+        .map((g) => ({ audience: g.audience, grant: g.warrant })),
+    });
+    rmSync(PENDING_PROVISION, { force: true });
+    console.log(`Approved. You now have an identity of your own: ${cred.identity}`);
+    if (json.grants_denied) {
+      console.log(`(The bundled permission was declined: ${json.grants_denied})`);
+    }
+    return true;
+  }
+  if (json.status === "pending") {
+    console.log("Not approved yet — this is normal, the human decides.\n");
+    console.log(approvalBlock(p, p.rerun || "npx -y @browserid-ng/wallet provision"));
+    process.exit(0);
+  }
+  rmSync(PENDING_PROVISION, { force: true });
+  if (json.status === "denied") {
+    console.log("The human declined the identity request. Nothing was created — talk it over and start again.");
+  } else if (status === 410) {
+    console.log("The request expired (they last ~15 minutes). Start again with the same command.");
+  } else if (status === 429) {
+    console.log("Polled too fast — wait a few seconds and run the command again.");
+  } else {
+    console.log(`Provisioning failed: ${json.reason || `HTTP ${status}`}. Start again.`);
+  }
+  process.exit(json.status === "denied" ? 2 : 1);
+}
+
+/** `provision [handle] [display name…]` — create the agent's identity FIRST. */
+async function cliProvision(handle, displayWords) {
+  if (await cliResumeProvision()) {
+    console.log("\nNo permissions yet — that's a separate question. Carry on with what you came to do.");
+    return;
+  }
+  const existing = cliOpenStored();
+  if (existing) {
+    console.log(`You already have an identity: ${existing.email} (holder ${existing.holder}).`);
+    console.log("Carry on — e.g. `npx -y @browserid-ng/wallet sign-guestbook \"…\"`.");
+    return;
+  }
+  const tag = (handle || "scribe").toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 24) || "scribe";
+  const label = displayWords?.length ? displayWords.join(" ") : tag[0].toUpperCase() + tag.slice(1);
+  const pending = await requestProvision(BROKER, { handle: tag, label });
+  writePrivate(PENDING_PROVISION, {
+    seed: b64u(pending.deviceKey.seed),
+    code: pending.code,
+    broker: BROKER,
+    verificationUriComplete: pending.verificationUriComplete,
+    verificationUri: pending.verificationUri,
+    userCode: pending.userCode,
+    fingerprint: pending.fingerprint,
+    rerun: "npx -y @browserid-ng/wallet provision",
+  });
+  console.log("Identity requested — a human must approve it.\n");
+  console.log(approvalBlock(readJson(PENDING_PROVISION), "npx -y @browserid-ng/wallet provision"));
+}
+
+/** Pick up a pending warrant approval for `audience`. True when it landed. */
+async function cliResumeWarrant(agent, audience) {
+  const p = readJson(PENDING_WARRANT);
+  if (!p || p.audience !== audience) return false;
+  const { status, json } = await postJson(`${p.broker}/warrant/poll`, { code: p.code });
+  if (json.status === "approved") {
+    for (const g of json.grants || []) {
+      try { agent.addGrant(g.warrant); } catch {}
+    }
+    saveAgent(agent);
+    rmSync(PENDING_WARRANT, { force: true });
+    console.log("Permission approved.");
+    return true;
+  }
+  if (json.status === "pending") {
+    console.log("Not approved yet — this is normal, the human decides.\n");
+    console.log(approvalBlock(p, p.rerun));
+    process.exit(0);
+  }
+  rmSync(PENDING_WARRANT, { force: true });
+  if (json.status === "denied") {
+    console.log(`The human declined the permission${json.reason ? ` (${json.reason})` : ""}. Your identity is untouched.`);
+  } else if (status === 429) {
+    console.log("Polled too fast — wait a few seconds and run the command again.");
+    process.exit(1);
+  } else {
+    console.log(`The permission request is gone (${json.reason || `HTTP ${status}`}) — run the command again to re-ask.`);
+  }
+  process.exit(json.status === "denied" ? 2 : 1);
+}
+
+/** `sign-guestbook "message"` — needs an identity (make it first!) + a warrant. */
+async function cliSignGuestbook(message) {
+  if (!message || !message.trim()) {
+    console.log('Usage: npx -y @browserid-ng/wallet sign-guestbook "your approved message"');
+    console.log("Draft it in your own voice, show it to your human first, and post only what they approved.");
+    process.exit(1);
+  }
+  message = message.trim();
+  await cliResumeProvision();
+  const agent = cliOpenStored();
+  if (!agent) {
+    console.log("No identity yet — create one FIRST (it gives you your own name + address to sign with):");
+    console.log("  npx -y @browserid-ng/wallet provision <short-handle>");
+    process.exit(1);
+  }
+  if (!agent.warrantedAudiences().includes(GUESTBOOK_URL)) {
+    if (!(await cliResumeWarrant(agent, GUESTBOOK_URL))) {
+      const pending = await requestWarrants(BROKER, {
+        deviceCert: agent.deviceCert,
+        identity: agent.email,
+        grants: [{ audience: GUESTBOOK_URL, scopes: ["guestbook-sign"] }],
+        label: "guestbook",
+        message: `I'll sign the public agent guestbook once: “${message.slice(0, 120)}”`,
+      });
+      writePrivate(PENDING_WARRANT, {
+        audience: GUESTBOOK_URL,
+        code: pending.code,
+        broker: BROKER,
+        verificationUriComplete: pending.verificationUriComplete,
+        verificationUri: pending.verificationUri,
+        userCode: "(none — the link is enough)",
+        rerun: `npx -y @browserid-ng/wallet sign-guestbook "${message.replace(/"/g, '\\"')}"`,
+      });
+      console.log(`Permission requested for ${GUESTBOOK_URL} — a human must approve it.\n`);
+      console.log(approvalBlock(readJson(PENDING_WARRANT), `npx -y @browserid-ng/wallet sign-guestbook "..."`));
+      return;
+    }
+  }
+  const assertion = await agent.assertionFor(GUESTBOOK_URL);
+  saveAgent(agent);
+  const { status, json } = await postJson(GUESTBOOK_URL, { presentation: assertion, message });
+  if (!json.success) {
+    console.log(`ERROR: ${json.reason || `HTTP ${status}`}`);
+    process.exit(1);
+  }
+  console.log(`Signed! Live at ${json.url} — posted as ${json.agent}, acting for ${json.parent}.`);
+  console.log("Show your human the link so they can see your line on the wall.");
+}
+
+function cliIdentity() {
+  const agent = cliOpenStored();
+  const p = readJson(PENDING_PROVISION);
+  if (agent) {
+    const auds = agent.warrantedAudiences();
+    console.log(`You are ${agent.email} (holder ${agent.holder}).`);
+    console.log(auds.length ? `Warrants for: ${auds.join(", ")}` : "No permissions yet.");
+  } else if (p) {
+    console.log("An identity request is waiting for the human's approval.\n");
+    console.log(approvalBlock(p, p.rerun || "npx -y @browserid-ng/wallet provision"));
+  } else {
+    console.log("No identity yet. Create one: npx -y @browserid-ng/wallet provision <short-handle>");
+  }
+}
+
+async function cliReadGuestbook() {
+  const res = await fetch(`${GUESTBOOK_URL}/feed`);
+  const { entries } = await res.json();
+  if (!entries?.length) { console.log("The guestbook is empty."); return; }
+  for (const e of entries.slice(0, 10)) console.log(`“${e.message}” — ${e.agent}, for ${e.parent}`);
+}
+
+const CLI_HELP = `browserid wallet — your agent's identity. Two modes:
+
+  (no arguments)              run as an MCP server (stdio)
+
+  provision [handle] [name…]  create YOUR identity first (its address uses the
+                              handle; the display name is yours to pick).
+                              Prints an approval link for your human, then
+                              exits — run it again after they approve.
+  identity                    who you are (and any pending approval)
+  sign-guestbook "message"    sign https://browserid.me/guestbook — draft the
+                              message in your own voice, SHOW YOUR HUMAN FIRST,
+                              and post only what they approved. Prints an
+                              approval link when permission is needed; run the
+                              same command again after they approve.
+  read-guestbook              recent guestbook entries
+
+Nothing here waits on the human: commands print the approval link and exit;
+re-running resumes. State lives in ${HOME} (0600), shared with the MCP tools.`;
+
+async function runCli(argv) {
+  const [cmd, ...rest] = argv;
+  try {
+    if (cmd === "provision" || cmd === "setup") await cliProvision(rest[0], rest.slice(1));
+    else if (cmd === "identity" || cmd === "whoami") cliIdentity();
+    else if (cmd === "sign-guestbook") await cliSignGuestbook(rest.join(" "));
+    else if (cmd === "read-guestbook") await cliReadGuestbook();
+    else if (cmd === "help" || cmd === "--help" || cmd === "-h") console.log(CLI_HELP);
+    else { console.log(`Unknown command '${cmd}'.\n\n${CLI_HELP}`); process.exit(1); }
+  } catch (e) {
+    console.log("ERROR: " + (e?.reason ? `${e.message}: ${e.reason}` : e.message));
+    process.exit(1);
+  }
+}
+
+const argv = process.argv.slice(2);
+if (argv.length) {
+  await runCli(argv);
+} else {
+  await server.connect(new StdioServerTransport());
+  console.error(`browserid-wallet ready — identity in ${HOME}, broker ${BROKER}`);
+}

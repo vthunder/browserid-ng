@@ -40,8 +40,9 @@ pub struct Entry {
     pub message: String,
     pub agent: String,
     /// Pre-device-model entries recorded a separate delegator; kept so old
-    /// persisted entries still render. New entries leave it empty (the agent
-    /// identity itself carries the attribution).
+    /// persisted entries still render. Since the grantor/grantee split this
+    /// is the ATTRIBUTED identity (the human) again, while `agent` is the
+    /// actor that signed.
     #[serde(default)]
     pub parent: String,
     pub scopes: Vec<String>,
@@ -114,7 +115,10 @@ fn escape(s: &str) -> String {
 
 #[derive(Deserialize)]
 pub struct SignRequest {
-    /// The access presentation (`access_cert~assertion~warrant~config_cert`)
+    /// The access presentation (`access_cert~assertion~warrant~config_cert`).
+    /// `assertion` is accepted as an alias — wallets in the wild posted the
+    /// old field name long after the rename (which silently 422'd them).
+    #[serde(alias = "assertion")]
     pub presentation: String,
     pub message: String,
 }
@@ -123,7 +127,10 @@ pub struct SignRequest {
 pub struct SignResponse {
     pub success: bool,
     pub url: String,
+    /// The ACTING identity (the warrant grantee — the agent that signed).
     pub agent: String,
+    /// The ATTRIBUTED identity (the warrant grantor — the human behind it).
+    pub parent: String,
 }
 
 pub async fn sign<U, S, E>(
@@ -179,7 +186,12 @@ where
         );
     }
 
-    let agent_email = result.email.clone().unwrap_or_default();
+    // Both names, correctly assigned since the grantor/grantee split: the
+    // ACTOR is the warrant grantee (the agent identity that signed), and the
+    // ATTRIBUTED identity is `email` (the grantor — the human). For an as-you
+    // presentation they coincide.
+    let parent_email = result.email.clone().unwrap_or_default();
+    let agent_email = result.grantee.clone().unwrap_or_else(|| parent_email.clone());
 
     // Light anti-spam: one post per agent identity per COOLDOWN_SECONDS.
     {
@@ -194,7 +206,7 @@ where
     let entry = Entry {
         message,
         agent: agent_email.clone(),
-        parent: String::new(),
+        parent: if parent_email == agent_email { String::new() } else { parent_email.clone() },
         scopes: scopes.clone(),
         at: Utc::now(),
     };
@@ -224,6 +236,7 @@ where
         success: true,
         url: guestbook_audience(&state.domain),
         agent: agent_email,
+        parent: parent_email,
     })
     .into_response()
 }
