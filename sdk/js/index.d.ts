@@ -3,8 +3,11 @@
 export type VerifyResult =
   | {
       ok: true;
-      /** The verified email / identity. */
+      /** The verified email — the ATTRIBUTED identity (the human). */
       email: string;
+      /** The ACTING identity — the agent that carried the actions out.
+       *  Equals `email` when the identity acted for itself. */
+      grantee: string;
       /** The issuing IdP domain (the identity's IdP). */
       issuer?: string;
       /** Which kind of identity authenticated. */

@@ -326,8 +326,8 @@ where
     let fetcher = match state.fallback_fetcher().await {
         Ok(f) => f,
         Err(e) => return Json(AccessVerificationResult {
-            status: "failure".into(), email: None, holder: None, scopes: None, issuer: None,
-            reason: Some(format!("fetcher: {e}")),
+            status: "failure".into(), email: None, grantee: None, holder: None, scopes: None,
+            issuer: None, reason: Some(format!("fetcher: {e}")),
         }),
     };
     let accepted = req.accepted_fallbacks.unwrap_or_else(|| vec![state.domain.clone()]);

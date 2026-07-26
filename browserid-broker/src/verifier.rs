@@ -108,6 +108,11 @@ pub struct AccessVerificationResult {
     pub status: String, // "okay" | "failure"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// The ACTING identity — the warrant's grantee (== the access-cert
+    /// identity). Equals `email` for an as-you presentation; differs when an
+    /// agent acted on the attributed identity's behalf. RPs get both names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grantee: Option<String>,
     /// The opaque holder id the presentation carried (which of the user's
     /// things acted). Advisory; the old user/agent subject axis is gone.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -122,7 +127,7 @@ pub struct AccessVerificationResult {
 
 impl AccessVerificationResult {
     fn fail(reason: impl Into<String>) -> Self {
-        Self { status: "failure".into(), email: None, holder: None, scopes: None, issuer: None, reason: Some(reason.into()) }
+        Self { status: "failure".into(), email: None, grantee: None, holder: None, scopes: None, issuer: None, reason: Some(reason.into()) }
     }
 }
 
@@ -322,6 +327,7 @@ pub async fn verify_access_with_dns(
     AccessVerificationResult {
         status: "okay".into(),
         email: Some(v.email),
+        grantee: Some(v.grantee),
         holder: Some(v.holder.as_str().to_string()),
         scopes: Some(v.scopes),
         issuer: Some(v.issuer),

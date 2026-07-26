@@ -149,6 +149,9 @@ async fn verify_access_primary_conformance_okay() {
     let r = verify_access_with_dns(&pres, "https://mingo.place", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
     assert_eq!(r.status, "okay", "{:?}", r);
     assert_eq!(r.email.as_deref(), Some("danmills@sandmill.org"));
+    // Both names, always: for an as-you presentation the acting identity
+    // (warrant grantee) equals the attributed one.
+    assert_eq!(r.grantee.as_deref(), Some("danmills@sandmill.org"));
     assert_eq!(r.holder.as_deref(), Some("br1a2b3c.main"));
 }
 

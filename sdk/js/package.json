@@ -1,6 +1,6 @@
 {
   "name": "@browserid-ng/verify",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Verify BrowserID-NG identity assertions via the hosted /verify service. Zero-dependency, fail-closed.",
   "type": "module",
   "main": "./index.mjs",
@@ -11,12 +11,27 @@
       "import": "./index.mjs"
     }
   },
-  "files": ["index.mjs", "index.d.ts", "README.md"],
-  "engines": { "node": ">=18" },
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "test": "node --test"
   },
-  "keywords": ["browserid", "identity", "authentication", "agent", "verify"],
+  "keywords": [
+    "browserid",
+    "identity",
+    "authentication",
+    "agent",
+    "verify"
+  ],
   "license": "MPL-2.0",
-  "repository": { "type": "git", "url": "https://github.com/vthunder/browserid-ng" }
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vthunder/browserid-ng"
+  }
 }

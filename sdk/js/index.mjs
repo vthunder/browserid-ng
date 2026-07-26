@@ -95,6 +95,7 @@ export function createVerifier(opts = {}) {
     const result = {
       ok: true,
       email: json.email,
+      grantee: json.grantee || json.email,
       issuer: json.issuer,
       subject: json.subject || "user",
       scopes: json.scopes || [],
