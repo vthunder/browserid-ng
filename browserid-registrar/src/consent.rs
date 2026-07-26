@@ -703,12 +703,29 @@ pub async fn warrant_request(
 
     let device_cert = DeviceCert::parse(&req.device_cert)
         .map_err(|e| bad(format!("bad device cert: {e}")))?;
-    // Must be OUR issuance: this registrar is the agent's IdP.
-    device_cert
-        .verify(&state.keypair.public_key())
-        .map_err(|_| bad("device cert not issued by this registrar's IdP"))?;
-    if device_cert.iss() != state.domain {
-        return Err(bad("device cert not issued by this registrar's IdP"));
+    // Our own issuance verifies against our key. A PRIMARY IdP's issuance is
+    // accepted too — verified against the issuer's published key, and only
+    // when that issuer is the agent identity's own domain (the same rule the
+    // provisioning approval applies to primary-signed certs). Without this,
+    // every primary-rooted user's agent was locked out of the consent flow
+    // ("device cert not issued by this registrar's IdP" — bit Dan live on
+    // the guestbook demo, 2026-07-25).
+    if device_cert.iss() == state.domain {
+        device_cert
+            .verify(&state.keypair.public_key())
+            .map_err(|_| bad("device cert not signed by this registrar's IdP"))?;
+    } else {
+        let agent_domain = req.identity.trim().rsplit('@').next().unwrap_or_default().to_lowercase();
+        if device_cert.iss() != agent_domain {
+            return Err(bad("device cert issuer is not the identity's own domain"));
+        }
+        let resolver = state.issuer_resolver.as_ref().ok_or_else(|| {
+            bad("primary-issued device certs are not accepted here (no issuer discovery)")
+        })?;
+        let idp_key = resolver.resolve_issuer_key(device_cert.iss()).await?;
+        device_cert
+            .verify(&idp_key)
+            .map_err(|_| bad("device cert is not signed by its domain's IdP"))?;
     }
     if device_cert.is_expired() {
         return Err(bad("device cert expired"));
