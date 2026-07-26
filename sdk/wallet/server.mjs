@@ -101,7 +101,14 @@ function openStored() {
   } catch {
     throw new NeedCredential();
   }
-  const agent = new DeviceAgent(stored.credential ?? stored);
+  const cred = stored.credential ?? stored;
+  // A credential from the pre-device-model wallet ({secret_key, delegation, …})
+  // can't act anymore — treat it as "no identity" so the agent is told to
+  // re-provision, instead of DeviceAgent crashing on the missing fields.
+  if (!cred || typeof cred !== "object" || !cred.device_key || !cred.agent_device_cert) {
+    throw new NeedCredential();
+  }
+  const agent = new DeviceAgent(cred);
   for (const g of stored.grants ?? []) {
     try { agent.addGrant(g.grant); } catch {}
   }
