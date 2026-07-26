@@ -25,6 +25,15 @@ pub struct AgentIdentity {
     pub parent_email: Option<String>,
 }
 
+/// What the host knows about an agent an account has already met — the
+/// trustworthy "who" a permission card opens with (Flow P, bean eywc):
+/// the user-chosen display name and when the agent was first authorized.
+#[derive(Debug, Clone)]
+pub struct KnownAgent {
+    pub display_name: Option<String>,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 pub trait RegistrarHost: Send + Sync {
     /// Resolve the browser session from cookies. `None` = not signed in.
     fn resolve_session(&self, cookies: &Cookies) -> Option<AuthedUser>;
@@ -72,6 +81,20 @@ pub trait RegistrarHost: Send + Sync {
         _status_idx: Option<u64>,
         _label: Option<&str>,
     ) {
+    }
+
+    /// Store the USER-CHOSEN display name for an agent identity (Flow I step
+    /// 2, bean eywc) — the name every later permission card opens with.
+    /// Best-effort; a default no-op for hosts without a registry.
+    fn set_agent_display_name(&self, _user_id: u64, _agent_email: &str, _name: &str) {}
+
+    /// Whether this account has already met `agent_email` — an agent identity
+    /// on the account, or a recorded device cert / service entry covering it —
+    /// and what it knows about it. `None` = an unknown agent: the consent page
+    /// renders deny-only (P4) and the requester's poll learns why. The default
+    /// treats every agent as unknown; hosts with a registry override.
+    fn known_agent(&self, _user_id: u64, _agent_email: &str) -> Result<Option<KnownAgent>, RegistrarError> {
+        Ok(None)
     }
 }
 

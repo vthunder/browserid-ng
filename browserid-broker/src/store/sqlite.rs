@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 18;
+const SCHEMA_VERSION: i32 = 20;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -116,6 +116,12 @@ impl SqliteStore {
             }
             if current_version < 18 {
                 Self::migrate_v18(conn)?;
+            }
+            if current_version < 19 {
+                Self::migrate_v19(conn)?;
+            }
+            if current_version < 20 {
+                Self::migrate_v20(conn)?;
             }
 
             // Update schema version
@@ -580,6 +586,32 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v19(conn: &Connection) -> Result<(), BrokerError> {
+        // Grantor pin on warrant requests (t1jp): `*` = the approver chooses
+        // (the consent page's on-behalf dropdown); a concrete email = pinned,
+        // approve/deny only. Pre-existing rows carry no pin.
+        conn.execute(
+            "ALTER TABLE warrant_requests ADD COLUMN grantor TEXT NOT NULL DEFAULT '*';",
+            [],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v20(conn: &Connection) -> Result<(), BrokerError> {
+        // Agent flows v2 (eywc): the USER-CHOSEN display name on an agent
+        // identity (Flow I step 2 — what permission cards open with), and the
+        // agent's unverified free-text message on a warrant request.
+        conn.execute_batch(
+            r#"
+            ALTER TABLE emails ADD COLUMN display_name TEXT;
+            ALTER TABLE warrant_requests ADD COLUMN message TEXT;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → DeviceCertRecord mapping (DC Phase 3/4)
@@ -678,13 +710,15 @@ fn warrant_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Warrant
         warrants: warrants_json.and_then(|w| serde_json::from_str(&w).ok()),
         external: row.get::<_, i64>(11)? != 0,
         holder: row.get(12)?,
+        grantor: row.get(13)?,
+        message: row.get(14)?,
         created_at: parse_ts(row.get(8)?),
         expires_at: parse_ts(row.get(9)?),
         last_polled_at: parse_ts_opt(row.get(10)?),
     })
 }
 
-const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, last_polled_at, external, holder";
+const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, last_polled_at, external, holder, grantor, message";
 
 // Helper to convert VerificationType to/from string
 impl VerificationType {
@@ -811,7 +845,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn
-            .prepare("SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email FROM emails WHERE user_id = ?1")
+            .prepare("SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name FROM emails WHERE user_id = ?1")
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
 
         let emails = stmt
@@ -836,6 +870,7 @@ impl UserStore for SqliteStore {
                     last_used_as: EmailType::from_str(&last_used_as_str)
                         .unwrap_or(EmailType::Secondary),
                     parent_email: row.get::<_, Option<String>>(6)?,
+                    display_name: row.get::<_, Option<String>>(7)?,
                 })
             })
             .map_err(|e| BrokerError::Internal(e.to_string()))?
@@ -905,6 +940,21 @@ impl UserStore for SqliteStore {
             .execute(
                 "UPDATE emails SET parent_email = ?1 WHERE email = ?2",
                 params![parent, normalized],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::EmailNotFound);
+        }
+        Ok(())
+    }
+
+    fn set_email_display_name(&self, email: &str, display_name: Option<&str>) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE emails SET display_name = ?1 WHERE email = ?2",
+                params![display_name, normalized],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         if rows == 0 {
@@ -1098,7 +1148,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         conn.query_row(
-            "SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email FROM emails WHERE email = ?1",
+            "SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name FROM emails WHERE email = ?1",
             params![normalized],
             |row| {
                 let email: String = row.get(0)?;
@@ -1121,6 +1171,7 @@ impl UserStore for SqliteStore {
                     last_used_as: EmailType::from_str(&last_used_as_str)
                         .unwrap_or(EmailType::Secondary),
                     parent_email: row.get::<_, Option<String>>(6)?,
+                    display_name: row.get::<_, Option<String>>(7)?,
                 })
             },
         )
@@ -1167,8 +1218,8 @@ impl UserStore for SqliteStore {
     fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO warrant_requests (code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, external, holder)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO warrant_requests (code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, external, holder, grantor, message)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 req.code,
                 req.user_id.0 as i64,
@@ -1182,6 +1233,8 @@ impl UserStore for SqliteStore {
                 req.expires_at.to_rfc3339(),
                 req.external as i64,
                 req.holder,
+                req.grantor,
+                req.message,
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -1866,6 +1919,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn set_parent_email(&self, email: &str, parent_email: Option<&str>) -> StoreResult<()> {
         (**self).set_parent_email(email, parent_email)
+    }
+
+    fn set_email_display_name(&self, email: &str, display_name: Option<&str>) -> StoreResult<()> {
+        (**self).set_email_display_name(email, display_name)
     }
 
     fn create_pending(&self, pending: PendingVerification) -> StoreResult<()> {

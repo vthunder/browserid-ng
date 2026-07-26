@@ -67,6 +67,39 @@ hosted `/verify`) and learns the agent, its principal, and the granted scopes.
 - **`agent.save(identityPath)` / `agent.revoke()`**
 - **`Credential.load(pathOrObject)`** — `constraint()`, `defaultIdentity()`, domains.
 
+### Paired provisioning (device model)
+
+The device-model entry points (`import { requestProvision, requestWarrants,
+DeviceAgent } from "@browserid-ng/agent"`) pair an agent with its human — no
+downloaded credential. The human's side is the broker's **agent flows v2**:
+an identity step (fingerprint check, then name + address) and, when grants
+are bundled, a separate permission screen.
+
+```js
+const pending = await requestProvision(broker, {
+  handle: "bsky",                       // address tag suggestion
+  label: "Bluesky poster",              // display-NAME suggestion (they confirm it)
+  message: "I post your daily summary.",// why — quoted to them, unverified
+  grants: [{ audience, scopes: ["post"] }],
+});
+show(pending.verificationUriComplete, pending.fingerprint);
+const { credential, grants, grantsDenied } = await pending.wait();
+```
+
+- **`grantor`** (both calls) pins who the warrants attribute to: omit (or
+  `"*"`) and the human chooses via a dropdown — the agent itself, or an
+  identity they own; `"self"` pins the agent itself (`grantor == grantee`);
+  a concrete email pins that identity. Pins render as text (approve/deny
+  only) and an unsatisfiable pin fails the request immediately.
+- **`message`** (both calls) is your one-sentence account of why — always
+  shown quoted and marked unverified; send one.
+- **`grantsDenied`** on the provisioning pickup means the human approved the
+  identity but declined the permissions: the credential is real, ask again
+  later with `requestWarrants`.
+- A denied `requestWarrants(...).wait()` throws with the broker's reason when
+  it has one — `unknown_agent` means this account never met you: run
+  `requestProvision` first.
+
 ### Typed errors
 
 `NeedCredentialError` (no credential file), `AmbiguousNameError` (several reserved

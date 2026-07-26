@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use browserid_registrar::host::{AgentIdentity, AuthedUser, RegistrarHost};
+use browserid_registrar::host::{AgentIdentity, AuthedUser, KnownAgent, RegistrarHost};
 use browserid_registrar::models as reg;
 use browserid_registrar::{RegistrarError, RegistrarStore};
 use tower_cookies::Cookies;
@@ -68,6 +68,8 @@ fn to_reg_request(r: crate::store::WarrantRequestRecord) -> reg::WarrantRequestR
         agent_email: r.agent_email,
         holder: r.holder,
         label: r.label,
+        grantor: r.grantor,
+        message: r.message,
         grants: r.grants.into_iter().map(to_reg_grant).collect(),
         status: to_reg_status(r.status),
         warrants: r.warrants,
@@ -86,6 +88,8 @@ fn from_reg_request(r: reg::WarrantRequestRecord) -> crate::store::WarrantReques
         agent_email: r.agent_email,
         holder: r.holder,
         label: r.label,
+        grantor: r.grantor,
+        message: r.message,
         grants: r.grants.into_iter().map(from_reg_grant).collect(),
         status: from_reg_status(r.status),
         warrants: r.warrants,
@@ -349,6 +353,54 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
                 tracing::warn!("labeling agent holder failed: {e}");
             }
         }
+    }
+
+    fn set_agent_display_name(&self, user_id: u64, agent_email: &str, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let name: String = name.chars().take(64).collect();
+        // Only name identities this account actually owns — best-effort.
+        match self.user_store.get_email(agent_email) {
+            Ok(Some(rec)) if rec.user_id.0 == user_id => {
+                if let Err(e) = self.user_store.set_email_display_name(agent_email, Some(&name)) {
+                    tracing::warn!("setting agent display name failed: {e}");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("setting agent display name failed: {e}"),
+        }
+    }
+
+    fn known_agent(
+        &self,
+        user_id: u64,
+        agent_email: &str,
+    ) -> Result<Option<KnownAgent>, RegistrarError> {
+        // Known = an identity on this account (a minted agent, or the user
+        // themself for an as-you agent), or a recorded device cert / external
+        // service entry covering the identity. Anything else is a stranger.
+        let email_rec = self
+            .user_store
+            .get_email(agent_email)
+            .map_err(to_reg_err)?
+            .filter(|e| e.user_id.0 == user_id);
+        let cert_created: Option<chrono::DateTime<chrono::Utc>> = self
+            .user_store
+            .list_device_certs(UserId(user_id))
+            .map_err(to_reg_err)?
+            .into_iter()
+            .filter(|c| c.identities.iter().any(|i| i.eq_ignore_ascii_case(agent_email)))
+            .map(|c| c.issued_at)
+            .min();
+        if email_rec.is_none() && cert_created.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(KnownAgent {
+            display_name: email_rec.as_ref().and_then(|e| e.display_name.clone()),
+            created_at: cert_created.or(email_rec.and_then(|e| e.verified_at)),
+        }))
     }
 
     fn owns_verified_email(&self, user_id: u64, email: &str) -> Result<bool, RegistrarError> {

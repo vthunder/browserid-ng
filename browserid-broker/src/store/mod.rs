@@ -60,6 +60,10 @@ pub trait UserStore: Send + Sync {
     /// must ensure both emails belong to the same account. `None` clears it.
     fn set_parent_email(&self, email: &str, parent_email: Option<&str>) -> StoreResult<()>;
 
+    /// Set (or clear) an email's USER-CHOSEN display name (Flow I step 2,
+    /// eywc) — only meaningful for agent identities today. `None` clears it.
+    fn set_email_display_name(&self, email: &str, display_name: Option<&str>) -> StoreResult<()>;
+
     /// Store a pending verification
     fn create_pending(&self, pending: PendingVerification) -> StoreResult<()>;
 

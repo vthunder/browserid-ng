@@ -23,6 +23,13 @@ pub struct WarrantRequestRecord {
     pub holder: String,
     /// Label of the provisioning cert that raised the request (display)
     pub label: String,
+    /// The request's GRANTOR pin, normalized (t1jp): `*` = approver's choice;
+    /// a concrete email = pinned (approve/deny only). A `self` pin arrives
+    /// normalized to the agent identity itself.
+    pub grantor: String,
+    /// The agent's own account of why it wants this (eywc) — displayed
+    /// quoted and marked unverified.
+    pub message: Option<String>,
     /// The requested grants — one per RP audience, each with its own scopes
     /// (audiences verbatim from RP challenges). Approval yields one
     /// single-audience warrant per grant.

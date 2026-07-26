@@ -4,10 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>browserid.me — agent consent</title>
-  <!-- Surface B of the agent-authorization design (flows B1–B4, bean k0s9):
-       later permission requests for an agent whose identity is already
-       settled. The cards STATE the identity relation — which card you get is
-       decided by what kind of agent is asking, never by asking the user. -->
+  <!-- Flow P of the agent-flows-v2 design (bean eywc): permission requests
+       for a KNOWN agent. Identity is already settled, so it is stated, never
+       asked: every card opens with the user-chosen name from Flow I. The only
+       question is the permission itself; "on behalf of" is a dropdown (the
+       agent itself, or an identity of yours) unless the request pinned the
+       grantor. An agent this account has never met gets a deny-only card. -->
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; padding: 32px 16px 48px;
@@ -69,6 +71,8 @@
     .pv-badge { font: 9.5px/1.4 ui-monospace, Menlo, monospace; letter-spacing: .06em; color: #8a8a93;
       border: 1px solid rgba(0,0,0,.16); border-radius: 4px; padding: 2px 5px; flex: none; margin-top: 1px; }
     .pv-footnote { font: 11.5px/1.5 system-ui, sans-serif; color: #8a8a93; }
+    .pv-obsel { font: 12px/1.4 ui-monospace, Menlo, monospace; color: #17171a; border: 1px solid rgba(0,0,0,.14);
+      border-radius: 6px; padding: 4px 6px; background: #fff; max-width: 100%; }
     details.pv-signed { margin: 0 0 9px; }
     details.pv-signed summary { font: 12px/1.4 system-ui, sans-serif; color: #1f6feb; cursor: pointer; list-style: none; }
     details.pv-signed summary::-webkit-details-marker { display: none; }
@@ -95,6 +99,8 @@ const escapeHtml = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&
 
 let csrf = null;
 let statusUri = null;
+// The account's root (non-agent) identities — the on-behalf dropdown's pool.
+let rootIds = [];
 // The account's registered warrants, used to state (not ask) each agent's
 // established relation: how it was authorized is how later grants are signed.
 let registry = [];
@@ -172,11 +178,12 @@ async function signWarrant(config, grantor, grantee, audience, scopes, status, h
 }
 
 // ---- classification ------------------------------------------------------
-// The identity question was settled when the agent was authorized (surface
-// A); here it is only restated. Server facts pick the card:
+// The identity question was settled when the agent was authorized (Flow I);
+// here it is only restated. Server facts pick the card:
 //   external              → B3: a foreign service — you must be the authority
 //   agent == delegator    → B2: an agent that IS you (provisioned as-you)
-//   otherwise             → B1: a +tag agent, relation read from the registry
+//   !known                → P4: a stranger — deny is the only action
+//   otherwise             → P1/P2: the common card — who · why · what
 
 /// The agent's established relation, read from its registered warrants:
 /// 'onbehalf' when any existing warrant names a distinct grantor, else
@@ -262,35 +269,90 @@ function approveLabel(r, text) {
   return n > 2 ? `${text} all ${n}` : n === 2 ? `${text} both` : text;
 }
 
-// B1 — the common case: a +tag agent, relation as established at first
-// authorization. Multiple grants in one request are normal; equal weight.
-function cardB1(r) {
-  const relation = establishedRelation(r.agent_email);
-  const grantor = relation === 'standalone' ? r.agent_email : r.delegator_email;
-  const n = (r.grants || []).length;
-  const since = authorizedSince(r.agent_email);
-  const agentLocal = r.agent_email.split('@')[0];
-  const callout = relation === 'standalone'
-    ? `At ${n === 1 ? 'this site' : n === 2 ? 'both sites' : 'these sites'}, actions are <b>by</b> this agent,
-       <b>as itself</b> — not attributed to you, same as your existing grants.`
-    : `At ${n === 1 ? 'this site' : n === 2 ? 'both sites' : 'these sites'}, actions are <b>by</b> this agent,
-       <b>for</b> you — same as your existing grants.`;
+// The display name every P card opens with: the name chosen at Flow I step 2,
+// else the agent's local part (older agents, named before display names).
+function agentName(r) {
+  return (r.display_name || '').trim() || r.agent_email.split('@')[0];
+}
+
+// "created April 12" — the host's record of when this account met the agent,
+// falling back to the registry's earliest warrant.
+function createdLine(r) {
+  const t = r.agent_created_at ? Date.parse(r.agent_created_at) : null;
+  const d = t ? new Date(t).toLocaleDateString(undefined, { month: 'long', day: 'numeric' })
+    : authorizedSince(r.agent_email);
+  return d ? `created ${d}` : null;
+}
+
+// P1/P2 — the common case: who (your name for it) · why (the agent's own
+// message, quoted and unverified — helpful without being trusted; the chips
+// remain the ground truth) · what (site + permissions + on whose behalf).
+// The on-behalf account is a dropdown when the request doesn't pin it —
+// pinned requests show it as plain text and the only choice is allow/deny.
+function cardP(r) {
+  const name = agentName(r);
+  const created = createdLine(r);
+  const message = (r.message || '').trim()
+    || ((r.label || '').trim().toLowerCase() !== r.agent_email.toLowerCase() ? (r.label || '').trim() : '');
+  const pin = (r.grantor || '*');
+  const pinned = pin !== '*';
+  const pinnedSelf = pinned && pin.toLowerCase() === r.agent_email.toLowerCase();
+  // Unpinned default: how the agent was authorized is how later grants lean.
+  const defaultChoice = establishedRelation(r.agent_email) === 'standalone' ? 'self' : r.delegator_email;
+  let obCell;
+  if (pinnedSelf) {
+    obCell = `<span class="mono" style="color:#17171a">itself only</span> <span class="pv-footnote">· requested</span>`;
+  } else if (pinned) {
+    obCell = `<span class="mono" style="color:#17171a">${escapeHtml(pin)}</span> <span class="pv-footnote">· requested</span>`;
+  } else {
+    const opts = [`<option value="self"${defaultChoice === 'self' ? ' selected' : ''}>itself only</option>`]
+      .concat(rootIds.map(e => `<option value="${escapeHtml(e)}"${e === defaultChoice ? ' selected' : ''}>${escapeHtml(e)}</option>`));
+    obCell = `<select class="pv-obsel ob-choice" data-code="${escapeHtml(r.code)}">${opts.join('')}</select>`;
+  }
+  const msgHtml = message
+    ? `<div style="font:italic 12.5px/1.6 system-ui,sans-serif;color:#4a4a52">\u201C${escapeHtml(message)}\u201D</div>`
+    : `<div style="font:12.5px/1.6 system-ui,sans-serif;color:#8a8a93">None given — it didn\u2019t say what it intends to do with this.</div>`;
   return {
-    grantor,
+    grantor: pinned ? pin : defaultChoice,
     html: pvHead(r.delegator_email) +
-      `<div class="pv-title" style="margin-bottom:8px">Your agent wants access to
-        ${n === 1 ? 'a new site' : n === 2 ? 'two more sites' : n + ' more sites'}.</div>
-      <p class="pv-note" style="font-size:12.5px;margin-bottom:16px"><span class="mono" style="color:#17171a">${escapeHtml(agentLocal)}</span>${since ? ` — authorized ${escapeHtml(since)}` : ''}</p>` +
+      `<div class="pv-title" style="margin-bottom:14px">${escapeHtml(name)} wants permission.</div>
+      <div class="pv-panel" style="background:#faf9f7;margin-bottom:14px">
+        <div class="pv-label" style="margin-bottom:5px">Agent</div>
+        <div style="font:600 13px/1.4 system-ui,sans-serif;color:#17171a">${escapeHtml(name)}</div>
+        <div class="mono" style="font-size:11.5px;line-height:1.5;color:#8a8a93;overflow-wrap:anywhere">${escapeHtml(r.agent_email)}</div>
+        ${created ? `<div class="pv-footnote" style="margin-top:4px">${escapeHtml(created)}</div>` : ''}</div>
+      <div class="pv-panel" style="background:#faf9f7;margin-bottom:14px">
+        <div class="pv-label" style="margin-bottom:5px">Agent message (unverified)</div>${msgHtml}</div>` +
       grantBlocks(r.grants) +
-      `<p class="pv-hint" style="margin-top:0">The permissions the agent is requesting at each site.
-        ${n > 1 ? `Approving covers ${n === 2 ? 'both' : `all ${n}`}, or none.` : ''}</p>
-      <div class="pv-callout">${callout}</div>` +
-      whatGetsSigned(r, grantor) +
-      `<div class="pv-actions">
-        <button class="pv-btn approve" data-code="${escapeHtml(r.code)}" disabled>${approveLabel(r, 'Approve')}</button>
+      `<div class="pv-panel" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+        <span class="pv-footnote">on behalf of</span> ${obCell}</div>
+      <div class="pv-actions" style="margin-top:0">
+        <button class="pv-btn approve" data-code="${escapeHtml(r.code)}" disabled>${approveLabel(r, 'Allow for 90 days')}</button>
         <button class="pv-ghost deny" data-code="${escapeHtml(r.code)}">Deny</button></div>` +
       expiryLine(r) +
       `<p class="status" id="status-${escapeHtml(r.code)}"></p>`,
+  };
+}
+
+// P4 — a permission request from an agent this account has never met.
+// Phishing-adjacent, so no consent is offered: deny is the only action. A
+// legitimate agent should request an identity (Flow I) itself — its poll is
+// told exactly that.
+function cardP4(r) {
+  return {
+    grantor: null,
+    danger: true,
+    denyOnly: true,
+    html: pvHead(r.delegator_email) +
+      `<div class="pv-title" style="margin-bottom:12px">You haven't met this agent.</div>
+      <p class="pv-note" style="margin-bottom:8px">An agent your account doesn't know —
+        <span class="mono">${escapeHtml(r.agent_email)}</span> — is asking for permissions.
+        Check where this link came from; you may not be talking to the right agent.</p>
+      <p class="pv-hint" style="margin-bottom:14px">A legitimate agent introduces itself first.
+        Denying tells it to request an identity before asking for permissions.</p>
+      <div class="pv-actions" style="margin-top:0">
+        <button class="pv-btn2 deny" data-code="${escapeHtml(r.code)}">Deny</button></div>
+      <p class="status" id="status-${escapeHtml(r.code)}"></p>`,
   };
 }
 
@@ -376,15 +438,23 @@ function render(requests) {
   list.innerHTML = requests.map(r => {
     const card = r.external ? cardB3(r)
       : r.agent_email.toLowerCase() === r.delegator_email.toLowerCase() ? cardB2(r)
-      : cardB1(r);
+      : r.known === false ? cardP4(r)
+      : cardP(r);
     byCode[r.code] = { r, grantor: card.grantor };
     const classes = ['pvcard', card.danger ? 'danger' : '', r.code === linkedCode ? 'hot' : ''].filter(Boolean);
     return `<div class="${classes.join(' ')}" id="req-${escapeHtml(r.code)}">${card.html}</div>`;
   }).join('');
 
+  // The on-behalf dropdown (unpinned P cards): 'self' = the agent itself.
+  for (const sel of list.querySelectorAll('select.ob-choice')) {
+    const e = byCode[sel.dataset.code];
+    sel.onchange = () => {
+      e.grantor = sel.value === 'self' ? e.r.agent_email : sel.value;
+    };
+  }
   for (const b of list.querySelectorAll('button.approve')) {
     const e = byCode[b.dataset.code];
-    b.onclick = () => resolve(e.r, true, e.grantor);
+    b.onclick = () => resolve(e.r, true, e.grantor === 'self' ? e.r.agent_email : e.grantor);
     // Brief arming delay: no reflex-click or scripted-focus approval the
     // instant the page paints (complements the frame-ancestors denial).
     setTimeout(() => { b.disabled = false; }, 800);
@@ -488,12 +558,15 @@ async function boot() {
   $('auth-gate').hidden = true;
   // External requests are redirect-tied: they surface ONLY via their
   // /consent/<code> deep link, so pass the code through when we have one.
-  const [resp, reg] = await Promise.all([
+  const [resp, reg, emails] = await Promise.all([
     api('/wsapi/warrant_requests' + (linkedCode ? '?code=' + encodeURIComponent(linkedCode) : '')),
     api('/wsapi/warrants').catch(() => ({ warrants: [] })),
+    api('/wsapi/list_emails').catch(() => ({ emails: [], agents: [] })),
   ]);
   statusUri = resp.status_uri || null;
   registry = reg.warrants || [];
+  const agentSet = new Set((emails.agents || []).map(a => a.toLowerCase()));
+  rootIds = (emails.emails || []).filter(e => !agentSet.has(e.toLowerCase()));
   render(resp.requests);
 }
 

@@ -39,7 +39,7 @@ appears attributed to the agent **and to you**.
   automatically once you approve. The private key is generated locally and never
   transmitted.
 - **`identity`** — who the agent acts as.
-- **`authorize(audience, scopes)`** — request a warrant for an audience (signed by
+- **`authorize(audience, scopes, message?)`** — request a warrant for an audience (signed by
   your config cert at the consent screen).
 - **`get_assertion(audience)`** — the four-object bundle
   (`access_cert~assertion~warrant~config_cert`) to present there; the agent mints a

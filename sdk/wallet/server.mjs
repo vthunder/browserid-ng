@@ -147,7 +147,7 @@ function explain(e) {
 // Non-blocking. { ready } if held; { approveUrl } to show the human; { pending }
 // if approval is still in flight. Approval is polled in the BACKGROUND — once
 // the human approves, the warrant lands and a retry proceeds.
-async function ensureWarrant(agent, audience, scopes) {
+async function ensureWarrant(agent, audience, scopes, message) {
   if (agent.warrantedAudiences().includes(audience)) return { ready: true };
   const inflight = pendingWarrants.get(audience);
   if (inflight) {
@@ -165,18 +165,24 @@ async function ensureWarrant(agent, audience, scopes) {
     identity: agent.email,
     grants: [{ audience, scopes }],
     label: process.env.AGENT_NAME || "agent",
+    ...(message ? { message } : {}),
   });
   pendingWarrants.set(audience, { approveUrl: pending.verificationUriComplete });
   pending
     .wait()
     .then((grants) => {
       for (const g of grants) agent.addGrant(g.grant);
+      lastDenial.delete(audience);
       saveAgent(agent);
     })
-    .catch(() => {})
+    .catch((e) => { lastDenial.set(audience, e.message); })
     .finally(() => pendingWarrants.delete(audience));
   return { approveUrl: pending.verificationUriComplete };
 }
+// Last settled failure per audience (denied/expired), so authorize can say
+// WHY — e.g. the broker's `unknown_agent` reason — instead of silently
+// re-asking.
+const lastDenial = new Map();
 
 const server = new McpServer({ name: "browserid-wallet", version: "0.1.0" });
 
@@ -269,14 +275,20 @@ server.registerTool(
   "authorize",
   {
     title: "Request a warrant",
-    description: "Ask the human to grant this agent an audience + scopes. Returns an APPROVE_URL (or READY).",
-    inputSchema: { audience: z.string(), scopes: z.array(z.string()).optional() },
+    description: "Ask the human to grant this agent an audience + scopes. Returns an APPROVE_URL (or READY). Pass a one-sentence `message` saying what you'll do with the access — it's shown to the human (quoted, unverified) and helps them decide.",
+    inputSchema: {
+      audience: z.string(),
+      scopes: z.array(z.string()).optional(),
+      message: z.string().optional().describe("one sentence on what you'll do with this access — shown to the human, unverified"),
+    },
   },
-  async ({ audience, scopes }) => {
+  async ({ audience, scopes, message }) => {
     try {
       const agent = await loadAgent();
-      const r = await ensureWarrant(agent, audience, scopes?.length ? scopes : ["use"]);
+      const denied = lastDenial.get(audience);
+      const r = await ensureWarrant(agent, audience, scopes?.length ? scopes : ["use"], message);
       if (r.ready) return text(`READY — authorized for ${audience}. Call get_assertion.`);
+      if (denied && !r.pending) lastDenial.delete(audience);
       return text(
         `APPROVE_URL: ${r.approveUrl}\n⚠ Show the human this link and ask them to approve. ` +
           `Then IMMEDIATELY call get_assertion — it waits for their approval and continues. Do NOT wait for the human to tell you.`

@@ -63,7 +63,10 @@ function urlHost(u) {
  *
  * WHO ACTS FOR WHOM — the two pins that decide it:
  * - `grantor`: the identity a write is ATTRIBUTED to. Omit (or `"*"`) to let
- *   the approver choose which of their identities delegates.
+ *   the approver choose which of their identities delegates. Pass `"self"`
+ *   to pin the minted agent identity itself (grantor == grantee — the agent
+ *   acts as itself, never attributed to the human); combining `"self"` with
+ *   an as-you `grantee` is contradictory and refused up front.
  * - `grantee`: the identity that ACTS. Omit for **as-you** (grantee ≡ grantor,
  *   which is what provisioning an account at an RP requires). Pass `"*"` to
  *   have the approver mint a distinct actor — that is what produces an
@@ -72,10 +75,14 @@ function urlHost(u) {
  *
  * `handle` is the browserid identity handle to request — NOT an application's
  * account name. Don't pass an RP-side handle here.
+ *
+ * `label` suggests the agent's display NAME (the human confirms or changes it
+ * on the naming screen); `message` is the agent's own account of why it wants
+ * the bundled grants — quoted on the permission screen, marked unverified.
  */
 export async function requestProvision(
   broker,
-  { handle, namespace, grants = [], label, grantor, grantee, granteeHolder, http = fetch } = {},
+  { handle, namespace, grants = [], label, message, grantor, grantee, granteeHolder, http = fetch } = {},
 ) {
   const deviceKey = KeyPair.generate();
   const body = {
@@ -85,6 +92,7 @@ export async function requestProvision(
   if (handle) body.requested_handles = { names: [handle] };
   if (namespace) body.namespace = namespace;
   if (label) body.label = label;
+  if (message) body.message = message;
   if (grantor) body.grantor = grantor;
   if (grantee) body.grantee = grantee;
   if (granteeHolder) body.grantee_holder = granteeHolder;
@@ -150,7 +158,11 @@ export class PendingProvision {
           const grants = (json.grants ?? [])
             .filter((g) => g?.audience && g?.warrant)
             .map((g) => ({ audience: g.audience, grant: g.warrant }));
-          return { credential, grants };
+          // Two-stage flow: the identity was approved but the permission
+          // screen was declined — the credential is real, the grants aren't.
+          return json.grants_denied
+            ? { credential, grants, grantsDenied: json.grants_denied }
+            : { credential, grants };
         }
         case "denied":
           throw new AgentError("the human refused the request");
@@ -193,14 +205,22 @@ export class PendingProvision {
  * identity. Returns a pending approval whose `wait()` resolves to the granted
  * `[{ audience, grant }]`. (Registrar: `/warrant/request` + `/warrant/poll`;
  * note the status word here is "approved", not "completed".)
+ *
+ * `grantor` pins who the warrants attribute to (t1jp). Omit (or `"*"`) to let
+ * the approver choose — the consent page offers the agent itself or any
+ * identity they own. Pass `"self"` (or the agent's own email) to require the
+ * agent acts as itself, or a concrete email to require that authority; an
+ * unsatisfiable pin fails this call immediately rather than expiring.
  */
-export async function requestWarrants(broker, { deviceCert, identity, grants, label, http = fetch }) {
+export async function requestWarrants(broker, { deviceCert, identity, grants, label, message, grantor, http = fetch }) {
   const base = trim(broker);
   const { res, json } = await postJson(http, `${base}/warrant/request`, {
     device_cert: deviceCert,
     identity,
     grants: grants.map((g) => ({ audience: g.audience, scopes: g.scopes ?? [] })),
     ...(label ? { label } : {}),
+    ...(message ? { message } : {}),
+    ...(grantor ? { grantor } : {}),
   });
   if (!res.ok || json.success !== true) {
     throw new RequestError("warrant request", res.status, json.reason || "no reason given");
@@ -233,7 +253,11 @@ export class PendingWarrants {
           .filter((g) => g?.audience && g?.warrant)
           .map((g) => ({ audience: g.audience, grant: g.warrant }));
       }
-      if (json.status === "denied") throw new AgentError("the human refused the request");
+      if (json.status === "denied") {
+        throw new AgentError(json.reason
+          ? `the request was denied: ${json.reason}`
+          : "the human refused the request");
+      }
       if (res.status === 410) throw new AgentError("the request expired before it was resolved");
       if (res.status >= 400 && res.status < 500 && res.status !== 429) {
         throw new RequestError("warrant poll", res.status, json.reason || "no reason given");

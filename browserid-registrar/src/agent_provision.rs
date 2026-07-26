@@ -46,6 +46,11 @@ const B64: base64::engine::general_purpose::GeneralPurpose = base64::engine::gen
 #[derive(Clone, PartialEq)]
 enum Status {
     Pending,
+    /// Two-stage approval (eywc): the identity stage is done — the cert is
+    /// minted — and the grants stage (the permission screens) is still open.
+    /// The agent's poll keeps reading "pending" until the whole request
+    /// resolves; abandoning here leaves an honest identity-without-permissions.
+    IdentityIssued,
     Completed,
     Denied,
     Failed,
@@ -69,9 +74,16 @@ struct Record {
     /// flow) — `status_idx` filled by `prepare`.
     grants: Vec<WarrantGrantItem>,
     label: String,
+    /// The agent's own account of why it wants this (eywc) — quoted on the
+    /// permission screens, marked unverified.
+    message: Option<String>,
     fingerprint: String,
     status: Status,
     fail_reason: Option<String>,
+    /// Set when the grants stage was DENIED after the identity stage issued
+    /// the cert (eywc): the poll still delivers the credential, with no
+    /// grants and this reason.
+    grants_denied: Option<String>,
     idp: Option<String>,
     // Filled by `prepare` (session-authed, from the approval page): the
     // broker-assigned holder the device cert AND the warrant matchers bind to,
@@ -193,9 +205,15 @@ pub struct RequestBody {
     pub grants: Vec<GrantReq>,
     #[serde(default)]
     pub label: Option<String>,
+    /// The agent's own account of why it wants the bundled grants (eywc) —
+    /// displayed quoted and marked unverified on the permission screens.
+    #[serde(default)]
+    pub message: Option<String>,
     /// GRANTOR pin (warrant semantics): the identity the write attributes to.
     /// `<id>` pins it; `*` (or absent → `*`) lets the approver choose which of
-    /// their identities delegates.
+    /// their identities delegates; `self` (t1jp) pins the to-be-minted agent
+    /// identity itself (grantor == grantee — the agent acts as itself), which
+    /// no concrete email can express before approval.
     #[serde(default)]
     pub grantor: Option<String>,
     /// GRANTEE pin: the actor identity. `<id>` pins it (a foreign service like
@@ -214,11 +232,28 @@ pub struct RequestBody {
 
 /// Normalize a `grantor`/`grantee` pin: absent → the field's default sentinel.
 /// grantor absent → `*` (any); grantee absent/empty → `` (as-you required).
+/// A grantor of `self` (t1jp) survives normalization as the literal sentinel —
+/// the agent identity it pins doesn't exist until approval.
 fn norm_grantor(p: Option<&str>) -> String {
     match p.map(str::trim).filter(|s| !s.is_empty()) {
         None => "*".to_string(),
         Some(s) => s.to_lowercase(),
     }
+}
+
+/// Reject a request whose pins can never be satisfied together (t1jp). A
+/// `self` grantor pin means the warrants must name the minted agent as their
+/// own authority — contradictory with an as-you demand (empty grantee: the
+/// agent would BE the human identity, which is exactly what `self` exists to
+/// avoid asking for).
+fn request_pin_contradiction(grantor: &str, grantee: &str) -> Option<&'static str> {
+    if grantor == "self" && grantee.is_empty() {
+        return Some(
+            "contradictory pins: grantor 'self' (the agent acts as itself) \
+             cannot be combined with an as-you grantee (the agent becomes the user)",
+        );
+    }
+    None
 }
 fn norm_grantee(p: Option<&str>) -> String {
     match p.map(str::trim) {
@@ -259,6 +294,9 @@ pub async fn request(
     let namespace = normalize_namespace(req.namespace.as_deref())?;
     let grantor = norm_grantor(req.grantor.as_deref());
     let grantee = norm_grantee(req.grantee.as_deref());
+    if let Some(reason) = request_pin_contradiction(&grantor, &grantee) {
+        return Err(RegistrarError::ValidationError(reason.into()));
+    }
     // A concrete foreign grantee must carry its holder (the warrant binds to it).
     let grantee_holder = req
         .grantee_holder
@@ -277,6 +315,15 @@ pub async fn request(
         .into_iter()
         .map(|g| WarrantGrantItem { audience: g.audience, scopes: g.scopes, status_idx: None })
         .collect();
+    let message = req
+        .message
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if message.as_deref().is_some_and(|m| m.len() > 500) {
+        return Err(RegistrarError::ValidationError("message too long (500 chars max)".into()));
+    }
     let code = new_code();
     let user_code = new_user_code();
     let fp = fingerprint(&pubkey);
@@ -291,9 +338,11 @@ pub async fn request(
         grantee_holder,
         grants,
         label: req.label.unwrap_or_default(),
+        message,
         fingerprint: fp.clone(),
         status: Status::Pending,
         fail_reason: None,
+        grants_denied: None,
         idp: None,
         holder: None,
         prepared_identity: None,
@@ -337,16 +386,24 @@ pub async fn poll(State(state): State<Arc<RegistrarState>>, Json(req): Json<Poll
         m.remove(&req.code);
         return expired();
     }
-    if let Some(prev) = rec.last_polled_at {
-        if Utc::now() - prev < Duration::seconds(POLL_INTERVAL_SECONDS) {
-            return RegistrarError::PollTooFast.into_response();
+    // Slow-down applies while the human is still deciding; a RESOLVED request
+    // delivers immediately regardless (same rule as the consent flow's poll).
+    let deciding = rec.status == Status::Pending || rec.status == Status::IdentityIssued;
+    if deciding {
+        if let Some(prev) = rec.last_polled_at {
+            if Utc::now() - prev < Duration::seconds(POLL_INTERVAL_SECONDS) {
+                return RegistrarError::PollTooFast.into_response();
+            }
         }
     }
     if let Some(r) = m.get_mut(&req.code) {
         r.last_polled_at = Some(Utc::now());
     }
     match rec.status {
-        Status::Pending => Json(json!({ "status": "pending" })).into_response(),
+        // The grants stage is still with the human — the agent keeps waiting.
+        Status::Pending | Status::IdentityIssued => {
+            Json(json!({ "status": "pending" })).into_response()
+        }
         Status::Denied => {
             m.remove(&req.code);
             Json(json!({ "status": "denied" })).into_response()
@@ -369,7 +426,7 @@ pub async fn poll(State(state): State<Arc<RegistrarState>>, Json(req): Json<Poll
                 .zip(rec.warrants.clone().unwrap_or_default())
                 .map(|(g, w)| json!({ "audience": g.audience, "warrant": w }))
                 .collect();
-            Json(json!({
+            let mut body = json!({
                 "status": "completed",
                 "credential": {
                     "device_cert": rec.device_cert,
@@ -378,8 +435,13 @@ pub async fn poll(State(state): State<Arc<RegistrarState>>, Json(req): Json<Poll
                     "access_mint": rec.access_mint,
                 },
                 "grants": grants,
-            }))
-            .into_response()
+            });
+            // Two-stage flow (eywc): identity approved, permissions declined.
+            // The credential is real; say why the grants aren't.
+            if let Some(reason) = &rec.grants_denied {
+                body["grants_denied"] = json!(reason);
+            }
+            Json(body).into_response()
         }
     }
 }
@@ -403,7 +465,8 @@ pub struct InfoResponse {
     pub requested_patterns: Vec<String>,
     /// Holder namespace the requester hinted (`agents` / `services`).
     pub namespace: String,
-    /// GRANTOR pin (`<id>` or `*`) — who the write attributes to.
+    /// GRANTOR pin (`<id>`, `*`, or `self` for the minted agent itself, t1jp)
+    /// — who the write attributes to.
     pub grantor: String,
     /// GRANTEE pin (`<id>`, `*`, or empty for as-you-required) — the actor. The
     /// card derives owned-vs-foreign from the approver's own identities.
@@ -415,6 +478,20 @@ pub struct InfoResponse {
     pub grantee_holder: Option<String>,
     /// Warrant grants asked for in the same approval (merged flow).
     pub grants: Vec<WarrantGrantItem>,
+    /// The agent's own account of why it wants the grants (eywc) — quoted,
+    /// unverified.
+    pub message: Option<String>,
+    /// Two-stage progress (eywc): "pending" (nothing approved yet) or
+    /// "identity_issued" (Flow I done, the permission screens are open). Lets
+    /// a reloaded page resume mid-flow instead of reporting nothing waiting.
+    pub stage: String,
+    /// Filled once the identity stage is done — what the grants stage needs
+    /// to render and sign without re-running prepare.
+    pub agent_email: Option<String>,
+    pub holder: Option<String>,
+    /// The registrar's status list URI — embedded (with each grant's
+    /// status_idx) in the warrants the page signs.
+    pub status_uri: String,
 }
 
 /// POST /agent-provision/info — what the verify page shows. By code (the bearer
@@ -427,8 +504,12 @@ pub async fn info(
     let m = PROVISIONS.lock().unwrap();
     let rec = m
         .get(&req.code)
-        .filter(|r| !r.is_expired() && r.status == Status::Pending)
+        .filter(|r| {
+            !r.is_expired()
+                && (r.status == Status::Pending || r.status == Status::IdentityIssued)
+        })
         .ok_or(RegistrarError::ProvisionRequestNotFound)?;
+    let identity_issued = rec.status == Status::IdentityIssued;
     Ok(Json(InfoResponse {
         success: true,
         provisioning_pubkey: rec.provisioning_pubkey.clone(),
@@ -441,6 +522,11 @@ pub async fn info(
         grantee: rec.grantee.clone(),
         grantee_holder: rec.grantee_holder.clone(),
         grants: rec.grants.clone(),
+        message: rec.message.clone(),
+        stage: if identity_issued { "identity_issued".into() } else { "pending".into() },
+        agent_email: rec.agent_email.clone().filter(|_| identity_issued),
+        holder: rec.holder.clone().filter(|_| identity_issued),
+        status_uri: status_list_uri(&state.domain),
     }))
 }
 
@@ -473,7 +559,10 @@ pub async fn resolve(
         .lock()
         .unwrap()
         .get(&code)
-        .map(|r| !r.is_expired() && r.status == Status::Pending)
+        .map(|r| {
+            !r.is_expired()
+                && (r.status == Status::Pending || r.status == Status::IdentityIssued)
+        })
         .unwrap_or(false);
     if !live {
         return Err(RegistrarError::ProvisionRequestNotFound);
@@ -546,9 +635,10 @@ fn resolve_agent_identity(
 
 /// Gate the approver's chosen identity against the request's GRANTOR pin: a
 /// concrete pin must equal it (case-insensitive); `*` accepts any (ownership is
-/// checked separately).
+/// checked separately). `self` (t1jp) also accepts any — it constrains the
+/// WARRANTS (grantor == the minted agent), not which identity mints.
 fn check_grantor_pin(pin: &str, identity_email: &str) -> Result<(), RegistrarError> {
-    if pin == "*" || pin.eq_ignore_ascii_case(identity_email) {
+    if pin == "*" || pin == "self" || pin.eq_ignore_ascii_case(identity_email) {
         Ok(())
     } else {
         Err(RegistrarError::PolicyRefused(format!(
@@ -731,6 +821,24 @@ pub struct CompleteBody {
     /// The chosen handle when `identity_mode` is "handle".
     #[serde(default)]
     pub handle: Option<String>,
+    /// Two-stage approval (eywc). Absent = the legacy single-shot (identity +
+    /// warrants in one call). "identity" = Flow I's commit: mint the cert now;
+    /// a request with grants moves to the grants stage instead of completing.
+    /// "grants" = Flow P's commit on an identity-issued request: record the
+    /// page-signed warrants (or decline them) and complete.
+    #[serde(default)]
+    pub stage: Option<String>,
+    /// The USER-CHOSEN display name for the agent (Flow I step 2, eywc) —
+    /// stored on the agent identity; every later permission card opens with
+    /// it. Honored on the identity stage / legacy path for named agents.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Grants-stage only (eywc): the grantor the permission screens' dropdown
+    /// chose — the agent's own email (acts as itself) or an owned identity
+    /// (on-behalf). Must satisfy the request's grantor pin. Absent = the
+    /// legacy shape (identity_mode decides).
+    #[serde(default)]
+    pub grantor: Option<String>,
     /// The warrant JWSs the approval page signed client-side with the config
     /// key, one per requested grant in grant order (required iff the request
     /// carries grants).
@@ -774,20 +882,51 @@ pub async fn complete(
     let user = require_session(&state, &cookies)?;
     require_csrf(&user, &req.csrf)?;
 
+    // Two-stage approval (eywc): which record state this call may act on.
+    let stage = match req.stage.as_deref() {
+        None => CompleteStage::Legacy,
+        Some("identity") => CompleteStage::Identity,
+        Some("grants") => CompleteStage::Grants,
+        Some(other) => {
+            return Err(RegistrarError::ValidationError(format!("unknown stage '{other}'")))
+        }
+    };
+    let wanted = match stage {
+        CompleteStage::Legacy | CompleteStage::Identity => Status::Pending,
+        CompleteStage::Grants => Status::IdentityIssued,
+    };
+
     // Snapshot the pending record (drop the lock before DB work).
     let snapshot = {
         let m = PROVISIONS.lock().unwrap();
         m.get(&req.code)
-            .filter(|r| !r.is_expired() && r.status == Status::Pending)
+            .filter(|r| !r.is_expired() && r.status == wanted)
             .cloned()
             .ok_or(RegistrarError::ProvisionRequestNotFound)?
     };
 
     if !req.approve {
-        if let Some(rec) = PROVISIONS.lock().unwrap().get_mut(&req.code) {
-            rec.status = Status::Denied;
+        match stage {
+            // Nothing exists yet: the whole request is denied.
+            CompleteStage::Legacy | CompleteStage::Identity => {
+                if let Some(rec) = PROVISIONS.lock().unwrap().get_mut(&req.code) {
+                    rec.status = Status::Denied;
+                }
+            }
+            // The identity is already real — deliver it, with the grants
+            // declined and a reason the agent can act on.
+            CompleteStage::Grants => {
+                if let Some(rec) = PROVISIONS.lock().unwrap().get_mut(&req.code) {
+                    rec.grants_denied = Some("the user declined the permissions".into());
+                    rec.status = Status::Completed;
+                }
+            }
         }
         return Ok(Json(CompleteResponse { success: true }));
+    }
+
+    if stage == CompleteStage::Grants {
+        return complete_grants_stage(&state, &user, &req, snapshot);
     }
 
     // Enforce the GRANTOR pin against the approver's chosen identity (both paths).
@@ -806,10 +945,124 @@ pub async fn complete(
 
     // Delegated (foreign grantee) vs owned (as-you / named agent) approval.
     if grantee_is_foreign(&state, &user, &snapshot) {
+        // A foreign grantee gets no identity here — its warrant-only approval
+        // has no identity stage to split off.
+        if stage == CompleteStage::Identity {
+            return Err(RegistrarError::ValidationError(
+                "a foreign grantee has no identity stage: it holds its own credential".into(),
+            ));
+        }
         complete_delegated_warrant(&state, &user, &req, snapshot).await
     } else {
-        complete_device_cert(&state, &user, &req, snapshot).await
+        complete_device_cert(&state, &user, &req, snapshot, stage == CompleteStage::Identity)
+            .await
     }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum CompleteStage {
+    /// Single-shot: identity + warrants in one call (the pre-eywc shape).
+    Legacy,
+    /// Flow I's commit: mint the cert; grants (if any) stay open.
+    Identity,
+    /// Flow P's commit on an identity-issued request: record the warrants.
+    Grants,
+}
+
+/// Grants-stage completion (eywc): the identity stage already minted the cert;
+/// validate and record the page-signed warrants under the grantor the
+/// permission screens chose — the agent itself, or an owned identity —
+/// honoring the request's grantor pin, then complete the request.
+fn complete_grants_stage(
+    state: &Arc<RegistrarState>,
+    user: &AuthedUser,
+    req: &CompleteBody,
+    snapshot: Record,
+) -> Result<Json<CompleteResponse>, RegistrarError> {
+    let agent_email = snapshot.agent_email.clone().ok_or_else(|| {
+        RegistrarError::Internal("identity-issued record without an agent email".into())
+    })?;
+    let holder = snapshot.holder.clone().ok_or_else(|| {
+        RegistrarError::Internal("identity-issued record without a holder".into())
+    })?;
+    let delegator = snapshot.prepared_identity.clone().ok_or_else(|| {
+        RegistrarError::Internal("identity-issued record without a prepared identity".into())
+    })?;
+    if snapshot.grants.is_empty() {
+        return Err(RegistrarError::ValidationError("this request has no grants stage".into()));
+    }
+
+    // The grantor the dropdown chose: the agent itself, or an identity this
+    // account owns. Absent defaults to on-behalf of the delegating identity.
+    let grantor = match req.grantor.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => delegator.clone(),
+        Some(g) => {
+            let g = g.to_lowercase();
+            if g != agent_email
+                && !state
+                    .host
+                    .owns_verified_email(user.user_id, &crate::consent::delegator_of(&g))
+                    .unwrap_or(false)
+            {
+                return Err(RegistrarError::PolicyRefused(
+                    "the warrant grantor must be the agent or an identity on this account".into(),
+                ));
+            }
+            g
+        }
+    };
+    // Honor the request's grantor pin (t1jp): `self` pins the agent itself;
+    // a concrete email pins that identity; `*` accepts the dropdown's choice.
+    match snapshot.grantor.as_str() {
+        "*" => {}
+        "self" => {
+            if grantor != agent_email {
+                return Err(RegistrarError::PolicyRefused(
+                    "this request requires the agent to act as itself".into(),
+                ));
+            }
+        }
+        pin => {
+            if !grantor.eq_ignore_ascii_case(pin) {
+                return Err(RegistrarError::PolicyRefused(format!(
+                    "this request requires attribution to '{pin}'"
+                )));
+            }
+        }
+    }
+
+    let warrant_jwss = req.warrants.as_deref().ok_or_else(|| {
+        RegistrarError::ValidationError("approve requires the signed warrants".into())
+    })?;
+    let config_jws = req.config_cert.as_deref().ok_or_else(|| {
+        RegistrarError::ValidationError("approve requires the signing config cert".into())
+    })?;
+    // Re-activation, as in the single-shot path: a prior revoke may have left
+    // the stable per-subject index set.
+    for g in &snapshot.grants {
+        if let Some(idx) = g.status_idx {
+            let _ = state.store.set_status_active_idx(idx);
+        }
+    }
+    let warrants = validate_grant_warrants(
+        warrant_jwss, config_jws, &grantor, &agent_email, &holder, &snapshot.grants,
+    )?;
+    for (warrant, jws) in warrants.iter().zip(warrant_jwss) {
+        state.store.upsert_warrant(warrant_to_record(
+            user.user_id, &delegator, warrant, jws, config_jws,
+        ))?;
+    }
+    let delivery: Vec<String> =
+        warrant_jwss.iter().map(|w| format!("{w}~{config_jws}")).collect();
+
+    let mut m = PROVISIONS.lock().unwrap();
+    let rec = m
+        .get_mut(&req.code)
+        .filter(|r| r.status == Status::IdentityIssued)
+        .ok_or(RegistrarError::ProvisionRequestNotFound)?;
+    rec.warrants = Some(delivery);
+    rec.status = Status::Completed;
+    Ok(Json(CompleteResponse { success: true }))
 }
 
 /// Delegated approval (foreign grantee): the approver signs a warrant delegating
@@ -829,6 +1082,16 @@ async fn complete_delegated_warrant(
     if !state.host.owns_verified_email(user.user_id, &grantor).unwrap_or(false) {
         return Err(RegistrarError::PolicyRefused(
             "you don't own the delegating identity".into(),
+        ));
+    }
+    // A foreign grantee's warrants are always signed BY the approver — a
+    // `self` grantor pin can't be satisfied here (the foreign service's own
+    // authority is its own issuer's business, not this account's).
+    if snapshot.grantor == "self" {
+        return Err(RegistrarError::PolicyRefused(
+            "a foreign grantee cannot act as itself here: this account can only \
+             delegate on the approver's behalf"
+                .into(),
         ));
     }
     let grantee = snapshot.grantee.clone();
@@ -909,6 +1172,7 @@ async fn complete_device_cert(
     user: &AuthedUser,
     req: &CompleteBody,
     snapshot: Record,
+    identity_only: bool,
 ) -> Result<Json<CompleteResponse>, RegistrarError> {
     let identity_email = req
         .identity_email
@@ -954,7 +1218,8 @@ async fn complete_device_cert(
 
     // Merged flow: validate the page-signed warrants BEFORE any side effect
     // (handle reservation, cert signing) — all-or-nothing with the approval.
-    let signed_warrants = if snapshot.grants.is_empty() {
+    // The identity stage (eywc) signs nothing yet: the grants stage follows.
+    let signed_warrants = if snapshot.grants.is_empty() || identity_only {
         None
     } else {
         let warrant_jwss = req.warrants.as_deref().ok_or_else(|| {
@@ -971,8 +1236,21 @@ async fn complete_device_cert(
         //   handle     -> grantor = the human, grantee = the agent  (ON BEHALF OF)
         //   standalone -> grantor == grantee == the agent, deliberately NOT
         //                 attributed to the human (a segregated identity)
+        // A `self` grantor pin (t1jp) forces the standalone shape; a concrete
+        // pin forbids it (the requester named a human authority) — never
+        // silently substituted, same rule as every other pin.
         let standalone = req.identity_mode.as_deref() == Some("standalone");
-        let grantor = if standalone { &agent_email } else { &identity_email };
+        if standalone && snapshot.grantor != "*" && snapshot.grantor != "self" {
+            return Err(RegistrarError::PolicyRefused(format!(
+                "this request requires attribution to '{}'",
+                snapshot.grantor
+            )));
+        }
+        let grantor = if standalone || snapshot.grantor == "self" {
+            &agent_email
+        } else {
+            &identity_email
+        };
         let warrants = validate_grant_warrants(
             warrant_jwss,
             config_jws,
@@ -1133,6 +1411,15 @@ async fn complete_device_cert(
         );
     }
 
+    // The user-chosen display name (Flow I step 2, eywc): stored on the agent
+    // identity so every later permission card opens with it. Named agents
+    // only — an as-you agent IS the user's identity.
+    if let Some(display) = req.display_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        if name.is_some() {
+            state.host.set_agent_display_name(user.user_id, &agent_email, display);
+        }
+    }
+
     let mut m = PROVISIONS.lock().unwrap();
     let rec = m
         .get_mut(&req.code)
@@ -1143,7 +1430,13 @@ async fn complete_device_cert(
     rec.agent_email = Some(agent_email);
     rec.access_mint = Some(access_mint);
     rec.warrants = delivery;
-    rec.status = Status::Completed;
+    // Identity stage of a bundled request (eywc): the cert exists; the
+    // permission screens are still open. Everything else completes here.
+    rec.status = if identity_only && !snapshot.grants.is_empty() {
+        Status::IdentityIssued
+    } else {
+        Status::Completed
+    };
     Ok(Json(CompleteResponse { success: true }))
 }
 
@@ -1191,6 +1484,66 @@ mod tests {
         // Absent mode (requester supplied a name, human didn't re-choose):
         // default to attributing to the human, never silently to the agent.
         assert_eq!(grantor_for(None, &agent), identity);
+    }
+
+    /// The `self` grantor pin (t1jp): decision table for how the pin composes
+    /// with the approver's identity_mode in complete_device_cert. `self`
+    /// forces the standalone shape regardless of mode; a concrete pin refuses
+    /// standalone (never silently substituted); `*` follows the mode.
+    #[test]
+    fn self_grantor_pin_forces_standalone() {
+        let identity = "danmills@sandmill.org".to_string();
+        let agent = "danmills+poster@sandmill.org".to_string();
+        // The expression under test, as it appears in complete_device_cert:
+        // Ok(grantor) or Err(the pin that refused standalone).
+        let grantor_for = |pin: &str, mode: Option<&str>| -> Result<String, String> {
+            let standalone = mode == Some("standalone");
+            if standalone && pin != "*" && pin != "self" {
+                return Err(pin.to_string());
+            }
+            Ok(if standalone || pin == "self" { agent.clone() } else { identity.clone() })
+        };
+
+        // self pin: standalone shape whatever the page sends.
+        assert_eq!(grantor_for("self", None), Ok(agent.clone()));
+        assert_eq!(grantor_for("self", Some("handle")), Ok(agent.clone()));
+        assert_eq!(grantor_for("self", Some("standalone")), Ok(agent.clone()));
+        // unpinned: the mode decides (the k0s9 table).
+        assert_eq!(grantor_for("*", Some("handle")), Ok(identity.clone()));
+        assert_eq!(grantor_for("*", Some("standalone")), Ok(agent.clone()));
+        // concrete pin: on-behalf of the pinned identity; standalone refused.
+        assert_eq!(grantor_for("danmills@sandmill.org", Some("handle")), Ok(identity.clone()));
+        assert_eq!(
+            grantor_for("danmills@sandmill.org", Some("standalone")),
+            Err("danmills@sandmill.org".into())
+        );
+    }
+
+    /// Pin combinations a request can never satisfy are refused at request
+    /// time (t1jp) — the agent learns immediately, not as a 15-minute expiry.
+    #[test]
+    fn contradictory_pins_fail_the_request_up_front() {
+        // grantor self + as-you demand (empty grantee): contradictory.
+        assert!(request_pin_contradiction("self", "").is_some());
+        // grantor self with a mintable or pinned grantee: fine.
+        assert!(request_pin_contradiction("self", "*").is_none());
+        assert!(request_pin_contradiction("self", "danmills+bsky@sandmill.org").is_none());
+        // any other grantor with any grantee: fine (ownership is checked later).
+        assert!(request_pin_contradiction("*", "").is_none());
+        assert!(request_pin_contradiction("danmills@sandmill.org", "").is_none());
+        assert!(request_pin_contradiction("danmills@sandmill.org", "*").is_none());
+    }
+
+    /// `check_grantor_pin` accepts any minting identity for `*` and `self`
+    /// (self constrains the warrants, not who mints) and only the pinned
+    /// identity otherwise.
+    #[test]
+    fn grantor_pin_gates_the_minting_identity() {
+        assert!(check_grantor_pin("*", "danmills@sandmill.org").is_ok());
+        assert!(check_grantor_pin("self", "danmills@sandmill.org").is_ok());
+        assert!(check_grantor_pin("danmills@sandmill.org", "danmills@sandmill.org").is_ok());
+        assert!(check_grantor_pin("DanMills@sandmill.org", "danmills@sandmill.org").is_ok());
+        assert!(check_grantor_pin("other@sandmill.org", "danmills@sandmill.org").is_err());
     }
 
     #[test]

@@ -141,12 +141,25 @@ impl Provisioned {
 /// approving identity itself, isolated by its holder), a `namespace` hint
 /// (`agents` default, `services` for a service), and the warrant `grants` to
 /// approve in the same consent. The private key never leaves this process.
+///
+/// `label` suggests the agent's display NAME (the human confirms or changes
+/// it on the naming screen); `message` is the agent's own account of why it
+/// wants the bundled grants — quoted on the permission screen, unverified.
+///
+/// `grantor` pins who the bundled warrants attribute to (t1jp): `None` (or
+/// `"*"`) lets the approver choose which of their identities delegates;
+/// `"self"` pins the minted agent identity itself (grantor == grantee — the
+/// agent acts as itself, never attributed to the human); a concrete email
+/// requires that identity. An unsatisfiable or contradictory pin fails at
+/// request or approval time — it is never silently substituted.
 pub async fn request_provision(
     broker: &str,
     handle: Option<&str>,
     namespace: Option<&str>,
     grants: &[GrantRequest],
     label: Option<&str>,
+    message: Option<&str>,
+    grantor: Option<&str>,
 ) -> Result<PendingProvision> {
     let http = reqwest::Client::new();
     let device_key = KeyPair::generate();
@@ -165,6 +178,12 @@ pub async fn request_provision(
     }
     if let Some(l) = label {
         body["label"] = serde_json::json!(l);
+    }
+    if let Some(m) = message {
+        body["message"] = serde_json::json!(m);
+    }
+    if let Some(g) = grantor {
+        body["grantor"] = serde_json::json!(g);
     }
     let broker = broker.trim_end_matches('/').to_string();
     let response = http

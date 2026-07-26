@@ -113,6 +113,25 @@ pub struct PendingRequestInfo {
     /// warrant's matcher to this (`<id>` isolation) or its `<ns>.*` prefix.
     pub holder: String,
     pub label: String,
+    /// The request's GRANTOR pin, normalized (t1jp): `*` = the approver
+    /// chooses (dropdown: the agent itself, or any identity they own); a
+    /// concrete email = pinned — the page renders it as text and the only
+    /// choice is approve/deny. `self` arrives already normalized to the
+    /// agent's own email.
+    pub grantor: String,
+    /// The agent's own account of why it wants this (eywc) — quoted on the
+    /// card under an "unverified" marking, never trusted. `None` renders as
+    /// "it didn't say what it intends to do with this".
+    pub message: Option<String>,
+    /// The USER-CHOSEN name for this agent (Flow I step 2) — the trustworthy
+    /// "who" the permission card opens with. `None` for agents named before
+    /// display names existed (the page falls back to the holder label / email).
+    pub display_name: Option<String>,
+    /// When this account first authorized the agent ("created April 12").
+    pub agent_created_at: Option<DateTime<Utc>>,
+    /// Whether this account has met the agent at all. `false` renders the
+    /// deny-only card (P4): no consent is offered to a stranger.
+    pub known: bool,
     /// Requested grants — one per audience, each with its scopes
     pub grants: Vec<WarrantGrantItem>,
     /// External request (§6.6) — raised by a foreign-IdP service, not one
@@ -157,16 +176,27 @@ pub async fn list_requests(
         .list_pending_warrant_requests(user.user_id)?
         .into_iter()
         .filter(|r| !r.external || query.code.as_deref() == Some(r.code.as_str()))
-        .map(|r| PendingRequestInfo {
-            code: r.code,
-            delegator_email: r.delegator_email,
-            agent_email: r.agent_email,
-            holder: r.holder,
-            label: r.label,
-            grants: r.grants,
-            external: r.external,
-            created_at: r.created_at,
-            expires_at: r.expires_at,
+        .map(|r| {
+            // The trustworthy "who" (eywc): the user-chosen name and first-
+            // authorized date from the host's registry — or nothing, which the
+            // page renders as the deny-only unknown-agent card (P4).
+            let met = state.host.known_agent(user.user_id, &r.agent_email).unwrap_or(None);
+            PendingRequestInfo {
+                code: r.code,
+                delegator_email: r.delegator_email,
+                agent_email: r.agent_email,
+                holder: r.holder,
+                label: r.label,
+                grantor: r.grantor,
+                message: r.message,
+                display_name: met.as_ref().and_then(|k| k.display_name.clone()),
+                agent_created_at: met.as_ref().and_then(|k| k.created_at),
+                known: met.is_some(),
+                grants: r.grants,
+                external: r.external,
+                created_at: r.created_at,
+                expires_at: r.expires_at,
+            }
         })
         .collect();
     Ok(Json(ListRequestsResponse {
@@ -257,6 +287,14 @@ pub async fn respond(
             g
         }
     };
+    // Honor the request's grantor pin (t1jp): a pinned request is
+    // approve/deny only — the page must not substitute a different grantor.
+    if rec.grantor != "*" && grantor != rec.grantor {
+        return Err(RegistrarError::ValidationError(format!(
+            "this request pins the grantor to '{}'",
+            rec.grantor
+        )));
+    }
     let warrants = validate_grant_warrants(
         warrant_jwss, config_jws, &grantor, &rec.agent_email, &rec.holder, &rec.grants,
     )?;
@@ -674,6 +712,29 @@ pub struct WarrantRequestBody {
     /// Display label shown on the consent page
     #[serde(default)]
     pub label: Option<String>,
+    /// GRANTOR pin (t1jp): who the warrants attribute to. Absent (or `*`) —
+    /// the approver chooses (the consent page's dropdown: the agent itself,
+    /// or any identity they own). `self` — pinned to the agent itself
+    /// (grantor == grantee; normalized to the agent identity, which exists
+    /// here). A concrete email — pinned to that identity; refused up front
+    /// when it isn't on the delegator's account.
+    #[serde(default)]
+    pub grantor: Option<String>,
+    /// The agent's own account of why it wants this (eywc) — displayed
+    /// quoted and marked unverified. Optional but encouraged.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Normalize a warrant request's grantor pin against the (already known)
+/// agent identity: absent/empty/`*` → `*` (approver's choice); `self` → the
+/// agent identity itself; anything else → a lowercased concrete email pin.
+fn norm_warrant_grantor_pin(raw: Option<&str>, agent_identity: &str) -> String {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None | Some("*") => "*".to_string(),
+        Some(s) if s.eq_ignore_ascii_case("self") => agent_identity.to_lowercase(),
+        Some(s) => s.to_lowercase(),
+    }
 }
 
 #[derive(Serialize)]
@@ -754,6 +815,15 @@ pub async fn warrant_request(
     for g in &req.grants {
         validate_grant_shape(&g.audience, &g.scopes)?;
     }
+    let message = req
+        .message
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if message.as_deref().is_some_and(|m| m.len() > 500) {
+        return Err(bad("message too long (500 chars max)"));
+    }
 
     // Route to the delegator's account: the identity with `+tag` stripped
     // must be a verified email on a local account. (Bare agent names on a
@@ -763,6 +833,19 @@ pub async fn warrant_request(
         .host
         .user_for_verified_email(&delegator)?
         .ok_or_else(|| bad("no local account for this identity's delegator"))?;
+
+    // Grantor pin (t1jp): fail early when the pinned identity can never be
+    // satisfied by the routed account — the requester learns now, not as an
+    // expiry fifteen minutes later.
+    let grantor = norm_warrant_grantor_pin(req.grantor.as_deref(), &identity);
+    if grantor != "*"
+        && grantor != identity
+        && !state.host.owns_verified_email(user_id, &delegator_of(&grantor))?
+    {
+        return Err(bad(format!(
+            "unsatisfiable grantor pin: '{grantor}' is not an identity on the delegator's account"
+        )));
+    }
 
     // One warrant per grant; each gets its stable status index up front so
     // the consent page embeds it in what it signs.
@@ -791,6 +874,8 @@ pub async fn warrant_request(
         agent_email: identity.clone(),
         holder: device_cert.holder().as_str().to_string(),
         label: req.label.unwrap_or_else(|| identity.clone()),
+        grantor,
+        message,
         grants,
         status: WarrantRequestStatus::Pending,
         warrants: None,
@@ -833,6 +918,11 @@ pub struct WarrantPollResponse {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grants: Option<Vec<WarrantPollGrant>>,
+    /// Machine reason accompanying a denial (eywc), e.g. `unknown_agent` —
+    /// this account has never met the requesting agent, so no consent was
+    /// offered; run the identity flow (agent provisioning) first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// POST /warrant/poll — RFC-8628-shaped poll on a consent request. Single
@@ -863,14 +953,27 @@ pub async fn warrant_poll(
                 success: true,
                 status: "pending".into(),
                 grants: None,
+                reason: None,
             }))
         }
         WarrantRequestStatus::Denied => {
             state.store.delete_warrant_request(&req.code).ok();
+            // Tell an unknown agent WHY (eywc): its request rendered the
+            // deny-only card because this account has never met it — the fix
+            // is to run the identity flow first, not to ask again.
+            let reason = match state.host.known_agent(rec.user_id, &rec.agent_email) {
+                Ok(None) => Some(
+                    "unknown_agent: this account has not met this agent; \
+                     request an identity (agent provisioning) first"
+                        .to_string(),
+                ),
+                _ => None,
+            };
             Ok(Json(WarrantPollResponse {
                 success: true,
                 status: "denied".into(),
                 grants: None,
+                reason,
             }))
         }
         WarrantRequestStatus::Approved => {
@@ -890,6 +993,7 @@ pub async fn warrant_poll(
                 success: true,
                 status: "approved".into(),
                 grants: Some(grants),
+                reason: None,
             }))
         }
     }
@@ -966,5 +1070,40 @@ mod tests {
         assert_eq!(gate_for(Some("danmills@sandmill.org")), Some("danmills@sandmill.org".into()));
         // A +tag grantor is gated on owning its base identity.
         assert_eq!(gate_for(Some("danmills+other@sandmill.org")), Some("danmills@sandmill.org".into()));
+    }
+
+    /// The grantor pin on a warrant REQUEST (t1jp): `*`/absent leaves the
+    /// choice to the approver (the page's dropdown); `self` pins the agent
+    /// itself — normalized to the agent identity, which exists on this
+    /// surface; anything else is a concrete pinned email.
+    #[test]
+    fn warrant_request_grantor_pin_normalizes() {
+        let agent = "danmills+bsky@sandmill.org";
+        assert_eq!(norm_warrant_grantor_pin(None, agent), "*");
+        assert_eq!(norm_warrant_grantor_pin(Some(""), agent), "*");
+        assert_eq!(norm_warrant_grantor_pin(Some("  "), agent), "*");
+        assert_eq!(norm_warrant_grantor_pin(Some("*"), agent), "*");
+        assert_eq!(norm_warrant_grantor_pin(Some("self"), agent), agent);
+        assert_eq!(norm_warrant_grantor_pin(Some("SELF"), agent), agent);
+        assert_eq!(
+            norm_warrant_grantor_pin(Some("DanMills@Sandmill.org"), agent),
+            "danmills@sandmill.org"
+        );
+        // An agent pinning its own email is the same as pinning `self`.
+        assert_eq!(norm_warrant_grantor_pin(Some(agent), agent), agent);
+    }
+
+    /// A pinned request is approve/deny only: the approved grantor must equal
+    /// the pin verbatim; `*` accepts whatever the (already ownership-gated)
+    /// page chose. Mirrors the check in respond().
+    #[test]
+    fn respond_honors_the_grantor_pin() {
+        let pinned_ok = |pin: &str, approved: &str| pin == "*" || approved == pin;
+        assert!(pinned_ok("*", "danmills@sandmill.org"));
+        assert!(pinned_ok("*", "danmills+bsky@sandmill.org"));
+        assert!(pinned_ok("danmills@sandmill.org", "danmills@sandmill.org"));
+        assert!(!pinned_ok("danmills@sandmill.org", "danmills+bsky@sandmill.org"));
+        // A self pin (normalized to the agent) refuses an on-behalf approval.
+        assert!(!pinned_ok("danmills+bsky@sandmill.org", "danmills@sandmill.org"));
     }
 }

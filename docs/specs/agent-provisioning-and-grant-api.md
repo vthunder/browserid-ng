@@ -364,6 +364,26 @@ once and the user approves once. Each grant still yields its own
 **single-audience** warrant (§5.2); batching exists only at the request/consent
 layer, so the privacy analysis is unchanged.
 
+Two optional fields shape the consent surface (agent flows v2, beans
+t1jp/eywc):
+
+- **`grantor`** — a pin on who the warrants attribute to. Absent (or `*`):
+  the approver chooses — the consent page offers the agent itself or any
+  identity the account owns, as a dropdown. `self` (or the agent's own
+  email): pinned to the agent itself (`grantor == grantee`). A concrete
+  email: pinned to that identity. A pinned request renders the grantor as
+  text and offers only approve/deny — a pin is **never silently
+  substituted**, and an unsatisfiable pin (an identity not on the routed
+  account) MUST fail the request immediately rather than expiring.
+- **`message`** — the agent's own account of why it wants the grants (≤500
+  chars). Displayed quoted and explicitly marked unverified; its absence is
+  stated rather than hidden.
+
+The merged provisioning request (`/agent-provision/request`) accepts the same
+two fields; there `grantor: "self"` is the only way to name a grantee that
+does not exist until approval, and combining it with an as-you demand (empty
+grantee) is a contradiction the request MUST refuse up front.
+
 The broker verifies the request signature against the agent's device cert
 (unrevoked, lists `identity`), then creates a **pending consent request** and
 returns:
@@ -380,10 +400,18 @@ The broker SHOULD notify the user; the agent SHOULD also surface
 ### 6.3 Consent page
 
 Served by the broker at `verification_uri`, to the signed-in user only. It MUST
-display: the agent's handle and label, and — for **every** grant in the request,
-each with equal prominence (no folding N grants behind a summary line) — the
-**verified audience** and its requested scopes, prefilled from the request, never
-user-typed. Where an RP publishes §7.4 metadata, the page MAY enrich the display
+display: the agent's identity and its **user-chosen display name** (set when
+the identity was created — the trustworthy "who" the card opens with; the
+requester's label is only ever shown marked unverified), and — for **every**
+grant in the request, each with equal prominence (no folding N grants behind a
+summary line) — the **verified audience** and its requested scopes, prefilled
+from the request, never user-typed.
+
+A request from an agent the account has **never met** (no identity on the
+account, no recorded device cert or service entry) MUST NOT offer consent at
+all: the page renders a deny-only card, and the requester's poll learns the
+machine reason (`unknown_agent`) so a legitimate agent knows to request an
+identity (agent provisioning, Flow I) first. Where an RP publishes §7.4 metadata, the page MAY enrich the display
 (name/logo) but MUST still show the audience itself.
 
 On approval, the page signs one §5.2 warrant **per grant** with the user's
@@ -403,7 +431,7 @@ Request: `{ "code": "<code>" }`. Responses:
 |---|---|---|
 | 200 | `{ "status": "approved", "warrants": ["<W JWS>", …], "warrant": "<W JWS>\|null" }` | Done — one warrant per grant, in grant order (`warrant` is populated iff exactly one); the pending request is deleted on delivery |
 | 200 | `{ "status": "pending" }` | Poll again after `interval` seconds |
-| 200 | `{ "status": "denied" }` | The user declined |
+| 200 | `{ "status": "denied", "reason": "…"? }` | The user declined; `reason` (optional) carries a machine cause, e.g. `unknown_agent` — request an identity first |
 | 410 | `{ "status": "expired" }` | Request expired unapproved |
 | 429 | — | Polling faster than `interval` |
 
@@ -420,6 +448,25 @@ manual signing surface) are registered the same way.
 MVP fallback (non-normative): the key-management UI MAY offer manual warrant
 creation with a typed audience. The request flow above is the intended UX; manual
 entry exists so the module is usable before RPs adopt the challenge extension.
+
+### 6.5 Two-stage provisioning approval (agent flows v2)
+
+A merged provisioning request (`/agent-provision/request` with bundled
+grants) is approved in **two stages under one code** (bean eywc): the
+**identity stage** verifies the pairing fingerprint and mints the agent
+device cert — the word "permission" never appears — and the **grants stage**
+then presents the permission question exactly as §6.3 does for a known
+agent, with the identity fixed and stated. The broker's approval endpoint
+takes `stage: "identity"` then `stage: "grants"`; the agent's poll keeps
+reading `pending` until the whole request resolves and still receives one
+single-delivery pickup. Declining the grants stage is honest, not fatal: the
+identity exists, and the pickup delivers the credential with no warrants and
+a `grants_denied` reason. Abandonment after the identity stage leaves an
+identity with no permissions — exactly what the screens said existed.
+Identity-only requests (no grants) complete at the identity stage;
+warrant-only requests are §6.2. The user-chosen **display name** confirmed
+at the identity stage is stored on the agent identity and is what every
+later §6.3 card opens with.
 
 ## 7. Grant exchange (RP side)
 

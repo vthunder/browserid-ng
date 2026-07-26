@@ -79,6 +79,10 @@ pub struct Email {
     /// — set via `set_parent_email`, never exposed publicly (mingo-cm8z). `None`
     /// for ordinary identities.
     pub parent_email: Option<String>,
+    /// USER-CHOSEN display name for an agent identity (Flow I step 2, eywc) —
+    /// the name permission cards open with. `None` for non-agent emails and
+    /// agents named before display names existed.
+    pub display_name: Option<String>,
 }
 
 /// A pending email verification
@@ -115,6 +119,12 @@ pub struct WarrantRequestRecord {
     pub holder: String,
     /// Label of the provisioning cert that raised the request (display)
     pub label: String,
+    /// The request's GRANTOR pin, normalized (t1jp): `*` = approver's choice;
+    /// a concrete email = pinned (approve/deny only).
+    pub grantor: String,
+    /// The agent's own account of why it wants this (eywc) — displayed
+    /// quoted and marked unverified.
+    pub message: Option<String>,
     /// The requested grants — one per RP audience, each with its own scopes
     /// (audiences verbatim from RP challenges). Approval yields one
     /// single-audience warrant per grant.

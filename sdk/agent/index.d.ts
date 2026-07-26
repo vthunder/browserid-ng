@@ -150,7 +150,7 @@ export class PendingProvision {
   userCode: string;
   fingerprint: string;
   /** Poll until approved. Single delivery: persist the result immediately. */
-  wait(opts?: { signal?: AbortSignal }): Promise<{ credential: DeviceCredential; grants: StoredGrant[] }>;
+  wait(opts?: { signal?: AbortSignal }): Promise<{ credential: DeviceCredential; grants: StoredGrant[]; grantsDenied?: string }>;
 }
 
 export class PendingWarrants {
@@ -168,8 +168,13 @@ export function requestProvision(
     handle?: string;
     namespace?: string;
     grants?: GrantRequest[];
+    /** Suggests the agent's display NAME (the human confirms or changes it). */
     label?: string;
-    /** Identity a write is attributed to; omit/"*" lets the approver choose. */
+    /** The agent's own account of why it wants the bundled grants — quoted on
+     *  the permission screen, marked unverified. */
+    message?: string;
+    /** Identity a write is attributed to; omit/"*" lets the approver choose;
+     *  "self" pins the minted agent itself (grantor == grantee). */
     grantor?: string;
     /** Identity that acts. Omit for as-you (grantee ≡ grantor); "*" has the
      *  approver mint a distinct actor — an ON-BEHALF-OF warrant. */
@@ -188,6 +193,12 @@ export function requestWarrants(
     identity: string;
     grants: GrantRequest[];
     label?: string;
+    /** The agent's own account of why it wants this — quoted, unverified. */
+    message?: string;
+    /** Grantor pin: omit/"*" = approver chooses (agent itself or any identity
+     *  they own); "self"/the agent's email or a concrete email pins it. An
+     *  unsatisfiable pin rejects the request immediately. */
+    grantor?: string;
     http?: typeof fetch;
   }
 ): Promise<PendingWarrants>;
