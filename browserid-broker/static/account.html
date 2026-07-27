@@ -716,12 +716,15 @@ function renderSites() {
   const byAud = new Map();
   for (const w of account.warrants) {
     const k = w.audience || '—';
-    // The broker's own origin is NOT listed as a site: showing it with a
+    // The broker's BARE origin is not listed as a site: showing it with a
     // "login" grant would misleadingly understate the relationship — the
     // broker inherently holds your account and keys, not a per-site grant.
-    // (A static note below states this; broker-origin agent grants like the
-    // guestbook remain visible/revocable on each holder's detail page.)
-    try { if (new URL(k).origin === location.origin) continue; } catch (e) { /* non-URL audience: list it */ }
+    // Broker-origin sub-audiences (e.g. the guestbook) ARE real per-site
+    // grants and list like any other site.
+    try {
+      const u = new URL(k);
+      if (u.origin === location.origin && (u.pathname === '/' || u.pathname === '')) continue;
+    } catch (e) { /* non-URL audience: list it */ }
     if (!byAud.has(k)) byAud.set(k, []);
     byAud.get(k).push(w);
   }
@@ -938,14 +941,34 @@ function renderHolderOwnWarrants(h) {
   if (group.length) sections.push([nsLabel ? `All ${nsLabel}` : 'Its whole group', group]);
   if (any.length) sections.push(['Any of my devices', any]);
   if (only.length) sections.push(['Only this device', only]);
-  const row = (w) =>
-    `<tr><td><span class="aud">${escapeHtml(w.audience)}</span><br>
+  const byId = {};
+  const row = (w) => {
+    byId[w.id] = w;
+    // Same lever as the site-detail table: revoke a live status-tracked
+    // grant, forget the rest (revoked or pre-status rows).
+    const actions = w.revoked
+      ? `<button class="small hw-forget" data-i="${w.id}">Forget</button>`
+      : (w.status_idx != null
+          ? `<button class="small hw-revoke" data-i="${w.id}" style="color:#c53030">Revoke</button>`
+          : `<button class="small hw-forget" data-i="${w.id}">Forget</button>`);
+    return `<tr><td><span class="aud">${escapeHtml(w.audience)}</span><br>
       <span class="muted" style="font-size:12px">acting for ${escapeHtml(w.delegator_email)}</span><br>
       ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
-      <td style="white-space:nowrap;text-align:right">${warrantStateHtml(w)}</td></tr>`;
+      <td style="white-space:nowrap;text-align:right">${warrantStateHtml(w)}<br>${actions}</td></tr>`;
+  };
   $('hd-warrants').innerHTML = sections.map(([title, ws]) =>
     `<div style="margin-bottom:12px"><div style="font-weight:600;font-size:13px;margin-bottom:4px">${title}</div>
       <table class="wtable">${ws.map(row).join('')}</table></div>`).join('');
+  for (const b of $('hd-warrants').querySelectorAll('.hw-forget')) b.onclick = async () => {
+    try { await post('/wsapi/forget_warrant', { id: Number(b.dataset.i) }); await reloadAccount(); renderHolderDetail(); renderHolders(); renderSites(); }
+    catch (e) { alert('Forget failed: ' + e.message); }
+  };
+  for (const b of $('hd-warrants').querySelectorAll('.hw-revoke')) b.onclick = async () => {
+    const w = byId[b.dataset.i];
+    if (!confirm(`Revoke this grant for ${w.audience}? It stops working within minutes at services that check revocation.`)) return;
+    try { await post('/wsapi/revoke_warrant', { id: Number(b.dataset.i) }); await reloadAccount(); renderHolderDetail(); renderHolders(); renderSites(); }
+    catch (e) { alert('Revoke failed: ' + e.message); }
+  };
 }
 
 // -------- add email (Add → discover → code or primary) --------

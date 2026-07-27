@@ -120,6 +120,29 @@ function saveAgent(agent) {
   writePrivate(CREDENTIAL, { credential: agent.credential, grants: agent.storedGrants() });
 }
 
+/** The decoded claims of a held grant ('warrant~config_cert'), or null. */
+function grantClaims(pair) {
+  try {
+    return JSON.parse(Buffer.from(pair.split("~")[0].split(".")[1], "base64url").toString());
+  } catch {
+    return null;
+  }
+}
+
+/** Locally forget the held warrant for `audience` (the registry copy and any
+ *  server-side revocation are the HUMAN's levers — this only clears our copy
+ *  so the next authorize/sign asks again). Returns true if one was dropped. */
+function dropStoredGrant(audience) {
+  let stored;
+  try { stored = JSON.parse(readFileSync(CREDENTIAL, "utf8")); } catch { return false; }
+  const before = (stored.grants ?? []).length;
+  stored.grants = (stored.grants ?? []).filter((g) => g.audience !== audience);
+  if (stored.grants.length === before) return false;
+  writePrivate(CREDENTIAL, stored);
+  readyAgent = null; // reload picks up the trimmed set
+  return true;
+}
+
 /** No identity yet — the agent should call `provision`. */
 class NeedCredential extends Error {
   constructor() { super("no identity yet"); }
@@ -147,7 +170,7 @@ function explain(e) {
 // Non-blocking. { ready } if held; { approveUrl } to show the human; { pending }
 // if approval is still in flight. Approval is polled in the BACKGROUND — once
 // the human approves, the warrant lands and a retry proceeds.
-async function ensureWarrant(agent, audience, scopes, message) {
+async function ensureWarrant(agent, audience, scopes, message, grantor) {
   if (agent.warrantedAudiences().includes(audience)) return { ready: true };
   const inflight = pendingWarrants.get(audience);
   if (inflight) {
@@ -166,6 +189,7 @@ async function ensureWarrant(agent, audience, scopes, message) {
     grants: [{ audience, scopes }],
     label: process.env.AGENT_NAME || "agent",
     ...(message ? { message } : {}),
+    ...(grantor ? { grantor } : {}),
   });
   pendingWarrants.set(audience, { approveUrl: pending.verificationUriComplete });
   pending
@@ -275,18 +299,33 @@ server.registerTool(
   "authorize",
   {
     title: "Request a warrant",
-    description: "Ask the human to grant this agent an audience + scopes. Returns an APPROVE_URL (or READY). Pass a one-sentence `message` saying what you'll do with the access — it's shown to the human (quoted, unverified) and helps them decide.",
+    description: "Ask the human to grant this agent an audience + scopes. Returns an APPROVE_URL (or READY). Pass a one-sentence `message` saying what you'll do with the access — it's shown to the human (quoted, unverified) and helps them decide. `grantor` pins who the actions are attributed to ('self' = you, or an email of the human's); if you already hold a warrant for the audience under a DIFFERENT grantor, it is replaced — a fresh approval is requested. Use this to redo a grant with a different on-behalf-of identity.",
     inputSchema: {
       audience: z.string(),
       scopes: z.array(z.string()).optional(),
       message: z.string().optional().describe("one sentence on what you'll do with this access — shown to the human, unverified"),
+      grantor: z.string().optional().describe("pin attribution: 'self' (you act as yourself) or one of the human's emails; omit = the human chooses"),
     },
   },
-  async ({ audience, scopes, message }) => {
+  async ({ audience, scopes, message, grantor }) => {
     try {
-      const agent = await loadAgent();
+      let agent = await loadAgent();
+      // A grantor pin replaces a held warrant whose attribution differs —
+      // that's the redo-with-a-different-on-behalf-of lever.
+      if (grantor) {
+        const held = agent.storedGrants().find((g) => g.audience === audience);
+        const claims = held && grantClaims(held.grant);
+        if (claims) {
+          const isSelf = claims.grantor === claims.grantee;
+          const matches = grantor === "self" ? isSelf : claims.grantor === grantor.toLowerCase();
+          if (!matches) {
+            dropStoredGrant(audience);
+            agent = await loadAgent();
+          }
+        }
+      }
       const denied = lastDenial.get(audience);
-      const r = await ensureWarrant(agent, audience, scopes?.length ? scopes : ["use"], message);
+      const r = await ensureWarrant(agent, audience, scopes?.length ? scopes : ["use"], message, grantor);
       if (r.ready) return text(`READY — authorized for ${audience}. Call get_assertion.`);
       if (denied && !r.pending) lastDenial.delete(audience);
       return text(
@@ -351,6 +390,45 @@ server.registerTool(
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);
     }
+  }
+);
+
+server.registerTool(
+  "warrants",
+  {
+    title: "List held warrants",
+    description:
+      "The warrants this agent holds: for each, the site (audience), scopes, who the actions are ATTRIBUTED to (grantor) vs who acts (you, the grantee), and expiry. Use before authorize({grantor}) to see what you'd be replacing.",
+  },
+  async () => {
+    try {
+      const agent = await loadAgent();
+      const grants = agent.storedGrants();
+      if (!grants.length) return text("No warrants held. Call authorize(audience, scopes) to request one.");
+      return text(grants.map((g) => {
+        const c = grantClaims(g.grant) || {};
+        const rel = c.grantor === c.grantee ? "as itself" : `on behalf of ${c.grantor}`;
+        const exp = c.exp ? new Date(c.exp * 1000).toISOString().slice(0, 10) : "?";
+        return `${g.audience}\n  scopes: ${(c.scopes || []).join(", ") || "(none)"} · acting ${rel} · expires ${exp}`;
+      }).join("\n"));
+    } catch (e) {
+      return explain(e) || text("ERROR: " + e.message);
+    }
+  }
+);
+
+server.registerTool(
+  "drop_grant",
+  {
+    title: "Forget a held warrant",
+    description:
+      "Locally forget the warrant held for an audience, so the next authorize/sign asks the human again — e.g. to redo it with a different on-behalf-of identity (or just call authorize with `grantor` directly, which replaces in one step). This does NOT revoke the warrant server-side; the human does that at browserid.me/account.",
+    inputSchema: { audience: z.string() },
+  },
+  async ({ audience }) => {
+    return dropStoredGrant(audience)
+      ? text(`Dropped the held warrant for ${audience}. Call authorize to request a new one.`)
+      : text(`No held warrant for ${audience}. Call \`warrants\` to see what's held.`);
   }
 );
 

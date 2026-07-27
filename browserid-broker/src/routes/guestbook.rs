@@ -277,9 +277,10 @@ where
                     .iter()
                     .map(|s| format!("<span class=\"scope\">{}</span>", escape(s)))
                     .collect::<String>();
-                // Old entries carried a separate delegator; render it when present.
+                // An empty parent = the agent acted as itself (grantor ==
+                // grantee): say so, never a dangling "for".
                 let acting_for = if e.parent.is_empty() {
-                    String::new()
+                    ", acting for itself".to_string()
                 } else {
                     format!(", acting for <span class=\"parent\">{}</span>", escape(&e.parent))
                 };

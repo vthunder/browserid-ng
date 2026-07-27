@@ -1398,6 +1398,16 @@ async fn complete_device_cert(
             .as_ref()
             .filter(|s| s.uri == status_list_uri(&state.domain))
             .map(|s| s.idx);
+        // The holder's friendly label: the USER-CHOSEN display name wins over
+        // whatever the requester suggested — the human edited it for a reason
+        // (this was silently ignored once; the device list showed the agent's
+        // own string).
+        let holder_label = req
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or(&snapshot.label);
         state.host.record_agent_device_cert(
             user.user_id,
             &agent_email,
@@ -1407,7 +1417,7 @@ async fn complete_device_cert(
             claims.iat,
             claims.exp,
             own_status_idx,
-            Some(&snapshot.label),
+            Some(holder_label),
         );
     }
 
