@@ -263,3 +263,144 @@ async fn respond_rejects_overbroad_or_foreign_holder() {
     // The correct isolated matcher (and its true namespace wildcard) are accepted.
     assert_eq!(attempt("ag.bot").await.status_code(), 200, "the agent's own `<id>` is accepted");
 }
+
+/// Status bleed (Dan, 2026-07-27): warrant status indices are stable per
+/// (user, agent, audience, scopes), so after revoking a grant, a FRESH
+/// approval of the same subject reused the still-set bit and the new warrant
+/// was born revoked. A consent-flow re-approval must reactivate the index.
+/// Also pinned here: a signed warrant embedding a status ref other than the
+/// allocated one is refused — the ref arms the revoke lever, so it must be
+/// provably the grant's own.
+#[tokio::test]
+async fn revoked_subject_reactivates_on_fresh_consent_approval() {
+    let (server, sender, idp_kp) = make_server();
+    let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+
+    let agent_holder = Holder::new("ag.bot").unwrap();
+    let agent_kp = KeyPair::generate();
+    let agent_cert = DeviceCert::create(
+        DOMAIN, &agent_kp.public_key(), Purpose::Authentication, agent_holder.clone(),
+        vec![AGENT.to_string()], Duration::days(90), &idp_kp, None,
+    )
+    .unwrap();
+    let config_kp = KeyPair::generate();
+    let config_cert = DeviceCert::create(
+        DOMAIN, &config_kp.public_key(), Purpose::Authorization, Holder::new("br.main").unwrap(),
+        vec![DELEGATOR.to_string(), "alice+*@example.com".to_string()],
+        Duration::days(90), &idp_kp, None,
+    )
+    .unwrap();
+
+    // One full consent round: request → sign → approve → deliver.
+    let round = |label: &'static str| {
+        let server = &server;
+        let session = session.clone();
+        let agent_cert = agent_cert.encoded().to_string();
+        let config_kp = &config_kp;
+        let config_cert = config_cert.encoded().to_string();
+        async move {
+            let r = server
+                .post("/warrant/request")
+                .json(&json!({ "device_cert": agent_cert, "identity": AGENT,
+                    "grants": [{ "audience": AUDIENCE, "scopes": ["post"] }], "label": label }))
+                .await;
+            assert_eq!(r.status_code(), 200, "{label} request: {:?}", r.text());
+            let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
+            let listed: Value = server
+                .get("/wsapi/warrant_requests")
+                .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+                .await
+                .json();
+            let req0 = &listed["requests"][0];
+            let status_idx = req0["grants"][0]["status_idx"].as_u64().unwrap();
+            let status_uri = listed["status_uri"].as_str().unwrap().to_string();
+            let w = Warrant::create(
+                AGENT, AGENT, HolderMatcher::new("ag.bot").unwrap(), AUDIENCE, vec!["post".into()],
+                Duration::days(90), config_kp,
+                Some(StatusRef { uri: status_uri, idx: status_idx }),
+            )
+            .unwrap();
+            let c = csrf(server, &session).await;
+            let r = server
+                .post("/wsapi/warrant_respond")
+                .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+                .json(&json!({ "csrf": c, "code": code, "approve": true,
+                    "warrants": [w.encoded()], "config_cert": config_cert }))
+                .await;
+            assert_eq!(r.status_code(), 200, "{label} respond: {:?}", r.text());
+            let poll: Value = server.post("/warrant/poll").json(&json!({ "code": code })).await.json();
+            assert_eq!(poll["status"], "approved", "{label}: {poll}");
+            status_idx
+        }
+    };
+
+    let idx1 = round("first").await;
+
+    // The delegator revokes the grant.
+    let listed: Value = server
+        .get("/wsapi/warrants")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    let row = &listed["warrants"][0];
+    assert_eq!(row["revoked"], false, "{listed}");
+    let id = row["id"].as_u64().unwrap();
+    let c = csrf(&server, &session).await;
+    let r = server
+        .post("/wsapi/revoke_warrant")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "id": id }))
+        .await;
+    assert_eq!(r.status_code(), 200, "revoke: {:?}", r.text());
+    let listed: Value = server
+        .get("/wsapi/warrants")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    assert_eq!(listed["warrants"][0]["revoked"], true, "{listed}");
+
+    // A fresh approval of the SAME subject reuses the index — and must
+    // reactivate it: the new warrant is NOT born revoked.
+    let idx2 = round("second").await;
+    assert_eq!(idx1, idx2, "the subject-stable index is reused");
+    let listed: Value = server
+        .get("/wsapi/warrants")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    assert_eq!(
+        listed["warrants"][0]["revoked"], false,
+        "a freshly approved warrant must not inherit the revoked bit: {listed}"
+    );
+
+    // Forged ref: a warrant embedding a DIFFERENT index than the allocated
+    // one is refused at respond — the ref arms the revoke lever.
+    let r = server
+        .post("/warrant/request")
+        .json(&json!({ "device_cert": agent_cert.encoded(), "identity": AGENT,
+            "grants": [{ "audience": "https://third.example", "scopes": ["post"] }] }))
+        .await;
+    let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
+    let listed: Value = server
+        .get("/wsapi/warrant_requests")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    let status_uri = listed["status_uri"].as_str().unwrap().to_string();
+    let real_idx = listed["requests"][0]["grants"][0]["status_idx"].as_u64().unwrap();
+    let forged = Warrant::create(
+        AGENT, AGENT, HolderMatcher::new("ag.bot").unwrap(), "https://third.example",
+        vec!["post".into()], Duration::days(90), &config_kp,
+        Some(StatusRef { uri: status_uri, idx: real_idx + 1000 }),
+    )
+    .unwrap();
+    let c = csrf(&server, &session).await;
+    let r = server
+        .post("/wsapi/warrant_respond")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code, "approve": true,
+            "warrants": [forged.encoded()], "config_cert": config_cert.encoded() }))
+        .await;
+    assert_ne!(r.status_code(), 200, "a warrant with someone else's status index must be refused");
+    assert!(r.text().contains("status ref"), "{}", r.text());
+}

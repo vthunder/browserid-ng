@@ -296,8 +296,25 @@ pub async fn respond(
         )));
     }
     let warrants = validate_grant_warrants(
-        warrant_jwss, config_jws, &grantor, &rec.agent_email, &rec.holder, &rec.grants,
+        warrant_jwss,
+        config_jws,
+        &grantor,
+        &rec.agent_email,
+        &rec.holder,
+        &rec.grants,
+        &status_list_uri(&state.domain),
     )?;
+    // Re-authorization (status bleed, 2026-07-27): the warrant status index is
+    // stable per (user, agent, audience, scopes), so a revoked grant — or a
+    // forgotten holder's grants — leaves its bit SET. A fresh approval of the
+    // same subject must reactivate it, or the newly issued warrant is born
+    // revoked. (The provisioning flow has done this since 8v6c; the consent
+    // flow never did.)
+    for g in &rec.grants {
+        if let Some(idx) = g.status_idx {
+            let _ = state.store.set_status_active_idx(idx);
+        }
+    }
     let records: Vec<WarrantRecord> = warrants
         .iter()
         .zip(warrant_jwss)
@@ -345,6 +362,7 @@ pub(crate) fn validate_grant_warrants(
     grantee: &str,
     agent_holder: &str,
     grants: &[WarrantGrantItem],
+    status_uri: &str,
 ) -> Result<Vec<Warrant>, RegistrarError> {
     if warrant_jwss.len() != grants.len() {
         return Err(RegistrarError::ValidationError(format!(
@@ -407,6 +425,25 @@ pub(crate) fn validate_grant_warrants(
             return Err(RegistrarError::ValidationError(
                 "warrant holder matcher does not cover the agent's holder".into(),
             ));
+        }
+        // The revocation ref must be EXACTLY the one allocated for this grant
+        // (our list, this grant's index). A warrant carrying someone else's
+        // index would otherwise arm our revoke lever — and any verifier — at
+        // a grant the signer doesn't own.
+        if let Some(idx) = grant.status_idx {
+            match &claims.status {
+                Some(st) if st.uri == status_uri && st.idx == idx => {}
+                Some(_) => {
+                    return Err(RegistrarError::ValidationError(
+                        "warrant status ref does not match the allocated one".into(),
+                    ))
+                }
+                None => {
+                    return Err(RegistrarError::ValidationError(
+                        "warrant is missing its allocated status ref".into(),
+                    ))
+                }
+            }
         }
         warrants.push(warrant);
     }
@@ -570,13 +607,48 @@ pub async fn register_warrant(
             "the warrant's delegator is not a verified email on this account".into(),
         ));
     }
-    state.store.upsert_warrant(warrant_to_record(
+    let mut record = warrant_to_record(
         user.user_id,
         &delegator,
         &warrant,
         &req.warrant,
         &req.config_cert,
-    ))?;
+    );
+    // Trust the embedded status ref for OUR revoke lever only when it is
+    // provably this grant's own index: our list URI, and the index the
+    // subject registry allocates for exactly (user, grantee, audience,
+    // scopes). Anything else is recorded without an index — the row stays
+    // reviewable/forgettable, but our revoke button can't be pointed at a
+    // grant the registrant doesn't own. A verified ref is also reactivated,
+    // same as a consent-flow reissue.
+    let claims = warrant.claims();
+    match &claims.status {
+        Some(st) if st.uri == status_list_uri(&state.domain) => {
+            let own_idx = state.store.get_or_allocate_status(
+                "warrant",
+                &warrant_status_subject(
+                    user.user_id,
+                    &claims.grantee,
+                    &claims.audience,
+                    &claims.scopes,
+                ),
+            )?;
+            if st.idx == own_idx {
+                let _ = state.store.set_status_active_idx(own_idx);
+            } else {
+                tracing::warn!(claimed = st.idx, allocated = own_idx,
+                    "register_warrant: status ref is not this grant's own index — recording without one");
+                record.status_idx = None;
+            }
+        }
+        Some(_) => {
+            // A foreign list: verifiers may honor it, but it is not ours to
+            // flip — never wire it to this account's revoke lever.
+            record.status_idx = None;
+        }
+        None => {}
+    }
+    state.store.upsert_warrant(record)?;
     Ok(Json(RespondResponse { success: true }))
 }
 

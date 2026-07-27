@@ -1045,7 +1045,13 @@ fn complete_grants_stage(
         }
     }
     let warrants = validate_grant_warrants(
-        warrant_jwss, config_jws, &grantor, &agent_email, &holder, &snapshot.grants,
+        warrant_jwss,
+        config_jws,
+        &grantor,
+        &agent_email,
+        &holder,
+        &snapshot.grants,
+        &status_list_uri(&state.domain),
     )?;
     for (warrant, jws) in warrants.iter().zip(warrant_jwss) {
         state.store.upsert_warrant(warrant_to_record(
@@ -1110,7 +1116,13 @@ async fn complete_delegated_warrant(
         RegistrarError::ValidationError("approve requires the signing config cert".into())
     })?;
     let warrants = validate_grant_warrants(
-        warrant_jwss, config_jws, &grantor, &grantee, &holder, &snapshot.grants,
+        warrant_jwss,
+        config_jws,
+        &grantor,
+        &grantee,
+        &holder,
+        &snapshot.grants,
+        &status_list_uri(&state.domain),
     )?;
 
     // Record each warrant in the approver's registry (an "external service").
@@ -1258,6 +1270,7 @@ async fn complete_device_cert(
             &agent_email,
             &holder_id,
             &snapshot.grants,
+            &status_list_uri(&state.domain),
         )?;
         Some((warrant_jwss.to_vec(), config_jws.to_string(), warrants))
     };
