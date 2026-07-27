@@ -100,22 +100,6 @@
     return rv >= 8;
   }
 
-  // Is this a phone/tablet? On mobile we prefer the full-page redirect flow
-  // over a popup: popups there are unreliable (Arc detaches them into
-  // opener-less tabs mid-flow, and there is no mid-flow fallback) and a mobile
-  // popup already renders as a full-page navigation, so there is nothing to
-  // lose. UA-based, with a coarse-pointer touch check as a backstop.
-  function isMobileEnv() {
-    try {
-      var ua = navigator.userAgent || '';
-      if (/Android|iPhone|iPod|iPad|IEMobile|BlackBerry|Opera Mini|Mobile|Silk/i.test(ua)) return true;
-      // iPadOS reports a desktop UA but is touch-only.
-      if (navigator.maxTouchPoints > 1 &&
-          typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) return true;
-    } catch (e) {}
-    return false;
-  }
-
   // checking Mobile Firefox (Fennec)
   function isFennec() {
     try {
@@ -774,10 +758,21 @@
       }
 
       // Explicit redirect mode, or mobile: skip the popup attempt entirely and
-      // run the whole chain as full-page redirects. (Requires watch-mode — the
-      // observer must survive the navigation; a stateless get() falls through
-      // to the popup as a best effort.)
-      if ((options.redirect === true || isMobileEnv()) && observers.login) {
+      // run the whole chain as full-page redirects. Mobile popups are
+      // unreliable (Arc detaches them into opener-less tabs mid-flow, with no
+      // fallback) and already render as a full-page navigation, so there's
+      // nothing to lose. Detection is inlined here to stay in this closure's
+      // scope. (Requires watch-mode — the observer must survive the
+      // navigation; a stateless get() falls through to the popup.)
+      var isMobile = false;
+      try {
+        var mua = navigator.userAgent || '';
+        isMobile = /Android|iPhone|iPod|iPad|IEMobile|BlackBerry|Opera Mini|Mobile|Silk/i.test(mua) ||
+          // iPadOS reports a desktop UA but is touch-only.
+          (navigator.maxTouchPoints > 1 &&
+           typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches);
+      } catch (e) { isMobile = false; }
+      if ((options.redirect === true || isMobile) && observers.login) {
         return engageRedirect(options);
       }
 
