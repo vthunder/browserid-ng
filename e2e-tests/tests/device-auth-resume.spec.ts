@@ -213,4 +213,55 @@ test.describe('device-auth resume handback: concurrent dialog windows', () => {
     await expect(resumed.locator('#error-screen.active')).toBeVisible({ timeout: 10000 });
     expect(await stillWaiting(a.page)).toBe(true);
   });
+
+  /**
+   * The announcement that keeps the dialog waiting through the OAuth hop. The
+   * IdP page's top-level redirect takes the popup to a COOP: same-origin PDS,
+   * which severs the handle and makes `popup.closed` read true — identical to
+   * a user closing the window. The IdP says so first, over postMessage to the
+   * opener (BroadcastChannel could not cross the origin boundary), and the
+   * dialog then treats the close as expected.
+   */
+  test('an announced handoff survives the popup looking closed', async ({ context }) => {
+    const a = await openWaitingDialog(context, 'alice@idp.example');
+    const b = await openWaitingDialog(context, 'bob@idp.example');
+
+    // Only A's key is announced.
+    await a.popup.evaluate(
+      ([pubX, dialogOrigin]) => window.opener.postMessage(
+        { type: 'browserid:device_auth_pending', device_pubkey: pubX }, dialogOrigin),
+      [a.pubX, new URL(a.page.url()).origin]
+    );
+    await a.popup.close();
+    await b.popup.close();
+
+    // B never heard an announcement, so its close is a real cancel.
+    await expect(b.page.locator('#error-screen.active')).toContainText('closed', { timeout: 15000 });
+    // A keeps waiting for the handoff that is still coming.
+    expect(await stillWaiting(a.page)).toBe(true);
+
+    // ...and when it arrives, A completes on its normal path (here: fails on
+    // the unsigned certs, which is still proof the listener was alive).
+    const resumed = await context.newPage();
+    await resumed.goto(RESUME + '#device_cert=' + certFor(a.pubX) + '&config_cert=' + certFor(a.pubX));
+    await expect(a.page.locator('#error-screen.active')).toBeVisible({ timeout: 15000 });
+    await expect(a.page.locator('#error-screen')).not.toContainText('closed');
+  });
+
+  test('an announcement for another window does not suppress this one\'s close', async ({ context }) => {
+    const a = await openWaitingDialog(context, 'alice@idp.example');
+    const b = await openWaitingDialog(context, 'bob@idp.example');
+
+    // A's popup announces B's key — pairing must reject it, so A's own close
+    // still counts.
+    await a.popup.evaluate(
+      ([pubX, dialogOrigin]) => window.opener.postMessage(
+        { type: 'browserid:device_auth_pending', device_pubkey: pubX }, dialogOrigin),
+      [b.pubX, new URL(a.page.url()).origin]
+    );
+    await a.popup.close();
+
+    await expect(a.page.locator('#error-screen.active')).toContainText('closed', { timeout: 15000 });
+    expect(await stillWaiting(b.page)).toBe(true);
+  });
 });

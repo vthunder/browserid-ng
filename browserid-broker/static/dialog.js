@@ -577,6 +577,10 @@
       let timeoutId = null;
       let pollId = null;
       let chan = null;
+      // Set when the IdP page tells us it is about to run a top-level OAuth
+      // redirect for OUR device key: a subsequent `popup.closed` is then COOP
+      // severing the handle, not the user cancelling.
+      let expectingHandoff = false;
 
       function cleanup() {
         clearTimeout(timeoutId);
@@ -625,6 +629,10 @@
         if (ev.origin !== idpOrigin) return;
         const d = ev.data;
         if (!d || typeof d !== 'object') return;
+        if (d.type === 'browserid:device_auth_pending') {
+          if (d.device_pubkey && d.device_pubkey === keys.device.publicKeyX) expectingHandoff = true;
+          return;
+        }
         if (d.type === 'browserid:device_certs') {
           cleanup();
           if (!d.device_cert || !d.config_cert) {
@@ -678,13 +686,7 @@
           // needed, just two sign-ins in flight in one browser.
           if (d.type === 'browserid:device_certs') {
             if (!d.device_cert || !d.config_cert) return;
-            if (!certKeyMatchesStrict(d.device_cert, keys.device.publicKeyX)) {
-              // DIAGNOSTIC: a window heard the handoff but the cert does not
-              // certify this window's key — tell the sender so it can report
-              // "key-mismatch" instead of a generic "nobody answered".
-              try { chan.postMessage({ type: 'browserid:device_auth_resume_seen', nonce: m.nonce }); } catch (e) { /* closed */ }
-              return;
-            }
+            if (!certKeyMatchesStrict(d.device_cert, keys.device.publicKeyX)) return;
             ack();
             cleanup();
             try { popup.close(); } catch (e) { /* closing itself */ }
@@ -709,10 +711,16 @@
       }, TIMEOUT_MS);
 
       pollId = setInterval(() => {
-        if (popup.closed) {
+        if (!popup.closed) return;
+        clearInterval(pollId);
+        pollId = null;
+        if (expectingHandoff) return; // COOP made an OAuth-redirecting popup look closed; the handoff is coming
+        // The close may have raced an announcement still in flight.
+        setTimeout(() => {
+          if (expectingHandoff) return;
           cleanup();
           reject(new Error('the sign-in window was closed'));
-        }
+        }, 800);
       }, 500);
     });
   }
@@ -991,15 +999,10 @@
   // within the grace window (then the caller reports lost state as before).
   // The certs never leave this origin: BroadcastChannel is same-origin by
   // construction, and they arrived in the fragment, never the query.
-  // Resolves 'ok' on a paired ack, else a diagnostic reason code:
-  //   'no-channel'  BroadcastChannel unsupported
-  //   'no-payload'  nothing to hand back (no certs and no error in the fragment)
-  //   'key-mismatch' a window heard us but the cert did not certify its key
-  //   'no-window'   nobody answered at all within the window
   function handoffResume(certs, errReason, errPubX) {
     return new Promise((resolve) => {
       let chan = null;
-      try { chan = new BroadcastChannel(RESUME_CHANNEL); } catch (e) { return resolve('no-channel'); }
+      try { chan = new BroadcastChannel(RESUME_CHANNEL); } catch (e) { return resolve(false); }
       const payload = errReason
         ? { type: 'browserid:device_error', reason: errReason, device_pubkey: errPubX || null }
         : (certs.device_cert && certs.config_cert
@@ -1007,26 +1010,24 @@
           : null);
       if (!payload) {
         try { chan.close(); } catch (e) { /* ignore */ }
-        return resolve('no-payload');
+        return resolve(false);
       }
       const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
       let settled = false;
-      let seen = false; // a window heard us but couldn't pair (key mismatch)
       let retryId = null;
       let giveUpId = null;
-      function finish(reason) {
+      function finish(ok) {
         if (settled) return;
         settled = true;
         clearInterval(retryId);
         clearTimeout(giveUpId);
         try { chan.close(); } catch (e) { /* ignore */ }
-        resolve(reason);
+        resolve(ok);
       }
       chan.onmessage = (ev) => {
         const m = ev.data;
-        if (m && m.type === 'browserid:device_auth_resume_seen' && m.nonce === nonce) { seen = true; return; }
         if (!m || m.type !== 'browserid:device_auth_resume_ack' || m.nonce !== nonce) return;
-        finish('ok');
+        finish(true);
         // This window was opened by script (primaryPopupFlow), so it may close
         // itself. If a browser refuses, say something honest instead of
         // sitting on a spinner — the sign-in itself already completed next door.
@@ -1038,7 +1039,7 @@
       };
       send();
       retryId = setInterval(send, 250);
-      giveUpId = setTimeout(() => finish(seen ? 'key-mismatch' : 'no-window'), 2500);
+      giveUpId = setTimeout(() => finish(false), 2500);
     });
   }
 
@@ -1065,9 +1066,8 @@
       // still holds the keys AND the RP response path. Hand the result to it
       // and get out of the way — it finishes exactly as on the postMessage
       // path. Only when nobody claims the result is the state really lost.
-      var handoff = await handoffResume(fragCerts, frag.get('device_error'), frag.get('device_pubkey'));
-      if (handoff === 'ok') return;
-      showError('Sign-in state was lost — go back to the site and click sign in again. [' + handoff + ']');
+      if (await handoffResume(fragCerts, frag.get('device_error'), frag.get('device_pubkey'))) return;
+      showError('Sign-in state was lost — go back to the site and click sign in again.');
       return;
     }
     state.origin = pending.dialog.origin;
