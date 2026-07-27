@@ -213,6 +213,43 @@
     return c ? c.holder : null;
   }
 
+  // Same-origin channel used to hand a device-authorization result from a
+  // resumed /dialog/dialog.html?resume=device_auth page back to the dialog
+  // window that started the flow (see primaryPopupFlow / handoffResume).
+  const RESUME_CHANNEL = 'browserid:device_auth_resume';
+
+  // The public key a device cert certifies, or null if the cert doesn't
+  // declare one in a shape we can read. The claim is advisory (DNSSEC is the
+  // trust root), so absence is normal for some IdPs.
+  function certPublicKey(jws) {
+    const c = decodeJws(jws);
+    const pk = c && c['public-key'];
+    return (pk && (pk.publicKey || pk.x)) || null;
+  }
+
+  // STRICT pairing, for the same-origin handoff: this cert must demonstrably
+  // certify `pubX`. Fails closed on an unreadable key, because the handoff has
+  // no other discriminator — accepting a cert we can't pair would let a
+  // broadcast resolve EVERY dialog window waiting on this origin, and each
+  // would then persist a cert that does not match its own key: a broken login
+  // cached until the cert expires. Our device-model IdPs all publish the
+  // claim, so an IdP that doesn't simply never gets the handoff route (it
+  // keeps the postMessage one, which needs no pairing).
+  function certKeyMatchesStrict(jws, pubX) {
+    const x = certPublicKey(jws);
+    return !!x && !!pubX && x === pubX;
+  }
+
+  // LENIENT pairing, for discarding a stale pending record: only a cert that
+  // demonstrably certifies a DIFFERENT key proves the record is not ours. An
+  // unreadable key must pass here — the pending record is the only way a
+  // redirect-mode sign-in can finish, and rejecting it would strand every IdP
+  // that omits the advisory claim.
+  function certKeyConflicts(jws, pubX) {
+    const x = certPublicKey(jws);
+    return !!x && !!pubX && x !== pubX;
+  }
+
   // This browser's stable holder (holder-authorization model): one per browser,
   // reused across every identity. It is a non-secret opaque string, so it lives
   // in localStorage (not the keystore, which is for non-extractable keys), keyed
@@ -539,11 +576,13 @@
       const TIMEOUT_MS = 3 * 60 * 1000;
       let timeoutId = null;
       let pollId = null;
+      let chan = null;
 
       function cleanup() {
         clearTimeout(timeoutId);
         clearInterval(pollId);
         window.removeEventListener('message', onMessage);
+        if (chan) { try { chan.close(); } catch (e) { /* already closed */ } chan = null; }
       }
 
       function reissue(newHolder) {
@@ -608,6 +647,54 @@
         }
       }
       window.addEventListener('message', onMessage);
+
+      // Second handback route, for a primary whose device-authorization page
+      // must run a top-level OAuth redirect (atproto's bsky-handle IdP). That
+      // navigation takes the popup cross-origin and the PDS's COOP severs its
+      // `window.opener`, so it can never postMessage us. It instead sends the
+      // popup it still owns to OUR /dialog/dialog.html?resume=device_auth with
+      // the certs in the fragment. That page is same-origin with us, and THIS
+      // window is still the one holding the non-extractable keys and the RP
+      // relationship — so it just hands the result over and closes, and we
+      // resolve on exactly the path the postMessage handback takes.
+      //
+      // Deliberately resolved WITHOUT `reissue`/`done`: the IdP page is gone
+      // from that popup, so hold mode has nothing left to talk to. The caller
+      // then skips holder reconciliation (best-effort by design) rather than
+      // hanging on a dead window.
+      try { chan = new BroadcastChannel(RESUME_CHANNEL); } catch (e) { /* unsupported: postMessage only */ }
+      if (chan) {
+        chan.onmessage = (ev) => {
+          const m = ev.data;
+          if (!m || typeof m !== 'object' || m.type !== 'browserid:device_auth_resume') return;
+          const d = m.payload;
+          if (!d || typeof d !== 'object') return;
+          const ack = () => {
+            try { chan.postMessage({ type: 'browserid:device_auth_resume_ack', nonce: m.nonce }); } catch (e) { /* closed */ }
+          };
+          // EVERY branch must pair before it acts. A broadcast reaches every
+          // dialog window on this origin, so an unpaired one would resolve or
+          // tear down a sign-in that has nothing to do with it — no attacker
+          // needed, just two sign-ins in flight in one browser.
+          if (d.type === 'browserid:device_certs') {
+            if (!d.device_cert || !d.config_cert) return;
+            if (!certKeyMatchesStrict(d.device_cert, keys.device.publicKeyX)) return;
+            ack();
+            cleanup();
+            try { popup.close(); } catch (e) { /* closing itself */ }
+            resolve({ device_cert: d.device_cert, config_cert: d.config_cert });
+          } else if (d.type === 'browserid:device_error') {
+            // A failure carries no cert, so the IdP echoes the device pubkey
+            // it was given. No pubkey, or someone else's, is not our failure —
+            // stay pending and let our own timeout speak.
+            if (!d.device_pubkey || d.device_pubkey !== keys.device.publicKeyX) return;
+            ack();
+            cleanup();
+            try { popup.close(); } catch (e) { /* closing itself */ }
+            reject(new Error(d.reason || 'identity provider refused'));
+          }
+        };
+      }
 
       timeoutId = setTimeout(() => {
         cleanup();
@@ -892,6 +979,56 @@
     );
   }
 
+  // Hand a device-authorization result to the dialog window still waiting on
+  // it in primaryPopupFlow (same origin, same browser — BroadcastChannel).
+  // Resolves true once that window acknowledges, false if nobody claims it
+  // within the grace window (then the caller reports lost state as before).
+  // The certs never leave this origin: BroadcastChannel is same-origin by
+  // construction, and they arrived in the fragment, never the query.
+  function handoffResume(certs, errReason, errPubX) {
+    return new Promise((resolve) => {
+      let chan = null;
+      try { chan = new BroadcastChannel(RESUME_CHANNEL); } catch (e) { return resolve(false); }
+      const payload = errReason
+        ? { type: 'browserid:device_error', reason: errReason, device_pubkey: errPubX || null }
+        : (certs.device_cert && certs.config_cert
+          ? { type: 'browserid:device_certs', device_cert: certs.device_cert, config_cert: certs.config_cert }
+          : null);
+      if (!payload) {
+        try { chan.close(); } catch (e) { /* ignore */ }
+        return resolve(false);
+      }
+      const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      let settled = false;
+      let retryId = null;
+      let giveUpId = null;
+      function finish(ok) {
+        if (settled) return;
+        settled = true;
+        clearInterval(retryId);
+        clearTimeout(giveUpId);
+        try { chan.close(); } catch (e) { /* ignore */ }
+        resolve(ok);
+      }
+      chan.onmessage = (ev) => {
+        const m = ev.data;
+        if (!m || m.type !== 'browserid:device_auth_resume_ack' || m.nonce !== nonce) return;
+        finish(true);
+        // This window was opened by script (primaryPopupFlow), so it may close
+        // itself. If a browser refuses, say something honest instead of
+        // sitting on a spinner — the sign-in itself already completed next door.
+        try { window.close(); } catch (e) { /* fall through */ }
+        showScreen('loading', 'Signed in — you can close this window.');
+      };
+      const send = () => {
+        try { chan.postMessage({ type: 'browserid:device_auth_resume', nonce, payload }); } catch (e) { /* closed */ }
+      };
+      send();
+      retryId = setInterval(send, 250);
+      giveUpId = setTimeout(() => finish(false), 2500);
+    });
+  }
+
   // Returning from the same-tab hop: certs (or an error) ride the fragment;
   // the keys + dialog state come back out of the pending store.
   async function resumeDeviceAuth() {
@@ -901,7 +1038,21 @@
     let pending = null;
     try { pending = await Keystore.getPending(); } catch (e) { /* fall through */ }
     try { await Keystore.clearPending(); } catch (e) { /* best-effort */ }
+    const fragCerts = { device_cert: frag.get('device_cert'), config_cert: frag.get('config_cert') };
+    // A parked record only belongs to THIS handback if the returned cert
+    // certifies the key it parked; otherwise it is the leftover of an
+    // abandoned redirect hop and using it would mint an unusable pair.
+    if (pending && pending.kind === 'device_auth' && fragCerts.device_cert &&
+        certKeyConflicts(fragCerts.device_cert, pending.devicePubX)) {
+      pending = null;
+    }
     if (!pending || pending.kind !== 'device_auth' || !pending.dialog) {
+      // Popup mode with an OAuth-redirecting primary: nothing was ever parked,
+      // because the dialog window that opened this popup is still open and
+      // still holds the keys AND the RP response path. Hand the result to it
+      // and get out of the way — it finishes exactly as on the postMessage
+      // path. Only when nobody claims the result is the state really lost.
+      if (await handoffResume(fragCerts, frag.get('device_error'), frag.get('device_pubkey'))) return;
       showError('Sign-in state was lost — go back to the site and click sign in again.');
       return;
     }
@@ -920,7 +1071,7 @@
       showError('Sign-in with your email provider failed: ' + errReason);
       return;
     }
-    const certs = { device_cert: frag.get('device_cert'), config_cert: frag.get('config_cert') };
+    const certs = fragCerts;
     if (!certs.device_cert || !certs.config_cert) {
       showError('Your email provider returned no certificates — try again.');
       return;
@@ -1672,6 +1823,7 @@
   // user what to do rather than spin forever.
   setTimeout(function () {
     if (state.origin) return; // a request arrived — normal operation
+    if (params.get('resume')) return; // a resume page never receives an RP request
     if (screens.error.classList.contains('active')) return; // a specific error is already showing
     const hint = winchanBroken || !window.opener
       ? 'This sign-in window lost its connection to the site that opened it ' +
