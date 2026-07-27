@@ -585,7 +585,9 @@ pub enum StatusVerdict {
 
 /// A cache of issuer-signed status lists (core §6.4). Refresh out of band —
 /// on a timer, or opportunistically when [`StatusCache::check`] returns
-/// `Unknown` — and verification stays synchronous:
+/// `Unknown` — and verification stays synchronous. Callers that need
+/// revocation to be visible sooner than the issuer's `ttl` can bound staleness
+/// by time-since-fetch with [`StatusCache::check_within`]:
 ///
 /// ```no_run
 /// # async fn demo(issuer_key: browserid_core::PublicKey) -> Result<(), browserid_rp::RpError> {
@@ -595,10 +597,18 @@ pub enum StatusVerdict {
 /// # Ok(()) }
 /// ```
 pub struct StatusCache {
-    lists: RwLock<HashMap<String, StatusListToken>>,
+    lists: RwLock<HashMap<String, CachedList>>,
     fail_closed: bool,
     /// Extra seconds a list stays usable past its advertised `ttl`
     grace_seconds: i64,
+}
+
+/// A cached list plus when we obtained it. The token's own `iat`/`ttl` bound
+/// how stale the *issuer* says it may be; `fetched` bounds how stale *we* let
+/// it get — see [`StatusCache::check_within`].
+struct CachedList {
+    token: StatusListToken,
+    fetched: std::time::Instant,
 }
 
 impl Default for StatusCache {
@@ -647,20 +657,59 @@ impl StatusCache {
         token
             .verify(issuer_key, uri)
             .map_err(|e| RpError::WellKnown(format!("status list: {e}")))?;
-        self.lists.write().unwrap().insert(uri.to_string(), token);
+        self.insert(uri, token);
         Ok(())
     }
 
     /// Insert an already-verified token (tests, detached snapshots)
     pub fn insert(&self, uri: &str, token: StatusListToken) {
-        self.lists.write().unwrap().insert(uri.to_string(), token);
+        self.insert_fetched_ago(uri, token, std::time::Duration::ZERO);
+    }
+
+    /// Like [`insert`](Self::insert), but backdates the fetch instant — for
+    /// tests that need an aged entry without waiting for one.
+    pub fn insert_fetched_ago(
+        &self,
+        uri: &str,
+        token: StatusListToken,
+        ago: std::time::Duration,
+    ) {
+        let fetched = std::time::Instant::now()
+            .checked_sub(ago)
+            .unwrap_or_else(std::time::Instant::now);
+        self.lists
+            .write()
+            .unwrap()
+            .insert(uri.to_string(), CachedList { token, fetched });
+    }
+
+    /// How long ago the list at `uri` was fetched, if it is cached at all.
+    pub fn age(&self, uri: &str) -> Option<std::time::Duration> {
+        self.lists.read().unwrap().get(uri).map(|c| c.fetched.elapsed())
     }
 
     pub fn check(&self, r: &StatusRef) -> StatusVerdict {
+        self.verdict(r, None)
+    }
+
+    /// [`check`](Self::check), but additionally treats a copy we fetched more
+    /// than `max_age` ago as `Unknown` — even while the issuer's own `ttl`
+    /// (plus grace) says it is still usable. Callers that refresh on `Unknown`
+    /// thereby bound revocation latency to `max_age`; if that refresh fails,
+    /// falling back to plain `check` keeps the still-in-ttl copy usable, so
+    /// availability degrades to §6.4 TTL semantics rather than hard-failing.
+    pub fn check_within(&self, r: &StatusRef, max_age: std::time::Duration) -> StatusVerdict {
+        self.verdict(r, Some(max_age))
+    }
+
+    fn verdict(&self, r: &StatusRef, max_age: Option<std::time::Duration>) -> StatusVerdict {
         let lists = self.lists.read().unwrap();
         match lists.get(&r.uri) {
-            Some(token) if token.is_fresh(self.grace_seconds) => {
-                if token.is_revoked(r.idx) {
+            Some(c)
+                if c.token.is_fresh(self.grace_seconds)
+                    && max_age.is_none_or(|m| c.fetched.elapsed() <= m) =>
+            {
+                if c.token.is_revoked(r.idx) {
                     StatusVerdict::Revoked
                 } else {
                     StatusVerdict::Valid
@@ -1009,5 +1058,73 @@ mod tests {
         let metadata = oauth_metadata("https://api.example.com", "https://api.example.com/token");
         assert_eq!(metadata["token_endpoint"], "https://api.example.com/token");
         assert_eq!(metadata["grant_types_supported"][0], GRANT_TYPE_ASSERTION);
+    }
+
+    #[test]
+    fn check_within_bounds_staleness_by_fetch_time() {
+        use browserid_core::{StatusList, StatusListToken};
+        use std::time::Duration as StdDuration;
+        let issuer_kp = KeyPair::generate();
+        let uri = "https://browserid.example/.well-known/browserid-status";
+        let clear = StatusRef { uri: uri.into(), idx: 3 };
+
+        // A list fetched 60s ago, still well inside its own ttl + grace.
+        let list = StatusList::from_revoked(vec![7], 8);
+        let token = StatusListToken::create(ISSUER, uri, &list, &issuer_kp).unwrap();
+        let cache = StatusCache::new();
+        cache.insert_fetched_ago(uri, token, StdDuration::from_secs(60));
+
+        // Plain check still trusts it — that is today's ttl+grace window…
+        assert_eq!(cache.check(&clear), StatusVerdict::Valid);
+        // …but a 15s bound calls it Unknown, so callers refresh.
+        assert_eq!(cache.check_within(&clear, StdDuration::from_secs(15)), StatusVerdict::Unknown);
+        // A looser bound accepts the same entry.
+        assert_eq!(cache.check_within(&clear, StdDuration::from_secs(300)), StatusVerdict::Valid);
+        assert!(cache.age(uri).unwrap() >= StdDuration::from_secs(60));
+        assert_eq!(cache.age("https://other.example/status"), None);
+
+        // Refetching (here: the caller's refresh landing a newer list that
+        // revokes idx 3) resets the age, and the new bit is seen at once.
+        let list = StatusList::from_revoked(vec![3, 7], 8);
+        let token = StatusListToken::create(ISSUER, uri, &list, &issuer_kp).unwrap();
+        cache.insert(uri, token);
+        assert_eq!(cache.check_within(&clear, StdDuration::from_secs(15)), StatusVerdict::Revoked);
+    }
+
+    #[test]
+    fn stale_by_age_still_usable_via_plain_check_when_refresh_fails() {
+        use browserid_core::{StatusList, StatusListToken};
+        use std::time::Duration as StdDuration;
+        let issuer_kp = KeyPair::generate();
+        let uri = "https://browserid.example/.well-known/browserid-status";
+        let list = StatusList::from_revoked(vec![7], 8);
+        let token = StatusListToken::create(ISSUER, uri, &list, &issuer_kp).unwrap();
+        let cache = StatusCache::new();
+        cache.insert_fetched_ago(uri, token, StdDuration::from_secs(120));
+
+        let revoked = StatusRef { uri: uri.into(), idx: 7 };
+        let clear = StatusRef { uri: uri.into(), idx: 3 };
+        // Age-bounded verdicts are Unknown; the caller refreshes, that fails,
+        // and the fallback plain check keeps serving the cached answers.
+        assert_eq!(cache.check_within(&clear, StdDuration::from_secs(15)), StatusVerdict::Unknown);
+        assert_eq!(cache.check(&clear), StatusVerdict::Valid);
+        assert_eq!(cache.check(&revoked), StatusVerdict::Revoked);
+    }
+
+    #[test]
+    fn insert_defaults_to_fresh_and_unchanged_for_existing_callers() {
+        use browserid_core::{StatusList, StatusListToken};
+        use std::time::Duration as StdDuration;
+        let issuer_kp = KeyPair::generate();
+        let uri = "https://browserid.example/.well-known/browserid-status";
+        let list = StatusList::from_revoked(vec![7], 8);
+        let token = StatusListToken::create(ISSUER, uri, &list, &issuer_kp).unwrap();
+        let cache = StatusCache::new();
+        cache.insert(uri, token);
+        assert!(cache.age(uri).unwrap() < StdDuration::from_secs(1));
+        assert_eq!(
+            cache.check_within(&StatusRef { uri: uri.into(), idx: 7 }, StdDuration::from_secs(1)),
+            StatusVerdict::Revoked
+        );
     }
 }
