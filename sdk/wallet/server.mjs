@@ -305,11 +305,15 @@ server.registerTool(
       scopes: z.array(z.string()).optional(),
       message: z.string().optional().describe("one sentence on what you'll do with this access — shown to the human, unverified"),
       grantor: z.string().optional().describe("pin attribution: 'self' (you act as yourself) or one of the human's emails; omit = the human chooses"),
+      replace: z.boolean().optional().describe("drop any held warrant for this audience first and request a fresh one — use when the held warrant is revoked or stale"),
     },
   },
-  async ({ audience, scopes, message, grantor }) => {
+  async ({ audience, scopes, message, grantor, replace }) => {
     try {
       let agent = await loadAgent();
+      if (replace && dropStoredGrant(audience)) {
+        agent = await loadAgent();
+      }
       // A grantor pin replaces a held warrant whose attribution differs —
       // that's the redo-with-a-different-on-behalf-of lever.
       if (grantor) {
@@ -385,7 +389,20 @@ server.registerTool(
         body: JSON.stringify({ presentation: assertion, message }),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body.success) return text("ERROR: " + (body.reason || `HTTP ${res.status}`));
+      if (!res.ok || !body.success) {
+        const reason = body.reason || `HTTP ${res.status}`;
+        // Self-heal a dead credential: a held warrant that verifiers report
+        // revoked can never work again by retrying — drop it so the next
+        // call requests a fresh approval instead of looping.
+        if (/revok/i.test(reason)) {
+          dropStoredGrant(GUESTBOOK_URL);
+          return text(
+            `The warrant I held was REVOKED server-side (${reason}). I dropped the dead copy — ` +
+              `call sign_guestbook again with the same message and it will request a fresh approval.`
+          );
+        }
+        return text("ERROR: " + reason);
+      }
       return text(`Signed! Live at ${body.url} — posted as ${body.agent}, acting for ${body.parent}.`);
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);
@@ -640,7 +657,14 @@ async function cliSignGuestbook(message) {
   saveAgent(agent);
   const { status, json } = await postJson(GUESTBOOK_URL, { presentation: assertion, message });
   if (!json.success) {
-    console.log(`ERROR: ${json.reason || `HTTP ${status}`}`);
+    const reason = json.reason || `HTTP ${status}`;
+    if (/revok/i.test(reason)) {
+      dropStoredGrant(GUESTBOOK_URL);
+      console.log(`The warrant I held was REVOKED server-side (${reason}).`);
+      console.log("Dropped the dead copy — run the same command again to request a fresh approval.");
+      process.exit(1);
+    }
+    console.log(`ERROR: ${reason}`);
     process.exit(1);
   }
   console.log(`Signed! Live at ${json.url} — posted as ${json.agent}, acting for ${json.parent}.`);
