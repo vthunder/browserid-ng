@@ -299,12 +299,12 @@ server.registerTool(
   "authorize",
   {
     title: "Request a warrant",
-    description: "Ask the human to grant this agent an audience + scopes. Returns an APPROVE_URL (or READY). Pass a one-sentence `message` saying what you'll do with the access — it's shown to the human (quoted, unverified) and helps them decide. `grantor` pins who the actions are attributed to ('self' = you, or an email of the human's); if you already hold a warrant for the audience under a DIFFERENT grantor, it is replaced — a fresh approval is requested. Use this to redo a grant with a different on-behalf-of identity.",
+    description: "Ask the human to grant this agent an audience + scopes. Returns an APPROVE_URL (or READY). Pass a one-sentence `message` saying what you'll do with the access — it's shown to the human (quoted, unverified) and helps them decide. `grantor` pins who the actions are attributed to ('self' = you, an email of the human's, or a handle identity like <handle>@bsky.browserid.me); if you already hold a warrant for the audience under a DIFFERENT grantor, it is replaced — a fresh approval is requested. Use this to redo a grant with a different on-behalf-of identity. NOTE: pass a grantor the human GAVE you verbatim (e.g. a Bluesky-handle identity <handle>@bsky.browserid.me) EXACTLY — do not 'normalise' it to their email; the attribution and the provenance badge are that literal string, and an email is a different person as far as the badge is concerned.",
     inputSchema: {
       audience: z.string(),
       scopes: z.array(z.string()).optional(),
       message: z.string().optional().describe("one sentence on what you'll do with this access — shown to the human, unverified"),
-      grantor: z.string().optional().describe("pin attribution: 'self' (you act as yourself) or one of the human's emails; omit = the human chooses"),
+      grantor: z.string().optional().describe("pin attribution, passed through VERBATIM: 'self' (you act as yourself), one of the human's emails, or a handle identity such as <handle>@bsky.browserid.me (posts to Bluesky are attributed to exactly this). Omit = the human chooses. Do not rewrite a handle identity into an email."),
       replace: z.boolean().optional().describe("drop any held warrant for this audience first and request a fresh one — use when the held warrant is revoked or stale"),
     },
   },
