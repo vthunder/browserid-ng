@@ -73,6 +73,9 @@
   on('a[href="/guestbook"], a[href$="/guestbook"]', function () {
     window.posthog.capture("guestbook_link_click", { from: location.pathname });
   });
+  on("#bskyCta", function () {
+    window.posthog.capture("bsky_cta_click");
+  });
   on(".try summary", function () {
     window.posthog.capture("guestbook_setup_expand");
   });
