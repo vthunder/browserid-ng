@@ -179,6 +179,93 @@ async fn verify_access_rejects_fallback_issuer_for_primary_domain() {
     assert_eq!(r.status, "failure", "fallback must not vouch for a primary domain: {:?}", r);
 }
 
+/// An on-behalf-of presentation whose GRANTEE (actor) and GRANTOR (attributed
+/// identity) live at DIFFERENT IdPs: the access cert is signed by the
+/// grantee's IdP, the config cert (and thus the warrant) by the grantor's.
+/// This is the shape a `@sandmill.org` agent posting as an
+/// `@bsky.browserid.me` handle produces.
+#[allow(clippy::too_many_arguments)]
+fn onbehalf_presentation(
+    grantee: &str,
+    grantee_iss: &str,
+    grantee_idp: &KeyPair,
+    grantor: &str,
+    grantor_iss: &str,
+    grantor_idp: &KeyPair,
+    audience: &str,
+) -> String {
+    let access_key = KeyPair::generate();
+    let config_key = KeyPair::generate();
+    let holder = Holder::new("br1a2b3c.main").unwrap();
+    // The access cert certifies the actor, signed by the actor's IdP.
+    let access_cert = DAccessCert::create(
+        grantee_iss, grantee, holder.clone(), &access_key.public_key(),
+        Duration::hours(24), grantee_idp, None,
+    ).unwrap();
+    // The config cert authorizes the GRANTOR identity, signed by the grantor's IdP.
+    let config_cert = DeviceCert::create(
+        grantor_iss, &config_key.public_key(), Purpose::Authorization, holder.clone(),
+        vec![grantor.to_string()], Duration::days(90), grantor_idp, None,
+    ).unwrap();
+    // The warrant attributes to the grantor, executed by the grantee, signed
+    // by the config key the grantor's IdP certified.
+    let warrant = DWarrant::create(
+        grantor, grantee, HolderMatcher::new("br1a2b3c.*").unwrap(), audience,
+        vec!["login".into()], Duration::days(90), &config_key, None,
+    ).unwrap();
+    let assertion = Assertion::create(audience, Duration::minutes(5), &access_key).unwrap();
+    format!("{}~{}~{}~{}", access_cert.encoded(), assertion.encoded(), warrant.encoded(), config_cert.encoded())
+}
+
+/// browserid-bsky-ru7u F10 regression. A cross-issuer on-behalf-of bundle — a
+/// `@sandmill.org` agent posting as an `@bsky.browserid.me` handle — must
+/// verify: the grantor's IdP (`bsky.browserid.me`) is authoritative for the
+/// grantor, and the grantee's (`sandmill.org`) for the grantee. The path once
+/// resolved only the access cert's issuer and rejected the grantor's own IdP
+/// as "not authoritative".
+#[tokio::test]
+async fn verify_access_accepts_cross_issuer_on_behalf_of() {
+    let grantee_idp = KeyPair::generate(); // sandmill.org
+    let grantor_idp = KeyPair::generate(); // bsky.browserid.me
+    let disc = MockDiscoverer::new(grantee_idp.public_key())
+        .with_primary("sandmill.org", grantee_idp.public_key())
+        .with_primary("bsky.browserid.me", grantor_idp.public_key());
+    let pres = onbehalf_presentation(
+        "danmills+claude@sandmill.org", "sandmill.org", &grantee_idp,
+        "danmills.bsky.social@bsky.browserid.me", "bsky.browserid.me", &grantor_idp,
+        "https://bsky.browserid.me",
+    );
+    let cache = RwLock::new(HashMap::new());
+    let r = verify_access_with_dns(&pres, "https://bsky.browserid.me", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
+    assert_eq!(r.status, "okay", "{:?}", r);
+    // The attributed identity is the GRANTOR; the acting one is the grantee.
+    assert_eq!(r.email.as_deref(), Some("danmills.bsky.social@bsky.browserid.me"));
+    assert_eq!(r.grantee.as_deref(), Some("danmills+claude@sandmill.org"));
+}
+
+/// The cross-issuer path must not become a hole: a config cert signed by an
+/// IdP that is NOT authoritative for the grantor is still rejected, even when
+/// the access cert's own issuer is fine.
+#[tokio::test]
+async fn verify_access_rejects_cross_issuer_with_rogue_grantor_idp() {
+    let grantee_idp = KeyPair::generate(); // sandmill.org, legitimate
+    let rogue = KeyPair::generate(); // signs the config cert but is not bsky's IdP
+    let real_bsky = KeyPair::generate();
+    let disc = MockDiscoverer::new(grantee_idp.public_key())
+        .with_primary("sandmill.org", grantee_idp.public_key())
+        .with_primary("bsky.browserid.me", real_bsky.public_key());
+    // config_iss claims bsky.browserid.me but is signed by `rogue`, not the
+    // key discovery publishes for it.
+    let pres = onbehalf_presentation(
+        "danmills+claude@sandmill.org", "sandmill.org", &grantee_idp,
+        "danmills.bsky.social@bsky.browserid.me", "bsky.browserid.me", &rogue,
+        "https://bsky.browserid.me",
+    );
+    let cache = RwLock::new(HashMap::new());
+    let r = verify_access_with_dns(&pres, "https://bsky.browserid.me", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
+    assert_eq!(r.status, "failure", "a config cert not signed by the grantor's real IdP must fail: {:?}", r);
+}
+
 // ---------------------------------------------------------------------------
 // Status enforcement (core §6.4): three authorities, fail-closed (4lxl).
 // ---------------------------------------------------------------------------

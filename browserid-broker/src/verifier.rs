@@ -226,13 +226,52 @@ async fn check_foreign_status(
     Ok(revoked)
 }
 
+/// Resolve the published IdP key for `iss`, enforcing that `iss` is
+/// authoritative for `domain`: a primary domain must be served by its own
+/// `iss == domain`; a no-primary domain must name an accepted fallback. This
+/// is the conformance rule applied independently to each identity in a
+/// presentation — the grantee (access cert) under its domain, and the grantor
+/// (config cert) under its own, which need not be the same IdP.
+async fn resolve_conformant_key(
+    discoverer: &impl crate::fallback_fetcher::Discoverer,
+    accepted_fallbacks: &[String],
+    domain: &str,
+    iss: &str,
+) -> Result<browserid_core::PublicKey, String> {
+    let disc = discoverer
+        .discover(domain)
+        .await
+        .map_err(|e| format!("discovery failed: {e}"))?;
+    let key_doc = if disc.is_primary {
+        if iss != domain {
+            return Err(format!("issuer '{iss}' is not authorized for primary domain '{domain}'"));
+        }
+        disc.document
+    } else {
+        if !accepted_fallbacks.iter().any(|f| f == iss) {
+            return Err(format!("issuer '{iss}' is not an accepted fallback"));
+        }
+        if iss == disc.authoritative_domain {
+            disc.document
+        } else {
+            discoverer
+                .discover(iss)
+                .await
+                .map_err(|e| format!("fallback discovery failed: {e}"))?
+                .document
+        }
+    };
+    key_doc.public_key.ok_or_else(|| "issuer has no key".to_string())
+}
+
 /// Verify a device-cert `access_cert~assertion~warrant~config_cert` bundle.
 ///
-/// Enforces conformance: the access cert AND config cert must be issued by the
-/// identity's own IdP (a primary for a primary domain; an accepted fallback for a
-/// no-primary domain). Because `AccessPresentation::verify` is sync and both certs
-/// share one `iss`, we resolve that single issuer key up front (async) and hand it
-/// to the sync join.
+/// Enforces conformance: the access cert AND config cert must each be issued
+/// by their own identity's IdP (a primary for a primary domain; an accepted
+/// fallback for a no-primary domain). The two issuers may differ — an
+/// on-behalf-of warrant attributes to the GRANTOR (the config cert's
+/// identity), whose IdP is not necessarily the grantee's — so both are
+/// resolved up front and handed to the sync join.
 ///
 /// Revocation (core §6.4): after the cryptographic join, the three status
 /// refs (access cert, config cert, warrant) are checked **fail-closed**
@@ -259,40 +298,43 @@ pub async fn verify_access_with_dns(
         None => return AccessVerificationResult::fail("identity is not an email"),
     };
 
-    let email_disc = match discoverer.discover(&email_domain).await {
-        Ok(r) => r,
-        Err(e) => return AccessVerificationResult::fail(format!("discovery failed: {e}")),
+    // The GRANTOR's issuer — the config cert's — which may differ from the
+    // grantee's (an on-behalf-of warrant where the actor and the identity it
+    // speaks for live at different IdPs: e.g. an `@sandmill.org` agent posting
+    // as an `@bsky.browserid.me` handle). `AccessPresentation::verify` asks the
+    // resolver for BOTH issuers separately; resolving only the access cert's,
+    // as this path once did, rejected every cross-issuer bundle — including an
+    // IdP's own certs — as "not authoritative".
+    let cc_iss = pres.config_cert.claims().iss.clone();
+    let grantor = pres.warrant.claims().grantor.clone();
+    let grantor_domain = match grantor.split('@').nth(1) {
+        Some(d) => d.to_string(),
+        None => return AccessVerificationResult::fail("warrant grantor is not an email"),
     };
 
-    // Same conformance rule as the classic path.
-    let key_doc = if email_disc.is_primary {
-        if iss != email_domain {
-            return AccessVerificationResult::fail(format!(
-                "issuer '{iss}' is not authorized for primary domain '{email_domain}'"
-            ));
-        }
-        email_disc.document
+    let access_key =
+        match resolve_conformant_key(discoverer, accepted_fallbacks, &email_domain, &iss).await {
+            Ok(k) => k,
+            Err(e) => return AccessVerificationResult::fail(e),
+        };
+    // Reuse only when the grantor is the SAME identity domain under the SAME
+    // issuer; otherwise resolve the grantor's IdP with the same conformance
+    // rule applied to the grantor's domain.
+    let config_key = if cc_iss == iss && grantor_domain == email_domain {
+        access_key.clone()
     } else {
-        if !accepted_fallbacks.iter().any(|f| f == &iss) {
-            return AccessVerificationResult::fail(format!("issuer '{iss}' is not an accepted fallback"));
+        match resolve_conformant_key(discoverer, accepted_fallbacks, &grantor_domain, &cc_iss).await
+        {
+            Ok(k) => k,
+            Err(e) => return AccessVerificationResult::fail(e),
         }
-        if iss == email_disc.authoritative_domain {
-            email_disc.document
-        } else {
-            match discoverer.discover(&iss).await {
-                Ok(r) => r.document,
-                Err(e) => return AccessVerificationResult::fail(format!("fallback discovery failed: {e}")),
-            }
-        }
-    };
-    let idp_key = match key_doc.public_key {
-        Some(k) => k,
-        None => return AccessVerificationResult::fail("issuer has no key"),
     };
 
     let v = match pres.verify(audience, |req_iss| {
         if req_iss == iss {
-            Ok(idp_key.clone())
+            Ok(access_key.clone())
+        } else if req_iss == cc_iss {
+            Ok(config_key.clone())
         } else {
             Err(browserid_core::Error::InvalidProvisioning(format!("issuer '{req_iss}' not authoritative")))
         }
