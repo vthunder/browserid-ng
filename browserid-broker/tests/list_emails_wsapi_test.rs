@@ -69,7 +69,7 @@ async fn test_list_emails_multiple() {
     let response = server
         .post("/wsapi/complete_email_addition")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
-        .json(&json!({ "token": code }))
+        .json(&json!({ "email": email2, "token": code, "csrf": csrf }))
         .await;
     assert_eq!(response.status_code(), 200);
 
@@ -121,7 +121,7 @@ async fn test_list_emails_reports_derived() {
     let response = server
         .post("/wsapi/complete_email_addition")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
-        .json(&json!({ "token": code }))
+        .json(&json!({ "email": child, "token": code, "csrf": csrf }))
         .await;
     assert_eq!(response.status_code(), 200);
 

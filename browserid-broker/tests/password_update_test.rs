@@ -194,6 +194,17 @@ async fn test_can_update_password_twice() {
         .await;
     assert_eq!(response.status_code(), 200);
 
+    // A password change rotates the session (audit H2): the old session is
+    // invalidated and a fresh one is set. A browser follows the Set-Cookie
+    // automatically; here we pick up the new session cookie (and its new CSRF
+    // token) for the next call.
+    let session = response
+        .maybe_cookie("browserid_session")
+        .expect("update_password should rotate the session cookie")
+        .value()
+        .to_string();
+    let csrf = get_csrf(&server, &session).await;
+
     // Second update
     let response = server
         .post("/wsapi/update_password")
@@ -256,7 +267,7 @@ async fn test_update_password_with_multiple_emails() {
     server
         .post("/wsapi/complete_email_addition")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "token": code }))
+        .json(&json!({ "email": email2, "token": code, "csrf": csrf }))
         .await;
 
     // Update password

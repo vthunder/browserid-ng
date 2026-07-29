@@ -1881,6 +1881,14 @@ impl SessionStore for SqliteStore {
 
         Ok(())
     }
+
+    fn delete_by_user(&self, user_id: UserId) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id.0])
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(n as u64)
+    }
 }
 
 // Implement traits for Arc<SqliteStore> so the same store can be used for both UserStore and SessionStore
@@ -2148,6 +2156,10 @@ impl SessionStore for std::sync::Arc<SqliteStore> {
 
     fn delete(&self, session_id: &SessionId) -> StoreResult<()> {
         (**self).delete(session_id)
+    }
+
+    fn delete_by_user(&self, user_id: UserId) -> StoreResult<u64> {
+        (**self).delete_by_user(user_id)
     }
 }
 

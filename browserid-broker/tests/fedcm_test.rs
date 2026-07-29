@@ -57,6 +57,7 @@ macro_rules! own_status_ctx {
             own_uri: browserid_registrar::consent::status_list_uri(BROKER),
             is_own_revoked: &never_revoked,
             cache: $cache,
+            allow_private_hosts: true,
         }
     };
 }

@@ -31,7 +31,7 @@ test.describe('Returning User Flow', () => {
 
     // Complete registration
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Now sign in through the dialog to establish a session
@@ -79,7 +79,7 @@ test.describe('Returning User Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Sign in
@@ -109,7 +109,7 @@ test.describe('Returning User Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Sign in
@@ -143,7 +143,7 @@ test.describe('Returning User Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     await dialogPage.goto('http://example.com');

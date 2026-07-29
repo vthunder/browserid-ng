@@ -51,7 +51,7 @@ async fn test_can_remove_second_email() {
     server
         .post("/wsapi/complete_email_addition")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
-        .json(&json!({ "token": code }))
+        .json(&json!({ "email": email2, "token": code, "csrf": csrf }))
         .await;
 
     // Verify we have 2 emails
@@ -108,7 +108,7 @@ async fn test_cannot_remove_nonexistent_email() {
     server
         .post("/wsapi/complete_email_addition")
         .add_cookie(cookie::Cookie::new("browserid_session", session_cookie.clone()))
-        .json(&json!({ "token": code }))
+        .json(&json!({ "email": email2, "token": code, "csrf": csrf }))
         .await;
 
     // Try to remove a different email that doesn't exist

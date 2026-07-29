@@ -4,3 +4,8 @@ target/
 .env
 *.md
 .beads/
+# Never bake secrets or local state into the image (audit L12).
+broker-key.json
+browserid.db
+browserid.db-shm
+browserid.db-wal

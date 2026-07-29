@@ -2,6 +2,7 @@
 
 mod account;
 mod auth;
+mod code_guard;
 mod device;
 mod email;
 mod fallback_idp;
@@ -245,7 +246,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-EdtiqT14U/haeHDm4fROPwBb+3NvbXQpWa8czq2Pivw='", // account.html
+    "'sha256-J1J7/Is+iVDr73iPWW3hF5xSjcMgwNfCEDUwOmkpze0='", // account.html
     "'sha256-KcSFrbxTD/FQlLnEbwRfQuYxTudagOb8OQNj5vSg5T8='", // consent.html
     "'sha256-+XqUYbHj+ZXqocYeM/oRYCX1zljIPfY94AJwWAtU2Do='", // agents.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)

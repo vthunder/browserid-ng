@@ -37,7 +37,7 @@ test.describe('Silent Assertion Flow', () => {
     const pending = await pendingResponse.json();
 
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Sign in via dialog - use the same origin as the test page will use
@@ -102,7 +102,7 @@ test.describe('Silent Assertion Flow', () => {
     const pending = await pendingResponse.json();
 
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Sign in via dialog for the same origin as the test page
@@ -166,7 +166,7 @@ test.describe('Silent Assertion Flow', () => {
     const pending = await pendingResponse.json();
 
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Sign in via dialog for the same origin as the test page
@@ -272,7 +272,7 @@ test.describe('Silent Assertion Flow', () => {
     const pending = await pendingResponse.json();
 
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Sign in via dialog for the same origin as the test page

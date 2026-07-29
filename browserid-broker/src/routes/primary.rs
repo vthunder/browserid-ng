@@ -63,6 +63,8 @@ where
         own_uri: browserid_registrar::consent::status_list_uri(&state.domain),
         is_own_revoked: &is_own_revoked,
         cache: &state.foreign_status_lists,
+        // Enforce the SSRF guard in production; relax only on localhost dev.
+        allow_private_hosts: !crate::routes::session::cookie_secure(&state.domain),
     };
     let result =
         verify_access_with_dns(&req.presentation, &audience, fetcher.as_ref(), &accepted, status)

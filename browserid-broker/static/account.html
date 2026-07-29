@@ -493,14 +493,14 @@ $('signin-form').onsubmit = async (e) => {
     }
     if (siMode === 'create-code') {
       siMuted('Confirming…');
-      await post('/wsapi/complete_user_creation', { token: $('si-code').value.trim() });
+      await post('/wsapi/complete_user_creation', { email, token: $('si-code').value.trim() });
       await post('/wsapi/authenticate_user', { email, pass: siPendingPass, ephemeral: false });
       location.reload(); return;
     }
     if (siMode === 'reset-code') {
       const pass = $('si-newpass').value;
       siMuted('Signing in…');
-      await post('/wsapi/complete_reset', { token: $('si-code').value.trim(), pass });
+      await post('/wsapi/complete_reset', { email, token: $('si-code').value.trim(), pass });
       await post('/wsapi/authenticate_user', { email, pass, ephemeral: false });
       location.reload(); return;
     }
@@ -996,7 +996,7 @@ $('ae-btn').onclick = async () => {
       status.textContent = 'Code sent — check that inbox.';
     } else {
       status.textContent = 'Verifying…';
-      await post('/wsapi/complete_email_addition', { token: $('ae-code').value.trim() });
+      await post('/wsapi/complete_email_addition', { email, token: $('ae-code').value.trim() });
       location.reload();
     }
   } catch (e) { status.className = 'status err'; status.textContent = e.message; }

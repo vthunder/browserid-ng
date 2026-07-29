@@ -49,7 +49,7 @@ async fn test_complete_email_requires_auth() {
 
     let response = server
         .post("/wsapi/complete_email_addition")
-        .json(&json!({ "token": "123456" }))
+        .json(&json!({ "email": "x@example.com", "token": "123456" }))
         .await;
 
     assert_eq!(response.status_code(), 401);

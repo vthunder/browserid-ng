@@ -27,7 +27,7 @@ test.describe('Remove Email Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: primaryEmail, token: pending.code },
     });
 
     // Sign in
@@ -55,15 +55,16 @@ test.describe('Remove Email Flow', () => {
     const emailPending = await emailPendingResponse.json();
     expect(emailPending.success).toBeTruthy();
 
-    const completeResult = await page.evaluate(async (token) => {
+    const completeResult = await page.evaluate(async ({ token, email }) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       const response = await fetch('/wsapi/complete_email_addition', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ token }),
+        body: JSON.stringify({ email, token, csrf: sc.csrf_token }),
       });
       return response.json();
-    }, emailPending.code);
+    }, { token: emailPending.code, email: secondaryEmail });
     expect(completeResult.success).toBeTruthy();
 
     // List emails - should have both
@@ -95,7 +96,7 @@ test.describe('Remove Email Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: primaryEmail, token: pending.code },
     });
 
     // Sign in
@@ -119,14 +120,15 @@ test.describe('Remove Email Flow', () => {
     );
     const emailPending = await emailPendingResponse.json();
 
-    await page.evaluate(async (token) => {
+    await page.evaluate(async ({ token, email }) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       await fetch('/wsapi/complete_email_addition', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ token }),
+        body: JSON.stringify({ email, token, csrf: sc.csrf_token }),
       });
-    }, emailPending.code);
+    }, { token: emailPending.code, email: secondaryEmail });
 
     // Remove secondary email
     const removeResult = await page.evaluate(async (email) => {
@@ -169,7 +171,7 @@ test.describe('Remove Email Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Sign in
@@ -211,7 +213,7 @@ test.describe('Remove Email Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: primaryEmail, token: pending.code },
     });
 
     // Sign in
@@ -235,14 +237,15 @@ test.describe('Remove Email Flow', () => {
     );
     const emailPending = await emailPendingResponse.json();
 
-    await page.evaluate(async (token) => {
+    await page.evaluate(async ({ token, email }) => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) => r.json());
       await fetch('/wsapi/complete_email_addition', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ token }),
+        body: JSON.stringify({ email, token, csrf: sc.csrf_token }),
       });
-    }, emailPending.code);
+    }, { token: emailPending.code, email: secondaryEmail });
 
     // Remove secondary email
     await page.evaluate(async (email) => {

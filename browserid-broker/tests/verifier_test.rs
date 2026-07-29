@@ -132,7 +132,7 @@ fn device_presentation_with_status(
 /// starts empty. Tests that need a foreign list serve it over HTTP.
 macro_rules! status_ctx {
     ($cache:expr, $check:expr) => {
-        StatusCtx { own_uri: OWN_STATUS_URI.to_string(), is_own_revoked: $check, cache: $cache }
+        StatusCtx { own_uri: OWN_STATUS_URI.to_string(), is_own_revoked: $check, cache: $cache, allow_private_hosts: true }
     };
 }
 

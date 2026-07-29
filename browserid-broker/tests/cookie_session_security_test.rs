@@ -70,7 +70,7 @@ async fn test_session_cookie_is_httponly() {
     let code = email_sender.get_code(email).expect("No code sent");
     let response = server
         .post("/wsapi/complete_user_creation")
-        .json(&serde_json::json!({ "token": code }))
+        .json(&serde_json::json!({ "email": email, "token": code }))
         .await;
 
     // Check that session cookie is set

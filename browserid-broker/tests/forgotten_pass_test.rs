@@ -129,6 +129,7 @@ async fn test_complete_reset_changes_password() {
     let response = server
         .post("/wsapi/complete_reset")
         .json(&json!({
+            "email": email,
             "token": code,
             "pass": new_password
         }))
@@ -161,6 +162,7 @@ async fn test_old_password_fails_after_reset() {
     server
         .post("/wsapi/complete_reset")
         .json(&json!({
+            "email": email,
             "token": code,
             "pass": new_password
         }))
@@ -203,6 +205,7 @@ async fn test_new_password_works_after_reset() {
     server
         .post("/wsapi/complete_reset")
         .json(&json!({
+            "email": email,
             "token": code,
             "pass": new_password
         }))
@@ -243,6 +246,7 @@ async fn test_reset_status_complete_after_reset() {
     server
         .post("/wsapi/complete_reset")
         .json(&json!({
+            "email": email,
             "token": code,
             "pass": "newpassword"
         }))
@@ -292,6 +296,7 @@ async fn test_complete_reset_invalid_token() {
     let response = server
         .post("/wsapi/complete_reset")
         .json(&json!({
+            "email": email,
             "token": "000000",
             "pass": "newpassword"
         }))
@@ -323,6 +328,7 @@ async fn test_complete_reset_password_too_short() {
     let response = server
         .post("/wsapi/complete_reset")
         .json(&json!({
+            "email": email,
             "token": code,
             "pass": "short"
         }))
@@ -358,7 +364,7 @@ async fn test_reset_affects_all_emails() {
     server
         .post("/wsapi/complete_email_addition")
         .add_cookie(cookie::Cookie::new("browserid_session", session))
-        .json(&json!({ "token": code }))
+        .json(&json!({ "email": email2, "token": code, "csrf": csrf }))
         .await;
 
     // Reset password using first email
@@ -372,6 +378,7 @@ async fn test_reset_affects_all_emails() {
     server
         .post("/wsapi/complete_reset")
         .json(&json!({
+            "email": email1,
             "token": reset_code,
             "pass": new_password
         }))

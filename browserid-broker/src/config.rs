@@ -123,6 +123,15 @@ fn save_keypair(path: &str, keypair: &KeyPair) -> Result<()> {
     fs::write(path, json)
         .with_context(|| format!("Failed to write keypair to {}", path))?;
 
+    // The file holds the broker's root signing seed — restrict it to the owner
+    // (audit M8). `fs::write` above creates it 0644 by default, so tighten after.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("Failed to chmod keypair {}", path))?;
+    }
+
     Ok(())
 }
 

@@ -150,6 +150,11 @@ pub struct StatusCtx<'a> {
     /// Cache of verified foreign list tokens, keyed by URI (see
     /// `AppState::status_lists`)
     pub cache: &'a RwLock<HashMap<String, StatusListToken>>,
+    /// Relax the SSRF guard on foreign status fetches (audit H1) to permit
+    /// `http` and private/loopback hosts. MUST be `false` in production; set
+    /// `true` only for localhost dev and tests, where status authorities are
+    /// served on `127.0.0.1`.
+    pub allow_private_hosts: bool,
 }
 
 fn status_http() -> &'static reqwest::Client {
@@ -157,9 +162,101 @@ fn status_http() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
+            // Do not follow redirects: a status URI is validated (below) before
+            // the request, and a redirect would let the target re-point the
+            // fetch at an internal host after the check (SSRF, audit H1).
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("failed to build status HTTP client")
     })
+}
+
+/// Ceiling on how long we honor a foreign issuer's status list, regardless of
+/// the `ttl` it declares (audit M3). Matches the reference 5-minute cache window.
+const MAX_FOREIGN_STATUS_TTL: i64 = 300;
+
+/// Cap on the number of foreign status lists cached at once (audit M4). The
+/// cache is keyed by an attacker-authored URI, so it must be bounded; at the cap
+/// we drop stale entries and, failing that, skip caching rather than grow without
+/// limit.
+const MAX_STATUS_CACHE_ENTRIES: usize = 1024;
+
+/// Max bytes read from a foreign status list before rejecting (audit H1/M4).
+/// A status list is a zlib-compressed, base64url bitstring; the decompressor is
+/// separately capped at 4 MiB (`status.rs`), so a few MiB of transport is ample
+/// and bounds a malicious server's response.
+const MAX_STATUS_BODY: usize = 4 * 1024 * 1024;
+
+/// SSRF guard (audit H1): a foreign status-list URI is attacker-authored (it
+/// rides in the certs of a self-minted bundle), so before fetching it we require
+/// `https` and reject any host that resolves to a non-global address
+/// (loopback / private / link-local / ULA / unspecified / multicast). Combined
+/// with the no-redirect client this stops a presentation from steering the
+/// verifier at cloud metadata endpoints or internal services.
+///
+/// Residual: resolution here and the client's own resolution are distinct
+/// lookups (a TOCTOU rebinding window). The no-redirect policy and the
+/// authenticated-issuer binding downstream bound the impact; pinning the checked
+/// IP into the connection would close it fully and is a future hardening.
+async fn validate_status_url(uri: &str, allow_private: bool) -> Result<(), String> {
+    if allow_private {
+        // Localhost dev / tests: status authorities run on 127.0.0.1 over http.
+        return Ok(());
+    }
+    let url = reqwest::Url::parse(uri).map_err(|e| format!("bad status uri '{uri}': {e}"))?;
+    if url.scheme() != "https" {
+        return Err(format!("status uri '{uri}' is not https"));
+    }
+    let host = url.host_str().ok_or_else(|| format!("status uri '{uri}' has no host"))?;
+    let port = url.port_or_known_default().unwrap_or(443);
+
+    // Resolve and require every resolved address to be globally routable.
+    let addrs = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| format!("resolve '{host}': {e}"))?;
+    let mut any = false;
+    for addr in addrs {
+        any = true;
+        if !is_global_ip(addr.ip()) {
+            return Err(format!("status host '{host}' resolves to non-global address {}", addr.ip()));
+        }
+    }
+    if !any {
+        return Err(format!("status host '{host}' did not resolve"));
+    }
+    Ok(())
+}
+
+/// Whether an IP is safe to fetch from — i.e. not loopback, private, link-local,
+/// unique-local, unspecified, or multicast. `std`'s `is_global` is unstable, so
+/// we enumerate the non-global ranges explicitly.
+fn is_global_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_multicast()
+                // 100.64.0.0/10 carrier-grade NAT
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 0x40))
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_global_ip(std::net::IpAddr::V4(v4));
+            }
+            let seg0 = v6.segments()[0];
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                // fc00::/7 unique-local
+                || (seg0 & 0xfe00) == 0xfc00
+                // fe80::/10 link-local
+                || (seg0 & 0xffc0) == 0xfe80)
+        }
+    }
 }
 
 /// The list's signer must be the URI's own host — the credential's issuer
@@ -175,31 +272,51 @@ fn uri_matches_issuer(uri: &str, iss: &str) -> bool {
     }
 }
 
+/// Read a response body into a String, rejecting once more than `max` bytes
+/// have arrived (streaming-safe — does not trust `Content-Length`).
+async fn read_capped(mut resp: reqwest::Response, max: usize) -> Result<String, String> {
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if buf.len() + chunk.len() > max {
+            return Err(format!("response exceeds {max} bytes"));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8(buf).map_err(|e| e.to_string())
+}
+
 /// Check a foreign status ref fail-closed: `Ok(revoked)`, or `Err` when the
 /// check cannot be made (which the caller MUST treat as a rejection).
 async fn check_foreign_status(
     r: &StatusRef,
     discoverer: &impl crate::fallback_fetcher::Discoverer,
     cache: &RwLock<HashMap<String, StatusListToken>>,
+    allow_private: bool,
 ) -> Result<bool, String> {
     // Fresh cached list → answer without network. (Scoped: the guard must not
     // live across an await.)
     {
         let lists = cache.read().unwrap();
         if let Some(tok) = lists.get(&r.uri) {
-            if tok.is_fresh(0) {
+            if tok.is_fresh_capped(0, MAX_FOREIGN_STATUS_TTL) {
                 return Ok(tok.is_revoked(r.idx));
             }
         }
     }
 
-    let body = status_http()
+    // SSRF guard: validate the attacker-authored URI before touching the network.
+    validate_status_url(&r.uri, allow_private).await?;
+
+    let resp = status_http()
         .get(&r.uri)
         .send()
         .await
         .and_then(|resp| resp.error_for_status())
-        .map_err(|e| format!("fetch {}: {e}", r.uri))?
-        .text()
+        .map_err(|e| format!("fetch {}: {e}", r.uri))?;
+
+    // Read the body with a hard cap so a malicious server can't stream unbounded
+    // data into the verifier (audit H1/M4).
+    let body = read_capped(resp, MAX_STATUS_BODY)
         .await
         .map_err(|e| format!("read {}: {e}", r.uri))?;
     let token = StatusListToken::parse(body.trim()).map_err(|e| e.to_string())?;
@@ -217,12 +334,24 @@ async fn check_foreign_status(
         .public_key
         .ok_or_else(|| format!("status issuer '{iss}' has no key"))?;
     token.verify(&key, &r.uri).map_err(|e| e.to_string())?;
-    if !token.is_fresh(0) {
+    if !token.is_fresh_capped(0, MAX_FOREIGN_STATUS_TTL) {
         return Err(format!("status list {} is stale", r.uri));
     }
 
     let revoked = token.is_revoked(r.idx);
-    cache.write().unwrap().insert(r.uri.clone(), token);
+    {
+        // Bounded insert (audit M4): keep the cache from growing without limit
+        // under attacker-supplied URIs. Evict stale entries first; if still at
+        // the cap, skip caching this one (correctness is unaffected — the next
+        // request just re-fetches).
+        let mut lists = cache.write().unwrap();
+        if lists.len() >= MAX_STATUS_CACHE_ENTRIES && !lists.contains_key(&r.uri) {
+            lists.retain(|_, t| t.is_fresh_capped(0, MAX_FOREIGN_STATUS_TTL));
+        }
+        if lists.len() < MAX_STATUS_CACHE_ENTRIES || lists.contains_key(&r.uri) {
+            lists.insert(r.uri.clone(), token);
+        }
+    }
     Ok(revoked)
 }
 
@@ -353,7 +482,7 @@ pub async fn verify_access_with_dns(
         let revoked = if r.uri == status.own_uri {
             (status.is_own_revoked)(r.idx)
         } else {
-            check_foreign_status(r, discoverer, status.cache).await
+            check_foreign_status(r, discoverer, status.cache, status.allow_private_hosts).await
         };
         match revoked {
             Ok(false) => {}

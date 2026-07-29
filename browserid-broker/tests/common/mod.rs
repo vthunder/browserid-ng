@@ -119,7 +119,7 @@ pub async fn create_user(
     // Complete user creation
     let response = server
         .post("/wsapi/complete_user_creation")
-        .json(&json!({ "token": code }))
+        .json(&json!({ "email": email, "token": code }))
         .await;
     assert_eq!(response.status_code(), 200);
 

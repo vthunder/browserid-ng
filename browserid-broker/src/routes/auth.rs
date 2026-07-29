@@ -167,6 +167,17 @@ where
     // Update password
     state.user_store.update_password(session.user_id, &new_hash)?;
 
+    // Evict every existing session for this user (audit H2), then mint a fresh
+    // one for the caller so the password change also logs out any other live
+    // session (e.g. a co-resident attacker) without logging *this* user out.
+    state.session_store.delete_by_user(session.user_id)?;
+    let fresh = state.session_store.create(session.user_id)?;
+    super::session::set_session_cookie(
+        &cookies,
+        &fresh.id.0,
+        super::session::cookie_secure(&state.domain),
+    );
+
     Ok(Json(UpdatePasswordResponse {
         success: true,
         reason: None,

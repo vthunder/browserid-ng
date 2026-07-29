@@ -37,7 +37,7 @@ test.describe('Sign In Flow', () => {
 
     // Complete registration
     const completeResponse = await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
     expect(completeResponse.ok()).toBeTruthy();
   });

@@ -228,25 +228,48 @@ fn classify_response(response: &Message, domain: &str) -> DnsLookupResult {
         response.answers().len()
     );
 
-    // Parse TXT records from the response
-    let mut txt_data: Option<String> = None;
+    // Collect the BrowserID candidate TXT records at `_browserid.<domain>`.
+    // Filter by the `v=browserid1` version tag rather than taking the first TXT
+    // (audit M5): a zone may legitimately carry other TXT records at this name,
+    // and blindly picking the first one would either miss a valid record or, if
+    // it happened to be ours, ignore a second conflicting one.
+    let candidates: Vec<String> = response
+        .answers()
+        .iter()
+        .filter_map(|record| match record.data() {
+            Some(RData::TXT(txt)) => {
+                let combined: String = txt
+                    .txt_data()
+                    .iter()
+                    .map(|bytes| String::from_utf8_lossy(bytes))
+                    .collect::<Vec<_>>()
+                    .join("");
+                combined
+                    .trim_start()
+                    .starts_with("v=browserid")
+                    .then_some(combined)
+            }
+            _ => None,
+        })
+        .collect();
 
-    for record in response.answers() {
-        if let Some(RData::TXT(txt)) = record.data() {
-            // Concatenate all character strings in the TXT record
-            let combined: String = txt
-                .txt_data()
-                .iter()
-                .map(|bytes| String::from_utf8_lossy(bytes))
-                .collect::<Vec<_>>()
-                .join("");
-
-            txt_data = Some(combined);
-            break; // Use the first TXT record
-        }
+    // More than one BrowserID record is an ambiguous/misconfigured (or tampered)
+    // zone. On a DNSSEC-secure answer this is Bogus — hard-reject rather than
+    // non-deterministically pick one and silently demote the domain.
+    if candidates.len() > 1 {
+        tracing::warn!(
+            "Multiple BrowserID records for {} ({} found)",
+            domain,
+            candidates.len()
+        );
+        return if is_secure {
+            DnsLookupResult::bogus()
+        } else {
+            DnsLookupResult::insecure()
+        };
     }
 
-    match txt_data {
+    match candidates.into_iter().next() {
         Some(txt) => match DnsRecord::parse(&txt) {
             Ok(record) => {
                 // Record found and parsed successfully
@@ -268,17 +291,20 @@ fn classify_response(response: &Message, domain: &str) -> DnsLookupResult {
                 }
             }
             Err(e) => {
-                // Malformed record - treat as not found
+                // A BrowserID record is PRESENT but malformed. If it is
+                // DNSSEC-signed this is Bogus (audit M5): treating it as
+                // NXDOMAIN would demote a primary domain to the broker fallback,
+                // rejecting the domain's own legitimately-issued presentations.
                 tracing::warn!("Malformed BrowserID record for {}: {}", domain, e);
                 if is_secure {
-                    DnsLookupResult::secure_nxdomain()
+                    DnsLookupResult::bogus()
                 } else {
                     DnsLookupResult::insecure()
                 }
             }
         },
         None => {
-            // No TXT records found
+            // No BrowserID record present — a genuine "not a primary" signal.
             if is_secure {
                 DnsLookupResult::secure_nxdomain()
             } else {
@@ -355,6 +381,20 @@ mod tests {
         message
     }
 
+    /// Response carrying several TXT records at `_browserid.example.com`.
+    fn response_multi(code: ResponseCode, ad: bool, txts: &[&str]) -> Message {
+        let mut message = Message::new();
+        message.set_message_type(MessageType::Response);
+        message.set_response_code(code);
+        message.set_authentic_data(ad);
+        let name = Name::from_str("_browserid.example.com.").unwrap();
+        for txt in txts {
+            let rdata = RData::TXT(TXT::new(vec![txt.to_string()]));
+            message.add_answer(Record::from_rdata(name.clone(), 300, rdata));
+        }
+        message
+    }
+
     #[test]
     fn test_servfail_is_bogus_not_fallback() {
         // A validating resolver returns SERVFAIL on DNSSEC validation failure.
@@ -362,6 +402,46 @@ mod tests {
         let result = classify_response(&response(ResponseCode::ServFail, false, None), "example.com");
         assert_eq!(result.dnssec_status, DnssecStatus::Bogus);
         assert!(result.record.is_none());
+    }
+
+    #[test]
+    fn test_malformed_signed_record_is_bogus_not_nxdomain() {
+        // A BrowserID record is present (v=browserid1 tag) but malformed, and the
+        // answer is DNSSEC-secure. This must hard-reject (Bogus), NOT demote to
+        // the broker fallback via secure_nxdomain (audit M5).
+        let result = classify_response(
+            &response(ResponseCode::NoError, true, Some("v=browserid1; public-key=not-valid")),
+            "example.com",
+        );
+        assert_eq!(result.dnssec_status, DnssecStatus::Bogus);
+        assert!(result.record.is_none());
+    }
+
+    #[test]
+    fn test_multiple_browserid_records_signed_is_bogus() {
+        // Two BrowserID records at _browserid is ambiguous/tampered; on a secure
+        // answer, reject rather than non-deterministically pick one (audit M5).
+        let result = classify_response(
+            &response_multi(ResponseCode::NoError, true, &[&valid_txt(), &valid_txt()]),
+            "example.com",
+        );
+        assert_eq!(result.dnssec_status, DnssecStatus::Bogus);
+    }
+
+    #[test]
+    fn test_non_browserid_txt_alongside_record_is_ignored() {
+        // An unrelated TXT record at the same name must not shadow the real
+        // BrowserID record (previously the first-TXT-wins scan could miss it).
+        let result = classify_response(
+            &response_multi(
+                ResponseCode::NoError,
+                true,
+                &["some-other-txt=hello", &valid_txt()],
+            ),
+            "example.com",
+        );
+        assert_eq!(result.dnssec_status, DnssecStatus::Secure);
+        assert!(result.record.is_some());
     }
 
     #[test]

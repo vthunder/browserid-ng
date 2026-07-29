@@ -26,7 +26,7 @@ test.describe('Cancel Account Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Sign in through dialog
@@ -65,7 +65,7 @@ test.describe('Cancel Account Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Sign in
@@ -109,7 +109,7 @@ test.describe('Cancel Account Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Sign in and cancel
@@ -158,7 +158,7 @@ test.describe('Cancel Account Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Sign in

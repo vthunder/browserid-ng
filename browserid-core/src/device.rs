@@ -12,9 +12,18 @@
 //! and joins them by `(identity, holder∈matcher, audience)`.
 //!
 //! Hardening (from the 2026-07-18 adversarial review):
-//! - the config cert MUST be issued by the identity's own IdP
-//!   (`config_cert.iss == access_cert.iss`), so an RP never trusts a warrant
-//!   signed by a rogue-IdP authorization cert (privilege-escalation fix);
+//! - **Cross-issuer conformance is the caller's obligation.** The config cert
+//!   and the access cert may be issued by *different* IdPs (an on-behalf-of
+//!   warrant attributes to the grantor, whose IdP need not be the grantee's), so
+//!   [`AccessPresentation::verify`] no longer requires `config_cert.iss ==
+//!   access_cert.iss`. Instead the caller's `get_idp_key` resolver MUST verify
+//!   that `access_cert.iss` is authoritative for the access-cert identity AND
+//!   that `config_cert.iss` is authoritative for the warrant's grantor (each
+//!   under its own domain, DNSSEC-rooted). If a caller resolves keys without
+//!   that per-issuer conformance check, a rogue IdP's authorization cert can
+//!   vouch for another IdP's identity — so this precondition is load-bearing
+//!   (`browserid-broker`'s `resolve_conformant_key` and `browserid-rp`'s
+//!   `issuer_conformant` both enforce it);
 //! - three revocation authorities — access cert, config cert, warrant — each
 //!   carry a status ref; [`VerifiedAccess`] surfaces all three for the caller to
 //!   check **fail-closed** (revocation needs network, so it lives in the RP-side

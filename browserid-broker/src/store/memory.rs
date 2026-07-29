@@ -764,6 +764,13 @@ impl SessionStore for InMemorySessionStore {
         self.sessions.write().unwrap().remove(session_id);
         Ok(())
     }
+
+    fn delete_by_user(&self, user_id: UserId) -> StoreResult<u64> {
+        let mut sessions = self.sessions.write().unwrap();
+        let before = sessions.len();
+        sessions.retain(|_, s| s.user_id != user_id);
+        Ok((before - sessions.len()) as u64)
+    }
 }
 
 #[cfg(test)]

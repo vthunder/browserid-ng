@@ -17,7 +17,7 @@ async function createAccount(request: any) {
   const pending = await (
     await request.get(`${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(email)}&type=new_account`)
   ).json();
-  await request.post(`${baseUrl}/wsapi/complete_user_creation`, { data: { token: pending.code } });
+  await request.post(`${baseUrl}/wsapi/complete_user_creation`, { data: { email, token: pending.code } });
   return { email, pass };
 }
 

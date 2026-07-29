@@ -73,7 +73,7 @@ async fn test_status_complete_after_verification() {
     let response = server
         .post("/wsapi/complete_email_addition")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "token": code }))
+        .json(&json!({ "email": second_email, "token": code, "csrf": csrf }))
         .await;
     assert_eq!(response.status_code(), 200);
 

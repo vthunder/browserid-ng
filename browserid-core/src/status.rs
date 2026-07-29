@@ -190,6 +190,15 @@ impl StatusListToken {
         Utc::now().timestamp() <= self.claims.iat + self.claims.ttl + grace
     }
 
+    /// Freshness with a consumer-imposed ceiling on the issuer-declared `ttl`.
+    /// A relying verifier caps how long it will honor a *foreign* issuer's list
+    /// so a malicious/compromised issuer cannot set `ttl` arbitrarily large and
+    /// pin a cached all-clear list past a real revocation (audit M3).
+    pub fn is_fresh_capped(&self, grace: i64, max_ttl: i64) -> bool {
+        let ttl = self.claims.ttl.min(max_ttl);
+        Utc::now().timestamp() <= self.claims.iat + ttl + grace
+    }
+
     pub fn is_revoked(&self, idx: u64) -> bool {
         self.list.is_revoked(idx)
     }

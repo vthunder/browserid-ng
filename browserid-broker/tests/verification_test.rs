@@ -22,7 +22,7 @@ async fn test_invalid_verification_code() {
     // Try with wrong code
     let response = server
         .post("/wsapi/complete_user_creation")
-        .json(&json!({ "token": "000000" }))
+        .json(&json!({ "email": "verify@example.com", "token": "000000" }))
         .await;
 
     assert_eq!(response.status_code(), 400);

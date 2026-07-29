@@ -47,9 +47,9 @@ class BrokerApi {
   /**
    * Complete user creation with verification code
    */
-  async completeUserCreation(token: string): Promise<{ success: boolean }> {
+  async completeUserCreation(token: string, email: string): Promise<{ success: boolean }> {
     const response = await this.request.post(`${this.baseUrl}/wsapi/complete_user_creation`, {
-      data: { token },
+      data: { email, token },
     });
     return response.json();
   }
@@ -122,7 +122,7 @@ class BrokerApi {
     }
 
     // Complete registration
-    const completeResult = await this.completeUserCreation(pendingResult.code);
+    const completeResult = await this.completeUserCreation(pendingResult.code, email);
     return completeResult.success;
   }
 

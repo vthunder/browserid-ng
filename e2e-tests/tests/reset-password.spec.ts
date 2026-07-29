@@ -24,7 +24,7 @@ test.describe('Reset Password Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Go to dialog and enter email
@@ -58,7 +58,7 @@ test.describe('Reset Password Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Request password reset via dialog
@@ -93,7 +93,7 @@ test.describe('Reset Password Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Request password reset
@@ -140,7 +140,7 @@ test.describe('Reset Password Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Request and complete password reset
@@ -205,7 +205,7 @@ test.describe('Reset Password Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Request password reset
@@ -245,7 +245,7 @@ test.describe('Reset Password Flow', () => {
     );
     const pending = await pendingResponse.json();
     await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { token: pending.code },
+      data: { email: testEmail, token: pending.code },
     });
 
     // Complete password reset

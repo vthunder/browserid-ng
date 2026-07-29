@@ -275,4 +275,9 @@ pub trait SessionStore: Send + Sync {
 
     /// Delete a session
     fn delete(&self, session_id: &SessionId) -> StoreResult<()>;
+
+    /// Delete **all** sessions for a user; returns the number removed. Used to
+    /// evict every live session on a credential change (password update/reset),
+    /// so recovering an account also cuts off an attacker's session (audit H2).
+    fn delete_by_user(&self, user_id: UserId) -> StoreResult<u64>;
 }

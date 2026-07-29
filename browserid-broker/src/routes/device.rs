@@ -12,12 +12,33 @@
 //! The warrant is signed CLIENT-side by the config cert; its registry/status
 //! (revocation) lands with DC Phase 4.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use axum::extract::State;
 use axum::Json;
 use browserid_core::device::{AccessCert, AccessRequest, DeviceCert, Purpose};
 use browserid_core::{PublicKey, StatusRef};
+
+/// Seen access-request `jti`s → their `exp` (unix seconds). An access request is
+/// single-use within its ~10-minute window; replaying it must not mint a second
+/// access cert (audit L2). In-memory and single-instance, matching the app's
+/// other anti-replay state; a restart only forgets already-expired-soon nonces.
+static SEEN_JTIS: LazyLock<Mutex<HashMap<String, i64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Record `jti` as used until `exp`; returns `false` if it was already seen and
+/// is still within its validity window (i.e. a replay). Prunes expired nonces.
+fn claim_jti(jti: &str, exp: i64) -> bool {
+    let now = chrono::Utc::now().timestamp();
+    let mut seen = SEEN_JTIS.lock().unwrap();
+    seen.retain(|_, &mut e| e > now);
+    if seen.contains_key(jti) {
+        return false;
+    }
+    seen.insert(jti.to_string(), exp);
+    true
+}
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
 use tower_cookies::Cookies;
@@ -275,8 +296,13 @@ where
     if areq.is_expired() {
         return Err(BrokerError::InvalidProvisioningRequest("access request expired".into()));
     }
-    // TODO (B2): single-use jti replay cache.
+    // Single-use jti: reject a replayed access request within its validity
+    // window (audit L2). Bounded in-memory set, pruned by expiry — consistent
+    // with the app's other in-memory anti-replay/throttle state.
     let c = areq.claims();
+    if !claim_jti(&c.jti, c.exp) {
+        return Err(BrokerError::InvalidProvisioningRequest("access request replayed (jti seen)".into()));
+    }
     if c.domain != state.domain {
         return Err(BrokerError::InvalidProvisioningRequest("wrong target domain".into()));
     }
@@ -337,6 +363,8 @@ where
         own_uri: browserid_registrar::consent::status_list_uri(&state.domain),
         is_own_revoked: &is_own_revoked,
         cache: &state.foreign_status_lists,
+        // Enforce the SSRF guard in production; relax only on localhost dev.
+        allow_private_hosts: !crate::routes::session::cookie_secure(&state.domain),
     };
     Json(
         verify_access_with_dns(&req.presentation, &req.audience, fetcher.as_ref(), &accepted, status)

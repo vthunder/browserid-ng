@@ -80,6 +80,9 @@ where
 
 #[derive(Deserialize)]
 pub struct CompleteResetRequest {
+    /// Target email the code was issued to — binds the guess to one pending
+    /// record so the code space can't be walked globally (audit C1).
+    pub email: String,
     pub token: String,
     pub pass: String,
 }
@@ -110,26 +113,18 @@ where
         return Err(BrokerError::PasswordTooLong);
     }
 
-    // Look up pending verification
-    let pending = state
-        .user_store
-        .get_pending(&req.token)?
-        .ok_or(BrokerError::InvalidVerificationCode)?;
-
-    // Verify this is a password reset
-    if pending.verification_type != VerificationType::PasswordReset {
-        return Err(BrokerError::InvalidVerificationCode);
-    }
+    // Look up the pending record by its target email and verify the code with
+    // the brute-force guard (binds the guess to one record, burns after N wrong
+    // tries). Expiry is enforced inside the guard.
+    let pending = super::code_guard::verify_pending_code(
+        state.user_store.as_ref(),
+        &req.email,
+        VerificationType::PasswordReset,
+        &req.token,
+    )?;
 
     // Get user ID
     let user_id = pending.user_id.ok_or(BrokerError::InvalidVerificationCode)?;
-
-    // Check expiry (15 minutes)
-    let age = Utc::now() - pending.created_at;
-    if age.num_minutes() > 15 {
-        state.user_store.delete_pending(&req.token)?;
-        return Err(BrokerError::VerificationExpired);
-    }
 
     // Hash new password
     let password_hash =
@@ -138,8 +133,15 @@ where
     // Update user's password
     state.user_store.update_password(user_id, &password_hash)?;
 
+    // Evict every existing session for this user: a reset is the recovery path,
+    // so it must also cut off an attacker who already holds a session (audit
+    // H2). The client re-authenticates immediately after, so no legitimate
+    // session is lost. Device certs are intentionally left in place (revoking
+    // them would silently break the user's agents) — see the audit doc.
+    state.session_store.delete_by_user(user_id)?;
+
     // Clean up pending verification
-    state.user_store.delete_pending(&req.token)?;
+    state.user_store.delete_pending(&pending.secret)?;
 
     Ok(Json(CompleteResetResponse {
         success: true,

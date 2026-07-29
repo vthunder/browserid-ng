@@ -14,6 +14,22 @@ use crate::error::BrokerError;
 use crate::state::AppState;
 use crate::store::{PendingVerification, SessionStore, UserStore, VerificationType};
 
+/// Constant-time byte-string equality for the admin token (audit L8), so a
+/// short-circuiting `==` can't leak the token prefix via response timing. The
+/// length comparison is not itself constant-time, which is acceptable for a
+/// high-entropy secret.
+fn ct_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 #[derive(Deserialize)]
 pub struct StageUserRequest {
     pub email: String,
@@ -100,6 +116,9 @@ where
 
 #[derive(Deserialize)]
 pub struct CompleteUserCreationRequest {
+    /// Target email the code was issued to — binds the guess to one pending
+    /// record so the code space can't be walked globally (audit C1).
+    pub email: String,
     pub token: String, // The 6-digit code
 }
 
@@ -122,18 +141,15 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    // Look up pending verification by code
-    let pending = state
-        .user_store
-        .get_pending(&req.token)?
-        .ok_or(BrokerError::InvalidVerificationCode)?;
-
-    // Check expiry (15 minutes)
-    let age = Utc::now() - pending.created_at;
-    if age.num_minutes() > 15 {
-        state.user_store.delete_pending(&req.token)?;
-        return Err(BrokerError::VerificationExpired);
-    }
+    // Look up the pending record by its target email and verify the code with
+    // the brute-force guard (binds the guess to one record, burns after N wrong
+    // tries). Expiry is enforced inside the guard.
+    let pending = super::code_guard::verify_pending_code(
+        state.user_store.as_ref(),
+        &req.email,
+        VerificationType::NewAccount,
+        &req.token,
+    )?;
 
     // Get password hash from pending record
     let password_hash = pending
@@ -147,7 +163,7 @@ where
     state.user_store.add_email(user_id, &pending.email, true)?;
 
     // Clean up pending
-    state.user_store.delete_pending(&req.token)?;
+    state.user_store.delete_pending(&pending.secret)?;
 
     // Create session
     let session = state.session_store.create(user_id)?;
@@ -334,7 +350,7 @@ where
     let expected = std::env::var("ADMIN_TOKEN").ok().filter(|t| !t.is_empty());
     let provided = headers.get("x-admin-token").and_then(|v| v.to_str().ok());
     match (expected, provided) {
-        (Some(exp), Some(got)) if exp == got => {}
+        (Some(exp), Some(got)) if ct_eq(&exp, got) => {}
         _ => return Err((StatusCode::FORBIDDEN, "admin token required".into())),
     }
 
@@ -392,7 +408,7 @@ where
     let expected = std::env::var("ADMIN_TOKEN").ok().filter(|t| !t.is_empty());
     let provided = headers.get("x-admin-token").and_then(|v| v.to_str().ok());
     match (expected, provided) {
-        (Some(exp), Some(got)) if exp == got => {}
+        (Some(exp), Some(got)) if ct_eq(&exp, got) => {}
         _ => return Err((StatusCode::FORBIDDEN, "admin token required".into())),
     }
     let vt = match q.verification_type.as_deref() {

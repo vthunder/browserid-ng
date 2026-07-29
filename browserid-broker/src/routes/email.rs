@@ -240,7 +240,12 @@ where
 
 #[derive(Deserialize)]
 pub struct CompleteEmailRequest {
+    /// Target email the code was issued to — binds the guess to one pending
+    /// record so the code space can't be walked globally (audit C1).
+    pub email: String,
     pub token: String,
+    #[serde(default)]
+    pub csrf: String,
 }
 
 #[derive(Serialize)]
@@ -263,23 +268,23 @@ where
 {
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
+    // Session-mutating endpoint → require the CSRF token like every other one
+    // (audit L7). The account page's `post()` helper already sends it.
+    super::session::require_csrf(&session, &req.csrf)?;
 
-    // Look up pending verification
-    let pending = state
-        .user_store
-        .get_pending(&req.token)?
-        .ok_or(BrokerError::InvalidVerificationCode)?;
+    // Look up the pending record by its target email and verify the code with
+    // the brute-force guard (binds the guess to one record, burns after N wrong
+    // tries). Expiry is enforced inside the guard.
+    let pending = super::code_guard::verify_pending_code(
+        state.user_store.as_ref(),
+        &req.email,
+        VerificationType::AddEmail,
+        &req.token,
+    )?;
 
     // Verify this is for the current user
     if pending.user_id != Some(session.user_id) {
         return Err(BrokerError::InvalidVerificationCode);
-    }
-
-    // Check expiry
-    let age = Utc::now() - pending.created_at;
-    if age.num_minutes() > 15 {
-        state.user_store.delete_pending(&req.token)?;
-        return Err(BrokerError::VerificationExpired);
     }
 
     // Add email to user
@@ -288,7 +293,7 @@ where
         .add_email(session.user_id, &pending.email, true)?;
 
     // Clean up
-    state.user_store.delete_pending(&req.token)?;
+    state.user_store.delete_pending(&pending.secret)?;
 
     // Funnel: an additional email was verified and added to an existing account.
     state.analytics.capture(
