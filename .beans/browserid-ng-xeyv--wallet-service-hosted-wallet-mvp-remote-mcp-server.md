@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: normal
 created_at: 2026-07-29T08:51:50Z
-updated_at: 2026-07-29T09:03:30Z
+updated_at: 2026-07-29T09:32:05Z
 ---
 
 Implement the MVP cut from docs/plans/2026-07-29-hosted-wallet-remote-mcp-design.md (design bean browserid-ng-83ab).
@@ -33,3 +33,7 @@ New top-level `wallet-service/` (Node >=22.5, zero native deps: node:http + node
 - `Dockerfile` (build from repo root for file: SDK deps) + README with dokku deploy notes.
 
 Deferred (offer follow-up beans): Playwright e2e against a local broker, actual dokku deploy + CI workflow, account/audit UI, named multi-agent tenancy, KMS KeyWrapper.
+
+## Deployed 2026-07-29
+
+Live at https://wallet.browserid.me (dokku app browserid-wallet on sandmill.org — the name 'wallet' was taken by an unrelated app at wallet.sandmill.org). CI deploy-wallet.yml builds wallet-service/Dockerfile from repo root -> GHCR ghcr.io/vthunder/browserid-ng/wallet -> git:from-image. First deploy succeeded first try (GHCR package defaulted public). Let's Encrypt enabled; HTTPS smoke test green: /healthz, RFC 9728 + 8414 discovery, /mcp 401 + resource_metadata handshake. Secrets (WALLET_KEK, WALLET_SESSION_SECRET) generated and set via config:set without echoing values.

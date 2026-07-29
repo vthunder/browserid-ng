@@ -1,0 +1,43 @@
+---
+# browserid-ng-wre6
+title: 'Security audit: browserid-ng (production, browserid.me)'
+status: in-progress
+type: epic
+priority: high
+created_at: 2026-07-28T23:40:19Z
+updated_at: 2026-07-29T01:42:03Z
+---
+
+Full adversarial security audit of the browserid-ng identity protocol and hosted broker, treating browserid.me as live production. Six workstreams: (1) verification-core proofs, (2) credential issuance & minting, (3) account lifecycle & auth, (4) network-facing input & DoS, (5) client key custody (SDKs), (6) dependency & secrets hygiene. Each candidate finding is confirmed or refuted by an independent adversarial reviewer (no PoCs required). Deliverables: a written security-audit report (docs/) and one child bean per confirmed finding.
+
+## Candidate leads (from initial recon, to verify/refute)
+1. Cross-issuer safety is an unenforced caller precondition; module doc contradicts code (core/device.rs:599-615 vs :15-17)
+2. No replay protection on RP path (assertion.rs, rp_auth.rs, mint jti TODO device.rs:278)
+3. SSRF via unvalidated status-list URI fetch (verifier.rs:197)
+4. 6-digit code brute force, no attempt-limit on wsapi path (account.rs:126, reset.rs:113, email.rs:266)
+5. Mailbox-only path to warrant-signing certs (fallback_idp.rs:271-413)
+6. FedCM token minting rests on one header check (fedcm.rs:186)
+7. identity_matches glob + implicit +tag expansion (core/device.rs:50-76)
+8. No session/cert invalidation after password change/reset (auth.rs:168, reset.rs:139)
+9. Unbounded status-list cache DoS (verifier.rs:225)
+10. No brute-force protection on authenticate_user (auth.rs:37)
+Smaller: split('@') parser differential; status ttl no ceiling; malformed-signed DNS downgrade; guestbook escape() misses '; admin/test endpoint posture; CORS mirrors any Origin on /wsapi/*.
+
+## Summary of audit (2026-07-29)
+
+Report: docs/security-audit-2026-07-29.md. 12-agent adversarial workflow (6 workstream finders + 6 skeptics). All 30 candidate findings verified/refuted by reading code (no PoCs).
+
+Result: crypto core is sound (Ed25519-only, no alg agility, fail-closed DNSSEC, parameterized SQL, clean secrets-in-git). Risk concentrated in the broker account-lifecycle + network HTTP surface.
+- 1 Critical (C1 codes brute-force), 2 High (H1 SSRF, H2 no session invalidation), 9 Medium (M1-M9), 12 Low (L1-L12 batched).
+- Verified NON-issues: FedCM mint gate sufficient, holder isolation holds, config +*@domain redundant, email header injection not reachable, shipped image safe-by-default.
+
+Child beans filed per finding. Remediation order: C1 → H1 → H2 → M4+M3 → M8 → M2/M9 → M1/M5/M6/M7 → lows.
+
+## Remediation pass complete (2026-07-29)
+Full broker suite green (31 test binaries, 0 failures); workspace builds clean.
+
+FIXED + tested: C1(0ypr), H1(c5n5), H2(axee), M3(nlj8), M5(dbmy), M8(l7oq) → completed. M4(qtl7) → memory/body DoS fixed, negative-caching a minor follow-up. Lows L2/L4/L7/L8/L12 done (batch v1ia).
+
+DEFERRED for product decision (UX/behavior/infra): M1(7ww7 fallback cert password-gate), M2(6q3u SDK allowAgent semantics), M6(ytjn login rate-limit needs proxy IP), M7(dw35 enumeration vs UX signal), M9(ttn3 SBO signer consent prompts), L1/L5/L9/L11.
+
+Report updated: docs/security-audit-2026-07-29.md (Remediation status section).

@@ -562,6 +562,7 @@
         <div class="mcp-tabs" id="mcpTabs">
           <button type="button" data-tab="claude" class="on">Claude Code</button>
           <button type="button" data-tab="codex">Codex</button>
+          <button type="button" data-tab="web">Claude.ai</button>
           <button type="button" data-tab="other">Other</button>
         </div>
         <div style="font-size:12px;color:var(--muted);margin-bottom:6px" id="mcpHint">Run this in your terminal:</div>
@@ -854,6 +855,7 @@ who.scopes   <span class="c">// <span class="s">["post"]</span> — what Alice s
   var tabs = {
     claude: { hint: "Run this in your terminal:", cmd: "claude mcp add -s user browserid -- npx -y @browserid-ng/wallet" },
     codex: { hint: "Run this in your terminal:", cmd: "codex mcp add browserid -- npx -y @browserid-ng/wallet" },
+    web: { hint: "No terminal needed — Settings → Connectors → Add custom connector:", cmd: "https://wallet.browserid.me/mcp" },
     other: { hint: "Any MCP-capable agent (Cursor, Claude Desktop, …) — add the server to its config:", cmd: mcpJson }
   };
   document.querySelectorAll("#mcpTabs button").forEach(function (b) {
