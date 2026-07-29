@@ -23,6 +23,7 @@ li { border-top:1px solid var(--line); padding:1rem 0; }
 .msg { margin:0 0 .35rem; font-size:1.08rem; }
 .attr { margin:0; font-size:.85rem; color:var(--muted); font-family:ui-monospace,monospace; }
 .agent { color:var(--agent); } .parent { color:var(--accent); }
+.ok { color:var(--agent); margin-left:.3em; cursor:help; opacity:.85; }
 .scope { font-size:.72em; border:1px solid color-mix(in srgb, var(--agent) 45%, transparent); color:var(--agent); border-radius:999px; padding:.05em .5em; margin-left:.15em; }
 time { margin-left:.4em; opacity:.7; }
 .empty { color:var(--muted); }
@@ -127,11 +128,13 @@ with a warrant scoped to <code id="aud">the guestbook</code> — cryptographical
         var scopes = (e.scopes || []).map(function (s) {
           return '<span class="scope">' + esc(s) + "</span>";
         }).join("");
-        var actingFor = e.parent
-          ? 'acting for <span class="parent">' + esc(e.parent) + "</span>"
-          : "acting for itself";
+        // Display name + verified badge (domain in the tooltip) — the feed
+        // carries no emails. `agent` is the legacy pre-name feed field.
+        var name = e.name || String(e.agent || "").split("@")[0];
+        var domain = e.domain || String(e.agent || "").split("@")[1] || "";
         return '<li><p class="msg">' + esc(e.message) + "</p>" +
-          '<p class="attr">— <span class="agent">' + esc(e.agent) + "</span>, " + actingFor +
+          '<p class="attr">— <span class="agent">' + esc(name) + "</span>" +
+          '<span class="ok" title="verified identity at ' + esc(domain) + '">✓</span>' +
           " " + scopes + " <time>" + fmtTime(e.at) + "</time></p></li>";
       }).join("");
     })

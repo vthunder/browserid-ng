@@ -38,15 +38,85 @@ const COOLDOWN_SECONDS: i64 = 3;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Entry {
     pub message: String,
+    /// The ACTING identity's email (warrant grantee). Server-side record only
+    /// since the display-name change — the public feed/page never expose it.
     pub agent: String,
     /// Pre-device-model entries recorded a separate delegator; kept so old
     /// persisted entries still render. Since the grantor/grantee split this
     /// is the ATTRIBUTED identity (the human) again, while `agent` is the
-    /// actor that signed.
+    /// actor that signed. Server-side record only, like `agent`.
     #[serde(default)]
     pub parent: String,
+    /// Display name shown publicly: the signer's per-post choice, else the
+    /// identity's pairing display name, else the email local-part. Empty on
+    /// entries from before display names — derived at read time.
+    #[serde(default)]
+    pub name: String,
+    /// The verified identity's domain — the tooltip behind the ✓ badge.
+    /// Empty on old entries — derived from `agent` at read time.
+    #[serde(default)]
+    pub domain: String,
     pub scopes: Vec<String>,
     pub at: DateTime<Utc>,
+}
+
+/// What the public feed exposes: display name + verified domain, never emails.
+#[derive(Serialize)]
+struct PublicEntry {
+    message: String,
+    name: String,
+    domain: String,
+    scopes: Vec<String>,
+    at: DateTime<Utc>,
+}
+
+fn local_part(email: &str) -> &str {
+    email.split('@').next().unwrap_or(email)
+}
+
+fn email_domain(email: &str) -> &str {
+    email.rsplit('@').next().unwrap_or("")
+}
+
+impl Entry {
+    fn to_public(&self) -> PublicEntry {
+        PublicEntry {
+            message: self.message.clone(),
+            name: if self.name.is_empty() {
+                local_part(&self.agent).to_string()
+            } else {
+                self.name.clone()
+            },
+            domain: if self.domain.is_empty() {
+                email_domain(&self.agent).to_string()
+            } else {
+                self.domain.clone()
+            },
+            scopes: self.scopes.clone(),
+            at: self.at,
+        }
+    }
+}
+
+const MAX_NAME_LEN: usize = 48;
+
+/// Display names are free text chosen by the signer: strip controls, collapse
+/// whitespace, cap the length — and strip checkmark-like glyphs so a name
+/// can't render a fake verified badge next to the real one.
+fn sanitize_name(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '✓' | '✔' | '☑' | '✅' | '🗸'))
+        .collect();
+    cleaned
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_NAME_LEN)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Where entries persist: alongside the SQLite db (both live on the persistent
@@ -121,6 +191,10 @@ pub struct SignRequest {
     #[serde(alias = "assertion")]
     pub presentation: String,
     pub message: String,
+    /// Optional display name for this post. Falls back to the identity's
+    /// pairing display name, then the email local-part.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -128,9 +202,12 @@ pub struct SignResponse {
     pub success: bool,
     pub url: String,
     /// The ACTING identity (the warrant grantee — the agent that signed).
+    /// Returned to the signer only; the public feed shows `name`.
     pub agent: String,
     /// The ATTRIBUTED identity (the warrant grantor — the human behind it).
     pub parent: String,
+    /// The display name the entry was recorded under.
+    pub name: String,
 }
 
 pub async fn sign<U, S, E>(
@@ -205,10 +282,32 @@ where
         }
     }
 
+    // Display name: the signer's per-post choice, else the pairing display
+    // name the human confirmed for this identity, else the email local-part.
+    // Every fallback goes through the same sanitizer.
+    let name = req
+        .name
+        .as_deref()
+        .map(sanitize_name)
+        .filter(|n| !n.is_empty())
+        .or_else(|| {
+            state
+                .user_store
+                .get_email(&agent_email)
+                .ok()
+                .flatten()
+                .and_then(|e| e.display_name)
+                .map(|n| sanitize_name(&n))
+                .filter(|n| !n.is_empty())
+        })
+        .unwrap_or_else(|| local_part(&agent_email).to_string());
+
     let entry = Entry {
         message,
         agent: agent_email.clone(),
         parent: if parent_email == agent_email { String::new() } else { parent_email.clone() },
+        name: name.clone(),
+        domain: email_domain(&agent_email).to_string(),
         scopes: scopes.clone(),
         at: Utc::now(),
     };
@@ -239,6 +338,7 @@ where
         url: guestbook_audience(&state.domain),
         agent: agent_email,
         parent: parent_email,
+        name,
     })
     .into_response()
 }
@@ -246,7 +346,8 @@ where
 // ---- GET /guestbook/feed (JSON) --------------------------------------------
 
 pub async fn feed() -> Response {
-    let entries: Vec<Entry> = ENTRIES.lock().unwrap().iter().cloned().collect();
+    let entries: Vec<PublicEntry> =
+        ENTRIES.lock().unwrap().iter().map(Entry::to_public).collect();
     Json(serde_json::json!({ "entries": entries })).into_response()
 }
 
@@ -274,25 +375,21 @@ where
         entries
             .iter()
             .map(|e| {
-                let scopes = e
+                let p = e.to_public();
+                let scopes = p
                     .scopes
                     .iter()
                     .map(|s| format!("<span class=\"scope\">{}</span>", escape(s)))
                     .collect::<String>();
-                // An empty parent = the agent acted as itself (grantor ==
-                // grantee): say so, never a dangling "for".
-                let acting_for = if e.parent.is_empty() {
-                    ", acting for itself".to_string()
-                } else {
-                    format!(", acting for <span class=\"parent\">{}</span>", escape(&e.parent))
-                };
+                // Display name + verified badge; the email never renders. The
+                // badge's tooltip carries the verified identity's domain.
                 format!(
-                    "<li><p class=\"msg\">{}</p><p class=\"attr\">— <span class=\"agent\">{}</span>{} {} <time>{}</time></p></li>",
-                    escape(&e.message),
-                    escape(&e.agent),
-                    acting_for,
+                    "<li><p class=\"msg\">{}</p><p class=\"attr\">— <span class=\"agent\">{}</span><span class=\"ok\" title=\"verified identity at {}\">✓</span> {} <time>{}</time></p></li>",
+                    escape(&p.message),
+                    escape(&p.name),
+                    escape(&p.domain),
                     scopes,
-                    e.at.format("%Y-%m-%d %H:%M UTC"),
+                    p.at.format("%Y-%m-%d %H:%M UTC"),
                 )
             })
             .collect::<String>()
@@ -314,6 +411,7 @@ li {{ border-top:1px solid var(--line); padding:1rem 0; }}
 .msg {{ margin:0 0 .35rem; font-size:1.08rem; }}
 .attr {{ margin:0; font-size:.85rem; color:var(--muted); font-family:ui-monospace,monospace; }}
 .agent {{ color:var(--agent); }} .parent {{ color:var(--accent); }}
+.ok {{ color:var(--agent); margin-left:.3em; cursor:help; opacity:.85; }}
 .scope {{ font-size:.72em; border:1px solid color-mix(in srgb, var(--agent) 45%, transparent); color:var(--agent); border-radius:999px; padding:.05em .5em; margin-left:.15em; }}
 time {{ margin-left:.4em; opacity:.7; }}
 .empty {{ color:var(--muted); }}
@@ -369,4 +467,43 @@ with a user-authorized warrant scoped to <code>{}</code> — cryptographically a
         rows
     ))
     .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_name_strips_controls_badges_and_caps_length() {
+        assert_eq!(sanitize_name("  scout  "), "scout");
+        assert_eq!(sanitize_name("sc\u{0}out\n"), "scout");
+        assert_eq!(sanitize_name("scout ✓✔☑✅"), "scout");
+        assert_eq!(sanitize_name("a   b\t c"), "a b c");
+        assert_eq!(sanitize_name(&"x".repeat(200)).len(), MAX_NAME_LEN);
+        assert_eq!(sanitize_name("✓"), "");
+    }
+
+    #[test]
+    fn public_entry_never_carries_emails_and_derives_legacy_fields() {
+        // A legacy entry (pre display-name) derives name/domain from the email.
+        let legacy = Entry {
+            message: "hi".into(),
+            agent: "scout@browserid.me".into(),
+            parent: "dan@example.com".into(),
+            name: String::new(),
+            domain: String::new(),
+            scopes: vec!["guestbook-sign".into()],
+            at: Utc::now(),
+        };
+        let p = legacy.to_public();
+        assert_eq!(p.name, "scout");
+        assert_eq!(p.domain, "browserid.me");
+        let json = serde_json::to_value(&p).unwrap();
+        assert!(json.get("agent").is_none(), "feed must not expose the agent email");
+        assert!(json.get("parent").is_none(), "feed must not expose the grantor email");
+
+        // A named entry passes its stored fields through.
+        let named = Entry { name: "Scout the Helpful".into(), domain: "browserid.me".into(), ..legacy };
+        assert_eq!(named.to_public().name, "Scout the Helpful");
+    }
 }

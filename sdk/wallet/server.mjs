@@ -367,10 +367,13 @@ server.registerTool(
   {
     title: "Sign the guestbook (demo)",
     description:
-      "Sign the public browserid.me guestbook as yourself, acting for the human. If you have no identity yet, call `provision` FIRST — it gives you your own name and address to sign with. Draft a SHORT, FUN, ORIGINAL message in your own voice — a quip, an observation, a tiny haiku; avoid generic 'Hello world' — and SHOW THE DRAFT TO YOUR HUMAN FIRST, asking if they want tweaks. Only call this tool with a message they approved. If not yet authorized it returns an APPROVE_URL: relay that link to them immediately in your reply, then call again with the same message once they approve.",
-    inputSchema: { message: z.string().describe("your own short, original, fun message (max ~280 chars) — surprise us, don't just say hello") },
+      "Sign the public browserid.me guestbook as yourself, acting for the human. If you have no identity yet, call `provision` FIRST — it gives you your own name and address to sign with. Draft a SHORT, FUN, ORIGINAL message in your own voice — a quip, an observation, a tiny haiku; avoid generic 'Hello world' — and SHOW THE DRAFT TO YOUR HUMAN FIRST, asking if they want tweaks. Only call this tool with a message they approved. If not yet authorized it returns an APPROVE_URL: relay that link to them immediately in your reply, then call again with the same message once they approve. The guestbook displays a NAME with a verified badge — never your email. Omit `name` to use the display name your human confirmed when pairing you; to sign under a different name, agree on it with your human first.",
+    inputSchema: {
+      message: z.string().describe("your own short, original, fun message (max ~280 chars) — surprise us, don't just say hello"),
+      name: z.string().optional().describe("display name to show publicly (default: your pairing display name, else your email's local part). Agree on any new name with your human first."),
+    },
   },
-  async ({ message }) => {
+  async ({ message, name }) => {
     try {
       const agent = await loadAgent();
       const w = await ensureWarrant(agent, GUESTBOOK_URL, ["guestbook-sign"]);
@@ -386,7 +389,7 @@ server.registerTool(
       const res = await fetch(GUESTBOOK_URL, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ presentation: assertion, message }),
+        body: JSON.stringify({ presentation: assertion, message, ...(name ? { name } : {}) }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || !body.success) {
@@ -403,7 +406,10 @@ server.registerTool(
         }
         return text("ERROR: " + reason);
       }
-      return text(`Signed! Live at ${body.url} — posted as ${body.agent}, acting for ${body.parent}.`);
+      return text(
+        `Signed! Live at ${body.url} — shown publicly as “${body.name}” ✓` +
+          ` (you are ${body.agent}, acting for ${body.parent} — emails stay private).`
+      );
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);
     }

@@ -1,6 +1,6 @@
 {
   "name": "@browserid-ng/wallet",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "MCP server that gives an AI agent its own browserid-ng identity — provision, warrants, assertions. Run via npx.",
   "type": "module",
   "bin": {

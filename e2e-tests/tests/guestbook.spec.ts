@@ -72,17 +72,22 @@ test('agent provisions, gets a sign warrant, and signs the public guestbook', as
   expect(body.agent).toBe(`${handle}@${baseUrl.replace(/^https?:\/\//, '')}`);
   expect(body.parent).toBe(email);
 
-  // 4. The public feed shows it, attributed to agent + human.
+  // 4. The public feed shows it under a display name + verified domain —
+  //    and exposes NO emails (that's the point of the display-name change).
   const feed = await (await request.get(`${baseUrl}/guestbook/feed`)).json();
   const entry = feed.entries.find((e: any) => e.message === message);
   expect(entry).toBeTruthy();
-  expect(entry.parent).toBe(email);
+  expect(entry.name).toBe(handle); // no pairing display name set → local-part
+  expect(entry.domain).toBe(baseUrl.replace(/^https?:\/\//, ''));
+  expect(entry.agent).toBeUndefined();
+  expect(entry.parent).toBeUndefined();
   expect(entry.scopes).toContain('sign');
 
-  // 5. The HTML page renders the message + attribution.
+  // 5. The HTML page renders the message + display name, and no emails.
   await page.goto(`${baseUrl}/guestbook`);
   await expect(page.locator('body')).toContainText(message);
-  await expect(page.locator('body')).toContainText(email);
+  await expect(page.locator('body')).toContainText(handle);
+  await expect(page.locator('body')).not.toContainText(email);
 });
 
 test('guestbook rejects a non-agent / bad assertion', async ({ request }) => {
