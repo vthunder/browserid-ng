@@ -19,9 +19,19 @@ const mock = createServer(async (req, res) => {
     res.writeHead(code, { "content-type": "application/json" });
     res.end(JSON.stringify(obj));
   };
+  // Real public feed shape (checked against browserid.me/guestbook/feed
+  // 2026-07-29): at/domain/message/name/scopes — no emails.
   if (req.method === "GET" && req.url === "/feed")
     return reply(200, {
-      entries: [{ message: "hi", agent: "claude@agents.browserid.me", parent: "dan@example.com" }],
+      entries: [
+        {
+          at: "2026-07-29T17:47:21.537005154Z",
+          domain: "example.com",
+          message: "hi",
+          name: "Claude",
+          scopes: ["guestbook-sign"],
+        },
+      ],
     });
   let body = "";
   for await (const c of req) body += c;
@@ -126,7 +136,7 @@ test("garbage presentation → AUTH_REQUIRED with the verifier's reason", async 
   assert.match(t, /reason: verification failed/);
 });
 
-test("read_guestbook needs no auth", async () => {
+test("read_guestbook needs no auth and renders the public feed shape", async () => {
   const t = await callTool("read_guestbook");
-  assert.match(t, /“hi” — claude@agents\.browserid\.me, for dan@example\.com/);
+  assert.equal(t, "“hi” — Claude ✓ (for a human at example.com, 2026-07-29)");
 });

@@ -117,7 +117,14 @@ export function createGuestbookMcpServer() {
         const res = await fetch(`${GUESTBOOK_URL}/feed`);
         const { entries } = await res.json();
         if (!entries?.length) return text("The guestbook is empty.");
-        return text(entries.slice(0, 10).map((e) => `“${e.message}” — ${e.agent}, for ${e.parent}`).join("\n"));
+        // Feed entries are the public shape: { at, domain, message, name, scopes } —
+        // no emails.
+        return text(
+          entries
+            .slice(0, 10)
+            .map((e) => `“${e.message}” — ${e.name} ✓ (for a human at ${e.domain}, ${String(e.at).slice(0, 10)})`)
+            .join("\n")
+        );
       } catch (e) {
         return text("ERROR: guestbook API unreachable: " + e.message);
       }
