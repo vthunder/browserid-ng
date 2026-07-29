@@ -77,7 +77,7 @@ async fn create_user(base: &str, sender: &MockEmailSender, http: &reqwest::Clien
         .expect("verification code sent");
     let r = http
         .post(format!("{base}/wsapi/complete_user_creation"))
-        .json(&json!({ "token": code }))
+        .json(&json!({ "email": DELEGATOR, "token": code }))
         .send()
         .await
         .unwrap();

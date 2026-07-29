@@ -1399,7 +1399,7 @@
       showScreen('loading');
 
       try {
-        await apiCall(API.completeUserCreation, 'POST', { token: code });
+        await apiCall(API.completeUserCreation, 'POST', { email: state.email, token: code });
         await completeSignIn(state.email);
       } catch (e) {
         showScreen('verify');
@@ -1455,7 +1455,7 @@
       showScreen('loading');
 
       try {
-        await apiCall(API.completeReset, 'POST', { token: code, pass: password });
+        await apiCall(API.completeReset, 'POST', { email: state.email, token: code, pass: password });
         // Now sign in with the new password
         await apiCall(API.authenticate, 'POST', {
           email: state.email,
@@ -1543,7 +1543,7 @@
       showScreen('loading');
 
       try {
-        await apiCall(API.completeEmailAddition, 'POST', { token: code });
+        await apiCall(API.completeEmailAddition, 'POST', { email: state.newEmail, token: code });
         // Email added successfully - use it to sign in
         state.email = state.newEmail;
         await completeSignIn(state.email);
