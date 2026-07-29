@@ -1,0 +1,80 @@
+# Build the hosted wallet in CI and deploy the IMAGE to dokku — same pattern
+# as deploy-broker.yml (the host never builds; git:from-image pulls ~100MB).
+#
+# One-time setup (mirrors the broker runbook) — DONE 2026-07-29:
+# - reuses repo secret DOKKU_SSH_KEY + repo variable DOKKU_HOST
+# - on the host (app is browserid-wallet — the name `wallet` was taken by an
+#   unrelated app at wallet.sandmill.org):
+#     dokku apps:create browserid-wallet
+#     dokku builder:set browserid-wallet selected dockerfile
+#     dokku domains:set browserid-wallet wallet.browserid.me
+#     dokku storage:mount browserid-wallet /var/lib/dokku/data/storage/browserid-wallet:/data
+#     dokku ports:set browserid-wallet http:80:3100
+#     dokku config:set browserid-wallet WALLET_ENV=production WALLET_ORIGIN=https://wallet.browserid.me \
+#       BROWSERID_BROKER=https://browserid.me WALLET_KEK=<secret> WALLET_SESSION_SECRET=<secret>
+#     dokku letsencrypt:enable browserid-wallet   (after DNS exists)
+# - after the first push: make the ghcr.io wallet package PUBLIC, or dokku
+#   cannot pull it (no registry credentials on the host).
+#
+# Note: `git:from-image` is a no-op on an unchanged image digest ("No changes
+# detected", exit 1) — the paths filter below keeps unrelated pushes from
+# tripping that.
+
+name: deploy-wallet
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wallet-service/**"
+      - "sdk/agent/**"
+      - "sdk/js/**"
+      - ".github/workflows/deploy-wallet.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/vthunder/browserid-ng/wallet
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Context is the repo root: the wallet's file: deps (sdk/agent, sdk/js)
+      # must be inside the build context.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: wallet-service/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to dokku
+        if: ${{ vars.DOKKU_HOST != '' }}
+        env:
+          DOKKU_SSH_KEY: ${{ secrets.DOKKU_SSH_KEY }}
+          DOKKU_HOST: ${{ vars.DOKKU_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DOKKU_SSH_KEY" > ~/.ssh/dokku_key
+          chmod 600 ~/.ssh/dokku_key
+          ssh -i ~/.ssh/dokku_key -o StrictHostKeyChecking=accept-new \
+            "dokku@$DOKKU_HOST" git:from-image browserid-wallet "$IMAGE:$GITHUB_SHA"

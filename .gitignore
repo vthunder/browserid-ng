@@ -12,3 +12,8 @@ playwright-report/
 
 # Node
 node_modules
+
+# wallet-service
+wallet-service/wallet.db*
+wallet-service/.dev-kek
+wallet-service/.dev-session-secret

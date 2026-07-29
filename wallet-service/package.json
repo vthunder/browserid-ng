@@ -1,0 +1,26 @@
+{
+  "name": "@browserid-ng/wallet-service",
+  "version": "0.1.0",
+  "description": "Hosted browserid-ng wallet — a remote MCP server (OAuth 2.1 + streamable HTTP) for agents that can't run code.",
+  "type": "module",
+  "private": true,
+  "main": "./src/server.mjs",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "@browserid-ng/agent": "file:../sdk/agent",
+    "@browserid-ng/verify": "file:../sdk/js",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0 || ^4.0.0"
+  },
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vthunder/browserid-ng"
+  }
+}
