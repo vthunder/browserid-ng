@@ -191,9 +191,12 @@ pub struct SignRequest {
     #[serde(alias = "assertion")]
     pub presentation: String,
     pub message: String,
-    /// Optional display name for this post. Falls back to the identity's
-    /// pairing display name, then the email local-part.
+    /// ACCEPTED FOR COMPAT, IGNORED since the public-name change (bean tmk8):
+    /// the byline is always the identity's human-configured `public_name` —
+    /// per-post agent-chosen names are gone by design. Kept so wallets in the
+    /// wild that still send it don't break (cf. the `assertion` alias above).
     #[serde(default)]
+    #[allow(dead_code)]
     pub name: Option<String>,
 }
 
@@ -282,24 +285,19 @@ where
         }
     }
 
-    // Display name: the signer's per-post choice, else the pairing display
-    // name the human confirmed for this identity, else the email local-part.
-    // Every fallback goes through the same sanitizer.
-    let name = req
-        .name
-        .as_deref()
-        .map(sanitize_name)
+    // Display name: the identity's PUBLIC byline (public_name, consented as
+    // public — bean tmk8), else the email local-part. The per-post `name`
+    // field is deliberately ignored: the name next to the verified badge is
+    // always human-configured, never agent-chosen. display_name (the internal
+    // pairing label) is likewise never published.
+    let name = state
+        .user_store
+        .get_email(&agent_email)
+        .ok()
+        .flatten()
+        .and_then(|e| e.public_name)
+        .map(|n| sanitize_name(&n))
         .filter(|n| !n.is_empty())
-        .or_else(|| {
-            state
-                .user_store
-                .get_email(&agent_email)
-                .ok()
-                .flatten()
-                .and_then(|e| e.display_name)
-                .map(|n| sanitize_name(&n))
-                .filter(|n| !n.is_empty())
-        })
         .unwrap_or_else(|| local_part(&agent_email).to_string());
 
     let entry = Entry {
@@ -349,6 +347,42 @@ pub async fn feed() -> Response {
     let entries: Vec<PublicEntry> =
         ENTRIES.lock().unwrap().iter().map(Entry::to_public).collect();
     Json(serde_json::json!({ "entries": entries })).into_response()
+}
+
+// ---- GET /public-name (public identity byline lookup) ----------------------
+
+#[derive(Deserialize)]
+pub struct PublicNameQuery {
+    pub identity: String,
+}
+
+/// The PUBLIC byline for an identity (bean tmk8): `public_name` if the human
+/// set one, else the email local-part — exactly the string services display
+/// next to the identity's actions, so agents may ask what they'll be shown
+/// as. Unauthenticated by design (the value is public-by-intent), and unknown
+/// identities get the same local-part fallback as known ones, so the endpoint
+/// leaks no registration info. The INTERNAL display_name/holder label are
+/// never served here. Lives in this module to share `sanitize_name`, but it
+/// is identity-level, not guestbook-specific.
+pub async fn public_name<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    axum::extract::Query(q): axum::extract::Query<PublicNameQuery>,
+) -> Response
+where
+    U: UserStore + 'static,
+    S: SessionStore + 'static,
+    E: EmailSender + 'static,
+{
+    let name = state
+        .user_store
+        .get_email(&q.identity)
+        .ok()
+        .flatten()
+        .and_then(|e| e.public_name)
+        .map(|n| sanitize_name(&n))
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| local_part(&q.identity).to_string());
+    Json(serde_json::json!({ "identity": q.identity, "public_name": name })).into_response()
 }
 
 // ---- GET /guestbook (public HTML page) -------------------------------------

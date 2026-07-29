@@ -200,15 +200,37 @@ export function createWalletMcpServer(tenant, { store, audit }) {
     }
   );
 
+  // The agent's public byline — public-by-intent, so an open broker lookup
+  // serves it (with the email local-part fallback applied broker-side).
+  // Fail-soft: identity display must not break if the endpoint is down.
+  async function publicNameFor(agentEmail) {
+    try {
+      const res = await fetch(`${BROKER}/public-name?identity=${encodeURIComponent(agentEmail)}`);
+      if (!res.ok) return null;
+      const { public_name } = await res.json();
+      return public_name || null;
+    } catch {
+      return null;
+    }
+  }
+
   server.registerTool(
     "identity",
-    { title: "Agent identity", description: "Who this agent acts as (or how to provision if there's none)." },
+    {
+      title: "Agent identity",
+      description:
+        "Who this agent acts as (or how to provision if there's none), including the public display name services show next to your actions.",
+    },
     async () => {
       try {
         const agent = await loadAgent();
         const auds = agent.warrantedAudiences();
+        const publicName = await publicNameFor(agent.email);
         return text(
           `Acting as ${agent.email} (holder ${agent.holder}).` +
+            (publicName
+              ? ` Public display name: “${publicName}” — what services show next to your actions; your human edits it at ${BROKER}/account.`
+              : "") +
             (auds.length ? ` Warrants for: ${auds.join(", ")}.` : " No warrants yet — call authorize.")
         );
       } catch (e) {
@@ -330,13 +352,12 @@ export function createWalletMcpServer(tenant, { store, audit }) {
     {
       title: "Sign the guestbook (demo)",
       description:
-        "Sign the public browserid.me guestbook as yourself, acting for the human. If you have no identity yet, call `provision` FIRST — it gives you your own name and address to sign with. Draft a SHORT, FUN, ORIGINAL message in your own voice — a quip, an observation, a tiny haiku; avoid generic 'Hello world' — and SHOW THE DRAFT TO YOUR HUMAN FIRST, asking if they want tweaks. Only call this tool with a message they approved. If not yet authorized it returns an APPROVE_URL: relay that link to them immediately in your reply, then call again with the same message once they approve. The guestbook displays a NAME with a verified badge — never your email. Omit `name` to use the display name your human confirmed when pairing you; to sign under a different name, agree on it with your human first.",
+        "Sign the public browserid.me guestbook as yourself, acting for the human. If you have no identity yet, call `provision` FIRST — it gives you your own name and address to sign with. Draft a SHORT, FUN, ORIGINAL message in your own voice — a quip, an observation, a tiny haiku; avoid generic 'Hello world' — and SHOW THE DRAFT TO YOUR HUMAN FIRST, asking if they want tweaks. Only call this tool with a message they approved. If not yet authorized it returns an APPROVE_URL: relay that link to them immediately in your reply, then call again with the same message once they approve. The guestbook displays your PUBLIC DISPLAY NAME with a verified badge — never your email. The `identity` tool shows you that name; your human edits it at browserid.me/account.",
       inputSchema: {
         message: z.string().describe("your own short, original, fun message (max ~280 chars) — surprise us, don't just say hello"),
-        name: z.string().optional().describe("display name to show publicly (default: your pairing display name, else your email's local part). Agree on any new name with your human first."),
       },
     },
-    async ({ message, name }) => {
+    async ({ message }) => {
       try {
         const agent = await loadAgent();
         const w = await ensureWarrant(agent, GUESTBOOK_URL, ["guestbook-sign"]);
@@ -352,7 +373,7 @@ export function createWalletMcpServer(tenant, { store, audit }) {
         const res = await fetch(GUESTBOOK_URL, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ presentation: assertion, message, ...(name ? { name } : {}) }),
+          body: JSON.stringify({ presentation: assertion, message }),
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || !body.success) {

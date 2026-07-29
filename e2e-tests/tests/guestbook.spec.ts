@@ -77,7 +77,7 @@ test('agent provisions, gets a sign warrant, and signs the public guestbook', as
   const feed = await (await request.get(`${baseUrl}/guestbook/feed`)).json();
   const entry = feed.entries.find((e: any) => e.message === message);
   expect(entry).toBeTruthy();
-  expect(entry.name).toBe(handle); // no pairing display name set → local-part
+  expect(entry.name).toBe(handle); // no public_name set → local-part (bean tmk8)
   expect(entry.domain).toBe(baseUrl.replace(/^https?:\/\//, ''));
   expect(entry.agent).toBeUndefined();
   expect(entry.parent).toBeUndefined();

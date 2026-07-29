@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 20;
+const SCHEMA_VERSION: i32 = 21;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -122,6 +122,9 @@ impl SqliteStore {
             }
             if current_version < 20 {
                 Self::migrate_v20(conn)?;
+            }
+            if current_version < 21 {
+                Self::migrate_v21(conn)?;
             }
 
             // Update schema version
@@ -612,6 +615,15 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v21(conn: &Connection) -> Result<(), BrokerError> {
+        // Public byline (bean tmk8): distinct from display_name, which was
+        // consented as an internal label. Deliberately NOT backfilled from
+        // display_name — existing names were never consented as public.
+        conn.execute_batch("ALTER TABLE emails ADD COLUMN public_name TEXT;")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → DeviceCertRecord mapping (DC Phase 3/4)
@@ -845,7 +857,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn
-            .prepare("SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name FROM emails WHERE user_id = ?1")
+            .prepare("SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name, public_name FROM emails WHERE user_id = ?1")
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
 
         let emails = stmt
@@ -871,6 +883,7 @@ impl UserStore for SqliteStore {
                         .unwrap_or(EmailType::Secondary),
                     parent_email: row.get::<_, Option<String>>(6)?,
                     display_name: row.get::<_, Option<String>>(7)?,
+                    public_name: row.get::<_, Option<String>>(8)?,
                 })
             })
             .map_err(|e| BrokerError::Internal(e.to_string()))?
@@ -940,6 +953,21 @@ impl UserStore for SqliteStore {
             .execute(
                 "UPDATE emails SET parent_email = ?1 WHERE email = ?2",
                 params![parent, normalized],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::EmailNotFound);
+        }
+        Ok(())
+    }
+
+    fn set_email_public_name(&self, email: &str, public_name: Option<&str>) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE emails SET public_name = ?1 WHERE email = ?2",
+                params![public_name, normalized],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         if rows == 0 {
@@ -1148,7 +1176,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         conn.query_row(
-            "SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name FROM emails WHERE email = ?1",
+            "SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name, public_name FROM emails WHERE email = ?1",
             params![normalized],
             |row| {
                 let email: String = row.get(0)?;
@@ -1172,6 +1200,7 @@ impl UserStore for SqliteStore {
                         .unwrap_or(EmailType::Secondary),
                     parent_email: row.get::<_, Option<String>>(6)?,
                     display_name: row.get::<_, Option<String>>(7)?,
+                    public_name: row.get::<_, Option<String>>(8)?,
                 })
             },
         )
@@ -1931,6 +1960,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn set_email_display_name(&self, email: &str, display_name: Option<&str>) -> StoreResult<()> {
         (**self).set_email_display_name(email, display_name)
+    }
+
+    fn set_email_public_name(&self, email: &str, public_name: Option<&str>) -> StoreResult<()> {
+        (**self).set_email_public_name(email, public_name)
     }
 
     fn create_pending(&self, pending: PendingVerification) -> StoreResult<()> {

@@ -221,7 +221,7 @@ async fn two_stage_provision_then_known_agent() {
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .json(&json!({ "csrf": c, "code": code, "approve": true, "stage": "identity",
             "identity_email": DELEGATOR, "identity_mode": "handle", "handle": "alice+bsky",
-            "display_name": "Bluesky poster" }))
+            "display_name": "Bluesky poster", "public_name": "Sky Scribe" }))
         .await;
     assert_eq!(r.status_code(), 200, "identity stage: {:?}", r.text());
 
@@ -277,6 +277,41 @@ async fn two_stage_provision_then_known_agent() {
     assert_eq!(req["known"], true, "{listed}");
     assert_eq!(req["display_name"], "Bluesky poster");
     assert!(req["agent_created_at"].as_str().is_some(), "{listed}");
+
+    // 6. The PUBLIC byline (bean tmk8): set at approval, served by the open
+    //    /public-name lookup, editable via /wsapi/set_public_name, and the
+    //    internal display_name never leaks through the public endpoint.
+    // `+` is significant in agent subaddresses — percent-encode it, as any
+    // URL-building client (encodeURIComponent) would.
+    let enc = agent_email.replace('+', "%2B");
+    let pn: Value = server.get(&format!("/public-name?identity={enc}")).await.json();
+    assert_eq!(pn["public_name"], "Sky Scribe", "{pn}");
+
+    let listed: Value = server
+        .get("/wsapi/list_emails")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    let names = listed["public_names"].as_array().unwrap();
+    assert!(
+        names.iter().any(|p| p["email"] == *agent_email && p["public_name"] == "Sky Scribe"),
+        "{listed}"
+    );
+
+    // Clearing falls back to the email local-part — NOT display_name.
+    let r = server
+        .post("/wsapi/set_public_name")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "email": agent_email, "public_name": "" }))
+        .await;
+    assert_eq!(r.status_code(), 200, "{:?}", r.text());
+    let pn: Value = server.get(&format!("/public-name?identity={enc}")).await.json();
+    let local = agent_email.split('@').next().unwrap();
+    assert_eq!(pn["public_name"], local, "cleared byline must fall back to local-part, not display_name: {pn}");
+
+    // An identity nobody registered gets the same shape — no registration oracle.
+    let pn: Value = server.get("/public-name?identity=stranger@nowhere.test").await.json();
+    assert_eq!(pn["public_name"], "stranger");
 }
 
 /// Declining the permission screen after the identity stage: the identity is

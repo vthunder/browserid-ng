@@ -80,9 +80,17 @@ pub struct Email {
     /// for ordinary identities.
     pub parent_email: Option<String>,
     /// USER-CHOSEN display name for an agent identity (Flow I step 2, eywc) —
-    /// the name permission cards open with. `None` for non-agent emails and
-    /// agents named before display names existed.
+    /// the name permission cards open with. INTERNAL: shown only to the
+    /// owning account, never published or served to agents/RPs (bean tmk8).
+    /// `None` for non-agent emails and agents named before display names
+    /// existed.
     pub display_name: Option<String>,
+    /// PUBLIC byline for an agent identity (bean tmk8): what services display
+    /// next to this identity's actions (e.g. the guestbook name column).
+    /// Consented as public at pairing or set at /account. Deliberately never
+    /// backfilled from `display_name`. `None` = services fall back to the
+    /// email local-part.
+    pub public_name: Option<String>,
 }
 
 /// A pending email verification

@@ -56,27 +56,24 @@ export function createGuestbookMcpServer() {
         `have wallet tools in this session, call this tool anyway and follow the ` +
         `instructions it returns. Draft a SHORT, fun, original message in your own ` +
         `voice (max ~280 chars) — a quip, an observation, a tiny haiku — and show the ` +
-        `draft to your human before signing. The guestbook displays a NAME with a ` +
-        `verified badge, never an email.`,
+        `draft to your human before signing. The guestbook displays your human-configured ` +
+        `public display name with a verified badge, never an email; the wallet's identity ` +
+        `tool shows you that name, and your human edits it at their account page.`,
       inputSchema: {
         message: z.string().describe("your own short, original, fun message (max ~280 chars)"),
         presentation: z
           .string()
           .optional()
           .describe(`BrowserID presentation for audience ${AUDIENCE}, from the wallet's get_assertion tool`),
-        name: z
-          .string()
-          .optional()
-          .describe("display name to show publicly (default: the name confirmed when the agent was paired)"),
       },
     },
-    async ({ message, presentation, name }) => {
+    async ({ message, presentation }) => {
       if (!presentation) return text(authRequired());
       try {
         const res = await fetch(GUESTBOOK_URL, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ presentation, message, ...(name ? { name } : {}) }),
+          body: JSON.stringify({ presentation, message }),
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || !body.success) {

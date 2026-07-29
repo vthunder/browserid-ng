@@ -135,6 +135,7 @@ impl UserStore for InMemoryUserStore {
                 last_used_as: email_type,
                 parent_email: None,
                 display_name: None,
+                public_name: None,
             },
         );
         Ok(())
@@ -205,6 +206,18 @@ impl UserStore for InMemoryUserStore {
         match emails.get_mut(&normalized) {
             Some(rec) => {
                 rec.display_name = display_name.map(str::to_string);
+                Ok(())
+            }
+            None => Err(BrokerError::EmailNotFound),
+        }
+    }
+
+    fn set_email_public_name(&self, email: &str, public_name: Option<&str>) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let mut emails = self.emails.write().unwrap();
+        match emails.get_mut(&normalized) {
+            Some(rec) => {
+                rec.public_name = public_name.map(str::to_string);
                 Ok(())
             }
             None => Err(BrokerError::EmailNotFound),

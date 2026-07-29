@@ -85,8 +85,15 @@ pub trait RegistrarHost: Send + Sync {
 
     /// Store the USER-CHOSEN display name for an agent identity (Flow I step
     /// 2, bean eywc) — the name every later permission card opens with.
+    /// INTERNAL: shown only to the owning account, never published.
     /// Best-effort; a default no-op for hosts without a registry.
     fn set_agent_display_name(&self, _user_id: u64, _agent_email: &str, _name: &str) {}
+
+    /// Store the PUBLIC byline for an agent identity (bean tmk8) — what
+    /// services display next to the identity's actions. Only set when the
+    /// human filled the explicitly-public field on the approval page.
+    /// Best-effort; a default no-op for hosts without a registry.
+    fn set_agent_public_name(&self, _user_id: u64, _agent_email: &str, _name: &str) {}
 
     /// Whether this account has already met `agent_email` — an agent identity
     /// on the account, or a recorded device cert / service entry covering it —

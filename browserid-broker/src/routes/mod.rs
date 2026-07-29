@@ -112,6 +112,7 @@ where
         .route("/wsapi/remove_email", post(email::remove_email))
         .route("/wsapi/address_info", get(email::address_info))
         .route("/wsapi/set_parent", post(email::set_parent))
+        .route("/wsapi/set_public_name", post(email::set_public_name))
         .route("/wsapi/parent_of", get(email::parent_of))
         .route("/wsapi/email_addition_status", get(email::email_addition_status))
         // FedCM IdP surface (browserid-ng-mhyp, device-cert model): the silent
@@ -143,6 +144,7 @@ where
         // The agent guestbook demo (a public RP only agents can sign).
         .route("/guestbook", get(guestbook::page).post(guestbook::sign))
         .route("/guestbook/feed", get(guestbook::feed))
+        .route("/public-name", get(guestbook::public_name))
         // Fallback-IdP surface (apgv, device-cert model): SMTP-verified email
         // control gates batch device-cert issuance, so the broker can vouch
         // for emails whose domain runs no primary IdP.
@@ -246,7 +248,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-J1J7/Is+iVDr73iPWW3hF5xSjcMgwNfCEDUwOmkpze0='", // account.html
+    "'sha256-luRUMd00kueiHZ3SafT1gaFOgOWefY4hNu1N4xfeIhg='", // account.html
     "'sha256-KcSFrbxTD/FQlLnEbwRfQuYxTudagOb8OQNj5vSg5T8='", // consent.html
     "'sha256-+XqUYbHj+ZXqocYeM/oRYCX1zljIPfY94AJwWAtU2Do='", // agents.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)

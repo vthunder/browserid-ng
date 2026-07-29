@@ -62,7 +62,13 @@ pub trait UserStore: Send + Sync {
 
     /// Set (or clear) an email's USER-CHOSEN display name (Flow I step 2,
     /// eywc) — only meaningful for agent identities today. `None` clears it.
+    /// INTERNAL: never published; see `Email::display_name`.
     fn set_email_display_name(&self, email: &str, display_name: Option<&str>) -> StoreResult<()>;
+
+    /// Set (or clear) an email's PUBLIC byline (bean tmk8) — what services
+    /// display next to this identity's actions. `None` clears it (services
+    /// fall back to the email local-part).
+    fn set_email_public_name(&self, email: &str, public_name: Option<&str>) -> StoreResult<()>;
 
     /// Store a pending verification
     fn create_pending(&self, pending: PendingVerification) -> StoreResult<()>;

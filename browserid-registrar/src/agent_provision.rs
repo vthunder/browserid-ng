@@ -830,9 +830,15 @@ pub struct CompleteBody {
     pub stage: Option<String>,
     /// The USER-CHOSEN display name for the agent (Flow I step 2, eywc) —
     /// stored on the agent identity; every later permission card opens with
-    /// it. Honored on the identity stage / legacy path for named agents.
+    /// it. INTERNAL — never published. Honored on the identity stage / legacy
+    /// path for named agents.
     #[serde(default)]
     pub display_name: Option<String>,
+    /// The PUBLIC byline the human chose on the approval page (bean tmk8) —
+    /// what services display next to this agent's actions. Optional; unset
+    /// means services fall back to the email local-part.
+    #[serde(default)]
+    pub public_name: Option<String>,
     /// Grants-stage only (eywc): the grantor the permission screens' dropdown
     /// chose — the agent's own email (acts as itself) or an owned identity
     /// (on-behalf). Must satisfy the request's grantor pin. Absent = the
@@ -1440,6 +1446,14 @@ async fn complete_device_cert(
     if let Some(display) = req.display_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
         if name.is_some() {
             state.host.set_agent_display_name(user.user_id, &agent_email, display);
+        }
+    }
+
+    // The PUBLIC byline (bean tmk8): a separate, explicitly-public field —
+    // never derived from display_name, which was consented as internal.
+    if let Some(public) = req.public_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        if name.is_some() {
+            state.host.set_agent_public_name(user.user_id, &agent_email, public);
         }
     }
 

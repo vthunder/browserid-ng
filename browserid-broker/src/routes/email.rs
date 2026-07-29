@@ -35,6 +35,16 @@ pub struct ListEmailsResponse {
     /// derived (cm8z) subordinates are NOT agents, so consumers must not
     /// infer agent-ness from `derived` alone.
     pub agents: Vec<String>,
+    /// Per-agent PUBLIC bylines (bean tmk8), for the account edit UI. Only
+    /// identities with a name actually set appear; absence = the local-part
+    /// fallback applies. Own-account only, like everything here.
+    pub public_names: Vec<PublicNameEntry>,
+}
+
+#[derive(Serialize)]
+pub struct PublicNameEntry {
+    pub email: String,
+    pub public_name: String,
 }
 
 /// GET /wsapi/list_emails
@@ -68,11 +78,22 @@ where
         .map(|e| e.email.clone())
         .collect();
 
+    let public_names = emails
+        .iter()
+        .filter_map(|e| {
+            e.public_name.as_ref().map(|n| PublicNameEntry {
+                email: e.email.clone(),
+                public_name: n.clone(),
+            })
+        })
+        .collect();
+
     Ok(Json(ListEmailsResponse {
         success: true,
         emails: emails.into_iter().map(|e| e.email).collect(),
         derived,
         agents,
+        public_names,
     }))
 }
 
@@ -112,6 +133,64 @@ where
         return Err(BrokerError::NotAuthenticated);
     }
     Ok(Json(ParentOfResponse { parent_email: email.parent_email }))
+}
+
+#[derive(Deserialize)]
+pub struct SetPublicNameRequest {
+    pub email: String,
+    /// The new public byline; empty or absent clears it (services fall back
+    /// to the email local-part).
+    #[serde(default)]
+    pub public_name: Option<String>,
+    #[serde(default)]
+    pub csrf: String,
+}
+
+#[derive(Serialize)]
+pub struct SetPublicNameResponse {
+    pub success: bool,
+    /// The stored value after the update (None = cleared).
+    pub public_name: Option<String>,
+}
+
+/// POST /wsapi/set_public_name — set or clear an identity's PUBLIC byline
+/// (bean tmk8): the name services display next to the identity's actions.
+/// Session-gated to the owning account. Distinct from the internal
+/// display_name/holder label, which are never published; this field is the
+/// only human-editable name that is.
+pub async fn set_public_name<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<SetPublicNameRequest>,
+) -> Result<Json<SetPublicNameResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    super::session::require_csrf(&session, &req.csrf)?;
+
+    let rec = state
+        .user_store
+        .get_email(&req.email)?
+        .ok_or(BrokerError::EmailNotFound)?;
+    if rec.user_id != session.user_id {
+        return Err(BrokerError::NotAuthenticated);
+    }
+
+    let name: Option<String> = req
+        .public_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(|n| n.chars().take(64).collect());
+    state
+        .user_store
+        .set_email_public_name(&req.email, name.as_deref())?;
+
+    Ok(Json(SetPublicNameResponse { success: true, public_name: name }))
 }
 
 #[derive(Deserialize)]

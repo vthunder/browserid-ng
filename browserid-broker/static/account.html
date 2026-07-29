@@ -219,6 +219,14 @@
       </div>
     </div>
 
+    <div class="card" id="agent-names-card" hidden>
+      <h2>Agent names</h2>
+      <p class="sub">What each agent identity is shown as publicly when it acts
+        (the name next to its verified badge). Leave unset to show the identity's
+        handle. Device labels under Devices &amp; services stay private.</p>
+      <ul class="idlist" id="agent-names"></ul>
+    </div>
+
     <div class="card" id="holders-card" hidden>
       <h2>Devices &amp; services</h2>
       <p class="sub">Browsers, agents and services connected to your account.
@@ -314,7 +322,7 @@ const post = (path, body) => api(path, {
   body: JSON.stringify({ csrf: account.csrf, ...body }),
 });
 
-let account = { emails: [], agents: [], parentOf: {}, warrants: [], deviceCerts: [], holders: { namespaces: [], holders_without_namespace: [] }, csrf: null };
+let account = { emails: [], agents: [], parentOf: {}, publicNames: {}, warrants: [], deviceCerts: [], holders: { namespaces: [], holders_without_namespace: [] }, csrf: null };
 let deviceCache = []; // this browser's DEVICE-store records (device/config certs, non-extractable keys)
 
 // -------- local device credentials (device-cert model) --------
@@ -533,6 +541,29 @@ function renderUserIdentities() {
   $('user-ids').innerHTML = rows +
     `<li class="add"><button class="row" id="add-email"><span class="email-text">+ Add an email</span></button></li>`;
   $('add-email').onclick = () => { $('add-email-form').hidden = false; $('ae-email').focus(); };
+  renderAgentNames();
+}
+
+// Agent names card (bean tmk8): the PUBLIC byline per agent identity — the
+// one name on this page that IS published. Unset = the handle is shown.
+function renderAgentNames() {
+  const card = $('agent-names-card');
+  card.hidden = !account.agents.length;
+  if (!account.agents.length) return;
+  $('agent-names').innerHTML = account.agents.map(a => {
+    const pn = account.publicNames[a];
+    const shown = pn ? escapeHtml(pn)
+      : `<span class="muted">${escapeHtml(a.slice(0, a.indexOf('@')))} <span style="font-size:11px">(default — its handle)</span></span>`;
+    return `<li><div class="row"><span class="email-text">${shown}
+      <span class="email-sub">${escapeHtml(a)}</span></span>
+      <button class="small linkish an-edit" data-a="${escapeHtml(a)}" data-n="${escapeHtml(pn || '')}">edit</button></div></li>`;
+  }).join('');
+  for (const b of $('agent-names').querySelectorAll('.an-edit')) b.onclick = async () => {
+    const name = prompt('Public display name — shown wherever this agent acts (empty shows its handle):', b.dataset.n);
+    if (name == null) return;
+    try { await post('/wsapi/set_public_name', { email: b.dataset.a, public_name: name.trim() }); await reloadAccount(); renderUserIdentities(); }
+    catch (e) { alert('Update failed: ' + e.message); }
+  };
 }
 
 /// A minted agent's parent (from the derived map) or, for a not-yet-minted
@@ -1078,6 +1109,7 @@ async function reloadAccount() {
   account.emails = resp.emails || [];
   account.agents = resp.agents || [];
   account.parentOf = Object.fromEntries((resp.derived || []).map(d => [d.email, d.parent_email]));
+  account.publicNames = Object.fromEntries((resp.public_names || []).map(p => [p.email, p.public_name]));
   account.warrants = warrants;
   account.deviceCerts = deviceCerts;
   account.holders = holders;
@@ -1273,8 +1305,10 @@ function pvRenderName(card) {
     pvStepMark('Step 2 of 2 · identity') +
     `<div class="pv-title" style="margin-bottom:14px">Give your agent a name and an address.</div>
     <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px">
-      <div><div class="pv-label" style="margin-bottom:6px">${nameLabel}</div>
+      <div><div class="pv-label" style="margin-bottom:6px">${nameLabel} <span style="font-weight:400;opacity:.7">(private — only you see this)</span></div>
         <input id="pv-name" class="pv-nameinput" value="${escapeHtml(pv.displayName || '')}" maxlength="64" autocomplete="off"></div>
+      <div><div class="pv-label" style="margin-bottom:6px">Public display name <span style="font-weight:400;opacity:.7">(optional — shown wherever it acts publicly; blank shows its handle)</span></div>
+        <input id="pv-public-name" class="pv-nameinput" value="${escapeHtml(pv.publicName || '')}" maxlength="64" autocomplete="off" placeholder="e.g. Claude"></div>
       ${acct}
       <div><div class="pv-label" style="margin-bottom:6px">Its address — under your account</div>${addr}
         ${reuse.length ? `<div class="pv-rowsub" style="margin-top:5px">or reuse: ${reuse.map(a =>
@@ -1296,6 +1330,8 @@ function pvRenderName(card) {
   };
   const nameInp = $('pv-name');
   if (nameInp) nameInp.oninput = () => { pv.displayName = nameInp.value; };
+  const pubInp = $('pv-public-name');
+  if (pubInp) pubInp.oninput = () => { pv.publicName = pubInp.value; };
   const inp = $('pv-handle');
   if (inp) inp.oninput = () => { pv.tag = inp.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, ''); };
   for (const b of document.querySelectorAll('.pv-reuse')) b.onclick = () => {
@@ -1603,6 +1639,7 @@ async function showProvisionApproval(code) {
     grantor: null, grantorLocked: false, granteeLocked: false,
     tag: '', baseTag: 'agent',
     displayName: (info.label || '').trim(),
+    publicName: '',
     agentEmail: null, prep: null, asMe: false, obChoice: null,
     identityDone: false, grantsResolved: false, grantsDenied: false,
     view: 'check', after: 'name', addressInfo: null, approved: null, pin: null, reason: null,
@@ -1962,6 +1999,7 @@ async function pvApproveIdentity(mode) {
       identity_mode: mode,
       ...(asMe ? {} : { handle: chosenName }),
       ...((pv.displayName || '').trim() ? { display_name: pv.displayName.trim() } : {}),
+      ...((pv.publicName || '').trim() ? { public_name: pv.publicName.trim() } : {}),
       // Primary-signed cert: also relay where that IdP mints access certs
       // (discovered path — never assume /access/mint).
       ...(deviceCert ? { device_cert: deviceCert, ...(ai.access_mint ? { access_mint: ai.access_mint } : {}) } : {}),

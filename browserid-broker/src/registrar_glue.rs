@@ -373,6 +373,24 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
         }
     }
 
+    fn set_agent_public_name(&self, user_id: u64, agent_email: &str, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let name: String = name.chars().take(64).collect();
+        // Only name identities this account actually owns — best-effort.
+        match self.user_store.get_email(agent_email) {
+            Ok(Some(rec)) if rec.user_id.0 == user_id => {
+                if let Err(e) = self.user_store.set_email_public_name(agent_email, Some(&name)) {
+                    tracing::warn!("setting agent public name failed: {e}");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("setting agent public name failed: {e}"),
+        }
+    }
+
     fn known_agent(
         &self,
         user_id: u64,

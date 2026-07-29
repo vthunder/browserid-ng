@@ -110,12 +110,12 @@ test("sign without presentation → AUTH_REQUIRED with the full recovery recipe"
   assert.match(t, /Never construct or guess/, "forbids fabrication");
 });
 
-test("sign with a valid presentation forwards and reports attribution", async () => {
-  const t = await callTool("sign_guestbook", { message: "a haiku", presentation: "good", name: "Claude" });
+test("sign with a valid presentation forwards message+presentation only (no per-post name)", async () => {
+  const t = await callTool("sign_guestbook", { message: "a haiku", presentation: "good" });
   assert.match(t, /^Signed!/);
   assert.match(t, /acting for dan@example\.com/);
   const fwd = seen.at(-1);
-  assert.deepEqual(fwd, { presentation: "good", message: "a haiku", name: "Claude" });
+  assert.deepEqual(fwd, { presentation: "good", message: "a haiku" });
 });
 
 test("expired assertion → STALE_PRESENTATION, points back to get_assertion", async () => {
