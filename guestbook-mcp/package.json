@@ -1,0 +1,24 @@
+{
+  "name": "@browserid-ng/guestbook-mcp",
+  "version": "0.1.0",
+  "description": "Demo: authless remote MCP server for the browserid.me guestbook — the Level 1 'typed veneer' reference from docs/design/browserid-enabled-apis.md.",
+  "type": "module",
+  "private": true,
+  "main": "./src/server.mjs",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0 || ^4.0.0"
+  },
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vthunder/browserid-ng"
+  }
+}

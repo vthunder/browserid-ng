@@ -1,0 +1,83 @@
+# Build the guestbook MCP in CI and deploy the IMAGE to dokku — same pattern
+# as deploy-wallet.yml (the host never builds; git:from-image pulls the image).
+#
+# One-time setup (mirrors the wallet runbook) — app created 2026-07-29;
+# remaining at first deploy: DNS A record, letsencrypt, ghcr package public:
+# - reuses repo secret DOKKU_SSH_KEY + repo variable DOKKU_HOST
+# - on the host:
+#     dokku apps:create guestbook-mcp
+#     dokku builder:set guestbook-mcp selected dockerfile
+#     dokku domains:set guestbook-mcp guestbook-mcp.browserid.me
+#     dokku ports:set guestbook-mcp http:80:3200
+#     dokku config:set guestbook-mcp SERVICE_ORIGIN=https://guestbook-mcp.browserid.me
+#     dokku letsencrypt:enable guestbook-mcp   (after DNS exists)
+# - DNS: guestbook-mcp.browserid.me A record → the dokku host
+# - after the first push: make the ghcr.io guestbook-mcp package PUBLIC, or
+#   dokku cannot pull it (no registry credentials on the host).
+#
+# Stateless service: no storage mount, no secrets. All config has prod-safe
+# defaults (broker/wallet URLs point at browserid.me / wallet.browserid.me).
+
+name: deploy-guestbook
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "guestbook-mcp/**"
+      - ".github/workflows/deploy-guestbook.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/vthunder/browserid-ng/guestbook-mcp
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The node test suite is not covered by test.yml (Rust only) — gate the
+      # deploy on it here.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Test
+        working-directory: guestbook-mcp
+        run: npm ci && npm test
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: guestbook-mcp/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to dokku
+        if: ${{ vars.DOKKU_HOST != '' }}
+        env:
+          DOKKU_SSH_KEY: ${{ secrets.DOKKU_SSH_KEY }}
+          DOKKU_HOST: ${{ vars.DOKKU_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DOKKU_SSH_KEY" > ~/.ssh/dokku_key
+          chmod 600 ~/.ssh/dokku_key
+          ssh -i ~/.ssh/dokku_key -o StrictHostKeyChecking=accept-new \
+            "dokku@$DOKKU_HOST" git:from-image guestbook-mcp "$IMAGE:$GITHUB_SHA"
