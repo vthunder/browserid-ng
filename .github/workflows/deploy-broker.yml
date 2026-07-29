@@ -23,6 +23,22 @@ name: deploy-broker
 on:
   push:
     branches: [main]
+    # The broker image is the Rust workspace + the broker's static assets.
+    # Without this, a docs- or marketing-only push rebuilds the image and then
+    # `git:from-image` no-ops on the unchanged digest, exiting 1 (a spurious
+    # red X). Scope deploys to what actually changes the image.
+    paths:
+      - "browserid-core/**"
+      - "browserid-registrar/**"
+      - "browserid-broker/**"
+      - "browserid-agent/**"
+      - "browserid-rp/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "Dockerfile"
+    # Deliberately NOT self-referencing this workflow file: editing the deploy
+    # recipe shouldn't auto-fire a deploy that no-ops on the unchanged image
+    # digest. Use workflow_dispatch to redeploy after a recipe change.
   workflow_dispatch: {}
 
 permissions:

@@ -1,0 +1,65 @@
+# Run the Rust workspace test suite on every push and PR. Independent of the
+# deploy workflows (deploy-immediately, test-async): deploy is 2-3 min and the
+# suite is ~1-2 min after the proxy-stall fix (bean 7g2q), so this gates PRs
+# and gives fast post-push signal on main without holding up a deploy.
+#
+# Nothing gated `main` before this — which is how a required-field change
+# (416c7b4) shipped with three broken dialog.js callers (bean a9u4). This is
+# the guard for that class of break.
+
+name: test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "browserid-core/**"
+      - "browserid-registrar/**"
+      - "browserid-broker/**"
+      - "browserid-agent/**"
+      - "browserid-rp/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/test.yml"
+  pull_request:
+    paths:
+      - "browserid-core/**"
+      - "browserid-registrar/**"
+      - "browserid-broker/**"
+      - "browserid-agent/**"
+      - "browserid-rp/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/test.yml"
+  workflow_dispatch: {}
+
+# A newer push to the same ref cancels the older in-flight run.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Match the Rust version the release Dockerfile builds with.
+      - uses: dtolnay/rust-toolchain@1.85.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --workspace
+
+  # fmt + clippy are deliberately NOT gated yet: the tree is not currently
+  # rustfmt-clean and has a few dead-code warnings, so enabling `--check` /
+  # `-D warnings` today would red every run. Do a cleanup pass first, then add
+  # them here (tracked separately).
