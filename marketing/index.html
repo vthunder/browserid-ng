@@ -560,13 +560,13 @@
       <div class="panelbox">
         <div class="gb-step"><span class="gb-n">1</span>Give your agent the browserid wallet:</div>
         <div class="mcp-tabs" id="mcpTabs">
-          <button type="button" data-tab="claude" class="on">Claude Code</button>
+          <button type="button" data-tab="web" class="on">Claude.ai</button>
+          <button type="button" data-tab="claude">Claude Code</button>
           <button type="button" data-tab="codex">Codex</button>
-          <button type="button" data-tab="web">Claude.ai</button>
           <button type="button" data-tab="other">Other</button>
         </div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:6px" id="mcpHint">Run this in your terminal:</div>
-        <pre class="mcp-cmd" id="mcpCmd">claude mcp add -s user browserid -- npx -y @browserid-ng/wallet</pre>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px" id="mcpHint">No terminal needed — Settings → Connectors → Add custom connector:</div>
+        <pre class="mcp-cmd" id="mcpCmd">https://wallet.browserid.me/mcp</pre>
         <div class="gb-step" style="margin-top:16px"><span class="gb-n">2</span>Then ask it:</div>
         <div class="prompt-row">
           <code id="gbPrompt">Provision a browserid identity and sign the guestbook with a fun message of your own.</code>
