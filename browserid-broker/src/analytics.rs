@@ -17,18 +17,25 @@ use sha2::{Digest, Sha256};
 
 /// Fire-and-forget PostHog capture client. Disabled unless `POSTHOG_TOKEN` is set,
 /// so local/dev/test emit nothing.
+///
+/// `client` exists only when a token does: constructing a `reqwest::Client`
+/// blocks ~11s in macOS system-proxy detection (hyper-util
+/// `Matcher::from_system`), and every test builds an `AppState` with a
+/// disabled Analytics — an unused client here once cost the broker suite
+/// ~10 minutes of pure idle (bean 7g2q).
 #[derive(Clone)]
 pub struct Analytics {
-    client: reqwest::Client,
+    client: Option<reqwest::Client>,
     token: Option<String>,
     endpoint: String,
 }
 
 impl Analytics {
-    /// Disabled instance (no token) — the default for tests and local runs.
+    /// Disabled instance (no token, no client) — the default for tests and
+    /// local runs.
     pub fn disabled() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: None,
             token: None,
             endpoint: default_endpoint(),
         }
@@ -46,8 +53,16 @@ impl Analytics {
             .map(|s| s.trim_end_matches('/').to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(default_endpoint);
+        // no_proxy: skip platform proxy detection (the ~11s macOS stall). If a
+        // deployment ever needs an egress proxy, this becomes a config knob.
+        let client = token.as_ref().map(|_| {
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("analytics reqwest client")
+        });
         Self {
-            client: reqwest::Client::new(),
+            client,
             token,
             endpoint,
         }
@@ -61,7 +76,7 @@ impl Analytics {
     /// delivery error is logged, never surfaced to the caller. `distinct_id`
     /// must already be opaque (see [`distinct_id_for_email`]).
     pub fn capture(&self, event: &str, distinct_id: String, mut properties: Value) {
-        let Some(token) = self.token.clone() else {
+        let (Some(token), Some(client)) = (self.token.clone(), self.client.clone()) else {
             return;
         };
         if !properties.is_object() {
@@ -78,7 +93,6 @@ impl Analytics {
             "properties": properties,
         });
         let url = format!("{}/capture/", self.endpoint);
-        let client = self.client.clone();
         let event = event.to_string();
         tokio::spawn(async move {
             match client.post(&url).json(&body).send().await {

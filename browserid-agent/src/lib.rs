@@ -98,6 +98,17 @@ pub struct GrantRequest {
     pub scopes: Vec<String>,
 }
 
+/// HTTP client without platform proxy detection — `Client::new()` blocks ~11s
+/// inside macOS system-proxy lookup, which made every CLI operation (e.g.
+/// `mingo login`) crawl (browserid-ng bean 7g2q). Panics on TLS-init failure,
+/// exactly like `Client::new()`.
+fn no_proxy_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("failed to build HTTP client")
+}
+
 /// A pairing in flight. Show [`Self::verification_uri_complete`] (plus
 /// `user_code` / `fingerprint` for cross-device confirmation) to the human,
 /// then [`Self::wait`] for the single pickup.
@@ -165,7 +176,7 @@ pub async fn request_provision(
     message: Option<&str>,
     grantor: Option<&str>,
 ) -> Result<PendingProvision> {
-    let http = reqwest::Client::new();
+    let http = no_proxy_client();
     let device_key = KeyPair::generate();
     let mut body = serde_json::json!({
         "provisioning_pubkey": {
@@ -416,7 +427,7 @@ impl DeviceAgent {
         let holder = device_cert.holder().clone();
         let idp_domain = url_host(&credential.idp).to_string();
         Ok(Self {
-            http: reqwest::Client::new(),
+            http: no_proxy_client(),
             credential,
             idp_domain,
             device_key,

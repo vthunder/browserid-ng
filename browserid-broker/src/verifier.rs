@@ -166,6 +166,8 @@ fn status_http() -> &'static reqwest::Client {
             // the request, and a redirect would let the target re-point the
             // fetch at an internal host after the check (SSRF, audit H1).
             .redirect(reqwest::redirect::Policy::none())
+            // Skip platform proxy detection — ~11s stall on macOS (bean 7g2q).
+            .no_proxy()
             .build()
             .expect("failed to build status HTTP client")
     })

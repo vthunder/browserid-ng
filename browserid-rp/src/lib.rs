@@ -532,7 +532,11 @@ fn grant_scopes(warrant_scopes: &[String], rp_scopes: &[String]) -> Vec<String> 
 async fn fetch_well_known_key(idp_base: &str) -> Result<(String, PublicKey), RpError> {
     let idp_base = idp_base.trim_end_matches('/');
     let url = format!("{idp_base}/.well-known/browserid");
-    let doc: browserid_core::discovery::SupportDocument = reqwest::Client::new()
+    // no_proxy: skip platform proxy detection (~11s stall on macOS, bean 7g2q).
+    let doc: browserid_core::discovery::SupportDocument = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("failed to build HTTP client")
         .get(&url)
         .send()
         .await?
