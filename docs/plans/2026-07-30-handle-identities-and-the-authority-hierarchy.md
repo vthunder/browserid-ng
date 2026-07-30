@@ -170,11 +170,32 @@ for a no-primary domain.
 - `pins.rs` still carries handle↔DID pinning and suspension; that machinery is
   unchanged and still bounds handle moves and takedowns.
 
-**Dialog**
+**Dialog — no atproto-specific UI**
 
-- A third sign-in lane beside "secondary password" and "primary popup": the
-  atproto hop. Mechanically it is the redirect/popup shape already built for
-  primary IdPs, so most of `primaryPopupFlow` / `primaryRedirectHop` applies.
+A handle identity is just an address the user types into the ordinary email
+field. There is no "Sign in with Bluesky" button, no handle input, no new screen.
+
+Note what does *not* work: presenting the handle domain as a primary with
+`device_auth` pointing at the bridge, so the existing primary lane runs verbatim.
+That breaks on the issuer rule twice — `finishPrimaryCerts` rejects certs unless
+`dc.iss === domain`, and `resolve_conformant_key` requires an accepted fallback
+for a no-primary domain — and the whole design rests on `iss = browserid.me`.
+
+What is actually needed is small, because once the identity is verified on the
+session, `completeSignIn` → `issueDevicePair` → `/device/issue` runs unchanged: a
+handle identity is an ordinary broker-issued fallback identity from that point
+on. The only new step is getting it *onto* the session — one navigation out to
+the bridge and one return, the same shape as clicking a link in a verification
+email, reusing the existing redirect/popup + resume machinery.
+
+- On the new `address_info` state, navigate to the bridge's claim URL (popup or
+  redirect, per the lane already in use) and resume on return.
+- Discovery copy on the email screen: "Bluesky user? Try `me@<your handle>`".
+- Treat a bare handle-shaped input with no `@` (`dan.bsky.social`) as a
+  suggestion for `me@dan.bsky.social` rather than an error — the most likely way
+  people will get this wrong.
+- The same path gives "add `me@<handle>` to an existing account" from the account
+  page's add-email flow for free.
 
 ## Migration
 
