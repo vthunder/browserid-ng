@@ -5,7 +5,7 @@ status: todo
 type: epic
 priority: normal
 created_at: 2026-07-30T20:34:46Z
-updated_at: 2026-07-30T20:34:46Z
+updated_at: 2026-07-30T21:07:40Z
 ---
 
 Replace the bridge-owned identity shape `<handle>@bsky.browserid.me` with
@@ -30,3 +30,10 @@ config, and no verifier touches DoH/plc.directory/PDS metadata.
 
 Architecture: the bsky bridge stays the atproto specialist and returns a signed
 attestation; the broker is the issuer.
+
+## Start here
+
+Fresh-context handoff: `docs/plans/2026-07-30-HANDOFF-handle-identities.md`
+Design (authoritative): `docs/plans/2026-07-30-handle-identities-and-the-authority-hierarchy.md`
+
+Roots: browserid-ng-5kf3 (broker hierarchy) and browserid-ng-031k (bridge endpoints, in ~/src/browserid-bsky). browserid-ng-jaa1 is an open DECISION, not a work item.
