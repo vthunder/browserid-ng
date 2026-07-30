@@ -1,11 +1,11 @@
 ---
 # browserid-ng-i8a2
 title: 'Bug: browsers miscategorized as agents in agent list (Safari on iOS, Chrome on macOS)'
-status: in-progress
+status: completed
 type: bug
 priority: normal
 created_at: 2026-07-30T13:18:06Z
-updated_at: 2026-07-30T15:19:13Z
+updated_at: 2026-07-30T16:11:58Z
 ---
 
 Two devices in the production agent list are actually browsers: 'Safari on iOS' and 'Chrome on macOS'. Chrome one likely from FedCM login creating a cert with a holder id with wrong category. Safari one unknown (probably not FedCM). Track down both root causes.
@@ -45,7 +45,7 @@ Also: two stale `Chrome on macOS` holder_labels rows (`br746fb0.*`, `brb5e395.*`
 - [x] Redirect lane: resumeDeviceAuth completes a pending move via a second same-tab hop (no popup)
 - [x] Popup lane: extend the BroadcastChannel handoff so the resume popup self-navigates for the re-issue (no new window.open)
 - [x] Tests for all three lanes
-- [ ] Deploy + register moves for the two existing prod orphans
+- [x] Deploy (CI image 62f794a → dokku git:from-image, verified live). Registering moves for the two existing orphans turned out to be unnecessary: the backstop schedules them on those browsers' next sign-in.
 
 ## Summary of Changes
 
