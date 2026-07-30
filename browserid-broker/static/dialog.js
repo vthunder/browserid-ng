@@ -28,6 +28,8 @@
     winchanCallback: null,  // WinChan response callback
     emails: [],
     derived: {},  // subordinate identity -> controlling parent email (mingo-cm8z)
+    agents: [],       // agent identities (subset of emails) — collapsed section in the picker
+    publicNames: {},  // agent identity -> public display name (shown in the picker + success)
     newEmail: null,  // Email being added to account
     pendingAddressInfo: null,  // Stored addressInfo for transition flows
     acceptedFallbacks: null,   // RP's accepted fallback IdPs (spec §8.1); null = default {this broker}
@@ -91,9 +93,29 @@
     if (!row || !state.fedcm) return;
     if (FEDCM_OPTIN_SCREENS[screenId]) {
       const content = screens[screenId] && screens[screenId].querySelector('.content');
-      if (content) { content.appendChild(row); row.style.display = ''; }
+      if (content) {
+        // On the pick screen the checkbox sits between the Sign in button and
+        // the bottom links row; elsewhere it goes at the end of the card.
+        const links = content.querySelector('.links-split');
+        if (links) links.parentNode.insertBefore(row, links);
+        else content.appendChild(row);
+        row.style.display = '';
+      }
     } else {
       row.style.display = 'none';
+    }
+  }
+
+  // "Signed in!" — or "Signed in as Claude" when an agent identity was used.
+  function setSuccessHeading() {
+    const h = document.getElementById('success-heading');
+    if (!h) return;
+    const email = state.email;
+    if (email && (state.agents || []).includes(email)) {
+      const name = state.publicNames[email] || email.slice(0, email.indexOf('@'));
+      h.textContent = 'Signed in as ' + name;
+    } else {
+      h.textContent = 'Signed in!';
     }
   }
 
@@ -105,6 +127,7 @@
       const t = document.getElementById('loading-text');
       if (t) t.textContent = loadingText || 'Loading...';
     }
+    if (screenId === 'success') setSuccessHeading();
     placeFedcmOptin(screenId);
   }
 
@@ -1486,6 +1509,16 @@
       await handleEmailChosen(state.email);
     });
 
+    // Agents disclosure on the picker: collapsed by default; hidden entirely
+    // (in populateEmailList) when the account has no agent identities.
+    const agentsToggle = document.getElementById('agents-toggle');
+    if (agentsToggle) agentsToggle.addEventListener('click', () => {
+      const section = document.getElementById('agents-section');
+      const open = section.classList.toggle('open');
+      const chev = agentsToggle.querySelector('.chev');
+      if (chev) chev.textContent = open ? '▾' : '▸';
+    });
+
     // Add email link - go to add email screen (not login screen)
     document.getElementById('add-email-link').addEventListener('click', (e) => {
       e.preventDefault();
@@ -1676,15 +1709,21 @@
     ));
   }
 
-  // Populate email list — ALL of the account's identities, whether or not this
+  // Populate the picker — ALL of the account's identities, whether or not this
   // browser holds device certs for them (issuance happens on selection).
-  // Derived/subordinate identities (mingo-cm8z) get a distinct sub-label
-  // naming the parent they sign in through.
+  // USER addresses go in the primary radio card; AGENT identities go in the
+  // collapsed section below (display name first, mono address second; the
+  // selected agent row explains the site will see it's an agent). One radio
+  // group (`selected-email`) spans both lists. Derived/subordinate identities
+  // (mingo-cm8z) get a sub-label naming the parent they sign in through.
   function populateEmailList(emails) {
     const list = document.getElementById('email-list');
     list.innerHTML = '';
+    const agents = state.agents || [];
+    const userEmails = emails.filter(e => !agents.includes(e));
+    const agentEmails = emails.filter(e => agents.includes(e));
 
-    emails.forEach((emailStr, index) => {
+    userEmails.forEach((emailStr, index) => {
       const parent = state.derived[emailStr];
       const li = document.createElement('li');
       if (parent) li.className = 'derived';
@@ -1700,6 +1739,30 @@
       `;
       list.appendChild(li);
     });
+
+    const section = document.getElementById('agents-section');
+    const agentList = document.getElementById('agent-list');
+    if (section && agentList) {
+      agentList.innerHTML = '';
+      section.hidden = agentEmails.length === 0;
+      const count = document.getElementById('agents-count');
+      if (count) count.textContent = '· ' + agentEmails.length;
+      agentEmails.forEach((emailStr, index) => {
+        const safeEmail = escapeHtml(emailStr);
+        const name = state.publicNames[emailStr] || emailStr.slice(0, emailStr.indexOf('@'));
+        const li = document.createElement('li');
+        li.innerHTML = `
+          <label>
+            <input type="radio" name="selected-email" value="${safeEmail}" ${!userEmails.length && index === 0 ? 'checked' : ''}>
+            <span class="agent-main">
+              <span>${escapeHtml(name)} <span class="agent-addr">${safeEmail}</span></span>
+              <span class="agent-note">the site will see it's an agent acting for you</span>
+            </span>
+          </label>
+        `;
+        agentList.appendChild(li);
+      });
+    }
   }
 
   // Initialize
@@ -1735,6 +1798,9 @@
         const emailsResponse = await apiCall(API.listEmails);
         state.emails = emailsResponse.emails || [];
         state.derived = derivedMapFromResponse(emailsResponse);
+        state.agents = emailsResponse.agents || [];
+        state.publicNames = {};
+        (emailsResponse.public_names || []).forEach(p => { state.publicNames[p.email] = p.public_name; });
 
         if (state.emails.length >= 1) {
           // Show email picker - even with one email, let user confirm or add another

@@ -111,6 +111,15 @@
     .perm.expired .chip { color: #b7791f; border-color: rgba(183,121,31,.35); }
     .perm.revoked, .perm.revoked .site, .perm.revoked .meta { color: #9d2f26; }
     .perm.revoked .chip { color: #9d2f26; border-color: rgba(157,47,38,.35); }
+    .permconfirm { flex-basis: 100%; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      background: #fdf6f5; border: 1px solid rgba(157,47,38,.25); border-radius: 6px;
+      padding: 6px 9px; margin-top: 4px; }
+    .permconfirm .pc-t { flex: 1; min-width: 180px; font: 11px/1.5 system-ui, sans-serif; color: #5c3a36; }
+    .permconfirm .pc-go { font: 600 11px system-ui, sans-serif; color: #fff; background: #9d2f26;
+      border: none; border-radius: 5px; padding: 4px 10px; cursor: pointer; }
+    .permconfirm .pc-cancel { font: 500 11px system-ui, sans-serif; color: #6b6b74; background: none;
+      border: none; padding: 4px 2px; cursor: pointer; }
+    .permconfirm .pc-cancel:hover { color: #17171a; }
     .managelink { margin-top: 10px; font: 500 12px system-ui, sans-serif; color: #1f6feb;
       background: none; border: none; padding: 0; cursor: pointer; }
     .managelink:hover { text-decoration: underline; }
@@ -146,6 +155,7 @@
     .rsub { font: 11.5px/1.5 system-ui, sans-serif; color: #8a8a93; margin-bottom: 10px; }
     .addrlist { display: flex; flex-direction: column; gap: 8px;
       font: 12px ui-monospace, Menlo, monospace; color: #17171a; }
+    .addrlist div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .addrlist .via { font: 10.5px system-ui, sans-serif; color: #8a8a93; }
     .rlink { font: 500 12px system-ui, sans-serif; color: #1f6feb; background: none; border: none;
       padding: 0; cursor: pointer; text-align: left; }
@@ -465,7 +475,7 @@ let deviceCache = []; // this browser's DEVICE-store records
 // Client view state (server data above; this is pure UI).
 let ui = { view: 'main', actorId: null, expandedId: null, expandedSite: null,
   inactiveOpen: false, sharedOpen: false, editingName: false, editingPublic: false,
-  techOpen: false, highlight: null };
+  techOpen: false, highlight: null, confirmPerm: null };
 
 // -------- local device credentials --------
 async function refreshKeystore() {
@@ -670,24 +680,44 @@ function permLineHtml(p, actor, opts) {
     ? `<button class="act revoke" data-i="${p.id}" data-act="revoke">Revoke</button>`
     : `<button class="act forget" data-i="${p.id}" data-act="forget">Forget</button>`;
   const who = opts.who ? `<span class="who">${escapeHtml(opts.who)}</span>` : '';
+  // Revoke asks inline, in the design language — no browser confirm().
+  const confirming = ui.confirmPerm === p.id ? `<span class="permconfirm">
+      <span class="pc-t">Revoke this permission? It stops working within minutes, everywhere the site checks.</span>
+      <button class="pc-go" data-i="${p.id}">Revoke</button>
+      <button class="pc-cancel">Cancel</button></span>` : '';
   return `<div class="perm ${state}">${who}<span class="site">${escapeHtml(p.site)}</span>
-    ${chips}${more} ${asLabel}<span class="meta">${meta}</span>${act}</div>`;
+    ${chips}${more} ${asLabel}<span class="meta">${meta}</span>${act}${confirming}</div>`;
 }
 
 function wirePermActions(rootEl, rerender) {
   for (const b of rootEl.querySelectorAll('.act')) b.onclick = async (ev) => {
     ev.stopPropagation();
     const id = Number(b.dataset.i);
+    if (b.dataset.act === 'revoke') {
+      // First click arms the inline confirm row; the .pc-go button commits.
+      ui.confirmPerm = ui.confirmPerm === id ? null : id;
+      rerender();
+      return;
+    }
     try {
-      if (b.dataset.act === 'revoke') {
-        if (!confirm('Revoke this permission? It stops working within minutes, everywhere the site checks.')) return;
-        await post('/wsapi/revoke_warrant', { id });
-      } else {
-        await post('/wsapi/forget_warrant', { id });
-      }
+      await post('/wsapi/forget_warrant', { id });
       await reloadAccount();
       rerender();
     } catch (e) { alert('Failed: ' + e.message); }
+  };
+  for (const b of rootEl.querySelectorAll('.pc-go')) b.onclick = async (ev) => {
+    ev.stopPropagation();
+    try {
+      await post('/wsapi/revoke_warrant', { id: Number(b.dataset.i) });
+      ui.confirmPerm = null;
+      await reloadAccount();
+      rerender();
+    } catch (e) { alert('Failed: ' + e.message); }
+  };
+  for (const b of rootEl.querySelectorAll('.pc-cancel')) b.onclick = (ev) => {
+    ev.stopPropagation();
+    ui.confirmPerm = null;
+    rerender();
   };
 }
 
@@ -818,7 +848,7 @@ function renderMain() {
   // Addresses rail
   $('addrlist').innerHTML = rootIds().map(email => {
     const via = account.parentOf[email];
-    return `<div>${escapeHtml(email)}${via ? ` <span class="via">via ${escapeHtml(via)}</span>` : ''}</div>`;
+    return `<div title="${escapeHtml(email)}">${escapeHtml(email)}${via ? ` <span class="via">via ${escapeHtml(via)}</span>` : ''}</div>`;
   }).join('') || '<div class="via">No addresses yet.</div>';
 
   // wiring

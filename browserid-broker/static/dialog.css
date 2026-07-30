@@ -1,6 +1,8 @@
 /*
  * BrowserID-NG Dialog Styles
- * Based on Mozilla Persona (MPL 2.0) - branding removed
+ * Based on Mozilla Persona (MPL 2.0) — restyled to the account-redesign
+ * design language (2026-07 handoff): ink #17171a, quiet grays, mono for
+ * emails/hosts/codes, one accent blue, no blue focus glow.
  */
 
 * {
@@ -13,8 +15,8 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 14px;
   line-height: 1.5;
-  color: #333;
-  background-color: #f5f5f5;
+  color: #17171a;
+  background-color: #f5f5f4;
 }
 
 #dialog {
@@ -35,7 +37,7 @@ body {
   width: 100%;
   max-width: 400px;
   background: #fff;
-  border-radius: 8px;
+  border-radius: 10px;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
   overflow: hidden;
 }
@@ -45,169 +47,256 @@ body {
 }
 
 .content {
-  padding: 24px;
+  padding: 24px 22px 20px;
 }
 
 .center {
   text-align: center;
 }
 
+/* Brand row — every screen starts with it. */
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.brand-mark {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: #17171a;
+  flex: none;
+}
+
+.brand-row span {
+  font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #17171a;
+}
+
 /* Typography */
 h2 {
-  margin: 0 0 16px 0;
-  font-size: 20px;
+  margin: 0 0 6px 0;
+  font-size: 19px;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  color: #17171a;
+  text-wrap: pretty;
+}
+
+h2 .rp-name {
   font-weight: 600;
-  color: #1a1a1a;
 }
 
 p {
-  margin: 0 0 16px 0;
-  color: #666;
+  margin: 0 0 14px 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #6b6b74;
+}
+
+p strong, p b {
+  color: #17171a;
+}
+
+.mono, .email-display {
+  font-family: ui-monospace, Menlo, monospace;
+  color: #17171a;
+  word-break: break-all;
 }
 
 .email-display {
-  font-weight: 500;
-  color: #333;
-  word-break: break-all;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+p.muted-note {
+  font-size: 12px;
+  color: #8a8a93;
+}
+
+/* Info callout (via-IdP screen) */
+.callout {
+  padding: 11px 14px;
+  background: #f4f6fb;
+  border-left: 2px solid #1f6feb;
+  border-radius: 0 8px 8px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #33333a;
+  margin: 0 0 16px;
 }
 
 /* Forms */
 .form-group {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 label {
   display: block;
-  margin-bottom: 4px;
-  font-size: 13px;
-  font-weight: 500;
-  color: #555;
+  margin-bottom: 6px;
+  font-size: 11px;
+  line-height: 1.3;
+  font-weight: 400;
+  color: #8a8a93;
 }
 
 input[type="email"],
 input[type="password"],
 input[type="text"] {
   width: 100%;
-  padding: 10px 12px;
-  font-size: 14px;
-  border: 1px solid #ccc;
-  border-radius: 4px;
+  padding: 11px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #17171a;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  border-radius: 8px;
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  background: #fff;
+  transition: border-color 0.15s;
+}
+
+/* Emails and one-time codes are mono; codes get the wide tracking. */
+input[type="email"] {
+  font-family: ui-monospace, Menlo, monospace;
+}
+
+input[inputmode="numeric"] {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 15px;
+  letter-spacing: 0.2em;
 }
 
 input:focus {
-  border-color: #4a90d9;
-  box-shadow: 0 0 0 3px rgba(74, 144, 217, 0.2);
+  border-color: rgba(0, 0, 0, 0.35);
+  box-shadow: none;
 }
 
 input.error {
-  border-color: #dc3545;
-}
-
-input.error:focus {
-  box-shadow: 0 0 0 3px rgba(220, 53, 69, 0.2);
+  border-color: rgba(157, 47, 38, 0.55);
 }
 
 .hint {
   margin-top: 4px;
-  font-size: 12px;
-  color: #888;
+  font-size: 11px;
+  color: #8a8a93;
 }
 
 .error {
   margin-top: 4px;
   font-size: 12px;
-  color: #dc3545;
+  color: #9d2f26;
   min-height: 18px;
 }
 
-/* Buttons */
+/* Buttons — primary full-width ink; secondary borderless ghost below. */
 .button-row {
   display: flex;
-  gap: 12px;
-  margin-top: 20px;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 16px;
 }
 
 button {
-  padding: 10px 20px;
-  font-size: 14px;
-  font-weight: 500;
+  font-family: inherit;
   border: none;
-  border-radius: 4px;
   cursor: pointer;
-  transition: background-color 0.15s, opacity 0.15s;
+  transition: background-color 0.15s, color 0.15s, opacity 0.15s;
 }
 
 button:disabled {
-  opacity: 0.6;
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
 button.primary {
-  flex: 1;
-  background-color: #4a90d9;
+  width: 100%;
+  padding: 13px;
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1;
   color: #fff;
+  background-color: #17171a;
+  border-radius: 9px;
+  text-align: center;
 }
 
 button.primary:hover:not(:disabled) {
-  background-color: #357abd;
-}
-
-button.primary:active:not(:disabled) {
-  background-color: #2a5f8f;
+  background-color: #000;
 }
 
 button.back,
 button.cancel,
 button.secondary {
-  background-color: #e9ecef;
-  color: #495057;
+  width: 100%;
+  padding: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  color: #6b6b74;
+  background: none;
+  text-align: center;
 }
 
 button.back:hover:not(:disabled),
 button.cancel:hover:not(:disabled),
 button.secondary:hover:not(:disabled) {
-  background-color: #dee2e6;
-}
-
-button.back:active:not(:disabled),
-button.cancel:active:not(:disabled),
-button.secondary:active:not(:disabled) {
-  background-color: #ced4da;
+  color: #17171a;
+  background: none;
 }
 
 /* Links */
 .link-row {
-  margin-top: 16px;
+  margin-top: 12px;
   text-align: center;
 }
 
-.link-row a {
-  color: #4a90d9;
+.link-row a,
+button.linkish {
+  color: #1f6feb;
+  background: none;
+  border: none;
+  padding: 0;
   text-decoration: none;
-  font-size: 13px;
+  font-size: 12px;
+  cursor: pointer;
 }
 
-.link-row a:hover {
+.link-row a:hover,
+button.linkish:hover {
   text-decoration: underline;
 }
 
-/* Email list for pick screen */
+/* Bottom links row on the pick screen: add-email left, cancel right. */
+.links-split {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 12px;
+}
+
+.links-split button.cancel {
+  width: auto;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+/* Email list (pick screen): radio card. */
 .email-list {
   list-style: none;
   padding: 0;
-  margin: 0 0 16px 0;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  /* Grow to use the popup's height instead of scrolling at a fixed cap, so a
-     longer email list fills the available space rather than leaving it blank. */
-  max-height: 58vh;
+  margin: 0 0 6px 0;
+  border: 1px solid rgba(0, 0, 0, 0.11);
+  border-radius: 9px;
   overflow-y: auto;
+  max-height: 46vh;
 }
 
 .email-list li {
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
 }
 
 .email-list li:last-child {
@@ -217,23 +306,46 @@ button.secondary:active:not(:disabled) {
 .email-list label {
   display: flex;
   align-items: center;
-  padding: 12px;
+  gap: 10px;
+  padding: 12px 14px;
+  margin: 0;
   cursor: pointer;
+  font-size: 13px;
+  color: #17171a;
   transition: background-color 0.1s;
 }
 
 .email-list label:hover {
-  background-color: #f8f9fa;
+  background-color: #faf9f7;
 }
 
+.email-list label:has(input:checked) {
+  background-color: #f4f6fb;
+}
+
+/* Custom radio: quiet ring, 5px ink ring when selected. */
 .email-list input[type="radio"] {
-  margin-right: 12px;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1.5px solid rgba(0, 0, 0, 0.3);
+  border-radius: 999px;
+  flex: none;
+  cursor: pointer;
+}
+
+.email-list input[type="radio"]:checked {
+  border: 5px solid #17171a;
 }
 
 .email-list .email-text {
   flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, Menlo, monospace;
   font-weight: normal;
-  color: #333;
+  color: #17171a;
   word-break: break-all;
 }
 
@@ -241,22 +353,183 @@ button.secondary:active:not(:disabled) {
 .email-list .email-sub {
   display: block;
   margin-top: 2px;
-  font-size: 12px;
-  color: #888;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 11px;
+  color: #8a8a93;
   font-weight: normal;
+}
+
+/* Agents section: collapsed by default under the user addresses. */
+.agents-section {
+  border: 1px solid rgba(0, 0, 0, 0.09);
+  border-radius: 9px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.agents-section[hidden] {
+  display: none;
+}
+
+#agents-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  width: 100%;
+  text-align: left;
+  background: #faf9f7;
+  font-size: 12px;
+  font-weight: 500;
+  color: #6b6b74;
+}
+
+#agents-toggle:hover {
+  background: #f4f3f0;
+}
+
+#agents-toggle .count {
+  font-size: 11px;
+  font-weight: 400;
+  color: #8a8a93;
+}
+
+#agents-toggle .chev {
+  margin-left: auto;
+  font-size: 11px;
+  color: #8a8a93;
+}
+
+.agents-section ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: none;
+}
+
+.agents-section.open ul {
+  display: block;
+}
+
+.agents-section li {
+  border-top: 1px solid rgba(0, 0, 0, 0.07);
+}
+
+.agents-section label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  margin: 0;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: #17171a;
+}
+
+.agents-section label:hover {
+  background-color: #faf9f7;
+}
+
+.agents-section label:has(input:checked) {
+  background-color: #f4f6fb;
+}
+
+.agents-section input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1.5px solid rgba(0, 0, 0, 0.3);
+  border-radius: 999px;
+  flex: none;
+  cursor: pointer;
+}
+
+.agents-section input[type="radio"]:checked {
+  border: 5px solid #17171a;
+}
+
+.agents-section .agent-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.agents-section .agent-addr {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  color: #8a8a93;
+  word-break: break-all;
+}
+
+/* "the site will see it's an agent acting for you" — selected row only. */
+.agents-section .agent-note {
+  display: none;
+  font-size: 11px;
+  color: #8a8a93;
+}
+
+.agents-section label:has(input:checked) .agent-note {
+  display: block;
+}
+
+/* SBO consent request card */
+.consent-card {
+  border: 1px solid rgba(0, 0, 0, 0.11);
+  border-radius: 9px;
+  padding: 12px 13px;
+  background: #faf9f7;
+  margin-bottom: 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #33333a;
+}
+
+.consent-card b {
+  color: #17171a;
+}
+
+/* FedCM opt-in row (moved into the active screen by dialog.js) */
+#fedcm-optin-row {
+  padding: 12px 0 2px;
+  border-top: 1px solid rgba(0, 0, 0, 0.07);
+  margin-top: 12px;
+}
+
+#fedcm-optin-row label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: normal;
+  cursor: pointer;
+  font-size: 12px;
+  color: #6b6b74;
+  margin: 0;
+}
+
+#fedcm-optin-row input[type="checkbox"] {
+  accent-color: #17171a;
+  margin: 0;
+}
+
+#fedcm-optin-note {
+  margin: 7px 0 0 24px;
+  font-size: 11px;
+  color: #8a8a93;
+  line-height: 1.4;
 }
 
 /* Loading screen */
 #loading .center {
-  padding: 48px 24px;
+  padding: 28px 0 20px;
 }
 
 .spinner {
-  width: 40px;
-  height: 40px;
-  margin: 0 auto 16px;
-  border: 3px solid #e9ecef;
-  border-top-color: #4a90d9;
+  width: 36px;
+  height: 36px;
+  margin: 0 auto 14px;
+  border: 3px solid rgba(0, 0, 0, 0.08);
+  border-top-color: #17171a;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -265,21 +538,37 @@ button.secondary:active:not(:disabled) {
   to { transform: rotate(360deg); }
 }
 
-/* Success screen */
+/* Success / error discs */
 .checkmark {
-  width: 60px;
-  height: 60px;
-  margin: 0 auto 16px;
-  background-color: #28a745;
-  color: #fff;
-  font-size: 32px;
-  line-height: 60px;
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 14px;
+  background-color: #e6f4ea;
+  color: #2f855a;
+  font-size: 26px;
+  line-height: 52px;
   border-radius: 50%;
+}
+
+.errmark {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 14px;
+  background-color: #fdf6f5;
+  color: #9d2f26;
+  font-size: 24px;
+  line-height: 52px;
+  border-radius: 50%;
+}
+
+/* Success/error screens: headings centered without the brand-row offset */
+.center h2 {
+  margin-bottom: 6px;
 }
 
 /* RP info */
 .rp-name {
-  font-weight: 500;
+  font-weight: 600;
 }
 
 /* Responsive */
@@ -292,15 +581,6 @@ button.secondary:active:not(:disabled) {
 
   .content {
     padding: 20px;
-  }
-
-  .button-row {
-    flex-direction: column;
-  }
-
-  button.back,
-  button.cancel {
-    order: 1;
   }
 }
 

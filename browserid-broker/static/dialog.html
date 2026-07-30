@@ -4,6 +4,7 @@
   Based on Mozilla Persona (MPL 2.0) — the original account-based login flow,
   completing on the device-cert model (device/config cert issuance ->
   access-cert mint -> config-signed warrant -> 4-object presentation).
+  Restyled 2026-07 to the account-redesign design language.
 -->
 <html lang="en">
 <head>
@@ -16,16 +17,22 @@
   <div id="dialog">
     <!-- Loading Screen -->
     <section id="loading" class="screen active">
-      <div class="center">
-        <div class="spinner"></div>
-        <p id="loading-text">Loading...</p>
+      <div class="content">
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <div class="center">
+          <div class="spinner"></div>
+          <p id="loading-text" style="margin-bottom:0">Loading...</p>
+        </div>
       </div>
     </section>
 
     <!-- Email Entry Screen -->
     <section id="email-screen" class="screen">
       <div class="content">
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
         <h2>Sign in to <span class="rp-name"></span></h2>
+        <p>Use any email address — we'll set you up if you're new.
+           One account works everywhere browserid does.</p>
 
         <form id="email-form">
           <div class="form-group">
@@ -50,7 +57,8 @@
     <!-- Password Entry Screen (for existing users) -->
     <section id="password-screen" class="screen">
       <div class="content">
-        <h2>Enter your password</h2>
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <h2>Welcome back</h2>
         <p class="email-display"></p>
 
         <form id="password-form">
@@ -64,11 +72,11 @@
           </div>
 
           <div class="button-row">
-            <button type="submit" class="primary">Sign In</button>
+            <button type="submit" class="primary">Sign in</button>
             <button type="button" class="back">Back</button>
           </div>
 
-          <p class="link-row">
+          <p class="link-row" style="margin-bottom:0">
             <a href="#" id="forgot-password-link">Forgot your password?</a>
           </p>
         </form>
@@ -78,48 +86,52 @@
     <!-- Create Account Screen (for new users) -->
     <section id="create-screen" class="screen">
       <div class="content">
-        <h2>Create your account</h2>
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <h2>You're new here — welcome</h2>
+        <p style="margin-bottom:4px">This creates your browserid account for</p>
         <p class="email-display"></p>
 
         <form id="create-form">
           <div class="form-group">
-            <label for="create-password">Password</label>
+            <label for="create-password">Choose a password</label>
             <input type="password" id="create-password" name="password"
-                   placeholder="Password (8+ characters)"
+                   placeholder="8+ characters"
                    autocomplete="new-password"
                    minlength="8"
                    maxlength="80"
                    required>
-            <div class="hint">Must be 8-80 characters</div>
             <div class="error" id="create-password-error"></div>
           </div>
 
           <div class="form-group">
-            <label for="confirm-password">Confirm Password</label>
+            <label for="confirm-password">Confirm password</label>
             <input type="password" id="confirm-password" name="confirm-password"
-                   placeholder="Confirm password"
+                   placeholder="Same again"
                    autocomplete="new-password"
                    required>
             <div class="error" id="confirm-password-error"></div>
           </div>
 
           <div class="button-row">
-            <button type="submit" class="primary">Create Account</button>
+            <button type="submit" class="primary">Create account</button>
             <button type="button" class="back">Back</button>
           </div>
         </form>
       </div>
     </section>
 
-    <!-- Verification Code Screen -->
+    <!-- Verification Code Screen (create-account / SMTP-fallback path) -->
     <section id="verify-screen" class="screen">
       <div class="content">
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
         <h2>Check your email</h2>
-        <p>We sent a verification code to <span class="email-display"></span></p>
+        <p>Your address has no email provider that vouches for it directly, so we
+           verify it the classic way — we sent a code to
+           <span class="email-display"></span>.</p>
 
         <form id="verify-form">
           <div class="form-group">
-            <label for="verification-code">Verification Code</label>
+            <label for="verification-code">Verification code</label>
             <input type="text" id="verification-code" name="code"
                    placeholder="000000"
                    pattern="[0-9]{6}"
@@ -141,6 +153,7 @@
     <!-- Password Reset - Enter Email Screen -->
     <section id="reset-email-screen" class="screen">
       <div class="content">
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
         <h2>Reset your password</h2>
         <p>Enter your email address and we'll send you a reset code.</p>
 
@@ -155,7 +168,7 @@
           </div>
 
           <div class="button-row">
-            <button type="submit" class="primary">Send Reset Code</button>
+            <button type="submit" class="primary">Send reset code</button>
             <button type="button" class="back">Back</button>
           </div>
         </form>
@@ -165,12 +178,13 @@
     <!-- Password Reset - Enter Code & New Password Screen -->
     <section id="reset-password-screen" class="screen">
       <div class="content">
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
         <h2>Set your password</h2>
-        <p>We emailed you a 6-digit code to confirm it’s you. Enter it and choose a password.</p>
+        <p>We emailed a 6-digit code to confirm it&rsquo;s you. Enter it and choose a password.</p>
 
         <form id="reset-password-form">
           <div class="form-group">
-            <label for="reset-code">Reset Code</label>
+            <label for="reset-code">Reset code</label>
             <input type="text" id="reset-code" name="code"
                    placeholder="000000"
                    pattern="[0-9]{6}"
@@ -182,9 +196,9 @@
           </div>
 
           <div class="form-group">
-            <label for="new-password">New Password</label>
+            <label for="new-password">New password</label>
             <input type="password" id="new-password" name="password"
-                   placeholder="New password (8+ characters)"
+                   placeholder="8+ characters"
                    autocomplete="new-password"
                    minlength="8"
                    maxlength="80"
@@ -193,31 +207,42 @@
           </div>
 
           <div class="button-row">
-            <button type="submit" class="primary">Set Password</button>
+            <button type="submit" class="primary">Set password</button>
             <button type="button" class="back">Back</button>
           </div>
         </form>
       </div>
     </section>
 
-    <!-- Email Selection Screen (for signed-in users) -->
+    <!-- Email Selection Screen (for signed-in users). User addresses as a
+         radio card; agent identities in a collapsed section below — one radio
+         group spans both lists. -->
     <section id="pick-email-screen" class="screen">
       <div class="content">
-        <h2>Sign in to <span class="rp-name"></span></h2>
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <h2 style="margin-bottom:14px">Sign in to <span class="rp-name"></span></h2>
 
         <form id="pick-email-form">
           <ul id="email-list" class="email-list">
-            <!-- Email options will be populated by JS -->
+            <!-- User addresses populated by JS -->
           </ul>
 
-          <div class="button-row">
-            <button type="submit" class="primary">Sign In</button>
-            <button type="button" class="cancel">Cancel</button>
+          <div id="agents-section" class="agents-section" hidden>
+            <button type="button" id="agents-toggle">Sign in as one of your agents
+              <span class="count" id="agents-count"></span>
+              <span class="chev">▸</span>
+            </button>
+            <ul id="agent-list">
+              <!-- Agent identities populated by JS -->
+            </ul>
           </div>
 
-          <p class="link-row">
-            <a href="#" id="add-email-link">Use a different email</a>
-          </p>
+          <button type="submit" class="primary" style="margin-top:6px">Sign in</button>
+
+          <div class="links-split">
+            <a href="#" id="add-email-link" class="link-row" style="margin:0">Use a different email</a>
+            <button type="button" class="cancel">Cancel</button>
+          </div>
         </form>
       </div>
     </section>
@@ -225,8 +250,9 @@
     <!-- Add Email Screen (for adding email to existing account) -->
     <section id="add-email-screen" class="screen">
       <div class="content">
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
         <h2>Add a new email</h2>
-        <p>Add another email address to your account.</p>
+        <p>Add another address to your account.</p>
 
         <form id="add-email-form">
           <div class="form-group">
@@ -241,7 +267,7 @@
           </div>
 
           <div class="button-row">
-            <button type="submit" class="primary">Add Email</button>
+            <button type="submit" class="primary">Add email</button>
             <button type="button" class="back-to-pick">Back</button>
           </div>
         </form>
@@ -251,12 +277,13 @@
     <!-- Add Email Verification Screen -->
     <section id="add-email-verify-screen" class="screen">
       <div class="content">
-        <h2>Verify your email</h2>
-        <p>We sent a verification code to <span class="new-email-display"></span></p>
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <h2>Check your email</h2>
+        <p>We sent a verification code to <span class="new-email-display email-display"></span>.</p>
 
         <form id="add-email-verify-form">
           <div class="form-group">
-            <label for="add-email-code">Verification Code</label>
+            <label for="add-email-code">Verification code</label>
             <input type="text" id="add-email-code" name="code"
                    placeholder="000000"
                    pattern="[0-9]{6}"
@@ -278,12 +305,15 @@
     <!-- Primary Transition Screen (for secondary->primary transition) -->
     <section id="primary-transition-screen" class="screen">
       <div class="content">
-        <h2>Sign in with your email provider</h2>
-        <p>Your email <strong class="email-display"></strong> can now be verified directly by your email provider.</p>
-        <p>Click continue to sign in with <strong class="idp-name"></strong>.</p>
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <h2>Your email provider vouches for you</h2>
+        <p><span class="email-display"></span> can be verified directly by
+           <strong class="idp-name"></strong> — no password with us needed.</p>
+        <div class="callout">A window from <strong class="idp-name"></strong> will open
+          so you can sign in there. We never see that password.</div>
 
         <div class="button-row">
-          <button type="button" id="continue-to-primary" class="primary">Continue</button>
+          <button type="button" id="continue-to-primary" class="primary">Continue to <span class="idp-name"></span></button>
           <button type="button" class="cancel">Cancel</button>
         </div>
       </div>
@@ -294,8 +324,10 @@
          tap). The button opens the popup inside its own fresh gesture. -->
     <section id="primary-auth-continue-screen" class="screen">
       <div class="content">
-        <h2>Sign in with your email provider</h2>
-        <p>Tap continue to open <strong class="idp-name"></strong> and sign in.</p>
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <h2>One more tap</h2>
+        <p>Your browser blocked the sign-in window. Tap continue to open
+           <strong class="idp-name"></strong> and finish signing in.</p>
 
         <div class="button-row">
           <button type="button" id="continue-primary-auth" class="primary">Continue</button>
@@ -307,10 +339,11 @@
     <!-- SBO Signing Consent Screen (typed signing extension) -->
     <section id="sbo-consent-screen" class="screen">
       <div class="content">
-        <h2>Allow posting as you</h2>
-        <p><strong class="rp-name"></strong> wants to create and sign posts on the
-           SBO network as <strong class="email-display"></strong>.</p>
-        <p>You can revoke this anytime by signing out of this site.</p>
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <h2 style="margin-bottom:14px">Allow posting as you?</h2>
+        <div class="consent-card"><b class="rp-name"></b> wants to create and sign posts
+          on the SBO network as <span class="email-display"></span>.</div>
+        <p class="muted-note">You can take this back anytime by signing out of the site.</p>
 
         <div class="button-row">
           <button type="button" id="sbo-consent-allow" class="primary">Allow</button>
@@ -321,21 +354,28 @@
 
     <!-- Success Screen -->
     <section id="success-screen" class="screen">
-      <div class="content center">
-        <div class="checkmark">&#10003;</div>
-        <h2>Signed in!</h2>
-        <p>Returning to <span class="rp-name"></span>...</p>
+      <div class="content">
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <div class="center">
+          <div class="checkmark">&#10003;</div>
+          <h2 id="success-heading">Signed in!</h2>
+          <p style="margin-bottom:8px">Returning to <b class="rp-name"></b>...</p>
+        </div>
       </div>
     </section>
 
     <!-- Error Screen -->
     <section id="error-screen" class="screen">
-      <div class="content center">
-        <h2>Something went wrong</h2>
-        <p class="error-message"></p>
-        <div class="button-row">
-          <button type="button" class="primary try-again">Try Again</button>
-          <button type="button" class="cancel">Cancel</button>
+      <div class="content">
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <div class="center">
+          <div class="errmark">!</div>
+          <h2>Something went wrong</h2>
+          <p class="error-message"></p>
+          <div class="button-row">
+            <button type="button" class="primary try-again">Try again</button>
+            <button type="button" class="cancel">Cancel</button>
+          </div>
         </div>
       </div>
     </section>
@@ -343,12 +383,12 @@
     <!-- FedCM opt-in: shown across sign-in screens only when the RP's
          include.js signals FedCM support. Ticking it banks a FedCM grant after
          sign-in so future visits log in silently. -->
-    <div id="fedcm-optin-row" style="display:none;padding:10px 0 2px;border-top:1px solid rgba(128,128,128,.2);margin-top:8px">
-      <label style="display:flex;gap:8px;align-items:center;font-weight:normal;cursor:pointer;font-size:.88em">
+    <div id="fedcm-optin-row" style="display:none">
+      <label>
         <input type="checkbox" id="fedcm-optin" checked>
         <span>Automatically sign in to this site next time</span>
       </label>
-      <p id="fedcm-optin-note" style="display:none;margin:7px 0 0 26px;font-size:.8em;color:#666;line-height:1.4">
+      <p id="fedcm-optin-note" style="display:none">
         Just after you sign in, your browser will ask you to confirm — tap <strong>Continue</strong> to finish.
       </p>
     </div>
