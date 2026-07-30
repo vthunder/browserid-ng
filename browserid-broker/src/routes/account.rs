@@ -72,6 +72,10 @@ where
         return Err(BrokerError::EmailAlreadyExists);
     }
 
+    // The SMTP loop only proves ownership where the mailbox is the
+    // authority (browserid-ng-tsqk).
+    super::email::require_smtp_authority(&state, &req.email).await?;
+
     // One account-verification email per address per cooldown.
     if let Err(secs) = state.throttle_email(&req.email, "new_account").await {
         return Err(BrokerError::EmailRateLimited(secs));

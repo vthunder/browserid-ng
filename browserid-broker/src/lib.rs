@@ -4,6 +4,7 @@
 //! native BrowserID support. Similar to Mozilla's login.persona.org.
 
 pub mod analytics;
+pub mod authority;
 pub mod config;
 pub mod crypto;
 pub mod dns_fetcher;

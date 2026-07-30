@@ -47,6 +47,36 @@ impl EmailType {
     }
 }
 
+/// How the broker verified ownership of a secondary identity
+/// (browserid-ng-tsqk, the claim-time authority hierarchy). Recorded at
+/// claim time and enforced from stored state, never re-derived per request:
+/// an SMTP proof covers exactly one mailbox, an atproto proof covers every
+/// label at the handle domain. Meaningless for primary/agent identities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProofMethod {
+    /// The email verification loop proved the specific mailbox.
+    Smtp,
+    /// An atproto handle attestation proved the whole domain.
+    Atproto,
+}
+
+impl ProofMethod {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProofMethod::Smtp => "smtp",
+            ProofMethod::Atproto => "atproto",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "smtp" => Some(ProofMethod::Smtp),
+            "atproto" => Some(ProofMethod::Atproto),
+            _ => None,
+        }
+    }
+}
+
 /// Unique user identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserId(pub u64);
@@ -91,6 +121,15 @@ pub struct Email {
     /// backfilled from `display_name`. `None` = services fall back to the
     /// email local-part.
     pub public_name: Option<String>,
+    /// How the broker verified this identity (browserid-ng-tsqk). Every
+    /// pre-hierarchy email is grandfathered as `Smtp` by the migration
+    /// default, which the pre-flight confirmed is accurate for all
+    /// production identities.
+    pub proof: ProofMethod,
+    /// The subject that held the proof — for `Atproto`, the DID the handle
+    /// resolved to at claim time. What lets a cold re-claim distinguish
+    /// "same holder signing in" from "the handle changed hands".
+    pub proof_subject: Option<String>,
 }
 
 /// A pending email verification

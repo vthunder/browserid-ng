@@ -8,7 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    DeviceCertRecord, Email, EmailType, Namespace, PendingVerification, Session, SessionId, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
+    DeviceCertRecord, Email, EmailType, Namespace, PendingVerification, ProofMethod, Session, SessionId, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, User, UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
@@ -136,6 +136,8 @@ impl UserStore for InMemoryUserStore {
                 parent_email: None,
                 display_name: None,
                 public_name: None,
+                proof: ProofMethod::Smtp,
+                proof_subject: None,
             },
         );
         Ok(())
@@ -210,6 +212,20 @@ impl UserStore for InMemoryUserStore {
             }
             None => Err(BrokerError::EmailNotFound),
         }
+    }
+
+    fn set_email_proof(
+        &self,
+        email: &str,
+        proof: ProofMethod,
+        subject: Option<&str>,
+    ) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let mut emails = self.emails.write().unwrap();
+        let record = emails.get_mut(&normalized).ok_or(BrokerError::EmailNotFound)?;
+        record.proof = proof;
+        record.proof_subject = subject.map(str::to_string);
+        Ok(())
     }
 
     fn set_email_public_name(&self, email: &str, public_name: Option<&str>) -> StoreResult<()> {

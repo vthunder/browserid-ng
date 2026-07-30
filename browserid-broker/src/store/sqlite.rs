@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    DeviceCertRecord, Email, EmailType, Namespace, PendingVerification, Session,
+    DeviceCertRecord, Email, EmailType, Namespace, PendingVerification, ProofMethod, Session,
     SessionId, SessionStore, StoreResult, User, UserId, UserStore, VerificationType, WarrantRecord,
     WarrantRequestRecord, WarrantRequestStatus,
 };
@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 21;
+const SCHEMA_VERSION: i32 = 22;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -125,6 +125,9 @@ impl SqliteStore {
             }
             if current_version < 21 {
                 Self::migrate_v21(conn)?;
+            }
+            if current_version < 22 {
+                Self::migrate_v22(conn)?;
             }
 
             // Update schema version
@@ -624,6 +627,19 @@ impl SqliteStore {
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v22(conn: &Connection) -> Result<(), BrokerError> {
+        // Proof method (browserid-ng-tsqk): how the broker verified a
+        // secondary identity. Existing rows are grandfathered as 'smtp' —
+        // confirmed accurate for production by the 2026-07-30 pre-flight
+        // (no verified domain resolves as an atproto handle).
+        conn.execute_batch(
+            "ALTER TABLE emails ADD COLUMN proof TEXT NOT NULL DEFAULT 'smtp';
+             ALTER TABLE emails ADD COLUMN proof_subject TEXT;",
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → DeviceCertRecord mapping (DC Phase 3/4)
@@ -857,7 +873,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn
-            .prepare("SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name, public_name FROM emails WHERE user_id = ?1")
+            .prepare("SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name, public_name, proof, proof_subject FROM emails WHERE user_id = ?1")
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
 
         let emails = stmt
@@ -884,6 +900,9 @@ impl UserStore for SqliteStore {
                     parent_email: row.get::<_, Option<String>>(6)?,
                     display_name: row.get::<_, Option<String>>(7)?,
                     public_name: row.get::<_, Option<String>>(8)?,
+                    proof: ProofMethod::from_str(&row.get::<_, String>(9)?)
+                        .unwrap_or(ProofMethod::Smtp),
+                    proof_subject: row.get::<_, Option<String>>(10)?,
                 })
             })
             .map_err(|e| BrokerError::Internal(e.to_string()))?
@@ -968,6 +987,26 @@ impl UserStore for SqliteStore {
             .execute(
                 "UPDATE emails SET public_name = ?1 WHERE email = ?2",
                 params![public_name, normalized],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::EmailNotFound);
+        }
+        Ok(())
+    }
+
+    fn set_email_proof(
+        &self,
+        email: &str,
+        proof: ProofMethod,
+        subject: Option<&str>,
+    ) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE emails SET proof = ?1, proof_subject = ?2 WHERE email = ?3",
+                params![proof.as_str(), subject, normalized],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         if rows == 0 {
@@ -1176,7 +1215,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         conn.query_row(
-            "SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name, public_name FROM emails WHERE email = ?1",
+            "SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name, public_name, proof, proof_subject FROM emails WHERE email = ?1",
             params![normalized],
             |row| {
                 let email: String = row.get(0)?;
@@ -1201,6 +1240,9 @@ impl UserStore for SqliteStore {
                     parent_email: row.get::<_, Option<String>>(6)?,
                     display_name: row.get::<_, Option<String>>(7)?,
                     public_name: row.get::<_, Option<String>>(8)?,
+                    proof: ProofMethod::from_str(&row.get::<_, String>(9)?)
+                        .unwrap_or(ProofMethod::Smtp),
+                    proof_subject: row.get::<_, Option<String>>(10)?,
                 })
             },
         )
@@ -1964,6 +2006,15 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn set_email_public_name(&self, email: &str, public_name: Option<&str>) -> StoreResult<()> {
         (**self).set_email_public_name(email, public_name)
+    }
+
+    fn set_email_proof(
+        &self,
+        email: &str,
+        proof: ProofMethod,
+        subject: Option<&str>,
+    ) -> StoreResult<()> {
+        (**self).set_email_proof(email, proof, subject)
     }
 
     fn create_pending(&self, pending: PendingVerification) -> StoreResult<()> {

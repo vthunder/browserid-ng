@@ -191,6 +191,58 @@ impl DnsFetcher {
 
         classify_response(&response, domain)
     }
+
+    /// Does `domain` publish a usable MX record? Step 3 of the claim-time
+    /// authority hierarchy (browserid-ng-tsqk): a no-primary, no-handle
+    /// domain may only take the SMTP verification loop if it actually
+    /// accepts mail.
+    ///
+    /// `Ok(true)`/`Ok(false)` are definitive answers; `Err` is a transport
+    /// failure carrying no signal, and the caller decides how to degrade
+    /// (the authority checker fails open). No DNSSEC requirement here — SMTP
+    /// itself offers none, so demanding it of the routing decision would
+    /// protect nothing.
+    pub async fn lookup_mx(&self, domain: &str) -> Result<bool, String> {
+        let name = Name::from_str(&format!("{}.", domain))
+            .map_err(|e| format!("invalid domain {domain}: {e}"))?;
+        let client = self.connect().await?;
+
+        let mut query = Query::new();
+        query.set_name(name);
+        query.set_query_type(RecordType::MX);
+        query.set_query_class(DNSClass::IN);
+
+        let mut message = Message::new();
+        message.set_id(rand::random());
+        message.set_message_type(MessageType::Query);
+        message.set_op_code(OpCode::Query);
+        message.set_recursion_desired(true);
+        message.add_query(query);
+
+        let mut response_stream = client.send(message);
+        let response = match response_stream.next().await {
+            Some(Ok(r)) => r,
+            Some(Err(e)) => return Err(format!("MX lookup failed for {domain}: {e}")),
+            None => return Err(format!("no MX response for {domain}")),
+        };
+        classify_mx_response(&response)
+    }
+}
+
+/// Interpret an MX response. NXDomain and an empty answer are the definitive
+/// "does not accept mail"; a null MX (`MX 0 .`, RFC 7505) is the domain
+/// *saying* it accepts no mail and counts the same way. Anything that is not
+/// a definitive answer is an error, never a silent false — refusing a claim
+/// wants a real "no", not a resolver hiccup.
+fn classify_mx_response(response: &Message) -> Result<bool, String> {
+    match response.response_code() {
+        ResponseCode::NoError | ResponseCode::NXDomain => {}
+        other => return Err(format!("MX query answered {other}")),
+    }
+    Ok(response.answers().iter().any(|record| match record.data() {
+        Some(RData::MX(mx)) => !mx.exchange().is_root(),
+        _ => false,
+    }))
 }
 
 /// Classify a DNS response into a BrowserID lookup result
@@ -393,6 +445,56 @@ mod tests {
             message.add_answer(Record::from_rdata(name.clone(), 300, rdata));
         }
         message
+    }
+
+    // --- classify_mx_response: step 3 of the authority hierarchy ---
+
+    fn mx_response(code: ResponseCode, exchanges: &[&str]) -> Message {
+        use hickory_client::proto::rr::rdata::MX;
+        let mut message = Message::new();
+        message.set_message_type(MessageType::Response);
+        message.set_response_code(code);
+        let name = Name::from_str("example.com.").unwrap();
+        for (i, ex) in exchanges.iter().enumerate() {
+            let rdata = RData::MX(MX::new(i as u16, Name::from_str(ex).unwrap()));
+            message.add_answer(Record::from_rdata(name.clone(), 300, rdata));
+        }
+        message
+    }
+
+    #[test]
+    fn mx_present_is_definitively_true() {
+        assert_eq!(
+            classify_mx_response(&mx_response(ResponseCode::NoError, &["mx.example.com."])),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn mx_absent_and_nxdomain_are_definitively_false() {
+        assert_eq!(classify_mx_response(&mx_response(ResponseCode::NoError, &[])), Ok(false));
+        assert_eq!(classify_mx_response(&mx_response(ResponseCode::NXDomain, &[])), Ok(false));
+    }
+
+    /// RFC 7505: `MX 0 .` is the domain declaring it accepts no mail — that
+    /// is a "no", not a usable exchange.
+    #[test]
+    fn null_mx_reads_as_no_mail() {
+        assert_eq!(classify_mx_response(&mx_response(ResponseCode::NoError, &["."])), Ok(false));
+        // …but a null MX alongside a real one does not mask it.
+        assert_eq!(
+            classify_mx_response(&mx_response(ResponseCode::NoError, &[".", "mx.example.com."])),
+            Ok(true)
+        );
+    }
+
+    /// A resolver failure is not a definitive "no mail" — it must surface as
+    /// an error so the authority checker can fail open instead of refusing
+    /// legitimate claims during an outage.
+    #[test]
+    fn mx_servfail_is_an_error_not_a_no() {
+        assert!(classify_mx_response(&mx_response(ResponseCode::ServFail, &[])).is_err());
+        assert!(classify_mx_response(&mx_response(ResponseCode::Refused, &[])).is_err());
     }
 
     #[test]

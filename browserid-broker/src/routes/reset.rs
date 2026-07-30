@@ -47,6 +47,12 @@ where
         .get_user_by_email(&req.email)?
         .ok_or(BrokerError::EmailNotFound)?;
 
+    // A mailed reset code is an account-takeover primitive on a domain whose
+    // authority is not the mailbox (browserid-ng-tsqk): whoever routes mail
+    // for an atproto handle domain must not be able to reset the handle
+    // owner's password.
+    super::email::require_smtp_authority(&state, &req.email).await?;
+
     // One reset email per address per cooldown (anti email-bombing / code spam).
     if let Err(secs) = state.throttle_email(&req.email, "reset").await {
         return Err(BrokerError::EmailRateLimited(secs));

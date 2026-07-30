@@ -252,6 +252,38 @@ where
     Ok(Json(SetParentResponse { success: true }))
 }
 
+/// Gate on the claim-time authority hierarchy (browserid-ng-tsqk): a
+/// verification code may only be mailed to a domain whose authority IS the
+/// mailbox. A resolved atproto handle domain is proven at the bridge — a
+/// mailbox there is not the owner — and a domain with no MX cannot prove
+/// anything by mail. Every route that stages an outbound
+/// verification/reset email must pass here first.
+pub(crate) async fn require_smtp_authority<U, S, E>(
+    state: &AppState<U, S, E>,
+    email: &str,
+) -> Result<(), BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let domain = email
+        .rsplit('@')
+        .next()
+        .filter(|d| !d.is_empty() && *d != email)
+        .ok_or(BrokerError::InvalidEmail)?
+        .to_ascii_lowercase();
+    match state.authority.no_primary_authority(&domain).await {
+        crate::authority::SecondaryAuthority::Smtp => Ok(()),
+        crate::authority::SecondaryAuthority::Atproto { .. } => {
+            Err(BrokerError::DomainProvenByAtproto(domain))
+        }
+        crate::authority::SecondaryAuthority::Unprovable => {
+            Err(BrokerError::DomainUnprovable(domain))
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct StageEmailRequest {
     pub email: String,
@@ -285,6 +317,10 @@ where
     if state.user_store.get_user_by_email(&req.email)?.is_some() {
         return Err(BrokerError::EmailAlreadyExists);
     }
+
+    // The SMTP loop only proves ownership where the mailbox is the
+    // authority (browserid-ng-tsqk).
+    require_smtp_authority(&state, &req.email).await?;
 
     // One verification email per address per cooldown.
     if let Err(secs) = state.throttle_email(&req.email, "add_email").await {
@@ -465,6 +501,18 @@ pub struct AddressInfoResponse {
     /// support them).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_device_auth: Option<String>,
+    /// Secondary (no-primary) domains only: which proof the fallback demands
+    /// before issuing for this domain — `"smtp"` (the email verification
+    /// loop), `"atproto"` (the domain is a resolved handle binding; ownership
+    /// is proven via atproto OAuth at the bridge), or `"none"` (no proof
+    /// method; claims are refused). The claim-time authority hierarchy,
+    /// browserid-ng-tsqk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof: Option<String>,
+    /// Where the atproto proof happens (the bridge's claim page), when
+    /// `proof == "atproto"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim: Option<String>,
 }
 
 /// Determine state based on password_known, last_used_as, current_type
@@ -599,6 +647,21 @@ where
         }
     };
 
+    // For a no-primary domain, report which proof the hierarchy demands so
+    // the dialog can route the claim (SMTP loop vs. the bridge's atproto
+    // hop) without re-deriving the decision client-side.
+    let (proof, claim) = if addr_type == "secondary" {
+        match state.authority.no_primary_authority(domain).await {
+            crate::authority::SecondaryAuthority::Atproto { .. } => {
+                (Some("atproto".to_string()), state.authority.claim_url())
+            }
+            crate::authority::SecondaryAuthority::Smtp => (Some("smtp".to_string()), None),
+            crate::authority::SecondaryAuthority::Unprovable => (Some("none".to_string()), None),
+        }
+    } else {
+        (None, None)
+    };
+
     // Look up email in database
     let email_record = state.user_store.get_email(&normalized)?;
 
@@ -622,6 +685,8 @@ where
         device_auth,
         access_mint,
         agent_device_auth,
+        proof,
+        claim,
     }))
 }
 

@@ -97,6 +97,16 @@ pub enum BrokerError {
 
     #[error("Polling too fast")]
     PollTooFast,
+
+    /// The domain's claim-time authority is atproto (browserid-ng-tsqk): its
+    /// identities are proven at the bridge via atproto OAuth, never by
+    /// mailing a code — a mailbox at a handle domain is not the owner.
+    #[error("{0} is a Bluesky handle — sign in with it instead of a verification email")]
+    DomainProvenByAtproto(String),
+
+    /// No proof method for the domain: no primary, no handle binding, no MX.
+    #[error("{0} does not accept mail, so ownership of an address there cannot be verified")]
+    DomainUnprovable(String),
 }
 
 impl IntoResponse for BrokerError {
@@ -125,6 +135,9 @@ impl IntoResponse for BrokerError {
             });
             return (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
         }
+        // The Display strings for these carry the domain, so borrow them
+        // into the match's lifetime.
+        let reason_buf = self.to_string();
         let (status, message) = match &self {
             BrokerError::UserNotFound => (StatusCode::NOT_FOUND, "User not found"),
             BrokerError::EmailNotFound => (StatusCode::NOT_FOUND, "Email not found"),
@@ -185,6 +198,9 @@ impl IntoResponse for BrokerError {
                 (StatusCode::NOT_FOUND, "Device certificate not found")
             }
             BrokerError::PollTooFast => (StatusCode::TOO_MANY_REQUESTS, "Polling too fast"),
+            BrokerError::DomainProvenByAtproto(_) | BrokerError::DomainUnprovable(_) => {
+                (StatusCode::FORBIDDEN, reason_buf.as_str())
+            }
         };
 
         let body = json!({ "success": false, "reason": message });

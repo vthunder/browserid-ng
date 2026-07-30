@@ -118,6 +118,55 @@ async fn main() -> Result<()> {
             "Agent provisioning enabled"
         );
     }
+    // Claim-time authority hierarchy probes (browserid-ng-tsqk). On by
+    // default; both fail open on transport errors, so an offline dev broker
+    // behaves as before. ATPROTO_BRIDGE_URL="" disables the atproto lane,
+    // MX_GATE=0 the MX gate.
+    {
+        use browserid_broker::authority::{AuthorityChecker, HandleProbe, MxProbe};
+        let bridge_url = std::env::var("ATPROTO_BRIDGE_URL")
+            .unwrap_or_else(|_| "https://bsky.browserid.me".to_string());
+        let handles = if bridge_url.trim().is_empty() {
+            HandleProbe::Disabled
+        } else {
+            HandleProbe::Bridge {
+                url: bridge_url.trim().to_string(),
+                http: reqwest::Client::new(),
+            }
+        };
+        // Default the MX gate off wherever SMTP is disabled (dev/e2e): those
+        // brokers stage addresses at fake domains — and example.com in
+        // particular publishes a null MX (RFC 7505), which the gate rightly
+        // reads as "accepts no mail".
+        let mx_gate_on = std::env::var("MX_GATE")
+            .map(|v| v != "0")
+            .unwrap_or(!disable_smtp);
+        let mx = if mx_gate_on {
+            match browserid_broker::DnsFetcher::new() {
+                Ok(f) => MxProbe::Dns(f),
+                Err(e) => {
+                    tracing::warn!("MX gate disabled — DNS fetcher unavailable: {e}");
+                    MxProbe::Off
+                }
+            }
+        } else {
+            MxProbe::Off
+        };
+        // The same bridge that answers the presence probe is the one whose
+        // attestations complete_handle_claim accepts.
+        state.handle_attestor = bridge_url
+            .trim()
+            .strip_prefix("https://")
+            .or_else(|| bridge_url.trim().strip_prefix("http://"))
+            .map(|rest| rest.split('/').next().unwrap_or(rest).to_string())
+            .filter(|h| !h.is_empty());
+        state.authority = AuthorityChecker::new(handles, mx);
+        tracing::info!(
+            atproto_lane = state.authority.claim_url().as_deref().unwrap_or("disabled"),
+            mx_gate = mx_gate_on,
+            "claim-time authority hierarchy configured"
+        );
+    }
 
     let state = Arc::new(state);
 

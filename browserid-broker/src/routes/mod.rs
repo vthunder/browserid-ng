@@ -8,6 +8,7 @@ mod email;
 mod fallback_idp;
 mod fedcm;
 mod guestbook;
+mod handle_claim;
 mod holders;
 mod primary;
 mod reset;
@@ -108,6 +109,10 @@ where
         .route("/wsapi/update_password", post(auth::update_password))
         .route("/wsapi/list_emails", get(email::list_emails))
         .route("/wsapi/stage_email", post(email::stage_email))
+        .route(
+            "/wsapi/complete_handle_claim",
+            post(handle_claim::complete_handle_claim),
+        )
         .route("/wsapi/complete_email_addition", post(email::complete_email_addition))
         .route("/wsapi/remove_email", post(email::remove_email))
         .route("/wsapi/address_info", get(email::address_info))

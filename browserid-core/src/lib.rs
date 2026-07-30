@@ -10,6 +10,7 @@
 
 pub mod keys;
 pub mod assertion;
+pub mod attestation;
 pub mod device;
 pub mod discovery;
 pub mod dns;
@@ -30,6 +31,7 @@ pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;
 pub use rp_auth::{RpChallenge, TokenRequest, TokenResponse};
 pub use status::{StatusList, StatusListToken, StatusRef, TYP_STATUS_LIST};
+pub use attestation::{HandleAttestation, HandleAttestationClaims, TYP_HANDLE_ATTESTATION};
 
 /// Result type for browserid-core operations
 pub type Result<T> = std::result::Result<T, Error>;

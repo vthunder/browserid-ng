@@ -64,6 +64,9 @@ pub enum Error {
     #[error("Invalid status list: {0}")]
     InvalidStatusList(String),
 
+    #[error("Invalid handle attestation: {0}")]
+    InvalidAttestation(String),
+
     #[error("Credential revoked (status list)")]
     Revoked,
 }

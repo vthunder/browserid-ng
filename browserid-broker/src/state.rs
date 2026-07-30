@@ -74,6 +74,23 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// warrant requests, §6.6). Production leaves this `None` and gets the
     /// DNSSEC-rooted fallback fetcher.
     pub issuer_resolver_override: Option<Arc<dyn browserid_registrar::IssuerKeyResolver>>,
+    /// The one attestor domain whose handle attestations
+    /// `complete_handle_claim` accepts (browserid-ng-tsqk) — the bsky
+    /// bridge's host, derived from `ATPROTO_BRIDGE_URL`. `None` disables the
+    /// route.
+    pub handle_attestor: Option<String>,
+    /// Test override for the attestor's signing key. Production resolves it
+    /// via DNSSEC primary discovery of the attestor domain.
+    pub handle_attestor_key_override: Option<browserid_core::PublicKey>,
+    /// Redeemed attestation `jti`s, kept until their `exp` (replay guard).
+    /// std RwLock: never held across an await.
+    pub used_attestation_jtis: std::sync::RwLock<HashMap<String, i64>>,
+    /// Claim-time authority hierarchy for no-primary domains
+    /// (browserid-ng-tsqk): which proof — atproto OAuth, the SMTP loop, or
+    /// none — the fallback demands before issuing. Defaults to disabled
+    /// (everything reads as SMTP-provable, the pre-hierarchy behavior);
+    /// `main.rs` wires the real bridge + MX probes.
+    pub authority: crate::authority::AuthorityChecker,
     /// Cache of verified **foreign** status-list tokens (core §6.4), keyed by
     /// list URI. Populated/refreshed by the fail-closed status check in
     /// `verifier::verify_access_with_dns`; own-list refs never land here
@@ -112,6 +129,10 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             analytics: crate::analytics::Analytics::disabled(),
             fedcm_autologin: RwLock::new(HashMap::new()),
             issuer_resolver_override: None,
+            handle_attestor: None,
+            handle_attestor_key_override: None,
+            used_attestation_jtis: std::sync::RwLock::new(HashMap::new()),
+            authority: crate::authority::AuthorityChecker::disabled(),
             foreign_status_lists: std::sync::RwLock::new(HashMap::new()),
         }
     }
@@ -140,6 +161,10 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             analytics: crate::analytics::Analytics::disabled(),
             fedcm_autologin: RwLock::new(HashMap::new()),
             issuer_resolver_override: None,
+            handle_attestor: None,
+            handle_attestor_key_override: None,
+            used_attestation_jtis: std::sync::RwLock::new(HashMap::new()),
+            authority: crate::authority::AuthorityChecker::disabled(),
             foreign_status_lists: std::sync::RwLock::new(HashMap::new()),
         }
     }

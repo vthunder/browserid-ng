@@ -96,6 +96,45 @@ pub fn create_test_context() -> TestContext {
     }
 }
 
+/// Create a test context with a specific claim-time authority checker
+/// (browserid-ng-tsqk) instead of the permissive default.
+pub fn create_test_context_with_authority(
+    authority: browserid_broker::authority::AuthorityChecker,
+) -> TestContext {
+    create_test_context_customized(|state| state.authority = authority)
+}
+
+/// Create a test context after applying arbitrary state customization
+/// (attestor config, authority checker, feature flags, …).
+pub fn create_test_context_customized(
+    customize: impl FnOnce(&mut AppState<InMemoryUserStore, InMemorySessionStore, MockEmailSender>),
+) -> TestContext {
+    let keypair = KeyPair::generate();
+    let email_sender = Arc::new(MockEmailSender::new());
+    let user_store = Arc::new(InMemoryUserStore::new());
+    let session_store = Arc::new(InMemorySessionStore::new());
+
+    let mut state = AppState::new_with_arcs(
+        keypair,
+        "localhost:3000".to_string(),
+        user_store.clone(),
+        session_store,
+        email_sender.clone(),
+    );
+    customize(&mut state);
+
+    let app = routes::create_router(Arc::new(state));
+    let server = TestServer::new(app).expect("Failed to create test server");
+
+    TestContext {
+        server,
+        email_sender: MockEmailSender {
+            sent: email_sender.sent.clone(),
+        },
+        user_store,
+    }
+}
+
 /// Helper to create a user and return the session cookie
 pub async fn create_user(
     server: &TestServer,

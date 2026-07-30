@@ -70,6 +70,16 @@ pub trait UserStore: Send + Sync {
     /// fall back to the email local-part).
     fn set_email_public_name(&self, email: &str, public_name: Option<&str>) -> StoreResult<()>;
 
+    /// Record how ownership of this identity was proven (browserid-ng-tsqk).
+    /// Emails default to `smtp` on insert; the handle-attestation route
+    /// flips its identities to `atproto`.
+    fn set_email_proof(
+        &self,
+        email: &str,
+        proof: ProofMethod,
+        subject: Option<&str>,
+    ) -> StoreResult<()>;
+
     /// Store a pending verification
     fn create_pending(&self, pending: PendingVerification) -> StoreResult<()>;
 
