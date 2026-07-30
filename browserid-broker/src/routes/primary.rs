@@ -192,11 +192,24 @@ where
             return Ok(Json(AuthWithPresentationResponse { success: true, email }));
         }
         super::holders::finish_holder_move(state.user_store.as_ref(), user_id, cc.holder.as_str());
+        //
+        // When adoption is refused the holder belongs to NO namespace, and an
+        // uncategorized holder reads as an agent in the account view. Schedule a
+        // move into `browsers` so it is categorized correctly from this moment,
+        // whether or not any client-side repair lane survives (browserid-ng-i8a2).
+        let mut move_target = None;
         if let Some((prefix, _)) = cc.holder.as_str().split_once('.') {
             match state.user_store.adopt_namespace_prefix(user_id, "browsers", prefix) {
-                Ok(false) => tracing::debug!(
-                    "browsers namespace already in use; cert holder keeps its own prefix"
-                ),
+                Ok(false) => {
+                    tracing::debug!(
+                        "browsers namespace already in use; cert holder keeps its own prefix"
+                    );
+                    move_target = super::holders::register_orphan_browser_move(
+                        state.user_store.as_ref(),
+                        user_id,
+                        cc.holder.as_str(),
+                    );
+                }
                 Ok(true) => {}
                 Err(e) => tracing::warn!("browsers prefix adoption failed: {e}"),
             }
@@ -221,6 +234,13 @@ where
         super::holders::maybe_label_holder_from_ua(
             state.user_store.as_ref(), user_id, cc.holder.as_str(), &headers,
         );
+        // A scheduled move takes the same label along, so the device keeps its
+        // name once it re-issues (completion deletes the old holder's rows).
+        if let Some(target) = move_target {
+            super::holders::maybe_label_holder_from_ua(
+                state.user_store.as_ref(), user_id, &target, &headers,
+            );
+        }
     }
 
     Ok(Json(AuthWithPresentationResponse { success: true, email }))

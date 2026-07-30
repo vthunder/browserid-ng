@@ -265,3 +265,135 @@ test.describe('device-auth resume handback: concurrent dialog windows', () => {
     expect(await stillWaiting(b.page)).toBe(true);
   });
 });
+
+/**
+ * Cold-login holder repair over the resume channel (browserid-ng-i8a2).
+ *
+ * A cold sign-in (no broker session yet) can't tell the IdP which holder this
+ * browser uses, so the IdP self-assigns one. When the account already has a
+ * `browsers` namespace, that self-assigned prefix can't be adopted and the
+ * broker schedules a move — the browser must re-issue under the target or it
+ * stays uncategorized (and renders as an "agent").
+ *
+ * The repair may NOT depend on opening a window: on the OAuth lane the dialog
+ * has no live IdP window, and a gesture-less `window.open` is exactly what
+ * popup blockers refuse. Instead the dialog tells the resumed page — a window
+ * it already owns — to navigate ITSELF back to the provider.
+ */
+test.describe('device-auth resume handback: holder repair', () => {
+  const b64url = (o: unknown) =>
+    Buffer.from(JSON.stringify(o)).toString('base64')
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const certFor = (pubX: string) =>
+    b64url({ alg: 'EdDSA', typ: 'JWT' }) + '.' +
+    b64url({
+      typ: 'browserid-device-cert', iss: 'idp.example', iat: 0, exp: 9999999999,
+      purpose: 'device', holder: 'brcold.0011223344', identities: ['a@idp.example'],
+      'public-key': { algorithm: 'Ed25519', publicKey: pubX }
+    }) + '.sig';
+  const STUB_IDP = 'http://127.0.0.1:3000/e2e-stub-idp.html';
+
+  async function openWaitingDialog(context: any, email: string) {
+    const page = await context.newPage();
+    await page.route('**/wsapi/address_info*', (route: any) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          type: 'primary', state: 'known',
+          device_auth: STUB_IDP,
+          access_mint: 'http://127.0.0.1:3000/e2e-stub-mint'
+        })
+      }));
+    await context.route('**/e2e-stub-idp.html*', (route: any) =>
+      route.fulfill({ contentType: 'text/html', body: '<title>stub idp</title>' }));
+    await page.goto('/dialog/dialog.html?origin=http://example.com');
+    await page.waitForSelector('#email-screen.active');
+    const popupPromise = page.waitForEvent('popup');
+    await page.fill('#email', email);
+    await page.click('#email-form button[type="submit"]');
+    const popup = await popupPromise;
+    const pubX = new URLSearchParams(new URL(popup.url()).hash.slice(1)).get('device_pubkey')!;
+    expect(pubX).toBeTruthy();
+    await expect(page.locator('#loading.active')).toBeVisible();
+    return { page, popup, pubX };
+  }
+
+  test('sends the resumed window back to the provider with the holder pinned, opening nothing', async ({ context }) => {
+    const a = await openWaitingDialog(context, 'alice@idp.example');
+    // The broker reports that this cold holder has been reassigned into the
+    // account's `browsers` namespace.
+    await a.page.route('**/wsapi/holder_assignment*', (route: any) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, status: 'moved', new_holder: 'brcanon.deadbeef01' })
+      }));
+    let popupsOpened = 0;
+    a.page.on('popup', () => { popupsOpened++; });
+
+    const resumed = await context.newPage();
+    await resumed.goto(RESUME + '#device_cert=' + certFor(a.pubX) + '&config_cert=' + certFor(a.pubX));
+
+    await expect.poll(() => resumed.url(), { timeout: 20000 }).toContain('e2e-stub-idp.html');
+    const frag = new URLSearchParams(new URL(resumed.url()).hash.slice(1));
+    expect(frag.get('holder')).toBe('brcanon.deadbeef01');
+    // The SAME keys are re-certified — a repair, not a new device slot.
+    expect(frag.get('device_pubkey')).toBe(a.pubX);
+    expect(frag.get('return_url')).toContain('resume=device_auth');
+    // The whole point: no window.open, so no popup blocker to lose to.
+    expect(popupsOpened).toBe(0);
+  });
+
+  test('closes the resumed window when no repair is needed', async ({ context }) => {
+    const a = await openWaitingDialog(context, 'alice@idp.example');
+    // Holder is current — nothing to re-issue, so the held window is released.
+    await a.page.route('**/wsapi/holder_assignment*', (route: any) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, status: 'current' })
+      }));
+    await a.page.route('**/wsapi/browser_holder*', (route: any) =>
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({ prefix: 'brcold' }) }));
+
+    const resumed = await context.newPage();
+    await resumed.goto(RESUME + '#device_cert=' + certFor(a.pubX) + '&config_cert=' + certFor(a.pubX));
+
+    // It must not hop anywhere, and must not strand itself claiming lost state.
+    // (The resumed page scrubs its own URL, so identity is "still on the
+    // dialog, not at the provider".)
+    await a.page.waitForTimeout(5000);
+    if (!resumed.isClosed()) {
+      expect(resumed.url()).not.toContain('e2e-stub-idp');
+      await expect(resumed.locator('#error-screen.active')).toHaveCount(0);
+    }
+  });
+
+  test('refuses a re-issue hop to an insecure URL', async ({ context }) => {
+    // The channel is same-origin by construction, but the resumed window still
+    // refuses to be navigated anywhere but a secure provider URL.
+    const listener = await context.newPage();
+    await listener.goto('/dialog/dialog.html?origin=http://example.com');
+    await listener.evaluate((channel) => {
+      const w = window as any;
+      w.__sent = false;
+      const chan = new BroadcastChannel(channel);
+      chan.onmessage = (ev: MessageEvent) => {
+        const m = ev.data;
+        if (!m || m.type !== 'browserid:device_auth_resume' || w.__sent) return;
+        w.__sent = true;
+        chan.postMessage({ type: 'browserid:device_auth_resume_ack', nonce: m.nonce, hold: true });
+        chan.postMessage({
+          type: 'browserid:device_auth_reissue', nonce: m.nonce,
+          url: 'http://evil.example/steal'
+        });
+      };
+    }, CHANNEL);
+
+    const resumed = await context.newPage();
+    await resumed.goto(RESUME + FRAG);
+
+    await expect.poll(() => listener.evaluate(() => (window as any).__sent), { timeout: 10000 }).toBe(true);
+    await resumed.waitForTimeout(3000);
+    expect(resumed.isClosed()).toBe(false);
+    expect(resumed.url()).not.toContain('evil.example');
+  });
+});

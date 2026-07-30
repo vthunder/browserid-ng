@@ -240,6 +240,7 @@
   // resumed /dialog/dialog.html?resume=device_auth page back to the dialog
   // window that started the flow (see primaryPopupFlow / handoffResume).
   const RESUME_CHANNEL = 'browserid:device_auth_resume';
+  const RESUME_PATH = '/dialog/dialog.html?resume=device_auth';
 
   // The public key a device cert certifies, or null if the cert doesn't
   // declare one in a shape we can read. The claim is advisory (DNSSEC is the
@@ -605,10 +606,16 @@
       // severing the handle, not the user cancelling.
       let expectingHandoff = false;
 
-      function cleanup() {
+      // Stop waiting on the IdP popup, but KEEP the resume channel: on the
+      // handoff path that channel is our only way back to the popup, and the
+      // holder re-issue still needs it after this promise settles.
+      function timersOff() {
         clearTimeout(timeoutId);
         clearInterval(pollId);
         window.removeEventListener('message', onMessage);
+      }
+      function cleanup() {
+        timersOff();
         if (chan) { try { chan.close(); } catch (e) { /* already closed */ } chan = null; }
       }
 
@@ -689,10 +696,52 @@
       // relationship — so it just hands the result over and closes, and we
       // resolve on exactly the path the postMessage handback takes.
       //
-      // Deliberately resolved WITHOUT `reissue`/`done`: the IdP page is gone
-      // from that popup, so hold mode has nothing left to talk to. The caller
-      // then skips holder reconciliation (best-effort by design) rather than
-      // hanging on a dead window.
+      // That popup is now OUR resume page, which means hold mode still has a
+      // window to talk to — just a different one. So this path ALSO resolves
+      // with `reissue`/`done`: `reissue` tells the resume page to navigate
+      // ITSELF back to the provider with the holder pinned. A same-tab
+      // navigation of a window we own needs no user gesture, so unlike
+      // re-opening a popup it cannot be blocked (browserid-ng-i8a2).
+      let lastNonce = null;        // the resume page we last acknowledged
+      let awaitingReissue = null;  // set while that page is off re-issuing
+      function ackResume(nonce) {
+        // `hold` asks the page to stay put until we say done — we don't know
+        // yet whether a re-issue is needed (the broker join hasn't run).
+        try { chan.postMessage({ type: 'browserid:device_auth_resume_ack', nonce, hold: true }); } catch (e) { /* closed */ }
+      }
+      function resumeReissue(newHolder) {
+        return new Promise((res, rej) => {
+          if (!chan || !lastNonce) { rej(new Error('the provider window is gone')); return; }
+          if (!deviceAuthUrl) { rej(new Error('no device-authorization URL')); return; }
+          // Same shape as the redirect lane's hop: the provider posts the certs
+          // back to our resume page, which hands them over on this channel.
+          const url = deviceAuthUrl +
+            '#email=' + encodeURIComponent(email) +
+            '&device_pubkey=' + encodeURIComponent(keys.device.publicKeyX) +
+            '&config_pubkey=' + encodeURIComponent(keys.config.publicKeyX) +
+            '&holder=' + encodeURIComponent(newHolder) +
+            '&return_origin=' + encodeURIComponent(window.location.origin) +
+            '&return_url=' + encodeURIComponent(window.location.origin + RESUME_PATH);
+          const timer = setTimeout(() => {
+            awaitingReissue = null;
+            rej(new Error('holder re-issue timed out'));
+          }, 45 * 1000);
+          awaitingReissue = { res, rej, timer };
+          try {
+            chan.postMessage({ type: 'browserid:device_auth_reissue', nonce: lastNonce, url });
+          } catch (e) {
+            clearTimeout(timer);
+            awaitingReissue = null;
+            rej(new Error('the provider window is gone'));
+          }
+        });
+      }
+      function resumeRelease() {
+        if (!chan) return;
+        try { chan.postMessage({ type: 'browserid:device_auth_done', nonce: lastNonce }); } catch (e) { /* closed */ }
+        try { chan.close(); } catch (e) { /* already closed */ }
+        chan = null;
+      }
       try { chan = new BroadcastChannel(RESUME_CHANNEL); } catch (e) { /* unsupported: postMessage only */ }
       if (chan) {
         chan.onmessage = (ev) => {
@@ -700,9 +749,6 @@
           if (!m || typeof m !== 'object' || m.type !== 'browserid:device_auth_resume') return;
           const d = m.payload;
           if (!d || typeof d !== 'object') return;
-          const ack = () => {
-            try { chan.postMessage({ type: 'browserid:device_auth_resume_ack', nonce: m.nonce }); } catch (e) { /* closed */ }
-          };
           // EVERY branch must pair before it acts. A broadcast reaches every
           // dialog window on this origin, so an unpaired one would resolve or
           // tear down a sign-in that has nothing to do with it — no attacker
@@ -710,19 +756,39 @@
           if (d.type === 'browserid:device_certs') {
             if (!d.device_cert || !d.config_cert) return;
             if (!certKeyMatchesStrict(d.device_cert, keys.device.publicKeyX)) return;
-            ack();
-            cleanup();
-            try { popup.close(); } catch (e) { /* closing itself */ }
-            resolve({ device_cert: d.device_cert, config_cert: d.config_cert });
+            lastNonce = m.nonce;
+            ackResume(m.nonce);
+            const got = { device_cert: d.device_cert, config_cert: d.config_cert };
+            // Second handback: the re-issue we asked for, under the new holder.
+            if (awaitingReissue) {
+              const w = awaitingReissue;
+              awaitingReissue = null;
+              clearTimeout(w.timer);
+              w.res(got);
+              return;
+            }
+            timersOff();
+            resolve(Object.assign(got, { reissue: resumeReissue, done: resumeRelease }));
           } else if (d.type === 'browserid:device_error') {
             // A failure carries no cert, so the IdP echoes the device pubkey
             // it was given. No pubkey, or someone else's, is not our failure —
             // stay pending and let our own timeout speak.
             if (!d.device_pubkey || d.device_pubkey !== keys.device.publicKeyX) return;
-            ack();
-            cleanup();
-            try { popup.close(); } catch (e) { /* closing itself */ }
-            reject(new Error(d.reason || 'identity provider refused'));
+            lastNonce = m.nonce;
+            const err = new Error(d.reason || 'identity provider refused');
+            if (awaitingReissue) {
+              // The re-issue failed; the ORIGINAL certs are still good, so let
+              // reconciliation fall back rather than failing the sign-in.
+              const w = awaitingReissue;
+              awaitingReissue = null;
+              clearTimeout(w.timer);
+              ackResume(m.nonce);
+              w.rej(err);
+              return;
+            }
+            timersOff();
+            resumeRelease();
+            reject(err);
           }
         };
       }
@@ -748,58 +814,64 @@
     });
   }
 
-  // Cold-login browser-holder reconciliation (browserid-ng-rrve). At cold
+  // Cold-login browser-holder reconciliation (browserid-ng-rrve, i8a2). At cold
   // primary login there was no broker session, so the IdP self-assigned a
   // holder under a fresh prefix. The join either ADOPTED that prefix as the
   // account's `browsers` namespace (first-ever device — nothing to fix) or
-  // could not (another device already owns `browsers`) — in which case the
-  // issued certs sit in an orphan namespace. Now that the session exists,
-  // fetch the canonical browsers holder and, on mismatch, re-sign the SAME
-  // keys under it: through the still-open hold-mode popup when the IdP
-  // supports it, else by RE-OPENING the authorize popup with the canonical
-  // holder as an explicit param — plain passthrough every device-model IdP
-  // already implements, so lazy IdPs reconcile too. Then replace the stored
-  // pair and re-join so the broker records the corrected cert. Best-effort:
-  // any failure (e.g. the re-open popup is blocked) keeps the initial
-  // (working, if mislabeled) pair.
+  // could not (another device already owns `browsers`), in which case the certs
+  // sit in an orphan namespace AND the join scheduled a move into `browsers`.
+  // Now that the session exists, re-sign the SAME keys under the right holder,
+  // in order of preference:
+  //   1. the still-open hold-mode IdP popup, when the IdP supports it;
+  //   2. the resume popup navigating ITSELF back to the provider (the OAuth
+  //      case — no window.open, so nothing for a popup blocker to refuse);
+  //   3. RE-OPENING the authorize popup with the holder pinned — plain
+  //      passthrough every device-model IdP implements, but gesture-less and
+  //      therefore blockable, which is why it is last.
+  // (1) and (2) both arrive as `certs.reissue`. Then replace the stored pair
+  // and re-join so the broker records the corrected cert. Best-effort: any
+  // failure keeps the initial (working, if miscategorized) pair — the server's
+  // pending move survives, so the next sign-in repairs it.
   async function reconcileBrowserHolder(email, domain, keys, certs, pair, mintUrl, deviceAuthUrl) {
+    const release = () => { try { if (certs.done) certs.done(); } catch (e) { /* gone */ } };
     try {
-      const canonical = await browserHolder(); // session exists after the join
       const issued = certHolder(pair.device.cert);
-      const issuedPrefix = issued && issued.includes('.') ? issued.slice(0, issued.indexOf('.')) : null;
-      const canonicalPrefix = canonical && canonical.includes('.') ? canonical.slice(0, canonical.indexOf('.')) : null;
-      if (!canonicalPrefix || !issuedPrefix || issuedPrefix === canonicalPrefix) {
-        certs.done();
-        return pair;
+      const prefixOf = (h) => (h && h.includes('.') ? h.slice(0, h.indexOf('.')) : null);
+      // The server's explicit assignment wins. Re-issuing under any OTHER
+      // holder would leave that pending move — and its orphan row — dangling,
+      // so the browser would still show up uncategorized.
+      let target = await pendingHolderMove(issued);
+      if (!target) {
+        const canonical = await browserHolder(); // session exists after the join
+        if (!prefixOf(canonical) || !prefixOf(issued) || prefixOf(canonical) === prefixOf(issued)) {
+          release();
+          return pair;
+        }
+        target = canonical;
       }
       let fresh;
       try {
-        fresh = await certs.reissue(canonical);
+        if (!certs.reissue) throw new Error('no window left to re-issue through');
+        fresh = await certs.reissue(target);
       } catch (holdErr) {
-        // The IdP didn't hold the popup open (or the re-issue died there).
-        // Fall back to a fresh authorize popup with the holder pinned — the
-        // user just finished interacting with this flow's popup, so an
-        // immediate re-open is generally allowed. The IdP session is warm, so
-        // it auto-issues and the window closes itself in a blink.
+        // Last resort: a fresh authorize popup with the holder pinned. The user
+        // just finished interacting with this flow, so an immediate re-open is
+        // often allowed; when it is blocked we fall through to the catch below
+        // and the server-side move repairs things on the next sign-in.
         if (!deviceAuthUrl) throw holdErr;
-        fresh = await primaryPopupFlow(email, deviceAuthUrl, keys, canonical);
+        // Let go of the window we were talking to first, so its channel
+        // listener can't race the fresh flow's on the same certs.
+        release();
+        fresh = await primaryPopupFlow(email, deviceAuthUrl, keys, target);
       }
-      // The cold cert cached its (orphan) prefix as this browser's holder —
-      // drop that so only the canonical entry remains.
-      try { localStorage.removeItem('browserid:holder:' + issuedPrefix); } catch (e) { /* best-effort */ }
       const newPair = await finishPrimaryCerts(email, keys, fresh);
-      // Re-join so the broker's holder registry records the corrected config
-      // cert (upsert on pubkey replaces the orphan-holder row).
-      try {
-        const p = await buildPresentation(newPair, domain, mintUrl, email, window.location.origin, /* noRegister */ true);
-        await apiCall('/wsapi/auth_with_presentation', 'POST', { presentation: p, ephemeral: false });
-      } catch (e) {
-        console.warn('holder reconcile re-join failed (non-fatal):', e.message || e);
-      }
+      await rejoinBroker(email, newPair, domain, mintUrl);
+      await followHolderCache(certHolder(newPair.device.cert), prefixOf(issued));
+      release();
       return newPair;
     } catch (e) {
       console.warn('browser-holder reconciliation failed (non-fatal):', e.message || e);
-      try { if (certs.done) certs.done(); } catch (e2) { /* gone */ }
+      release();
       return pair;
     }
   }
@@ -849,6 +921,33 @@
     return storedDevicePair(domain, email);
   }
 
+  // Re-present to the broker so it records the CURRENT cert for this holder
+  // (the registry upserts on pubkey), which is what completes a pending move
+  // server-side and drops the old holder's rows. Best-effort: the sign-in
+  // itself already succeeded.
+  async function rejoinBroker(email, pair, issuer, mintUrl) {
+    try {
+      const p = await buildPresentation(
+        pair, issuer, mintUrl, email, window.location.origin, /* noRegister */ true);
+      await apiCall('/wsapi/auth_with_presentation', 'POST', { presentation: p, ephemeral: false });
+    } catch (e) {
+      console.warn('holder repair re-join failed (non-fatal):', e.message || e);
+    }
+  }
+
+  // Point this browser's holder cache at `holder` under the account's canonical
+  // browsers prefix, and forget the orphan prefix a cold login may have cached.
+  async function followHolderCache(holder, dropPrefix) {
+    if (dropPrefix) {
+      try { localStorage.removeItem('browserid:holder:' + dropPrefix); } catch (e) { /* best-effort */ }
+    }
+    if (!holder) return;
+    try {
+      const r = await apiCall(API.browserHolder, 'GET');
+      if (r && r.prefix) localStorage.setItem('browserid:holder:' + r.prefix, holder);
+    } catch (e) { /* best-effort */ }
+  }
+
   // Account-driven namespace move: is this device's holder still current, or
   // has the account reassigned it? (The move revoked the old certs up front;
   // this check is how the device heals.)
@@ -890,19 +989,11 @@
         await storeDevicePair(issuer, email, pair, certs);
         // Re-join so the broker records the corrected cert (which also
         // deletes the old holder's rows server-side).
-        try {
-          const moved = await storedDevicePair(issuer, email);
-          const p = await buildPresentation(moved, issuer, mintUrl, email, window.location.origin, /* noRegister */ true);
-          await apiCall('/wsapi/auth_with_presentation', 'POST', { presentation: p, ephemeral: false });
-        } catch (e) {
-          console.warn('holder move re-join failed (non-fatal):', e.message || e);
-        }
+        const moved = await storedDevicePair(issuer, email);
+        await rejoinBroker(email, moved, issuer, mintUrl);
       }
       // This browser's holder cache follows the move.
-      try {
-        const r = await apiCall(API.browserHolder, 'GET');
-        if (r && r.prefix) localStorage.setItem('browserid:holder:' + r.prefix, target);
-      } catch (e) { /* best-effort */ }
+      await followHolderCache(target, null);
       return (await storedDevicePair(issuer, email)) || pair;
     } catch (e) {
       console.warn('holder move completion failed (non-fatal):', e.message || e);
@@ -968,9 +1059,10 @@
       }
       let pair = await finishPrimaryCerts(email, keys, certs);
       await ensureBrokerSession(email, pair, domain, mintUrl);
-      if (certs.reissue) {
-        pair = await reconcileBrowserHolder(email, domain, keys, certs, pair, mintUrl, addressInfo.device_auth);
-      }
+      // Unconditional: reconciliation itself decides whether anything needs
+      // fixing, and it now has a repair route even when the IdP window is gone
+      // (the OAuth-redirect case, which is where cold logins actually land).
+      pair = await reconcileBrowserHolder(email, domain, keys, certs, pair, mintUrl, addressInfo.device_auth);
       await finishSignIn(email, pair, domain, mintUrl);
     } catch (e) {
       showError('Sign-in with your email provider failed: ' + (e.message || e));
@@ -994,6 +1086,9 @@
       email,
       domain: email.split('@')[1],
       mintUrl: info.access_mint,
+      // Kept so the resume leg can hop back here to repair the holder without
+      // a popup (browserid-ng-i8a2).
+      deviceAuth: info.device_auth,
       dialog: {
         origin: state.origin,
         redirect: state.redirect,
@@ -1004,7 +1099,7 @@
         emails: state.emails
       }
     });
-    const resume = window.location.origin + '/dialog/dialog.html?resume=device_auth';
+    const resume = window.location.origin + RESUME_PATH;
     window.location.assign(
       info.device_auth +
       '#email=' + encodeURIComponent(email) +
@@ -1039,31 +1134,95 @@
       let settled = false;
       let retryId = null;
       let giveUpId = null;
+      let holdId = null;
+      // This window was opened by script (primaryPopupFlow), so it may close
+      // itself. If a browser refuses, say something honest instead of sitting
+      // on a spinner — the sign-in itself already completed next door.
+      function closeSelf() {
+        try { window.close(); } catch (e) { /* fall through */ }
+        showScreen('loading', 'Signed in — you can close this window.');
+      }
+      function stopChannel() {
+        clearTimeout(holdId);
+        try { chan.close(); } catch (e) { /* ignore */ }
+      }
       function finish(ok) {
         if (settled) return;
         settled = true;
         clearInterval(retryId);
         clearTimeout(giveUpId);
-        try { chan.close(); } catch (e) { /* ignore */ }
         resolve(ok);
       }
       chan.onmessage = (ev) => {
         const m = ev.data;
-        if (!m || m.type !== 'browserid:device_auth_resume_ack' || m.nonce !== nonce) return;
-        finish(true);
-        // This window was opened by script (primaryPopupFlow), so it may close
-        // itself. If a browser refuses, say something honest instead of
-        // sitting on a spinner — the sign-in itself already completed next door.
-        try { window.close(); } catch (e) { /* fall through */ }
-        showScreen('loading', 'Signed in — you can close this window.');
+        if (!m || typeof m !== 'object' || m.nonce !== nonce) return;
+        if (m.type === 'browserid:device_auth_resume_ack') {
+          finish(true);
+          clearInterval(retryId);
+          if (!m.hold) { stopChannel(); closeSelf(); return; }
+          // The dialog may still send us back to the provider to re-issue under
+          // the account's real holder — stay put until it says done. Bounded, so
+          // a dialog that dies mid-flow doesn't strand this window forever.
+          showScreen('loading', 'Finishing sign-in...');
+          clearTimeout(holdId);
+          holdId = setTimeout(() => { stopChannel(); closeSelf(); }, 60 * 1000);
+        } else if (m.type === 'browserid:device_auth_reissue' && m.url) {
+          // The holder repair: hop THIS window back to the provider. Navigating
+          // a window we already own needs no user gesture — that is the whole
+          // point, since the popup-blocker case is exactly what stranded these
+          // sign-ins before. The channel is same-origin by construction; we
+          // still refuse anything but a secure provider URL.
+          let ok = false;
+          try {
+            const u = new URL(m.url, window.location.href);
+            ok = u.protocol === 'https:' || u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+          } catch (e) { /* refuse */ }
+          if (!ok) return;
+          finish(true);
+          stopChannel();
+          window.location.replace(m.url);
+        } else if (m.type === 'browserid:device_auth_done') {
+          finish(true);
+          stopChannel();
+          closeSelf();
+        }
       };
       const send = () => {
         try { chan.postMessage({ type: 'browserid:device_auth_resume', nonce, payload }); } catch (e) { /* closed */ }
       };
       send();
       retryId = setInterval(send, 250);
-      giveUpId = setTimeout(() => finish(false), 2500);
+      giveUpId = setTimeout(() => { stopChannel(); finish(false); }, 2500);
     });
+  }
+
+  // Redirect-lane holder repair: the same second hop the popup lane performs,
+  // minus the window juggling — THIS tab goes back to the provider with the
+  // account's holder pinned and returns here. The provider session is warm, so
+  // it auto-issues and bounces straight back. Returns true when it is
+  // navigating away (the caller must stop). Best-effort: on any doubt we keep
+  // the working pair and let the server-side move repair the next sign-in.
+  async function reissueViaRedirectHop(pending, pair) {
+    if (pending.holderHop) return false;   // one repair attempt per sign-in
+    if (!pending.deviceAuth) return false;
+    let target = null;
+    try { target = await pendingHolderMove(certHolder(pair.device.cert)); } catch (e) { return false; }
+    if (!target) return false;
+    try {
+      await Keystore.putPending(Object.assign({}, pending, { holderHop: true }));
+    } catch (e) {
+      return false;
+    }
+    window.location.assign(
+      pending.deviceAuth +
+      '#email=' + encodeURIComponent(pending.email) +
+      '&device_pubkey=' + encodeURIComponent(pending.devicePubX) +
+      '&config_pubkey=' + encodeURIComponent(pending.configPubX) +
+      '&holder=' + encodeURIComponent(target) +
+      '&return_origin=' + encodeURIComponent(window.location.origin) +
+      '&return_url=' + encodeURIComponent(window.location.origin + RESUME_PATH)
+    );
+    return true;
   }
 
   // Returning from the same-tab hop: certs (or an error) ride the fragment;
@@ -1119,7 +1278,20 @@
     };
     try {
       const pair = await finishPrimaryCerts(pending.email, keys, certs);
-      await ensureBrokerSession(pending.email, pair, pending.domain, pending.mintUrl);
+      if (pending.holderHop) {
+        // THIS leg is the repair. Force the re-join (rather than relying on
+        // ensureBrokerSession, which no-ops once the email is on the account)
+        // so the broker records the corrected cert, which completes the move
+        // and drops the orphan's rows.
+        await rejoinBroker(pending.email, pair, pending.domain, pending.mintUrl);
+        await followHolderCache(certHolder(pair.device.cert), pending.orphanPrefix);
+      } else {
+        await ensureBrokerSession(pending.email, pair, pending.domain, pending.mintUrl);
+        const issued = certHolder(pair.device.cert);
+        pending.orphanPrefix = issued && issued.includes('.')
+          ? issued.slice(0, issued.indexOf('.')) : null;
+        if (await reissueViaRedirectHop(pending, pair)) return; // navigating away
+      }
       await finishSignIn(pending.email, pair, pending.domain, pending.mintUrl);
     } catch (e) {
       showError(e.message || String(e));
@@ -1613,9 +1785,7 @@
         const certs = await primaryPopupFlow(p.email, p.info.device_auth, p.keys, p.holder, /* hold */ !p.holder);
         let pair = await finishPrimaryCerts(p.email, p.keys, certs);
         await ensureBrokerSession(p.email, pair, p.email.split('@')[1], p.info.access_mint);
-        if (certs.reissue) {
-          pair = await reconcileBrowserHolder(p.email, p.email.split('@')[1], p.keys, certs, pair, p.info.access_mint, p.info.device_auth);
-        }
+        pair = await reconcileBrowserHolder(p.email, p.email.split('@')[1], p.keys, certs, pair, p.info.access_mint, p.info.device_auth);
         await finishSignIn(p.email, pair, p.email.split('@')[1], p.info.access_mint);
       } catch (err) {
         if (err && err.popupBlocked) {

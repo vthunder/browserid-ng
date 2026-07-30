@@ -497,6 +497,82 @@ fn cleanup_holder_warrants<U: UserStore>(store: &U, user_id: crate::store::UserI
     }
 }
 
+/// Backstop for a cold primary login whose IdP-assigned holder prefix could NOT
+/// be adopted as this account's `browsers` namespace (another browser already
+/// owns it): record a pending move `orphan → a fresh browsers holder`.
+///
+/// Without this the holder belongs to no namespace, and the account view — which
+/// can only categorize by namespace — files the browser under agents. The client
+/// re-issues under the target on its next sign-in (`/wsapi/holder_assignment`),
+/// but the move alone is enough to categorize it correctly right away, because
+/// the holders view buckets a moving holder under its TARGET. That matters: the
+/// client repair lanes all depend on a window surviving an OAuth redirect, and
+/// this one doesn't.
+///
+/// Deliberately NOT a revoking move (unlike `move_holder`): the user is midway
+/// through a sign-in with these very certs, and the orphan namespace has no
+/// warrants for the move to invalidate.
+///
+/// Returns the target holder when a move was recorded. Best-effort: every
+/// failure is logged and swallowed — a login must never fail over bookkeeping.
+pub fn register_orphan_browser_move<U: UserStore>(
+    store: &U,
+    user_id: crate::store::UserId,
+    holder: &str,
+) -> Option<String> {
+    let (prefix, _) = holder.split_once('.')?;
+    // Only a TRUE orphan is repaired. A holder under any namespace the user owns
+    // (`agents`, `services`, a custom one) is categorized as its owner intended —
+    // adoption "failing" for it is the normal case, not a defect.
+    match store.list_namespaces(user_id) {
+        Ok(namespaces) => {
+            if namespaces.iter().any(|n| n.prefix == prefix) {
+                return None;
+            }
+        }
+        Err(e) => {
+            tracing::warn!("orphan-holder repair skipped (namespaces: {e})");
+            return None;
+        }
+    }
+    // A foreign service holds its own cert (recorded with an empty pubkey) and
+    // its holder is bound to a warrant, so there would be nothing to re-issue —
+    // `move_holder` refuses these outright and so must an automatic move.
+    match store.list_device_certs(user_id) {
+        Ok(certs) => {
+            if certs.iter().any(|c| c.holder == holder && c.pubkey.is_empty()) {
+                return None;
+            }
+        }
+        Err(e) => {
+            tracing::warn!("orphan-holder repair skipped (device certs: {e})");
+            return None;
+        }
+    }
+    // Already scheduled by an earlier login that the device hasn't completed yet.
+    match store.resolve_holder_move(user_id, holder) {
+        Ok(Some(_)) => return None,
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!("orphan-holder repair skipped (move lookup: {e})");
+            return None;
+        }
+    }
+    let target = match store.get_or_create_namespace(user_id, "browsers") {
+        Ok(prefix) => crate::crypto::assign_holder_id(&prefix),
+        Err(e) => {
+            tracing::warn!("orphan-holder repair skipped (browsers namespace: {e})");
+            return None;
+        }
+    };
+    if let Err(e) = store.set_holder_move(user_id, holder, &target) {
+        tracing::warn!("orphan-holder repair failed: {e}");
+        return None;
+    }
+    tracing::info!("cold-login holder '{holder}' orphaned; scheduled move to '{target}'");
+    Some(target)
+}
+
 /// Completion hook, called from issuance paths when certs land under `holder`:
 /// if it is the target of a pending move, the old holder's rows are deleted
 /// (they were revoked at move time) so the device appears exactly once.
@@ -676,7 +752,8 @@ fn title_case(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ua_label;
+    use super::{register_orphan_browser_move, ua_label};
+    use crate::store::{InMemoryUserStore, UserStore};
 
     #[test]
     fn ua_label_common_browsers() {
@@ -693,5 +770,97 @@ mod tests {
         let chrome_android = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36";
         assert_eq!(ua_label(chrome_android).as_deref(), Some("Chrome on Android"));
         assert_eq!(ua_label("curl/8.7.1"), None);
+    }
+
+    // The cold-login repair backstop (browserid-ng-i8a2). A browser whose
+    // IdP-self-assigned prefix can't be adopted must not sit in no namespace at
+    // all — that is what made browsers show up as agents.
+    #[test]
+    fn an_orphaned_cold_holder_is_scheduled_into_browsers() {
+        let store = InMemoryUserStore::new();
+        let user = store.create_user_no_password().unwrap();
+        let browsers = store.get_or_create_namespace(user, "browsers").unwrap();
+
+        let target = register_orphan_browser_move(&store, user, "brorphan.abc123")
+            .expect("an orphan holder is scheduled");
+        assert!(
+            target.starts_with(&format!("{browsers}.")),
+            "target {target} must live in the browsers namespace ({browsers})"
+        );
+        assert_eq!(
+            store.resolve_holder_move(user, "brorphan.abc123").unwrap().as_deref(),
+            Some(target.as_str()),
+            "the move must be recorded so the device re-issues under it"
+        );
+    }
+
+    #[test]
+    fn a_holder_in_a_namespace_the_user_owns_is_left_alone() {
+        let store = InMemoryUserStore::new();
+        let user = store.create_user_no_password().unwrap();
+        // Adoption also "fails" for agents/services — that is correct
+        // categorization, not an orphan, and must never be rewritten.
+        for ns in ["agents", "services", "browsers"] {
+            let prefix = store.get_or_create_namespace(user, ns).unwrap();
+            let holder = format!("{prefix}.abc123");
+            assert_eq!(
+                register_orphan_browser_move(&store, user, &holder),
+                None,
+                "{ns} holder must not be moved"
+            );
+            assert_eq!(store.resolve_holder_move(user, &holder).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn scheduling_is_idempotent_across_repeat_logins() {
+        let store = InMemoryUserStore::new();
+        let user = store.create_user_no_password().unwrap();
+        store.get_or_create_namespace(user, "browsers").unwrap();
+
+        let first = register_orphan_browser_move(&store, user, "brorphan.abc123").unwrap();
+        // A second login before the device completes the move must not mint a
+        // second target (which would strand the first).
+        assert_eq!(register_orphan_browser_move(&store, user, "brorphan.abc123"), None);
+        assert_eq!(
+            store.resolve_holder_move(user, "brorphan.abc123").unwrap().as_deref(),
+            Some(first.as_str())
+        );
+    }
+
+    #[test]
+    fn an_external_services_holder_is_never_auto_moved() {
+        use crate::store::DeviceCertRecord;
+        let store = InMemoryUserStore::new();
+        let user = store.create_user_no_password().unwrap();
+        store.get_or_create_namespace(user, "browsers").unwrap();
+        // A foreign service is recorded with an EMPTY pubkey: it holds its own
+        // cert at its own issuer, and its holder is bound to the warrant, so a
+        // move would break the grant with nothing to re-issue.
+        store
+            .insert_device_cert(DeviceCertRecord {
+                id: 0,
+                user_id: user,
+                identities: vec!["svc@partner.example".into()],
+                purpose: "authorization".into(),
+                holder: "extsvc.abc123".into(),
+                pubkey: String::new(),
+                iss: "partner.example".into(),
+                issued_at: chrono::Utc::now(),
+                expires_at: chrono::Utc::now(),
+                revoked_at: None,
+                status_idx: None,
+            })
+            .unwrap();
+
+        assert_eq!(register_orphan_browser_move(&store, user, "extsvc.abc123"), None);
+        assert_eq!(store.resolve_holder_move(user, "extsvc.abc123").unwrap(), None);
+    }
+
+    #[test]
+    fn a_holder_with_no_namespace_prefix_is_ignored() {
+        let store = InMemoryUserStore::new();
+        let user = store.create_user_no_password().unwrap();
+        assert_eq!(register_orphan_browser_move(&store, user, "nodotshere"), None);
     }
 }
