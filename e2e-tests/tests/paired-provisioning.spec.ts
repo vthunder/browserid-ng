@@ -3,7 +3,7 @@
  *
  * Drives BOTH sides in one test: the agent side is the Node SDK
  * (`Agent.bootstrap`), the human side is the browser (approve on
- * `/account?provision=<code>`). Proves the full loop — pair → human approves →
+ * `/authorize?code=<code>`). Proves the full loop — pair → human approves →
  * agent picks up the delegation and mints — with the provisioning key never
  * leaving the SDK.
  */
@@ -51,7 +51,7 @@ test.describe('Paired agent provisioning (74u1)', () => {
       requestedHandles: { names: [handle] },
       label: 'e2e agent',
     });
-    expect(pairing.verificationUriComplete).toContain('/account?provision=');
+    expect(pairing.verificationUriComplete).toContain('/authorize?code=');
     expect(pairing.fingerprint).toMatch(/^[0-9A-F]{2}-[0-9A-F]{2}-[0-9A-F]{2}$/);
 
     // HUMAN SIDE: Flow I (agent flows v2, bean eywc) — the fingerprint check
@@ -106,7 +106,9 @@ test.describe('Paired agent provisioning (74u1)', () => {
     await expect(page.locator('#provision')).toContainText('notes.example.com');
     await expect(page.locator('#provision')).toContainText('on behalf of');
     await page.click('#pv-approve'); // "Allow for 90 days"
-    await expect(page.locator('#provision')).toContainText('See my agents', { timeout: 20000 });
+    // Approval lands on the /account roster with the new agent highlighted.
+    await expect(page).toHaveURL(/\/account/, { timeout: 20000 });
+    await expect(page.locator('#banner')).toContainText('Bluesky poster can now', { timeout: 20000 });
 
     // AGENT SIDE: one pickup delivers credential + warrant together.
     const result = await pending.wait();

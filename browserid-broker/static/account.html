@@ -3,177 +3,280 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>browserid.me — your identities</title>
-  <!-- Styled to match the sign-in dialog (dialog.css look): white cards on
-       #f5f5f5, 4a90d9 primary, same list rows the chooser uses. -->
+  <title>browserid.me — who can act as you</title>
+  <!-- The account dashboard (account redesign handoff): one mental model —
+       "Who can act as you" — a roster of actors (browsers / agents / outside
+       services) with their permissions nested inside, a per-site view, and an
+       inactive drawer. The UI never uses protocol nouns: warrant→permission,
+       holder/namespace/cert are hidden, forget_holder→sign out. Authorization
+       flows live on /authorize (standalone); approvals land back here with
+       the new actor highlighted. -->
   <style>
     * { box-sizing: border-box; }
-    body { margin: 0; padding: 32px 16px 48px;
+    [hidden] { display: none !important; }
+    body { margin: 0; background: #f5f5f4; color: #17171a;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      font-size: 14px; line-height: 1.5; color: #333; background-color: #f5f5f5; }
-    .wrap { max-width: 440px; margin: 0 auto; }
-    .brand { text-align: center; margin-bottom: 20px; }
-    .brand a { color: #333; text-decoration: none; font-weight: 600; font-size: 16px; }
-    .brand .me { color: #4a90d9; }
-    input.pv-inline { width: auto; display: inline-block; margin: 0 6px 0 0; vertical-align: middle; }
-    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45);
-      display: flex; align-items: center; justify-content: center; z-index: 50; }
-    .modal { background: #fff; color: #1a1a1a; border-radius: 12px;
-      padding: 16px 20px; max-width: 26rem; width: 90%;
-      box-shadow: 0 12px 40px rgba(0,0,0,.25); }
-    .modal input[type=radio] { width: auto; display: inline-block;
-      margin: 0 6px 0 0; vertical-align: middle; }
-    .card { background: #fff; border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,.08);
-      padding: 24px; margin-bottom: 20px; }
-    h2 { margin: 0 0 4px 0; font-size: 18px; font-weight: 600; color: #1a1a1a; }
-    p { margin: 0 0 16px 0; color: #666; }
-    .sub { font-size: 13px; color: #888; margin-bottom: 12px; }
-    label { display: block; margin-bottom: 4px; font-size: 13px; font-weight: 500; color: #555; }
-    input, select { width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #ccc;
-      border-radius: 4px; outline: none; margin-bottom: 12px; background: #fff; color: #333; }
-    input:focus, select:focus { border-color: #4a90d9; box-shadow: 0 0 0 3px rgba(74,144,217,.2); }
-    button { padding: 10px 20px; font-size: 14px; font-weight: 500; border: none;
-      border-radius: 4px; cursor: pointer; background-color: #e9ecef; color: #495057; }
-    button:hover:not(:disabled) { background-color: #dee2e6; }
-    button.primary { background-color: #4a90d9; color: #fff; }
-    button.primary:hover:not(:disabled) { background-color: #357abd; }
-    button.small { padding: 4px 10px; font-size: 12px; }
-    button:disabled { opacity: .6; cursor: not-allowed; }
-    .idlist { list-style: none; padding: 0; margin: 0; border: 1px solid #ddd; border-radius: 4px; }
-    .idlist li { border-bottom: 1px solid #eee; }
-    .idlist li:last-child { border-bottom: none; }
-    .idlist .row { display: flex; align-items: center; padding: 12px; width: 100%;
-      background: none; border: none; text-align: left; font-size: 14px; border-radius: 0; }
-    button.row { font-family: inherit; }
-    .idlist .row:hover { background-color: #f8f9fa; }
-    .idlist .email-text { flex: 1; color: #333; word-break: break-all; }
-    .idlist .email-sub { display: block; margin-top: 2px; font-size: 12px; color: #888; }
-    .idlist .chev { color: #bbb; margin-left: 8px; }
-    .idlist .add .email-text { color: #4a90d9; font-weight: 500; }
-    .badge { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px;
-      margin-left: 6px; vertical-align: middle; }
-    .badge.active { background: #e6f4ea; color: #2f855a; }
-    .badge.inactive { background: #fdeaea; color: #b7791f; }
-    .badge.info { background: #eef2f7; color: #55607a; }
-    .badge.revoked { background: #fdeaea; color: #c53030; }
-    .rowbtn { margin-left: 8px; }
-    a { color: #4a90d9; text-decoration: none; }
+      font-size: 14px; line-height: 1.5; min-height: 100vh; }
+    a { color: #1f6feb; text-decoration: none; }
     a:hover { text-decoration: underline; }
-    .status { font-size: 13px; margin-top: 8px; }
-    .muted { color: #888; } .err { color: #dc3545; } .ok { color: #2f855a; } .warn { color: #b7791f; }
-    .scope { display: inline-block; font-family: ui-monospace, monospace; font-size: 11px;
-      border: 1px solid #ccc; border-radius: 999px; padding: 1px 8px; margin: 0 3px 3px 0; color: #555; }
-    .idchip { display: inline-block; font-family: ui-monospace, monospace; font-size: 11px;
-      background: #eef2f7; border-radius: 999px; padding: 1px 8px; margin: 2px 3px 0 0; color: #55607a; }
-    .wtable { width: 100%; border-collapse: collapse; font-size: 13px; }
-    .wtable td { padding: 8px 6px; border-bottom: 1px solid #eee; vertical-align: top; }
-    .wtable tr:last-child td { border-bottom: none; }
-    .aud { font-family: ui-monospace, monospace; word-break: break-all; }
-    .footer-links { text-align: center; font-size: 13px; color: #888; }
-    .footer-links a { margin: 0 8px; }
-    .kv { font-size: 13px; color: #555; margin-bottom: 16px; }
-    .kv b { color: #333; }
-    .disclose { font-size: 13px; color: #4a90d9; cursor: pointer; user-select: none; }
-    pre { background: #f5f7fa; padding: 12px; border-radius: 6px; overflow-x: auto;
-      font-size: 12px; white-space: pre-wrap; word-break: break-all; font-family: ui-monospace, monospace; }
-    .inline-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid #eee; }
-    .handle-row { display: flex; align-items: stretch; }
-    .handle-prefix { display: flex; align-items: center; padding: 0 2px 0 12px; margin-bottom: 12px;
-      background: #eef2f7; border: 1px solid #ccc; border-right: none; border-radius: 4px 0 0 4px;
-      color: #555; font-family: ui-monospace, monospace; font-size: 14px; white-space: nowrap; }
-    .handle-row input { margin-bottom: 12px; border-radius: 0 4px 4px 0; }
-    .handle-prefix[hidden] + input { border-radius: 4px; }
-    .handle-preview { font-family: ui-monospace, monospace; font-size: 12px; color: #888; margin: -6px 0 8px; min-height: 14px; }
-    .linkish { background: none; border: none; color: #4a90d9; cursor: pointer; padding: 0; font-size: 13px; }
-    .linkish:hover { text-decoration: underline; background: none; }
-
-    /* Agent authorization card (surface A) — design-board language: near-black
-       ink, quiet grays, one accent blue for info, one red for danger. */
-    .pvcard { padding: 24px 22px 20px; color: #17171a; border: 1px solid rgba(0,0,0,.09); }
-    .pvcard.danger { border-color: rgba(157,47,38,.3); }
-    .pv-head { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
-    .pv-mark { width: 15px; height: 15px; border-radius: 4px; background: #17171a; }
-    .pv-brand { font-weight: 600; font-size: 12px; color: #17171a; }
-    .pv-corner { margin-left: auto; font: 11px/1 ui-monospace, Menlo, monospace; color: #8a8a93; word-break: break-all; text-align: right; }
-    .pv-title { font: 400 20px/1.4 system-ui, sans-serif; letter-spacing: -.01em; margin: 0 0 16px; color: #17171a; text-wrap: pretty; }
-    .pv-title.danger { color: #9d2f26; }
-    .pv-note { font: 13px/1.65 system-ui, sans-serif; color: #6b6b74; margin: 0 0 16px; }
-    .pv-note b, .pv-note .mono { color: #17171a; }
+    button { font-family: inherit; }
     .mono { font-family: ui-monospace, Menlo, monospace; }
-    .pv-panel { border: 1px solid rgba(0,0,0,.11); border-radius: 9px; padding: 11px 13px; margin-bottom: 8px; }
-    .pv-label { font: 10.5px/1.3 system-ui, sans-serif; color: #8a8a93; margin-bottom: 3px; }
-    .pv-fp { font: 600 19px/1 ui-monospace, Menlo, monospace; letter-spacing: .07em; color: #17171a; }
-    .pv-hint { font: 11px/1.5 system-ui, sans-serif; color: #8a8a93; margin: 0 0 14px; }
-    .pv-aud { font: 12.5px/1.5 ui-monospace, Menlo, monospace; color: #17171a; word-break: break-all; margin-bottom: 8px; }
-    .pv-chips { display: flex; flex-wrap: wrap; gap: 5px; }
-    .pv-chip { font: 10px/1.3 ui-monospace, Menlo, monospace; color: #6b6b74; border: 1px solid rgba(0,0,0,.14); border-radius: 20px; padding: 4px 8px; word-break: break-all; }
-    .pv-chip.warn { color: #b7791f; border-color: rgba(183,121,31,.4); }
-    .pv-table { border: 1px solid rgba(0,0,0,.1); border-radius: 9px; overflow: hidden; margin-bottom: 6px; }
-    .pv-row { padding: 11px 13px; background: #faf9f7; display: flex; gap: 10px; }
-    .pv-row + .pv-row { border-top: 1px solid rgba(0,0,0,.07); }
-    .pv-rowlabel { font: 11px/1.4 system-ui, sans-serif; color: #8a8a93; flex: none; width: 40px; }
-    .pv-rowmain { font: 12px/1.4 ui-monospace, Menlo, monospace; color: #17171a; word-break: break-all; }
-    .pv-rowsub { font: 10.5px/1.4 system-ui, sans-serif; color: #8a8a93; margin-top: 2px; }
-    .pv-idsel { font: 12px/1.4 ui-monospace, Menlo, monospace; color: #17171a; border: 1px solid rgba(0,0,0,.13);
-      border-radius: 6px; background: #fff; padding: 3px 4px; margin: 0; width: auto; max-width: 100%; }
-    .pv-callout { padding: 12px 14px; background: #f4f6fb; border-left: 2px solid #1f6feb; border-radius: 0 8px 8px 0;
-      font: 13px/1.6 system-ui, sans-serif; color: #33333a; margin: 0 0 9px; }
-    .pv-callout.danger { background: #fdf6f5; border-left-color: #9d2f26; color: #5c3a36; }
-    .pv-link { font: 12px/1.4 system-ui, sans-serif; color: #1f6feb; background: none; border: none; padding: 0; cursor: pointer; text-align: left; border-radius: 0; }
-    .pv-link:hover { text-decoration: underline; background: none; }
-    .pv-actions { display: flex; flex-direction: column; gap: 9px; margin-top: 14px; }
-    .pv-btn { font: 600 15px/1 system-ui, sans-serif; color: #fff; background: #17171a; border: none; border-radius: 9px;
-      padding: 14px; text-align: center; cursor: pointer; width: 100%; }
+
+    /* Header bar */
+    .bar { display: flex; align-items: center; gap: 12px; padding: 16px 28px;
+      background: #fff; border-bottom: 1px solid rgba(0,0,0,.08); }
+    .bar .mark { width: 15px; height: 15px; border-radius: 4px; background: #17171a; flex: none; }
+    .bar .brand { font-weight: 600; font-size: 14px; color: #17171a; }
+    .bar .brand .me { color: #4a90d9; }
+    .ghost { font: 500 12px system-ui, sans-serif; color: #6b6b74; background: none;
+      border: 1px solid rgba(0,0,0,.14); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+    .ghost:hover { background: #faf9f7; }
+
+    /* Layout */
+    .container { max-width: 920px; margin: 0 auto; padding: 28px 20px 48px; }
+    .container.narrow { max-width: 720px; }
+    .container.detail { max-width: 620px; }
+    .h1row { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+    h1 { margin: 0; font: 600 22px/1.3 system-ui, sans-serif; letter-spacing: -.01em; color: #17171a;
+      flex: none; white-space: nowrap; }
+    h1.sub { font-size: 20px; }
+    .summary { font: 13px system-ui, sans-serif; color: #8a8a93; }
+    .intro { margin: 0 0 24px; font: 13px/1.6 system-ui, sans-serif; color: #6b6b74; max-width: 580px; }
+    .cols { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+    .maincol { flex: 1; min-width: 420px; display: flex; flex-direction: column; gap: 20px; }
+    .rail { width: 250px; flex: none; display: flex; flex-direction: column; gap: 14px; }
+    .backbtn { font: 500 12px system-ui, sans-serif; color: #6b6b74; background: none;
+      border: 1px solid rgba(0,0,0,.14); border-radius: 6px; padding: 5px 11px; cursor: pointer; }
+    .backbtn:hover { background: #faf9f7; }
+    .foot { text-align: center; font: 12px system-ui, sans-serif; color: #8a8a93; padding-bottom: 32px; }
+    .foot a { margin: 0 8px; }
+
+    /* Confirmation banner (post-authorize landing) */
+    .banner { display: flex; align-items: center; gap: 10px; padding: 11px 14px; background: #e6f4ea;
+      border: 1px solid rgba(47,133,90,.25); border-radius: 9px; margin-bottom: 22px;
+      font: 12.5px/1.5 system-ui, sans-serif; color: #2f855a; }
+    .banner b { flex: none; }
+
+    /* Section heads + cards */
+    .sechead { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+    .sechead .t { font: 600 13px system-ui, sans-serif; color: #17171a; }
+    .sechead .x { font: 11.5px system-ui, sans-serif; color: #8a8a93; }
+    .card { background: #fff; border: 1px solid rgba(0,0,0,.09); border-radius: 10px; overflow: hidden; }
+
+    /* Actor rows */
+    .rowwrap { border-top: 1px solid rgba(0,0,0,.06); }
+    .rowwrap:first-child { border-top: none; }
+    .rowwrap.open { background: #fafafa; }
+    .rowwrap.hl { background: #f0f7f2; box-shadow: inset 3px 0 0 #2f855a; }
+    .arow { display: flex; align-items: center; gap: 12px; padding: 13px 16px; width: 100%;
+      background: none; border: none; text-align: left; cursor: pointer; }
+    .arow:hover { background: rgba(0,0,0,.015); }
+    .amono { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center;
+      justify-content: center; font: 600 12px system-ui, sans-serif; flex: none; }
+    .amono.sm { width: 30px; height: 30px; font-size: 11px; }
+    .amono.lg { width: 44px; height: 44px; border-radius: 10px; font-size: 17px; }
+    .m-browser { background: #eef2f7; color: #55607a; }
+    .m-agent { background: #17171a; color: #fff; }
+    .m-service { background: #fff; color: #8a8a93; border: 1px dashed rgba(0,0,0,.25); }
+    .amain { flex: 1; min-width: 0; }
+    .alabel { display: block; font: 500 13.5px system-ui, sans-serif; color: #17171a; }
+    .apub { font: 11px system-ui, sans-serif; color: #8a8a93; font-weight: 400; }
+    .asub { display: block; font: 11.5px system-ui, sans-serif; color: #8a8a93; margin-top: 1px; }
+    .arecency { font: 11.5px system-ui, sans-serif; color: #8a8a93; flex: none; }
+    .achev { color: #c4c4c9; flex: none; display: inline-block; transition: transform .12s; }
+    .achev.open { transform: rotate(90deg); }
+    .badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; vertical-align: 1px; }
+    .b-green { background: #e6f4ea; color: #2f855a; }
+    .b-gray { background: #eef2f7; color: #55607a; }
+
+    /* Expanded row / permission lines */
+    .expand { padding: 0 16px 13px 62px; }
+    .blanket { font: 12px/1.5 system-ui, sans-serif; color: #17171a; background: #f4f6fb;
+      border-left: 2px solid #1f6feb; border-radius: 0 6px 6px 0; padding: 7px 10px; }
+    .blanket .dim { color: #8a8a93; }
+    .permtitle { font: 11px system-ui, sans-serif; color: #8a8a93; margin-bottom: 6px; letter-spacing: .04em; }
+    .permcol { display: flex; flex-direction: column; gap: 6px; }
+    .perm { display: flex; align-items: center; gap: 8px; font: 12px system-ui, sans-serif;
+      color: #17171a; flex-wrap: wrap; }
+    .perm .site { font-family: ui-monospace, Menlo, monospace; }
+    .chip { font: 10.5px ui-monospace, Menlo, monospace; color: #6b6b74;
+      border: 1px solid rgba(0,0,0,.13); border-radius: 20px; padding: 1px 7px; }
+    .perm .as { font: 11px system-ui, sans-serif; color: #8a8a93; }
+    .perm .meta { margin-left: auto; font: 11px system-ui, sans-serif; color: #8a8a93; }
+    .perm .act { font: 11px system-ui, sans-serif; background: none; border: none; padding: 0; cursor: pointer; }
+    .perm .act:hover { text-decoration: underline; }
+    .act.revoke { color: #9d2f26; }
+    .act.forget { color: #6b6b74; }
+    .perm.expired, .perm.expired .site, .perm.expired .meta { color: #b7791f; }
+    .perm.expired .chip { color: #b7791f; border-color: rgba(183,121,31,.35); }
+    .perm.revoked, .perm.revoked .site, .perm.revoked .meta { color: #9d2f26; }
+    .perm.revoked .chip { color: #9d2f26; border-color: rgba(157,47,38,.35); }
+    .managelink { margin-top: 10px; font: 500 12px system-ui, sans-serif; color: #1f6feb;
+      background: none; border: none; padding: 0; cursor: pointer; }
+    .managelink:hover { text-decoration: underline; }
+
+    /* Shared-permissions disclosure */
+    .sharedbtn { font: 11.5px system-ui, sans-serif; color: #6b6b74; background: none; border: none;
+      padding: 10px 16px; cursor: pointer; text-align: left; width: 100%; }
+    .sharedbtn:hover { color: #17171a; }
+    .sharednote { font: 11px/1.5 system-ui, sans-serif; color: #8a8a93; margin-bottom: 8px; }
+
+    /* Inactive drawer */
+    .drawer { border: 1px solid rgba(0,0,0,.09); border-radius: 10px; }
+    .drawerhead { display: flex; align-items: center; gap: 10px; padding: 11px 16px; width: 100%;
+      background: none; border: none; text-align: left; cursor: pointer; }
+    .drawerhead .t { font: 600 12.5px system-ui, sans-serif; color: #6b6b74; flex: none; }
+    .drawerhead .blurb { font: 11px system-ui, sans-serif; color: #8a8a93; flex: 1; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .drawerhead .c { color: #8a8a93; font-size: 12px; }
+    .irow { display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+      border-top: 1px solid rgba(0,0,0,.07); opacity: .75; }
+    .irow .lbl { display: block; font: 500 13px system-ui, sans-serif; color: #17171a; }
+    .irow .note { display: block; font: 11.5px system-ui, sans-serif; color: #b7791f; }
+    .dangerout { font: 11.5px system-ui, sans-serif; color: #9d2f26; background: none;
+      border: 1px solid rgba(157,47,38,.3); border-radius: 6px; padding: 5px 10px; cursor: pointer; flex: none; }
+    .dangerout:hover { background: #fdf6f5; }
+    .drawerfoot { padding: 10px 16px; border-top: 1px solid rgba(0,0,0,.07);
+      font: 11px/1.5 system-ui, sans-serif; color: #8a8a93; }
+
+    /* Rail cards */
+    .rcard { background: #fff; border: 1px solid rgba(0,0,0,.09); border-radius: 10px; padding: 16px; }
+    .rtitle { font: 600 12.5px system-ui, sans-serif; color: #17171a; margin-bottom: 4px; }
+    .rtitle.tight { margin-bottom: 8px; }
+    .rsub { font: 11.5px/1.5 system-ui, sans-serif; color: #8a8a93; margin-bottom: 10px; }
+    .addrlist { display: flex; flex-direction: column; gap: 8px;
+      font: 12px ui-monospace, Menlo, monospace; color: #17171a; }
+    .addrlist .via { font: 10.5px system-ui, sans-serif; color: #8a8a93; }
+    .rlink { font: 500 12px system-ui, sans-serif; color: #1f6feb; background: none; border: none;
+      padding: 0; cursor: pointer; text-align: left; }
+    .rlink:hover { text-decoration: underline; }
+    .rlist { display: flex; flex-direction: column; gap: 10px; }
+    .rlist .d { font: 11px/1.5 system-ui, sans-serif; color: #8a8a93; }
+    .rlist a { font: 500 12px system-ui, sans-serif; }
+    .setlist { display: flex; flex-direction: column; gap: 7px; font: 12px system-ui, sans-serif; }
+    .setlist button { text-align: left; font: 12px system-ui, sans-serif; color: #1f6feb;
+      background: none; border: none; padding: 0; cursor: pointer; }
+    .setlist button:hover { text-decoration: underline; }
+    .setlist button.danger { color: #9d2f26; }
+    .inform { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(0,0,0,.07); }
+    .inform .hint { font: 11.5px/1.5 system-ui, sans-serif; color: #6b6b74; margin-bottom: 8px; }
+    .inp { width: 100%; font: 12px ui-monospace, Menlo, monospace; color: #17171a; padding: 8px 10px;
+      border: 1px solid rgba(0,0,0,.14); border-radius: 7px; outline: none; background: #fff; margin-bottom: 8px; }
+    .inp:focus { border-color: rgba(0,0,0,.3); }
+    .inp.txt { font: 12px system-ui, sans-serif; }
+    .inp.code { font: 14px ui-monospace, Menlo, monospace; letter-spacing: .2em; }
+    .btnrow { display: flex; gap: 8px; align-items: center; }
+    .btn-dark { font: 600 11.5px system-ui, sans-serif; color: #fff; background: #17171a; border: none;
+      border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+    .btn-dark:hover:not(:disabled) { background: #000; }
+    .btn-dark:disabled { opacity: .55; cursor: not-allowed; }
+    .btn-plain { font: 500 11.5px system-ui, sans-serif; color: #6b6b74; background: none; border: none;
+      padding: 7px 4px; cursor: pointer; }
+    .btn-danger { font: 600 11.5px system-ui, sans-serif; color: #fff; background: #9d2f26; border: none;
+      border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+    .status { font-size: 11.5px; margin: 6px 0 0; }
+    .muted { color: #8a8a93; } .err { color: #9d2f26; } .ok { color: #2f855a; } .warn { color: #b7791f; }
+
+    /* Sites view */
+    .srow { display: flex; align-items: center; gap: 12px; padding: 13px 16px; width: 100%;
+      background: none; border: none; text-align: left; cursor: pointer; }
+    .srow:hover { background: rgba(0,0,0,.015); }
+    .smono { width: 32px; height: 32px; border-radius: 8px; background: #eef2f7; color: #55607a;
+      display: flex; align-items: center; justify-content: center; font: 600 13px system-ui, sans-serif; flex: none; }
+    .shost { display: block; font: 500 13.5px ui-monospace, Menlo, monospace; color: #17171a; word-break: break-all; }
+    .swho { display: block; font: 11.5px system-ui, sans-serif; color: #8a8a93; margin-top: 1px; }
+    .sexpand { padding: 0 16px 13px 60px; }
+    .perm .who { font-weight: 500; }
+
+    /* Actor detail */
+    .dcard { background: #fff; border: 1px solid rgba(0,0,0,.09); border-radius: 12px; padding: 24px 26px; }
+    .dhead { display: flex; align-items: center; gap: 14px; margin: 18px 0 4px; }
+    .dtitle { font: 600 17px system-ui, sans-serif; color: #17171a; }
+    .dtitle .rlink, .dmeta .rlink { font-size: 11px; vertical-align: 1px; }
+    .daddr { font: 12px ui-monospace, Menlo, monospace; color: #8a8a93; margin-top: 2px; word-break: break-all; }
+    .dmeta { font: 12px/1.6 system-ui, sans-serif; color: #6b6b74; margin: 10px 0 14px; }
+    .dcallout { padding: 11px 14px; background: #f4f6fb; border-left: 2px solid #1f6feb;
+      border-radius: 0 8px 8px 0; font: 12.5px/1.6 system-ui, sans-serif; color: #33333a; margin-bottom: 18px; }
+    .dsecthead { font: 600 12px system-ui, sans-serif; color: #17171a; margin-bottom: 8px; }
+    .dtable { border: 1px solid rgba(0,0,0,.1); border-radius: 9px; overflow: hidden; margin-bottom: 18px; }
+    .didrow { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #faf9f7;
+      border-top: 1px solid rgba(0,0,0,.06); flex-wrap: wrap; }
+    .didrow:first-child { border-top: none; }
+    .didrow .em { font: 12px ui-monospace, Menlo, monospace; color: #17171a; flex: 1; word-break: break-all; }
+    .dblanket { border: 1px solid rgba(31,111,235,.25); border-radius: 9px; overflow: hidden; margin-bottom: 14px; }
+    .dblanket .row { padding: 11px 14px; background: #f4f6fb; border-top: 1px solid rgba(31,111,235,.15);
+      font: 12.5px/1.55 system-ui, sans-serif; color: #17171a; }
+    .dblanket .row:first-child { border-top: none; }
+    .dblanket .dim { color: #6b6b74; }
+    .dsection { margin-bottom: 14px; }
+    .dsection .t { font: 11px system-ui, sans-serif; color: #8a8a93; margin-bottom: 5px; letter-spacing: .04em; }
+    .dgrid { border: 1px solid rgba(0,0,0,.1); border-radius: 9px; overflow: hidden; }
+    .dgrid .perm { padding: 11px 14px; background: #faf9f7; border-top: 1px solid rgba(0,0,0,.06); }
+    .dgrid .perm:first-child { border-top: none; }
+    .dgrid .perm .site { flex: 1; min-width: 140px; }
+    .dgrid .perm .meta { margin-left: 0; }
+    .dgrid .chip { padding: 2px 8px; }
+    .dangerzone { border: 1px solid rgba(157,47,38,.32); background: #fdf6f5; border-radius: 9px;
+      padding: 13px 14px; display: flex; align-items: center; gap: 12px; margin-top: 18px; flex-wrap: wrap; }
+    .dangerzone .t { flex: 1; min-width: 200px; font: 12px/1.55 system-ui, sans-serif; color: #5c3a36; }
+    .dangerbtn { font: 600 12px system-ui, sans-serif; color: #fff; background: #9d2f26; border: none;
+      border-radius: 7px; padding: 9px 14px; cursor: pointer; flex: none; }
+    .techlink { margin-top: 14px; font: 11.5px system-ui, sans-serif; color: #8a8a93; cursor: pointer;
+      background: none; border: none; padding: 0; }
+    .techlink:hover { color: #6b6b74; }
+    .tech { margin-top: 10px; font: 11px/1.6 ui-monospace, Menlo, monospace; color: #6b6b74;
+      background: #faf9f7; border: 1px solid rgba(0,0,0,.08); border-radius: 8px; padding: 10px 12px;
+      word-break: break-all; }
+    .inlinename { font: 600 15px system-ui, sans-serif; color: #17171a; padding: 6px 9px;
+      border: 1px solid rgba(0,0,0,.2); border-radius: 7px; outline: none; flex: 1; min-width: 0; }
+    .inlinename:focus { border-color: rgba(0,0,0,.4); }
+    .inlinepub { font: 12px system-ui, sans-serif; color: #17171a; padding: 3px 7px;
+      border: 1px solid rgba(0,0,0,.2); border-radius: 6px; outline: none; width: 9em; }
+    .btn-dark.xs { font-size: 11px; border-radius: 5px; padding: 4px 9px; }
+    .btn-plain.xs { font-size: 11px; padding: 0; }
+
+    /* Sign-in (direct visit while signed out) */
+    .signwrap { display: flex; justify-content: center; padding: 48px 16px 24px; }
+    .signcard { width: 400px; max-width: 100%; background: #fff; border: 1px solid rgba(0,0,0,.09);
+      border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06); padding: 24px 22px 20px; }
+    .signcard h2 { margin: 0 0 12px; font: 400 20px/1.4 system-ui, sans-serif; letter-spacing: -.01em; }
+    .signcard label { display: block; margin: 0 0 6px; font: 11px/1.3 system-ui, sans-serif; color: #8a8a93; }
+    .signcard input { font: 13px/1.4 system-ui, sans-serif; color: #17171a; border: 1px solid rgba(0,0,0,.16);
+      border-radius: 8px; padding: 11px 12px; width: 100%; outline: none; margin-bottom: 12px; background: #fff; }
+    .signcard input:focus { border-color: rgba(0,0,0,.35); }
+    .signcard .lead { font: 13px/1.65 system-ui, sans-serif; color: #6b6b74; margin: 0 0 16px; }
+    .pv-btn { font: 600 15px/1 system-ui, sans-serif; color: #fff; background: #17171a; border: none;
+      border-radius: 9px; padding: 14px; text-align: center; cursor: pointer; width: 100%; }
     .pv-btn:hover:not(:disabled) { background: #000; }
-    .pv-btn:disabled { opacity: .55; cursor: not-allowed; }
-    .pv-btn2 { font: 600 14.5px/1 system-ui, sans-serif; color: #17171a; background: #fff; border: 1px solid rgba(0,0,0,.18);
-      border-radius: 9px; padding: 13px; text-align: center; cursor: pointer; width: 100%; }
-    .pv-btn2:hover:not(:disabled) { background: #faf9f7; }
-    .pv-ghost { font: 500 13px/1 system-ui, sans-serif; color: #6b6b74; background: none; border: none; padding: 7px;
-      text-align: center; cursor: pointer; width: 100%; border-radius: 0; }
-    .pv-ghost:hover { color: #17171a; background: none; }
-    .pv-dangerlink { font: 11.5px/1.4 system-ui, sans-serif; color: #9d2f26; background: none; border: none;
-      padding: 0; cursor: pointer; text-align: center; width: 100%; }
-    .pv-dangerlink:hover { text-decoration: underline; background: none; }
-    .pv-dangerbox { margin-top: 14px; border: 1px solid rgba(157,47,38,.32); background: #fdf6f5; border-radius: 9px; padding: 13px; }
-    .pv-dangerbox label { display: flex; gap: 9px; align-items: flex-start; font: 12.5px/1.55 system-ui, sans-serif;
-      color: #5c3a36; margin: 0 0 11px; font-weight: 400; }
-    .pv-dangerbox input[type=checkbox] { width: auto; margin: 2px 0 0; accent-color: #9d2f26; }
-    .pv-dangerbtn { font: 600 13px/1 system-ui, sans-serif; color: #fff; background: #9d2f26; border: none;
-      border-radius: 8px; padding: 12px; text-align: center; cursor: pointer; width: 100%; }
-    .pv-dangerbtn:disabled { opacity: .5; cursor: not-allowed; }
-    .pv-foot { margin-top: 15px; padding-top: 12px; border-top: 1px solid rgba(0,0,0,.08); display: flex; gap: 7px; align-items: flex-start; }
-    .pv-badge { font: 9.5px/1.4 ui-monospace, Menlo, monospace; letter-spacing: .06em; color: #8a8a93;
-      border: 1px solid rgba(0,0,0,.16); border-radius: 4px; padding: 2px 5px; flex: none; margin-top: 1px; }
-    .pv-footnote { font: 11.5px/1.5 system-ui, sans-serif; color: #8a8a93; }
-    .pv-nameinput { font: 13px/1.4 system-ui, sans-serif; color: #17171a; border: 1px solid rgba(0,0,0,.14);
-      border-radius: 7px; padding: 9px 10px; width: 100%; box-sizing: border-box; outline: none; background: #fff; }
-    .pv-nameinput:focus { border-color: rgba(0,0,0,.3); }
-    .pv-tagedit { display: flex; align-items: center; border: 1px solid rgba(0,0,0,.14); border-radius: 7px; overflow: hidden; background: #fff; }
-    .pv-tagedit .pv-tagfix { font: 12.5px ui-monospace, Menlo, monospace; color: #8a8a93; padding: 9px 2px; white-space: nowrap; }
-    .pv-tagedit .pv-tagfix:first-child { padding-left: 10px; }
-    .pv-tagedit .pv-tagfix:last-child { padding-right: 10px; }
-    .pv-tagedit input { font: 12.5px ui-monospace, Menlo, monospace; color: #17171a; border: none; outline: none;
-      box-shadow: none; padding: 9px 3px; margin: 0; width: 7em; min-width: 3em; background: none; border-radius: 0; }
+    .pv-ghost { font: 500 13px/1 system-ui, sans-serif; color: #6b6b74; background: none; border: none;
+      padding: 7px; text-align: center; cursor: pointer; width: 100%; }
+    .pv-ghost:hover { color: #17171a; }
+
+    /* Advanced tools (debug manual-warrant signer) */
+    .advcard { background: #fff; border: 1px solid rgba(0,0,0,.09); border-radius: 10px; padding: 16px; }
+    .advcard label { display: block; margin: 8px 0 4px; font: 11px system-ui, sans-serif; color: #8a8a93; }
+    .advcard select { width: 100%; font: 12px ui-monospace, Menlo, monospace; color: #17171a; padding: 8px 10px;
+      border: 1px solid rgba(0,0,0,.14); border-radius: 7px; outline: none; background: #fff; }
+    pre.wout { background: #faf9f7; border: 1px solid rgba(0,0,0,.08); padding: 12px; border-radius: 6px;
+      overflow-x: auto; font-size: 11px; white-space: pre-wrap; word-break: break-all;
+      font-family: ui-monospace, Menlo, monospace; }
   </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="brand"><a href="/">browserid<span class="me">.me</span></a></div>
 
-  <div id="gate" class="card"><p style="margin:0">Checking your session…</p></div>
+<div class="bar">
+  <div class="mark"></div>
+  <span class="brand">browserid<span class="me">.me</span></span>
+  <button class="ghost" id="signout" style="margin-left:auto" hidden>Sign out</button>
+</div>
 
-  <!-- Agent authorization (surface A, flows A0–A8 — bean k0s9). Fully
-       JS-rendered: which card appears is decided by server facts (the shape
-       of the request + what this account owns), never by asking the user to
-       classify. See the design board "Agent flows" / docs/design/
-       2026-07-25-approval-dialog-brief.md. -->
-  <div id="provision" class="card pvcard" hidden></div>
+<div id="gate" class="signwrap"><div class="signcard"><p class="lead" style="margin:0">Checking your session…</p></div></div>
 
-  <!-- Sign-in / create — email-first: one field, then discover what to ask. -->
-  <div id="signin" class="card" hidden>
+<!-- Sign-in / create — email-first: one field, then discover what to ask. -->
+<div id="signin" class="signwrap" hidden>
+  <div class="signcard">
     <h2>Sign in</h2>
-    <p class="sub" id="si-lead">Enter your email — we'll sign you in or set you up.</p>
+    <p class="lead" id="si-lead">Enter your email — we'll sign you in or set you up.</p>
     <form id="signin-form">
       <label for="si-email">Email</label>
       <input id="si-email" type="email" autocomplete="username" required>
@@ -188,118 +291,145 @@
           <label for="si-newpass">Choose a password</label>
           <input id="si-newpass" type="password" autocomplete="new-password" minlength="8" maxlength="80">
         </div>
-        <p class="sub" id="si-resend-wrap" hidden style="margin:.4rem 0 0">
+        <p class="status muted" id="si-resend-wrap" hidden style="margin:0 0 12px">
           Didn't get it? Check spam, or <a href="#" id="si-resend">resend the code</a><span id="si-resend-timer"></span>.
         </p>
       </div>
-      <button type="submit" class="primary" id="si-btn">Continue</button>
-      <button type="button" id="si-back" hidden>Use a different email</button>
+      <div style="display:flex;flex-direction:column;gap:9px">
+        <button type="submit" class="pv-btn" id="si-btn">Continue</button>
+        <button type="button" class="pv-ghost" id="si-back" hidden>Use a different email</button>
+      </div>
       <p class="status" id="si-status"></p>
-      <p class="sub" id="si-alt" hidden style="margin-bottom:0"></p>
+      <p class="status muted" id="si-alt" hidden style="margin-bottom:0"></p>
     </form>
   </div>
-
-  <!-- Main -->
-  <div id="app" hidden>
-    <div class="card">
-      <h2>Your identities</h2>
-      <p class="sub">Emails you sign in with. Which devices hold certificates for them
-        lives under Devices &amp; services below.</p>
-      <ul class="idlist" id="user-ids"></ul>
-      <div id="add-email-form" class="inline-form" hidden>
-        <label for="ae-email">New email</label>
-        <input id="ae-email" type="email" placeholder="you@example.com">
-        <div id="ae-code-block" hidden>
-          <label for="ae-code">6-digit code (check that inbox)</label>
-          <input id="ae-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000">
-        </div>
-        <button class="primary small" id="ae-btn">Add</button>
-        <button class="small" id="ae-cancel">Cancel</button>
-        <p class="status" id="ae-status"></p>
-      </div>
-    </div>
-
-    <div class="card" id="agent-names-card" hidden>
-      <h2>Agent names</h2>
-      <p class="sub">What each agent identity is shown as publicly when it acts
-        (the name next to its verified badge). Leave unset to show the identity's
-        handle. Device labels under Devices &amp; services stay private.</p>
-      <ul class="idlist" id="agent-names"></ul>
-    </div>
-
-    <div class="card" id="holders-card" hidden>
-      <h2>Devices &amp; services</h2>
-      <p class="sub">Browsers, agents and services connected to your account.
-        Click one to see and manage what it can do.</p>
-      <div id="holders-tree"></div>
-      <div id="new-namespace-form" class="inline-form" hidden>
-        <label for="nn-name">New namespace (short slug — letters, digits, hyphen)</label>
-        <input id="nn-name" placeholder="services" maxlength="32">
-        <label for="nn-label">Display name</label>
-        <input id="nn-label" placeholder="External services" maxlength="64">
-        <button class="primary small" id="nn-btn">Create</button>
-        <button class="small" id="nn-cancel">Cancel</button>
-        <p class="status" id="nn-status"></p>
-      </div>
-      <p style="margin:12px 0 0"><button class="small linkish" id="nn-add">+ New namespace</button></p>
-    </div>
-
-    <div class="card" id="sites-card" hidden>
-      <h2>Authorized sites</h2>
-      <p class="sub">Every site or service you've authorized, and who may act there.
-        Revoking a grant takes effect on the site's next check.</p>
-      <div id="sites-tree"></div>
-      <p class="status" style="margin-top:12px"><a href="/consent">Pending consent requests →</a></p>
-    </div>
-
-    <div class="card">
-      <h2>Session</h2>
-      <p class="sub">Signing out also clears this browser's cached certificates.</p>
-      <button id="signout">Sign out</button>
-      <button id="reset">Clear cached certificates</button>
-      <p class="status" id="out"></p>
-      <p style="margin:14px 0 0"><span class="disclose" id="dbg-toggle">Advanced / debug ▸</span></p>
-      <div id="dbg" hidden style="margin-top:12px;border-top:1px solid #eee;padding-top:12px">
-        <label for="w-identity">Sign a warrant manually (identity)</label>
-        <select id="w-identity"></select>
-        <label for="w-agent">Agent identity</label>
-        <input id="w-agent" placeholder="attestor@browserid.me">
-        <label for="w-audience">Audience (exact value the app advertises)</label>
-        <input id="w-audience" placeholder="https://api.example.com or sbo://ledger">
-        <label for="w-scopes">Scopes (space-separated, optional)</label>
-        <input id="w-scopes" placeholder="post read">
-        <button class="small primary" id="w-create">Sign warrant</button>
-        <span class="status" id="w-status"></span>
-        <pre id="w-out" hidden></pre>
-      </div>
-    </div>
-  </div>
-
-  <!-- Holder detail: this holder's warrants, plus an all-warrants-by-audience slice -->
-  <div id="holder-detail" hidden>
-    <div class="card">
-      <button id="hd-back" class="small">← Back</button>
-      <h2 id="hd-label" style="word-break:break-all"></h2>
-      <p class="kv"><span id="hd-badges"></span></p>
-      <div id="hd-identities" style="margin-bottom:12px"></div>
-      <div id="hd-warrants" style="margin-top:8px"></div>
-      <p class="status" id="hd-status"></p>
-    </div>
-  </div>
-
-  <div id="site-detail" hidden>
-    <div class="card">
-      <button id="sd-back" class="small">← Back</button>
-      <h2 id="sd-aud" class="aud" style="word-break:break-all"></h2>
-      <p class="sub">Every grant for this site. Revoking takes effect on the site's next
-        revocation check.</p>
-      <div id="sd-warrants"></div>
-      <p class="status" id="sd-status"></p>
-    </div>
-  </div>
-
-  <p class="footer-links"><a href="/consent">Consent</a> · <a href="/">browserid.me</a></p>
 </div>
+
+<!-- Main app: three client-side views (main / sites / detail), all rendered. -->
+<div id="app" hidden>
+  <div id="view-main" class="container">
+    <div id="banner" class="banner" hidden></div>
+    <div class="h1row">
+      <h1>Who can act as you</h1>
+      <span class="summary" id="summary"></span>
+    </div>
+    <p class="intro">Every browser, agent and service below holds a key to some of your accounts.
+      Open one to see exactly what it may do — or sign it out.</p>
+    <div class="cols">
+      <div class="maincol">
+        <div id="sections"></div>
+        <div id="inactive"></div>
+        <div id="advanced" hidden>
+          <div class="sechead"><span class="t">Advanced tools</span>
+            <span class="x">sign a permission by hand — debug only</span></div>
+          <div class="advcard">
+            <label for="w-agent">Agent identity</label>
+            <input class="inp" id="w-agent" placeholder="attestor@browserid.me" style="margin-bottom:0">
+            <label for="w-audience">Audience (exact value the app advertises)</label>
+            <input class="inp" id="w-audience" placeholder="https://api.example.com or sbo://ledger" style="margin-bottom:0">
+            <label for="w-scopes">Scopes (space-separated, optional)</label>
+            <input class="inp" id="w-scopes" placeholder="post read" style="margin-bottom:0">
+            <div class="btnrow" style="margin-top:10px">
+              <button class="btn-dark" id="w-create">Sign warrant</button>
+              <span class="status" id="w-status" style="margin:0"></span>
+            </div>
+            <pre class="wout" id="w-out" hidden></pre>
+          </div>
+        </div>
+      </div>
+      <div class="rail">
+        <div class="rcard">
+          <div class="rtitle">Your addresses</div>
+          <div class="rsub">The emails you are. Signing in with any of them opens this same account.</div>
+          <div class="addrlist" id="addrlist"></div>
+          <div id="addr-closed">
+            <button class="rlink" id="addr-start" style="margin-top:12px">+ Add an address</button>
+          </div>
+          <div id="addr-email" class="inform" hidden>
+            <input class="inp" id="ae-email" type="email" placeholder="you@example.com" style="margin-bottom:0">
+            <div class="btnrow" style="margin-top:8px">
+              <button class="btn-dark" id="ae-send">Email me a code</button>
+              <button class="btn-plain" id="ae-cancel">Cancel</button>
+            </div>
+            <p class="status" id="ae-status"></p>
+          </div>
+          <div id="addr-code" class="inform" hidden>
+            <div class="hint">We emailed a 6-digit code to <span class="mono" id="ae-pending" style="color:#17171a"></span>
+              — enter it to confirm the address is yours.</div>
+            <input class="inp code" id="ae-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" style="margin-bottom:0">
+            <div class="btnrow" style="margin-top:8px">
+              <button class="btn-dark" id="ae-verify">Verify</button>
+              <button class="btn-plain" id="ae-cancel2">Cancel</button>
+            </div>
+            <p class="status" id="ae-status2"></p>
+          </div>
+        </div>
+        <div class="rcard">
+          <div class="rtitle">Connected sites</div>
+          <div class="rsub" id="sitecount-sub"></div>
+          <button class="rlink" id="open-sites">See site by site ›</button>
+        </div>
+        <div class="rcard">
+          <div class="rtitle tight">Goes well with</div>
+          <div class="rlist">
+            <div><a href="https://wallet.browserid.me/">MCP wallet ↗</a>
+              <div class="d">Give agents in Claude (or any MCP client) a browserid identity.</div></div>
+            <div><a href="https://bsky.browserid.me/">Bluesky bridge ↗</a>
+              <div class="d">Sign in with your Bluesky handle; let agents post to Bluesky.</div></div>
+            <div><a href="/guestbook">Guestbook demo ↗</a>
+              <div class="d">See agent attribution in action — try your first agent here.</div></div>
+          </div>
+        </div>
+        <div class="rcard">
+          <div class="rtitle tight">Account settings</div>
+          <div class="setlist">
+            <button id="set-pass">Change password</button>
+            <button id="set-signout-all">Sign out everywhere</button>
+            <button id="set-advanced">Advanced tools</button>
+            <button id="set-delete" class="danger">Delete account</button>
+          </div>
+          <div id="pass-form" class="inform" hidden>
+            <input class="inp txt" id="cp-old" type="password" placeholder="Current password" autocomplete="current-password" style="margin-bottom:8px">
+            <input class="inp txt" id="cp-new" type="password" placeholder="New password (8+ characters)" autocomplete="new-password" style="margin-bottom:0">
+            <div class="btnrow" style="margin-top:8px">
+              <button class="btn-dark" id="cp-go">Change</button>
+              <button class="btn-plain" id="cp-cancel">Cancel</button>
+            </div>
+            <p class="status" id="cp-status"></p>
+          </div>
+          <div id="del-form" class="inform" hidden>
+            <div class="hint" style="color:#5c3a36">This deletes your account, addresses and every permission —
+              agents and services stop working. There is no undo.</div>
+            <input class="inp txt" id="del-pass" type="password" placeholder="Your password" autocomplete="current-password" style="margin-bottom:0">
+            <div class="btnrow" style="margin-top:8px">
+              <button class="btn-danger" id="del-go">Delete my account</button>
+              <button class="btn-plain" id="del-cancel">Cancel</button>
+            </div>
+            <p class="status" id="del-status"></p>
+          </div>
+          <p class="status" id="set-status"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="view-sites" class="container narrow" hidden>
+    <button class="backbtn" id="sites-back">← Everything acting as you</button>
+    <div class="h1row" style="margin:18px 0 6px">
+      <h1 class="sub">Where you're connected</h1>
+      <span class="summary" id="sites-count"></span>
+    </div>
+    <p class="intro" style="margin-bottom:18px;max-width:560px">Each site, and every permission anyone
+      holds there. Open one to manage or remove access.</p>
+    <div class="card" id="sites-card"></div>
+  </div>
+
+  <div id="view-detail" class="container detail" hidden>
+    <div class="dcard" id="detail-card"></div>
+  </div>
+</div>
+
+<p class="foot"><a href="/">browserid.me</a></p>
 
 <script src="/common/js/keystore.js"></script>
 <script type="module">
@@ -309,6 +439,13 @@ const b64urlJson = (obj) => btoa(String.fromCharCode(...enc.encode(JSON.stringif
   .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const escapeHtml = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const nowS = () => Math.floor(Date.now() / 1000);
+
+// Old printed agent URLs say /account?provision=<code>; the flow lives on
+// /authorize now. Redirect before anything renders (location.replace doesn't
+// halt the script, so boot() checks the flag).
+const legacyProvisionCode = new URLSearchParams(location.search).get('provision')
+  || new URLSearchParams(location.search).get('code');
+if (legacyProvisionCode) location.replace('/authorize?code=' + encodeURIComponent(legacyProvisionCode));
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { credentials: 'same-origin', ...opts });
@@ -322,10 +459,15 @@ const post = (path, body) => api(path, {
   body: JSON.stringify({ csrf: account.csrf, ...body }),
 });
 
-let account = { emails: [], agents: [], parentOf: {}, publicNames: {}, warrants: [], deviceCerts: [], holders: { namespaces: [], holders_without_namespace: [] }, csrf: null };
-let deviceCache = []; // this browser's DEVICE-store records (device/config certs, non-extractable keys)
+let account = { emails: [], agents: [], parentOf: {}, publicNames: {}, warrants: [],
+  deviceCerts: [], holders: { namespaces: [], holders_without_namespace: [] }, csrf: null };
+let deviceCache = []; // this browser's DEVICE-store records
+// Client view state (server data above; this is pure UI).
+let ui = { view: 'main', actorId: null, expandedId: null, expandedSite: null,
+  inactiveOpen: false, sharedOpen: false, editingName: false, editingPublic: false,
+  techOpen: false, highlight: null };
 
-// -------- local device credentials (device-cert model) --------
+// -------- local device credentials --------
 async function refreshKeystore() {
   try { deviceCache = await window.Keystore.allDevice(); } catch { deviceCache = []; }
 }
@@ -348,8 +490,8 @@ function identityMatches(pattern, email) {
   return pattern.slice(pa) === email.slice(ea)
     && eLocal.length > pLocal.length && eLocal.startsWith(pLocal) && eLocal[pLocal.length] === '+';
 }
-// The config (authorization) record whose cert authorizes `identity` (globs
-// included) — what signs warrants for it. Prefers the delegator's own record.
+// The config (authorization) record whose cert authorizes `identity` — what
+// signs warrants for it (advanced tools only, on this page).
 function configFor(identity) {
   const want = (identity || '').toLowerCase();
   for (const r of deviceCache) {
@@ -361,17 +503,717 @@ function configFor(identity) {
   }
   return null;
 }
+// ALL distinct holder ids found on this browser's local device certs → the
+// "this device" badge. Only AUTHENTICATION records count: a deposited
+// config-only record can carry a foreign holder.
+function localHolderIds() {
+  const out = new Set();
+  for (const r of deviceCache) {
+    if (r.kind !== 'device' || !r.cert) continue;
+    const c = certPayload(r.cert);
+    if (c && c.holder && (c.exp || 0) > nowS() + 60) out.add(c.holder);
+  }
+  return out;
+}
+// Mirror of browserid-core HolderMatcher::matches — `*` / `<ns>.*` / `<id>`.
+function holderMatcherMatches(matcher, holderId) {
+  if (!matcher) return false;
+  if (matcher === '*') return true;
+  if (matcher.endsWith('.*')) {
+    const ns = matcher.slice(0, -2);
+    return holderId.startsWith(ns) && holderId.slice(ns.length).startsWith('.');
+  }
+  return matcher === holderId;
+}
 
-// -------- sign-in / create: email-first with address discovery --------
-// One field to begin. On "Continue" we ask the broker about the address and
-// branch, so a new user never sees a login/reset dead-end:
-//   • primary IdP         → hand off to that domain's own sign-in page
-//   • existing + password → ask for the password (with a "forgot → code" escape)
-//   • existing, no pw      → email a code to set one
-//   • unknown (brand new)  → create: choose a password, confirm with a mailed code
-let siMode = 'email';     // email | login | create | create-code | reset-code
-let siPendingPass = '';   // password chosen during 'create', reused after the code
+// -------- derivations: server nouns → the roster's actors & permissions ----
 
+const rootIds = () => account.emails.filter(e => !account.agents.includes(e));
+
+// The user's `browsers` namespace prefix — `<prefix>.*` is "any of your
+// browsers", the shared-permissions matcher.
+function browsersPrefix() {
+  for (const ns of (account.holders.namespaces || [])) {
+    if (ns.name === 'browsers') return ns.prefix;
+  }
+  return null;
+}
+
+function fmtDate(iso, opts) {
+  const t = Date.parse(iso);
+  if (!t) return '';
+  const d = new Date(t);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString('en-US', opts || { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
+}
+
+// A warrant as the UI's "permission": site + scope chips + presented identity
+// + expiry + one action. The broker's own bare origin never lists — the
+// broker inherently holds your account, not a per-site grant.
+function isBrokerOrigin(aud) {
+  try {
+    const u = new URL(aud);
+    return u.origin === location.origin && (u.pathname === '/' || u.pathname === '');
+  } catch (e) { return false; }
+}
+function allPerms() {
+  const out = [];
+  for (const w of account.warrants) {
+    if (isBrokerOrigin(w.audience)) continue;
+    const exp = Date.parse(w.expires_at);
+    out.push({
+      id: w.id, audience: w.audience,
+      site: (w.audience || '—').replace(/^https?:\/\//, '').replace(/\/+$/, ''),
+      scopes: (w.scopes || []).filter(s => s !== 'login'),
+      as: w.agent_email, by: w.delegator_email,
+      holder: w.holder || '*',
+      revoked: !!w.revoked, expired: !!exp && exp < Date.now(),
+      expiresAt: w.expires_at, statusIdx: w.status_idx,
+    });
+  }
+  return out;
+}
+const liveOf = (ps) => ps.filter(p => !p.revoked && !p.expired);
+
+// Every holder the account knows, folded into an ACTOR: kind (browser /
+// agent / service), addresses (+ per-address trust), badges, recency.
+function buildActors() {
+  const here = localHolderIds();
+  const perms = allPerms();
+  const actors = [];
+  const fold = (h, ns) => {
+    const kind = h.external ? 'service'
+      : (ns && ns.name === 'browsers') ? 'browser'
+      : (ns && ns.name === 'services') ? 'service'
+      : 'agent';
+    const certs = account.deviceCerts.filter(c => c.holder === h.holder_id && !c.revoked);
+    const emails = [...new Set(certs.flatMap(c => c.identities.filter(i => !i.includes('*'))))].sort();
+    const ids = emails.map(email => ({
+      email,
+      trusted: certs.some(c => c.purpose === 'authorization' && c.identities.some(p => identityMatches(p, email))),
+    }));
+    let addr = null;
+    if (kind !== 'browser') {
+      addr = emails[0] || null;
+      if (!addr) {
+        const w = perms.find(p => p.holder === h.holder_id);
+        addr = w ? w.as : null;
+      }
+    }
+    actors.push({
+      id: h.holder_id, kind, label: h.label, ids, addr,
+      publicName: addr ? (account.publicNames[addr] || '') : '',
+      here: here.has(h.holder_id),
+      inactive: !!h.revoked && !h.moving_to,
+      moving: !!h.moving_to,
+      since: h.issued_at || '',
+      external: !!h.external,
+    });
+  };
+  for (const ns of (account.holders.namespaces || [])) for (const h of ns.holders) fold(h, ns);
+  for (const h of (account.holders.holders_without_namespace || [])) fold(h, null);
+  // Recency: the API only records issued_at today, so "when it arrived" is
+  // the sort key and the row's right-hand date (bean lfpu adds last-used).
+  actors.sort((a, b) => Date.parse(b.since || 0) - Date.parse(a.since || 0));
+  return actors;
+}
+
+const appliesTo = (p, actor) => holderMatcherMatches(p.holder, actor.id);
+
+// A browser's permission slices (the FULL-CONTROL BLANKET rule): for each
+// address it holds an authorization cert for, ONE blanket line replaces the
+// individual grants presented as that address — they are redundant and
+// misleadingly under-state what the browser can do. Grants for addresses it
+// only signs in as still list normally.
+function browserSlices(actor, perms) {
+  const held = actor.ids.map(i => i.email);
+  const trusted = actor.ids.filter(i => i.trusted).map(i => i.email);
+  const mine = perms.filter(p => appliesTo(p, actor)).filter(p => !p.as || held.includes(p.as));
+  const shown = mine.filter(p => !(p.as && trusted.includes(p.as)));
+  return { trusted, shown, mine };
+}
+
+function actorPerms(actor, perms) {
+  if (actor.kind === 'browser') return browserSlices(actor, perms).shown;
+  return perms.filter(p => appliesTo(p, actor));
+}
+
+const distinctSites = (ps) => [...new Set(ps.map(p => p.site))];
+
+// -------- renderers --------
+
+function monoOf(actor) {
+  if (actor.kind === 'browser') {
+    const m = (actor.label || '').match(/Chrome|Firefox|Safari|Edge|Arc/);
+    const t = { Chrome: 'Ch', Firefox: 'Fx', Safari: 'Sa', Edge: 'Ed', Arc: 'Ar' }[m ? m[0] : ''] || 'Br';
+    return { text: t, cls: 'm-browser' };
+  }
+  if (actor.kind === 'agent') return { text: (actor.label || 'A')[0].toUpperCase(), cls: 'm-agent' };
+  return { text: (actor.label || '??').slice(0, 2), cls: 'm-service' };
+}
+
+function permLineHtml(p, actor, opts) {
+  opts = opts || {};
+  const state = p.revoked ? 'revoked' : (p.expired ? 'expired' : '');
+  const chips = (p.scopes.length ? p.scopes.slice(0, 2) : ['sign in'])
+    .map(s => `<span class="chip">${escapeHtml(s)}</span>`).join('');
+  const more = p.scopes.length > 2 ? `<span class="as">+${p.scopes.length - 2}</span>` : '';
+  const asLabel = p.as
+    ? `<span class="as">as ${actor && actor.addr === p.as ? 'itself' : escapeHtml(p.as)}</span>` : '';
+  const meta = p.revoked ? 'revoked'
+    : p.expired ? `expired ${fmtDate(p.expiresAt)}`
+    : `until ${fmtDate(p.expiresAt)}`;
+  // Revoke a live status-tracked grant; forget the rest (revoked, expired,
+  // or pre-status rows there's no bit to flip for).
+  const canRevoke = !p.revoked && !p.expired && p.statusIdx != null;
+  const act = canRevoke
+    ? `<button class="act revoke" data-i="${p.id}" data-act="revoke">Revoke</button>`
+    : `<button class="act forget" data-i="${p.id}" data-act="forget">Forget</button>`;
+  const who = opts.who ? `<span class="who">${escapeHtml(opts.who)}</span>` : '';
+  return `<div class="perm ${state}">${who}<span class="site">${escapeHtml(p.site)}</span>
+    ${chips}${more} ${asLabel}<span class="meta">${meta}</span>${act}</div>`;
+}
+
+function wirePermActions(rootEl, rerender) {
+  for (const b of rootEl.querySelectorAll('.act')) b.onclick = async (ev) => {
+    ev.stopPropagation();
+    const id = Number(b.dataset.i);
+    try {
+      if (b.dataset.act === 'revoke') {
+        if (!confirm('Revoke this permission? It stops working within minutes, everywhere the site checks.')) return;
+        await post('/wsapi/revoke_warrant', { id });
+      } else {
+        await post('/wsapi/forget_warrant', { id });
+      }
+      await reloadAccount();
+      rerender();
+    } catch (e) { alert('Failed: ' + e.message); }
+  };
+}
+
+function actorRowHtml(actor, perms) {
+  const mono = monoOf(actor);
+  const expanded = ui.expandedId === actor.id;
+  const hl = ui.highlight && actor.addr && actor.addr.toLowerCase() === ui.highlight;
+  const live = liveOf(actorPerms(actor, perms));
+  const nSites = distinctSites(live).length;
+  const badges = [];
+  if (hl) badges.push('<span class="badge b-green">new</span>');
+  if (actor.here) badges.push('<span class="badge b-green">this device</span>');
+  const trusted = actor.ids.filter(i => i.trusted).map(i => i.email);
+  const loginOnly = actor.ids.filter(i => !i.trusted).map(i => i.email);
+  if (actor.kind === 'browser' && !trusted.length) badges.push('<span class="badge b-gray">sign-in only</span>');
+  if (actor.moving) badges.push('<span class="badge b-gray">arrives on next sign-in</span>');
+  const pub = actor.kind === 'agent' && actor.publicName
+    ? ` <span class="apub">· appears publicly as “${escapeHtml(actor.publicName)}”</span>` : '';
+  let sub;
+  if (actor.kind === 'browser') {
+    const parts = [];
+    if (trusted.length) parts.push('Full control of ' + trusted.map(escapeHtml).join(', '));
+    if (loginOnly.length) parts.push('Signs in as ' + loginOnly.map(escapeHtml).join(', ')
+      + ` · connected to ${nSites} site${nSites === 1 ? '' : 's'}`);
+    sub = parts.join(' · ') || 'No addresses yet';
+  } else if (actor.kind === 'agent') {
+    sub = `${escapeHtml(actor.addr || '—')} · allowed at ${nSites} site${nSites === 1 ? '' : 's'}`;
+  } else {
+    sub = `Acts as ${escapeHtml(actor.addr || '—')} · allowed at ${nSites} site${nSites === 1 ? '' : 's'}`;
+  }
+  const recency = hl ? 'just now' : fmtDate(actor.since);
+  let expandHtml = '';
+  if (expanded) {
+    const shown = actorPerms(actor, perms);
+    const blanket = actor.kind === 'browser' ? trusted : [];
+    const blanketHtml = blanket.length
+      ? `<div class="permcol" style="margin-bottom:8px">${blanket.map(email =>
+          `<div class="blanket"><b>Anything</b> as <span class="mono">${escapeHtml(email)}</span>
+            <span class="dim">— sign in anywhere, act, approve new permissions</span></div>`).join('')}</div>`
+      : '';
+    const nShown = distinctSites(liveOf(shown)).length;
+    const title = actor.kind === 'browser'
+      ? (blanket.length ? 'ALSO, AS ITS SIGN-IN-ONLY ADDRESSES' : `SIGNED IN & ALLOWED AT ${nShown} PLACE${nShown === 1 ? '' : 'S'}`)
+      : `ALLOWED AT ${nSites} PLACE${nSites === 1 ? '' : 'S'}`;
+    const permsHtml = shown.length
+      ? `<div class="permtitle">${title}</div>
+         <div class="permcol">${shown.map(p => permLineHtml(p, actor)).join('')}</div>`
+      : (blanket.length ? '' : `<div class="permtitle" style="letter-spacing:0">Nothing yet — permissions you approve will appear here.</div>`);
+    expandHtml = `<div class="expand">${blanketHtml}${permsHtml}
+      <button class="managelink" data-h="${escapeHtml(actor.id)}">Manage this ${actor.kind === 'service' ? 'service' : actor.kind} ›</button></div>`;
+  }
+  return `<div class="rowwrap${expanded ? ' open' : ''}${hl ? ' hl' : ''}">
+    <button class="arow rowtoggle" data-h="${escapeHtml(actor.id)}">
+      <span class="amono ${mono.cls}">${escapeHtml(mono.text)}</span>
+      <span class="amain">
+        <span class="alabel">${escapeHtml(actor.label)} ${badges.join(' ')}${pub}</span>
+        <span class="asub">${sub}</span>
+      </span>
+      <span class="arecency">${recency}</span>
+      <span class="achev${expanded ? ' open' : ''}">›</span>
+    </button>
+    ${expandHtml}
+  </div>`;
+}
+
+function renderMain() {
+  const actors = buildActors();
+  const perms = allPerms();
+  const active = actors.filter(a => !a.inactive);
+  const inactive = actors.filter(a => a.inactive);
+  const bp = browsersPrefix();
+  const sharedPerms = perms.filter(p => p.holder === '*' || (bp && p.holder === bp + '.*'));
+  const nSites = distinctSites(perms.filter(p => !p.revoked)).length;
+
+  $('summary').textContent = `${active.length} active · ${nSites} site${nSites === 1 ? '' : 's'} connected`;
+  $('sitecount-sub').textContent = `${nSites} site${nSites === 1 ? '' : 's'} accept sign-ins or actions from the list on the left.`;
+
+  const sections = [
+    { title: 'You, on your devices', explainer: 'browsers where you’re signed in — trusted ones can also approve new permissions',
+      rows: active.filter(a => a.kind === 'browser'), shared: true },
+    { title: 'Your agents', explainer: 'act in your name, only where you’ve allowed — they can’t approve anything new',
+      rows: active.filter(a => a.kind === 'agent') },
+    { title: 'Outside services', explainer: 'companies acting on your behalf with their own identity',
+      rows: active.filter(a => a.kind === 'service') },
+  ].filter(s => s.rows.length);
+
+  $('sections').innerHTML = sections.map(sec => {
+    const sharedFoot = (sec.shared && sharedPerms.length) ? `
+      <div style="border-top:1px solid rgba(0,0,0,.06)">
+        <button class="sharedbtn" id="shared-toggle">${ui.sharedOpen ? '▾' : '▸'} Any browser you sign in with —
+          even a new one — can use ${sharedPerms.length} shared permission${sharedPerms.length === 1 ? '' : 's'}</button>
+        ${ui.sharedOpen ? `<div style="padding:0 16px 13px 16px">
+          <div class="sharednote">These permissions are shared: any browser you sign in with can use them
+            right away, for whichever of your addresses it signs in as — including a brand-new, sign-in-only browser.</div>
+          <div class="permcol">${sharedPerms.map(p => permLineHtml(p, null)).join('')}</div>
+        </div>` : ''}
+      </div>` : '';
+    return `<div style="margin-bottom:20px">
+      <div class="sechead"><span class="t">${sec.title}</span><span class="x">${sec.explainer}</span></div>
+      <div class="card">${sec.rows.map(a => actorRowHtml(a, perms)).join('')}${sharedFoot}</div>
+    </div>`;
+  }).join('');
+
+  // Inactive drawer: actors whose keys were all cut off. (Auto-demotion for
+  // long-unused actors needs last-used data — bean lfpu.)
+  $('inactive').innerHTML = inactive.length ? `
+    <div class="drawer">
+      <button class="drawerhead" id="inactive-toggle">
+        <span class="t">Inactive</span>
+        <span class="blurb">${inactive.map(a => escapeHtml(a.label)).join(' · ')}</span>
+        <span class="c">${ui.inactiveOpen ? '▾' : '▸'}</span>
+      </button>
+      ${ui.inactiveOpen ? `<div style="border-top:1px solid rgba(0,0,0,.07)">
+        ${inactive.map(a => {
+          const mono = monoOf(a);
+          return `<div class="irow">
+            <span class="amono sm ${mono.cls}">${escapeHtml(mono.text)}</span>
+            <span class="amain"><span class="lbl">${escapeHtml(a.label)}</span>
+              <span class="note">signed out</span></span>
+            <button class="dangerout" data-h="${escapeHtml(a.id)}">Remove for good</button>
+          </div>`;
+        }).join('')}
+        <div class="drawerfoot">Inactive things can no longer act — their keys were cut off or expired.
+          Removing one just clears it from this list; a browser you still own can always sign in again as a fresh entry.</div>
+      </div>` : ''}
+    </div>` : '';
+
+  // Addresses rail
+  $('addrlist').innerHTML = rootIds().map(email => {
+    const via = account.parentOf[email];
+    return `<div>${escapeHtml(email)}${via ? ` <span class="via">via ${escapeHtml(via)}</span>` : ''}</div>`;
+  }).join('') || '<div class="via">No addresses yet.</div>';
+
+  // wiring
+  for (const b of $('sections').querySelectorAll('.rowtoggle')) b.onclick = () => {
+    ui.expandedId = ui.expandedId === b.dataset.h ? null : b.dataset.h;
+    renderMain();
+  };
+  for (const b of $('sections').querySelectorAll('.managelink')) b.onclick = () => openDetail(b.dataset.h);
+  const st = $('shared-toggle');
+  if (st) st.onclick = () => { ui.sharedOpen = !ui.sharedOpen; renderMain(); };
+  const it = $('inactive-toggle');
+  if (it) it.onclick = () => { ui.inactiveOpen = !ui.inactiveOpen; renderMain(); };
+  for (const b of $('inactive').querySelectorAll('.dangerout')) b.onclick = async () => {
+    if (!confirm('Remove it for good? This clears it from the list; nothing regains access.')) return;
+    try { await post('/wsapi/forget_holder', { holder_id: b.dataset.h }); await reloadAccount(); renderMain(); }
+    catch (e) { alert('Remove failed: ' + e.message); }
+  };
+  wirePermActions($('sections'), renderMain);
+}
+
+// -------- sites view --------
+function whoOf(p, actors, bp) {
+  if (p.holder === '*') return 'You, from any device';
+  if (bp && p.holder === bp + '.*') return 'You, from any browser';
+  if (p.holder.endsWith('.*')) return 'You, from a group of devices';
+  const a = actors.find(x => x.id === p.holder);
+  return a ? a.label : 'A removed actor';
+}
+function renderSites() {
+  const actors = buildActors();
+  const perms = allPerms();
+  const bp = browsersPrefix();
+  const bySite = new Map();
+  for (const p of perms) {
+    if (!bySite.has(p.site)) bySite.set(p.site, []);
+    bySite.get(p.site).push(p);
+  }
+  $('sites-count').textContent = `${bySite.size} site${bySite.size === 1 ? '' : 's'}`;
+  $('sites-card').innerHTML = [...bySite.entries()].map(([site, ps]) => {
+    const names = [...new Set(ps.map(p =>
+      (p.holder === '*' || p.holder.endsWith('.*')) ? 'You' : whoOf(p, actors, bp)))];
+    const expanded = ui.expandedSite === site;
+    return `<div class="rowwrap${expanded ? ' open' : ''}">
+      <button class="srow sitetoggle" data-s="${escapeHtml(site)}">
+        <span class="smono">${escapeHtml((site[0] || '?').toUpperCase())}</span>
+        <span class="amain">
+          <span class="shost">${escapeHtml(site)}</span>
+          <span class="swho">${names.map(escapeHtml).join(' · ')}</span>
+        </span>
+        <span class="arecency">${ps.length} permission${ps.length === 1 ? '' : 's'}</span>
+        <span class="achev${expanded ? ' open' : ''}">›</span>
+      </button>
+      ${expanded ? `<div class="sexpand"><div class="permcol">${ps.map(p => {
+        const actor = actors.find(x => x.id === p.holder) || null;
+        return permLineHtml({ ...p, site: '' }, actor, { who: whoOf(p, actors, bp) });
+      }).join('')}</div></div>` : ''}
+    </div>`;
+  }).join('') || '<div style="padding:16px;font:12.5px system-ui;color:#8a8a93">Nothing connected yet — sites you approve appear here.</div>';
+  for (const b of $('sites-card').querySelectorAll('.sitetoggle')) b.onclick = () => {
+    ui.expandedSite = ui.expandedSite === b.dataset.s ? null : b.dataset.s;
+    renderSites();
+  };
+  wirePermActions($('sites-card'), renderSites);
+}
+
+// -------- actor detail --------
+function renderDetail() {
+  const actors = buildActors();
+  const actor = actors.find(a => a.id === ui.actorId);
+  if (!actor) { showView('main'); return; }
+  const perms = allPerms();
+  const mono = monoOf(actor);
+  const bp = browsersPrefix();
+  const trusted = actor.ids.filter(i => i.trusted).map(i => i.email);
+
+  const kindPhrase = actor.kind === 'browser' ? 'A browser of yours'
+    : actor.kind === 'agent' ? 'An agent of yours' : 'An outside service';
+  const metaLine = `${kindPhrase}${actor.since ? ' since ' + fmtDate(actor.since) : ''}`;
+
+  const callouts = {
+    browser: 'A browser is you. When it’s trusted for an address, it can sign in and approve new permissions for that address. Cutting it off signs it out everywhere within minutes.',
+    agent: 'This agent can only do what’s listed below, nowhere else — and it can never approve new permissions by itself. Every action it takes is signed with its own name and yours.',
+    service: 'An outside service with its own identity, allowed to act on your behalf only where listed below. It holds none of your addresses.',
+  };
+
+  // Permission slices, sectioned by HOW they apply — never by raw matcher id.
+  let mine = perms.filter(p => appliesTo(p, actor));
+  let redundant = [];
+  if (actor.kind === 'browser') {
+    const held = actor.ids.map(i => i.email);
+    mine = mine.filter(p => !p.as || held.includes(p.as));
+    redundant = mine.filter(p => p.as && trusted.includes(p.as));
+  }
+  const shown = mine.filter(p => !redundant.includes(p));
+  const own = shown.filter(p => p.holder === actor.id);
+  const grp = shown.filter(p => p.holder.endsWith('.*'));
+  const any = shown.filter(p => p.holder === '*');
+  const secs = [];
+  if (actor.kind === 'browser') {
+    if (grp.length) secs.push(['FROM ANY OF YOUR BROWSERS', grp]);
+    if (any.length) secs.push(['FROM ANY DEVICE OF YOURS', any]);
+    if (own.length) secs.push(['ONLY THIS BROWSER', own]);
+  } else {
+    const all = [...own, ...grp, ...any];
+    if (all.length) secs.push([`ALLOWED AT ${distinctSites(liveOf(all)).length} PLACE${distinctSites(liveOf(all)).length === 1 ? '' : 'S'}`, all]);
+  }
+
+  const nameHtml = ui.editingName
+    ? `<div style="display:flex;gap:8px;align-items:center">
+        <input class="inlinename" id="rn-input" value="${escapeHtml(actor.label)}" maxlength="64">
+        <button class="btn-dark" id="rn-save">Save</button>
+        <button class="btn-plain" id="rn-cancel">Cancel</button></div>`
+    : `<div class="dtitle">${escapeHtml(actor.label)} <button class="rlink" id="rn-edit">rename</button></div>`;
+
+  const pubShown = actor.publicName || ((actor.addr || '').split('@')[0] + ' (its handle)');
+  const pubHtml = actor.kind === 'agent' && actor.addr
+    ? ` · appears publicly as ${ui.editingPublic
+        ? `<input class="inlinepub" id="pn-input" value="${escapeHtml(actor.publicName)}" maxlength="64" placeholder="its handle">
+           <button class="btn-dark xs" id="pn-save">Save</button>
+           <button class="btn-plain xs" id="pn-cancel">Cancel</button>`
+        : `<b style="color:#17171a">“${escapeHtml(pubShown)}”</b> <button class="rlink" id="pn-edit">edit</button>`}`
+    : '';
+
+  const idsHtml = actor.kind === 'browser' && actor.ids.length ? `
+    <div class="dsecthead">Addresses it can use</div>
+    <div class="dtable">${actor.ids.map(i => `
+      <div class="didrow"><span class="em">${escapeHtml(i.email)}</span>
+        ${i.trusted ? '<span class="badge b-green">can approve permissions</span>'
+                    : '<span class="badge b-gray">sign-in only</span>'}</div>`).join('')}
+    </div>` : '';
+
+  const blanketHtml = actor.kind === 'browser' && trusted.length ? `
+    <div class="dblanket">${trusted.map(email => `
+      <div class="row"><b>Anything as <span class="mono">${escapeHtml(email)}</span></b><span class="dim">
+        — it can sign in anywhere, act, and approve new permissions for this address.
+        Individual grants aren't listed; they'd be redundant.</span></div>`).join('')}
+    </div>` : '';
+
+  const noPerms = !secs.length && !(actor.kind === 'browser' && trusted.length);
+
+  const dangerText = actor.kind === 'browser'
+    ? 'Sign out & remove this browser — it loses all its keys within minutes. If you still own it, it can simply sign in again.'
+    : `Sign out this ${actor.kind} — it stops working everywhere within minutes. Its name and history stay attributed to it.`;
+  const dangerBtn = actor.kind === 'browser' ? 'Sign out & remove' : 'Sign out';
+
+  const certs = account.deviceCerts.filter(c => c.holder === actor.id);
+  const techHtml = ui.techOpen ? `<div class="tech">${certs.length ? certs.map(c =>
+    `${escapeHtml(c.purpose)} cert · ${c.identities.map(escapeHtml).join(', ')} · issued ${fmtDate(c.issued_at)}
+     · expires ${fmtDate(c.expires_at)}${c.revoked ? ' · <span style="color:#9d2f26">revoked</span>' : ''}<br>
+     key ${escapeHtml((c.pubkey || '').slice(0, 24))}… · issuer ${escapeHtml(c.iss || '')}`).join('<hr style="border:none;border-top:1px solid rgba(0,0,0,.07);margin:8px 0">')
+    : 'No certificates recorded for it.'}</div>` : '';
+
+  $('detail-card').innerHTML = `
+    <button class="backbtn" id="detail-back">← Everything acting as you</button>
+    <div class="dhead">
+      <div class="amono lg ${mono.cls}">${escapeHtml(mono.text)}</div>
+      <div style="flex:1;min-width:0">
+        ${nameHtml}
+        <div class="daddr">${escapeHtml(actor.kind === 'browser'
+          ? actor.ids.map(i => i.email).join(' · ') : (actor.addr || ''))}</div>
+      </div>
+    </div>
+    <div class="dmeta">${metaLine}${pubHtml}</div>
+    <div class="dcallout">${callouts[actor.kind]}</div>
+    ${idsHtml}
+    <div class="dsecthead">What it may do</div>
+    ${blanketHtml}
+    ${noPerms ? '<div style="font:12px system-ui;color:#8a8a93;margin-bottom:18px">Nothing yet — permissions you approve will appear here.</div>' : ''}
+    ${secs.map(([title, ps]) => `
+      <div class="dsection">
+        <div class="t">${title}</div>
+        <div class="dgrid">${ps.map(p => permLineHtml(p, actor)).join('')}</div>
+      </div>`).join('')}
+    <div class="dangerzone">
+      <div class="t">${dangerText}</div>
+      <button class="dangerbtn" id="cutoff">${dangerBtn}</button>
+    </div>
+    <button class="techlink" id="tech-toggle">Technical details (certificates, key fingerprints) ${ui.techOpen ? '▾' : '▸'}</button>
+    ${techHtml}`;
+
+  $('detail-back').onclick = () => history.back();
+  const rn = $('rn-edit');
+  if (rn) rn.onclick = () => { ui.editingName = true; renderDetail(); $('rn-input').focus(); };
+  const rnc = $('rn-cancel');
+  if (rnc) rnc.onclick = () => { ui.editingName = false; renderDetail(); };
+  const rns = $('rn-save');
+  if (rns) rns.onclick = async () => {
+    const v = $('rn-input').value.trim();
+    ui.editingName = false;
+    if (!v || v === actor.label) { renderDetail(); return; }
+    try { await post('/wsapi/rename_holder', { holder_id: actor.id, label: v }); await reloadAccount(); }
+    catch (e) { alert('Rename failed: ' + e.message); }
+    renderDetail();
+  };
+  const pn = $('pn-edit');
+  if (pn) pn.onclick = () => { ui.editingPublic = true; renderDetail(); $('pn-input').focus(); };
+  const pnc = $('pn-cancel');
+  if (pnc) pnc.onclick = () => { ui.editingPublic = false; renderDetail(); };
+  const pns = $('pn-save');
+  if (pns) pns.onclick = async () => {
+    const v = $('pn-input').value.trim();
+    ui.editingPublic = false;
+    try { await post('/wsapi/set_public_name', { email: actor.addr, public_name: v }); await reloadAccount(); }
+    catch (e) { alert('Update failed: ' + e.message); }
+    renderDetail();
+  };
+  $('tech-toggle').onclick = () => { ui.techOpen = !ui.techOpen; renderDetail(); };
+  // Sign out = revoke every one of its certs (its keys die within minutes;
+  // fail-closed at verifiers) + revoke its own live grants. The entry stays,
+  // in the Inactive drawer — "Remove for good" (forget_holder) lives there.
+  $('cutoff').onclick = async () => {
+    const verb = actor.kind === 'browser' ? 'Sign out & remove' : 'Sign out';
+    if (!confirm(`${verb} “${actor.label}”? It stops working everywhere within minutes.`)) return;
+    try {
+      const certs2 = account.deviceCerts.filter(c => c.holder === actor.id && !c.revoked);
+      for (const c of certs2) await post('/wsapi/revoke_device_cert', { id: c.id });
+      const own2 = allPerms().filter(p => p.holder === actor.id && !p.revoked && p.statusIdx != null);
+      for (const p of own2) { try { await post('/wsapi/revoke_warrant', { id: p.id }); } catch (e) { /* best effort */ } }
+      if (!certs2.length) {
+        // Nothing to revoke (e.g. a service holder with no recorded certs):
+        // fall back to removing it outright.
+        await post('/wsapi/forget_holder', { holder_id: actor.id });
+      }
+      await reloadAccount();
+      ui.inactiveOpen = true;
+      showView('main', { push: false });
+      history.replaceState({ view: 'main' }, '', location.pathname);
+    } catch (e) { alert('Sign out failed: ' + e.message); }
+  };
+  wirePermActions($('detail-card'), renderDetail);
+}
+
+// -------- view routing --------
+function showView(view, opts) {
+  opts = opts || {};
+  ui.view = view;
+  $('view-main').hidden = view !== 'main';
+  $('view-sites').hidden = view !== 'sites';
+  $('view-detail').hidden = view !== 'detail';
+  if (view === 'main') renderMain();
+  if (view === 'sites') renderSites();
+  if (view === 'detail') renderDetail();
+  window.scrollTo(0, 0);
+}
+function openSites() {
+  ui.expandedSite = null;
+  history.pushState({ view: 'sites' }, '', '#sites');
+  showView('sites');
+}
+function openDetail(holderId) {
+  ui.actorId = holderId; ui.editingName = false; ui.editingPublic = false; ui.techOpen = false;
+  history.pushState({ view: 'detail', holderId }, '', '#a:' + encodeURIComponent(holderId));
+  showView('detail');
+}
+window.addEventListener('popstate', (e) => {
+  if (e.state && e.state.view === 'detail') {
+    ui.actorId = e.state.holderId; ui.editingName = false; ui.editingPublic = false; ui.techOpen = false;
+    showView('detail'); return;
+  }
+  if (e.state && e.state.view === 'sites') { showView('sites'); return; }
+  showView('main');
+});
+$('open-sites').onclick = openSites;
+$('sites-back').onclick = () => history.back();
+
+// -------- rail: add an address --------
+let aePending = '';
+function aeShow(step) {
+  $('addr-closed').hidden = step !== 'closed';
+  $('addr-email').hidden = step !== 'email';
+  $('addr-code').hidden = step !== 'code';
+  $('ae-status').textContent = ''; $('ae-status2').textContent = '';
+}
+$('addr-start').onclick = () => { aeShow('email'); $('ae-email').focus(); };
+$('ae-cancel').onclick = () => { $('ae-email').value = ''; aeShow('closed'); };
+$('ae-cancel2').onclick = () => { $('ae-code').value = ''; aePending = ''; aeShow('closed'); };
+$('ae-send').onclick = async () => {
+  const status = $('ae-status'); status.className = 'status muted';
+  const email = $('ae-email').value.trim();
+  if (!email) return;
+  try {
+    status.textContent = 'Checking…';
+    let info; try { info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`); } catch { info = {}; }
+    if (info.type === 'primary') {
+      const domain = email.split('@')[1];
+      status.innerHTML = `${escapeHtml(email)} is managed by ${escapeHtml(domain)}. Sign in to an app with it
+        and it's added automatically — no code needed.`;
+      return;
+    }
+    status.textContent = 'Sending code…';
+    await post('/wsapi/stage_email', { email });
+    aePending = email;
+    $('ae-pending').textContent = email;
+    aeShow('code');
+    $('ae-code').focus();
+  } catch (e) { status.className = 'status err'; status.textContent = e.message; }
+};
+$('ae-verify').onclick = async () => {
+  const status = $('ae-status2'); status.className = 'status muted';
+  try {
+    status.textContent = 'Verifying…';
+    await post('/wsapi/complete_email_addition', { email: aePending, token: $('ae-code').value.trim() });
+    $('ae-email').value = ''; $('ae-code').value = ''; aePending = '';
+    aeShow('closed');
+    await reloadAccount(); renderMain();
+  } catch (e) { status.className = 'status err'; status.textContent = e.message; }
+};
+
+// -------- rail: account settings --------
+function toggleForm(id) {
+  for (const f of ['pass-form', 'del-form']) $(f).hidden = (f === id) ? !$(id).hidden : true;
+  $('set-status').textContent = '';
+}
+$('set-pass').onclick = () => { toggleForm('pass-form'); if (!$('pass-form').hidden) $('cp-old').focus(); };
+$('cp-cancel').onclick = () => { $('pass-form').hidden = true; };
+$('cp-go').onclick = async () => {
+  const status = $('cp-status'); status.className = 'status muted'; status.textContent = 'Changing…';
+  try {
+    await post('/wsapi/update_password', { oldpass: $('cp-old').value, newpass: $('cp-new').value });
+    $('cp-old').value = ''; $('cp-new').value = '';
+    status.className = 'status ok'; status.textContent = '✓ Password changed (other sessions were signed out).';
+  } catch (e) { status.className = 'status err'; status.textContent = e.message; }
+};
+// Sign out everywhere: cut every BROWSER's keys (each becomes sign-in-again),
+// leave agents/services running, then end this session too.
+$('set-signout-all').onclick = async () => {
+  if (!confirm('Sign out everywhere? Every browser signed in to this account loses its keys within minutes and must sign in again. Agents and services are not affected.')) return;
+  const status = $('set-status'); status.className = 'status muted'; status.textContent = 'Signing out…';
+  try {
+    const browsers = buildActors().filter(a => a.kind === 'browser');
+    for (const a of browsers) {
+      for (const c of account.deviceCerts.filter(c => c.holder === a.id && !c.revoked)) {
+        await post('/wsapi/revoke_device_cert', { id: c.id });
+      }
+    }
+    try { await post('/wsapi/logout', {}); } catch (e) { /* session may be gone */ }
+    await clearLocal();
+    location.reload();
+  } catch (e) { status.className = 'status err'; status.textContent = e.message; }
+};
+$('set-advanced').onclick = () => {
+  const adv = $('advanced');
+  adv.hidden = !adv.hidden;
+  if (!adv.hidden) adv.scrollIntoView({ behavior: 'smooth' });
+};
+$('set-delete').onclick = () => { toggleForm('del-form'); if (!$('del-form').hidden) $('del-pass').focus(); };
+$('del-cancel').onclick = () => { $('del-form').hidden = true; };
+$('del-go').onclick = async () => {
+  const status = $('del-status'); status.className = 'status muted'; status.textContent = 'Deleting…';
+  const email = rootIds()[0];
+  try {
+    await post('/wsapi/account_cancel', { email, pass: $('del-pass').value });
+    await clearLocal();
+    location.href = '/';
+  } catch (e) { status.className = 'status err'; status.textContent = e.message; }
+};
+
+// -------- advanced: manual warrant signing (debug) --------
+// Signs a device-shaped warrant with the CONFIG key held in this browser and
+// registers it. Output is `warrant~config_cert` — the exact tail an agent
+// splices into its access presentations. Manually-signed warrants default to
+// `*` (any of your holders).
+async function signDeviceWarrant(config, grantor, grantee, holder, audience, scopes, statusRef) {
+  const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+  const claims = { typ: 'browserid-warrant-v1', iat: nowS(), exp: nowS() + 90*24*3600,
+    grantor, grantee, holder, audience };
+  if ((scopes || []).length) claims.scopes = scopes;
+  if (statusRef) claims.status = statusRef;
+  const payload = b64urlJson(claims);
+  const sig = await window.Keystore.sign(config.privateKey, `${header}.${payload}`);
+  return `${header}.${payload}.${sig}`;
+}
+$('w-create').onclick = async () => {
+  const agentEmail = $('w-agent').value.trim().toLowerCase(), audience = $('w-audience').value.trim();
+  const scopes = $('w-scopes').value.split(/\s+/).map(s => s.trim()).filter(Boolean);
+  const status = $('w-status'); const fail = (m) => { status.className = 'status err'; status.textContent = m; };
+  if (!/^[^@\s]+@[^@\s]+$/.test(agentEmail)) return fail('Agent identity must be an email.');
+  if (!audience || audience.includes('*')) return fail('Audience must be one exact value (no wildcards).');
+  const config = configFor(agentEmail);
+  if (!config) return fail(`No config key covering ${agentEmail} in this browser — sign in with the delegating identity through an app's dialog first.`);
+  status.className = 'status muted'; status.textContent = 'Signing…';
+  try {
+    let statusRef = null;
+    try { const alloc = await post('/wsapi/allocate_warrant_status', { agent_email: agentEmail, audience, scopes }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
+    const jws = await signDeviceWarrant(config, agentEmail, '*', '*', audience, scopes, statusRef);
+    try { await post('/wsapi/register_warrant', { warrant: jws, config_cert: config.cert }); } catch (e) { console.warn(e); }
+    $('w-out').textContent = `${jws}~${config.cert}`; $('w-out').hidden = false;
+    status.className = 'status ok'; status.textContent = 'Signed & registered — paste warrant~config_cert into the agent.';
+    await reloadAccount(); renderMain();
+  } catch (e) { fail('Failed: ' + e.message); }
+};
+
+// -------- sign-in (direct visit while signed out) --------
+let siMode = 'email';
+let siPendingPass = '';
 function siShow(mode, opts) {
   opts = opts || {};
   siMode = mode;
@@ -395,8 +1237,7 @@ function siShow(mode, opts) {
 function siMuted(m) { $('si-status').className = 'status muted'; $('si-status').textContent = m; }
 function siErr(m)   { $('si-status').className = 'status err';   $('si-status').textContent = m; }
 
-// Resend the emailed code, throttled to one per 5 minutes. The button is
-// disabled with a live countdown; the initial send starts the cooldown too.
+// Resend the emailed code, throttled to one per 5 minutes.
 const SI_RESEND_COOLDOWN_MS = 5 * 60 * 1000;
 let siResendReadyAt = 0, siResendTimer = null;
 function siTickResend() {
@@ -428,37 +1269,28 @@ $('si-resend').onclick = async (ev) => {
     siStartResendCooldown();
   } catch (e) { siErr(e.message); }
 };
-
 $('si-back').onclick = () => {
   $('si-pass').value = ''; $('si-code').value = ''; $('si-newpass').value = ''; siPendingPass = '';
   siShow('email', { lead: "Enter your email — we'll sign you in or set you up.", btn: 'Continue' });
 };
-
 async function siSendResetCode(email, lead) {
   siMuted('Emailing a code…');
   await post('/wsapi/stage_reset', { email });
   siShow('reset-code', { lead: `${lead} — we emailed a code to ${email}.`, btn: 'Sign in' });
   siStartResendCooldown();
 }
-
 async function siDiscover(email) {
   siMuted('Checking…');
   const info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`);
   if (info.type === 'primary') {
-    // Primary sign-in needs a cross-origin access-cert mint from the IdP, which
-    // /account's strict CSP (connect 'self') blocks. Route it through the dialog
-    // (the open-connect tier + the proven device-cert primary flow): it
-    // establishes the broker session as a side effect and redirects back here,
-    // where boot() sees us authenticated. Replaces the dead classic `info.auth`
-    // redirect (the legacy /browserid/auth page was removed with the Persona stack).
+    // Primary sign-in needs a cross-origin access-cert mint, which this
+    // page's strict CSP (connect 'self') blocks. Route it through the dialog:
+    // it establishes the broker session and redirects back here.
     siMuted(`Redirecting to ${info.issuer} to sign in…`);
     const origin = location.origin;
-    // Keep the query string: a pending ?provision=<code> must survive the
-    // round-trip, or the user lands back on a bare account page with the
-    // authorization card gone (A0 → A1 handoff).
     location.assign('/dialog/dialog.html?rp_redirect=1'
       + '&rp_origin=' + encodeURIComponent(origin)
-      + '&return_to=' + encodeURIComponent(origin + '/account' + location.search)
+      + '&return_to=' + encodeURIComponent(origin + '/account')
       + '&login_hint=' + encodeURIComponent(email)
       + '&state=acct');
     return;
@@ -478,7 +1310,6 @@ async function siDiscover(email) {
     await siSendResetCode(email, 'Set a password to sign in');
   }
 }
-
 $('signin-form').onsubmit = async (e) => {
   e.preventDefault();
   const email = $('si-email').value.trim();
@@ -515,579 +1346,6 @@ $('signin-form').onsubmit = async (e) => {
   } catch (err) { siErr(err.message); }
 };
 
-siShow('email', { lead: "Enter your email — we'll sign you in or set you up.", btn: 'Continue' });
-
-// -------- identity + agent lists --------
-function idpUrlFor(domain) {
-  return /^(localhost|127\.)/.test(domain) ? `http://${domain}` : `https://${domain}`;
-}
-
-// This browser holds a live device cert for the email → one-click login here.
-function localCertReady(email) {
-  return deviceCache.some(r => r.kind === 'device' && r.email === email && r.privateKey && r.cert
-    && (certPayload(r.cert)?.exp || 0) > nowS() + 60);
-}
-
-function renderUserIdentities() {
-  const rows = account.emails
-    .filter(e => !account.agents.includes(e))
-    .map(email => {
-      const via = account.parentOf[email];
-      const here = localCertReady(email) ? ' <span class="badge active">active</span>' : '';
-      return `<li><div class="row"><span class="email-text">${escapeHtml(email)}${here}
-        ${via ? `<span class="email-sub">signs in via ${escapeHtml(via)}</span>` : ''}
-      </span></div></li>`;
-    }).join('');
-  $('user-ids').innerHTML = rows +
-    `<li class="add"><button class="row" id="add-email"><span class="email-text">+ Add an email</span></button></li>`;
-  $('add-email').onclick = () => { $('add-email-form').hidden = false; $('ae-email').focus(); };
-  renderAgentNames();
-}
-
-// Agent names card (bean tmk8): the PUBLIC byline per agent identity — the
-// one name on this page that IS published. Unset = the handle is shown.
-function renderAgentNames() {
-  const card = $('agent-names-card');
-  card.hidden = !account.agents.length;
-  if (!account.agents.length) return;
-  $('agent-names').innerHTML = account.agents.map(a => {
-    const pn = account.publicNames[a];
-    const shown = pn ? escapeHtml(pn)
-      : `<span class="muted">${escapeHtml(a.slice(0, a.indexOf('@')))} <span style="font-size:11px">(default — its handle)</span></span>`;
-    return `<li><div class="row"><span class="email-text">${shown}
-      <span class="email-sub">${escapeHtml(a)}</span></span>
-      <button class="small linkish an-edit" data-a="${escapeHtml(a)}" data-n="${escapeHtml(pn || '')}">edit</button></div></li>`;
-  }).join('');
-  for (const b of $('agent-names').querySelectorAll('.an-edit')) b.onclick = async () => {
-    const name = prompt('Public display name — shown wherever this agent acts (empty shows its handle):', b.dataset.n);
-    if (name == null) return;
-    try { await post('/wsapi/set_public_name', { email: b.dataset.a, public_name: name.trim() }); await reloadAccount(); renderUserIdentities(); }
-    catch (e) { alert('Update failed: ' + e.message); }
-  };
-}
-
-/// A minted agent's parent (from the derived map) or, for a not-yet-minted
-/// reserved handle, the provisioning cert's delegator.
-// Mirror of the server's agent-identity email rule (browserid_registrar::
-// agent_identity_email): no translation — the name IS the full local-part, so
-// the identity email is just `<name>@<owner's email domain>`.
-function agentIdentityEmail(delegator, name) {
-  const domain = (delegator || '').slice((delegator || '').lastIndexOf('@') + 1);
-  return `${name}@${domain}`;
-}
-
-// Is this owner on a fallback IdP (their email domain differs from the IdP that
-// roots them)? Fallback owners may only sub-address their own email.
-function isFallbackOwner(delegator, idpDomain) {
-  const domain = (delegator || '').slice((delegator || '').lastIndexOf('@') + 1);
-  return !!domain && domain.toLowerCase() !== (idpDomain || '').toLowerCase();
-}
-
-// The full constraint name (= identity local-part) for a typed handle: for a
-// fallback owner it must be `<owner-local>+<handle>`; for a primary owner the
-// handle is used as-is. Idempotent if the user already typed the prefix.
-function agentConstraintName(delegator, idpDomain, handle) {
-  const local = (delegator || '').slice(0, (delegator || '').lastIndexOf('@'));
-  return isFallbackOwner(delegator, idpDomain) && !handle.startsWith(local + '+')
-    ? `${local}+${handle}`
-    : handle;
-}
-
-// -------- devices & holders (holder-authorization model, stage 2b) --------
-// Each thing that acts for you is a HOLDER (an opaque broker-assigned id), and
-// holders group into user-organized namespaces. The tree lists namespaces →
-// holders; a holder carries a trust badge (trusted = holds a config cert;
-// login-only = authentication only) and is revocable (logs it out; its access
-// certs die). Labels are editable inline; namespaces are creatable/removable.
-
-const holderPrefix = (id) => (id && id.includes('.')) ? id.slice(0, id.indexOf('.')) : null;
-// Mirror of browserid-core HolderMatcher::matches — `*` / `<ns>.*` / `<id>`.
-function holderMatcherMatches(matcher, holderId) {
-  if (!matcher) return false;
-  if (matcher === '*') return true;
-  if (matcher.endsWith('.*')) {
-    const ns = matcher.slice(0, -2);
-    return holderId.startsWith(ns) && holderId.slice(ns.length).startsWith('.');
-  }
-  return matcher === holderId;
-}
-
-// ALL distinct holder ids found on this browser's local device certs, so we can
-// tag their rows "this browser". A set (not first-match) — transitional states
-// can leave certs under more than one holder, and any of them is "here".
-function localHolderIds() {
-  const out = new Set();
-  for (const r of deviceCache) {
-    // Only AUTHENTICATION (device) records mark "this browser": a deposited
-    // config-only record can carry a foreign holder (e.g. the as-you recovery
-    // pairs the user's config key with the SERVICE's holder in one IdP visit)
-    // and must not tag that holder as this browser.
-    if (r.kind !== 'device' || !r.cert) continue;
-    const c = certPayload(r.cert);
-    if (c && c.holder && (c.exp || 0) > nowS() + 60) out.add(c.holder);
-  }
-  return out;
-}
-
-function holderRowHtml(h, thisHolder) {
-  const trust = h.trust === 'trusted' ? '<span class="badge active">trusted</span>' : '';
-  const here = thisHolder && thisHolder.has(h.holder_id)
-    ? '<span class="badge info">this browser</span>' : '';
-  const moving = h.moving_to
-    ? `<span class="badge info">arrives on next sign-in</span>` : '';
-  const rev = (h.revoked && !h.moving_to) ? '<span class="badge revoked">revoked</span>' : '';
-  const issued = h.issued_at ? `issued ${new Date(Date.parse(h.issued_at)).toLocaleDateString()}` : '';
-  const wc = `${h.warrant_count} warrant${h.warrant_count === 1 ? '' : 's'}`;
-  const certs = `${h.cert_count} cert${h.cert_count === 1 ? '' : 's'}`;
-  const ids = (h.identities || []).length
-    ? `<span class="email-sub">${h.identities.map(i => `<span class="idchip">${escapeHtml(i)}</span>`).join('')}</span>` : '';
-  return `<li><button class="row holder-row" data-h="${escapeHtml(h.holder_id)}">
-    <span class="email-text">${escapeHtml(h.label)} ${trust} ${here} ${moving} ${rev}
-      ${ids}
-      <span class="email-sub">${[issued, certs, wc].filter(Boolean).join(' · ')}</span></span>
-    <span class="chev">›</span></button></li>`;
-}
-
-function renderHolders() {
-  const data = account.holders || { namespaces: [], holders_without_namespace: [] };
-  const nss = data.namespaces || [];
-  const orphans = data.holders_without_namespace || [];
-  $('holders-card').hidden = !(nss.length || orphans.length);
-  const thisHolder = localHolderIds();
-  const groups = nss.map(ns => {
-    const rows = ns.holders.length
-      ? `<ul class="idlist">${ns.holders.map(h => holderRowHtml(h, thisHolder)).join('')}</ul>`
-      : `<p class="muted" style="font-size:13px;margin:4px 0 0">No holders yet.</p>`;
-    const del = ns.holders.length
-      ? '' // non-empty namespaces can't be deleted; revoke holders first
-      : `<button class="small linkish ns-del" data-n="${escapeHtml(ns.name)}" style="color:#c53030">delete</button>`;
-    return `<div style="margin-bottom:16px">
-      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px">
-        <b style="font-size:15px">${escapeHtml(ns.label)}</b>
-        <button class="small linkish ns-rename" data-n="${escapeHtml(ns.name)}" data-l="${escapeHtml(ns.label)}">rename</button>
-        ${del}
-      </div>
-      ${rows}</div>`;
-  }).join('');
-  const orphanGroup = orphans.length ? `<div style="margin-bottom:16px">
-    <b style="font-size:15px">Uncategorized</b>
-    <ul class="idlist">${orphans.map(h => holderRowHtml(h, thisHolder)).join('')}</ul></div>` : '';
-  $('holders-tree').innerHTML = groups + orphanGroup;
-
-  for (const b of $('holders-tree').querySelectorAll('.holder-row')) {
-    b.onclick = () => openHolder(b.dataset.h);
-  }
-  for (const b of $('holders-tree').querySelectorAll('.ns-rename')) b.onclick = async () => {
-    const label = prompt('Namespace name:', b.dataset.l);
-    if (label == null || !label.trim()) return;
-    try { await post('/wsapi/rename_namespace', { name: b.dataset.n, label: label.trim() }); await reloadAccount(); renderHolders(); }
-    catch (e) { alert('Rename failed: ' + e.message); }
-  };
-  for (const b of $('holders-tree').querySelectorAll('.ns-del')) b.onclick = async () => {
-    if (!confirm(`Delete the "${b.dataset.n}" namespace?`)) return;
-    try { await post('/wsapi/delete_namespace', { name: b.dataset.n }); await reloadAccount(); renderHolders(); }
-    catch (e) { alert('Delete failed: ' + e.message); }
-  };
-}
-
-// New-namespace form
-$('nn-add').onclick = () => { $('new-namespace-form').hidden = false; $('nn-name').focus(); };
-$('nn-cancel').onclick = () => { $('new-namespace-form').hidden = true; $('nn-name').value = ''; $('nn-label').value = ''; $('nn-status').textContent = ''; };
-$('nn-btn').onclick = async () => {
-  const name = $('nn-name').value.trim(), label = $('nn-label').value.trim();
-  const status = $('nn-status');
-  if (!name) { status.className = 'status err'; status.textContent = 'Enter a slug.'; return; }
-  try {
-    await post('/wsapi/create_namespace', { name, label: label || undefined });
-    $('new-namespace-form').hidden = true; $('nn-name').value = ''; $('nn-label').value = '';
-    await reloadAccount(); renderHolders();
-  } catch (e) { status.className = 'status err'; status.textContent = e.message; }
-};
-
-// A warrant's holder matcher, shown as the holder's friendly label when it
-// names exactly one known holder, else as the raw matcher (`*` / `<ns>.*` /
-// an unknown `<id>` — e.g. an external service whose cert we never recorded).
-function matcherDisplay(m) {
-  if (!m || m === '*') return '<span class="muted" style="font-size:12px">any of my devices</span>';
-  if (m.endsWith('.*')) {
-    const l = nsLabelForPrefix(m.slice(0, -2));
-    return l ? escapeHtml('all ' + l) : '<span class="muted" style="font-size:12px">a whole group</span>';
-  }
-  const h = findHolder(m);
-  return h ? escapeHtml(h.label) : '<span class="muted" style="font-size:12px">a removed device</span>';
-}
-
-// Sites slice: every warrant on the account, grouped audience → matcher, as a
-// compact rollup ("who may act there, doing what"). Login-scoped warrants fold
-// into a "Sign in as:" line; other scopes show as a truncated chip list. The
-// full per-warrant table (with revoke/forget) lives in the site detail view.
-function nsLabelForPrefix(p) {
-  for (const ns of ((account.holders || {}).namespaces || [])) {
-    if (ns.prefix === p) return ns.label;
-  }
-  return null;
-}
-// A matcher as a group heading: "All Browsers" / "Only: Chrome on macOS" /
-// "Any of my holders" — raw mono chip when it names nothing we know.
-function matcherGroupLabel(m) {
-  if (!m || m === '*') return 'Any of my holders';
-  if (m.endsWith('.*')) {
-    const l = nsLabelForPrefix(m.slice(0, -2));
-    return l ? 'All ' + escapeHtml(l) : 'A previous group';
-  }
-  const h = findHolder(m);
-  return h ? 'Only: ' + escapeHtml(h.label) : 'Only: a removed device';
-}
-// A pure login grant: no scopes beyond the `login` sentinel.
-function isLoginWarrant(w) {
-  return ((w.scopes || []).filter(s => s !== 'login')).length === 0;
-}
-
-function renderSites() {
-  const byAud = new Map();
-  for (const w of account.warrants) {
-    const k = w.audience || '—';
-    // The broker's BARE origin is not listed as a site: showing it with a
-    // "login" grant would misleadingly understate the relationship — the
-    // broker inherently holds your account and keys, not a per-site grant.
-    // Broker-origin sub-audiences (e.g. the guestbook) ARE real per-site
-    // grants and list like any other site.
-    try {
-      const u = new URL(k);
-      if (u.origin === location.origin && (u.pathname === '/' || u.pathname === '')) continue;
-    } catch (e) { /* non-URL audience: list it */ }
-    if (!byAud.has(k)) byAud.set(k, []);
-    byAud.get(k).push(w);
-  }
-  // Own card: show it whenever signed in, with an empty state when nothing's
-  // registered yet (so the section is discoverable).
-  $('sites-card').hidden = false;
-  if (!byAud.size) {
-    $('sites-tree').innerHTML = `<p class="muted" style="font-size:13px">Nothing authorized yet —
-      grants you approve appear here, grouped by site.</p>`;
-    return;
-  }
-  $('sites-tree').innerHTML = '<ul class="idlist">' + [...byAud.entries()].map(([aud, ws]) => {
-    const byMatcher = new Map();
-    for (const w of ws) {
-      const m = w.holder || '*';
-      if (!byMatcher.has(m)) byMatcher.set(m, []);
-      byMatcher.get(m).push(w);
-    }
-    const groups = [...byMatcher.entries()].map(([m, mws]) => {
-      const logins = [...new Set(mws.filter(isLoginWarrant).map(w => w.agent_email))];
-      const perms = [...new Set(mws.flatMap(w => (w.scopes || []).filter(s => s !== 'login')))];
-      const shown = perms.slice(0, 3);
-      const lines = [];
-      if (logins.length) lines.push(`<span class="email-sub">Sign in as: ${logins.map(escapeHtml).join(', ')}</span>`);
-      if (perms.length) lines.push(`<span style="display:block;margin-top:2px">${
-        shown.map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('')}${
-        perms.length > shown.length ? `<span class="muted" style="font-size:12px"> +${perms.length - shown.length} more</span>` : ''}</span>`);
-      if (!lines.length) lines.push('<span class="email-sub">no scopes</span>');
-      return `<span style="display:block;margin:3px 0 0 12px">
-        <span style="display:block;font-size:13px;font-weight:500">${matcherGroupLabel(m)}</span>${lines.join('')}</span>`;
-    }).join('');
-    const host = aud.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-    return `<li><button class="row site-row" data-a="${escapeHtml(aud)}">
-      <span class="email-text"><span class="aud" style="font-weight:600">${escapeHtml(host)}</span>${groups}</span>
-      <span class="chev">›</span></button></li>`;
-  }).join('') + '</ul>';
-  for (const b of $('sites-tree').querySelectorAll('.site-row')) {
-    b.onclick = () => openSite(b.dataset.a);
-  }
-}
-
-// -------- site detail: every grant for one audience, with revoke --------
-let sdAud = null;
-function openSite(aud) {
-  sdAud = aud;
-  history.pushState({ view: 'site', aud }, '', '#s:' + encodeURIComponent(aud));
-  renderSiteDetail();
-}
-function renderSiteDetail() {
-  const ws = account.warrants.filter(w => (w.audience || '—') === sdAud);
-  $('app').hidden = true; $('holder-detail').hidden = true; $('site-detail').hidden = false;
-  $('sd-aud').textContent = sdAud;
-  if (!ws.length) {
-    $('sd-warrants').innerHTML = '<p class="muted" style="font-size:13px">No grants left for this site.</p>';
-    return;
-  }
-  const byId = {};
-  $('sd-warrants').innerHTML = `<table class="wtable">${ws.map(w => {
-    byId[w.id] = w;
-    const signed = w.signed_at ? `signed ${new Date(Date.parse(w.signed_at)).toLocaleDateString()}` : '';
-    const actions = w.revoked
-      ? `<button class="small sw-forget" data-i="${w.id}">Forget</button>`
-      : (w.status_idx != null
-          ? `<button class="small sw-revoke" data-i="${w.id}" style="color:#c53030">Revoke</button>`
-          : `<button class="small sw-forget" data-i="${w.id}">Forget</button>`);
-    return `<tr><td>
-      <span style="font-size:13px">${escapeHtml(w.agent_email)}</span> · ${matcherDisplay(w.holder)}<br>
-      <span class="muted" style="font-size:12px">${[`acting for ${w.delegator_email}`, signed].map(escapeHtml).filter(Boolean).join(' · ')}</span><br>
-      ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
-      <td style="white-space:nowrap;text-align:right">${warrantStateHtml(w)}<br>${actions}</td></tr>`;
-  }).join('')}</table>`;
-  for (const b of $('sd-warrants').querySelectorAll('.sw-forget')) b.onclick = async () => {
-    try { await post('/wsapi/forget_warrant', { id: Number(b.dataset.i) }); await reloadAccount(); renderHolders(); renderSites(); renderSiteDetail(); }
-    catch (e) { alert('Forget failed: ' + e.message); }
-  };
-  for (const b of $('sd-warrants').querySelectorAll('.sw-revoke')) b.onclick = async () => {
-    const w = byId[b.dataset.i];
-    if (!confirm(`Revoke this grant for ${w.audience}? It stops working within minutes at services that check revocation.`)) return;
-    try { await post('/wsapi/revoke_warrant', { id: Number(b.dataset.i) }); await reloadAccount(); renderHolders(); renderSites(); renderSiteDetail(); }
-    catch (e) { alert('Revoke failed: ' + e.message); }
-  };
-}
-$('sd-back').onclick = () => history.back();
-
-// -------- holder detail: two-slice warrant view --------
-let hdCtx = null; // { holderId, slice }
-function findHolder(holderId) {
-  const d = account.holders || {};
-  for (const ns of (d.namespaces || [])) { const h = ns.holders.find(x => x.holder_id === holderId); if (h) return h; }
-  return (d.holders_without_namespace || []).find(x => x.holder_id === holderId) || null;
-}
-function openHolder(holderId) {
-  hdCtx = { holderId, slice: 'holder' };
-  history.pushState({ view: 'holder', holderId }, '', '#h:' + encodeURIComponent(holderId));
-  renderHolderDetail();
-}
-function renderHolderDetail() {
-  const h = findHolder(hdCtx.holderId);
-  if (!h) { backToMain(); return; }
-  $('app').hidden = true; $('site-detail').hidden = true; $('holder-detail').hidden = false;
-  $('hd-label').textContent = h.label;
-  $('hd-badges').innerHTML = (h.trust === 'trusted'
-    ? '<span class="badge active">trusted</span> ' : '')
-    + (h.external ? '<span class="badge info">external service</span> ' : '')
-    + `<button class="small linkish" id="hd-rename">rename</button>`
-    // An external service's holder is bound to its warrant — it can't be moved
-    // without revoking (re-authorize from the app to relocate). Hide "move".
-    + (h.external ? '' : ` <button class="small linkish" id="hd-move">move</button>`)
-    + ` <button class="small linkish" id="hd-remove" style="color:#c53030">remove</button>`
-    + (h.moving_to ? ` <span class="badge info">moved to ${escapeHtml(h.moving_to)} — arrives on next sign-in</span>` : '')
-    + (h.revoked && !h.moving_to ? ' <span class="badge revoked">revoked</span>' : '');
-  // Per-identity trust: config certs are per-identity, so one device can be
-  // trusted for identity A while only login-capable for identity B. The
-  // summary pill shows the at-least-one rollup; this is the real breakdown.
-  const hcerts = account.deviceCerts.filter(c => c.holder === h.holder_id && !c.revoked);
-  const hids = [...new Set(hcerts.flatMap(c => c.identities.filter(i => !i.includes('*'))))].sort();
-  $('hd-identities').innerHTML = hids.length
-    ? `<table class="wtable">${hids.map(email => {
-        const trusted = hcerts.some(c => c.purpose === 'authorization'
-          && c.identities.some(p => identityMatches(p, email)));
-        return `<tr><td style="font-size:13px">${escapeHtml(email)}</td>
-          <td style="text-align:right">${trusted
-            ? '<span class="badge active">trusted</span>' : ''}</td></tr>`;
-      }).join('')}</table>`
-    : '';
-  $('hd-rename').onclick = async () => {
-    const label = prompt('Holder name:', h.label);
-    if (label == null || !label.trim()) return;
-    try { await post('/wsapi/rename_holder', { holder_id: h.holder_id, label: label.trim() }); await reloadAccount(); renderHolderDetail(); renderHolders(); }
-    catch (e) { alert('Rename failed: ' + e.message); }
-  };
-  // Move to another namespace, forcefully: the old certs are revoked NOW (the
-  // old namespace's warrants stop applying to this device within a status
-  // window) and the device re-registers under the broker-assigned target
-  // holder next time it signs in — no need to touch the device.
-  if ($('hd-move')) $('hd-move').onclick = () => {
-    const myPrefix = holderPrefix(h.holder_id);
-    const options = (account.holders.namespaces || [])
-      .filter(ns => ns.prefix !== myPrefix)
-      .map(ns => `<label style="display:block;margin:4px 0"><input type="radio" name="mv-ns" value="${escapeHtml(ns.name)}">${escapeHtml(ns.label)}</label>`)
-      .join('');
-    const warn = h.warrant_count
-      ? `<p class="sub" style="color:#b7791f;margin:8px 0 0">Its ${h.warrant_count} grant${h.warrant_count === 1 ? '' : 's'} will stop working and need re-approval under the new group.</p>`
-      : '';
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal">
-      <h3 style="margin:0 0 8px">Move “${escapeHtml(h.label)}”</h3>
-      ${options || ''}
-      <label style="display:block;margin:4px 0"><input type="radio" name="mv-ns" value="">A new group:
-        <input id="mv-new" placeholder="e.g. laptops" maxlength="32" style="width:10em;display:inline-block"></label>
-      ${warn}
-      <p class="sub" style="margin:8px 0">The device is signed out now and rejoins under the new group the next time it signs in.</p>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button class="primary small" id="mv-go">Move</button>
-        <button class="small" id="mv-cancel">Cancel</button>
-        <span class="status" id="mv-status" style="margin:0"></span>
-      </div></div>`;
-    document.body.appendChild(overlay);
-    overlay.querySelector('#mv-cancel').onclick = () => overlay.remove();
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-    overlay.querySelector('#mv-new').onfocus = () => {
-      const r = overlay.querySelector('input[name="mv-ns"][value=""]'); if (r) r.checked = true;
-    };
-    overlay.querySelector('#mv-go').onclick = async () => {
-      const st = overlay.querySelector('#mv-status');
-      const picked = overlay.querySelector('input[name="mv-ns"]:checked');
-      let ns = picked ? picked.value : '';
-      if (picked && !ns) ns = overlay.querySelector('#mv-new').value.trim().toLowerCase();
-      if (!ns) { st.className = 'status err'; st.textContent = 'Pick a group (or name a new one).'; return; }
-      st.className = 'status muted'; st.textContent = 'Moving…';
-      try {
-        await post('/wsapi/move_holder', { holder_id: h.holder_id, namespace: ns });
-        overlay.remove();
-        await reloadAccount(); renderHolders(); renderSites();
-        backToMain(); // the holder now shows under its new group with an "arrives" badge
-      } catch (e) { st.className = 'status err'; st.textContent = 'Move failed: ' + e.message; }
-    };
-  };
-  // A holder id is signed into its certs, so "remove" = revoke every cert
-  // (fail-closed at verifiers within minutes) + delete the records. The
-  // device itself can sign in again later — that just records a fresh entry.
-  $('hd-remove').onclick = async () => {
-    if (!confirm(`Remove “${h.label}”? This signs it out everywhere (its certificates are revoked) and deletes it from this list. If it is a browser you still use, it can simply sign in again.`)) return;
-    try {
-      await post('/wsapi/forget_holder', { holder_id: h.holder_id });
-      await reloadAccount(); renderHolders(); renderSites(); backToMain();
-    } catch (e) { alert('Remove failed: ' + e.message); }
-  };
-  renderHolderOwnWarrants(h);
-}
-$('hd-back').onclick = () => history.back();
-
-function warrantStateHtml(w) {
-  const now = Date.now(); const exp = Date.parse(w.expires_at);
-  return w.revoked ? '<span class="badge revoked">revoked</span>'
-    : (exp && exp < now ? '<span class="warn" style="font-size:12px">expired</span>'
-      : `<span class="muted" style="font-size:12px">until ${new Date(exp).toLocaleDateString()}</span>`);
-}
-// Every warrant whose matcher covers THIS holder, sectioned by HOW it
-// applies — never by raw matcher id: grants to the whole group ("All
-// Browsers"), grants to any holder, and grants isolated to this one device.
-function renderHolderOwnWarrants(h) {
-  const entries = account.warrants.filter(w => holderMatcherMatches(w.holder, h.holder_id));
-  if (!entries.length) {
-    $('hd-warrants').innerHTML = `<p class="muted" style="font-size:13px">No grants apply to this device yet.</p>`;
-    return;
-  }
-  const sections = [];
-  const only = entries.filter(w => w.holder === h.holder_id);
-  const group = entries.filter(w => w.holder && w.holder.endsWith('.*'));
-  const any = entries.filter(w => !w.holder || w.holder === '*');
-  const nsLabel = nsLabelForPrefix(holderPrefix(h.holder_id));
-  if (group.length) sections.push([nsLabel ? `All ${nsLabel}` : 'Its whole group', group]);
-  if (any.length) sections.push(['Any of my devices', any]);
-  if (only.length) sections.push(['Only this device', only]);
-  const byId = {};
-  const row = (w) => {
-    byId[w.id] = w;
-    // Same lever as the site-detail table: revoke a live status-tracked
-    // grant, forget the rest (revoked or pre-status rows).
-    const actions = w.revoked
-      ? `<button class="small hw-forget" data-i="${w.id}">Forget</button>`
-      : (w.status_idx != null
-          ? `<button class="small hw-revoke" data-i="${w.id}" style="color:#c53030">Revoke</button>`
-          : `<button class="small hw-forget" data-i="${w.id}">Forget</button>`);
-    return `<tr><td><span class="aud">${escapeHtml(w.audience)}</span><br>
-      <span class="muted" style="font-size:12px">acting for ${escapeHtml(w.delegator_email)}</span><br>
-      ${(w.scopes || []).map(s => `<span class="scope">${escapeHtml(s)}</span>`).join('') || '<span class="muted" style="font-size:12px">no scopes</span>'}</td>
-      <td style="white-space:nowrap;text-align:right">${warrantStateHtml(w)}<br>${actions}</td></tr>`;
-  };
-  $('hd-warrants').innerHTML = sections.map(([title, ws]) =>
-    `<div style="margin-bottom:12px"><div style="font-weight:600;font-size:13px;margin-bottom:4px">${title}</div>
-      <table class="wtable">${ws.map(row).join('')}</table></div>`).join('');
-  for (const b of $('hd-warrants').querySelectorAll('.hw-forget')) b.onclick = async () => {
-    try { await post('/wsapi/forget_warrant', { id: Number(b.dataset.i) }); await reloadAccount(); renderHolderDetail(); renderHolders(); renderSites(); }
-    catch (e) { alert('Forget failed: ' + e.message); }
-  };
-  for (const b of $('hd-warrants').querySelectorAll('.hw-revoke')) b.onclick = async () => {
-    const w = byId[b.dataset.i];
-    if (!confirm(`Revoke this grant for ${w.audience}? It stops working within minutes at services that check revocation.`)) return;
-    try { await post('/wsapi/revoke_warrant', { id: Number(b.dataset.i) }); await reloadAccount(); renderHolderDetail(); renderHolders(); renderSites(); }
-    catch (e) { alert('Revoke failed: ' + e.message); }
-  };
-}
-
-// -------- add email (Add → discover → code or primary) --------
-let aeStaged = false;
-$('ae-cancel').onclick = () => { $('add-email-form').hidden = true; aeStaged = false; $('ae-btn').textContent = 'Add'; };
-$('ae-btn').onclick = async () => {
-  const status = $('ae-status'); status.className = 'status muted';
-  const email = $('ae-email').value.trim();
-  try {
-    if (!aeStaged) {
-      if (!email) return;
-      status.textContent = 'Checking…';
-      let info; try { info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`); } catch { info = {}; }
-      if (info.type === 'primary') {
-        const domain = email.split('@')[1];
-        status.className = 'status muted';
-        status.innerHTML = `${escapeHtml(email)} is managed by ${escapeHtml(domain)}. ` +
-          `Sign in to an app with it (e.g. <a href="${idpUrlFor(domain)}" target="_blank" rel="noopener">${escapeHtml(domain)} ↗</a>) ` +
-          `and it's added automatically — no code needed.`;
-        return;
-      }
-      status.textContent = 'Sending code…';
-      await post('/wsapi/stage_email', { email });
-      aeStaged = true; $('ae-code-block').hidden = false; $('ae-btn').textContent = 'Verify';
-      status.textContent = 'Code sent — check that inbox.';
-    } else {
-      status.textContent = 'Verifying…';
-      await post('/wsapi/complete_email_addition', { email, token: $('ae-code').value.trim() });
-      location.reload();
-    }
-  } catch (e) { status.className = 'status err'; status.textContent = e.message; }
-};
-
-// -------- navigation --------
-function backToMain() {
-  $('holder-detail').hidden = true; $('site-detail').hidden = true; $('app').hidden = false;
-}
-window.addEventListener('popstate', (e) => {
-  if (e.state && e.state.view === 'holder') {
-    hdCtx = { holderId: e.state.holderId, slice: 'holder' };
-    renderHolderDetail(); return;
-  }
-  if (e.state && e.state.view === 'site') {
-    sdAud = e.state.aud;
-    renderSiteDetail(); return;
-  }
-  backToMain();
-});
-// -------- advanced: manual warrant signing (device model) --------
-// Signs a device-shaped warrant with the CONFIG key held in this browser and
-// registers it with its config cert. Output is `warrant~config_cert` — the
-// exact tail an agent splices into its access presentations.
-// `holder` is the warrant's matcher (`*` / `<ns>.*` / `<id>`). Manually-signed
-// warrants from this debug surface default to `*` (any of your holders); the
-// broker only *forbids* issuing `*` via consent, not client-side signing.
-async function signDeviceWarrant(config, grantor, grantee, holder, audience, scopes, statusRef) {
-  const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
-  // grantor = attributed identity (the config cert is authoritative for it);
-  // grantee = the actor. Equal for an as-you grant; distinct for delegation.
-  const claims = { typ: 'browserid-warrant-v1', iat: nowS(), exp: nowS() + 90*24*3600,
-    grantor, grantee, holder, audience };
-  if ((scopes || []).length) claims.scopes = scopes;
-  if (statusRef) claims.status = statusRef;
-  const payload = b64urlJson(claims);
-  const sig = await window.Keystore.sign(config.privateKey, `${header}.${payload}`);
-  return `${header}.${payload}.${sig}`;
-}
-$('dbg-toggle').onclick = () => { const d = $('dbg'); d.hidden = !d.hidden; $('dbg-toggle').textContent = d.hidden ? 'Advanced / debug ▸' : 'Advanced / debug ▾'; };
-$('w-create').onclick = async () => {
-  const agentEmail = $('w-agent').value.trim().toLowerCase(), audience = $('w-audience').value.trim();
-  const scopes = $('w-scopes').value.split(/\s+/).map(s => s.trim()).filter(Boolean);
-  const status = $('w-status'); const fail = (m) => { status.className = 'status err'; status.textContent = m; };
-  if (!/^[^@\s]+@[^@\s]+$/.test(agentEmail)) return fail('Agent identity must be an email.');
-  if (!audience || audience.includes('*')) return fail('Audience must be one exact value (no wildcards).');
-  const config = configFor(agentEmail);
-  if (!config) return fail(`No config key covering ${agentEmail} in this browser — sign in with the delegating identity through an app's dialog first.`);
-  status.className = 'status muted'; status.textContent = 'Signing…';
-  try {
-    let statusRef = null;
-    try { const alloc = await post('/wsapi/allocate_warrant_status', { csrf: account.csrf, agent_email: agentEmail, audience, scopes }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
-    const jws = await signDeviceWarrant(config, agentEmail, '*', audience, scopes, statusRef);
-    try { await post('/wsapi/register_warrant', { csrf: account.csrf, warrant: jws, config_cert: config.cert }); } catch (e) { console.warn(e); }
-    $('w-out').textContent = `${jws}~${config.cert}`; $('w-out').hidden = false;
-    status.className = 'status ok'; status.textContent = 'Signed & registered — paste warrant~config_cert into the agent.';
-    await reloadAccount();
-  } catch (e) { fail('Failed: ' + e.message); }
-};
-
 // -------- session --------
 async function clearLocal() {
   try { await window.Keystore.purgeLegacy(); } catch {}
@@ -1096,8 +1354,33 @@ async function clearLocal() {
   }
   deviceCache = [];
 }
-$('signout').onclick = async () => { $('out').textContent = 'Signing out…'; try { await post('/wsapi/logout', {}); } catch {} await clearLocal(); location.reload(); };
-$('reset').onclick = async () => { await clearLocal(); renderUserIdentities(); renderHolders(); $('out').textContent = '✓ Cached device certificates cleared (still signed in).'; };
+$('signout').onclick = async () => {
+  try { await post('/wsapi/logout', {}); } catch {}
+  await clearLocal();
+  location.reload();
+};
+
+// -------- post-authorize landing: banner + roster highlight --------
+function consumeAuthorizedHandoff() {
+  let h = null;
+  try {
+    const raw = sessionStorage.getItem('browserid:authorized');
+    if (raw) { h = JSON.parse(raw); sessionStorage.removeItem('browserid:authorized'); }
+  } catch (e) { /* private mode */ }
+  if (!h || !h.agent || (Date.now() - (h.ts || 0)) > 5 * 60 * 1000) return;
+  ui.highlight = (h.agent || '').toLowerCase();
+  const name = escapeHtml(h.name || h.agent);
+  const sites = (h.sites || []).map(s => s.replace(/^https?:\/\//, '').replace(/\/+$/, ''));
+  const siteStr = sites.length
+    ? ` at <span class="mono">${sites.map(escapeHtml).join(', ')}</span>` : '';
+  const verb = (h.scopes && h.scopes.length) ? escapeHtml(h.scopes.slice(0, 2).join(' & ')) : 'sign in';
+  const text = h.identityOnly
+    ? `<b>Done.</b>&nbsp;<span>${name} is yours now — here it is in your roster. It has no permissions yet.</span>`
+    : `<b>Done.</b>&nbsp;<span>${name} can now ${verb}${siteStr} on your behalf — here it is in your roster. Revoke any time.</span>`;
+  const banner = $('banner');
+  banner.innerHTML = text;
+  banner.hidden = false;
+}
 
 // -------- boot --------
 async function reloadAccount() {
@@ -1115,1032 +1398,42 @@ async function reloadAccount() {
   account.holders = holders;
   await refreshKeystore();
 }
-// -------- agent flows v2: Flow I (identity) · Flow P (permissions) (eywc) ----
-// Reached as /account?provision=<code> (the agent's one-click URL). v2
-// unbundles the request: Flow I creates an identity — sign in if needed (I0),
-// verify the fingerprint (I1, the only place it appears), name it (I2) — and
-// ends in a certificate (I3), never a warrant. A bundled request then
-// continues into the permission screen under the same code: the identity is
-// fixed, so the only question left is the permission itself. Which card
-// renders is decided by SERVER FACTS — the user never classifies the request:
-//   check   I1 — the fingerprint IS the screen; answering is an act
-//   name    I2 — name + address, both seeded, both the user's to change
-//   asyou   I4 — the request demands the bare identity (empty grantee pin,
-//                 no suggested handle); the default offers it its own address
-//   done    I3 — meet your agent: it exists, it's yours, it can do nothing
-//                 yet; a bundled request continues to the permission screen
-//   perm    P  — who (your name for it) · what (site + permissions + on
-//                 whose behalf; a dropdown unless the request pinned the
-//                 grantor) · why (the agent's message, quoted, unverified)
-//   foreign —    a grantee this account doesn't own (a service holding its
-//                 own issuer's cert); warrant-only, B3's shape
-//   pinmismatch — grantor pinned to an identity this account lacks
-//   invalid · approved · stopped — terminal screens
-let pv = null;
-const ownerLocalOf = (email) => (email || '').slice(0, (email || '').lastIndexOf('@'));
-function stripOwnerPrefix(handle, email) {
-  const p = ownerLocalOf(email) + '+';
-  return handle.startsWith(p) ? handle.slice(p.length) : handle;
-}
-// All agent identities the account already has (agent emails + warrant
-// identifiers) — the pool the unique-handle suggestion must avoid.
-function knownAgentEmails() {
-  const out = new Set(account.agents.map(a => a.toLowerCase()));
-  for (const w of account.warrants) if (w.agent_email) out.add(w.agent_email.toLowerCase());
-  return out;
-}
-// A unique handle TAG for `email`: `base`, else base2, base3, …, judged by the
-// full agent identity it would produce.
-function uniqueHandleTag(email, base) {
-  base = (base || 'agent').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 24) || 'agent';
-  const known = knownAgentEmails();
-  const idFor = (tag) => `${ownerLocalOf(email)}+${tag}@${email.split('@')[1]}`.toLowerCase();
-  if (!known.has(idFor(base))) return base;
-  for (let n = 2; n < 100; n++) {
-    if (!known.has(idFor(base + n))) return base + n;
-  }
-  return base + Math.floor(Math.random() * 10000);
-}
-/** Existing agent identities that belong to the selected grantor, offered so
- *  the human can REUSE an agent instead of minting one per app. */
-function pvExistingAgents(grantor) {
-  const base = grantor ? ownerLocalOf(grantor) + '+' : null;
-  if (!base) return [];
-  return (account.agents || []).filter((a) => a.startsWith(base));
-}
-
-/** The account's root (non-agent) identities — the pool "For" picks from. */
-const pvRootIds = () => account.emails.filter(e => !account.agents.includes(e));
-
-/** The full agent identity the current choice produces. */
-function pvAgentEmail() {
-  if (!pv || !pv.grantor) return '';
-  return `${ownerLocalOf(pv.grantor)}+${pv.tag}@${pv.grantor.split('@')[1]}`;
-}
-
-// ---- card fragments ------------------------------------------------------
-// Trust rule (design board): only the fingerprint, the account's own
-// addresses, and owned-vs-foreign are trustworthy. Anything the requester
-// typed (its label) is quoted and marked UNVERIFIED, at the bottom.
-
-function pvHead(corner) {
-  if (corner === undefined) corner = (pv && pv.grantor) || pvRootIds()[0] || '';
-  return `<div class="pv-head"><div class="pv-mark"></div><span class="pv-brand">browserid</span>` +
-    (corner ? `<span class="pv-corner">${escapeHtml(corner)}</span>` : '') + `</div>`;
-}
-
-function pvStepMark(text, danger) {
-  return `<div class="pv-label" style="letter-spacing:.08em;margin-bottom:10px${danger ? ';color:#9d2f26' : ''}">${text}</div>`;
-}
-
-// The audience is a requester-supplied string. A non-web identifier must not
-// pass as a URL at a glance; plain http gets a lighter note.
-function pvAudienceWarn(aud) {
-  try {
-    const u = new URL(aud);
-    if (u.protocol === 'https:') return null;
-    if (u.protocol === 'http:') return 'not an https site';
-  } catch (e) { /* not URL-shaped */ }
-  return 'not a web address — recognize it, or deny';
-}
-
-function pvGrantBlocks(hint) {
-  if (!pv.grants.length) return '';
-  const blocks = pv.grants.map(g => {
-    const warn = pvAudienceWarn(g.audience);
-    const chips = (g.scopes || []).map(s => `<span class="pv-chip">${escapeHtml(s)}</span>`).join('')
-      || '<span class="pv-chip">site-level access</span>';
-    return `<div class="pv-panel" style="padding:12px 13px"><div class="pv-aud">${escapeHtml(g.audience)}</div>
-      <div class="pv-chips">${chips}${warn ? `<span class="pv-chip warn">${escapeHtml(warn)}</span>` : ''}</div></div>`;
-  }).join('');
-  return blocks + (hint ? `<p class="pv-hint" style="margin-bottom:18px">${hint}</p>` : '');
-}
-
-const PV_FORBY_HINT = '“For” — whose account the actions count against. “By” — who does them. ' +
-  'The approval itself is signed by the account shown top-right.';
-
-function pvForByTable(forCell, byCell) {
-  return `<div class="pv-table">
-      <div class="pv-row"><span class="pv-rowlabel">For</span><div style="min-width:0;flex:1">${forCell}</div></div>
-      <div class="pv-row"><span class="pv-rowlabel">By</span><div style="min-width:0;flex:1">${byCell}</div></div>
-    </div><p class="pv-hint" style="margin-top:6px">${PV_FORBY_HINT}</p>`;
-}
-
-function pvUnverifiedFoot(text) {
-  return `<div class="pv-foot"><span class="pv-badge">UNVERIFIED</span>
-    <div class="pv-footnote">${text}</div></div>`;
-}
-
-function pvCloseAction(btn, fallback) {
-  btn.onclick = () => {
-    try { window.close(); } catch (e) { /* not allowed */ }
-    btn.textContent = fallback || 'You can close this tab.';
-    btn.disabled = true;
-  };
-}
-
-// ---- the card state machine ---------------------------------------------
-
-function pvRender() {
-  const card = $('provision');
-  if (!pv) { card.hidden = true; return; }
-  card.hidden = false;
-  card.classList.toggle('danger', pv.view === 'asyou' || pv.view === 'pinmismatch' || pv.view === 'invalid');
-  card.classList.toggle('pv-wide', pv.view === 'perm');
-  ({ check: pvRenderCheck, name: pvRenderName, done: pvRenderDone, perm: pvRenderPerm,
-     foreign: pvRenderForeign, asyou: pvRenderAsYou, pinmismatch: pvRenderPinMismatch,
-     invalid: pvRenderInvalid, approved: pvRenderApproved,
-     denied: pvRenderDenied }[pv.view] || pvRenderInvalid)(card);
-}
-
-// Shared wiring for the foreign table's identity select + approve/deny.
-function pvWireCommon(approve) {
-  const sel = $('pv-identity');
-  if (sel) sel.onchange = () => {
-    pv.grantor = sel.value;
-    pvRender();
-    refreshProvisionAddressInfo();
-  };
-  const ap = $('pv-approve'); if (ap) ap.onclick = approve;
-  const dn = $('pv-deny'); if (dn) dn.onclick = () => pvDeny();
-}
-
-// I1 — the fingerprint check is the whole screen. Answering is an act —
-// "it matches" — and this is the only place in either flow the check appears.
-function pvRenderCheck(card) {
-  card.innerHTML = pvHead() +
-    pvStepMark('Step 1 of 2 · check') +
-    `<div class="pv-title" style="margin-bottom:12px">Is this your agent?</div>
-    <p class="pv-note" style="margin-bottom:18px">Your agent should be showing this code right now, wherever you run it.</p>
-    <div class="pv-panel" style="text-align:center;padding:22px;margin-bottom:18px">
-      <div class="pv-fp" style="font-size:26px;letter-spacing:.1em">${escapeHtml(pv.info.fingerprint || '')}</div></div>
-    <div class="pv-actions" style="margin-top:0">
-      <button class="pv-btn" id="pv-match">It matches</button>
-      <button class="pv-ghost" id="pv-nomatch" type="button">It doesn't — stop</button></div>
-    <div class="pv-foot"><div class="pv-footnote">If the codes differ, you're not talking to your agent.
-      Stopping here is always safe — nothing has been created.</div></div>`;
-  $('pv-match').onclick = () => { pv.view = pv.after || 'name'; pvRender(); };
-  $('pv-nomatch').onclick = () => pvDeny();
-}
-
-// I2 — name it. Both fields seeded from what the agent reported, both the
-// user's to change. Says what is — and isn't — being created. No site, no
-// permission chips: identity only.
-function pvRenderName(card) {
-  const roots = pvRootIds();
-  const none = roots.length === 0;
-  const local = ownerLocalOf(pv.grantor), domain = (pv.grantor || '').split('@')[1] || '';
-  const nameLabel = pv.label ? 'Name — it suggested this, you decide' : 'Name — you decide';
-  const acct = (!pv.grantorLocked && roots.length > 1)
-    ? `<div><div class="pv-label" style="margin-bottom:6px">Under account</div>
-        <select id="pv-identity" class="pv-idsel">${roots.map(e =>
-          `<option value="${escapeHtml(e)}"${e === pv.grantor ? ' selected' : ''}>${escapeHtml(e)}</option>`).join('')}</select></div>`
-    : '';
-  const addr = pv.granteeLocked
-    ? `<div class="pv-rowmain">${escapeHtml(pvAgentEmail())}</div><div class="pv-rowsub">requested · an address of yours</div>`
-    : `<div class="pv-tagedit"><span class="pv-tagfix">${escapeHtml(local)}+</span><input id="pv-handle"
-        value="${escapeHtml(pv.tag)}" maxlength="48" autocomplete="off" spellcheck="false"><span class="pv-tagfix">@${escapeHtml(domain)}</span></div>`;
-  const reuse = pv.granteeLocked ? [] : pvExistingAgents(pv.grantor).filter(a => a.toLowerCase() !== pvAgentEmail().toLowerCase());
-  card.innerHTML = pvHead() +
-    pvStepMark('Step 2 of 2 · identity') +
-    `<div class="pv-title" style="margin-bottom:14px">Give your agent a name and an address.</div>
-    <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px">
-      <div><div class="pv-label" style="margin-bottom:6px">${nameLabel} <span style="font-weight:400;opacity:.7">(private — only you see this)</span></div>
-        <input id="pv-name" class="pv-nameinput" value="${escapeHtml(pv.displayName || '')}" maxlength="64" autocomplete="off"></div>
-      <div><div class="pv-label" style="margin-bottom:6px">Public display name <span style="font-weight:400;opacity:.7">(optional — shown wherever it acts publicly; blank shows its handle)</span></div>
-        <input id="pv-public-name" class="pv-nameinput" value="${escapeHtml(pv.publicName || '')}" maxlength="64" autocomplete="off" placeholder="e.g. Claude"></div>
-      ${acct}
-      <div><div class="pv-label" style="margin-bottom:6px">Its address — under your account</div>${addr}
-        ${reuse.length ? `<div class="pv-rowsub" style="margin-top:5px">or reuse: ${reuse.map(a =>
-          `<button type="button" class="pv-link pv-reuse" data-a="${escapeHtml(a)}" style="font-size:10.5px">${escapeHtml(a)}</button>`).join(' · ')}</div>` : ''}
-      </div>
-    </div>
-    <div class="pv-callout">This is an introduction, not a permission. Your agent gets an identity of its own —
-      it can't touch your accounts until you approve that separately.</div>
-    <div class="pv-actions">
-      <button class="pv-btn" id="pv-approve"${none ? ' disabled' : ''}>Create its identity</button>
-      <button class="pv-ghost" id="pv-deny" type="button">Cancel</button></div>
-    <p class="status" id="pv-status">${none ? 'Add an email below, then come back here to authorize the agent.' : ''}</p>`;
-  const sel = $('pv-identity');
-  if (sel) sel.onchange = () => {
-    pv.grantor = sel.value;
-    if (!pv.granteeLocked) pv.tag = uniqueHandleTag(pv.grantor, pv.baseTag);
-    pvRender();
-    refreshProvisionAddressInfo();
-  };
-  const nameInp = $('pv-name');
-  if (nameInp) nameInp.oninput = () => { pv.displayName = nameInp.value; };
-  const pubInp = $('pv-public-name');
-  if (pubInp) pubInp.oninput = () => { pv.publicName = pubInp.value; };
-  const inp = $('pv-handle');
-  if (inp) inp.oninput = () => { pv.tag = inp.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, ''); };
-  for (const b of document.querySelectorAll('.pv-reuse')) b.onclick = () => {
-    const local2 = (b.dataset.a || '').split('@')[0];
-    pv.tag = local2.includes('+') ? local2.slice(local2.indexOf('+') + 1) : local2;
-    pvRender();
-  };
-  $('pv-approve').onclick = () => pvApproveIdentity('handle');
-  $('pv-deny').onclick = () => pvDeny();
-}
-
-// I3 — meet your agent. The mental model forms here: it exists, it's yours,
-// it can do nothing yet. A bundled request continues into the permission
-// screen; a declined grants stage lands back here, honestly.
-function pvRenderDone(card) {
-  const email = pv.agentEmail || pvAgentEmail();
-  const name = (pv.displayName || '').trim() || email;
-  const pending = pv.grants.length && !pv.grantsResolved;
-  const sub = pv.asMe ? 'Yours · acts as you · no permissions yet' : 'Yours · no permissions yet';
-  const note = pending
-    ? 'Next, it\u2019s asking for permission — that\u2019s a separate question, and it\u2019s the next screen.'
-    : pv.grantsDenied
-      ? 'You granted nothing. The agent has been told — when it wants to do something later, that comes back to you as a new request naming it.'
-      : 'When it wants to do something — post somewhere, read something — that comes back to you as a separate request naming it. You can dissolve it any time from your account page.';
-  const actions = pending
-    ? `<button class="pv-btn" id="pv-toperm">View permission request</button>
-       <button class="pv-ghost" id="pv-skipgrants" type="button">Skip — grant nothing</button>`
-    : `<button class="pv-btn2" id="pv-seeagents">See my agents</button>
-       <button class="pv-ghost" id="pv-done" type="button">Done</button>`;
-  card.innerHTML = pvHead() +
-    `<div class="pv-title" style="margin-bottom:14px">Meet ${escapeHtml(name)}.</div>
-    <div class="pv-panel" style="padding:13px;margin-bottom:14px">
-      <div style="font:600 13.5px/1.4 system-ui,sans-serif;color:#17171a;margin-bottom:3px">${escapeHtml(name)}</div>
-      <div class="mono" style="font-size:12.5px;line-height:1.5;color:#4a4a52;word-break:break-all">${escapeHtml(email)}</div>
-      <div class="pv-footnote" style="margin-top:6px">${sub}</div></div>
-    <p class="pv-note" style="margin-bottom:18px">${note}</p>
-    <div class="pv-actions" style="margin-top:0">${actions}</div>
-    <p class="status" id="pv-status"></p>`;
-  const tp = $('pv-toperm');
-  if (tp) tp.onclick = () => { pv.view = 'perm'; pvRender(); };
-  const sk = $('pv-skipgrants');
-  if (sk) sk.onclick = () => pvDenyGrants();
-  const sa = $('pv-seeagents');
-  if (sa) sa.onclick = () => {
-    history.replaceState(null, '', location.pathname);
-    pv = null; pvRender();
-    const hc = $('holders-card');
-    if (hc) hc.scrollIntoView({ behavior: 'smooth' });
-  };
-  const done = $('pv-done');
-  if (done) {
-    if (history.length > 1) done.onclick = () => history.back();
-    else pvCloseAction(done, 'All set — you can close this tab.');
-  }
-}
-
-// P — a known agent asks for permission. The card opens with who (the name
-// chosen at I2), quotes the agent's message (unverified), and states the site
-// + permissions. On-behalf is a dropdown — the agent itself, or an identity
-// of yours — unless the request pinned the grantor (then it's text and the
-// only choice is allow/deny). "Act as me" is never offered here.
-function pvRenderPerm(card) {
-  const email = pv.agentEmail || pvAgentEmail();
-  const name = (pv.displayName || '').trim() || email;
-  const roots = pvRootIds();
-  const base = email.replace(/\+[^@]*@/, '@');
-  const pin = pv.grantorPin;
-  if (!pv.obChoice) pv.obChoice = pin === 'self' ? 'self' : (pin !== '*' ? pin : base);
-  let obCell;
-  if (pv.asMe) {
-    obCell = `<span class="mono" style="color:#17171a">you — it acts as you</span>`;
-  } else if (pin === 'self') {
-    obCell = `<span class="mono" style="color:#17171a">itself only</span> <span class="pv-footnote">· requested</span>`;
-  } else if (pin !== '*') {
-    obCell = `<span class="mono" style="color:#17171a">${escapeHtml(pin)}</span> <span class="pv-footnote">· requested</span>`;
-  } else {
-    const opts = [`<option value="self"${pv.obChoice === 'self' ? ' selected' : ''}>itself only</option>`]
-      .concat(roots.map(e => `<option value="${escapeHtml(e)}"${e === pv.obChoice ? ' selected' : ''}>${escapeHtml(e)}</option>`));
-    obCell = `<select id="pv-ob" class="pv-idsel" style="width:auto;max-width:100%">${opts.join('')}</select>`;
-  }
-  const msg = pv.messageText
-    ? `<div style="font:italic 12.5px/1.6 system-ui,sans-serif;color:#4a4a52">\u201C${escapeHtml(pv.messageText)}\u201D</div>`
-    : `<div style="font:12.5px/1.6 system-ui,sans-serif;color:#8a8a93">None given — it didn\u2019t say what it intends to do with this.</div>`;
-  card.innerHTML = pvHead() +
-    `<div class="pv-title" style="margin-bottom:14px">${escapeHtml(name)} wants permission.</div>
-    <div class="pv-panel" style="background:#faf9f7;padding:12px 13px;margin-bottom:14px">
-      <div class="pv-label" style="margin-bottom:5px">Agent</div>
-      <div style="font:600 13px/1.4 system-ui,sans-serif;color:#17171a">${escapeHtml(name)}</div>
-      <div class="mono" style="font-size:11.5px;line-height:1.5;color:#8a8a93;overflow-wrap:anywhere">${escapeHtml(email)}</div>
-      <div class="pv-footnote" style="margin-top:4px">created just now</div></div>
-    <div class="pv-panel" style="background:#faf9f7;padding:12px 13px;margin-bottom:14px">
-      <div class="pv-label" style="margin-bottom:5px">Agent message (unverified)</div>${msg}</div>` +
-    pvGrantBlocks('') +
-    `<div class="pv-panel" style="padding:10px 13px;margin-bottom:18px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-      <span class="pv-footnote">on behalf of</span> ${obCell}</div>
-    <div class="pv-actions" style="margin-top:0">
-      <button class="pv-btn" id="pv-approve">Allow for 90 days</button>
-      <button class="pv-ghost" id="pv-deny" type="button">Deny</button></div>
-    <p class="status" id="pv-status"></p>`;
-  const ob = $('pv-ob');
-  if (ob) ob.onchange = () => { pv.obChoice = ob.value; };
-  $('pv-approve').onclick = () => pvApproveGrants();
-  $('pv-deny').onclick = () => pvDenyGrants();
-}
-
-// I4 — the request demands the bare identity. Purely an identity question
-// now — no permission chips muddying it; the default offers it an address.
-function pvRenderAsYou(card) {
-  const id = pv.grantor || pvRootIds()[0] || 'your identity';
-  card.innerHTML = pvHead(id) +
-    pvStepMark('Step 2 of 2 · identity', true) +
-    `<div class="pv-title danger" style="margin-bottom:12px">It's asking to become you.</div>
-    <p class="pv-note" style="color:#4a4a52;margin-bottom:12px">It wants to hold
-      <span class="mono" style="color:#17171a">${escapeHtml(id)}</span> itself, not an address of its own —
-      indistinguishable from you, even later: nothing it does can ever be separated from what you did yourself.</p>
-    <p class="pv-hint" style="margin:-2px 0 16px">This grants no permissions — anything it wants to do is still a separate ask.</p>
-    <div class="pv-panel" style="padding:13px;margin-bottom:0">
-      <div style="font:600 13px/1.4 system-ui,sans-serif;color:#17171a;margin-bottom:3px">Give it an address of its own</div>
-      <div class="pv-footnote" style="margin-bottom:11px">Recommended. Most agents accept this — if it refuses, it will say so.</div>
-      <button class="pv-btn" id="pv-offer" style="width:100%">Offer it its own address</button></div>
-    <div class="pv-label" style="text-align:center;margin:10px 0;letter-spacing:.08em">or</div>
-    <div class="pv-dangerbox" style="margin-top:0">
-      <label><input type="checkbox" id="pv-selfck">I understand its actions can never be told apart from mine.</label>
-      <button class="pv-dangerbtn" id="pv-selfgo" disabled>Let it become ${escapeHtml(id)}</button>
-    </div>
-    <div class="pv-actions" style="margin-top:10px">
-      <button class="pv-ghost" id="pv-deny" type="button">Cancel</button></div>
-    <p class="status" id="pv-status"></p>`;
-  $('pv-offer').onclick = () => {
-    // The safe path: same request, but the agent gets its own address (I2).
-    pv.view = 'name';
-    if (!pv.tag) pv.tag = pv.grantor ? uniqueHandleTag(pv.grantor, pv.baseTag) : pv.baseTag;
-    pvRender();
-  };
-  $('pv-deny').onclick = () => pvDeny();
-  $('pv-selfck').onchange = () => { $('pv-selfgo').disabled = !$('pv-selfck').checked; };
-  $('pv-selfgo').onclick = () => pvApproveIdentity('self');
-}
-
-// Foreign grantee — a service you don't run, holding its own issuer's cert.
-// You aren't giving it an address; you're lending it your name at one site.
-function pvRenderForeign(card) {
-  const grantee = pv.granteePin;
-  const granteeDomain = grantee.split('@')[1] || '';
-  const roots = pvRootIds();
-  const forSub = pv.grantorLocked || roots.length <= 1
-    ? 'you — nothing else is possible here' : 'you — its actions land on your account';
-  const forCell = (pv.grantorLocked || roots.length <= 1)
-    ? `<div class="pv-rowmain">${escapeHtml(pv.grantor || '—')}</div><div class="pv-rowsub">${forSub}</div>`
-    : `<select id="pv-identity" class="pv-idsel">${roots.map(e =>
-        `<option value="${escapeHtml(e)}"${e === pv.grantor ? ' selected' : ''}>${escapeHtml(e)}</option>`).join('')}</select>
-      <div class="pv-rowsub">${forSub}</div>`;
-  const byCell = `<div class="pv-rowmain">${escapeHtml(grantee)}</div>
-    <div class="pv-rowsub">not yours · certified by ${escapeHtml(granteeDomain)}</div>`;
-  card.innerHTML = pvHead() +
-    `<div class="pv-title" style="margin-bottom:12px">A service you don't run wants to act in your name.</div>
-    <p class="pv-note" style="margin-bottom:14px"><span class="mono" style="color:#17171a">${escapeHtml(grantee)}</span>
-      holds its own credentials from its own provider. You aren't giving it an address —
-      you're lending it your name at one site.</p>` +
-    pvForByTable(forCell, byCell) +
-    pvGrantBlocks('') +
-    `<div class="pv-callout" style="margin:6px 0 18px">Only at ${pv.grants.length === 1 ? 'this location' : 'these locations'},
-      only the listed permissions, for 90 days.</div>
-    <div class="pv-actions" style="margin-top:0">
-      <button class="pv-btn" id="pv-approve"${pv.grantor ? '' : ' disabled'}>Approve</button>
-      <button class="pv-ghost" id="pv-deny" type="button">Deny</button></div>
-    <p class="status" id="pv-status">${pv.grantor ? '' : 'Add an email below, then come back here to approve.'}</p>` +
-    (pv.label ? pvUnverifiedFoot(`Calls itself “${escapeHtml(pv.label)}”. Not checked by browserid.`) : '');
-  pvWireCommon(() => pvApproveDelegated());
-}
-
-// A4 — the pinned grantor isn't an address this account owns. No approve
-// button exists: identities are never silently substituted.
-function pvRenderPinMismatch(card) {
-  const you = pvRootIds()[0] || 'this account';
-  card.innerHTML = pvHead(you) +
-    `<div class="pv-title" style="margin-bottom:12px">This request is for a different account.</div>
-    <p class="pv-note" style="margin-bottom:18px">It asks specifically for
-      <span class="mono" style="color:#17171a">${escapeHtml(pv.pin)}</span>. You're signed in as
-      <span class="mono" style="color:#17171a">${escapeHtml(you)}</span>, which isn't the same person
-      as far as we can tell — so it can't be approved here.</p>
-    <div class="pv-actions" style="margin-top:0">
-      <button class="pv-btn2" id="pv-switch">Sign in as ${escapeHtml(pv.pin)}</button>
-      <button class="pv-ghost" id="pv-deny" type="button">Close and tell it this failed</button></div>
-    <p class="status" id="pv-status"></p>
-    <div class="pv-foot"><div class="pv-footnote">The agent is told the reason immediately —
-      it won't sit waiting until the request expires.</div></div>`;
-  $('pv-switch').onclick = async () => {
-    try { sessionStorage.setItem('pv-si-hint', pv.pin); } catch (e) { /* private mode */ }
-    try { await post('/wsapi/logout', {}); } catch (e) { /* already gone */ }
-    location.reload();
-  };
-  $('pv-deny').onclick = () => pvDeny();
-}
-
-// A6 — one generic screen for every malformed request. The human copy never
-// changes; the machine reason is shown verbatim and copyable.
-function pvRenderInvalid(card) {
-  const reason = pv.reason || 'unknown error';
-  card.innerHTML = pvHead() +
-    `<div class="pv-title" style="margin-bottom:12px">This request is invalid.</div>
-    <p class="pv-note">Something is wrong with the request itself. It isn't anything you did,
-      and there's nothing here for you to fix — it's safe to close this page.</p>
-    <div class="pv-panel" style="background:#faf9f7;margin-bottom:18px">
-      <div class="pv-label" style="margin-bottom:5px">Tell whoever runs the agent</div>
-      <div class="mono" style="font-size:11.5px;line-height:1.6;color:#4a4a52;word-break:break-all">${escapeHtml(reason)}</div></div>
-    <div class="pv-actions" style="margin-top:0">
-      <button class="pv-btn2" id="pv-copy">Copy the reason</button>
-      <button class="pv-ghost" id="pv-close" type="button">Close</button></div>`;
-  $('pv-copy').onclick = async () => {
-    try { await navigator.clipboard.writeText(reason); $('pv-copy').textContent = 'Copied ✓'; }
-    catch (e) { $('pv-copy').textContent = 'Copy failed — select the text above'; }
-  };
-  pvCloseAction($('pv-close'));
-}
-
-// A7 — names what now exists and where to undo it.
-function pvRenderApproved(card) {
-  const a = pv.approved;
-  const hosts = pv.grants.map(g => g.audience.replace(/^https?:\/\//, '').replace(/\/+$/, ''));
-  const at = hosts.length
-    ? ` at ${hosts.map(h => `<span class="mono">${escapeHtml(h)}</span>`).join(', ')} · 90 days` : '';
-  const title = a.mode === 'self' ? 'Your agent now acts as you.'
-    : a.mode === 'foreign' ? 'The service can act for you now.'
-    : 'Your agent has an address now.';
-  const relation = a.mode === 'self' ? 'Acts as you'
-    : a.mode === 'standalone' ? 'Acts as itself' : 'Acts for you';
-  const note = a.mode === 'self'
-    ? 'You can end this at any time from your account page. Anything else it wants later comes back to you as a new request.'
-    : "You can end this at any time from your account page, and that won't touch your own access. Anything else it wants later comes back to you as a new request.";
-  card.innerHTML = pvHead() +
-    `<div class="pv-title" style="margin-bottom:12px">${title}</div>
-    <div class="pv-panel" style="padding:13px;margin-bottom:14px">
-      <div class="pv-aud" style="font-size:13px;margin-bottom:7px">${escapeHtml(a.agentEmail)}</div>
-      <div class="pv-footnote">${relation}${at}</div></div>
-    <p class="pv-note" style="margin-bottom:18px">${note}</p>
-    <div class="pv-actions" style="margin-top:0">
-      <button class="pv-btn2" id="pv-seeagents">See my agents</button>
-      <button class="pv-ghost" id="pv-done" type="button">${history.length > 1 ? '← Return to the app' : 'Done'}</button></div>`;
-  $('pv-seeagents').onclick = () => {
-    history.replaceState(null, '', location.pathname);
-    pv = null; pvRender();
-    const hc = $('holders-card');
-    if (hc) hc.scrollIntoView({ behavior: 'smooth' });
-  };
-  const done = $('pv-done');
-  if (history.length > 1) done.onclick = () => history.back();
-  else pvCloseAction(done, 'All set — you can close this tab.');
-}
-
-// I5 — the same landing spot for "it doesn't match", Cancel, and a phishing
-// attempt that got this far.
-function pvRenderDenied(card) {
-  card.innerHTML = pvHead() +
-    `<div class="pv-title" style="margin-bottom:12px">Nothing was created.</div>
-    <p class="pv-note" style="margin-bottom:14px">No identity exists and nothing can act under your account.
-      The requester has been told, so it isn't waiting.</p>
-    <p class="pv-note" style="font-size:12.5px;color:#8a8a93;margin-bottom:18px">If you didn't start this,
-      someone else may have sent you the link. Closing this page is enough.</p>
-    <div class="pv-actions" style="margin-top:0"><button class="pv-btn2" id="pv-close">Close</button></div>`;
-  pvCloseAction($('pv-close'));
-}
-
-// Does the approver own `id` — an exact identity, or a `+tag` sub-address of
-// one? A grantee they do NOT own is a FOREIGN service (delegated attribution).
-function approverOwns(id) {
-  id = (id || '').toLowerCase();
-  const emails = (account.emails || []).map(e => e.toLowerCase());
-  if (emails.includes(id)) return true;
-  const at = id.indexOf('@');
-  if (at < 0) return false;
-  const local = id.slice(0, at), dom = id.slice(at);
-  const plus = local.indexOf('+');
-  return plus >= 0 && emails.includes(local.slice(0, plus) + dom);
-}
-
-// Classify the pending request into a card. Order matters: foreignness and
-// pins are checked before defaults, and every contradiction lands on the one
-// generic invalid screen (A6) with the machine reason shown verbatim.
-async function showProvisionApproval(code) {
-  let info;
-  try {
-    info = await post('/agent-provision/info', { code });
-  } catch (e) {
-    pv = { code, view: 'invalid', reason: e.message || 'request not found or expired' };
-    pvRender();
-    return;
-  }
-  const roots = pvRootIds();
-  const ownRoot = (id) => roots.some(e => e.toLowerCase() === id);
-  const granteePin = (info.grantee || '').trim().toLowerCase();
-  const grantorPin = (((info.grantor || '*').trim()) || '*').toLowerCase();
-  const requested = ((info.requested_names || [])[0] || '').toLowerCase();
-  const concreteGrantor = grantorPin !== '*';
-  const concreteGrantee = !!granteePin && granteePin !== '*';
-
-  pv = {
-    code, info,
-    grants: info.grants || [],
-    pubkey: info.provisioning_pubkey,
-    label: (info.label || '').trim(),
-    messageText: (info.message || '').trim(),
-    namespace: info.namespace || 'agents',
-    grantorPin, granteePin,
-    grantor: null, grantorLocked: false, granteeLocked: false,
-    tag: '', baseTag: 'agent',
-    displayName: (info.label || '').trim(),
-    publicName: '',
-    agentEmail: null, prep: null, asMe: false, obChoice: null,
-    identityDone: false, grantsResolved: false, grantsDenied: false,
-    view: 'check', after: 'name', addressInfo: null, approved: null, pin: null, reason: null,
-  };
-
-  const invalid = (reason) => { pv.view = 'invalid'; pv.reason = reason; pvRender(); };
-
-  // Resume a two-stage request mid-flow (a reload after the identity stage):
-  // the cert exists; only the permission screen is left.
-  if (info.stage === 'identity_issued' && info.agent_email) {
-    pv.identityDone = true;
-    pv.agentEmail = info.agent_email;
-    pv.asMe = ownRoot(info.agent_email.toLowerCase());
-    pv.prep = {
-      agent_email: info.agent_email, holder: info.holder,
-      grants: info.grants || [], status_uri: info.status_uri,
-    };
-    pv.view = 'perm';
-    pvRender();
-    return;
-  }
-
-  // Foreign grantee — a service this account doesn't own. It must have
-  // brought its own holder, or nothing signed here could ever bind to it.
-  if (concreteGrantee && !approverOwns(granteePin)) {
-    if (!info.grantee_holder) {
-      return invalid('a foreign grantee must supply its holder (grantee_holder missing)');
-    }
-    if (concreteGrantor && !ownRoot(grantorPin)) {
-      pv.view = 'pinmismatch'; pv.pin = grantorPin; pvRender(); return;
-    }
-    pv.view = 'foreign';
-    pv.grantorLocked = concreteGrantor;
-    pv.grantor = concreteGrantor ? roots.find(e => e.toLowerCase() === grantorPin) : (roots[0] || null);
-    pvRender(); refreshProvisionAddressInfo(); return;
-  }
-
-  // A grantor pin this account can't satisfy — refuse, never substitute (A4).
-  if (concreteGrantor && !ownRoot(grantorPin)) {
-    pv.view = 'pinmismatch'; pv.pin = grantorPin; pvRender(); return;
-  }
-
-  // A grantee pin equal to one of YOUR bare addresses demands being you (A5).
-  if (concreteGrantee && ownRoot(granteePin)) {
-    if (concreteGrantor && grantorPin !== granteePin) {
-      return invalid(`contradictory pins: grantee '${granteePin}' is a bare identity but grantor is '${grantorPin}'`);
-    }
-    pv.view = 'check'; pv.after = 'asyou';
-    pv.grantor = roots.find(e => e.toLowerCase() === granteePin) || null;
-    pv.grantorLocked = true;
-    pv.baseTag = pv.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').split('-')[0] || 'agent';
-    pvRender(); refreshProvisionAddressInfo(); return;
-  }
-
-  // An owned +tag grantee pin fixes both rows: the grantor is forced to the
-  // tag's base identity, so nothing is left to choose (A3).
-  if (concreteGrantee) {
-    const base = granteePin.replace(/\+[^@]*@/, '@');
-    if (concreteGrantor && grantorPin !== base) {
-      return invalid(`contradictory pins: grantee '${granteePin}' belongs to '${base}', but grantor is '${grantorPin}'`);
-    }
-    if (!ownRoot(base)) {
-      return invalid(`grantee '${granteePin}' is a sub-address of '${base}', which this account doesn't hold`);
-    }
-    pv.view = 'check'; pv.after = 'name';
-    pv.grantorLocked = true; pv.granteeLocked = true;
-    pv.grantor = roots.find(e => e.toLowerCase() === base) || null;
-    const local = granteePin.split('@')[0];
-    pv.tag = local.includes('+') ? local.slice(local.indexOf('+') + 1) : local;
-    pvRender(); refreshProvisionAddressInfo(); return;
-  }
-
-  // Empty grantee AND no suggested handle = the legacy as-you shape: the
-  // request demands the bare identity (A5). A suggested handle or `*` means
-  // the requester expects an address of its own — the common case (A1).
-  if (granteePin === '' && !requested) {
-    pv.view = 'check'; pv.after = 'asyou';
-    pv.grantorLocked = concreteGrantor;
-    pv.grantor = concreteGrantor ? roots.find(e => e.toLowerCase() === grantorPin) : (roots[0] || null);
-    pv.baseTag = pv.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').split('-')[0] || 'agent';
-    pvRender(); refreshProvisionAddressInfo(); return;
-  }
-
-  // The common case: fingerprint check (I1), then name + address (I2).
-  pv.view = 'check'; pv.after = 'name';
-  pv.grantorLocked = concreteGrantor;
-  pv.grantor = concreteGrantor ? roots.find(e => e.toLowerCase() === grantorPin) : (roots[0] || null);
-  pv.baseTag = stripOwnerPrefix(requested, pv.grantor || '')
-    || pv.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').split('-')[0]
-    || 'agent';
-  pv.tag = pv.grantor ? uniqueHandleTag(pv.grantor, pv.baseTag) : pv.baseTag;
-  pvRender();
-  refreshProvisionAddressInfo();
-}
-
-// A0 — a pending request seen while signed out: keep it on screen so the
-// stranger arriving from an agent's link knows why they're being asked.
-async function showProvisionGate(code) {
-  let info;
-  try {
-    info = await post('/agent-provision/info', { code });
-  } catch (e) {
-    $('signin').hidden = true;
-    pv = { code, view: 'invalid', reason: e.message || 'request not found or expired' };
-    pvRender();
-    return;
-  }
-  const auds = (info.grants || []).map(g => g.audience);
-  const what = auds.length
-    ? `is asking you for an identity, and access to <span class="mono">${escapeHtml(auds[0])}</span>${auds.length > 1 ? ` and ${auds.length - 1} more` : ''}`
-    : 'is asking you for an identity — an address of its own under your account';
-  const card = $('provision');
-  card.hidden = false;
-  card.innerHTML = pvHead('') +
-    `<div class="pv-panel" style="background:#faf9f7;border-color:rgba(0,0,0,.09);padding:13px;margin-bottom:0">
-      <div class="pv-label" style="margin-bottom:6px">Waiting for approval</div>
-      <div style="font:13px/1.55 system-ui,sans-serif;color:#17171a">An agent showing
-        <span class="mono">${escapeHtml(info.fingerprint)}</span> ${what}.</div></div>`;
-  const h2 = $('signin').querySelector('h2');
-  if (h2) h2.textContent = 'First, which email is you?';
-  $('si-lead').textContent = 'browserid is how you say “that agent is mine” — and how you take it back later. ' +
-    "We'll bring you straight back here.";
-}
-
-// Approve a foreign-grantee (delegated) grant: sign warrants delegating from
-// your chosen identity to the service. No cert is minted — the service holds
-// its own from its issuer.
-async function pvApproveDelegated() {
-  const status = $('pv-status');
-  const fail = (m) => { status.className = 'status err'; status.textContent = m; };
-  status.className = 'status muted'; status.textContent = 'Approving…';
-  const grantor = pv.grantor;
-  const grantee = pv.granteePin;
-  if (!grantor) return fail('Add an email below first.');
-  try {
-    const prep = await post('/agent-provision/prepare', { code: pv.code, identity_email: grantor });
-    let config = configFor(grantor);
-    if (!config) {
-      // Broker-rooted identity with no local pair: issue one from the session.
-      const keys = { device: await window.Keystore.generate(), config: await window.Keystore.generate() };
-      const body = { email: grantor, device_pubkey: keys.device.publicKeyX, config_pubkey: keys.config.publicKeyX };
-      const bh = await browserHolderForIssue();
-      if (bh) body.holder = bh;
-      try {
-        const certs = await post('/device/issue', body);
-        await storeIssuedPair(location.host, grantor, keys, certs);
-        config = configFor(grantor);
-      } catch (e) { /* primary-rooted: fall through to the guidance below */ }
-    }
-    if (!config) throw new Error(
-      `No signing key for ${grantor} in this browser — sign in as ${grantor} here first, then retry.`);
-    status.textContent = 'Signing…';
-    const warrants = [];
-    for (const g of prep.grants) {
-      const statusRef = (g.status_idx != null && prep.status_uri)
-        ? { uri: prep.status_uri, idx: g.status_idx } : null;
-      warrants.push(await signDeviceWarrant(config, grantor, grantee, prep.holder, g.audience, g.scopes || [], statusRef));
-    }
-    await post('/agent-provision/complete', {
-      code: pv.code, approve: true, identity_email: grantor, warrants, config_cert: config.cert,
-    });
-    pv.approved = { mode: 'foreign', agentEmail: grantee };
-    pv.view = 'approved';
-    pvRender();
-    reloadAccount().then(() => { renderUserIdentities(); renderHolders(); renderSites(); }).catch(() => {});
-  } catch (e) {
-    fail(e.message || 'Approval failed.');
-  }
-}
-
-// The delegating identity's IdP info — decides whether the agent's cert must
-// be signed by a PRIMARY (issuer-consistency: the warrant's config cert and
-// the agent's certs must share one issuer). Prefetched so the approve click
-// can open the hop popup synchronously (popup blockers).
-async function refreshProvisionAddressInfo() {
-  if (!pv) return;
-  pv.addressInfo = null;
-  const email = pv.grantor;
-  if (!email) return;
-  try { pv.addressInfo = await api('/wsapi/address_info?email=' + encodeURIComponent(email)); } catch {}
-}
-
-// Device-authorize hop for provisioning approval. Two shapes:
-//
-// `asYou` — the agent holds the USER'S OWN identity. To the IdP this is
-// indistinguishable from a normal device sign-in (that's the point of the
-// holder model): standard user-mode fragment, `device_pubkey` = the AGENT's
-// key, holder = the broker-assigned one, plus a config pubkey the IdP pairs
-// with it. Works against ANY device-model primary — no agent-mode support
-// needed (sandmill works today).
-//
-// Named (+tag) agents — the cert's identity differs from the session's, so
-// the IdP must knowingly sign a sub-address: the agent-mode fragment, only on
-// IdPs that implement it (mingo). `user` (optional, combined mode) rides
-// along to also issue the user's own pair in the same visit.
-function agentCertPopupFlow(popup, deviceAuthUrl, agentEmail, agentPubkey, holder, user, asYou) {
-  return new Promise((resolve, reject) => {
-    const idpOrigin = new URL(deviceAuthUrl).origin;
-    popup.location = deviceAuthUrl + (asYou
-      ? '#email=' + encodeURIComponent(agentEmail) +
-        '&device_pubkey=' + encodeURIComponent(agentPubkey) +
-        '&config_pubkey=' + encodeURIComponent(asYou.configPubkey) +
-        '&holder=' + encodeURIComponent(holder) +
-        '&return_origin=' + encodeURIComponent(window.location.origin)
-      : '#agent_email=' + encodeURIComponent(agentEmail) +
-        '&agent_pubkey=' + encodeURIComponent(agentPubkey) +
-        '&holder=' + encodeURIComponent(holder) +
-        (user
-          ? '&email=' + encodeURIComponent(user.email) +
-            '&device_pubkey=' + encodeURIComponent(user.devicePubkey) +
-            '&config_pubkey=' + encodeURIComponent(user.configPubkey) +
-            (user.holder ? '&user_holder=' + encodeURIComponent(user.holder) : '')
-          : '') +
-        '&return_origin=' + encodeURIComponent(window.location.origin));
-    const TIMEOUT_MS = 3 * 60 * 1000;
-    let timeoutId = null, pollId = null;
-    function cleanup() {
-      clearTimeout(timeoutId); clearInterval(pollId);
-      window.removeEventListener('message', onMessage);
-      try { popup.close(); } catch (e) { /* already closed */ }
-    }
-    function onMessage(ev) {
-      if (ev.origin !== idpOrigin) return;
-      const d = ev.data;
-      if (!d || typeof d !== 'object') return;
-      // 'device_certs' is the user-mode response (as-you path); the config
-      // cert rides back as user_config_cert either way.
-      if (d.type === 'browserid:agent_device_cert' || d.type === 'browserid:device_certs') {
-        cleanup();
-        if (d.device_cert) {
-          resolve({
-            device_cert: d.device_cert,
-            user_device_cert: d.user_device_cert || null,
-            user_config_cert: d.user_config_cert || d.config_cert || null,
-          });
-        } else {
-          reject(new Error('identity provider returned no certificate'));
-        }
-      } else if (d.type === 'browserid:device_error') {
-        cleanup();
-        reject(new Error(d.reason || 'identity provider refused'));
-      }
-    }
-    window.addEventListener('message', onMessage);
-    timeoutId = setTimeout(() => { cleanup(); reject(new Error('the provider window timed out')); }, TIMEOUT_MS);
-    pollId = setInterval(() => {
-      if (popup.closed) { cleanup(); reject(new Error('the provider window was closed')); }
-    }, 500);
-  });
-}
-
-// This browser's stable holder (mirrors the dialog's browserHolder): one per
-// browser, reused across identities; localStorage-cached by namespace prefix.
-async function browserHolderForIssue() {
-  let prefix;
-  try { prefix = (await api('/wsapi/browser_holder')).prefix; } catch (e) { return null; }
-  if (!prefix) return null;
-  const key = 'browserid:holder:' + prefix;
-  try { const cached = localStorage.getItem(key); if (cached) return cached; } catch (e) {}
-  const rand = Array.from(crypto.getRandomValues(new Uint8Array(5))).map(b => b.toString(16).padStart(2, '0')).join('');
-  const holder = prefix + '.' + rand;
-  try { localStorage.setItem(key, holder); } catch (e) {}
-  return holder;
-}
-
-// Persist an issued (device, config) pair in the keystore, same shape the
-// dialog stores at sign-in, then refresh the local cache so configFor sees it.
-async function storeIssuedPair(issuer, email, keys, certs) {
-  await window.Keystore.putDevice(issuer, email, 'device', {
-    publicKeyX: keys.device.publicKeyX, privateKey: keys.device.privateKey, cert: certs.device_cert,
-  });
-  await window.Keystore.putDevice(issuer, email, 'config', {
-    publicKeyX: keys.config.publicKeyX, privateKey: keys.config.privateKey, cert: certs.config_cert,
-  });
-  await refreshKeystore();
-}
-
-// Flow I's commit ('Create its identity' / the confirmed become-you path).
-// `mode` is the identity_mode: 'handle' (a named agent) or 'self' (as-you).
-// Mints the cert via the two-stage complete; a bundled request then moves to
-// the permission screen — the grants are signed there, not here.
-async function pvApproveIdentity(mode) {
-  const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Creating…';
-  const identityEmail = pv.grantor;
-  const ai = pv.addressInfo;
-  const primaryHop = ai && ai.type === 'primary';
-  const asMe = mode === 'self';
-  const handleTag = (pv.tag || '').trim().toLowerCase();
-  if (!identityEmail) {
-    status.className = 'status err';
-    status.textContent = 'Add an email below first.';
-    return;
-  }
-  if (!asMe && !handleTag) {
-    status.className = 'status err';
-    status.textContent = 'Name the agent\u2019s address first.';
-    return;
-  }
-  // The NAME sent to the broker: agent identities sub-address the owner
-  // (`<local>+<tag>`) on every IdP.
-  const chosenName = asMe ? null : `${ownerLocalOf(identityEmail)}+${handleTag}`;
-  let popup = null;
-  if (primaryHop) {
-    if (!ai.device_auth) {
-      status.className = 'status err';
-      status.textContent = `${identityEmail.split('@')[1]} runs its own identity provider, but it does not support device sign-in yet.`;
-      return;
-    }
-    popup = window.open('about:blank', 'browserid_agent_auth', 'width=600,height=700');
-    if (!popup) {
-      status.className = 'status err';
-      status.textContent = 'Popup blocked — allow popups for this site and retry (your identity provider must sign the agent’s certificate).';
-      return;
-    }
-  }
-  try {
-    // `prepare` assigns the holder + status indices (needed whenever grants
-    // will be signed later, or a primary must be told the holder up front).
-    let deviceCert = null;
-    let agentEmail = asMe ? identityEmail : `${chosenName}@${identityEmail.split('@')[1]}`;
-    if (pv.grants.length || primaryHop) {
-      const prep = await post('/agent-provision/prepare', {
-        code: pv.code, identity_email: identityEmail,
-        identity_mode: mode,
-        ...(asMe ? {} : { handle: chosenName }),
-      });
-      agentEmail = prep.agent_email;
-      pv.prep = prep;
-      if (primaryHop) {
-        status.textContent = 'Waiting for your identity provider…';
-        // ONE hop shape for every mode: a standard user-mode visit with the
-        // AGENT's key as the device key and the broker-assigned holder. The
-        // cert names the SESSION identity; the protocol's subaddress rule
-        // (base identity covers its +tags) authorizes a named agent, and the
-        // warrant pins the exact identity it may present as. The paired
-        // config key is a fresh keystore key — deposited below when this
-        // browser lacked a config cert (the permission screen signs with it),
-        // discarded otherwise.
-        const k = await window.Keystore.generate();
-        const hopReq = { keys: k, configPubkey: k.publicKeyX };
-        const res = await agentCertPopupFlow(popup, ai.device_auth, identityEmail, pv.pubkey, prep.holder, null, hopReq);
-        popup = null; // closed by the flow
-        deviceCert = res.device_cert;
-        if (!configFor(identityEmail) && res.user_config_cert) {
-          // Deposit ONLY the config record: the device cert from this visit
-          // certifies the AGENT's key, not a key this browser holds.
-          await window.Keystore.putDevice(identityEmail.split('@')[1], identityEmail, 'config', {
-            publicKeyX: hopReq.keys.publicKeyX, privateKey: hopReq.keys.privateKey, cert: res.user_config_cert,
-          });
-          await refreshKeystore();
-        }
-      }
-      status.textContent = 'Creating…';
-    }
-    await post('/agent-provision/complete', {
-      code: pv.code, approve: true, stage: 'identity', identity_email: identityEmail,
-      identity_mode: mode,
-      ...(asMe ? {} : { handle: chosenName }),
-      ...((pv.displayName || '').trim() ? { display_name: pv.displayName.trim() } : {}),
-      ...((pv.publicName || '').trim() ? { public_name: pv.publicName.trim() } : {}),
-      // Primary-signed cert: also relay where that IdP mints access certs
-      // (discovered path — never assume /access/mint).
-      ...(deviceCert ? { device_cert: deviceCert, ...(ai.access_mint ? { access_mint: ai.access_mint } : {}) } : {}),
-    });
-    pv.agentEmail = agentEmail;
-    pv.asMe = asMe;
-    pv.identityDone = true;
-    pv.view = 'done';
-    pvRender();
-    reloadAccount().then(() => { renderUserIdentities(); renderHolders(); renderSites(); }).catch(() => {});
-  } catch (e) {
-    if (popup) { try { popup.close(); } catch (e2) { /* already closed */ } }
-    status.className = 'status err'; status.textContent = 'Failed: ' + e.message;
-  }
-}
-
-// Flow P's commit ('Allow for 90 days'): sign one warrant per grant with the
-// config key held in this browser — grantor = the dropdown's choice (the
-// agent itself, or an identity of yours), grantee = the agent — and record
-// them via the grants stage.
-async function pvApproveGrants() {
-  const status = $('pv-status'); status.className = 'status muted'; status.textContent = 'Signing…';
-  const prep = pv.prep;
-  const agentEmail = pv.agentEmail || (prep && prep.agent_email);
-  if (!prep || !agentEmail) {
-    status.className = 'status err';
-    status.textContent = 'This request is no longer resumable — ask the agent to try again.';
-    return;
-  }
-  const grantorEmail = pv.asMe ? agentEmail
-    : (pv.obChoice === 'self' ? agentEmail : (pv.obChoice || agentEmail.replace(/\+[^@]*@/, '@')));
-  // The config cert must cover the GRANTOR. The subaddress rule means the
-  // base identity's config covers its +tag agents (acts-as-itself included).
-  const baseIdentity = grantorEmail.replace(/\+[^@]*@/, '@');
-  try {
-    let config = configFor(grantorEmail);
-    if (!config) {
-      // Broker-rooted identity with no local pair: the account session can
-      // issue one right here (same endpoint the dialog uses at sign-in).
-      const keys = { device: await window.Keystore.generate(), config: await window.Keystore.generate() };
-      const body = {
-        email: baseIdentity,
-        device_pubkey: keys.device.publicKeyX,
-        config_pubkey: keys.config.publicKeyX,
-      };
-      const bh = await browserHolderForIssue();
-      if (bh) body.holder = bh;
-      try {
-        const certs = await post('/device/issue', body);
-        await storeIssuedPair(location.host, baseIdentity, keys, certs);
-        config = configFor(grantorEmail);
-      } catch (e) { /* primary-rooted: fall through to the guidance below */ }
-    }
-    if (!config) throw new Error(
-      `no config key covering ${grantorEmail} in this browser — ` +
-      `sign in to an app with ${baseIdentity} here first, then retry`);
-    const statusUri = prep.status_uri || (pv.info && pv.info.status_uri);
-    const warrants = [];
-    for (const g of prep.grants) {
-      const statusRef = (g.status_idx != null && statusUri)
-        ? { uri: statusUri, idx: g.status_idx } : null;
-      // Isolated to this agent's holder, always — group-widening is
-      // deliberately not offered here.
-      warrants.push(await signDeviceWarrant(config, grantorEmail, agentEmail, prep.holder, g.audience, g.scopes || [], statusRef));
-    }
-    status.textContent = 'Approving…';
-    await post('/agent-provision/complete', {
-      code: pv.code, approve: true, stage: 'grants',
-      grantor: grantorEmail, warrants, config_cert: config.cert,
-    });
-    pv.grantsResolved = true;
-    pv.approved = {
-      mode: pv.asMe ? 'self' : (grantorEmail === agentEmail ? 'standalone' : 'handle'),
-      agentEmail,
-    };
-    pv.view = 'approved';
-    pvRender();
-    reloadAccount().then(() => { renderUserIdentities(); renderHolders(); renderSites(); }).catch(() => {});
-  } catch (e) {
-    status.className = 'status err'; status.textContent = 'Failed: ' + e.message;
-  }
-}
-
-// Decline the permission screen (or skip it): the identity stays — honestly —
-// and the agent is told the grants were declined, with the credential still
-// delivered on its next poll.
-async function pvDenyGrants() {
-  try {
-    await post('/agent-provision/complete', { code: pv.code, approve: false, stage: 'grants' });
-  } catch (e) { /* best effort */ }
-  pv.grantsResolved = true;
-  pv.grantsDenied = true;
-  pv.view = 'done';
-  pvRender();
-}
-
-// Deny (A8): the requester is told immediately via its poll — it never sits
-// waiting for the request to expire.
-async function pvDeny() {
-  try { await post('/agent-provision/complete', { code: pv.code, approve: false }); } catch (e) { /* best effort */ }
-  pv.view = 'denied';
-  pvRender();
-}
 
 async function boot() {
+  if (legacyProvisionCode) return; // already redirecting to /authorize
   // Returning from the dialog after a primary sign-in leaves a `#browserid=…`
-  // blob in the URL; the broker session cookie is already set, so just clear it.
+  // blob in the URL; the broker session cookie is already set, so clear it.
   if (location.hash.indexOf('browserid=') !== -1) history.replaceState(null, '', location.pathname + location.search);
   let ctx; try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
   $('gate').hidden = true;
-  const provisionCode = new URLSearchParams(location.search).get('provision');
   if (!ctx.authenticated) {
-    // A0: the pairing code survives sign-in (it's in the URL), and the
-    // pending request stays on screen so the stranger arriving from an
-    // agent's link knows why they're being asked. A "sign in as X" hop
-    // (A4) prefills the address it asked for.
     $('signin').hidden = false;
     try {
       const hint = sessionStorage.getItem('pv-si-hint');
       if (hint) { sessionStorage.removeItem('pv-si-hint'); $('si-email').value = hint; }
     } catch (e) { /* private mode */ }
-    if (provisionCode) await showProvisionGate(provisionCode);
+    siShow('email', { lead: "Enter your email — we'll sign you in or set you up.", btn: 'Continue' });
     return;
   }
   account.csrf = ctx.csrf_token;
   try { await window.Keystore.purgeLegacy(); } catch (e) { console.warn('keystore purge:', e); }
   await reloadAccount();
+  $('signout').hidden = false;
   $('app').hidden = false;
-  renderUserIdentities();
-  renderHolders();
-  renderSites();
-  // The authorization card sits above the account app so add-email is right
-  // there for new users who need another address first.
-  if (provisionCode) {
-    showProvisionApproval(provisionCode).catch(e => {
-      pv = { code: provisionCode, view: 'invalid', reason: e.message };
-      pvRender();
-    });
+  consumeAuthorizedHandoff();
+  history.replaceState({ view: 'main' }, '', location.pathname);
+  showView('main', { push: false });
+  // The fresh arrival from /authorize: make sure the highlighted actor is
+  // visible even when the roster is long.
+  if (ui.highlight) {
+    const el = document.querySelector('.rowwrap.hl');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 }
-boot().catch(e => { $('gate').hidden = false; $('gate').innerHTML = `<p class="err" style="margin:0">Error: ${escapeHtml(e.message)}</p>`; });
+boot().catch(e => {
+  $('gate').hidden = false;
+  $('gate').innerHTML = `<div class="signcard"><p class="lead err" style="margin:0">Error: ${escapeHtml(e.message)}</p></div>`;
+});
 </script>
 </body>
 </html>

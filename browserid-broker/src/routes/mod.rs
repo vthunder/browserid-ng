@@ -171,6 +171,10 @@ where
         // Broker account utilities (sign out / clear cached certs / agent keys),
         // moved off the root when the marketing landing page took `/`.
         .route_service("/account", ServeFile::new(format!("{}/account.html", static_path)))
+        // Standalone authorization page: the agent provisioning/consent flow
+        // (/authorize?code=…), moved off the /account dashboard. Old printed
+        // /account?provision=… links still work — account.html redirects.
+        .route_service("/authorize", ServeFile::new(format!("{}/authorize.html", static_path)))
         // Demo RP on the device-cert model.
         .route_service("/broker-demo", ServeFile::new(format!("{}/broker-demo.html", static_path)))
         // Landing page at the root. When the origin split is deployed
@@ -248,7 +252,8 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-luRUMd00kueiHZ3SafT1gaFOgOWefY4hNu1N4xfeIhg='", // account.html
+    "'sha256-U7KAqjlm5pMFuAxJEfweKYhh/Kh1MsXDiqpTlVqhJWI='", // account.html
+    "'sha256-XRWE73ZH1qCk6vmO+hv85g2743sS42s8Y64PjFX8z98='", // authorize.html
     "'sha256-KcSFrbxTD/FQlLnEbwRfQuYxTudagOb8OQNj5vSg5T8='", // consent.html
     "'sha256-+XqUYbHj+ZXqocYeM/oRYCX1zljIPfY94AJwWAtU2Do='", // agents.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)
@@ -500,7 +505,12 @@ mod csp_tests {
     #[test]
     fn inline_script_hashes_match() {
         let mut checked = 0;
-        for file in ["static/account.html", "static/consent.html", "static/agents.html"] {
+        for file in [
+            "static/account.html",
+            "static/authorize.html",
+            "static/consent.html",
+            "static/agents.html",
+        ] {
             let html = std::fs::read_to_string(file)
                 .unwrap_or_else(|e| panic!("read {file}: {e}"));
             let script = first_inline_script(&html)
@@ -551,6 +561,7 @@ mod csp_tests {
     #[test]
     fn csp_tiers_route_correctly() {
         assert!(matches!(csp_tier("/account"), CspTier::Strict));
+        assert!(matches!(csp_tier("/authorize"), CspTier::Strict));
         assert!(matches!(csp_tier("/consent"), CspTier::Strict));
         assert!(matches!(csp_tier("/dialog/dialog.html"), CspTier::Dialog));
         assert!(matches!(csp_tier("/sign"), CspTier::Dialog));

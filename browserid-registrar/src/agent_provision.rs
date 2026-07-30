@@ -357,8 +357,8 @@ pub async fn request(
     USER_CODES.lock().unwrap().insert(user_code.clone(), code.clone());
     Ok(Json(RequestResponse {
         success: true,
-        verification_uri: format!("{origin}/account"),
-        verification_uri_complete: format!("{origin}/account?provision={code}"),
+        verification_uri: format!("{origin}/authorize"),
+        verification_uri_complete: format!("{origin}/authorize?code={code}"),
         user_code,
         fingerprint: fp,
         expires_in: REQUEST_VALIDITY_SECONDS,
