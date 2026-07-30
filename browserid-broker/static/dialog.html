@@ -37,13 +37,15 @@
         <form id="email-form">
           <div class="form-group">
             <label for="email">Email address</label>
-            <input type="email" id="email" name="email"
+            <input type="text" inputmode="email" id="email" name="email"
                    placeholder="you@example.com"
                    autocomplete="email"
                    autocapitalize="off"
                    autocorrect="off"
                    required>
             <div class="error" id="email-error"></div>
+            <p style="font-size:.85rem;opacity:.65;margin:.35rem 0 0">
+              Bluesky user? Try <code>me@your.handle</code></p>
           </div>
 
           <div class="button-row">
@@ -322,6 +324,20 @@
     <!-- Tap-to-continue for the primary-IdP device-authorization popup. Shown
          when the browser blocks window.open (e.g. on mobile, past the original
          tap). The button opens the popup inside its own fresh gesture. -->
+    <section id="claim-continue-screen" class="screen">
+      <div class="content">
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <h2>One more tap</h2>
+        <p>Your browser blocked the verification window. Tap continue to verify
+           <strong class="claim-handle"></strong> with Bluesky and finish signing in.</p>
+
+        <div class="button-row">
+          <button type="button" id="continue-handle-claim" class="primary">Continue</button>
+          <button type="button" class="cancel">Cancel</button>
+        </div>
+      </div>
+    </section>
+
     <section id="primary-auth-continue-screen" class="screen">
       <div class="content">
         <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>

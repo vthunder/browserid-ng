@@ -39,6 +39,7 @@
     provisionEmail: null,  // RP asked to provision/sign in a SPECIFIC identity (skip the chooser)
     loginHint: null,  // caller pre-filled the email (e.g. /account) → skip the email screen
     pendingPrimary: null,  // {email, info, keys} while waiting on tap-to-continue
+    pendingClaim: null,    // {email, info} while waiting on claim tap-to-continue
     // Full-page redirect mode (Arc / blocked popups): {returnTo, state}. The
     // response navigates back to the RP with the payload in the fragment
     // instead of using WinChan/postMessage.
@@ -59,7 +60,8 @@
     completeReset: '/wsapi/complete_reset',
     addressInfo: '/wsapi/address_info',
     stageEmail: '/wsapi/stage_email',
-    completeEmailAddition: '/wsapi/complete_email_addition'
+    completeEmailAddition: '/wsapi/complete_email_addition',
+    completeHandleClaim: '/wsapi/complete_handle_claim'
   };
 
   // DOM elements
@@ -76,6 +78,7 @@
     addEmailVerify: document.getElementById('add-email-verify-screen'),
     primaryTransition: document.getElementById('primary-transition-screen'),
     primaryAuthContinue: document.getElementById('primary-auth-continue-screen'),
+    claimContinue: document.getElementById('claim-continue-screen'),
     sboConsent: document.getElementById('sbo-consent-screen'),
     success: document.getElementById('success-screen'),
     error: document.getElementById('error-screen')
@@ -241,6 +244,12 @@
   // window that started the flow (see primaryPopupFlow / handoffResume).
   const RESUME_CHANNEL = 'browserid:device_auth_resume';
   const RESUME_PATH = '/dialog/dialog.html?resume=device_auth';
+
+  // Handle-identity claims (browserid-ng-xcy6) use a parallel pair: the
+  // bridge's claim page hands back an ATTESTATION (no keys, no certs), so
+  // the machinery is a simplified sibling of the device_auth one.
+  const CLAIM_RESUME_CHANNEL = 'browserid:handle_claim_resume';
+  const CLAIM_RESUME_PATH = '/dialog/dialog.html?resume=handle_claim';
 
   // The public key a device cert certifies, or null if the cert doesn't
   // declare one in a shape we can read. The claim is advisory (DNSSEC is the
@@ -527,6 +536,15 @@
         showError('This site doesn’t accept email sign-in via ' + dom +
           '. Use an email whose domain is its own identity provider.');
         return;
+      }
+
+      // Handle-identity domain: re-proof runs at the bridge, never by
+      // password reset or mailed code (browserid-ng-xcy6).
+      if (addressInfo.proof === 'atproto' &&
+          (addressInfo.state === 'unknown' ||
+           addressInfo.state === 'transition_no_password' ||
+           addressInfo.state === 'unverified')) {
+        return await handleAtprotoClaim(email, addressInfo);
       }
 
       if (addressInfo.state === 'transition_to_secondary') {
@@ -1298,6 +1316,252 @@
     }
   }
 
+  // --- handle-identity claims (browserid-ng-xcy6) --------------------------
+  //
+  // A handle identity (`me@dan.bsky.social`) is an ordinary broker-issued
+  // secondary identity whose OWNERSHIP proof runs at the bsky bridge instead
+  // of an email loop: one navigation out to the bridge's claim page, one
+  // return carrying a short-lived signed attestation, which we redeem at the
+  // broker. From there completeSignIn runs unchanged.
+
+  // Popup lane. Resolves with the attestation string.
+  function claimPopupFlow(email, claimUrl) {
+    return new Promise((resolve, reject) => {
+      const claimOrigin = new URL(claimUrl).origin;
+      const url = claimUrl +
+        '#email=' + encodeURIComponent(email) +
+        '&return_origin=' + encodeURIComponent(window.location.origin);
+      const popup = window.open(url, 'browserid_handle_claim', 'width=600,height=700');
+      if (!popup) {
+        reject({ popupBlocked: true });
+        return;
+      }
+      showScreen('loading', 'Verifying your Bluesky handle...');
+
+      const TIMEOUT_MS = 3 * 60 * 1000;
+      let timeoutId = null;
+      let pollId = null;
+      let chan = null;
+      // Set when the claim page announces its OAuth navigation: a subsequent
+      // `popup.closed` is COOP severing the handle, not the user cancelling.
+      let expectingHandoff = false;
+      let settled = false;
+
+      function cleanup() {
+        clearTimeout(timeoutId);
+        clearInterval(pollId);
+        window.removeEventListener('message', onMessage);
+        if (chan) { try { chan.close(); } catch (e) { /* closed */ } chan = null; }
+      }
+      function finish(err, attestation) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (err) reject(err); else resolve(attestation);
+      }
+
+      function onMessage(ev) {
+        if (ev.origin !== claimOrigin) return;
+        const d = ev.data || {};
+        if (d.email && String(d.email).toLowerCase() !== email.toLowerCase()) return;
+        if (d.type === 'browserid:handle_claim_pending') { expectingHandoff = true; return; }
+        if (d.type === 'browserid:handle_attestation') finish(null, d.attestation);
+        else if (d.type === 'browserid:handle_error') {
+          finish(new Error(d.reason || 'handle verification failed'));
+        }
+      }
+      window.addEventListener('message', onMessage);
+
+      // After the OAuth hop the popup's opener is severed; the result comes
+      // back through our resume page on this same-origin channel instead.
+      try {
+        chan = new BroadcastChannel(CLAIM_RESUME_CHANNEL);
+        chan.onmessage = (ev) => {
+          const m = ev.data || {};
+          if (m.type !== 'browserid:handle_claim_result') return;
+          if (String(m.email || '').toLowerCase() !== email.toLowerCase()) return;
+          try { chan.postMessage({ type: 'browserid:handle_claim_ack', nonce: m.nonce }); } catch (e) { /* closed */ }
+          if (m.attestation) finish(null, m.attestation);
+          else finish(new Error(m.reason || 'handle verification failed'));
+        };
+      } catch (e) { /* unsupported: postMessage lane only */ }
+
+      timeoutId = setTimeout(() => {
+        try { popup.close(); } catch (e) { /* gone */ }
+        finish(new Error('Timed out waiting for Bluesky verification'));
+      }, TIMEOUT_MS);
+      pollId = setInterval(() => {
+        if (popup.closed && !expectingHandoff) {
+          finish(new Error('The verification window was closed'));
+        }
+      }, 500);
+    });
+  }
+
+  // Same-tab hop (redirect mode): park the dialog's state, navigate to the
+  // claim page with a return_url back to our resume entry point. Unlike the
+  // primary hop there are no keys to park — the attestation is the only
+  // thing that crosses back.
+  async function claimRedirectHop(email, info) {
+    await Keystore.putPending({
+      kind: 'handle_claim',
+      email,
+      dialog: {
+        origin: state.origin,
+        redirect: state.redirect,
+        sboSign: state.sboSign,
+        fedcm: !!state.fedcm,
+        provisionEmail: state.provisionEmail,
+        acceptedFallbacks: state.acceptedFallbacks,
+        emails: state.emails
+      }
+    });
+    const resume = window.location.origin + CLAIM_RESUME_PATH;
+    window.location.assign(
+      info.claim +
+      '#email=' + encodeURIComponent(email) +
+      '&return_origin=' + encodeURIComponent(window.location.origin) +
+      '&return_url=' + encodeURIComponent(resume)
+    );
+  }
+
+  // Redeem the attestation at the broker. apiCall attaches the session CSRF
+  // automatically when one exists (the add-to-signed-in-account case); a
+  // cold claim has no session and the broker requires none.
+  async function redeemHandleAttestation(email, attestation) {
+    return await apiCall(API.completeHandleClaim, 'POST', { email, attestation });
+  }
+
+  async function handleAtprotoClaim(email, info) {
+    if (!info.claim) {
+      showError('This identity needs Bluesky verification, but the service for it is unavailable.');
+      return;
+    }
+    if (state.redirect) return await claimRedirectHop(email, info);
+    let attestation;
+    try {
+      attestation = await claimPopupFlow(email, info.claim);
+    } catch (e) {
+      if (e && e.popupBlocked) {
+        // Blocked — re-run from a fresh tap gesture (mobile).
+        state.pendingClaim = { email, info };
+        document.querySelectorAll('.claim-handle').forEach(el => {
+          el.textContent = email.split('@')[1];
+        });
+        showScreen('claimContinue');
+        return;
+      }
+      showError('Bluesky verification failed: ' + (e.message || e));
+      return;
+    }
+    try {
+      showScreen('loading', 'Finishing sign-in...');
+      await redeemHandleAttestation(email, attestation);
+      await completeSignIn(email);
+    } catch (e) {
+      showError('Could not complete sign-in: ' + (e.message || e));
+    }
+  }
+
+  // Hand a claim result to the dialog window still waiting in
+  // claimPopupFlow (same origin — BroadcastChannel). Resolves true once
+  // that window acknowledges, false if nobody claims it.
+  function handoffClaimResume(email, attestation, errReason) {
+    return new Promise((resolve) => {
+      let chan = null;
+      try { chan = new BroadcastChannel(CLAIM_RESUME_CHANNEL); } catch (e) { return resolve(false); }
+      if (!email || (!attestation && !errReason)) {
+        try { chan.close(); } catch (e) { /* ignore */ }
+        return resolve(false);
+      }
+      const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      const payload = {
+        type: 'browserid:handle_claim_result',
+        email,
+        attestation: attestation || null,
+        reason: errReason || null,
+        nonce
+      };
+      let settled = false;
+      let retryId = null;
+      chan.onmessage = (ev) => {
+        const m = ev.data || {};
+        if (m.type !== 'browserid:handle_claim_ack' || m.nonce !== nonce || settled) return;
+        settled = true;
+        clearInterval(retryId);
+        try { chan.close(); } catch (e) { /* ignore */ }
+        // This window was opened by script; if the browser refuses to close
+        // it, say something honest — the sign-in completed next door.
+        window.close();
+        showScreen('loading', 'Signed in — you can close this window.');
+        resolve(true);
+      };
+      try { chan.postMessage(payload); } catch (e) { /* ignore */ }
+      retryId = setInterval(() => { try { chan.postMessage(payload); } catch (e) { /* ignore */ } }, 300);
+      setTimeout(() => {
+        if (settled) return;
+        clearInterval(retryId);
+        try { chan.close(); } catch (e) { /* ignore */ }
+        resolve(false);
+      }, 3000);
+    });
+  }
+
+  // Entry point for /dialog/dialog.html?resume=handle_claim — the return leg
+  // of both the redirect lane and the COOP-severed popup lane.
+  async function resumeHandleClaim() {
+    showScreen('loading', 'Finishing sign-in...');
+    const frag = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    history.replaceState(null, '', window.location.pathname); // attestation out of the URL bar
+    const email = frag.get('email') || '';
+    const attestation = frag.get('handle_attestation');
+    const errReason = frag.get('handle_error');
+
+    let pending = null;
+    try { pending = await Keystore.getPending(); } catch (e) { /* fall through */ }
+    if (pending && pending.kind !== 'handle_claim') pending = null;
+    if (pending) { try { await Keystore.clearPending(); } catch (e) { /* best-effort */ } }
+
+    if (!pending || !pending.dialog) {
+      // Popup lane: the dialog window that opened the claim popup is still
+      // open and still holds the RP response path — hand the result over.
+      if (await handoffClaimResume(email, attestation, errReason)) return;
+      showError('Sign-in state was lost — go back to the site and click sign in again.');
+      return;
+    }
+
+    state.origin = pending.dialog.origin;
+    state.redirect = pending.dialog.redirect;
+    state.sboSign = !!pending.dialog.sboSign;
+    state.provisionEmail = pending.dialog.provisionEmail || null;
+    state.acceptedFallbacks = pending.dialog.acceptedFallbacks || null;
+    state.emails = pending.dialog.emails || [];
+    maybeShowFedcmOptin(!!pending.dialog.fedcm);
+    document.querySelectorAll('.rp-name').forEach(el => {
+      try { el.textContent = new URL(state.origin).hostname; } catch (e) { /* leave */ }
+    });
+
+    if (errReason) {
+      showError('Bluesky verification failed: ' + errReason);
+      return;
+    }
+    const claimed = pending.email || email;
+    if (!attestation || !claimed) {
+      showError('Bluesky verification returned nothing — try again.');
+      return;
+    }
+    if (email && claimed.toLowerCase() !== email.toLowerCase()) {
+      showError('Sign-in state did not match — try again.');
+      return;
+    }
+    try {
+      await redeemHandleAttestation(claimed, attestation);
+      await completeSignIn(claimed);
+    } catch (e) {
+      showError(e.message || String(e));
+    }
+  }
+
   // Complete sign-in for a broker-rooted (secondary) email: reuse or issue the
   // device pair under the session, then present.
   async function completeSignIn(email) {
@@ -1448,6 +1712,31 @@
         return;
       }
 
+      // A bare handle ("dan.bsky.social") is the most likely way to get the
+      // Bluesky path wrong — offer the identity it maps to instead of erroring
+      // (browserid-ng-xcy6).
+      if (email.indexOf('@') === -1) {
+        const err = document.getElementById('email-error');
+        err.textContent = '';
+        if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(email)) {
+          const suggested = 'me@' + email.toLowerCase();
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = 'Did you mean ' + suggested + '?';
+          btn.style.cssText = 'background:none;border:none;padding:0;font:inherit;color:inherit;text-decoration:underline;cursor:pointer';
+          btn.addEventListener('click', () => {
+            document.getElementById('email').value = suggested;
+            err.textContent = '';
+            document.getElementById('email-form').requestSubmit();
+          });
+          err.appendChild(document.createTextNode('That looks like a Bluesky handle. '));
+          err.appendChild(btn);
+        } else {
+          err.textContent = 'Enter an email address';
+        }
+        return;
+      }
+
       state.email = email;
       document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
 
@@ -1487,6 +1776,20 @@
             const dom = state.brokerDomain || location.hostname;
             showError('This site doesn’t accept email sign-in via ' + dom +
               '. Use an email whose domain is its own identity provider.');
+            return;
+          }
+          // Handle-identity domain (browserid-ng-xcy6): ownership is proven
+          // at the bridge via atproto OAuth, not by password or mailed code.
+          // A 'known' identity with a password still gets the password screen.
+          if (addressInfo.proof === 'atproto' &&
+              (addressInfo.state === 'unknown' ||
+               addressInfo.state === 'transition_no_password' ||
+               addressInfo.state === 'unverified')) {
+            return await handleAtprotoClaim(email, addressInfo);
+          }
+          if (addressInfo.proof === 'none' && addressInfo.state === 'unknown') {
+            showError(email.split('@')[1] + ' can’t receive email and isn’t a ' +
+              'Bluesky handle, so this address can’t be verified.');
             return;
           }
           if (addressInfo.state === 'known') {
@@ -1727,6 +2030,15 @@
           return;
         }
 
+        // A handle identity is proven at the bridge, not by mailed code —
+        // the same claim hop attaches it to the signed-in account, because
+        // complete_handle_claim lands on the session when one exists
+        // (browserid-ng-xcy6).
+        if (addressInfo.proof === 'atproto') {
+          await handleAtprotoClaim(email, addressInfo);
+          return;
+        }
+
         await apiCall(API.stageEmail, 'POST', { email });
         showScreen('addEmailVerify');
       } catch (e) {
@@ -1794,6 +2106,15 @@
           showError(err.message || String(err));
         }
       }
+    });
+
+    // Tap-to-continue for a blocked handle-claim popup (browserid-ng-xcy6):
+    // same shape as the primary one — re-run from a real user gesture.
+    document.getElementById('continue-handle-claim').addEventListener('click', async () => {
+      const p = state.pendingClaim;
+      if (!p) return showScreen('email');
+      state.pendingClaim = null;
+      await handleAtprotoClaim(p.email, p.info);
     });
 
     // Back to pick email buttons
@@ -1997,6 +2318,9 @@
   if (params.get('resume') === 'device_auth') {
     // Returning from the same-tab primary hop (redirect mode).
     resumeDeviceAuth();
+  } else if (params.get('resume') === 'handle_claim') {
+    // Returning from the bridge's handle-claim hop (browserid-ng-xcy6).
+    resumeHandleClaim();
   } else if (params.get('rp_redirect') === '1') {
     // Full-page redirect mode: the RP's include.js navigated here because the
     // popup failed (Arc detaches popups; blockers). The response goes back by

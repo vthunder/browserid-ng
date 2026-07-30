@@ -1138,6 +1138,13 @@ $('ae-send').onclick = async () => {
         and it's added automatically — no code needed.`;
       return;
     }
+    if (info.proof === 'atproto' && info.claim) {
+      // Handle identity (browserid-ng-xcy6): proven at the bridge via
+      // Bluesky, not by mailed code. Same claim hop as the dialog; the
+      // attestation lands on this signed-in session.
+      openHandleClaim(email, info, status);
+      return;
+    }
     status.textContent = 'Sending code…';
     await post('/wsapi/stage_email', { email });
     aePending = email;
@@ -1146,6 +1153,60 @@ $('ae-send').onclick = async () => {
     $('ae-code').focus();
   } catch (e) { status.className = 'status err'; status.textContent = e.message; }
 };
+// Bluesky-handle claim hop: open the bridge's claim page in a popup, wait
+// for the attestation (postMessage while the opener survives; the
+// same-origin resume BroadcastChannel after the OAuth hop severs it), then
+// redeem it on this session.
+function openHandleClaim(email, info, status) {
+  const claimOrigin = new URL(info.claim).origin;
+  const url = info.claim + '#email=' + encodeURIComponent(email) +
+    '&return_origin=' + encodeURIComponent(window.location.origin);
+  const popup = window.open(url, 'browserid_handle_claim', 'width=600,height=700');
+  if (!popup) {
+    status.className = 'status err';
+    status.textContent = 'Popup blocked — allow popups for this site and try again.';
+    return;
+  }
+  status.className = 'status muted';
+  status.textContent = 'Verify ' + email.split('@')[1] + ' in the Bluesky window…';
+  let chan = null;
+  let done = false;
+  const finish = async (attestation, reason) => {
+    if (done) return; done = true;
+    window.removeEventListener('message', onMsg);
+    if (chan) { try { chan.close(); } catch (e) {} chan = null; }
+    if (!attestation) {
+      status.className = 'status err';
+      status.textContent = reason || 'Bluesky verification failed.';
+      return;
+    }
+    try {
+      status.className = 'status muted'; status.textContent = 'Adding…';
+      await post('/wsapi/complete_handle_claim', { email, attestation });
+      $('ae-email').value = ''; aeShow('closed');
+      await reloadAccount(); renderMain();
+    } catch (e) { status.className = 'status err'; status.textContent = e.message; }
+  };
+  const onMsg = (ev) => {
+    if (ev.origin !== claimOrigin) return;
+    const d = ev.data || {};
+    if (d.email && String(d.email).toLowerCase() !== email.toLowerCase()) return;
+    if (d.type === 'browserid:handle_attestation') finish(d.attestation);
+    else if (d.type === 'browserid:handle_error') finish(null, d.reason);
+  };
+  window.addEventListener('message', onMsg);
+  try {
+    chan = new BroadcastChannel('browserid:handle_claim_resume');
+    chan.onmessage = (ev) => {
+      const m = ev.data || {};
+      if (m.type !== 'browserid:handle_claim_result') return;
+      if (String(m.email || '').toLowerCase() !== email.toLowerCase()) return;
+      try { chan.postMessage({ type: 'browserid:handle_claim_ack', nonce: m.nonce }); } catch (e) {}
+      finish(m.attestation, m.reason);
+    };
+  } catch (e) { /* unsupported: postMessage lane only */ }
+}
+
 $('ae-verify').onclick = async () => {
   const status = $('ae-status2'); status.className = 'status muted';
   try {
