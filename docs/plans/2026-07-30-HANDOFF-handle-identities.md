@@ -5,9 +5,15 @@ Read this, then the design note:
 that doc is authoritative for the design; this one is for getting productive
 fast and for the things that are easy to get wrong.
 
-**Status: design settled, nothing implemented.** No code has been written for
-this. Epic **`browserid-ng-tsqk`** with five children (`beans show
-browserid-ng-tsqk`).
+**Status: BUILT AND DEPLOYED 2026-07-31** (broker ccd55ac, bridge 755e134).
+Epic **`browserid-ng-tsqk`**: 5kf3/031k/77mw/xcy6 completed — hierarchy in
+`address_info` + stage gates, bridge `/idp/resolve` + `/idp/attest` +
+`/idp/claim`, broker `/wsapi/complete_handle_claim` (proof method + DID
+stored, migration v22), dialog + /account claim flow. Still open: `jaa1`
+(the revocation-on-flip DECISION, draft) and `rau4` (atproto-lane e2e + the
+first live claim with a real handle — the real test). §2–§9 below remain
+accurate as constraints; the pre-flight in §7 was re-run 2026-07-31 (clear,
+with an example.com null-MX correction — see bean 5kf3).
 
 ## 1. What we're building, in one paragraph
 

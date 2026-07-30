@@ -1,11 +1,11 @@
 ---
 # browserid-ng-tmk8
 title: 'Agent display names: separate internal label from public byline'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-07-29T18:04:46Z
-updated_at: 2026-07-29T19:00:16Z
+updated_at: 2026-07-29T19:22:38Z
 ---
 
 Live guestbook demo (bean browserid-ng-kp0a) surfaced a naming-consent gap: the display name set when pairing a device/agent at browserid.me/account was published verbatim as the public guestbook byline ('Claude.ai (web)'). The human experienced that name as an internal management label (like naming an SSH key), not a public persona. Current feed names ('Dan's Claude Code', 'Claude.ai (web)') read as infrastructure vocabulary leaking into a public space.
@@ -53,4 +53,12 @@ Touches: browserid-broker store (schema + migration: add public_name), guestbook
 - [x] Account page: Agent names card (list + prompt-edit via /wsapi/set_public_name; list_emails grew public_names)
 - [x] wallet-service AND sdk/wallet local twin: drop name param; identity tool fetches /public-name (fail-soft)
 - [x] guestbook-mcp: drop name param
-- [ ] Tests across all of the above (broker agent_flows_v2 extended + CSP hash bumped; node suites green; full workspace run in progress)
+- [x] Tests across all of the above (workspace 134 passed / 0 failed; node suites 8 + 20 green)
+
+## Summary of Changes
+
+Shipped in 993f97b, all four workflows green, verified live:
+- /public-name returns local-part fallback for Dan's existing agent (danmills+claudeweb) — old display_name 'Claude.ai (web)' correctly NOT served (no grandfathering) — and the identical shape for unknown identities.
+- Schema migrate_v21 (emails.public_name), approval page second explicitly-public field + internal field marked private, Agent names card at /account, /wsapi/set_public_name, guestbook byline = public_name -> local-part with per-post name accepted-but-ignored, wallet identity tool (hosted + local sdk/wallet twin) reports the public name, sign_guestbook name param removed from all three MCP surfaces.
+
+Note for the demo account: subaddressed agent identities fall back to a local-part containing the owner's own local part (danmills+claudeweb) — set a public name at browserid.me/account to avoid that.
