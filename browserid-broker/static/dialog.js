@@ -1702,6 +1702,34 @@
 
   // Event handlers
   function setupEventHandlers() {
+    // A bare handle ("dan.bsky.social") is the most likely way to get the
+    // Bluesky path wrong. The input stays type=email — the identity IS an
+    // email, and native validation should keep saying so — but when
+    // validation blocks a handle-shaped value, teach the address it maps to
+    // instead of showing the browser's generic bubble (browserid-ng-xcy6).
+    // The bare handle is never accepted as an identity; it is only how
+    // ownership gets proven once the address form is right.
+    document.getElementById('email').addEventListener('invalid', (e) => {
+      const val = e.target.value.trim();
+      if (!val || val.indexOf('@') !== -1) return; // native message is right
+      if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(val)) return;
+      e.preventDefault();
+      const err = document.getElementById('email-error');
+      err.textContent = '';
+      const suggested = 'me@' + val.toLowerCase();
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = 'Did you mean ' + suggested + '?';
+      btn.style.cssText = 'background:none;border:none;padding:0;font:inherit;color:inherit;text-decoration:underline;cursor:pointer';
+      btn.addEventListener('click', () => {
+        document.getElementById('email').value = suggested;
+        err.textContent = '';
+        document.getElementById('email-form').requestSubmit();
+      });
+      err.appendChild(document.createTextNode('Your browserid is an address at your handle. '));
+      err.appendChild(btn);
+    });
+
     // Email form
     document.getElementById('email-form').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1709,31 +1737,6 @@
 
       if (!email) {
         document.getElementById('email-error').textContent = 'Email is required';
-        return;
-      }
-
-      // A bare handle ("dan.bsky.social") is the most likely way to get the
-      // Bluesky path wrong — offer the identity it maps to instead of erroring
-      // (browserid-ng-xcy6).
-      if (email.indexOf('@') === -1) {
-        const err = document.getElementById('email-error');
-        err.textContent = '';
-        if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(email)) {
-          const suggested = 'me@' + email.toLowerCase();
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.textContent = 'Did you mean ' + suggested + '?';
-          btn.style.cssText = 'background:none;border:none;padding:0;font:inherit;color:inherit;text-decoration:underline;cursor:pointer';
-          btn.addEventListener('click', () => {
-            document.getElementById('email').value = suggested;
-            err.textContent = '';
-            document.getElementById('email-form').requestSubmit();
-          });
-          err.appendChild(document.createTextNode('That looks like a Bluesky handle. '));
-          err.appendChild(btn);
-        } else {
-          err.textContent = 'Enter an email address';
-        }
         return;
       }
 

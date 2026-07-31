@@ -101,7 +101,12 @@ pub enum BrokerError {
     /// The domain's claim-time authority is atproto (browserid-ng-tsqk): its
     /// identities are proven at the bridge via atproto OAuth, never by
     /// mailing a code — a mailbox at a handle domain is not the owner.
-    #[error("{0} is a Bluesky handle — sign in with it instead of a verification email")]
+    ///
+    /// Copy note: the identity is the EMAIL (`me@<handle>`); the bare handle
+    /// is only how ownership is proven. The message must never read as "use
+    /// the handle instead" — it teaches the address form and says how that
+    /// address gets verified.
+    #[error("{0} is a Bluesky handle, so addresses there (like me@{0}) are verified with a Bluesky sign-in, not an emailed code")]
     DomainProvenByAtproto(String),
 
     /// No proof method for the domain: no primary, no handle binding, no MX.

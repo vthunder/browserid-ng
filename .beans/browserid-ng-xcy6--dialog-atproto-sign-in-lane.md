@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: normal
 created_at: 2026-07-30T20:35:08Z
-updated_at: 2026-07-30T22:54:02Z
+updated_at: 2026-07-31T08:07:33Z
 parent: browserid-ng-tsqk
 blocked_by:
     - browserid-ng-5kf3
@@ -31,3 +31,11 @@ What is actually needed is small: once the identity is verified on the session, 
 - e2e: full suite green twice (77 passed / 0 failed) against a warm broker with the hierarchy live — no regressions from the input-type change or the new branches.
 
 NOT yet covered: e2e specs for the atproto lane itself (needs a mock bridge + static authority probes via test endpoints) and a live end-to-end claim with a real handle — follow-up bean.
+
+## Correction after live testing (2026-07-31, user feedback)
+
+The identity is the EMAIL; the bare handle is only proof. Two reversions to keep that true:
+- Input restored to type=email — native validation stays authoritative. The "Did you mean me@<handle>?" nudge moved to the input's `invalid` event: a bare handle can never submit, and the correction teaches the address form.
+- DomainProvenByAtproto copy rewritten — it read as "use the bare handle instead"; now: "X is a Bluesky handle, so addresses there (like me@X) are verified with a Bluesky sign-in, not an emailed code".
+
+(The tester also hit the deploy-order window where the new broker + old cached dialog coexisted — dialog assets are cache-control: no-cache, so fresh loads self-heal.)
