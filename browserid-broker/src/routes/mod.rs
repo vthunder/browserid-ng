@@ -132,6 +132,7 @@ where
         .route("/access/mint", post(device::access_mint))
         .route("/verify-access", post(device::verify_access))
         .route("/wsapi/device_certs", get(device::device_certs))
+        .route("/wsapi/issuer_revoke_url", get(device::issuer_revoke_url))
         .route("/wsapi/browser_holder", get(device::browser_holder))
         .route("/wsapi/revoke_device_cert", post(device::revoke_device_cert))
         .route("/wsapi/holders", get(holders::holders))
@@ -257,7 +258,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-kZJlDPPC1y4VCI4QqZBKSBlIKAFbk/a313yh7K/r7c8='", // account.html
+    "'sha256-5sVcl2t9nDFneXH9JvIRKL7wPWWnn1J2bczj2kucZrY='", // account.html
     "'sha256-XRWE73ZH1qCk6vmO+hv85g2743sS42s8Y64PjFX8z98='", // authorize.html
     "'sha256-KcSFrbxTD/FQlLnEbwRfQuYxTudagOb8OQNj5vSg5T8='", // consent.html
     "'sha256-+XqUYbHj+ZXqocYeM/oRYCX1zljIPfY94AJwWAtU2Do='", // agents.html

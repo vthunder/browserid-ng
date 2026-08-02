@@ -1064,6 +1064,20 @@ function renderDetail() {
     if (!confirm(`${verb} “${actor.label}”? It stops working everywhere within minutes.`)) return;
     try {
       const certs2 = account.deviceCerts.filter(c => c.holder === actor.id && !c.revoked);
+      // Foreign-issued certs (browserid-ng-ft55): our status list cannot kill
+      // them — send the user to the ISSUER's revoke page (it re-authenticates
+      // them and flips its own list); the local revoke below only hides rows.
+      const foreignIss = [...new Set(certs2.filter(c => c.iss && c.iss !== location.host).map(c => c.iss))];
+      for (const iss of foreignIss) {
+        const sample = certs2.find(c => c.iss === iss);
+        let r = {};
+        try { r = await api(`/wsapi/issuer_revoke_url?iss=${encodeURIComponent(iss)}`); } catch (e) { /* fall through */ }
+        if (!r.revoke_url) {
+          alert(`Certificates from ${iss} can’t be revoked from here — the issuer offers no revocation endpoint. They will be hidden but keep working until they expire${sample && sample.expires_at ? ' (' + fmtDate(sample.expires_at) + ')' : ''}.`);
+          continue;
+        }
+        await openIssuerRevoke(r.revoke_url, sample.identities[0], iss);
+      }
       for (const c of certs2) await post('/wsapi/revoke_device_cert', { id: c.id });
       const own2 = allPerms().filter(p => p.holder === actor.id && !p.revoked && p.statusIdx != null);
       for (const p of own2) { try { await post('/wsapi/revoke_warrant', { id: p.id }); } catch (e) { /* best effort */ } }
@@ -1233,6 +1247,42 @@ $('cp-go').onclick = async () => {
     status.className = 'status ok'; status.textContent = '✓ Password changed (other sessions were signed out).';
   } catch (e) { status.className = 'status err'; status.textContent = e.message; }
 };
+// Open a foreign issuer's device-revoke page (discovered from its support
+// document) and wait for it to report. The issuer authenticates the user
+// itself and flips its OWN status list — the broker never holds that power.
+// If the page's opener gets severed (an OAuth hop at the issuer), the
+// popup-closed poll resolves; the issuer page shows its own success state.
+function openIssuerRevoke(url, identity, iss) {
+  return new Promise((resolve) => {
+    let origin;
+    try { origin = new URL(url).origin; } catch (e) { return resolve(false); }
+    const popup = window.open(url + '#identity=' + encodeURIComponent(identity) +
+      '&return_origin=' + encodeURIComponent(location.origin), 'browserid_revoke', 'width=600,height=700');
+    if (!popup) {
+      alert('Popup blocked — allow popups for this site to revoke at ' + iss + '.');
+      return resolve(false);
+    }
+    let done = false;
+    const onMsg = (ev) => {
+      if (ev.origin !== origin) return;
+      const d = ev.data || {};
+      if (d.type !== 'browserid:device_revoked') return;
+      done = true;
+      window.removeEventListener('message', onMsg);
+      try { popup.close(); } catch (e) { /* its own page closes itself */ }
+      resolve(true);
+    };
+    window.addEventListener('message', onMsg);
+    const poll = setInterval(() => {
+      if (popup.closed) {
+        clearInterval(poll);
+        window.removeEventListener('message', onMsg);
+        resolve(done);
+      }
+    }, 500);
+  });
+}
+
 // Sign out everywhere: cut every BROWSER's keys (each becomes sign-in-again),
 // leave agents/services running, then end this session too.
 $('set-signout-all').onclick = async () => {

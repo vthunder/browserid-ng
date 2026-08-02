@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::Json;
 use browserid_core::device::{AccessCert, AccessRequest, DeviceCert, Purpose};
 use browserid_core::{PublicKey, StatusRef};
@@ -463,23 +463,99 @@ where
         .ok_or(BrokerError::NotAuthenticated)?;
     super::session::require_csrf(&session, &req.csrf)?;
 
-    // Capture the status index BEFORE revoking (owner-scoped lookup).
-    let status_idx = state
+    // Capture status index + issuer BEFORE revoking (owner-scoped lookup).
+    let rec = state
         .user_store
         .list_device_certs(session.user_id)?
         .into_iter()
-        .find(|r| r.id == req.id)
-        .and_then(|r| r.status_idx);
+        .find(|r| r.id == req.id);
+    let status_idx = rec.as_ref().and_then(|r| r.status_idx);
+    let iss = rec.map(|r| r.iss).unwrap_or_default();
 
     // Owner-scoped: errors DeviceCertNotFound if it isn't this user's cert.
     state
         .user_store
         .revoke_device_cert(session.user_id, req.id)?;
 
-    // Kill outstanding access certs rooted at this device (fail-closed status).
-    if let Some(idx) = status_idx {
-        state.user_store.set_status_revoked_idx(idx)?;
+    // Kill outstanding access certs rooted at this device (fail-closed
+    // status) — but only OUR list's bits are ours to flip
+    // (browserid-ng-ft55). A foreign-issued cert's idx numbers the
+    // ISSUER's list: flipping the same index on our list would not revoke
+    // it anywhere a verifier looks, and could collaterally revoke an
+    // unrelated broker-issued cert. Foreign certs are revoked at the
+    // issuer via its advertised device-revoke page; here the row is only
+    // soft-hidden.
+    if iss.is_empty() || iss.eq_ignore_ascii_case(&state.domain) {
+        if let Some(idx) = status_idx {
+            state.user_store.set_status_revoked_idx(idx)?;
+        }
     }
 
     Ok(Json(RevokeDeviceCertResponse { success: true }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct IssuerRevokeUrlQuery {
+    pub iss: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct IssuerRevokeUrlResponse {
+    /// Absolute URL of the issuer's device-revoke page, or None when the
+    /// issuer advertises none (its certs run to expiry).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revoke_url: Option<String>,
+}
+
+/// GET /wsapi/issuer_revoke_url?iss=<domain> — where the USER can revoke
+/// certs a foreign issuer signed (browserid-ng-ft55), discovered from the
+/// issuer's support document (`device-revoke`). The account page opens the
+/// answer with `#identity=…&return_origin=…`; the issuer re-authenticates
+/// the user and flips its own status list — the broker never holds that
+/// power. Cached per issuer for ten minutes.
+pub async fn issuer_revoke_url<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Query(query): Query<IssuerRevokeUrlQuery>,
+) -> Result<Json<IssuerRevokeUrlResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+
+    let iss = query.iss.trim().to_ascii_lowercase();
+    if iss.is_empty() || iss == state.domain.to_ascii_lowercase() {
+        return Ok(Json(IssuerRevokeUrlResponse { revoke_url: None }));
+    }
+
+    use std::sync::{OnceLock, RwLock};
+    use std::time::{Duration, Instant};
+    static CACHE: OnceLock<RwLock<std::collections::HashMap<String, (Option<String>, Instant)>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((url, at)) = cache.read().unwrap().get(&iss).cloned() {
+        if at.elapsed() < Duration::from_secs(600) {
+            return Ok(Json(IssuerRevokeUrlResponse { revoke_url: url }));
+        }
+    }
+
+    let url = match state.fallback_fetcher().await {
+        Ok(f) => match f.discover(&iss).await {
+            Ok(r) if r.is_primary => r
+                .document
+                .device_revocation
+                .as_ref()
+                .map(|path| format!("https://{iss}{path}")),
+            _ => None,
+        },
+        Err(_) => None,
+    };
+    cache
+        .write()
+        .unwrap()
+        .insert(iss, (url.clone(), Instant::now()));
+    Ok(Json(IssuerRevokeUrlResponse { revoke_url: url }))
 }

@@ -407,3 +407,71 @@ async fn move_holder_revokes_up_front_and_redirects_reissue() {
     assert!(rows.iter().all(|c| c["holder"] == new_holder.as_str()), "only the new holder remains: {after2}");
     assert!(rows.iter().all(|c| c["revoked"] == false), "fresh certs are live: {after2}");
 }
+
+/// browserid-ng-ft55 regression: revoking a FOREIGN-issued device cert from
+/// /account must not flip the broker's own status list — the record's
+/// status_idx numbers the ISSUER's list, and flipping the same index here
+/// would (a) not revoke the cert anywhere a verifier looks and (b) could
+/// collaterally revoke an unrelated broker-issued cert at that index.
+#[tokio::test]
+async fn foreign_issued_cert_revocation_never_touches_the_broker_status_list() {
+    use browserid_broker::store::{DeviceCertRecord, UserStore};
+    use common::{create_test_context_customized, create_user as mk_user, get_csrf};
+
+    let ctx = create_test_context_customized(|_| {});
+    let session = mk_user(&ctx.server, &ctx.email_sender, "me@mail.test", "password123").await;
+    let csrf = get_csrf(&ctx.server, &session).await;
+    let user_id = ctx.user_store.get_user_by_email("me@mail.test").unwrap().unwrap().id;
+
+    // A broker-owned status slot, as issuance would allocate it…
+    let own_idx = ctx.user_store.get_or_allocate_status("device", "own-key").unwrap();
+    // …and a foreign cert whose ISSUER-side index happens to collide with it.
+    let mk = |iss: &str, idx: u64, holder: &str| DeviceCertRecord {
+        id: 0,
+        user_id,
+        identities: vec![format!("dan@{iss}")],
+        purpose: "authorization".into(),
+        holder: holder.into(),
+        pubkey: format!("pk-{holder}"),
+        iss: iss.into(),
+        issued_at: chrono::Utc::now(),
+        expires_at: chrono::Utc::now() + chrono::Duration::days(90),
+        revoked_at: None,
+        status_idx: Some(idx),
+    };
+    ctx.user_store.insert_device_cert(mk("localhost:3000", own_idx, "br1.own")).unwrap();
+    ctx.user_store.insert_device_cert(mk("mingo.place", own_idx, "br2.foreign")).unwrap();
+
+    let ids: Vec<(u64, String)> = ctx
+        .user_store
+        .list_device_certs(user_id)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.id, r.iss))
+        .collect();
+    let foreign_id = ids.iter().find(|(_, i)| i == "mingo.place").unwrap().0;
+    let own_id = ids.iter().find(|(_, i)| i == "localhost:3000").unwrap().0;
+
+    // Revoking the FOREIGN cert soft-hides it but leaves our list alone.
+    let resp = ctx
+        .server
+        .post("/wsapi/revoke_device_cert")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "id": foreign_id, "csrf": csrf }))
+        .await;
+    resp.assert_status_ok();
+    assert!(
+        !ctx.user_store.is_status_revoked_idx(own_idx).unwrap(),
+        "foreign revoke must not flip the broker's bit at the colliding index"
+    );
+
+    // Revoking the OWN cert still flips our bit.
+    let resp = ctx
+        .server
+        .post("/wsapi/revoke_device_cert")
+        .add_cookie(cookie::Cookie::new("browserid_session", session))
+        .json(&json!({ "id": own_id, "csrf": csrf }))
+        .await;
+    resp.assert_status_ok();
+    assert!(ctx.user_store.is_status_revoked_idx(own_idx).unwrap());
+}
