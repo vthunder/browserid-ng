@@ -29,13 +29,15 @@ scopes enforced per tool call.
 
 The design rests on a separation the protocol already enforces:
 
-- **Minting authority** happens exactly once, at the approval hop: only the
-  user's config cert can sign a warrant, and that signature happens at
-  their ISSUER's account surface (browserid.me/account for fallback
-  identities; a primary's own surface otherwise). The issuer therefore
-  knows every grant it brokered, lists it (Authorized sites), and stamps
-  each warrant with a `status` ref into the issuer-published status list
-  (core §6.4).
+- **Minting authority** happens exactly once, at the approval hop: only
+  the user's config cert can sign a warrant, and the REGISTRAR
+  (browserid.me/account today) brokers that approval — for identities from
+  ANY issuer, including primaries (§6.6 external requests resolve foreign
+  issuer keys via DNSSEC; the mingo poster proved this live). The
+  registrar records the grant, lists it (Authorized sites), and stamps
+  each warrant with a `status` ref into the REGISTRAR-published status
+  list (core §6.4, `/wsapi/allocate_warrant_status`). Issuers sign certs;
+  the registrar owns the grant lifecycle.
 - **Redeeming authority** is all an AS does: verify the presentation —
   signature chain, audience, expiry, **and the status ref, fail-closed** —
   then issue a short-lived bearer. The bsky bridge is the reference
@@ -44,19 +46,23 @@ The design rests on a separation the protocol already enforces:
 
 Consequences:
 
-- **Revocation stays centralized-per-issuer no matter how many ASes
-  exist.** Revoke at browserid.me/account flips a bit on browserid.me's
-  status list; every AS in the world consults that list and fails closed.
-  A thousand independent MCP-server ASes share one revocation surface per
-  issuer, by construction.
+- **Revocation stays at the registrar no matter how many ASes exist.**
+  Revoke at browserid.me/account flips a bit on the registrar's status
+  list; every AS in the world consults that list and fails closed. A
+  thousand independent MCP-server ASes share ONE revocation surface —
+  the broker — by construction, independent of which IdP issued the
+  identity.
 - **Revocation latency** = min(status-list cache TTL, per-action re-check
   cadence), bounded by bearer TTL as the backstop. Status lists cache for
   5 minutes; the middleware makes per-tool-call status checks the
   non-optional default, so revoke lands next-call to minutes — never
   "until the token expires" alone.
-- The issuer UI shows grants *it* brokered. Users on their own primary see
-  their grants at their primary — correct decentralized behavior, not a
-  gap.
+- Grants live where they were BROKERED, not where the identity was
+  issued: a user with a primary-issued identity still sees and revokes
+  every grant at browserid.me/account. (A self-hosting primary MAY also
+  run its own registrar — the registrar crate supports it — and grants
+  approved there would live there; that is a per-registrar choice made at
+  approval time, never forced by the identity's issuer.)
 
 ## The first epic: adapter + middleware + flagship (one artifact, really)
 
