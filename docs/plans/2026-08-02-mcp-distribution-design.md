@@ -64,6 +64,27 @@ Consequences:
   approved there would live there; that is a per-registrar choice made at
   approval time, never forced by the identity's issuer.)
 
+## Aside: warrant revocation vs. cert revocation (checked 2026-08-03)
+
+Verification consults THREE status authorities fail-closed per presentation
+(verifier.rs: access cert, config cert, warrant — each against the list its
+ref names). The mechanisms differ:
+
+| | warrants | certs (device/config/access) |
+|---|---|---|
+| bit lives on | the REGISTRAR's list, all identities | the ISSUER's list (broker for fallback, primary for primary-issued) |
+| user lever | /account → Authorized sites → Revoke (uniform) | "Sign out everywhere" — broker-issued certs ONLY; primary certs need the primary's own surface |
+| IdP-initiated | never (user or expiry only) | yes — e.g. the bridge suspends+revokes on handle moves/takedowns; the broker deliberately does not yet (open decision jaa1) |
+| granularity | one grant | one browser (device) / the identity's whole grant authority (config — revoking a config cert kills every warrant it signed, at verification time) |
+| latency | same for both: per-verification fail-closed, ~5 min foreign-list cache; backstop TTLs (warrant exp / 24h access / 90d device) only matter if a verifier skips checks, which fail-closed forbids | |
+
+The structural point: the broker cannot flip a primary's cert bits — lists
+are signed by their publishers. Warrants being registrar-uniform is what
+makes the MCP revocation story clean; cert revocation is issuer-tied by
+design. Gap worth a Theme-4 roadmap line: no cross-issuer "sign out
+everywhere" exists — a spec-level convention (a standard revocation
+endpoint primaries implement, invocable from the broker UI) would close it.
+
 ## The first epic: adapter + middleware + flagship (one artifact, really)
 
 ### 1. `@browserid-ng/mcp-auth` — warrant-gated tools in ten lines
