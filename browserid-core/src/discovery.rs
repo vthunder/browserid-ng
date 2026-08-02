@@ -62,6 +62,18 @@ pub struct SupportDocument {
     /// agents need no support (they are indistinguishable from devices).
     #[serde(rename = "agent-device-authorization", skip_serializing_if = "Option::is_none")]
     pub agent_device_authorization: Option<String>,
+
+    /// Path to the browser-facing device-REVOCATION page. A registrar's
+    /// account UI opens it with `#identity=…&return_origin=…` (optionally
+    /// `&device_pubkey=…` for per-cert-capable IdPs) so the USER — never the
+    /// registrar on its own authority — can revoke certs this IdP issued:
+    /// the page authenticates the user first-party, confirms, flips the bit
+    /// on this IdP's own status list, and posts
+    /// `{type:'browserid:device_revoked', identity}` back to
+    /// `window.opener` (targetOrigin = return_origin). Absent = this IdP
+    /// offers no remote-initiated revocation (its certs run to expiry).
+    #[serde(rename = "device-revoke", skip_serializing_if = "Option::is_none")]
+    pub device_revocation: Option<String>,
 }
 
 impl SupportDocument {
@@ -76,6 +88,7 @@ impl SupportDocument {
             access_cert: None,
             device_authorization: None,
             agent_device_authorization: None,
+            device_revocation: None,
         }
     }
 
@@ -114,6 +127,12 @@ impl SupportDocument {
         self
     }
 
+    /// Set the browser-facing device-revocation page path
+    pub fn with_device_revocation(mut self, path: impl Into<String>) -> Self {
+        self.device_revocation = Some(path.into());
+        self
+    }
+
     /// Create a delegation document
     pub fn delegate(authority: impl Into<String>) -> Self {
         Self {
@@ -125,6 +144,7 @@ impl SupportDocument {
             access_cert: None,
             device_authorization: None,
             agent_device_authorization: None,
+            device_revocation: None,
         }
     }
 
