@@ -5,7 +5,7 @@ status: completed
 type: bug
 priority: high
 created_at: 2026-08-02T22:19:16Z
-updated_at: 2026-08-02T23:36:38Z
+updated_at: 2026-08-03T14:32:39Z
 ---
 
 Found 2026-08-03 while comparing warrant vs cert revocation.
@@ -29,3 +29,9 @@ Shipped across three commits, all deployed:
 The authority model held throughout: the registrar sends the user; only the user's first-party session at the issuer can flip that issuer's bits.
 
 Tests: bridge 171+7, broker suite green incl. new regression, e2e 77/0 twice.
+
+## 2026-08-03: post-revocation verification (aae2136)
+
+The account page now VERIFIES a cross-issuer revocation before believing it: GET /wsapi/cert_revocation_status consults the authority (own store for own certs; the issuer's signed status list for foreign, fresh-fetched via check_foreign_status_fresh so a just-flipped bit is never masked by the ≤5-min cache). Active/unknown outcomes warn and keep the rows visible for retry — soft-hiding an active cert would be a lie. Covers the changed-their-mind and broken-IdP cases.
+
+Shipping gate: Rust suites (the local e2e env has 34 pre-existing environmental failures, reproduced at session-start commit — see the new e2e-infra bean).
