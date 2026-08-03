@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: high
 created_at: 2026-08-03T14:32:39Z
-updated_at: 2026-08-03T14:32:39Z
+updated_at: 2026-08-03T14:56:01Z
 ---
 
 Found 2026-08-03 while shipping ft55; conclusively NOT a code regression — the same 34 failures reproduce against the session-start commit 77c68cf (isolated worktree build, own binary confirmed serving via a 404 on complete_handle_claim).
@@ -19,3 +19,14 @@ Three distinct problems:
 3. Result-reading hygiene + count discrepancy: historical 'green' baselines summed to ~82 of the 118 listed tests, and several of this week's runs were read via tail/grep (the handoff explicitly warns the 'N failed' header scrolls off — it still bit). Fix: add a JSON reporter output (playwright --reporter=json or blob) and a tiny summary script; make the warm-broker env (DISABLE_SMTP=1 AGENT_PROVISIONING=1) impossible to forget (a just script/Makefile target).
 
 Until fixed, the Rust suites are the merge gate; e2e is advisory.
+
+## ROOT CAUSE FOUND (2026-08-03): stale tests, not environment
+
+The ~34 failures assert the hidden communication_iframe / classic Persona JS stack that was DELIBERATELY DELETED on 2026-07-20 (d9a6baf, refactor!, bean 3b8m). include.js contains no communication_iframe at all; watch() was ported to presentations (8xvi). Every one of these tests has been failing by design since Jul 20 — invisible because results were read through tails/greps (the very trap the handoff warns about; historical 'green' baselines counting ~82 of 118 were misreadings).
+
+Ruled out empirically: chromium version drift, storage partitioning, Local Network Access (flag experiments + headed run all still fail 7/7 on silent-assertion), and any commit since session start (77c68cf reproduces).
+
+Remaining scope of this bean:
+1. Rewrite or delete the stale specs for the device-model/FedCM reality: silent-assertion (silent = FedCM route now), include-api iframe assertions, cross-origin-rp communication-iframe paths, primary-idp classic GET /browserid/provision expectations, transition/paired stragglers. Judge each: does an equivalent modern behavior deserve the test, or is the behavior simply gone?
+2. DONE: marketing-split brokerBin resolves via BROKER_BIN / CARGO_TARGET_DIR / shared-dir default / legacy path.
+3. Still wanted: JSON reporter + summary script so results can never be tail-misread again; a run script that bakes DISABLE_SMTP=1 AGENT_PROVISIONING=1.

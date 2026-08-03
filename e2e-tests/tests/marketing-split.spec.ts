@@ -21,7 +21,19 @@ import { join } from 'path';
 
 const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 const marketingDir = join(__dirname, '..', '..', 'marketing');
-const brokerBin = join(__dirname, '..', '..', 'target', 'debug', 'browserid-broker');
+// The workspace builds into a SHARED target dir (~/.cache/cargo-target,
+// set in ~/.cargo/config.toml since 2026-07-22) — the repo-local target/
+// no longer exists. Honor CARGO_TARGET_DIR / BROKER_BIN, then the shared
+// default, then the legacy in-repo path.
+import { homedir } from 'os';
+import { existsSync } from 'fs';
+const brokerBinCandidates = [
+  process.env.BROKER_BIN,
+  process.env.CARGO_TARGET_DIR && join(process.env.CARGO_TARGET_DIR, 'debug', 'browserid-broker'),
+  join(homedir(), '.cache', 'cargo-target', 'debug', 'browserid-broker'),
+  join(__dirname, '..', '..', 'target', 'debug', 'browserid-broker'),
+].filter((p): p is string => !!p);
+const brokerBin = brokerBinCandidates.find(existsSync) ?? brokerBinCandidates[0];
 
 /** Serves the real marketing/ dir, injecting authOrigin=<broker> into config.js. */
 class MarketingServer {
