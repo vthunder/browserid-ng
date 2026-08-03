@@ -475,3 +475,68 @@ async fn foreign_issued_cert_revocation_never_touches_the_broker_status_list() {
     resp.assert_status_ok();
     assert!(ctx.user_store.is_status_revoked_idx(own_idx).unwrap());
 }
+
+/// The post-revocation confirmation (browserid-ng-ft55 follow-up): the
+/// account page verifies a revocation actually landed before hiding
+/// anything. Own-issued certs answer from our store; a cert with no
+/// recorded status ref answers "unknown", never a false "revoked".
+#[tokio::test]
+async fn cert_revocation_status_answers_from_the_authority() {
+    use browserid_broker::store::{DeviceCertRecord, UserStore};
+    use common::{create_test_context_customized, create_user as mk_user, get_csrf};
+
+    let ctx = create_test_context_customized(|_| {});
+    let session = mk_user(&ctx.server, &ctx.email_sender, "me@mail.test", "password123").await;
+    let csrf = get_csrf(&ctx.server, &session).await;
+    let user_id = ctx.user_store.get_user_by_email("me@mail.test").unwrap().unwrap().id;
+
+    let own_idx = ctx.user_store.get_or_allocate_status("device", "own-key-2").unwrap();
+    let mk = |iss: &str, idx: Option<u64>, holder: &str| DeviceCertRecord {
+        id: 0,
+        user_id,
+        identities: vec![format!("dan@{iss}")],
+        purpose: "authorization".into(),
+        holder: holder.into(),
+        pubkey: format!("pk-{holder}"),
+        iss: iss.into(),
+        issued_at: chrono::Utc::now(),
+        expires_at: chrono::Utc::now() + chrono::Duration::days(90),
+        revoked_at: None,
+        status_idx: idx,
+    };
+    ctx.user_store.insert_device_cert(mk("localhost:3000", Some(own_idx), "br3.own")).unwrap();
+    ctx.user_store.insert_device_cert(mk("mingo.place", None, "br4.norf")).unwrap();
+    let ids: Vec<(u64, String)> = ctx
+        .user_store
+        .list_device_certs(user_id)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.id, r.holder))
+        .collect();
+    let own_id = ids.iter().find(|(_, h)| h == "br3.own").unwrap().0;
+    let norf_id = ids.iter().find(|(_, h)| h == "br4.norf").unwrap().0;
+
+    let get = |id: u64| {
+        ctx.server
+            .get(&format!("/wsapi/cert_revocation_status?id={id}"))
+            .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    };
+
+    // Own cert, bit not flipped → active.
+    let body: Value = get(own_id).await.json();
+    assert_eq!(body["state"], "active");
+
+    // Revoke it (own-issued: flips our bit) → revoked.
+    ctx.server
+        .post("/wsapi/revoke_device_cert")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "id": own_id, "csrf": csrf }))
+        .await
+        .assert_status_ok();
+    let body: Value = get(own_id).await.json();
+    assert_eq!(body["state"], "revoked");
+
+    // Foreign cert with no recorded ref → unknown, never a false claim.
+    let body: Value = get(norf_id).await.json();
+    assert_eq!(body["state"], "unknown");
+}

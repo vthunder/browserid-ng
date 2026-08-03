@@ -1068,6 +1068,9 @@ function renderDetail() {
       // them — send the user to the ISSUER's revoke page (it re-authenticates
       // them and flips its own list); the local revoke below only hides rows.
       const foreignIss = [...new Set(certs2.filter(c => c.iss && c.iss !== location.host).map(c => c.iss))];
+      // Issuers whose revocation did NOT confirm: their rows stay visible so
+      // the user can retry — hiding an active cert would be a lie.
+      const unconfirmed = new Set();
       for (const iss of foreignIss) {
         const sample = certs2.find(c => c.iss === iss);
         let r = {};
@@ -1077,8 +1080,22 @@ function renderDetail() {
           continue;
         }
         await openIssuerRevoke(r.revoke_url, sample.identities[0], iss);
+        // The popup's word is not proof — the user may have cancelled, or
+        // the issuer may be broken. The issuer's SIGNED status list is:
+        // verify against it (fresh-fetched server-side) before believing.
+        let st = { state: 'unknown' };
+        try { st = await api(`/wsapi/cert_revocation_status?id=${sample.id}`); } catch (e) { /* stays unknown */ }
+        if (st.state !== 'revoked') {
+          unconfirmed.add(iss);
+          alert(st.state === 'active'
+            ? `The revocation at ${iss} did not go through — its certificates are still active there. Maybe you cancelled, or the issuer failed. They stay listed here; try again when ready.`
+            : `Could not confirm the revocation at ${iss} — its certificates stay listed here. Check again in a minute, or retry.`);
+        }
       }
-      for (const c of certs2) await post('/wsapi/revoke_device_cert', { id: c.id });
+      for (const c of certs2) {
+        if (c.iss && unconfirmed.has(c.iss)) continue;
+        await post('/wsapi/revoke_device_cert', { id: c.id });
+      }
       const own2 = allPerms().filter(p => p.holder === actor.id && !p.revoked && p.statusIdx != null);
       for (const p of own2) { try { await post('/wsapi/revoke_warrant', { id: p.id }); } catch (e) { /* best effort */ } }
       if (!certs2.length) {

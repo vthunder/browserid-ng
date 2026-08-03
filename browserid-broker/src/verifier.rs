@@ -287,6 +287,20 @@ async fn read_capped(mut resp: reqwest::Response, max: usize) -> Result<String, 
     String::from_utf8(buf).map_err(|e| e.to_string())
 }
 
+/// Fresh (cache-busting) foreign-status check, for the post-revocation
+/// confirmation path (browserid-ng-ft55): evict any cached list for the
+/// ref's uri first, so a just-flipped bit is never masked by a younger-
+/// than-TTL cache entry. The fresh fetch re-verifies and re-caches.
+pub(crate) async fn check_foreign_status_fresh(
+    r: &StatusRef,
+    discoverer: &impl crate::fallback_fetcher::Discoverer,
+    cache: &RwLock<HashMap<String, StatusListToken>>,
+    allow_private: bool,
+) -> Result<bool, String> {
+    cache.write().unwrap().remove(&r.uri);
+    check_foreign_status(r, discoverer, cache, allow_private).await
+}
+
 /// Check a foreign status ref fail-closed: `Ok(revoked)`, or `Err` when the
 /// check cannot be made (which the caller MUST treat as a rejection).
 async fn check_foreign_status(

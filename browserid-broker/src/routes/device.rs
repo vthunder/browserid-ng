@@ -495,6 +495,85 @@ where
 }
 
 #[derive(serde::Deserialize)]
+pub struct CertRevocationStatusQuery {
+    pub id: u64,
+}
+
+#[derive(serde::Serialize)]
+pub struct CertRevocationStatusResponse {
+    /// "revoked" | "active" | "unknown". `unknown` = the check could not be
+    /// made (no status ref recorded, or the issuer's list is unreachable) —
+    /// the caller must not claim success on it.
+    pub state: &'static str,
+}
+
+/// GET /wsapi/cert_revocation_status?id= — did a revocation actually land
+/// on the ISSUER's signed status list? The account page calls this after
+/// the cross-issuer revoke hop (browserid-ng-ft55): the popup's word is
+/// not proof — the user may have cancelled, or the issuer may be broken —
+/// but the issuer's signed list is. Fresh-fetched (cache-busted) so a
+/// just-flipped bit shows immediately.
+pub async fn cert_revocation_status<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Query(query): Query<CertRevocationStatusQuery>,
+) -> Result<Json<CertRevocationStatusResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    let rec = state
+        .user_store
+        .list_device_certs(session.user_id)?
+        .into_iter()
+        .find(|r| r.id == query.id)
+        .ok_or(BrokerError::DeviceCertNotFound)?;
+
+    let Some(idx) = rec.status_idx else {
+        return Ok(Json(CertRevocationStatusResponse { state: "unknown" }));
+    };
+    // Own-issued: our store is the authority, no network.
+    if rec.iss.is_empty() || rec.iss.eq_ignore_ascii_case(&state.domain) {
+        let revoked = state.user_store.is_status_revoked_idx(idx)?;
+        return Ok(Json(CertRevocationStatusResponse {
+            state: if revoked { "revoked" } else { "active" },
+        }));
+    }
+
+    // Foreign: consult the issuer's signed list. The join records only the
+    // idx, so the uri is reconstructed from the conformant well-known path
+    // every IdP here publishes under.
+    let r = browserid_core::StatusRef {
+        uri: format!("https://{}/.well-known/browserid-status", rec.iss),
+        idx,
+    };
+    let fetcher = match state.fallback_fetcher().await {
+        Ok(f) => f,
+        Err(_) => return Ok(Json(CertRevocationStatusResponse { state: "unknown" })),
+    };
+    let allow_private =
+        state.domain.starts_with("localhost") || state.domain.starts_with("127.");
+    match crate::verifier::check_foreign_status_fresh(
+        &r,
+        fetcher.as_ref(),
+        &state.foreign_status_lists,
+        allow_private,
+    )
+    .await
+    {
+        Ok(true) => Ok(Json(CertRevocationStatusResponse { state: "revoked" })),
+        Ok(false) => Ok(Json(CertRevocationStatusResponse { state: "active" })),
+        Err(e) => {
+            tracing::warn!(iss = %rec.iss, "post-revocation status check failed: {e}");
+            Ok(Json(CertRevocationStatusResponse { state: "unknown" }))
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
 pub struct IssuerRevokeUrlQuery {
     pub iss: String,
 }
