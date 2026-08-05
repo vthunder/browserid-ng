@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: high
 created_at: 2026-08-03T14:32:39Z
-updated_at: 2026-08-05T01:00:38Z
+updated_at: 2026-08-05T15:11:10Z
 ---
 
 Found 2026-08-03 while shipping ft55; conclusively NOT a code regression — the same 34 failures reproduce against the session-start commit 77c68cf (isolated worktree build, own binary confirmed serving via a 404 on complete_handle_claim).
@@ -48,3 +48,7 @@ MARKED (visible, not deleted):
 REMAINING REWRITES (real flows, outdated harnesses):
 - guestbook agent flow: waits on the pre-redesign approval selectors; approval moved to /authorize (b5095ec) — pv-identity now lives there behind sign-in; rewrite the walk.
 - paired-provisioning (74u1): drives the pre-device credential shape (secret_key/delegation/broker/idp); rewrite against the DeviceCredential flow.
+
+## Deletion attempt 2026-08-05: deferred to the follow-up
+
+Two scanner-based deletions of the 12 skips broke the spec files (string/template-aware scanning still mis-cut; reverted both times — files are at the committed green state, skips annotated). Do the deletion with a real AST tool (ts-morph/jscodeshift) in the same pass that adds the two gate tests (dialog forged-origin postMessage rejection; wrong-identity cert rejection). Keystore's gate is already cleared (ad282d6 confirmed deliberate). Zero runtime cost meanwhile: skips are annotated, suite green at 86/0.
