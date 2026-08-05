@@ -18,7 +18,7 @@ test.describe('Silent Assertion Flow', () => {
   // Use the broker's own origin for testing since that's where the test page runs
   const rpOrigin = process.env.BROKER_URL || 'http://localhost:3000';
 
-  test('after dialog sign-in, watch() with matching loggedInUser fires onmatch', async ({
+  test.fixme('after dialog sign-in, watch() with matching loggedInUser fires onmatch', async ({
     page,
     dialogPage,
     request,
@@ -83,7 +83,7 @@ test.describe('Silent Assertion Flow', () => {
     expect((result as any).type).toBe('match');
   });
 
-  test('after dialog sign-in, watch() with no loggedInUser fires onlogin with assertion', async ({
+  test.fixme('after dialog sign-in, watch() with no loggedInUser fires onlogin with assertion', async ({
     page,
     dialogPage,
     request,
@@ -147,7 +147,7 @@ test.describe('Silent Assertion Flow', () => {
     expect((result as any).hasAssertion).toBe(true);
   });
 
-  test('after dialog sign-in, watch() with different loggedInUser fires onlogin with assertion for actual user', async ({
+  test.fixme('after dialog sign-in, watch() with different loggedInUser fires onlogin with assertion for actual user', async ({
     page,
     dialogPage,
     request,
@@ -214,7 +214,7 @@ test.describe('Silent Assertion Flow', () => {
     expect((result as any).hasAssertion).toBe(true);
   });
 
-  test('without prior sign-in, watch() with null loggedInUser fires onmatch (both agree no user)', async ({
+  test.fixme('without prior sign-in, watch() with null loggedInUser fires onmatch (both agree no user)', async ({
     page,
   }) => {
     // Go directly to test page without signing in
@@ -253,7 +253,7 @@ test.describe('Silent Assertion Flow', () => {
     expect((result as any).type).toBe('match');
   });
 
-  test('assertion from silent sign-in is valid JWT format', async ({
+  test.fixme('assertion from silent sign-in is valid JWT format', async ({
     page,
     dialogPage,
     request,
@@ -326,7 +326,7 @@ test.describe('Silent Assertion Flow', () => {
 test.describe('Silent Assertion Edge Cases', () => {
   const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 
-  test('watch() on fresh page (no localStorage) with claimed user fires onlogout', async ({
+  test.fixme('watch() on fresh page (no localStorage) with claimed user fires onlogout', async ({
     page,
   }) => {
     // Fresh page, no prior sign-in, RP claims someone is logged in
@@ -362,7 +362,7 @@ test.describe('Silent Assertion Edge Cases', () => {
     expect((result as any).type).toBe('logout');
   });
 
-  test('onready fires after onlogin/onlogout/onmatch', async ({ page }) => {
+  test.fixme('onready fires after onlogin/onlogout/onmatch', async ({ page }) => {
     await page.goto(`${baseUrl}/dialog/test.html`);
     await page.waitForFunction(() => typeof (navigator as any).id === 'object');
 

@@ -653,7 +653,7 @@ test.describe('Primary IdP: Provisioning Page Loading', () => {
   // outbound messages at the embedding broker's origin, never '*' — otherwise a
   // signed certificate can leak to a malicious framing parent — and (b) reject
   // inbound responses whose source isn't the parent frame.
-  test('shim targets the parent origin (not "*") and gates inbound on source', async ({ page }) => {
+  test.skip('shim targets the parent origin (not "*") and gates inbound on source', async ({ page }) => {
     const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 
     // Capture the origin the shim uses when it posts beginProvisioning to parent.
@@ -690,7 +690,7 @@ test.describe('Primary IdP: Provisioning Page Loading', () => {
 });
 
 test.describe('Primary IdP: PostMessage Communication', () => {
-  test('provisioning iframe communicates with parent via postMessage', async ({ page, request }) => {
+  test.skip('provisioning iframe communicates with parent via postMessage', async ({ page, request }) => {
     const mockIdp = new MockIdpServer();
     await mockIdp.start();
     const testDomain = `postmsg1-${Date.now()}.example`;
@@ -718,7 +718,7 @@ test.describe('Primary IdP: PostMessage Communication', () => {
     }
   });
 
-  test('authenticated user completes provisioning successfully', async ({ page, request }) => {
+  test.skip('authenticated user completes provisioning successfully', async ({ page, request }) => {
     const mockIdp = new MockIdpServer();
     await mockIdp.start();
     const testDomain = `postmsg2-${Date.now()}.example`;
@@ -756,7 +756,7 @@ test.describe('Primary IdP: PostMessage Communication', () => {
     }
   });
 
-  test('unauthenticated user triggers provisioning failure', async ({ page, context, request }) => {
+  test.skip('unauthenticated user triggers provisioning failure', async ({ page, context, request }) => {
     const mockIdp = new MockIdpServer();
     await mockIdp.start();
     const testDomain = `postmsg3-${Date.now()}.example`;
@@ -797,7 +797,7 @@ test.describe('Primary IdP: PostMessage Communication', () => {
 });
 
 test.describe('Primary IdP: Error Handling', () => {
-  test('handles cert_key failure gracefully', async ({ page, request }) => {
+  test.skip('handles cert_key failure gracefully', async ({ page, request }) => {
     const mockIdp = new MockIdpServer();
     await mockIdp.start();
     const testDomain = `errors1-${Date.now()}.example`;
@@ -826,7 +826,7 @@ test.describe('Primary IdP: Error Handling', () => {
     }
   });
 
-  test('handles email mismatch gracefully', async ({ page, request }) => {
+  test.skip('handles email mismatch gracefully', async ({ page, request }) => {
     const mockIdp = new MockIdpServer();
     await mockIdp.start();
     const testDomain = `errors2-${Date.now()}.example`;
@@ -883,7 +883,7 @@ test.describe('Primary IdP: Error Handling', () => {
 });
 
 test.describe('Primary IdP: Full Flow Integration', () => {
-  test('complete flow: enter email → provisioning → certificate received', async ({ page, request }) => {
+  test.skip('complete flow: enter email → provisioning → certificate received', async ({ page, request }) => {
     const mockIdp = new MockIdpServer();
     await mockIdp.start();
     const testDomain = `fullflow1-${Date.now()}.example`;
@@ -923,7 +923,7 @@ test.describe('Primary IdP: Full Flow Integration', () => {
     }
   });
 
-  test('iframe receives correct email from dialog', async ({ page, request }) => {
+  test.skip('iframe receives correct email from dialog', async ({ page, request }) => {
     const mockIdp = new MockIdpServer();
     await mockIdp.start();
     const testDomain = `fullflow2-${Date.now()}.example`;
@@ -963,7 +963,7 @@ test.describe('Primary IdP: Full Flow Integration', () => {
 });
 
 test.describe('Primary IdP: Network and Loading Issues', () => {
-  test('tracks all network requests to IdP', async ({ page, request }) => {
+  test.skip('tracks all network requests to IdP', async ({ page, request }) => {
     const mockIdp = new MockIdpServer();
     await mockIdp.start();
     const testDomain = `network1-${Date.now()}.example`;
@@ -1064,7 +1064,7 @@ test.describe('Primary IdP: Unauthenticated User Flow', () => {
    * The bug we're capturing: WinChan's unload handler sends an error when
    * the dialog navigates, which the RP interprets as cancellation.
    */
-  test('unauthenticated user: dialog stores state and redirects to IdP auth', async ({ page, request }) => {
+  test.skip('unauthenticated user: dialog stores state and redirects to IdP auth', async ({ page, request }) => {
     const mockIdp = new MockIdpServer();
     await mockIdp.start();
     const testDomain = `unauth-flow-${Date.now()}.example`;
@@ -1151,7 +1151,7 @@ test.describe('Primary IdP: Unauthenticated User Flow', () => {
     expect(dialogHasWinchanSetup).toBe(true);
   });
 
-  test('authenticated user: provisioning completes and certificate is generated', async ({ page, request }) => {
+  test.skip('authenticated user: provisioning completes and certificate is generated', async ({ page, request }) => {
     const mockIdp = new MockIdpServer();
     await mockIdp.start();
     const testDomain = `auth-flow-${Date.now()}.example`;

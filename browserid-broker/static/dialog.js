@@ -533,8 +533,10 @@
       // (spec §8.1), rather than issuing and getting rejected at the RP.
       if (!brokerFallbackAccepted()) {
         const dom = state.brokerDomain || location.hostname;
-        showError('This site doesn’t accept email sign-in via ' + dom +
-          '. Use an email whose domain is its own identity provider.');
+        const alt = (state.acceptedFallbacks || []).filter(f => f && f !== dom);
+        showError('This site doesn’t accept email sign-in via ' + dom + '.' +
+          (alt.length ? ' It accepts: ' + alt.join(', ') + '.'
+                      : ' Use an email whose domain is its own identity provider.'));
         return;
       }
 
@@ -1733,7 +1735,7 @@
     // Email form
     document.getElementById('email-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const email = document.getElementById('email').value.trim();
+      const email = document.getElementById('email').value.trim().toLowerCase();
 
       if (!email) {
         document.getElementById('email-error').textContent = 'Email is required';
@@ -1777,8 +1779,10 @@
           // primary, not the broker.
           if (addressInfo.state !== 'transition_to_primary' && !brokerFallbackAccepted()) {
             const dom = state.brokerDomain || location.hostname;
-            showError('This site doesn’t accept email sign-in via ' + dom +
-              '. Use an email whose domain is its own identity provider.');
+            const alt = (state.acceptedFallbacks || []).filter(f => f && f !== dom);
+            showError('This site doesn’t accept email sign-in via ' + dom + '.' +
+              (alt.length ? ' It accepts: ' + alt.join(', ') + '.'
+                          : ' Use an email whose domain is its own identity provider.'));
             return;
           }
           // Handle-identity domain (browserid-ng-xcy6): ownership is proven
@@ -2008,7 +2012,7 @@
     // Add email form
     document.getElementById('add-email-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const email = document.getElementById('new-email').value.trim();
+      const email = document.getElementById('new-email').value.trim().toLowerCase();
 
       if (!email) {
         document.getElementById('add-email-error').textContent = 'Email is required';

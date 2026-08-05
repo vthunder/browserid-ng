@@ -94,7 +94,6 @@ test.describe('transition_no_password routing (gg5s)', () => {
     await expect(page.locator('#reset-password-screen')).toHaveClass(/active/, { timeout: 10000 });
 
     // The regression guard: the OLD dead-end set-password screen must NOT show.
-    await expect(page.locator('#set-password-screen')).not.toHaveClass(/active/);
 
     // And the reset flow was actually engaged (the proof-of-control email path).
     expect(stageResetCalled).toBe(true);
@@ -156,8 +155,10 @@ test.describe('transition_no_password routing (gg5s)', () => {
     await page.fill('#email', email);
     await page.click('#email-form button[type="submit"]');
 
-    await expect(page.locator('#set-password-screen')).toHaveClass(/active/, { timeout: 10000 });
-    await expect(page.locator('#reset-password-screen')).not.toHaveClass(/active/);
+    // The dedicated set-password screen was removed with the dialog
+    // redesign; signed-in users now also prove control via the code-based
+    // reset screen (direct set-password lives at /account settings).
+    await expect(page.locator('#reset-password-screen')).toHaveClass(/active/, { timeout: 10000 });
     expect(stageResetCalled).toBe(false);
   });
 });

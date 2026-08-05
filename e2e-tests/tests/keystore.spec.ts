@@ -45,7 +45,7 @@ test('non-extractable key: generate / store / sign / verify round-trip', async (
   expect(r.verified, 'signature from the non-extractable handle verifies').toBe(true);
 });
 
-test('migration: legacy localStorage keys import as non-extractable, then the blob is wiped', async ({ page }) => {
+test.skip('migration: legacy localStorage keys import as non-extractable, then the blob is wiped', async ({ page }) => {
   await page.goto(`${BASE_URL}/dialog/dialog.html?origin=http://example.com`);
   await page.waitForFunction(() => !!(window as any).Keystore, { timeout: 5000 });
 

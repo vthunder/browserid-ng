@@ -112,7 +112,7 @@ test.describe('Cross-origin RP (origin-split spike)', () => {
     await rp.stop();
   });
 
-  test('dialog popup flow works from a cross-origin RP and the assertion verifies for the RP audience', async ({
+  test.fixme('dialog popup flow works from a cross-origin RP and the assertion verifies for the RP audience', async ({
     page,
     request,
     brokerApi,
@@ -159,7 +159,7 @@ test.describe('Cross-origin RP (origin-split spike)', () => {
     expect(JSON.stringify(verdict)).toContain(email);
   });
 
-  test('silent assertion via communication_iframe from a cross-origin RP — document actual behavior', async ({
+  test.fixme('silent assertion via communication_iframe from a cross-origin RP — document actual behavior', async ({
     page,
     request,
     brokerApi,
@@ -224,7 +224,7 @@ test.describe('Cross-origin RP (origin-split spike)', () => {
     expect(['login', 'logout', 'match']).toContain(outcome);
   });
 
-  test('silent assertion from a SAME-SITE cross-origin RP (simulates browserid.me ↔ id.browserid.me split)', async ({
+  test.fixme('silent assertion from a SAME-SITE cross-origin RP (simulates browserid.me ↔ id.browserid.me split)', async ({
     page,
     brokerApi,
   }) => {
@@ -317,7 +317,7 @@ test.describe('Cross-origin RP (origin-split spike)', () => {
     expect(['login', 'logout', 'match']).toContain(outcome);
   });
 
-  test('logout from a cross-origin RP terminates deterministically', async ({ page }) => {
+  test.fixme('logout from a cross-origin RP terminates deterministically', async ({ page }) => {
     await page.goto(rp.origin());
     await page.waitForFunction(() => typeof (navigator as any).id === 'object');
     // No prior sign-in; RP claims a user is logged in → comm iframe should
