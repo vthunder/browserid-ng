@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-08-06T14:12:15Z
-updated_at: 2026-08-06T16:16:10Z
+updated_at: 2026-08-06T16:20:39Z
 ---
 
 Rebuild sandmill.org dokku host into two: an identity host (browserid.me broker, bsky-bridge, bsky-pds, browserid-wallet) and a hobby host (everything else), driven by a reproducible setup script with secrets in an encrypted git repo.
@@ -42,7 +42,7 @@ Still open: backups live only on the mini. A second, genuinely offsite copy (B2/
 ## www CI (2026-08-06)
 .github/workflows/deploy-www.yml added: builds marketing/ -> ghcr.io/vthunder/browserid-ng/www, releases via git:from-image, replacing the `git subtree push --prefix marketing` deploy. www was the last identity-host app without a reproducible image build.
 
-NOT YET GREEN. Two runs failed on transient GHCR problems, neither structural — run 1 built and pushed the sha-tagged manifest fine, then hit a GitHub SECONDARY RATE LIMIT tagging :latest; run 2 timed out in docker/login-action reaching ghcr.io. The workflow config is validated (YAML parses; context=marketing, file=marketing/Dockerfile — the Dockerfile COPYs by relative path so the repo root will NOT work).
+NOT YET GREEN — CAUSE CONFIRMED EXTERNAL: a GitHub Actions partial outage (critical incident, 2026-08-06 ~16:20Z, confirmed on githubstatus.com). Three runs failed with three different platform errors: (1) GHCR secondary rate limit tagging :latest, (2) docker/login-action timeout to ghcr.io, (3) "Failed to resolve action download info. Service Unavailable" — a Set-up-job failure before any workflow step runs, i.e. Actions could not fetch actions/checkout. Nothing to fix here; re-dispatch once the incident clears. Original notes below, neither structural — run 1 built and pushed the sha-tagged manifest fine, then hit a GitHub SECONDARY RATE LIMIT tagging :latest; run 2 timed out in docker/login-action reaching ghcr.io. The workflow config is validated (YAML parses; context=marketing, file=marketing/Dockerfile — the Dockerfile COPYs by relative path so the repo root will NOT work).
 
 CORRECTION: package visibility was never a blocker. A package published by Actions from a PUBLIC repo inherits that visibility — ghcr.io/vthunder/browserid-ng/www was anonymously pullable minutes after its first push, as were all the others. The claim that it needs a manual step was wrong and had been copied into deploy-broker/wallet/guestbook headers too; all four corrected.
 
