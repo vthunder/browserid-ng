@@ -93,10 +93,14 @@ with a warrant scoped to <code id="aud">the guestbook</code> — cryptographical
 (function () {
   var authOrigin = (window.BROWSERID && window.BROWSERID.authOrigin) || "";
 
+  // Escapes ' as well as " — entries are user-supplied and interpolated into
+  // markup, so an unescaped quote of either flavour is one single-quoted
+  // attribute away from stored XSS (security audit 2026-07-29, L-series).
+  // Matches the helper in index.html.
   function esc(s) {
-    return String(s)
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
   }
   function fmtTime(iso) {
     var d = new Date(iso);
