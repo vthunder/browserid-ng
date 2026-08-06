@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-08-06T14:12:15Z
-updated_at: 2026-08-06T14:20:09Z
+updated_at: 2026-08-06T14:49:09Z
 ---
 
 Rebuild sandmill.org dokku host into two: an identity host (browserid.me broker, bsky-bridge, bsky-pds, browserid-wallet) and a hobby host (everything else), driven by a reproducible setup script with secrets in an encrypted git repo.
@@ -20,7 +20,7 @@ Context: a leaked SSH key (public repo) was authorized on both the dokku user an
 - [x] SSRF-guarded /retro?url= instead of relocating it (sandmill dc39f72): the risk was lateral movement (docker network, 169.254.169.254 metadata), not key theft — SSRF returns fetched bodies and cannot read env vars. Guard requires http(s) + globally-routable resolved addresses and disables redirect-following. 18 tests; verified live.
 
 ## Stage 2 — backups + secrets
-- [ ] Encrypted offsite backup of all persistent state (~28MB, includes irreplaceable PLC rotation key + broker key + IdP key)
+- [x] Encrypted backups: ~/bin/sandmill-backup.sh, daily 03:20 via launchd org.sandmill.backup. PULL model (droplet holds no backup creds); age PUBLIC-key encryption so the job cannot decrypt what it writes; private key ~/backups/sandmill/age-identity.txt (0600) — MUST also go in the password manager or backups are unreadable. SQLite snapshotted via .backup (WAL-safe). Verified: 477 entries, all 9 dbs PRAGMA integrity_check=ok, broker-key.json + attest/checkpoint keys + PLC rotation key + IdP key all present. Retains 14. Dedicated restricted SSH key ~/.ssh/sandmill-backup (agent is unavailable under launchd).
 - [ ] Secrets repo: sops+age encrypted, one file per app, apply script
 
 ## Stage 3 — identity host
@@ -33,3 +33,8 @@ Context: a leaked SSH key (public repo) was authorized on both the dokku user an
 - [ ] sandmill.org becomes tenant #1; retire the Laravel IdP; key moves to identity host
 
 ## Stage 5 — hobby host rebuild from the same script
+
+## Backup gotchas found by testing the SCHEDULED path (not just manual)
+launchd runs with a minimal PATH (no Homebrew -> age missing) and NO ssh-agent; the admin RSA key exists only in the agent, not on disk. Both are now explicit in the script. A backup that only works when run by hand is not a backup.
+
+Still open: backups live only on the mini. A second, genuinely offsite copy (B2/S3 via rclone) is worth adding — as is putting the age private key in the password manager.
