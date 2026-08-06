@@ -13,8 +13,9 @@
 #     dokku config:set browserid-wallet WALLET_ENV=production WALLET_ORIGIN=https://wallet.browserid.me \
 #       BROWSERID_BROKER=https://browserid.me WALLET_KEK=<secret> WALLET_SESSION_SECRET=<secret>
 #     dokku letsencrypt:enable browserid-wallet   (after DNS exists)
-# - after the first push: make the ghcr.io wallet package PUBLIC, or dokku
-#   cannot pull it (no registry credentials on the host).
+# - ghcr package visibility needs NO manual step: packages published by
+#   Actions from a PUBLIC repo inherit that visibility, so dokku pulls them
+#   anonymously (verified 2026-08-06 across every package here).
 #
 # Note: `git:from-image` is a no-op on an unchanged image digest ("No changes
 # detected", exit 1) — the paths filter below keeps unrelated pushes from

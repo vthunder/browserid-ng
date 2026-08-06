@@ -9,9 +9,12 @@
 # The build context is `marketing/`, not the repo root: marketing/Dockerfile
 # COPYs its files by relative path (nginx.conf, index.html, vendor/).
 #
+# Package visibility needs NO manual step: a package published by Actions from
+# a PUBLIC repo inherits that visibility, so dokku (which holds no registry
+# credentials) can pull it anonymously. Verified 2026-08-06 against every
+# package here — all anonymously pullable, none ever set by hand.
+#
 # One-time setup at first run:
-# - the ghcr.io .../www package must be made PUBLIC, or dokku cannot pull it
-#   (the host holds no registry credentials).
 # - the app's builder must not carry a custom dockerfile-path: git:from-image
 #   generates its own root Dockerfile, and a stale custom path fails with
 #   `Invalid dockerfile-path`. `www` currently uses the default, so nothing to

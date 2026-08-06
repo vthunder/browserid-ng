@@ -12,8 +12,9 @@
 #     dokku config:set guestbook-mcp SERVICE_ORIGIN=https://guestbook-mcp.browserid.me
 #     dokku letsencrypt:enable guestbook-mcp   (after DNS exists)
 # - DNS: guestbook-mcp.browserid.me A record → the dokku host
-# - after the first push: make the ghcr.io guestbook-mcp package PUBLIC, or
-#   dokku cannot pull it (no registry credentials on the host).
+# - ghcr package visibility needs NO manual step: packages published by
+#   Actions from a PUBLIC repo inherit that visibility, so dokku pulls them
+#   anonymously (verified 2026-08-06 across every package here).
 #
 # Stateless service: no storage mount, no secrets. All config has prod-safe
 # defaults (broker/wallet URLs point at browserid.me / wallet.browserid.me).

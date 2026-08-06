@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-08-06T14:12:15Z
-updated_at: 2026-08-06T15:17:20Z
+updated_at: 2026-08-06T16:16:10Z
 ---
 
 Rebuild sandmill.org dokku host into two: an identity host (browserid.me broker, bsky-bridge, bsky-pds, browserid-wallet) and a hobby host (everything else), driven by a reproducible setup script with secrets in an encrypted git repo.
@@ -44,6 +44,6 @@ Still open: backups live only on the mini. A second, genuinely offsite copy (B2/
 
 NOT YET GREEN. Two runs failed on transient GHCR problems, neither structural — run 1 built and pushed the sha-tagged manifest fine, then hit a GitHub SECONDARY RATE LIMIT tagging :latest; run 2 timed out in docker/login-action reaching ghcr.io. The workflow config is validated (YAML parses; context=marketing, file=marketing/Dockerfile — the Dockerfile COPYs by relative path so the repo root will NOT work).
 
-Blocking first successful deploy: the ghcr.io .../www package must be made PUBLIC (new GHCR packages default to private; the host holds no registry credentials). No REST endpoint for container package visibility — it is a click in GitHub package settings, same one-time step the broker/wallet/guestbook packages went through.
+CORRECTION: package visibility was never a blocker. A package published by Actions from a PUBLIC repo inherits that visibility — ghcr.io/vthunder/browserid-ng/www was anonymously pullable minutes after its first push, as were all the others. The claim that it needs a manual step was wrong and had been copied into deploy-broker/wallet/guestbook headers too; all four corrected.
 
 The guestbook escaping fix was shipped meanwhile via the old subtree push (www e0842ea) so it did not wait on GHCR; verified live.

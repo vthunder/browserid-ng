@@ -12,8 +12,9 @@
 # - on the host:  dokku builder:set id selected dockerfile
 #     `git:from-image` generates its OWN root Dockerfile; without the builder
 #     pinned, dokku can fall back to herokuish and fail to detect a buildpack.
-# - after the first push: make the ghcr.io package PUBLIC, or dokku cannot
-#     pull it (no registry credentials on the host).
+# - ghcr package visibility needs NO manual step: packages published by
+#   Actions from a PUBLIC repo inherit that visibility, so dokku pulls them
+#   anonymously (verified 2026-08-06 across every package here).
 #
 # Note: `git:from-image` is a no-op on an unchanged image digest ("No changes
 # detected", exit 1). That only bites when re-deploying the same commit.
