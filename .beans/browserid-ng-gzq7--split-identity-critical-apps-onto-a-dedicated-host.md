@@ -5,15 +5,84 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-08-06T14:12:15Z
-updated_at: 2026-08-07T15:18:11Z
+updated_at: 2026-08-07T15:24:05Z
 ---
 
 Rebuild sandmill.org dokku host into two: an identity host (browserid.me broker, bsky-bridge, bsky-pds, browserid-wallet) and a hobby host (everything else), driven by a reproducible setup script with secrets in an encrypted git repo.
 
 Context: a leaked SSH key (public repo) was authorized on both the dokku user and a NOPASSWD-sudo account. Revoked 2026-08-06; forensics found no unauthorized use (all 118 logins were the owner's IP or matching CI runs, none as the sudo-capable user, no persistence artifacts). Rebuild is for hygiene/architecture, not incident response.
 
-## Stage 1 — cheap cleanup (in progress)
-- [x] Snapshot config+state of apps to be deleted (~/backups/sandmill/2026-08-06-decommission/decommission-bundle.tgz, 3.2M, mode 600 — CONTAINS SECRETS, must go into the encrypted backup set)
+## RESUME HERE — state as of 2026-08-07
+
+**Where things stand:** the identity split is DONE and live. Everything below is
+verified, not assumed.
+
+| Host | IP | Runs |
+|---|---|---|
+| `id-host` (new) | 159.89.230.185 | browserid.me, www, guestbook-mcp, browserid-wallet, bsky-bridge, bsky-pds — all with valid TLS |
+| `sandmill.org` (old) | 198.199.110.160 | sandmill, mingo, sbo-daemon, fedcm-rp, rolodexterity, sandmill-{bot,irc,proxy,relay}, virtual-ethernet-switch. The 6 migrated apps are STOPPED here but their data remains — this is the rollback path, do NOT destroy it yet. |
+
+**Everything lives in `github.com/vthunder/sandmill-infra` (private).** Read its
+README first: it declares the rule (the domain is the trust boundary), the app
+definitions, the access model, and the scripts. Encrypted secrets are committed
+there; they are useless without the age key.
+
+**First command to run when resuming** — proves the host still matches what the
+repo claims, and is faster than re-reading anything:
+
+    cd ~/src/sandmill-infra && bin/audit-host.sh root@159.89.230.185
+
+**Access:**
+- `~/.ssh/laptop-admin` (laptop, passphrase) — root + dokku on both hosts. Reaches
+  the mini only via agent forwarding, so it vanishes when the laptop sleeps.
+- `~/.ssh/mini-ops` (mini) — dokku user only. Enough to deploy and manage apps,
+  never root. Use this for unattended work.
+- `~/.ssh/mini-backup` (mini) — forced command only; produces an encrypted backup
+  and nothing else.
+- `~/backups/sandmill/age-identity.txt` — decrypts every backup and every secret
+  in the infra repo. STILL THE ONLY COPY unless it has since been put in the
+  password manager. If this is lost, everything encrypted is gone.
+- DigitalOcean: `doctl` is authenticated; the account holds exactly one SSH key.
+
+**Backups:** `~/bin/sandmill-backup.sh`, launchd `org.sandmill.backup`, 03:20
+daily, both hosts, 14 kept each, encrypted host-side.
+
+## Next, in order
+
+1. **Hobby host rebuild** (stage 5) from the same scripts. Note `apply-apps.sh`
+   and `audit-host.sh` currently assume the identity app set; the hobby host
+   needs its own `apps/` entries and `audit-host.sh --hobby`. Its ufw profile
+   also differs (IRC on 6667), so do NOT just re-run `provision-host.sh` at it.
+2. **Decommission the old droplet** once confident.
+3. **`browserid-ng-v96n`** — move the guestbook out of the broker. Independent
+   of the host work; a good standalone task.
+4. **Stage 4: hosted IdP** so `sandmill.org`'s IdP can leave the hobby host. The
+   blocker is one line in `browserid-broker/src/routes/email.rs` that builds
+   endpoint URLs as `https://{domain}{path}`; allowing absolute URLs lets a
+   hosted IdP serve the endpoints while `iss` stays the customer domain, so the
+   verifier's trust model needs no change. Start from bsky-bridge's `idp` module,
+   which is already a working IdP.
+
+## Gotchas worth not rediscovering
+
+- **DNS:** creating `pds.bsky.browserid.me` made `bsky.browserid.me` an *empty
+  non-terminal*, so the `*.browserid.me` wildcard refused to answer for it
+  (RFC 4592 — NOERROR/0 answers, not NXDOMAIN). It needed an explicit record.
+  Wildcards also match exactly one label.
+- **Debian ships a `backup` user** (uid 34, home `/var/backups`). Creating one
+  by that name silently mutates a system account and sshd reads the wrong
+  authorized_keys. We use `dokku-backup`.
+- **macOS `/bin/bash` is 3.2**: expanding an empty array under `set -u` errors,
+  and it cannot parse nested `$( ... $(...) ... )`.
+- **bsky-pds needs ONE SAN cert** covering both its wildcard and non-wildcard
+  vhost; dokku keeps a single cert bundle per app, so a wildcard-only cert
+  breaks `pds.bsky.browserid.me`.
+- **GHCR packages from a public repo are already public** — no manual step,
+  contrary to comments that used to be in the deploy workflows.
+- Let's Encrypt DNS-01 can fail once on a challenge-TXT propagation race; retry.
+
+## Stage 1 — cheap cleanup (done)
+- [x] Snapshot config+state of apps to be deleted (now ~/backups/sandmill/decommission-2026-08-06.tar.gz.age — age-encrypted, plaintext destroyed)
 - [x] Delete unused apps: wallet (SBO), foo, phonics, fallback — 20 apps -> 16; public port 3001 closed
 - [x] Back up rolodexterity state (in the decommission bundle; app kept and healthy)
 - [x] Delete orphaned bud-state dir — kept the <2MB memory/journal subset (1_core, 3_long_term, insights, projects, journal.jsonl), dropped 865M of re-clonable repos. Disk 69% -> 65%
