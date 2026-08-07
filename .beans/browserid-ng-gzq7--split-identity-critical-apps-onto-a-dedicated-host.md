@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-08-06T14:12:15Z
-updated_at: 2026-08-07T14:27:19Z
+updated_at: 2026-08-07T14:59:51Z
 ---
 
 Rebuild sandmill.org dokku host into two: an identity host (browserid.me broker, bsky-bridge, bsky-pds, browserid-wallet) and a hobby host (everything else), driven by a reproducible setup script with secrets in an encrypted git repo.
@@ -26,7 +26,9 @@ Context: a leaked SSH key (public repo) was authorized on both the dokku user an
 ## Stage 3 — identity host
 - [x] Scripted host build: sandmill-infra/bin/{provision-host,apply-apps,restore-state,seed-secrets}.sh + apps/*.conf for all 6 identity apps. apply-apps.sh smoke-tested against the live host on www (domains, GHCR pull, deploy, healthy). Scripts honour SSH_KEY/SUDO so they work as root@newbox and thunder@currenthost.
 - [x] Identity host BUILT and verified at 159.89.230.185 (droplet id-host, 2GB/1vCPU, nyc1). All 6 apps (id, www, guestbook-mcp, browserid-wallet, bsky-bridge, bsky-pds) created, configured, deployed from pinned images, state restored from the 2026-08-07 backup. Verified vs production: identical broker public key, identical guestbook entries (3), identical user count (13), all 4 dbs integrity_check=ok, every app 200 via Host: header. audit-host.sh: no drift.
-- [ ] DNS cutover (NOT started — nothing user-facing has changed yet)
+- [x] DNS cutover done 2026-08-07. browserid.me zone now: * / *.at / @ / pds.bsky / bsky -> 159.89.230.185. All 5 HTTP-01 certs issued and validating; bsky-pds still needs DNS-01 for the *.at wildcard.
+
+DNS gotcha worth remembering: `bsky` needed an EXPLICIT record even with a wildcard present. Creating pds.bsky.browserid.me makes bsky.browserid.me an EMPTY NON-TERMINAL — the name exists in the tree, so per RFC 4592 the wildcard refuses to synthesize for it (NOERROR/0 answers, not NXDOMAIN). Same would apply to at.browserid.me. A wildcard also only ever matches ONE label.
 
 ## Stage 4 — hosted IdP (defers the sandmill.org IdP migration)
 - [ ] Spec/code: support-document endpoints MAY be absolute URLs (browserid-broker/src/routes/email.rs builds https://{domain}{path}); keeps iss == domain so the verifier trust model is unchanged
@@ -67,3 +69,9 @@ NOT yet verified end to end: provision-host.sh and restore-state.sh have never r
 5. After each hostname resolves: run apply-apps WITHOUT SKIP_TLS to issue certs (TLS is deliberately unissued right now).
 6. *.at.browserid.me needs DNS-01, not HTTP-01 (bsky-pds.conf is LETSENCRYPT=no) — reuse the deSEC alias runbook in browserid-bsky.
 7. Point the backup job at the new host once it is authoritative.
+
+## Remaining after cutover
+- bsky-pds: no cert yet (*.at.browserid.me needs DNS-01 via the deSEC runbook in browserid-bsky). pds.bsky is reachable but untrusted over TLS.
+- Point the backup job at id-host (forced-command key, host-side age) and keep the old host backed up until it is decommissioned.
+- Old host still runs the 6 migrated apps and answers for anyone with cached DNS. Stop them once propagation completes, then decommission.
+- Hobby host rebuild from the same scripts (stage 5).
