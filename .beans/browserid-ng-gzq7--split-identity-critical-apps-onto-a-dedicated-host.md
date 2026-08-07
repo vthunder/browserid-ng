@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-08-06T14:12:15Z
-updated_at: 2026-08-07T15:24:05Z
+updated_at: 2026-08-07T15:30:01Z
 ---
 
 Rebuild sandmill.org dokku host into two: an identity host (browserid.me broker, bsky-bridge, bsky-pds, browserid-wallet) and a hobby host (everything else), driven by a reproducible setup script with secrets in an encrypted git repo.
@@ -40,8 +40,9 @@ repo claims, and is faster than re-reading anything:
 - `~/.ssh/mini-backup` (mini) — forced command only; produces an encrypted backup
   and nothing else.
 - `~/backups/sandmill/age-identity.txt` — decrypts every backup and every secret
-  in the infra repo. STILL THE ONLY COPY unless it has since been put in the
-  password manager. If this is lost, everything encrypted is gone.
+  in the infra repo. Also in the password manager since 2026-08-07, so the mini
+  is no longer a single point of failure. Never commit it; never put it on a
+  host (hosts hold only the PUBLIC half, at /etc/backup-recipient.pub).
 - DigitalOcean: `doctl` is authenticated; the account holds exactly one SSH key.
 
 **Backups:** `~/bin/sandmill-backup.sh`, launchd `org.sandmill.backup`, 03:20
