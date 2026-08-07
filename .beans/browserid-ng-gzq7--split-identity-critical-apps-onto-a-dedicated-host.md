@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-08-06T14:12:15Z
-updated_at: 2026-08-07T15:11:51Z
+updated_at: 2026-08-07T15:18:11Z
 ---
 
 Rebuild sandmill.org dokku host into two: an identity host (browserid.me broker, bsky-bridge, bsky-pds, browserid-wallet) and a hobby host (everything else), driven by a reproducible setup script with secrets in an encrypted git repo.
@@ -72,7 +72,8 @@ NOT yet verified end to end: provision-host.sh and restore-state.sh have never r
 
 ## Remaining after cutover
 - [x] bsky-pds SAN cert issued on id-host (acme.sh + deSEC alias DNS-01), covering *.at.browserid.me + pds.bsky.browserid.me. Renewal wired via persisted reloadcmd -> deploy-bsky-pds.sh; next renewal by 2026-10-07. Verified: PDS health 200, claude.at.browserid.me -> its DID over a valid cert, unknown handle 404s.
-- Point the backup job at id-host (forced-command key, host-side age) and keep the old host backed up until it is decommissioned.
+- [x] Backup job now covers BOTH hosts via the same forced-command path (~/bin/sandmill-backup.sh, launchd 03:20 daily, keeps 14 per host). Verified in a clean env with no agent: id-host 132K / sandmill 2.0M, both decrypt, id-host carries broker-key.json + the PDS PLC rotation key. The job rejects any artifact that is not age ciphertext, so a host-side error cannot be stored as a successful backup.
+- [x] acme.sh DNS-01 issuance folded into provisioning (bin/issue-dns01-cert.sh, driven by TLS_DNS01_DOMAINS in apps/bsky-pds.conf; deSEC token in secrets/acme-desec.env.age). A rebuild now gets the PDS wildcard cert automatically; re-running is a verified no-op.
 - [x] Migrated apps STOPPED on the old host 2026-08-07 (id, www, guestbook-mcp, browserid-wallet, bsky-bridge, bsky-pds). Data left in place — the old host is still the rollback path, so do NOT destroy it yet. Hobby apps unaffected and verified.
 - [ ] Decommission the old host once confident (after the hobby rebuild).
 - Hobby host rebuild from the same scripts (stage 5).
