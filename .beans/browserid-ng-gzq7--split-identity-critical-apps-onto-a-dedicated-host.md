@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-08-06T14:12:15Z
-updated_at: 2026-08-07T03:35:10Z
+updated_at: 2026-08-07T14:27:19Z
 ---
 
 Rebuild sandmill.org dokku host into two: an identity host (browserid.me broker, bsky-bridge, bsky-pds, browserid-wallet) and a hobby host (everything else), driven by a reproducible setup script with secrets in an encrypted git repo.
@@ -25,7 +25,8 @@ Context: a leaked SSH key (public repo) was authorized on both the dokku user an
 
 ## Stage 3 — identity host
 - [x] Scripted host build: sandmill-infra/bin/{provision-host,apply-apps,restore-state,seed-secrets}.sh + apps/*.conf for all 6 identity apps. apply-apps.sh smoke-tested against the live host on www (domains, GHCR pull, deploy, healthy). Scripts honour SSH_KEY/SUDO so they work as root@newbox and thunder@currenthost.
-- [ ] Migrate id, bsky-bridge, bsky-pds, browserid-wallet (no protocol change needed)
+- [x] Identity host BUILT and verified at 159.89.230.185 (droplet id-host, 2GB/1vCPU, nyc1). All 6 apps (id, www, guestbook-mcp, browserid-wallet, bsky-bridge, bsky-pds) created, configured, deployed from pinned images, state restored from the 2026-08-07 backup. Verified vs production: identical broker public key, identical guestbook entries (3), identical user count (13), all 4 dbs integrity_check=ok, every app 200 via Host: header. audit-host.sh: no drift.
+- [ ] DNS cutover (NOT started — nothing user-facing has changed yet)
 
 ## Stage 4 — hosted IdP (defers the sandmill.org IdP migration)
 - [ ] Spec/code: support-document endpoints MAY be absolute URLs (browserid-broker/src/routes/email.rs builds https://{domain}{path}); keeps iss == domain so the verifier trust model is unchanged
@@ -57,3 +58,12 @@ Remaining host-builder: `sandmill` (git push deploy). Each of its deploys leaves
 Everything is ready except the droplet itself. Remaining: create it, run provision-host.sh, apply-apps.sh, restore-state.sh, then explicit A records per hostname (the *.browserid.me wildcard will keep pointing at the OLD ip until overridden). The *.at.browserid.me wildcard cert needs DNS-01, not HTTP-01 — bsky-pds.conf is marked LETSENCRYPT=no for that reason.
 
 NOT yet verified end to end: provision-host.sh and restore-state.sh have never run against a real target — the first true test is the new droplet. apply-apps.sh has.
+
+## Cutover checklist (not yet started)
+1. Lower TTLs to 60 at Namecheap a day ahead (currently ~1800).
+2. Take a FINAL backup immediately before flipping — the restore used the 03:20 snapshot, so anything written to production since then is not on the new host.
+3. Add EXPLICIT A records per hostname -> 159.89.230.185. The *.browserid.me wildcard still points at the old IP and will keep answering for anything without its own record.
+4. Flip least-critical first (www, guestbook-mcp), browserid.me LAST — it is the accepted fallback for other domains, so its downtime is ecosystem-wide.
+5. After each hostname resolves: run apply-apps WITHOUT SKIP_TLS to issue certs (TLS is deliberately unissued right now).
+6. *.at.browserid.me needs DNS-01, not HTTP-01 (bsky-pds.conf is LETSENCRYPT=no) — reuse the deSEC alias runbook in browserid-bsky.
+7. Point the backup job at the new host once it is authoritative.
