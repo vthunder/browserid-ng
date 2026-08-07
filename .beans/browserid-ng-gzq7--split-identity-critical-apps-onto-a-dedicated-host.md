@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-08-06T14:12:15Z
-updated_at: 2026-08-07T03:11:24Z
+updated_at: 2026-08-07T03:35:10Z
 ---
 
 Rebuild sandmill.org dokku host into two: an identity host (browserid.me broker, bsky-bridge, bsky-pds, browserid-wallet) and a hobby host (everything else), driven by a reproducible setup script with secrets in an encrypted git repo.
@@ -21,10 +21,10 @@ Context: a leaked SSH key (public repo) was authorized on both the dokku user an
 
 ## Stage 2 — backups + secrets
 - [x] Encrypted backups: ~/bin/sandmill-backup.sh, daily 03:20 via launchd org.sandmill.backup. PULL model (droplet holds no backup creds); age PUBLIC-key encryption so the job cannot decrypt what it writes; private key ~/backups/sandmill/age-identity.txt (0600) — MUST also go in the password manager or backups are unreadable. SQLite snapshotted via .backup (WAL-safe). Verified: 477 entries, all 9 dbs PRAGMA integrity_check=ok, broker-key.json + attest/checkpoint keys + PLC rotation key + IdP key all present. Retains 14. Dedicated restricted SSH key ~/.ssh/sandmill-backup (agent is unavailable under launchd).
-- [ ] Secrets repo: sops+age encrypted, one file per app, apply script
+- [x] Secrets repo: ~/src/sandmill-infra (local git, not pushed). age-encrypted one file per app (5 apps, 41 vars), seeded from the 2026-08-07 backup and verified against the host. Uses age rather than sops — same key already protects the backups.
 
 ## Stage 3 — identity host
-- [ ] Scripted host build (dokku, ufw 22/80/443 only, per-repo CI deploy keys, no key on sudo accounts)
+- [x] Scripted host build: sandmill-infra/bin/{provision-host,apply-apps,restore-state,seed-secrets}.sh + apps/*.conf for all 6 identity apps. apply-apps.sh smoke-tested against the live host on www (domains, GHCR pull, deploy, healthy). Scripts honour SSH_KEY/SUDO so they work as root@newbox and thunder@currenthost.
 - [ ] Migrate id, bsky-bridge, bsky-pds, browserid-wallet (no protocol change needed)
 
 ## Stage 4 — hosted IdP (defers the sandmill.org IdP migration)
@@ -52,3 +52,8 @@ The guestbook escaping fix was shipped meanwhile via the old subtree push (www e
 Run 31143436642 succeeded end to end once the GitHub Actions incident cleared — build, push, and the git:from-image deploy. www now reports `Git source image: ghcr.io/vthunder/browserid-ng/www:cc8aa569`, so EVERY identity-host app is released from a pinned CI image and the host builds none of them. Site healthy; the guestbook escaping fix is live.
 
 Remaining host-builder: `sandmill` (git push deploy). Each of its deploys leaves a ~1.3GB dangling image — three deploys on 2026-08-06 pushed the disk 65% -> 73%; pruning dangling images + build cache recovered it to 58% (9.8G free). Giving sandmill the same CI-image treatment would stop the leak.
+
+## Stage 3 status (2026-08-07)
+Everything is ready except the droplet itself. Remaining: create it, run provision-host.sh, apply-apps.sh, restore-state.sh, then explicit A records per hostname (the *.browserid.me wildcard will keep pointing at the OLD ip until overridden). The *.at.browserid.me wildcard cert needs DNS-01, not HTTP-01 — bsky-pds.conf is marked LETSENCRYPT=no for that reason.
+
+NOT yet verified end to end: provision-host.sh and restore-state.sh have never run against a real target — the first true test is the new droplet. apply-apps.sh has.
