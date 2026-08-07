@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-08-06T14:12:15Z
-updated_at: 2026-08-07T14:59:51Z
+updated_at: 2026-08-07T15:11:51Z
 ---
 
 Rebuild sandmill.org dokku host into two: an identity host (browserid.me broker, bsky-bridge, bsky-pds, browserid-wallet) and a hobby host (everything else), driven by a reproducible setup script with secrets in an encrypted git repo.
@@ -71,7 +71,8 @@ NOT yet verified end to end: provision-host.sh and restore-state.sh have never r
 7. Point the backup job at the new host once it is authoritative.
 
 ## Remaining after cutover
-- bsky-pds: no cert yet (*.at.browserid.me needs DNS-01 via the deSEC runbook in browserid-bsky). pds.bsky is reachable but untrusted over TLS.
+- [x] bsky-pds SAN cert issued on id-host (acme.sh + deSEC alias DNS-01), covering *.at.browserid.me + pds.bsky.browserid.me. Renewal wired via persisted reloadcmd -> deploy-bsky-pds.sh; next renewal by 2026-10-07. Verified: PDS health 200, claude.at.browserid.me -> its DID over a valid cert, unknown handle 404s.
 - Point the backup job at id-host (forced-command key, host-side age) and keep the old host backed up until it is decommissioned.
-- Old host still runs the 6 migrated apps and answers for anyone with cached DNS. Stop them once propagation completes, then decommission.
+- [x] Migrated apps STOPPED on the old host 2026-08-07 (id, www, guestbook-mcp, browserid-wallet, bsky-bridge, bsky-pds). Data left in place — the old host is still the rollback path, so do NOT destroy it yet. Hobby apps unaffected and verified.
+- [ ] Decommission the old host once confident (after the hobby rebuild).
 - Hobby host rebuild from the same scripts (stage 5).
