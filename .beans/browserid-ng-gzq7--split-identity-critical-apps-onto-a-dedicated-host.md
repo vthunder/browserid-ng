@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-08-06T14:12:15Z
-updated_at: 2026-08-06T16:20:39Z
+updated_at: 2026-08-07T03:11:24Z
 ---
 
 Rebuild sandmill.org dokku host into two: an identity host (browserid.me broker, bsky-bridge, bsky-pds, browserid-wallet) and a hobby host (everything else), driven by a reproducible setup script with secrets in an encrypted git repo.
@@ -47,3 +47,8 @@ NOT YET GREEN — CAUSE CONFIRMED EXTERNAL: a GitHub Actions partial outage (cri
 CORRECTION: package visibility was never a blocker. A package published by Actions from a PUBLIC repo inherits that visibility — ghcr.io/vthunder/browserid-ng/www was anonymously pullable minutes after its first push, as were all the others. The claim that it needs a manual step was wrong and had been copied into deploy-broker/wallet/guestbook headers too; all four corrected.
 
 The guestbook escaping fix was shipped meanwhile via the old subtree push (www e0842ea) so it did not wait on GHCR; verified live.
+
+## www CI green (2026-08-07)
+Run 31143436642 succeeded end to end once the GitHub Actions incident cleared — build, push, and the git:from-image deploy. www now reports `Git source image: ghcr.io/vthunder/browserid-ng/www:cc8aa569`, so EVERY identity-host app is released from a pinned CI image and the host builds none of them. Site healthy; the guestbook escaping fix is live.
+
+Remaining host-builder: `sandmill` (git push deploy). Each of its deploys leaves a ~1.3GB dangling image — three deploys on 2026-08-06 pushed the disk 65% -> 73%; pruning dangling images + build cache recovered it to 58% (9.8G free). Giving sandmill the same CI-image treatment would stop the leak.
