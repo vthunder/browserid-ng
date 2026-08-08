@@ -13,6 +13,7 @@ mod holders;
 mod primary;
 mod reset;
 pub(crate) mod session;
+mod status;
 mod test;
 mod well_known;
 
@@ -131,6 +132,10 @@ where
         .route("/device/issue", post(device::device_issue))
         .route("/access/mint", post(device::access_mint))
         .route("/verify-access", post(device::verify_access))
+        // Status-list distribution (watch() v2, bean 6u70): the page-side
+        // revocation poll and the RP-backend re-check.
+        .route("/status/proxy", get(status::status_proxy))
+        .route("/status/check", post(status::status_check))
         .route("/wsapi/device_certs", get(device::device_certs))
         .route("/wsapi/issuer_revoke_url", get(device::issuer_revoke_url))
         .route("/wsapi/cert_revocation_status", get(device::cert_revocation_status))

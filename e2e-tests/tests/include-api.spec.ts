@@ -100,25 +100,36 @@ test.describe('include.js API', () => {
     expect(throws).toBe(true);
   });
 
-  test('stateless mode rejects onmatch', async ({ page }) => {
-    // Stateless mode should not accept onmatch
-    const throws = await page.evaluate(() => {
+  test('onmatch is ignored with a warning and never fires (watch() v2)', async ({ page }) => {
+    // v2 contract (bean 6u70): silent reconciliation is gone, so onmatch has
+    // no trigger. Passing it is tolerated for back-compat — warned, ignored,
+    // never invoked — and no longer throws.
+    const result = await page.evaluate(async () => {
+      const warnings: string[] = [];
+      const origWarn = console.warn;
+      console.warn = (...args: any[]) => { warnings.push(args.join(' ')); origWarn.apply(console, args); };
+      let threw = false;
+      let matched = false;
       try {
         (navigator as any).id.watch({
           onlogin: function() {},
-          onmatch: function() {}
+          onlogout: function() {},
+          onmatch: function() { matched = true; }
         });
-        return false;
       } catch (e) {
-        return true;
+        threw = true;
       }
+      console.warn = origWarn;
+      await new Promise((r) => setTimeout(r, 500));
+      return { threw, matched, warned: warnings.some((w) => w.includes('onmatch')) };
     });
 
-    expect(throws).toBe(true);
+    expect((result as any).threw).toBe(false);
+    expect((result as any).matched).toBe(false);
+    expect((result as any).warned).toBe(true);
   });
 
-  test.fixme('watch() creates communication iframe', async ({ page }) => {
-    // Call watch() and verify the communication iframe is created
+  test('watch() creates no hidden iframes (communication_iframe is gone)', async ({ page }) => {
     await page.evaluate(() => {
       (navigator as any).id.watch({
         onlogin: function() {},
@@ -126,26 +137,14 @@ test.describe('include.js API', () => {
       });
     });
 
-    // Wait for iframe to be created
     await page.waitForTimeout(1000);
-
-    // Check if a hidden iframe pointing to communication_iframe exists
-    const iframeCount = await page.evaluate(() => {
-      const iframes = document.querySelectorAll('iframe');
-      let count = 0;
-      for (const iframe of iframes) {
-        if (iframe.src && iframe.src.includes('communication_iframe')) {
-          count++;
-        }
-      }
-      return count;
-    });
-
-    expect(iframeCount).toBe(1);
+    const iframeCount = await page.evaluate(() => document.querySelectorAll('iframe').length);
+    expect(iframeCount).toBe(0);
   });
 
-  test.fixme('watch() with onready fires when communication_iframe loads', async ({ page }) => {
-    // Check that onready is called
+  test('onready fires once the automatic phase settles', async ({ page }) => {
+    // No pending redirect return and no FedCM opt-in → the automatic phase
+    // settles immediately and onready fires on its own.
     const result = await page.evaluate(async () => {
       return new Promise((resolve) => {
         const timeout = setTimeout(() => {
@@ -166,40 +165,41 @@ test.describe('include.js API', () => {
     expect((result as any).type).toBe('ready');
   });
 
-  // Note: Silent assertion (onmatch/onlogin) requires localStorage session state
-  // which is only set when user signs in via the dialog, not via API.
-  // This test verifies the infrastructure works by checking logout behavior
-  // when the RP thinks user is logged in but broker doesn't have them in session.
-  test.fixme('watch() with loggedInUser calls onlogout when not actually logged in', async ({ page }) => {
-    // RP claims user is logged in, but broker has no session
+  test('claimed loggedInUser produces no spontaneous callback — onready only (watch() v2)', async ({ page }) => {
+    // Old contract: RP claims a user the broker doesn't know → silent
+    // onlogout. v2: no silent reconciliation; nothing fires but onready.
     const result = await page.evaluate(async () => {
       return new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          resolve({ type: 'timeout' });
-        }, 10000);
-
+        const events: string[] = [];
         (navigator as any).id.watch({
           loggedInUser: 'nonexistent@example.com',
-          onlogin: function(assertion: string) {
-            clearTimeout(timeout);
-            resolve({ type: 'login', assertion: assertion ? true : false });
-          },
-          onlogout: function() {
-            clearTimeout(timeout);
-            resolve({ type: 'logout' });
-          },
-          onmatch: function() {
-            clearTimeout(timeout);
-            resolve({ type: 'match' });
-          },
-          onready: function() {
-            // onready may fire before callbacks
-          }
+          onlogin: function() { events.push('login'); },
+          onlogout: function() { events.push('logout'); },
+          onready: function() { events.push('ready'); }
         });
+        // Leave a generous window for any spurious callback, then report.
+        setTimeout(() => resolve({ events }), 3000);
       });
     });
 
-    // Should call onlogout since broker doesn't have this user logged in
+    expect((result as any).events).toEqual(['ready']);
+  });
+
+  test('logout() fires onlogout in the calling tab (watch() v2)', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve({ type: 'timeout' }), 5000);
+        (navigator as any).id.watch({
+          onlogin: function() {},
+          onlogout: function() {
+            clearTimeout(timeout);
+            resolve({ type: 'logout' });
+          }
+        });
+        (navigator as any).id.logout();
+      });
+    });
+
     expect((result as any).type).toBe('logout');
   });
 });

@@ -99,6 +99,10 @@ export function createVerifier(opts = {}) {
       issuer: json.issuer,
       subject: json.subject || "user",
       scopes: json.scopes || [],
+      // Revocation pointers ({uri, idx}) for later re-checks via
+      // checkStatus() — retain these with the session; the presentation
+      // itself expires in minutes.
+      statusRefs: json.status_refs || [],
     };
 
     // Default posture: an agent may not stand in for a human login. The caller
@@ -111,7 +115,51 @@ export function createVerifier(opts = {}) {
     return result;
   }
 
-  return { verify, verifierUrl };
+  /**
+   * Re-check revocation for a previously verified session ("logged out
+   * everywhere", spec §6.4). Call on session activity with the `statusRefs`
+   * a successful verify() returned; when it resolves `{ok: true}` with
+   * `revoked: true` — or `{ok: false}` at all (fail-closed: "cannot prove
+   * unrevoked" is a rejection) — terminate the RP session.
+   * @param {{uri: string, idx: number}[]} refs
+   * @returns {Promise<{ok: true, revoked: boolean}
+   *   | {ok: false, reason: string}>}
+   */
+  async function checkStatus(refs) {
+    if (!Array.isArray(refs) || refs.length === 0) {
+      // No refs means the credentials carried no revocation pointer; there
+      // is nothing to re-check and TTL-only semantics apply.
+      return { ok: true, revoked: false };
+    }
+    const statusUrl = new URL("/status/check", verifierUrl).toString();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res, json;
+    try {
+      res = await doFetch(statusUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ refs }),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      return fail(`status check failed: ${(e && e.message) || e}`);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) return fail(`status check returned HTTP ${res.status}`);
+    try {
+      json = await res.json();
+    } catch {
+      return fail("status check returned a non-JSON response");
+    }
+    if (!json || json.ok !== true) {
+      return fail((json && "status refs unavailable (fail-closed)") || "status check failed");
+    }
+    return { ok: true, revoked: json.revoked === true };
+  }
+
+  return { verify, checkStatus, verifierUrl };
 }
 
 function fail(reason) {
@@ -131,6 +179,7 @@ export function verifyPresentation(presentation, audience, opts = {}) {
 
 /**
  * @typedef {{ok: true, email: string, issuer?: string,
- *   subject: "user" | "agent", scopes: string[]}
+ *   subject: "user" | "agent", scopes: string[],
+ *   statusRefs: {uri: string, idx: number}[]}
  *   | {ok: false, reason: string}} VerifyResult
  */

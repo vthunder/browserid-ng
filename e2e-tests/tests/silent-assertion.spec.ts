@@ -1,404 +1,267 @@
 import { test, expect, generateTestEmail, generateTestPassword } from '../fixtures/test-helpers';
+import { DialogPage } from '../pages/dialog';
+import { createServer, IncomingMessage, ServerResponse } from 'http';
 
 /**
- * Silent Assertion Tests
+ * watch() v2 contract (bean browserid-ng-6u70) — formerly the silent-assertion
+ * suite. The hidden communication_iframe and its silent reconciliation
+ * (onmatch / spontaneous onlogin / spontaneous onlogout) are GONE — third-party
+ * storage partitioning killed the mechanism, and the RP-side alternatives were
+ * rejected as holder-shaped. The v2 contract this file specifies:
  *
- * These tests verify the communication_iframe's silent assertion flow,
- * which allows RPs to get assertions without showing the dialog.
- *
- * The flow requires:
- * 1. User signs in via dialog (sets localStorage session state)
- * 2. RP calls watch() with loggedInUser
- * 3. communication_iframe checks localStorage and broker session
- * 4. Appropriate callback fires (onmatch, onlogin, or onlogout)
+ * - No spontaneous callbacks at page load: without a user-triggered flow (or
+ *   FedCM auto-reauthn, opt-in, browser-mediated) watch() fires onready only.
+ * - onready = "the automatic phase has settled".
+ * - logout() delivers onlogout to the calling tab AND to every other
+ *   same-origin tab (BroadcastChannel/storage ping).
+ * - Revocation is observable: include.js stashes the access cert's status ref
+ *   at login and polls it through the broker's caching status proxy; a revoked
+ *   device flips an open tab to onlogout without a reload. UX only — the RP
+ *   backend enforces via /status/check.
  */
 
-test.describe('Silent Assertion Flow', () => {
-  const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
-  // Use the broker's own origin for testing since that's where the test page runs
-  const rpOrigin = process.env.BROKER_URL || 'http://localhost:3000';
+const brokerUrl = process.env.BROKER_URL || 'http://localhost:3000';
 
-  test.fixme('after dialog sign-in, watch() with matching loggedInUser fires onmatch', async ({
-    page,
-    dialogPage,
-    request,
-  }) => {
-    const testEmail = generateTestEmail();
-    const testPassword = generateTestPassword();
+/** Minimal RP on its own origin, loading include.js from the broker. */
+class RpServer {
+  private server: ReturnType<typeof createServer> | null = null;
+  private port = 0;
 
-    // Create user via API first
-    await request.post(`${baseUrl}/wsapi/stage_user`, {
-      data: { email: testEmail, pass: testPassword },
+  async start(): Promise<void> {
+    return new Promise((resolve) => {
+      this.server = createServer((req, res) => this.handle(req, res));
+      this.server.listen(0, '127.0.0.1', () => {
+        const addr = this.server!.address();
+        this.port = typeof addr === 'object' ? addr!.port : 0;
+        resolve();
+      });
     });
+  }
 
-    const pendingResponse = await request.get(
-      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=new_account`
+  async stop(): Promise<void> {
+    return new Promise((resolve) => {
+      this.server ? this.server.close(() => resolve()) : resolve();
+    });
+  }
+
+  origin(): string {
+    return `http://127.0.0.1:${this.port}`;
+  }
+
+  private handle(_req: IncomingMessage, res: ServerResponse) {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(`<!doctype html>
+<html>
+<head><title>watch() v2 RP</title></head>
+<body>
+  <h1>watch() v2 RP</h1>
+  <button id="signin">Sign in</button>
+  <script src="${brokerUrl}/include.js"></script>
+  <script>
+    window.__events = [];
+    window.__presentation = null;
+    window.__setup = function (loggedInUser) {
+      navigator.id.watch({
+        loggedInUser: loggedInUser,
+        onlogin: function (presentation) {
+          window.__events.push('login');
+          window.__presentation = presentation;
+        },
+        onlogout: function () { window.__events.push('logout'); },
+        onready: function () { window.__events.push('ready'); },
+      });
+    };
+    document.getElementById('signin').addEventListener('click', function () {
+      navigator.id.request();
+    });
+  </script>
+</body>
+</html>`);
+  }
+}
+
+/** Full popup sign-in through include.js on the RP page. */
+async function signInViaPopup(page: any, email: string, password: string) {
+  const popupPromise = page.context().waitForEvent('page');
+  await page.click('#signin');
+  const popup = await popupPromise;
+  await popup.waitForSelector('#email-screen.active', { timeout: 15000 });
+  await new DialogPage(popup).signInExistingUser(email, password);
+  await page.waitForFunction(() => (window as any).__presentation !== null, undefined, {
+    timeout: 20000,
+  });
+}
+
+test.describe('watch() v2 contract', () => {
+  let rp: RpServer;
+
+  test.beforeAll(async () => {
+    rp = new RpServer();
+    await rp.start();
+  });
+
+  test.afterAll(async () => {
+    await rp.stop();
+  });
+
+  test('page load with no session fires onready only — no spontaneous callbacks', async ({
+    page,
+  }) => {
+    await page.goto(rp.origin());
+    await page.waitForFunction(() => typeof (navigator as any).id === 'object');
+    await page.evaluate(() => (window as any).__setup(undefined));
+
+    await page.waitForFunction(() => (window as any).__events.includes('ready'), undefined, {
+      timeout: 10000,
+    });
+    // Give any spurious callback a beat to arrive, then assert there was none.
+    await page.waitForTimeout(1000);
+    const events = await page.evaluate(() => (window as any).__events);
+    expect(events).toEqual(['ready']);
+  });
+
+  test('claimed loggedInUser does NOT produce a spontaneous onlogout (or anything else)', async ({
+    page,
+  }) => {
+    // Old contract: RP claims a user, broker disagrees → silent onlogout.
+    // v2: no silent reconciliation exists; the page still just gets onready.
+    await page.goto(rp.origin());
+    await page.waitForFunction(() => typeof (navigator as any).id === 'object');
+    await page.evaluate(() => (window as any).__setup('nobody@example.com'));
+
+    await page.waitForFunction(() => (window as any).__events.includes('ready'), undefined, {
+      timeout: 10000,
+    });
+    await page.waitForTimeout(1000);
+    const events = await page.evaluate(() => (window as any).__events);
+    expect(events).toEqual(['ready']);
+  });
+
+  test('explicit sign-in delivers onlogin with a 4-part access presentation', async ({
+    page,
+    brokerApi,
+  }) => {
+    const email = generateTestEmail();
+    const password = generateTestPassword();
+    expect(await brokerApi.createVerifiedUser(email, password)).toBe(true);
+
+    await page.goto(rp.origin());
+    await page.waitForFunction(() => typeof (navigator as any).id === 'object');
+    await page.evaluate(() => (window as any).__setup(null));
+    await signInViaPopup(page, email, password);
+
+    const presentation = await page.evaluate(() => (window as any).__presentation);
+    expect(presentation.split('~')).toHaveLength(4);
+
+    // The login stashed a revocation pointer (uri+idx, no key material) for
+    // the status poll.
+    const ref = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem('browserid_status_ref') || 'null')
     );
-    const pending = await pendingResponse.json();
-
-    await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { email: testEmail, token: pending.code },
-    });
-
-    // Sign in via dialog - use the same origin as the test page will use
-    // This is crucial: localStorage is stored per-origin, so the dialog must
-    // store for the same origin that the test page will have
-    await dialogPage.goto(rpOrigin);
-    await dialogPage.signInExistingUser(testEmail, testPassword);
-    await dialogPage.waitForSuccess();
-
-    // Now go to test page with include.js (same origin as dialog was opened for)
-    await page.goto(`${baseUrl}/dialog/test.html`);
-    await page.waitForFunction(() => typeof (navigator as any).id === 'object');
-
-    // Call watch() with the same email the user just signed in with
-    const result = await page.evaluate(async (email) => {
-      return new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          resolve({ type: 'timeout' });
-        }, 15000);
-
-        (navigator as any).id.watch({
-          loggedInUser: email,
-          onlogin: function (assertion: string) {
-            clearTimeout(timeout);
-            resolve({ type: 'login', hasAssertion: !!assertion });
-          },
-          onlogout: function () {
-            clearTimeout(timeout);
-            resolve({ type: 'logout' });
-          },
-          onmatch: function () {
-            clearTimeout(timeout);
-            resolve({ type: 'match' });
-          },
-          onready: function () {
-            // onready fires before other callbacks
-          },
-        });
-      });
-    }, testEmail);
-
-    // Should get onmatch since loggedInUser matches the signed-in user
-    expect((result as any).type).toBe('match');
+    expect(ref).toBeTruthy();
+    expect(ref.uri).toContain('/.well-known/browserid-status');
+    expect(typeof ref.idx).toBe('number');
   });
 
-  test.fixme('after dialog sign-in, watch() with no loggedInUser fires onlogin with assertion', async ({
+  test('logout() fires onlogout in the calling tab', async ({ page, brokerApi }) => {
+    const email = generateTestEmail();
+    const password = generateTestPassword();
+    expect(await brokerApi.createVerifiedUser(email, password)).toBe(true);
+
+    await page.goto(rp.origin());
+    await page.waitForFunction(() => typeof (navigator as any).id === 'object');
+    await page.evaluate(() => (window as any).__setup(null));
+    await signInViaPopup(page, email, password);
+
+    await page.evaluate(() => (navigator as any).id.logout());
+    await page.waitForFunction(() => (window as any).__events.includes('logout'), undefined, {
+      timeout: 5000,
+    });
+    // The stashed status ref is dropped with the session.
+    const ref = await page.evaluate(() => localStorage.getItem('browserid_status_ref'));
+    expect(ref).toBeNull();
+  });
+
+  test('logout() propagates onlogout to another same-origin tab', async ({ page, brokerApi }) => {
+    const email = generateTestEmail();
+    const password = generateTestPassword();
+    expect(await brokerApi.createVerifiedUser(email, password)).toBe(true);
+
+    await page.goto(rp.origin());
+    await page.waitForFunction(() => typeof (navigator as any).id === 'object');
+    await page.evaluate(() => (window as any).__setup(null));
+    await signInViaPopup(page, email, password);
+
+    const otherTab = await page.context().newPage();
+    await otherTab.goto(rp.origin());
+    await otherTab.waitForFunction(() => typeof (navigator as any).id === 'object');
+    await otherTab.evaluate(() => (window as any).__setup(null));
+    await otherTab.waitForFunction(() => (window as any).__events.includes('ready'), undefined, {
+      timeout: 10000,
+    });
+
+    await page.evaluate(() => (navigator as any).id.logout());
+
+    await otherTab.waitForFunction(() => (window as any).__events.includes('logout'), undefined, {
+      timeout: 5000,
+    });
+    await otherTab.close();
+  });
+
+  test('revoking the device flips an open tab to onlogout via the status poll', async ({
     page,
-    dialogPage,
-    request,
+    brokerApi,
   }) => {
-    const testEmail = generateTestEmail();
-    const testPassword = generateTestPassword();
+    const email = generateTestEmail();
+    const password = generateTestPassword();
+    expect(await brokerApi.createVerifiedUser(email, password)).toBe(true);
 
-    // Create user via API
-    await request.post(`${baseUrl}/wsapi/stage_user`, {
-      data: { email: testEmail, pass: testPassword },
-    });
-
-    const pendingResponse = await request.get(
-      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=new_account`
-    );
-    const pending = await pendingResponse.json();
-
-    await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { email: testEmail, token: pending.code },
-    });
-
-    // Sign in via dialog for the same origin as the test page
-    await dialogPage.goto(rpOrigin);
-    await dialogPage.signInExistingUser(testEmail, testPassword);
-    await dialogPage.waitForSuccess();
-
-    // Go to test page
-    await page.goto(`${baseUrl}/dialog/test.html`);
+    await page.goto(rp.origin());
     await page.waitForFunction(() => typeof (navigator as any).id === 'object');
+    await page.evaluate(() => (window as any).__setup(null));
+    await signInViaPopup(page, email, password);
 
-    // Call watch() with undefined loggedInUser (RP doesn't know if user is logged in)
-    const result = await page.evaluate(async () => {
-      return new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          resolve({ type: 'timeout' });
-        }, 15000);
-
-        (navigator as any).id.watch({
-          loggedInUser: undefined,
-          onlogin: function (assertion: string) {
-            clearTimeout(timeout);
-            resolve({ type: 'login', hasAssertion: !!assertion, assertion: assertion });
-          },
-          onlogout: function () {
-            clearTimeout(timeout);
-            resolve({ type: 'logout' });
-          },
-          onmatch: function () {
-            clearTimeout(timeout);
-            resolve({ type: 'match' });
-          },
-          onready: function () {
-            // onready fires before other callbacks
-          },
+    // Revoke this session's device cert from a broker-origin tab (the popup's
+    // session cookie lives in this browser context).
+    const brokerTab = await page.context().newPage();
+    await brokerTab.goto(`${brokerUrl}/dialog/test.html`);
+    const revoked = await brokerTab.evaluate(async () => {
+      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) =>
+        r.json()
+      );
+      const certs = await fetch('/wsapi/device_certs', { credentials: 'include' }).then((r) =>
+        r.json()
+      );
+      const active = (certs.certs || []).filter((c: any) => !c.revoked);
+      if (!active.length) return { ok: false, reason: 'no active device certs' };
+      const results = [];
+      for (const cert of active) {
+        const res = await fetch('/wsapi/revoke_device_cert', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ csrf: sc.csrf_token, id: cert.id }),
         });
-      });
+        results.push(res.status);
+      }
+      return { ok: results.every((s) => s === 200), results };
     });
+    await brokerTab.close();
+    expect(revoked.ok).toBe(true);
 
-    // Should get onlogin with an assertion
-    expect((result as any).type).toBe('login');
-    expect((result as any).hasAssertion).toBe(true);
-  });
-
-  test.fixme('after dialog sign-in, watch() with different loggedInUser fires onlogin with assertion for actual user', async ({
-    page,
-    dialogPage,
-    request,
-  }) => {
-    const testEmail = generateTestEmail();
-    const testPassword = generateTestPassword();
-
-    // Create user via API
-    await request.post(`${baseUrl}/wsapi/stage_user`, {
-      data: { email: testEmail, pass: testPassword },
-    });
-
-    const pendingResponse = await request.get(
-      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=new_account`
-    );
-    const pending = await pendingResponse.json();
-
-    await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { email: testEmail, token: pending.code },
-    });
-
-    // Sign in via dialog for the same origin as the test page
-    await dialogPage.goto(rpOrigin);
-    await dialogPage.signInExistingUser(testEmail, testPassword);
-    await dialogPage.waitForSuccess();
-
-    // Go to test page
-    await page.goto(`${baseUrl}/dialog/test.html`);
+    // Reload the RP tab (localStorage ref survives), arm a fast poll, watch().
+    await page.goto(rp.origin());
     await page.waitForFunction(() => typeof (navigator as any).id === 'object');
-
-    // Call watch() with a DIFFERENT email than the signed-in user
-    // BrowserID should fire onlogin with an assertion for the actual signed-in user
-    // This allows the RP to update their session to the correct user
-    const result = await page.evaluate(async () => {
-      return new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          resolve({ type: 'timeout' });
-        }, 15000);
-
-        (navigator as any).id.watch({
-          loggedInUser: 'different-user@example.com',
-          onlogin: function (assertion: string) {
-            clearTimeout(timeout);
-            resolve({ type: 'login', hasAssertion: !!assertion });
-          },
-          onlogout: function () {
-            clearTimeout(timeout);
-            resolve({ type: 'logout' });
-          },
-          onmatch: function () {
-            clearTimeout(timeout);
-            resolve({ type: 'match' });
-          },
-          onready: function () {
-            // onready fires before other callbacks
-          },
-        });
-      });
+    await page.evaluate(() => {
+      (window as any).BROWSERID_STATUS_POLL_MS = 250;
+      (window as any).__setup('claimed@example.com');
     });
 
-    // Should get onlogin with an assertion for the actual signed-in user
-    // (not onlogout - BrowserID corrects the RP's view of who's logged in)
-    expect((result as any).type).toBe('login');
-    expect((result as any).hasAssertion).toBe(true);
-  });
-
-  test.fixme('without prior sign-in, watch() with null loggedInUser fires onmatch (both agree no user)', async ({
-    page,
-  }) => {
-    // Go directly to test page without signing in
-    await page.goto(`${baseUrl}/dialog/test.html`);
-    await page.waitForFunction(() => typeof (navigator as any).id === 'object');
-
-    // Call watch() with null loggedInUser (RP says no user logged in)
-    const result = await page.evaluate(async () => {
-      return new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          resolve({ type: 'timeout' });
-        }, 15000);
-
-        (navigator as any).id.watch({
-          loggedInUser: null,
-          onlogin: function (assertion: string) {
-            clearTimeout(timeout);
-            resolve({ type: 'login', hasAssertion: !!assertion });
-          },
-          onlogout: function () {
-            clearTimeout(timeout);
-            resolve({ type: 'logout' });
-          },
-          onmatch: function () {
-            clearTimeout(timeout);
-            resolve({ type: 'match' });
-          },
-          onready: function () {
-            // onready fires before other callbacks
-          },
-        });
-      });
+    await page.waitForFunction(() => (window as any).__events.includes('logout'), undefined, {
+      timeout: 15000,
     });
-
-    // Should get onmatch since both agree there's no logged-in user
-    expect((result as any).type).toBe('match');
-  });
-
-  test.fixme('assertion from silent sign-in is valid JWT format', async ({
-    page,
-    dialogPage,
-    request,
-  }) => {
-    const testEmail = generateTestEmail();
-    const testPassword = generateTestPassword();
-
-    // Create user
-    await request.post(`${baseUrl}/wsapi/stage_user`, {
-      data: { email: testEmail, pass: testPassword },
-    });
-
-    const pendingResponse = await request.get(
-      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=new_account`
-    );
-    const pending = await pendingResponse.json();
-
-    await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
-      data: { email: testEmail, token: pending.code },
-    });
-
-    // Sign in via dialog for the same origin as the test page
-    await dialogPage.goto(rpOrigin);
-    await dialogPage.signInExistingUser(testEmail, testPassword);
-    await dialogPage.waitForSuccess();
-
-    // Go to test page
-    await page.goto(`${baseUrl}/dialog/test.html`);
-    await page.waitForFunction(() => typeof (navigator as any).id === 'object');
-
-    // Get assertion
-    const result = await page.evaluate(async () => {
-      return new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          resolve({ type: 'timeout' });
-        }, 15000);
-
-        (navigator as any).id.watch({
-          loggedInUser: undefined,
-          onlogin: function (assertion: string) {
-            clearTimeout(timeout);
-            resolve({ type: 'login', assertion: assertion });
-          },
-          onlogout: function () {
-            clearTimeout(timeout);
-            resolve({ type: 'logout' });
-          },
-          onready: function () {},
-        });
-      });
-    });
-
-    expect((result as any).type).toBe('login');
-
-    const assertion = (result as any).assertion;
-    expect(assertion).toBeTruthy();
-
-    // Assertion should be in format: cert~assertion (both are JWTs)
-    const parts = assertion.split('~');
-    expect(parts.length).toBe(2);
-
-    // Each part should be a JWT (3 dot-separated base64url strings)
-    parts.forEach((part: string) => {
-      const jwtParts = part.split('.');
-      expect(jwtParts.length).toBe(3);
-    });
-  });
-});
-
-test.describe('Silent Assertion Edge Cases', () => {
-  const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
-
-  test.fixme('watch() on fresh page (no localStorage) with claimed user fires onlogout', async ({
-    page,
-  }) => {
-    // Fresh page, no prior sign-in, RP claims someone is logged in
-    await page.goto(`${baseUrl}/dialog/test.html`);
-    await page.waitForFunction(() => typeof (navigator as any).id === 'object');
-
-    const result = await page.evaluate(async () => {
-      return new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          resolve({ type: 'timeout' });
-        }, 15000);
-
-        (navigator as any).id.watch({
-          loggedInUser: 'some-user@example.com',
-          onlogin: function () {
-            clearTimeout(timeout);
-            resolve({ type: 'login' });
-          },
-          onlogout: function () {
-            clearTimeout(timeout);
-            resolve({ type: 'logout' });
-          },
-          onmatch: function () {
-            clearTimeout(timeout);
-            resolve({ type: 'match' });
-          },
-          onready: function () {},
-        });
-      });
-    });
-
-    // Should fire onlogout since broker doesn't know this user
-    expect((result as any).type).toBe('logout');
-  });
-
-  test.fixme('onready fires after onlogin/onlogout/onmatch', async ({ page }) => {
-    await page.goto(`${baseUrl}/dialog/test.html`);
-    await page.waitForFunction(() => typeof (navigator as any).id === 'object');
-
-    const result = await page.evaluate(async () => {
-      const events: string[] = [];
-
-      return new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          resolve({ events, timedOut: true });
-        }, 10000);
-
-        (navigator as any).id.watch({
-          loggedInUser: null,
-          onlogin: function () {
-            events.push('login');
-          },
-          onlogout: function () {
-            events.push('logout');
-          },
-          onmatch: function () {
-            events.push('match');
-          },
-          onready: function () {
-            events.push('ready');
-            clearTimeout(timeout);
-            resolve({ events, timedOut: false });
-          },
-        });
-      });
-    });
-
-    expect((result as any).timedOut).toBe(false);
-    expect((result as any).events).toContain('ready');
-
-    // onready should be last
-    const events = (result as any).events;
-    expect(events[events.length - 1]).toBe('ready');
+    // The ref is cleared after the revocation fired, so the poll stops.
+    const ref = await page.evaluate(() => localStorage.getItem('browserid_status_ref'));
+    expect(ref).toBeNull();
   });
 });

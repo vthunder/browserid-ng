@@ -428,6 +428,24 @@ instant revocation at the mint (a revoked device cert mints no new access cert),
 ≤ cache-window for live sessions at status-checking RPs, and fail-closed
 rejection if any of the three authorities is unreachable.
 
+**Distribution to web RPs.** The broker exposes two convenience endpoints so
+RPs can consume status without implementing list verification:
+
+- `POST /status/check` (`{refs: [{uri, idx}, …]}`) — the fail-closed re-check
+  an RP backend runs on session activity, using the `status_refs` returned by
+  `/verify-access`. An `ok: false` (any ref uncheckable) MUST be treated as
+  revoked.
+- `GET /status/proxy?uri=…` — serves the **verified** list token at `uri`
+  from the broker's cache (its own list by redirect). This exists for the RP
+  *page*: a browser fetching a primary IdP's list directly would send the
+  page's `Origin` and the user's IP to that IdP, disclosing the RP↔user
+  association the protocol otherwise avoids. Routing the poll through the
+  broker adds no information anywhere: the broker already participated in the
+  login, and the primary IdP sees only the broker's aggregate cache-refresh
+  fetches. Because every proxied response must parse and verify as an
+  issuer-signed status list, the endpoint cannot be used as a general fetch
+  proxy.
+
 ## 7. Issuance & obtaining credentials
 
 This section is what an **IdP** and a **client broker** implement; a plain **RP**
@@ -487,6 +505,29 @@ For a browser RP, obtaining a presentation is an interactive exchange, kept
 `acceptedFallbacks` only routes the exchange and lets it fail fast; it grants
 nothing, because the RP's verifier independently enforces its trusted-issuer set
 (§8.1).
+
+**Session signals.** The mediator exposes an observer contract to the RP page
+(in the reference shim: `navigator.id.watch()`); every presentation, whatever
+path it arrived by, is delivered through the same login observer. Three rules
+govern it:
+
+- **No silent minting.** A presentation is only produced by an explicit
+  user-triggered exchange (steps 1–3 above), with one exception: a
+  **browser-mediated** auto-reauthentication API (FedCM), which is opt-in per
+  user, shows the browser's own UI, and is invisible to the RP — the RP
+  neither requests nor observes the mechanism. There is no hidden-iframe or
+  storage-probing reconciliation; a page load without one of these paths
+  fires only a *ready* signal ("the automatic phase has settled").
+- **Logout is symmetric with login.** The RP's logout call routes through the
+  logout observer (in every same-origin tab, via a same-origin broadcast) and
+  tells the identity layer to disable auto-reauthentication, so a logged-out
+  user is not silently signed back in.
+- **Revocation is observable (UX), enforced server-side (security).** At
+  login the mediator MAY retain the presentation's status refs (§6.3) — 
+  pointers, not credentials — and poll them through the broker's status proxy
+  (§6.3) to deliver a logout signal to open tabs when the issuing device is
+  revoked. This signal is advisory; the RP's backend re-checks the same refs
+  (fail-closed) on session activity.
 
 ### 7.4 Headless issuance: the device-grant
 

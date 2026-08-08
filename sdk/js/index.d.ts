@@ -14,12 +14,25 @@ export type VerifyResult =
       subject: "user" | "agent";
       /** Scopes the warrant grants at this audience. */
       scopes: string[];
+      /** Revocation pointers for later re-checks via checkStatus().
+       *  Retain with the session; the presentation expires in minutes. */
+      statusRefs: StatusRef[];
     }
   | {
       ok: false;
       /** Human-readable failure reason. */
       reason: string;
     };
+
+/** A revocation pointer: where a credential's status bit lives (spec §6.4). */
+export interface StatusRef {
+  uri: string;
+  idx: number;
+}
+
+export type CheckStatusResult =
+  | { ok: true; revoked: boolean }
+  | { ok: false; reason: string };
 
 export interface CreateVerifierOptions {
   /** Hosted /verify-access URL. Default: https://browserid.me/verify-access */
@@ -45,6 +58,9 @@ export interface Verifier {
     audience: string,
     opts?: VerifyCallOptions
   ): Promise<VerifyResult>;
+  /** Re-check revocation for a session's statusRefs ("logged out
+   *  everywhere"). Fail-closed: treat {ok: false} as revoked. */
+  checkStatus(refs: StatusRef[]): Promise<CheckStatusResult>;
   verifierUrl: string;
 }
 

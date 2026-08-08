@@ -7,6 +7,12 @@
  * (`access_cert~assertion~warrant~config_cert`) — verify it server-side via
  * POST /verify-access (or the @browserid-ng/verify SDK).
  *
+ * watch() v2 (bean 6u70): logins are always explicitly triggered (request()
+ * → popup/redirect), except FedCM auto-reauthn where the browser mediates.
+ * onlogout fires on logout() (all same-origin tabs) and on observed device
+ * revocation (via the broker's status proxy); onready fires once the
+ * page-load automatic phase settles. onmatch is gone.
+ *
  * Popup-hostile browsers (Arc's detached popups, blockers): when the dialog
  * popup fails, the flow falls back to a FULL-PAGE REDIRECT and the
  * presentation is delivered on the return page load through the SAME
@@ -525,10 +531,14 @@
     var w;
 
     // table of registered observers
+    // watch() v2 contract (bean 6u70): onlogin delivers presentations from
+    // every arrival path (dialog, redirect return, FedCM); onlogout fires on
+    // explicit logout() (all same-origin tabs) and on observed revocation;
+    // onready fires once the page-load automatic phase (FedCM auto-reauthn)
+    // has settled. There is no silent reconciliation and no onmatch.
     var observers = {
       login: null,
       logout: null,
-      match: null,
       ready: null
     };
 
@@ -609,19 +619,20 @@
 
       if (options.onlogin && typeof options.onlogin !== 'function' ||
           options.onlogout && typeof options.onlogout !== 'function' ||
-          options.onmatch && typeof options.onmatch !== 'function' ||
           options.onready && typeof options.onready !== 'function')
       {
         throw new Error("non-function where function expected in parameters to navigator.id.watch()");
       }
 
       if (!options.onlogin) throw new Error("'onlogin' is a required argument to navigator.id.watch()");
-      if (!options.onlogout && (options.onmatch || ('loggedInUser' in options)))
+      if (options.onmatch)
+        warn("navigator.id.watch(): onmatch is no longer supported and will never fire " +
+             "(silent reconciliation was removed); use onlogin/onlogout");
+      if (!options.onlogout && ('loggedInUser' in options))
         throw new Error('stateless api only allows onlogin and onready options');
 
       observers.login = options.onlogin || null;
       observers.logout = options.onlogout || null;
-      observers.match = options.onmatch || null;
       // NOTE: Do not modify without reading GH-2017
       observers.ready = options.onready || null;
 
@@ -646,24 +657,46 @@
       // A routing hint for the dialog; the RP's verifier enforces (§6.1).
       if (options.acceptedFallbacks) displayOpts.acceptedFallbacks = options.acceptedFallbacks;
 
-      // Opted-in silent FedCM: attempt a zero-UI auto-login for returning users.
-      // No chooser, no popup.
-      if (fedcmAvailable()) trySilentFedCM();
+      // The page-load AUTOMATIC PHASE. Exactly one of these can deliver an
+      // onlogin without a user gesture; onready fires once the phase settles,
+      // meaning: any callback after onready is the result of explicit user
+      // action (a request() click, a logout() call, or observed revocation).
+      var readySignaled = false;
+      function signalReady() {
+        if (readySignaled) return;
+        readySignaled = true;
+        if (observers.ready) {
+          setTimeout(function () {
+            if (observers.ready) {
+              try { observers.ready(); } catch (clientError) { console.log(clientError); }
+            }
+          }, 0);
+        }
+      }
 
-      // Deliver a redirect-mode return now that the observer exists.
       if (pendingRedirectReturn) {
+        // Deliver a redirect-mode return now that the observer exists.
         var pr = pendingRedirectReturn;
         pendingRedirectReturn = null;
         setTimeout(function () {
-          if (observers.login) {
-            // Second arg: the dialog's full response (email, sbo_sign_granted,
-            // …) so RPs never have to guess a grant decision. Existing
-            // single-arg observers just ignore it.
-            try { observers.login(pr.presentation, pr); } catch (clientError) { console.log(clientError); }
-          }
+          try { deliverLogin(pr.presentation, pr); } catch (clientError) { console.log(clientError); }
           if (pr.fedcm_optin && fedcmAvailable()) establishFedCMGrant();
+          signalReady();
         }, 0);
+      } else if (fedcmAvailable() && !isString(loggedInUser)) {
+        // Opted-in FedCM auto-reauthn for returning users — no chooser, no
+        // popup (the browser shows its own brief UI). Suppressed when the RP
+        // says a session already exists (loggedInUser is a string): auto-
+        // reauthn's job is signing in a signed-out user.
+        trySilentFedCM(signalReady);
+      } else {
+        signalReady();
       }
+
+      // Revocation poll (UX only; the RP backend enforces via /status/check):
+      // if a status ref was stashed at login, watch it so an open tab can
+      // flip to logged-out when the issuing device is revoked.
+      scheduleStatusPoll(STATUS_POLL_INITIAL_MS + Math.random() * STATUS_POLL_JITTER_MS);
     }
 
     function isNull(arg) {
@@ -725,7 +758,8 @@
       options.backgroundColor = displayOpts.backgroundColor || options.backgroundColor;
       options.acceptedFallbacks = displayOpts.acceptedFallbacks || options.acceptedFallbacks;
       // Tell the dialog whether to offer the "auto sign-in next time" (FedCM)
-      // checkbox — only when this browser supports FedCM and the RP opted in.
+      // checkbox. Set by include.js itself from browser capability — RPs
+      // neither set nor see anything FedCM-related.
       options.fedcm = fedcmAvailable();
 
       options.rp_api = getRPAPI();
@@ -816,7 +850,7 @@
         w = undefined;
         if (!err && r && r.presentation) {
           try {
-            if (observers.login) observers.login(r.presentation, r);
+            deliverLogin(r.presentation, r);
           } catch(clientError) {
             // client's observer threw an exception
             // help developers debug by logging the error
@@ -946,8 +980,9 @@
       try { on ? localStorage.setItem(FEDCM_AUTOLOGIN_KEY, '1') : localStorage.removeItem(FEDCM_AUTOLOGIN_KEY); } catch (e) {}
     }
 
-    function trySilentFedCM() {
-      if (!fedcmAutologinEnabled()) return; // user hasn't opted in this session
+    function trySilentFedCM(onSettled) {
+      onSettled = onSettled || function () {};
+      if (!fedcmAutologinEnabled()) return onSettled(); // user hasn't opted in
       try {
         navigator.credentials.get({
           mediation: 'silent',
@@ -962,11 +997,12 @@
           }
         }).then(function(cred) {
           var token = cred && cred.token;
-          if (token && observers.login) {
-            try { observers.login(token); } catch (clientError) { console.log(clientError); }
+          if (token) {
+            try { deliverLogin(token); } catch (clientError) { console.log(clientError); }
           }
-        }).catch(function() { /* no silent session; normal flow continues */ });
-      } catch (e) { /* FedCM unavailable */ }
+          onSettled();
+        }).catch(function() { /* no silent session; normal flow continues */ onSettled(); });
+      } catch (e) { /* FedCM unavailable */ onSettled(); }
     }
 
     // Show the FedCM chooser ONCE (mediation:'required') to bank the grant that
@@ -993,6 +1029,180 @@
           try { console.log('browserid: FedCM grant not established:', e && e.message); } catch (x) {}
         });
       } catch (e) { /* FedCM unavailable */ }
+    }
+    // ----------------------------------------------------------------------
+
+    // --- login delivery, cross-tab logout, revocation polling (6u70) ------
+
+    // Single delivery point for every presentation, whatever path it arrived
+    // by (dialog popup, redirect return, FedCM): stash the status ref for the
+    // revocation poll, then hand the RP the presentation. Internal fields
+    // (fedcm_optin) are stripped from the second argument — RPs never observe
+    // which mechanism was involved. Observer exceptions propagate to the
+    // caller, which owns the per-path error semantics.
+    function deliverLogin(presentation, response) {
+      rememberStatusRef(presentation);
+      // Arm the revocation poll for this fresh session (an interval out — the
+      // presentation was just verified as unrevoked).
+      scheduleStatusPoll(STATUS_POLL_INTERVAL_MS + Math.random() * STATUS_POLL_JITTER_MS);
+      var pub;
+      if (response) {
+        pub = {};
+        for (var k in response) {
+          if (Object.prototype.hasOwnProperty.call(response, k) && k !== 'fedcm_optin') {
+            pub[k] = response[k];
+          }
+        }
+      }
+      if (observers.login) observers.login(presentation, pub);
+    }
+
+    // Deliver onlogout to this tab's observer, async like every other
+    // callback. logout() routes here too — same inversion of control as
+    // login (button → API call → observer), so RPs write teardown once.
+    function fireLogout() {
+      if (!observers.logout) return;
+      setTimeout(function () {
+        if (observers.logout) {
+          try { observers.logout(); } catch (clientError) { console.log(clientError); }
+        }
+      }, 0);
+    }
+
+    // Cross-tab logout propagation (same-origin only): BroadcastChannel where
+    // available, with a localStorage ping fallback. Siblings run the same
+    // browser, so when we have BroadcastChannel the storage ping is ignored
+    // to avoid double delivery.
+    var LOGOUT_PING_KEY = 'browserid_logout_ping';
+    var logoutChannel = null;
+    try {
+      if (typeof BroadcastChannel === 'function') {
+        logoutChannel = new BroadcastChannel('browserid');
+        logoutChannel.onmessage = function (e) {
+          if (e && e.data === 'logout') { clearStatusRef(); fireLogout(); }
+        };
+      }
+    } catch (e) { /* no cross-tab channel */ }
+    try {
+      window.addEventListener('storage', function (e) {
+        if (logoutChannel) return;
+        if (e.key === LOGOUT_PING_KEY && e.newValue) { clearStatusRef(); fireLogout(); }
+      });
+    } catch (e) { /* ignore */ }
+    function broadcastLogout() {
+      try { if (logoutChannel) logoutChannel.postMessage('logout'); } catch (e) { }
+      try {
+        localStorage.setItem(LOGOUT_PING_KEY, String(new Date().getTime()));
+        localStorage.removeItem(LOGOUT_PING_KEY);
+      } catch (e) { }
+    }
+
+    // Revocation poll. At login we stash the access cert's status ref — a
+    // {uri, idx} POINTER into the issuer's public revocation bitmap, not a
+    // credential — and poll it through the broker's caching proxy so a
+    // revoked device flips open tabs to logged-out without a reload.
+    // Always via the broker, never the issuer directly: a direct cross-origin
+    // fetch would show a primary IdP which RP this user is on. This is UX
+    // only and fails open; the RP backend's /status/check is the enforcement.
+    var STATUS_REF_KEY = 'browserid_status_ref';
+    var STATUS_POLL_INITIAL_MS = 5 * 1000;
+    var STATUS_POLL_INTERVAL_MS = 5 * 60 * 1000; // matches the list's 5-min TTL
+    var STATUS_POLL_JITTER_MS = 60 * 1000;
+    var statusPollTimer = null;
+
+    function rememberStatusRef(presentation) {
+      try {
+        if (!isString(presentation)) return;
+        // presentation = access_cert~assertion~warrant~config_cert; the access
+        // cert's status ref is rooted at the issuing DEVICE's status index —
+        // the bit that flips on "log out everywhere".
+        var claims = b64urlParse(presentation.split('~')[0].split('.')[1]);
+        if (claims && claims.status && claims.status.uri) {
+          localStorage.setItem(STATUS_REF_KEY, JSON.stringify({
+            uri: claims.status.uri,
+            idx: claims.status.idx || 0,
+            exp: claims.exp || 0
+          }));
+        }
+      } catch (e) { /* no ref, no poll */ }
+    }
+    function readStatusRef() {
+      try { return JSON.parse(localStorage.getItem(STATUS_REF_KEY) || 'null'); }
+      catch (e) { return null; }
+    }
+    function clearStatusRef() {
+      try { localStorage.removeItem(STATUS_REF_KEY); } catch (e) { }
+      if (statusPollTimer) { clearTimeout(statusPollTimer); statusPollTimer = null; }
+    }
+
+    function scheduleStatusPoll(delayMs) {
+      if (statusPollTimer) return; // one pending poll at a time
+      if (!readStatusRef()) return;
+      if (typeof DecompressionStream !== 'function') return; // can't inflate the bitmap
+      // Test hook: a numeric window.BROWSERID_STATUS_POLL_MS forces the poll
+      // cadence (initial and interval, no jitter) so e2e tests are prompt and
+      // deterministic. Unset in production.
+      if (typeof window.BROWSERID_STATUS_POLL_MS === 'number' && window.BROWSERID_STATUS_POLL_MS > 0) {
+        delayMs = window.BROWSERID_STATUS_POLL_MS;
+      }
+      statusPollTimer = setTimeout(function () {
+        statusPollTimer = null;
+        pollStatusRef();
+      }, delayMs);
+    }
+
+    function pollStatusRef() {
+      var ref = readStatusRef();
+      if (!ref || !observers.logout) return;
+      if (ref.exp && ref.exp * 1000 < new Date().getTime()) {
+        // The credential horizon has passed; the poll is moot. Not a logout:
+        // the RP's session lifetime is the RP's own business.
+        clearStatusRef();
+        return;
+      }
+      if (document.hidden) {
+        // Don't poll from background tabs; resume when visible.
+        var onVisible = function () {
+          document.removeEventListener('visibilitychange', onVisible);
+          scheduleStatusPoll(Math.random() * STATUS_POLL_JITTER_MS);
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        return;
+      }
+      fetch(ipServer + '/status/proxy?uri=' + encodeURIComponent(ref.uri))
+        .then(function (r) { return r.ok ? r.text() : Promise.reject(new Error('http ' + r.status)); })
+        .then(function (token) { return inflateStatusList(token); })
+        .then(function (bytes) {
+          // 1 bit per index, LSB-first within each byte (core §6.4).
+          var revoked = ((bytes[ref.idx >> 3] || 0) >> (ref.idx & 7)) & 1;
+          if (revoked) {
+            clearStatusRef();
+            // A revoked session must not silently resurrect via FedCM.
+            setFedcmAutologin(false);
+            fireLogout();
+            broadcastLogout();
+          } else {
+            scheduleStatusPoll(STATUS_POLL_INTERVAL_MS + Math.random() * STATUS_POLL_JITTER_MS);
+          }
+        })
+        .catch(function () {
+          // Fail open: this signal is UX, the backend check is enforcement.
+          scheduleStatusPoll(STATUS_POLL_INTERVAL_MS + Math.random() * STATUS_POLL_JITTER_MS);
+        });
+    }
+
+    // A status list token is a JWS whose payload carries a zlib-compressed
+    // bitmap (status_list.lst). No signature check here — the broker proxy
+    // already verified it, and a forged "revoked" could only log the UI out.
+    function inflateStatusList(token) {
+      var claims = b64urlParse(token.split('.')[1]);
+      var lst = claims && claims.status_list && claims.status_list.lst;
+      if (!lst) return Promise.reject(new Error('no status list payload'));
+      var bin = atob(lst.replace(/-/g, '+').replace(/_/g, '/'));
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
+      return new Response(stream).arrayBuffer().then(function (ab) { return new Uint8Array(ab); });
     }
     // ----------------------------------------------------------------------
 
@@ -1039,6 +1249,13 @@
           fetch(ipServer + '/fedcm/reset', { method: 'POST', credentials: 'include', keepalive: true })
             .catch(function () {});
         } catch (e) {}
+        // Deliver onlogout: to this tab's observer (teardown runs in the
+        // observer, same inversion of control as login) and to every other
+        // same-origin tab. Also stop watching revocation for the session
+        // that just ended.
+        clearStatusRef();
+        fireLogout();
+        broadcastLogout();
         if (typeof callback === 'function') {
           warn('navigator.id.logout callback argument has been deprecated.');
           setTimeout(callback, 0);
@@ -1082,7 +1299,7 @@
             callback(null);
             callback = null;
           }
-          observers.login = observers.logout = observers.match = observers.ready = null;
+          observers.login = observers.logout = observers.ready = null;
         };
         internalRequest(opts);
       },

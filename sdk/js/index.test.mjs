@@ -104,3 +104,63 @@ test("verifyPresentation one-shot wrapper works", async () => {
   });
   assert.equal(r.ok, true);
 });
+
+// --- checkStatus (revocation re-checks, bean 6u70) -------------------------
+
+const REFS = [{ uri: "https://idp.example/.well-known/browserid-status", idx: 7 }];
+
+test("verify surfaces status_refs as statusRefs", async () => {
+  const v = createVerifier({
+    fetch: stubFetch({
+      status: "okay", email: "a@b.com", issuer: "b.com", subject: "user",
+      scopes: ["login"], status_refs: REFS,
+    }),
+  });
+  const r = await v.verify(P, "https://app.example");
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.statusRefs, REFS);
+});
+
+test("checkStatus: valid refs → ok:true revoked:false", async () => {
+  const v = createVerifier({ fetch: stubFetch({ ok: true, revoked: false, results: [] }) });
+  const r = await v.checkStatus(REFS);
+  assert.deepEqual(r, { ok: true, revoked: false });
+});
+
+test("checkStatus: revoked ref surfaces revoked:true", async () => {
+  const v = createVerifier({ fetch: stubFetch({ ok: true, revoked: true, results: [] }) });
+  const r = await v.checkStatus(REFS);
+  assert.deepEqual(r, { ok: true, revoked: true });
+});
+
+test("checkStatus: unavailable refs → fail closed (ok:false)", async () => {
+  const v = createVerifier({ fetch: stubFetch({ ok: false, revoked: false, results: [] }) });
+  const r = await v.checkStatus(REFS);
+  assert.equal(r.ok, false);
+});
+
+test("checkStatus: HTTP error → fail closed", async () => {
+  const v = createVerifier({ fetch: stubFetch({}, { httpStatus: 502 }) });
+  const r = await v.checkStatus(REFS);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /HTTP 502/);
+});
+
+test("checkStatus: no refs → nothing to check, not revoked", async () => {
+  const v = createVerifier({ fetch: stubFetch(null, { throwErr: new Error("must not fetch") }) });
+  const r = await v.checkStatus([]);
+  assert.deepEqual(r, { ok: true, revoked: false });
+});
+
+test("checkStatus posts to /status/check on the verifier origin", async () => {
+  let calledUrl = null;
+  const v = createVerifier({
+    verifierUrl: "https://broker.example/verify-access",
+    fetch: async (url) => {
+      calledUrl = url;
+      return { ok: true, status: 200, json: async () => ({ ok: true, revoked: false, results: [] }) };
+    },
+  });
+  await v.checkStatus(REFS);
+  assert.equal(calledUrl, "https://broker.example/status/check");
+});

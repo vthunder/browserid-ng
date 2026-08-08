@@ -46,10 +46,31 @@ if (result.ok) {
 }
 ```
 
-`result` is either `{ ok: true, email, issuer, subject, scopes }` or
-`{ ok: false, reason }`. There is no status string to remember to check — a
+`result` is either `{ ok: true, email, issuer, subject, scopes, statusRefs }`
+or `{ ok: false, reason }`. There is no status string to remember to check — a
 truthy `.ok` is the only success signal, and every error path (including network
 failures and malformed responses) resolves to `ok: false`.
+
+### Revocation re-checks ("logged out everywhere")
+
+Verification already rejects revoked credentials at login. But your session
+outlives the presentation, so a device revoked *after* login would otherwise
+stay signed in until your session expires. Store `result.statusRefs` (plain
+`{uri, idx}` pointers — no key material) with the session and re-check on
+session activity:
+
+```js
+// e.g. in session middleware, throttled to once per few minutes
+const status = await verifier.checkStatus(session.statusRefs);
+if (!status.ok || status.revoked) {
+  // Fail-closed (spec §6.4): "cannot prove unrevoked" is a rejection.
+  session.destroy();
+}
+```
+
+The browser shim additionally polls revocation client-side to flip open tabs
+to `onlogout` without a reload — that signal is UX; this check is the
+enforcement.
 
 ### Agents
 

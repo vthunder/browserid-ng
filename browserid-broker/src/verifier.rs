@@ -121,13 +121,19 @@ pub struct AccessVerificationResult {
     pub scopes: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issuer: Option<String>,
+    /// The presentation's status refs (access cert / config cert / warrant,
+    /// whichever are present), so the RP can re-check revocation later —
+    /// on session activity via `POST /status/check` — without retaining the
+    /// (short-lived) presentation itself. Bean 6u70.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_refs: Option<Vec<StatusRef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
 impl AccessVerificationResult {
-    fn fail(reason: impl Into<String>) -> Self {
-        Self { status: "failure".into(), email: None, grantee: None, holder: None, scopes: None, issuer: None, reason: Some(reason.into()) }
+    pub(crate) fn fail(reason: impl Into<String>) -> Self {
+        Self { status: "failure".into(), email: None, grantee: None, holder: None, scopes: None, issuer: None, status_refs: None, reason: Some(reason.into()) }
     }
 }
 
@@ -309,37 +315,54 @@ async fn check_foreign_status(
     cache: &RwLock<HashMap<String, StatusListToken>>,
     allow_private: bool,
 ) -> Result<bool, String> {
+    let token = fetch_foreign_status_list(&r.uri, discoverer, cache, allow_private).await?;
+    Ok(token.is_revoked(r.idx))
+}
+
+/// Fetch the VERIFIED status list published at `uri`, serving from the cache
+/// while fresh. Every returned token has passed the full authority chain:
+/// SSRF-guarded fetch, issuer == URI host, signature under the issuer's
+/// discovered key, freshness cap. Shared by the in-process revocation checks
+/// above and by `GET /status/proxy` (bean 6u70), which re-serves the token to
+/// RP pages — the verification is what keeps that endpoint from being an open
+/// proxy: it can only ever emit a valid, issuer-signed status list.
+pub(crate) async fn fetch_foreign_status_list(
+    uri: &str,
+    discoverer: &impl crate::fallback_fetcher::Discoverer,
+    cache: &RwLock<HashMap<String, StatusListToken>>,
+    allow_private: bool,
+) -> Result<StatusListToken, String> {
     // Fresh cached list → answer without network. (Scoped: the guard must not
     // live across an await.)
     {
         let lists = cache.read().unwrap();
-        if let Some(tok) = lists.get(&r.uri) {
+        if let Some(tok) = lists.get(uri) {
             if tok.is_fresh_capped(0, MAX_FOREIGN_STATUS_TTL) {
-                return Ok(tok.is_revoked(r.idx));
+                return Ok(tok.clone());
             }
         }
     }
 
     // SSRF guard: validate the attacker-authored URI before touching the network.
-    validate_status_url(&r.uri, allow_private).await?;
+    validate_status_url(uri, allow_private).await?;
 
     let resp = status_http()
-        .get(&r.uri)
+        .get(uri)
         .send()
         .await
         .and_then(|resp| resp.error_for_status())
-        .map_err(|e| format!("fetch {}: {e}", r.uri))?;
+        .map_err(|e| format!("fetch {uri}: {e}"))?;
 
     // Read the body with a hard cap so a malicious server can't stream unbounded
     // data into the verifier (audit H1/M4).
     let body = read_capped(resp, MAX_STATUS_BODY)
         .await
-        .map_err(|e| format!("read {}: {e}", r.uri))?;
+        .map_err(|e| format!("read {uri}: {e}"))?;
     let token = StatusListToken::parse(body.trim()).map_err(|e| e.to_string())?;
 
     let iss = token.claims().iss.clone();
-    if !uri_matches_issuer(&r.uri, &iss) {
-        return Err(format!("list at {} signed by non-authoritative issuer '{iss}'", r.uri));
+    if !uri_matches_issuer(uri, &iss) {
+        return Err(format!("list at {uri} signed by non-authoritative issuer '{iss}'"));
     }
     let disc = discoverer
         .discover(&iss)
@@ -349,26 +372,25 @@ async fn check_foreign_status(
         .document
         .public_key
         .ok_or_else(|| format!("status issuer '{iss}' has no key"))?;
-    token.verify(&key, &r.uri).map_err(|e| e.to_string())?;
+    token.verify(&key, uri).map_err(|e| e.to_string())?;
     if !token.is_fresh_capped(0, MAX_FOREIGN_STATUS_TTL) {
-        return Err(format!("status list {} is stale", r.uri));
+        return Err(format!("status list {uri} is stale"));
     }
 
-    let revoked = token.is_revoked(r.idx);
     {
         // Bounded insert (audit M4): keep the cache from growing without limit
         // under attacker-supplied URIs. Evict stale entries first; if still at
         // the cap, skip caching this one (correctness is unaffected — the next
         // request just re-fetches).
         let mut lists = cache.write().unwrap();
-        if lists.len() >= MAX_STATUS_CACHE_ENTRIES && !lists.contains_key(&r.uri) {
+        if lists.len() >= MAX_STATUS_CACHE_ENTRIES && !lists.contains_key(uri) {
             lists.retain(|_, t| t.is_fresh_capped(0, MAX_FOREIGN_STATUS_TTL));
         }
-        if lists.len() < MAX_STATUS_CACHE_ENTRIES || lists.contains_key(&r.uri) {
-            lists.insert(r.uri.clone(), token);
+        if lists.len() < MAX_STATUS_CACHE_ENTRIES || lists.contains_key(uri) {
+            lists.insert(uri.to_string(), token.clone());
         }
     }
-    Ok(revoked)
+    Ok(token)
 }
 
 /// Resolve the published IdP key for `iss`, enforcing that `iss` is
@@ -511,6 +533,14 @@ pub async fn verify_access_with_dns(
         }
     }
 
+    // Hand the RP the refs it needs for later re-checks (POST /status/check on
+    // session activity — bean 6u70); the presentation itself is too short-lived
+    // to retain for that.
+    let status_refs: Vec<StatusRef> = [&v.access_status, &v.config_status, &v.warrant_status]
+        .into_iter()
+        .filter_map(|r| r.clone())
+        .collect();
+
     AccessVerificationResult {
         status: "okay".into(),
         email: Some(v.email),
@@ -518,6 +548,7 @@ pub async fn verify_access_with_dns(
         holder: Some(v.holder.as_str().to_string()),
         scopes: Some(v.scopes),
         issuer: Some(v.issuer),
+        status_refs: if status_refs.is_empty() { None } else { Some(status_refs) },
         reason: None,
     }
 }

@@ -11,11 +11,10 @@
  *
  * 1. Dialog popup flow (WinChan): must work cross-origin — this is the
  *    design-intent path. A failure here blocks the origin split.
- * 2. Silent assertion via the hidden communication_iframe: the iframe becomes
- *    THIRD-PARTY on a cross-origin RP page, so it is subject to third-party
- *    storage partitioning (partitioned localStorage/IndexedDB) and
- *    SameSite=Lax cookie exclusion (see the comment in session.rs). This test
- *    documents the actual behavior rather than asserting a hoped-for one.
+ * 2. watch() v2 page-load behavior (bean 6u70): the communication_iframe and
+ *    its silent reconciliation are GONE. A return visit from a cross-origin
+ *    RP fires onready only — no spontaneous onlogin/onlogout — regardless of
+ *    what loggedInUser claims.
  */
 
 import { test, expect } from '../fixtures/test-helpers';
@@ -72,7 +71,6 @@ class RpServer {
           window.__assertion = assertion;
         },
         onlogout: function () { window.__events.push('logout'); },
-        onmatch: function () { window.__events.push('match'); },
         onready: function () { window.__events.push('ready'); },
       });
     };
@@ -85,18 +83,14 @@ class RpServer {
   }
 }
 
-/** Wait until any of login/logout/match has fired, or time out. */
-async function waitForOutcome(page: any, timeoutMs: number): Promise<string[]> {
+/** Wait for onready, leave a beat for spurious callbacks, report all events. */
+async function settleAndCollect(page: any, timeoutMs: number): Promise<string[]> {
   await page
-    .waitForFunction(
-      () =>
-        (window as any).__events.includes('login') ||
-        (window as any).__events.includes('logout') ||
-        (window as any).__events.includes('match'),
-      undefined,
-      { timeout: timeoutMs }
-    )
+    .waitForFunction(() => (window as any).__events.includes('ready'), undefined, {
+      timeout: timeoutMs,
+    })
     .catch(() => {});
+  await page.waitForTimeout(1000);
   return page.evaluate(() => (window as any).__events);
 }
 
@@ -159,18 +153,15 @@ test.describe('Cross-origin RP (origin-split spike)', () => {
     expect(JSON.stringify(verdict)).toContain(email);
   });
 
-  test.fixme('silent assertion via communication_iframe from a cross-origin RP — document actual behavior', async ({
+  test('return visit from a cross-origin RP fires onready only (watch() v2 — no silent login)', async ({
     page,
-    request,
     brokerApi,
   }) => {
     const email = generateTestEmail();
     const password = generateTestPassword();
     expect(await brokerApi.createVerifiedUser(email, password)).toBe(true);
 
-    // Establish state exactly like a real first visit: full popup sign-in
-    // from the cross-origin RP (dialog runs top-level on the broker origin,
-    // so its localStorage/keystore writes are UNpartitioned).
+    // First visit: full popup sign-in from the cross-origin RP.
     await page.goto(rp.origin());
     await page.waitForFunction(() => typeof (navigator as any).id === 'object');
     await page.evaluate(() => (window as any).__setup(null));
@@ -183,57 +174,26 @@ test.describe('Cross-origin RP (origin-split spike)', () => {
       timeout: 20000,
     });
 
-    // Return visit: fresh load of the RP page, silent watch().
+    // Return visit: fresh load. v2 contract — no spontaneous callbacks, no
+    // hidden iframes; the sign-in button is the way back in.
     await page.goto(rp.origin());
     await page.waitForFunction(() => typeof (navigator as any).id === 'object');
     await page.evaluate(() => (window as any).__setup(undefined));
-    const events = await waitForOutcome(page, 20000);
-    const outcome = events.includes('login')
-      ? 'login'
-      : events.includes('logout')
-        ? 'logout'
-        : events.includes('match')
-          ? 'match'
-          : 'timeout';
-
-    // Diagnostics: what does the third-party comm iframe actually see?
-    const iframeDiag = await page.evaluate(async (broker) => {
-      const frames = Array.from(document.querySelectorAll('iframe'));
-      return {
-        iframeCount: frames.length,
-        iframeSrcs: frames.map((f) => (f as HTMLIFrameElement).src),
-        brokerReachable: await fetch(broker + '/wsapi/session_context', {
-          credentials: 'include',
-        })
-          .then((r) => r.status)
-          .catch((e) => String(e)),
-      };
-    }, brokerUrl);
-
-    console.log(
-      `[spike] silent-assertion outcome from cross-origin RP: ${outcome}; events=${JSON.stringify(events)}; diag=${JSON.stringify(iframeDiag)}`
-    );
-
-    test.info().annotations.push({
-      type: 'spike-finding',
-      description: `silent assertion cross-origin: ${outcome} (events: ${events.join(',')})`,
-    });
-
-    // Spike: document, don't wish. We assert only that the flow terminates
-    // deterministically (no hang) — the outcome itself is the finding.
-    expect(['login', 'logout', 'match']).toContain(outcome);
+    const events = await settleAndCollect(page, 10000);
+    expect(events).toEqual(['ready']);
+    const iframeCount = await page.evaluate(() => document.querySelectorAll('iframe').length);
+    expect(iframeCount).toBe(0);
   });
 
-  test.fixme('silent assertion from a SAME-SITE cross-origin RP (simulates browserid.me ↔ id.browserid.me split)', async ({
+  test('return visit from a SAME-SITE cross-origin RP also fires onready only (watch() v2)', async ({
     page,
     brokerApi,
   }) => {
     // rp.localhost:<port> and localhost:3000 are different ORIGINS but the
-    // same SITE (registrable domain "localhost") — exactly the relationship
-    // between browserid.me (marketing/guestbook) and id.browserid.me (auth
-    // cluster) after the proposed split. Chromium resolves *.localhost to
-    // loopback, and same-site embedding gets neither third-party storage
-    // partitioning nor SameSite=Lax cookie exclusion.
+    // same SITE — the browserid.me ↔ id.browserid.me relationship after the
+    // proposed origin split. Under the old contract same-site was the one
+    // configuration where silent login still worked; v2 removes the mechanism
+    // entirely, so the contract must be identical to the cross-site case.
     const sameSiteRpUrl = rp.origin().replace('127.0.0.1', 'rp.localhost');
     const email = generateTestEmail();
     const password = generateTestPassword();
@@ -252,79 +212,23 @@ test.describe('Cross-origin RP (origin-split spike)', () => {
       timeout: 20000,
     });
 
-    // Return visit: silent watch() — the comm iframe is cross-origin but
-    // same-site, so it should see the broker's real storage + session cookie.
+    // Return visit: onready only, same as cross-site.
     await page.goto(sameSiteRpUrl);
     await page.waitForFunction(() => typeof (navigator as any).id === 'object');
     await page.evaluate(() => (window as any).__setup(undefined));
-    const events = await waitForOutcome(page, 20000);
-    const outcome = events.includes('login')
-      ? 'login'
-      : events.includes('logout')
-        ? 'logout'
-        : events.includes('match')
-          ? 'match'
-          : 'timeout';
-
-    // Probe the mechanism from inside the comm-iframe's origin: does the
-    // third-party (same-site) iframe see the session cookie, the localStorage
-    // siteInfo the dialog wrote, and the keystore? This distinguishes a
-    // cookie-SameSite problem (cheap fix) from storage partitioning (hard).
-    const diag = await page.evaluate(async (broker) => {
-      const out: any = {};
-      // Cross-site fetch from the RP page itself (not the iframe) — will be
-      // blocked by CORS-with-credentials semantics, expected to fail.
-      try {
-        const r = await fetch(broker + '/wsapi/session_context', {
-          credentials: 'include',
-        });
-        out.sessionFromRpPage = { status: r.status, body: await r.json() };
-      } catch (e) {
-        out.sessionFromRpPage = String(e);
-      }
-      return out;
-    }, brokerUrl);
-
-    // Ask the broker origin directly (new top-level tab) what it sees, to
-    // confirm the session + storage still exist unpartitioned there.
-    const brokerTab = await page.context().newPage();
-    await brokerTab.goto(brokerUrl + '/dialog/test.html');
-    const brokerSide = await brokerTab.evaluate(async () => {
-      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) =>
-        r.json()
-      );
-      let siteKeys: string[] = [];
-      try {
-        siteKeys = Object.keys(JSON.parse(localStorage.getItem('siteInfo') || '{}'));
-      } catch {}
-      return { authenticated: sc.authenticated, siteInfoKeys: siteKeys };
-    });
-    await brokerTab.close();
-
-    console.log(
-      `[spike] SAME-SITE cross-origin silent assertion: outcome=${outcome}; events=${JSON.stringify(events)}`
-    );
-    console.log(`[spike]   diag from RP page: ${JSON.stringify(diag)}`);
-    console.log(`[spike]   broker-origin top-level sees: ${JSON.stringify(brokerSide)}`);
-    test.info().annotations.push({
-      type: 'spike-finding',
-      description: `silent assertion same-site cross-origin: ${outcome}; broker-side session=${brokerSide.authenticated}, siteInfo keys=${brokerSide.siteInfoKeys.join('|')}`,
-    });
-
-    // SPIKE: document actual behavior. Whether this is 'login' or 'logout'
-    // is THE finding for guestbook-split viability. We only require the flow
-    // to terminate; the outcome + diagnostics above tell the story.
-    expect(['login', 'logout', 'match']).toContain(outcome);
+    const events = await settleAndCollect(page, 10000);
+    expect(events).toEqual(['ready']);
   });
 
-  test.fixme('logout from a cross-origin RP terminates deterministically', async ({ page }) => {
+  test('claimed loggedInUser from a cross-origin RP: onready only, no spontaneous onlogout (watch() v2)', async ({
+    page,
+  }) => {
     await page.goto(rp.origin());
     await page.waitForFunction(() => typeof (navigator as any).id === 'object');
-    // No prior sign-in; RP claims a user is logged in → comm iframe should
-    // answer logout (requires the iframe channel to work cross-origin at all).
+    // No prior sign-in; the RP claims a user. Old contract: silent onlogout.
+    // v2: no reconciliation — the claim changes nothing at page load.
     await page.evaluate(() => (window as any).__setup('nobody@example.com'));
-    const events = await waitForOutcome(page, 20000);
-    console.log(`[spike] claimed-user-no-session outcome: ${JSON.stringify(events)}`);
-    expect(events.length).toBeGreaterThan(0);
+    const events = await settleAndCollect(page, 10000);
+    expect(events).toEqual(['ready']);
   });
 });
