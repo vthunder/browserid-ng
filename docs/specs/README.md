@@ -24,8 +24,8 @@ on top. A plain relying party only needs the core.
 
 | Document | What it covers |
 |---|---|
-| **[Protocol Specification (core)](./browserid-ng-protocol.md)** | **Start here.** Discovery & the DNSSEC trust root, keys, **device / access / config certificates**, assertions & the four-object bundle, verification (issuer binding + three fail-closed status checks), the primary-IdP model with **mandatory device-cert issuance + the access-cert mint API**, and the fallback broker. |
-| **[Agent Provisioning, Warrants & Grant Exchange](./agent-provisioning-and-grant-api.md)** | *Module.* How an agent obtains its own **`agent`-subject device cert** (IdP-issued after user authorization) and **mints access certs headlessly**, and how **config-cert-signed warrants** confine it to the audiences and scopes its principal authorized. |
+| **[Protocol Specification (core)](./browserid-ng-protocol.md)** | **Start here.** Discovery & the DNSSEC trust root, keys, **device / access / config certificates**, holders, assertions & the four-object bundle, verification (per-identity issuer authority + three fail-closed status checks), the IdP operations (**mandatory device-cert issuance + the access-cert mint**), and the fallback broker. |
+| **[Agent Provisioning, Warrants & Grant Exchange](./agent-provisioning-and-grant-api.md)** | *Module.* How a headless **agent** obtains its own device cert (IdP-issued after user authorization) and **mints access certs headlessly**, and how **config-cert-signed warrants** (grantor → grantee) confine it to the audiences and scopes the user authorized. |
 | **[SBO Attribution Specification](https://github.com/vthunder/sbo/blob/main/specs/SBO%20Attribution%20Specification.md)** *(sbo repo)* | *Module.* How a ledger attributes an email identity to an on-chain `ed25519:` key, built on the core's offline-verification primitive (§6.3). Lives in the sbo repo because it is ledger-specific and sbo depends on browserid-ng, not the reverse. |
 | **[Divergence Analysis](./browserid-ng-divergence-analysis.md)** | *Background.* A point-by-point comparison with Mozilla BrowserID and the rationale for each deliberate departure. |
 
@@ -44,12 +44,9 @@ on top. A plain relying party only needs the core.
 
 ## Status
 
-The spec describes the **device-cert model** (design:
-`../design/browserid-end-to-end-flow.md`; built types
-`browserid-core/src/device.rs`; wire vectors
-`test-vectors/device-cert-v1.json`). Core device/access/config cert types and
-the broker's issuance + mint + conformance verifier are implemented (DC Phases
-1–6). Planned extension: the optional **host-certificate** intermediate (core
-§4.4, bean `browserid-ng-dff5`). Migration/divergence detail:
-`docs/plans/2026-07-18-divergence-analysis/`. The Divergence Analysis is a
-working document (bean `browserid-ng-v9rz`).
+Draft. The core protocol (device / access / config certs, holders, the four-object
+bundle, verification, issuance + mint) and the agent-provisioning module are
+specified here. The optional **host-certificate** intermediate (core §4.4) is a
+planned extension. A companion overview lives at
+[`../design/browserid-end-to-end-flow.md`](../design/browserid-end-to-end-flow.md);
+the Divergence Analysis is background.

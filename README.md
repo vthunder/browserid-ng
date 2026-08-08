@@ -33,10 +33,10 @@ you and your users, and nothing breaks if browserid.me disappears.
 
 Three properties fall out of the design:
 
-- **Agent-native, headless.** An agent is just a device with an `agent`-subject
-  device cert. It mints its own short-lived **access certs** through the IdP's
-  mint API — no browser, no user in the loop at mint time. Humans and agents ride
-  the identical mint + presentation path.
+- **Agent-native, headless.** An agent is just a holder that isn't a browser — a
+  program with its own device cert. It mints its own short-lived **access certs**
+  through the IdP's mint API — no browser, no user in the loop at mint time. Humans
+  and agents ride the identical mint + presentation path.
 - **Least privilege: authentication ≠ authorization.** Device certs come in two
   purposes — `authentication` (mints access certs → logging in) and
   `authorization` (a **config cert** that signs warrants → granting). A
@@ -58,9 +58,9 @@ const verifier = createVerifier();               // hosted verifier, or point at
 
 const r = await verifier.verify(bundle, "https://app.example.com");
 if (r.ok) {
-  session.user = r.email;                         // the verified identity (identifier)
-  // r.subject         → "user" or "agent"
-  // r.scopes          → what the identity's config cert authorized at this audience
+  session.user = r.email;                         // whom the sign-in is attributed to (the grantor)
+  // r.grantee         → who actually acted (an agent, for a delegated grant; == r.email for a human login)
+  // r.scopes          → what the grantor's warrant authorized at this audience
 } else {
   reject(r.reason);                               // fail-closed on anything else
 }
@@ -69,7 +69,7 @@ if (r.ok) {
 `bundle` is the four-object presentation the client sends —
 `access_cert~assertion~warrant~config_cert` (see [Protocol notes](#protocol-notes)) —
 but as a relying party you never parse it: you POST it and read back
-`{ email, subject, scopes, issuer }`.
+`{ email, grantee, scopes, issuer }`.
 
 - **JS/TS wrapper:** [`sdk/js`](./sdk/js) (`@browserid-ng/verify`) — thin, typed, fail-closed.
 - **Agent side (Node):** [`sdk/agent`](./sdk/agent) (`@browserid-ng/agent`) — obtain an
@@ -123,11 +123,12 @@ signs the **public guestbook** at [browserid.me/guestbook](https://browserid.me/
 ```
 DNS  _browserid.acme.com  (Ed25519, DNSSEC)              ← trust root
   └─ acme.com IdP  issues, per device (never seen by the RP):
-       • agent device cert   purpose=authentication, subject=agent, identities=[dan+researcher@acme.com]
-       • config cert         purpose=authorization                          (signs warrants)
+       • auth cert     purpose=authentication, holder=agents.k3n9, identities=[dan+researcher@acme.com]
+       • config cert   purpose=authorization                        (signs warrants)
 
-  agent device cert ──mint API──▶ access cert  (fresh key, short-lived)      ← RP-facing
-  config cert ──signs──▶ warrant (dan+researcher@acme.com, subject=agent, aud=api.example.com, scopes=[post,read])
+  auth cert ──mint──▶ access cert  (fresh key, short-lived, carries the holder)   ← RP-facing
+  config cert ──signs──▶ warrant (grantor=dan@acme.com → grantee=dan+researcher@acme.com,
+                                  holder=agents.*, aud=api.example.com, scopes=[post,read])
 
   RP receives the four-object bundle:  access_cert ~ assertion ~ warrant ~ config_cert
 ```
@@ -135,9 +136,10 @@ DNS  _browserid.acme.com  (Ed25519, DNSSEC)              ← trust root
 The device certs stay on the device; the RP sees only the **access cert** (a
 fresh, IdP-minted key), the **assertion** it signs, the **warrant**, and the
 **config cert** that signed the warrant. The RP joins them by
-`(identity, subject, audience)`, checks `config_cert.iss == access_cert.iss` (the
-warrant was signed by an authorization cert from the identity's own IdP), and
-learns the agent's identity, that it acts as `subject=agent`, and the scopes
+`(grantee = access-cert identity, holder ∈ matcher, audience)`, attributes the
+action to the **grantor**, and requires each issuer to be authoritative for its own
+identity (the access cert for the grantee, the config cert for the grantor). It
+learns who acted (the grantee), on whose behalf (the grantor), and the scopes
 authorized **for that audience** — rejecting anything outside them. See
 [`docs/verify-quickstart.md`](./docs/verify-quickstart.md), the protocol spec, and
 the design under [`docs/design`](./docs/design).
@@ -188,7 +190,9 @@ the user's device certs, mints an **access cert** through the IdP's mint API
 user's **config cert**. The interactive step uses a first-party WinChan popup, not
 a hidden cross-origin iframe. What the server verifies is the same four-object
 bundle (`access_cert~assertion~warrant~config_cert`) as in the one-call example
-above — a human login carries `subject=user`.
+above — humans sign in the same way, and get the same guardrails: a login on a
+shared or borrowed machine can hold a scoped, revocable credential instead of
+all-powerful account keys.
 
 ## Testing
 
@@ -212,16 +216,18 @@ An RP receives four tilde-joined objects — the same for humans and agents:
   **device cert** that authorized the mint is never presented.
 - **Assertion** — signed by that fresh access key, contains `{aud, exp}`.
 - **Warrant** — signed by a **config cert** (an `authorization`-purpose device
-  cert), binds `(identifier, subject) → audience[+scopes]`. Always present — for
-  human logins too. Load-bearing: no warrant, no login.
+  cert), binds `grantor → grantee` over a holder-matcher, audience, and optional
+  scopes. Always present — for human logins too (there grantor == grantee). No
+  warrant, no login.
 - **Config cert** — the `authorization` device cert that signed the warrant,
-  presented so the RP can verify it. The RP MUST check
-  `config_cert.iss == access_cert.iss` (identity's own IdP) and check three
-  fail-closed status authorities: access cert → IdP (per device), config cert →
-  IdP, warrant → hosted broker.
+  presented so the RP can verify it. The RP MUST require each issuer to be
+  authoritative for its own identity (access cert → grantee's IdP, config cert →
+  grantor's IdP) and check three fail-closed status authorities: access cert → IdP
+  (per device), config cert → IdP, warrant → hosted broker.
 
-The RP joins the four by `(identity, subject, audience)`. See
-`browserid-core/src/device.rs` and `test-vectors/device-cert-v1.json`.
+The RP joins the four by `(grantee = access-cert identity, holder ∈ matcher,
+audience)` and attributes the action to the grantor. See
+`browserid-core/src/device.rs`.
 
 ### DNS-based key discovery (divergence from original BrowserID)
 
