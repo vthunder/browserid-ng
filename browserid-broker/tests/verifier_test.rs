@@ -54,12 +54,14 @@ impl MockDiscoverer {
                 document: SupportDocument::new(key.clone()),
                 authoritative_domain: domain.to_string(),
                 is_primary: true,
+                serving_host: None,
             })
         } else {
             Ok(FallbackResult {
                 document: SupportDocument::new(self.broker_key.clone()),
                 authoritative_domain: BROKER.to_string(),
                 is_primary: false,
+                serving_host: None,
             })
         }
     }

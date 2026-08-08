@@ -7,15 +7,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    DeviceCertRecord, Email, EmailType, Namespace, PendingVerification, ProofMethod, Session,
-    SessionId, SessionStore, StoreResult, User, UserId, UserStore, VerificationType, WarrantRecord,
-    WarrantRequestRecord, WarrantRequestStatus,
+    DeviceCertRecord, Email, EmailType, Namespace, PendingVerification, ProofMethod, RosterEntry,
+    RosterState, Session, SessionId, SessionStore, StoreResult, Tenant, TenantStatus, User, UserId,
+    UserStore, VerificationType, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
 };
 use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 22;
+const SCHEMA_VERSION: i32 = 23;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -128,6 +128,9 @@ impl SqliteStore {
             }
             if current_version < 22 {
                 Self::migrate_v22(conn)?;
+            }
+            if current_version < 23 {
+                Self::migrate_v23(conn)?;
             }
 
             // Update schema version
@@ -636,6 +639,57 @@ impl SqliteStore {
         conn.execute_batch(
             "ALTER TABLE emails ADD COLUMN proof TEXT NOT NULL DEFAULT 'smtp';
              ALTER TABLE emails ADD COLUMN proof_subject TEXT;",
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v23(conn: &Connection) -> Result<(), BrokerError> {
+        // Hosted-primary tenants (bean g5qt): custodial per-tenant signing
+        // keys (private half sealed by tenant_keys), admin identities, the
+        // admin-managed roster, and a per-tenant revocation index space
+        // (separate from status_entries, whose idx is a table-wide sequence —
+        // tenant lists need dense per-tenant indices; 0 is never allocated).
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS tenants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL UNIQUE,
+                public_key TEXT NOT NULL,
+                private_key_sealed TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending_dns',
+                self_claim INTEGER NOT NULL DEFAULT 0,
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                activated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS tenant_admins (
+                tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                identity TEXT NOT NULL,
+                added_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (tenant_id, identity)
+            );
+            CREATE TABLE IF NOT EXISTS tenant_roster (
+                tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                local_part TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'active',
+                must_change_password INTEGER NOT NULL DEFAULT 1,
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_login_at TEXT,
+                PRIMARY KEY (tenant_id, local_part)
+            );
+            CREATE TABLE IF NOT EXISTS tenant_status (
+                tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                subject TEXT NOT NULL,
+                idx INTEGER NOT NULL,
+                revoked_at TEXT,
+                PRIMARY KEY (tenant_id, subject),
+                UNIQUE (tenant_id, idx)
+            );
+            "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
@@ -1884,6 +1938,332 @@ impl UserStore for SqliteStore {
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(rows)
     }
+
+    // --- Hosted-primary tenants (bean g5qt) ---
+
+    fn create_tenant(
+        &self,
+        domain: &str,
+        public_key: &str,
+        private_key_sealed: &str,
+        created_by: &str,
+    ) -> StoreResult<Tenant> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now();
+        let n = conn
+            .execute(
+                "INSERT OR IGNORE INTO tenants
+                 (domain, public_key, private_key_sealed, status, self_claim, created_by, created_at)
+                 VALUES (?1, ?2, ?3, 'pending_dns', 0, ?4, ?5)",
+                params![domain, public_key, private_key_sealed, created_by, now.to_rfc3339()],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if n == 0 {
+            return Err(BrokerError::TenantExists);
+        }
+        drop(conn);
+        self.get_tenant(domain)?.ok_or(BrokerError::TenantNotFound)
+    }
+
+    fn get_tenant(&self, domain: &str) -> StoreResult<Option<Tenant>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, domain, public_key, private_key_sealed, status, self_claim,
+                    created_by, created_at, activated_at
+             FROM tenants WHERE domain = ?1",
+            params![domain],
+            tenant_from_row,
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn list_tenants_for(&self, identity: &str) -> StoreResult<Vec<Tenant>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT t.id, t.domain, t.public_key, t.private_key_sealed, t.status,
+                        t.self_claim, t.created_by, t.created_at, t.activated_at
+                 FROM tenants t
+                 LEFT JOIN tenant_admins a ON a.tenant_id = t.id
+                 WHERE t.created_by = ?1 OR a.identity = ?1
+                 ORDER BY t.created_at",
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![identity], tenant_from_row)
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows)
+    }
+
+    fn set_tenant_status(&self, domain: &str, status: TenantStatus) -> StoreResult<()> {
+        let tenant = self.get_tenant(domain)?.ok_or(BrokerError::TenantNotFound)?;
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        if status == TenantStatus::Active {
+            conn.execute(
+                "UPDATE tenants SET status = 'active',
+                        activated_at = COALESCE(activated_at, ?1) WHERE domain = ?2",
+                params![now, domain],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            // First activation seats the onboarder as admin.
+            conn.execute(
+                "INSERT OR IGNORE INTO tenant_admins (tenant_id, identity, added_by, created_at)
+                 VALUES (?1, ?2, ?2, ?3)",
+                params![tenant.id as i64, tenant.created_by, now],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        } else {
+            conn.execute(
+                "UPDATE tenants SET status = ?1 WHERE domain = ?2",
+                params![status.as_str(), domain],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn is_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM tenant_admins a JOIN tenants t ON t.id = a.tenant_id
+                WHERE t.domain = ?1 AND a.identity = ?2)",
+            params![domain, identity],
+            |row| row.get(0),
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn add_tenant_admin(&self, domain: &str, identity: &str, added_by: &str) -> StoreResult<()> {
+        let tenant = self.get_tenant(domain)?.ok_or(BrokerError::TenantNotFound)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO tenant_admins (tenant_id, identity, added_by, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![tenant.id as i64, identity, added_by, Utc::now().to_rfc3339()],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_tenant_admins(&self, domain: &str) -> StoreResult<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.identity FROM tenant_admins a JOIN tenants t ON t.id = a.tenant_id
+                 WHERE t.domain = ?1 ORDER BY a.created_at",
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![domain], |row| row.get::<_, String>(0))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows)
+    }
+
+    fn create_roster_entry(
+        &self,
+        tenant_id: u64,
+        local_part: &str,
+        password_hash: &str,
+        created_by: &str,
+    ) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "INSERT OR IGNORE INTO tenant_roster
+                 (tenant_id, local_part, password_hash, state, must_change_password, created_by, created_at)
+                 VALUES (?1, ?2, ?3, 'active', 1, ?4, ?5)",
+                params![tenant_id as i64, local_part, password_hash, created_by, Utc::now().to_rfc3339()],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if n == 0 {
+            return Err(BrokerError::RosterEntryExists);
+        }
+        Ok(())
+    }
+
+    fn get_roster_entry(&self, tenant_id: u64, local_part: &str) -> StoreResult<Option<RosterEntry>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT tenant_id, local_part, password_hash, state, must_change_password,
+                    created_by, created_at, last_login_at
+             FROM tenant_roster WHERE tenant_id = ?1 AND local_part = ?2",
+            params![tenant_id as i64, local_part],
+            roster_from_row,
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn list_roster(&self, tenant_id: u64) -> StoreResult<Vec<RosterEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT tenant_id, local_part, password_hash, state, must_change_password,
+                        created_by, created_at, last_login_at
+                 FROM tenant_roster WHERE tenant_id = ?1 ORDER BY local_part",
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![tenant_id as i64], roster_from_row)
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows)
+    }
+
+    fn set_roster_state(&self, tenant_id: u64, local_part: &str, state: RosterState) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE tenant_roster SET state = ?1 WHERE tenant_id = ?2 AND local_part = ?3",
+                params![state.as_str(), tenant_id as i64, local_part],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(n > 0)
+    }
+
+    fn set_roster_password(
+        &self,
+        tenant_id: u64,
+        local_part: &str,
+        password_hash: &str,
+        must_change: bool,
+    ) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE tenant_roster SET password_hash = ?1, must_change_password = ?2
+                 WHERE tenant_id = ?3 AND local_part = ?4",
+                params![password_hash, must_change as i64, tenant_id as i64, local_part],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(n > 0)
+    }
+
+    fn touch_roster_login(&self, tenant_id: u64, local_part: &str) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE tenant_roster SET last_login_at = ?1 WHERE tenant_id = ?2 AND local_part = ?3",
+            params![Utc::now().to_rfc3339(), tenant_id as i64, local_part],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn tenant_status_allocate(&self, tenant_id: u64, subject: &str) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        // Allocate MAX(idx)+1 within the tenant, starting at 1. The INSERT and
+        // the MAX read run under the store's connection mutex, so the
+        // read-compute-write is not racy.
+        conn.execute(
+            "INSERT OR IGNORE INTO tenant_status (tenant_id, subject, idx)
+             VALUES (?1, ?2, (SELECT COALESCE(MAX(idx), 0) + 1 FROM tenant_status WHERE tenant_id = ?1))",
+            params![tenant_id as i64, subject],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        conn.query_row(
+            "SELECT idx FROM tenant_status WHERE tenant_id = ?1 AND subject = ?2",
+            params![tenant_id as i64, subject],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|v| v as u64)
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn tenant_status_revoke(&self, tenant_id: u64, subject: &str) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE tenant_status SET revoked_at = COALESCE(revoked_at, ?1)
+                 WHERE tenant_id = ?2 AND subject = ?3",
+                params![Utc::now().to_rfc3339(), tenant_id as i64, subject],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(n > 0)
+    }
+
+    fn tenant_status_is_revoked(&self, tenant_id: u64, idx: u64) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT revoked_at IS NOT NULL FROM tenant_status WHERE tenant_id = ?1 AND idx = ?2",
+            params![tenant_id as i64, idx as i64],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+        .map(|v| v.unwrap_or(false))
+    }
+
+    fn tenant_status_snapshot(&self, tenant_id: u64) -> StoreResult<(Vec<u64>, u64)> {
+        let conn = self.conn.lock().unwrap();
+        let max: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(idx), 0) FROM tenant_status WHERE tenant_id = ?1",
+                params![tenant_id as i64],
+                |row| row.get(0),
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT idx FROM tenant_status WHERE tenant_id = ?1 AND revoked_at IS NOT NULL",
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let revoked = stmt
+            .query_map(params![tenant_id as i64], |row| row.get::<_, i64>(0))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .into_iter()
+            .map(|v| v as u64)
+            .collect();
+        Ok((revoked, max as u64))
+    }
+}
+
+// Row → Tenant mapping (bean g5qt)
+fn tenant_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tenant> {
+    let parse_ts = |s: String| {
+        DateTime::parse_from_rfc3339(&s)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now())
+    };
+    Ok(Tenant {
+        id: row.get::<_, i64>(0)? as u64,
+        domain: row.get(1)?,
+        public_key: row.get(2)?,
+        private_key_sealed: row.get(3)?,
+        status: TenantStatus::parse(&row.get::<_, String>(4)?).unwrap_or(TenantStatus::Suspended),
+        self_claim: row.get::<_, i64>(5)? != 0,
+        created_by: row.get(6)?,
+        created_at: parse_ts(row.get(7)?),
+        activated_at: row.get::<_, Option<String>>(8)?.map(parse_ts),
+    })
+}
+
+// Row → RosterEntry mapping (bean g5qt)
+fn roster_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RosterEntry> {
+    let parse_ts = |s: String| {
+        DateTime::parse_from_rfc3339(&s)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now())
+    };
+    Ok(RosterEntry {
+        tenant_id: row.get::<_, i64>(0)? as u64,
+        local_part: row.get(1)?,
+        password_hash: row.get(2)?,
+        state: RosterState::parse(&row.get::<_, String>(3)?).unwrap_or(RosterState::Disabled),
+        must_change_password: row.get::<_, i64>(4)? != 0,
+        created_by: row.get(5)?,
+        created_at: parse_ts(row.get(6)?),
+        last_login_at: row.get::<_, Option<String>>(7)?.map(parse_ts),
+    })
 }
 
 /// Title-case a namespace name for its default label ("browsers" → "Browsers").
@@ -2226,6 +2606,92 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn get_holder_labels(&self, user_id: UserId) -> StoreResult<HashMap<String, String>> {
         (**self).get_holder_labels(user_id)
+    }
+
+    fn create_tenant(
+        &self,
+        domain: &str,
+        public_key: &str,
+        private_key_sealed: &str,
+        created_by: &str,
+    ) -> StoreResult<Tenant> {
+        (**self).create_tenant(domain, public_key, private_key_sealed, created_by)
+    }
+
+    fn get_tenant(&self, domain: &str) -> StoreResult<Option<Tenant>> {
+        (**self).get_tenant(domain)
+    }
+
+    fn list_tenants_for(&self, identity: &str) -> StoreResult<Vec<Tenant>> {
+        (**self).list_tenants_for(identity)
+    }
+
+    fn set_tenant_status(&self, domain: &str, status: TenantStatus) -> StoreResult<()> {
+        (**self).set_tenant_status(domain, status)
+    }
+
+    fn is_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {
+        (**self).is_tenant_admin(domain, identity)
+    }
+
+    fn add_tenant_admin(&self, domain: &str, identity: &str, added_by: &str) -> StoreResult<()> {
+        (**self).add_tenant_admin(domain, identity, added_by)
+    }
+
+    fn list_tenant_admins(&self, domain: &str) -> StoreResult<Vec<String>> {
+        (**self).list_tenant_admins(domain)
+    }
+
+    fn create_roster_entry(
+        &self,
+        tenant_id: u64,
+        local_part: &str,
+        password_hash: &str,
+        created_by: &str,
+    ) -> StoreResult<()> {
+        (**self).create_roster_entry(tenant_id, local_part, password_hash, created_by)
+    }
+
+    fn get_roster_entry(&self, tenant_id: u64, local_part: &str) -> StoreResult<Option<RosterEntry>> {
+        (**self).get_roster_entry(tenant_id, local_part)
+    }
+
+    fn list_roster(&self, tenant_id: u64) -> StoreResult<Vec<RosterEntry>> {
+        (**self).list_roster(tenant_id)
+    }
+
+    fn set_roster_state(&self, tenant_id: u64, local_part: &str, state: RosterState) -> StoreResult<bool> {
+        (**self).set_roster_state(tenant_id, local_part, state)
+    }
+
+    fn set_roster_password(
+        &self,
+        tenant_id: u64,
+        local_part: &str,
+        password_hash: &str,
+        must_change: bool,
+    ) -> StoreResult<bool> {
+        (**self).set_roster_password(tenant_id, local_part, password_hash, must_change)
+    }
+
+    fn touch_roster_login(&self, tenant_id: u64, local_part: &str) -> StoreResult<()> {
+        (**self).touch_roster_login(tenant_id, local_part)
+    }
+
+    fn tenant_status_allocate(&self, tenant_id: u64, subject: &str) -> StoreResult<u64> {
+        (**self).tenant_status_allocate(tenant_id, subject)
+    }
+
+    fn tenant_status_revoke(&self, tenant_id: u64, subject: &str) -> StoreResult<bool> {
+        (**self).tenant_status_revoke(tenant_id, subject)
+    }
+
+    fn tenant_status_is_revoked(&self, tenant_id: u64, idx: u64) -> StoreResult<bool> {
+        (**self).tenant_status_is_revoked(tenant_id, idx)
+    }
+
+    fn tenant_status_snapshot(&self, tenant_id: u64) -> StoreResult<(Vec<u64>, u64)> {
+        (**self).tenant_status_snapshot(tenant_id)
     }
 }
 

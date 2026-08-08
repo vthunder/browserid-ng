@@ -279,6 +279,85 @@ pub trait UserStore: Send + Sync {
     /// This user's holder-id → friendly-label map (holders without a row are
     /// simply absent; the caller supplies a default).
     fn get_holder_labels(&self, user_id: UserId) -> StoreResult<HashMap<String, String>>;
+
+    // --- Hosted-primary tenants (bean g5qt) ---
+
+    /// Create a tenant in `PendingDns` with a freshly generated custodial
+    /// keypair (public b64url, private sealed by `crate::tenant_keys`).
+    /// Errors with `TenantExists` if the domain already has a tenant row.
+    fn create_tenant(
+        &self,
+        domain: &str,
+        public_key: &str,
+        private_key_sealed: &str,
+        created_by: &str,
+    ) -> StoreResult<Tenant>;
+
+    /// Look up a tenant by domain (exact, lowercase).
+    fn get_tenant(&self, domain: &str) -> StoreResult<Option<Tenant>>;
+
+    /// Tenants this identity onboarded or administers.
+    fn list_tenants_for(&self, identity: &str) -> StoreResult<Vec<Tenant>>;
+
+    /// Flip a tenant's status. Activation (→`Active`) stamps `activated_at`
+    /// once and seats `created_by` as the first admin.
+    fn set_tenant_status(&self, domain: &str, status: TenantStatus) -> StoreResult<()>;
+
+    /// Whether `identity` administers `domain`'s tenant.
+    fn is_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool>;
+
+    /// Add an admin identity to a tenant (idempotent).
+    fn add_tenant_admin(&self, domain: &str, identity: &str, added_by: &str) -> StoreResult<()>;
+
+    /// List a tenant's admin identities.
+    fn list_tenant_admins(&self, domain: &str) -> StoreResult<Vec<String>>;
+
+    /// Create a roster entry (admin-set bcrypt hash, `must_change_password`
+    /// on). Errors with `RosterEntryExists` for a duplicate local part.
+    fn create_roster_entry(
+        &self,
+        tenant_id: u64,
+        local_part: &str,
+        password_hash: &str,
+        created_by: &str,
+    ) -> StoreResult<()>;
+
+    /// Look up one roster entry.
+    fn get_roster_entry(&self, tenant_id: u64, local_part: &str) -> StoreResult<Option<RosterEntry>>;
+
+    /// All roster entries for a tenant.
+    fn list_roster(&self, tenant_id: u64) -> StoreResult<Vec<RosterEntry>>;
+
+    /// Enable/disable a roster entry. Ok(false) if absent.
+    fn set_roster_state(&self, tenant_id: u64, local_part: &str, state: RosterState) -> StoreResult<bool>;
+
+    /// Admin password reset: new hash + `must_change_password` back on.
+    /// The user's own change (`must_change` false) also lands here.
+    fn set_roster_password(
+        &self,
+        tenant_id: u64,
+        local_part: &str,
+        password_hash: &str,
+        must_change: bool,
+    ) -> StoreResult<bool>;
+
+    /// Stamp a successful interactive login.
+    fn touch_roster_login(&self, tenant_id: u64, local_part: &str) -> StoreResult<()>;
+
+    // --- Tenant status lists: per-tenant revocation index space ---
+
+    /// Get (or allocate, starting at 1) the status index for `subject` on
+    /// this tenant's list. Index 0 is never allocated (list sentinel).
+    fn tenant_status_allocate(&self, tenant_id: u64, subject: &str) -> StoreResult<u64>;
+
+    /// Flip the revocation bit for a subject on the tenant's list.
+    fn tenant_status_revoke(&self, tenant_id: u64, subject: &str) -> StoreResult<bool>;
+
+    /// Whether a tenant-list index is revoked.
+    fn tenant_status_is_revoked(&self, tenant_id: u64, idx: u64) -> StoreResult<bool>;
+
+    /// Revoked indices + max index for building the tenant's signed list.
+    fn tenant_status_snapshot(&self, tenant_id: u64) -> StoreResult<(Vec<u64>, u64)>;
 }
 
 /// Trait for session storage

@@ -29,7 +29,7 @@ static SEEN_JTIS: LazyLock<Mutex<HashMap<String, i64>>> =
 
 /// Record `jti` as used until `exp`; returns `false` if it was already seen and
 /// is still within its validity window (i.e. a replay). Prunes expired nonces.
-fn claim_jti(jti: &str, exp: i64) -> bool {
+pub(crate) fn claim_jti(jti: &str, exp: i64) -> bool {
     let now = chrono::Utc::now().timestamp();
     let mut seen = SEEN_JTIS.lock().unwrap();
     seen.retain(|_, &mut e| e > now);
@@ -620,11 +620,13 @@ where
 
     let url = match state.fallback_fetcher().await {
         Ok(f) => match f.discover(&iss).await {
-            Ok(r) if r.is_primary => r
-                .document
-                .device_revocation
-                .as_ref()
-                .map(|path| format!("https://{iss}{path}")),
+            Ok(r) if r.is_primary => {
+                let base = r.serving_host.clone().unwrap_or_else(|| iss.clone());
+                r.document
+                    .device_revocation
+                    .as_ref()
+                    .map(|path| format!("https://{base}{path}"))
+            }
             _ => None,
         },
         Err(_) => None,

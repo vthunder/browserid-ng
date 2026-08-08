@@ -46,6 +46,15 @@ pub enum BrokerError {
     #[error("Invalid email address")]
     InvalidEmail,
 
+    #[error("Tenant already exists")]
+    TenantExists,
+
+    #[error("Tenant not found")]
+    TenantNotFound,
+
+    #[error("Roster entry already exists")]
+    RosterEntryExists,
+
     /// Too many verification/reset emails to an address; the value is the number
     /// of seconds the caller must wait before requesting another.
     #[error("Too many requests; retry in {0}s")]
@@ -203,6 +212,11 @@ impl IntoResponse for BrokerError {
                 (StatusCode::NOT_FOUND, "Device certificate not found")
             }
             BrokerError::PollTooFast => (StatusCode::TOO_MANY_REQUESTS, "Polling too fast"),
+            BrokerError::TenantExists => (StatusCode::CONFLICT, "Tenant already exists"),
+            BrokerError::TenantNotFound => (StatusCode::NOT_FOUND, "Tenant not found"),
+            BrokerError::RosterEntryExists => {
+                (StatusCode::CONFLICT, "Roster entry already exists")
+            }
             BrokerError::DomainProvenByAtproto(_) | BrokerError::DomainUnprovable(_) => {
                 (StatusCode::FORBIDDEN, reason_buf.as_str())
             }

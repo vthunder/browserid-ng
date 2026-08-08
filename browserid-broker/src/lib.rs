@@ -15,6 +15,7 @@ pub mod registrar_glue;
 pub mod routes;
 pub mod state;
 pub mod store;
+pub mod tenant_keys;
 pub mod verifier;
 
 pub use config::{load_or_generate_keypair, Config};

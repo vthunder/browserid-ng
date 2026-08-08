@@ -45,6 +45,10 @@ pub struct FallbackResult {
     pub authoritative_domain: String,
     /// Whether this is a primary IdP (via DNS) or fallback broker
     pub is_primary: bool,
+    /// The DNSSEC record's `host=` value, when set: the domain's declared
+    /// serving host for `.well-known` and every support-doc path (hosted
+    /// primaries, bean g5qt). `None` = the domain serves its own surface.
+    pub serving_host: Option<String>,
 }
 
 /// Resolves the authoritative BrowserID support for an email domain.
@@ -111,11 +115,13 @@ impl FallbackFetcher {
             DnssecStatus::Secure => {
                 if let Some(record) = dns_result.record {
                     // Primary IdP: identity key comes from the DNSSEC record.
+                    let serving_host = record.host.clone();
                     let doc = resolve_with_dnssec_key(domain, record).await?;
                     Ok(FallbackResult {
                         document: doc,
                         authoritative_domain: domain.to_string(),
                         is_primary: true,
+                        serving_host,
                     })
                 } else {
                     // DNSSEC-validated NXDOMAIN - fall back to broker
@@ -146,11 +152,13 @@ impl FallbackFetcher {
         match dns_result.dnssec_status {
             DnssecStatus::Secure => match dns_result.record {
                 Some(record) => {
+                    let serving_host = record.host.clone();
                     let doc = resolve_with_dnssec_key(&broker, record).await?;
                     Ok(FallbackResult {
                         document: doc,
                         authoritative_domain: broker,
                         is_primary: false,
+                        serving_host,
                     })
                 }
                 None => Err(BrokerError::Discovery(format!(
@@ -167,6 +175,7 @@ impl FallbackFetcher {
                         document: doc,
                         authoritative_domain: broker,
                         is_primary: false,
+                        serving_host: None,
                     })
                 } else {
                     Err(BrokerError::Discovery(format!(

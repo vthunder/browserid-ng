@@ -1,0 +1,1015 @@
+//! Hosted-primary IdP surface (bean g5qt).
+//!
+//! browserid.me operates the full §7 primary contract for TENANT domains:
+//! a customer domain publishes one DNSSEC `_browserid` record carrying a
+//! custodial per-tenant public key plus `host=<idp host>`, and the pages and
+//! APIs here — reached only via standard discovery, never by dialog
+//! special-casing — issue certs with `iss = <tenant domain>` signed by the
+//! tenant's own key. The existing dialog and fallback surfaces are untouched.
+//!
+//! Two route families live here:
+//!
+//! - `/idp/*` — the tenant-user §7 surface: `device-authorize` page glue
+//!   (login/whoami/password), first-party device-cert issuance, the CORS
+//!   headless mint, and per-tenant signed status lists at
+//!   `/status/<tenant domain>`.
+//! - `/wsapi/tenant/*` — onboarding + roster admin, broker-session + CSRF
+//!   gated: create a tenant (generates the sealed keypair + the DNS record
+//!   text; publishing that record IS the proof of domain control), poll the
+//!   DNSSEC checker, manage the roster and admins.
+
+use std::sync::Arc;
+
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::Json;
+use chrono::{Duration, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tower_cookies::cookie::time::Duration as CookieDuration;
+use tower_cookies::cookie::SameSite;
+use tower_cookies::{Cookie, Cookies};
+
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+
+use browserid_core::device::{AccessCert, DeviceCert, Purpose};
+use browserid_core::status::{StatusList, StatusListToken};
+use browserid_core::{PublicKey, StatusRef};
+
+use crate::email::EmailSender;
+use crate::error::BrokerError;
+use crate::state::AppState;
+use crate::store::{RosterState, SessionStore, Tenant, TenantStatus, UserStore};
+
+/// Device/config cert validity for tenant issuance — matches the fallback's.
+const DEVICE_CERT_VALIDITY_DAYS: i64 = 90;
+/// Tenant-user session cookie (scoped to /idp; signed, stateless).
+const IDP_COOKIE: &str = "idp_session";
+const IDP_SESSION_SECONDS: i64 = 2 * 60 * 60;
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+/// The tenant's status-list URI, served by this deployment on the idp host.
+pub fn tenant_status_uri(idp_host: &str, tenant_domain: &str) -> String {
+    format!(
+        "{}/status/{}",
+        browserid_registrar::consent::public_origin(idp_host),
+        tenant_domain
+    )
+}
+
+/// The TXT record a tenant publishes at `_browserid.<domain>`. Publishing
+/// it is the onboarding challenge: the pubkey is generated per attempt, so
+/// only the attempt's creator can be seated as first admin by it.
+pub fn tenant_dns_record(public_key: &str, idp_host: &str) -> String {
+    format!("v=browserid1; public-key-algorithm=Ed25519; public-key={public_key}; host={idp_host}")
+}
+
+fn split_email(email: &str) -> Option<(String, String)> {
+    let (local, domain) = email.split_once('@')?;
+    if local.is_empty() || domain.is_empty() {
+        return None;
+    }
+    Some((local.to_lowercase(), domain.to_lowercase()))
+}
+
+/// Look up an ACTIVE tenant or refuse.
+fn active_tenant<U: UserStore>(store: &U, domain: &str) -> Result<Tenant, BrokerError> {
+    let tenant = store.get_tenant(domain)?.ok_or(BrokerError::TenantNotFound)?;
+    if tenant.status != TenantStatus::Active {
+        return Err(BrokerError::PolicyRefused("tenant is not active".into()));
+    }
+    Ok(tenant)
+}
+
+/// Unseal a tenant's signing keypair (refuses when the keystore is absent).
+fn tenant_keypair<U: UserStore, S: SessionStore, E: EmailSender>(
+    state: &AppState<U, S, E>,
+    tenant: &Tenant,
+) -> Result<browserid_core::KeyPair, BrokerError> {
+    let keystore = state
+        .tenant_keystore
+        .as_ref()
+        .ok_or_else(|| BrokerError::PolicyRefused("tenant keystore not configured".into()))?;
+    keystore
+        .unseal(&tenant.domain, &tenant.private_key_sealed)
+        .map_err(|e| BrokerError::Internal(format!("tenant key unseal: {e}")))
+}
+
+// --- Tenant-user session cookie: stateless, signed by the broker key ------
+// Value: b64url(json{email, exp, mc}) + "." + b64url(sig). `mc` =
+// must-change-password: the session exists (so the page can drive the change
+// form) but cert issuance is refused until the password is changed.
+
+fn issue_idp_cookie<U: UserStore, S: SessionStore, E: EmailSender>(
+    state: &AppState<U, S, E>,
+    cookies: &Cookies,
+    email: &str,
+    must_change: bool,
+) {
+    let claims = json!({
+        "email": email,
+        "exp": (Utc::now() + Duration::seconds(IDP_SESSION_SECONDS)).timestamp(),
+        "mc": must_change,
+    })
+    .to_string();
+    let payload = URL_SAFE_NO_PAD.encode(claims.as_bytes());
+    let sig = URL_SAFE_NO_PAD.encode(state.keypair.sign(payload.as_bytes()));
+    let mut cookie = Cookie::new(IDP_COOKIE, format!("{payload}.{sig}"));
+    cookie.set_http_only(true);
+    cookie.set_same_site(SameSite::Lax);
+    cookie.set_path("/idp");
+    cookie.set_max_age(CookieDuration::seconds(IDP_SESSION_SECONDS));
+    cookie.set_secure(super::session::cookie_secure(&state.domain));
+    cookies.add(cookie);
+}
+
+/// (email, must_change) from a valid, unexpired idp session cookie.
+fn idp_session<U: UserStore, S: SessionStore, E: EmailSender>(
+    state: &AppState<U, S, E>,
+    cookies: &Cookies,
+) -> Option<(String, bool)> {
+    let raw = cookies.get(IDP_COOKIE)?.value().to_string();
+    let (payload, sig) = raw.rsplit_once('.')?;
+    let sig = URL_SAFE_NO_PAD.decode(sig).ok()?;
+    state
+        .keypair
+        .public_key()
+        .verify(payload.as_bytes(), &sig)
+        .ok()?;
+    let claims: serde_json::Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).ok()?).ok()?;
+    if claims.get("exp")?.as_i64()? < Utc::now().timestamp() {
+        return None;
+    }
+    Some((
+        claims.get("email")?.as_str()?.to_string(),
+        claims.get("mc")?.as_bool().unwrap_or(false),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Tenant support document — served for GET /.well-known/browserid when the
+// request's Host is the idp host (wired in well_known.rs). Carries no key:
+// the tenant's key lives only in its own DNSSEC record.
+// ---------------------------------------------------------------------------
+
+pub fn tenant_support_document() -> browserid_core::discovery::SupportDocument {
+    let mut doc = browserid_core::discovery::SupportDocument::delegate("unused");
+    doc.authority = None;
+    doc.device_cert = Some("/idp/device_cert".into());
+    doc.access_cert = Some("/idp/access_cert".into());
+    doc.device_authorization = Some("/idp/device-authorize".into());
+    doc
+}
+
+// ---------------------------------------------------------------------------
+// POST /idp/login {email, password}
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct IdpLoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+pub async fn idp_login<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<IdpLoginRequest>,
+) -> (StatusCode, Json<serde_json::Value>)
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let fail = || {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"success": false, "reason": "invalid email or password"})),
+        )
+    };
+    let Some((local, domain)) = split_email(&req.email) else {
+        return fail();
+    };
+    let Ok(tenant) = active_tenant(state.user_store.as_ref(), &domain) else {
+        return fail();
+    };
+    let Ok(Some(entry)) = state.user_store.get_roster_entry(tenant.id, &local) else {
+        return fail();
+    };
+    if entry.state != RosterState::Active {
+        return fail();
+    }
+    if !crate::crypto::verify_password(&req.password, &entry.password_hash).unwrap_or(false) {
+        return fail();
+    }
+    let email = format!("{local}@{domain}");
+    issue_idp_cookie(state.as_ref(), &cookies, &email, entry.must_change_password);
+    let _ = state.user_store.touch_roster_login(tenant.id, &local);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "email": email,
+            "must_change_password": entry.must_change_password,
+        })),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// GET /idp/whoami
+// ---------------------------------------------------------------------------
+
+pub async fn idp_whoami<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+) -> Json<serde_json::Value>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    match idp_session(state.as_ref(), &cookies) {
+        Some((email, mc)) => Json(json!({"email": email, "must_change_password": mc})),
+        None => Json(json!({"email": null})),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// POST /idp/password {email, current_password, new_password}
+// Credential-gated (no cookie required): the login page drives this for the
+// forced first-login change. Success re-issues the session cookie with the
+// must-change flag cleared.
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct IdpPasswordRequest {
+    pub email: String,
+    pub current_password: String,
+    pub new_password: String,
+}
+
+pub async fn idp_password<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<IdpPasswordRequest>,
+) -> (StatusCode, Json<serde_json::Value>)
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let fail = || {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"success": false, "reason": "invalid email or password"})),
+        )
+    };
+    if req.new_password.len() < 8 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"success": false, "reason": "new password too short (minimum 8 characters)"})),
+        );
+    }
+    if req.new_password.len() > 80 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"success": false, "reason": "new password too long (maximum 80 characters)"})),
+        );
+    }
+    let Some((local, domain)) = split_email(&req.email) else {
+        return fail();
+    };
+    let Ok(tenant) = active_tenant(state.user_store.as_ref(), &domain) else {
+        return fail();
+    };
+    let Ok(Some(entry)) = state.user_store.get_roster_entry(tenant.id, &local) else {
+        return fail();
+    };
+    if entry.state != RosterState::Active
+        || !crate::crypto::verify_password(&req.current_password, &entry.password_hash)
+            .unwrap_or(false)
+    {
+        return fail();
+    }
+    let Ok(hash) = crate::crypto::hash_password(&req.new_password) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"success": false, "reason": "hashing failed"})),
+        );
+    };
+    if state
+        .user_store
+        .set_roster_password(tenant.id, &local, &hash, false)
+        .is_err()
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"success": false, "reason": "store failed"})),
+        );
+    }
+    let email = format!("{local}@{domain}");
+    issue_idp_cookie(state.as_ref(), &cookies, &email, false);
+    (StatusCode::OK, Json(json!({"success": true, "email": email})))
+}
+
+// ---------------------------------------------------------------------------
+// POST /idp/device_cert  (idp-session-gated, first-party)
+// Mirrors the fallback's batch issuance, signed by the TENANT key.
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct IdpDeviceCertRequest {
+    pub email: String,
+    pub device_pubkey: String,
+    pub config_pubkey: String,
+    /// Passthrough holder from the dialog; absent = cold login, self-assign.
+    #[serde(default)]
+    pub holder: Option<String>,
+}
+
+pub async fn idp_device_cert<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<IdpDeviceCertRequest>,
+) -> (StatusCode, Json<serde_json::Value>)
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let err = |code: StatusCode, reason: String| (code, Json(json!({"success": false, "reason": reason})));
+
+    let Some((session_email, must_change)) = idp_session(state.as_ref(), &cookies) else {
+        return err(StatusCode::UNAUTHORIZED, "not signed in".into());
+    };
+    if must_change {
+        return err(StatusCode::FORBIDDEN, "password change required".into());
+    }
+    let Some((local, domain)) = split_email(&req.email) else {
+        return err(StatusCode::BAD_REQUEST, "invalid email".into());
+    };
+    let email = format!("{local}@{domain}");
+    if email != session_email {
+        return err(StatusCode::FORBIDDEN, "signed-in identity does not match".into());
+    }
+    let tenant = match active_tenant(state.user_store.as_ref(), &domain) {
+        Ok(t) => t,
+        Err(e) => return err(StatusCode::FORBIDDEN, e.to_string()),
+    };
+    match state.user_store.get_roster_entry(tenant.id, &local) {
+        Ok(Some(entry)) if entry.state == RosterState::Active => {}
+        _ => return err(StatusCode::FORBIDDEN, "roster entry is not active".into()),
+    }
+    let keypair = match tenant_keypair(state.as_ref(), &tenant) {
+        Ok(k) => k,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    let (device_pub, config_pub) = match (
+        PublicKey::from_base64(&req.device_pubkey),
+        PublicKey::from_base64(&req.config_pubkey),
+    ) {
+        (Ok(d), Ok(c)) => (d, c),
+        (Err(e), _) | (_, Err(e)) => return err(StatusCode::BAD_REQUEST, format!("bad pubkey: {e}")),
+    };
+    // Holder: verbatim passthrough (the dialog supplies the browser's stable
+    // holder, and the reissue hop supplies a corrected one), else self-assign
+    // a standalone `<prefix>.<rand>` exactly like a cold fallback login.
+    let holder_str = req
+        .holder
+        .clone()
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| {
+            crate::crypto::assign_holder_id(&crate::crypto::generate_namespace_prefix())
+        });
+    let holder = match browserid_core::device::Holder::new(holder_str) {
+        Ok(h) => h,
+        Err(e) => return err(StatusCode::BAD_REQUEST, format!("holder: {e}")),
+    };
+    // Per-device status refs on the TENANT's list.
+    let status_for = |pubkey: &PublicKey| -> Result<StatusRef, BrokerError> {
+        let idx = state
+            .user_store
+            .tenant_status_allocate(tenant.id, &pubkey.to_base64())?;
+        Ok(StatusRef {
+            uri: tenant_status_uri(&state.idp_host, &tenant.domain),
+            idx,
+        })
+    };
+    let (device_ref, config_ref) = match (status_for(&device_pub), status_for(&config_pub)) {
+        (Ok(d), Ok(c)) => (d, c),
+        (Err(e), _) | (_, Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("status: {e}")),
+    };
+    let ttl = Duration::days(DEVICE_CERT_VALIDITY_DAYS);
+    let config_identities = vec![email.clone(), format!("{local}+*@{domain}")];
+    let issue = |pubkey: &PublicKey, purpose: Purpose, identities: Vec<String>, status: StatusRef| {
+        DeviceCert::create(
+            &tenant.domain,
+            pubkey,
+            purpose,
+            holder.clone(),
+            identities,
+            ttl,
+            &keypair,
+            Some(status),
+        )
+    };
+    let (device_cert, config_cert) = match (
+        issue(&device_pub, Purpose::Authentication, vec![email.clone()], device_ref),
+        issue(&config_pub, Purpose::Authorization, config_identities, config_ref),
+    ) {
+        (Ok(d), Ok(c)) => (d, c),
+        (Err(e), _) | (_, Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("cert: {e}")),
+    };
+    tracing::info!(email = %email, tenant = %tenant.domain, "hosted primary: issued device + config certs");
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "device_cert": device_cert.encoded(),
+            "config_cert": config_cert.encoded(),
+            "identity": email,
+        })),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// POST /idp/access_cert  (headless mint; CORS — the dialog calls it
+// cross-origin with credentials omitted)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct IdpAccessCertRequest {
+    pub device_cert: String,
+    pub access_request: String,
+}
+
+pub async fn idp_access_cert<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    Json(req): Json<IdpAccessCertRequest>,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let ce = |e: browserid_core::Error| BrokerError::InvalidProvisioningRequest(e.to_string());
+    let device_cert = DeviceCert::parse(&req.device_cert).map_err(ce)?;
+    // Route by the cert's iss: it must name one of OUR active tenants, and
+    // then the signature must verify under that tenant's key.
+    let tenant = active_tenant(state.user_store.as_ref(), device_cert.iss())?;
+    let keypair = tenant_keypair(state.as_ref(), &tenant)?;
+    device_cert.verify(&keypair.public_key()).map_err(ce)?;
+    if device_cert.is_expired() {
+        return Err(BrokerError::InvalidProvisioningRequest("device cert expired".into()));
+    }
+    if device_cert.purpose() != Purpose::Authentication {
+        return Err(BrokerError::PolicyRefused(
+            "device cert cannot mint access certs (not authentication)".into(),
+        ));
+    }
+    // Fail-closed revocation gate at the mint (closes the M1 gap for tenants):
+    // the device's own status bit must be clear.
+    if let Some(status) = &device_cert.claims().status {
+        if state.user_store.tenant_status_is_revoked(tenant.id, status.idx)? {
+            return Err(BrokerError::PolicyRefused("device cert revoked".into()));
+        }
+    }
+    let areq = browserid_core::device::AccessRequest::parse(&req.access_request).map_err(ce)?;
+    areq.verify(device_cert.public_key()).map_err(ce)?;
+    if areq.is_expired() {
+        return Err(BrokerError::InvalidProvisioningRequest("access request expired".into()));
+    }
+    let c = areq.claims();
+    if !super::device::claim_jti(&c.jti, c.exp) {
+        return Err(BrokerError::InvalidProvisioningRequest(
+            "access request replayed (jti seen)".into(),
+        ));
+    }
+    if c.domain != tenant.domain {
+        return Err(BrokerError::InvalidProvisioningRequest("wrong target domain".into()));
+    }
+    if !device_cert.authorizes_identity(&c.identity) {
+        return Err(BrokerError::PolicyRefused(
+            "device cert not authorized for this identity".into(),
+        ));
+    }
+    if c.holder != *device_cert.holder() {
+        return Err(BrokerError::PolicyRefused("holder mismatch".into()));
+    }
+    // The roster stays authoritative at mint time: a disabled (or vanished)
+    // user stops minting immediately, bounding a live session by the access
+    // cert's 24h TTL even without touching the status list.
+    if let Some((local, _)) = split_email(&c.identity) {
+        match state.user_store.get_roster_entry(tenant.id, &local)? {
+            Some(entry) if entry.state == RosterState::Active => {}
+            _ => return Err(BrokerError::PolicyRefused("roster entry is not active".into())),
+        }
+    }
+    let access_cert = AccessCert::create(
+        &tenant.domain,
+        &c.identity,
+        device_cert.holder().clone(),
+        &c.access_key,
+        Duration::hours(24),
+        &keypair,
+        device_cert.claims().status.clone(),
+    )
+    .map_err(ce)?;
+    Ok(Json(json!({
+        "success": true,
+        "access_cert": access_cert.encoded(),
+        "email": c.identity,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// GET /status/:domain — the tenant's signed status list. Same wire format as
+// every other list (`browserid-status-list-v1`), iss = the tenant domain,
+// sub = this URI, signed by the tenant key. Verifiers accept the idp host as
+// the serving host via the tenant's DNSSEC `host=` declaration.
+// ---------------------------------------------------------------------------
+
+pub async fn tenant_status_list<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    Path(domain): Path<String>,
+) -> Result<String, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let domain = domain.to_lowercase();
+    let tenant = state
+        .user_store
+        .get_tenant(&domain)?
+        .ok_or(BrokerError::TenantNotFound)?;
+    // Suspended tenants keep serving their list (revocations must stay
+    // visible); only pending ones (no possible certs) 404.
+    if tenant.status == TenantStatus::PendingDns {
+        return Err(BrokerError::TenantNotFound);
+    }
+    let keypair = tenant_keypair(state.as_ref(), &tenant)?;
+    let (revoked, max) = state.user_store.tenant_status_snapshot(tenant.id)?;
+    let list = StatusList::from_revoked(revoked, max);
+    let token = StatusListToken::create(
+        &tenant.domain,
+        &tenant_status_uri(&state.idp_host, &tenant.domain),
+        &list,
+        &keypair,
+    )
+    .map_err(|e| BrokerError::Internal(format!("status list sign: {e}")))?;
+    Ok(token.encoded().to_string())
+}
+
+// ===========================================================================
+// Onboarding + roster admin (broker session + CSRF)
+// ===========================================================================
+
+/// Session + CSRF + identity-ownership gate: the session's account must own
+/// `identity` (verified). Returns the normalized identity.
+fn owned_identity<U: UserStore, S: SessionStore, E: EmailSender>(
+    state: &AppState<U, S, E>,
+    cookies: &Cookies,
+    csrf: &str,
+    identity: &str,
+) -> Result<String, BrokerError> {
+    let session = super::session::get_session_from_cookies(cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    if session.csrf_token != csrf {
+        return Err(BrokerError::InvalidCsrf);
+    }
+    let identity = identity.trim().to_lowercase();
+    let owned = state
+        .user_store
+        .list_emails(session.user_id)?
+        .into_iter()
+        .any(|e| e.verified && e.email == identity);
+    if !owned {
+        return Err(BrokerError::PolicyRefused(
+            "identity not verified on this account".into(),
+        ));
+    }
+    Ok(identity)
+}
+
+/// Admin gate: some verified identity on the session's account administers
+/// `domain`. Returns that identity.
+fn session_admin_identity<U: UserStore, S: SessionStore, E: EmailSender>(
+    state: &AppState<U, S, E>,
+    cookies: &Cookies,
+    csrf: &str,
+    domain: &str,
+) -> Result<String, BrokerError> {
+    let session = super::session::get_session_from_cookies(cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    if session.csrf_token != csrf {
+        return Err(BrokerError::InvalidCsrf);
+    }
+    for email in state.user_store.list_emails(session.user_id)? {
+        if email.verified && state.user_store.is_tenant_admin(domain, &email.email)? {
+            return Ok(email.email);
+        }
+    }
+    Err(BrokerError::PolicyRefused("not a tenant admin".into()))
+}
+
+fn valid_tenant_domain(domain: &str) -> bool {
+    let d = domain.trim();
+    !d.is_empty()
+        && d.len() <= 253
+        && d.contains('.')
+        && !d.starts_with('.')
+        && !d.ends_with('.')
+        && !d.contains("..")
+        && d.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && d.split('.').last().is_some_and(|tld| tld.chars().all(|c| c.is_ascii_alphabetic()))
+}
+
+fn valid_local_part(local: &str) -> bool {
+    !local.is_empty()
+        && local.len() <= 64
+        // `+` is reserved for subaddressing; `*` for globs.
+        && local
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+#[derive(Deserialize)]
+pub struct TenantCreateRequest {
+    pub csrf: String,
+    pub domain: String,
+    /// The identity claiming the domain — becomes first admin at activation.
+    pub identity: String,
+}
+
+/// POST /wsapi/tenant/create — start an onboarding attempt: generate the
+/// custodial keypair and return the record to publish.
+pub async fn tenant_create<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<TenantCreateRequest>,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let identity = owned_identity(state.as_ref(), &cookies, &req.csrf, &req.identity)?;
+    let domain = req.domain.trim().to_lowercase();
+    if !valid_tenant_domain(&domain) {
+        return Err(BrokerError::ValidationError("invalid domain".into()));
+    }
+    if domain == state.domain.to_lowercase() || domain == state.idp_host.to_lowercase() {
+        return Err(BrokerError::PolicyRefused("that domain is this service".into()));
+    }
+    let keystore = state
+        .tenant_keystore
+        .as_ref()
+        .ok_or_else(|| BrokerError::PolicyRefused("tenant onboarding is not enabled here".into()))?;
+    let (public_key, sealed) = keystore
+        .generate_sealed(&domain)
+        .map_err(BrokerError::Internal)?;
+    let tenant = state
+        .user_store
+        .create_tenant(&domain, &public_key, &sealed, &identity)?;
+    state.analytics.capture("tenant_onboarding_started", crate::analytics::distinct_id_for_email(&identity), serde_json::json!({}));
+    Ok(Json(json!({
+        "success": true,
+        "domain": tenant.domain,
+        "status": tenant.status,
+        "record_name": format!("_browserid.{}", tenant.domain),
+        "record": tenant_dns_record(&tenant.public_key, &state.idp_host),
+    })))
+}
+
+/// GET /wsapi/tenant/list — tenants any of the account's verified identities
+/// onboarded or administers.
+pub async fn tenant_list<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let session =
+        super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+            .ok_or(BrokerError::NotAuthenticated)?;
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for email in state.user_store.list_emails(session.user_id)? {
+        if !email.verified {
+            continue;
+        }
+        for t in state.user_store.list_tenants_for(&email.email)? {
+            if seen.insert(t.domain.clone()) {
+                out.push(json!({
+                    "domain": t.domain,
+                    "status": t.status,
+                    "created_by": t.created_by,
+                    "record_name": format!("_browserid.{}", t.domain),
+                    "record": tenant_dns_record(&t.public_key, &state.idp_host),
+                    "activated_at": t.activated_at.map(|d| d.to_rfc3339()),
+                }));
+            }
+        }
+    }
+    Ok(Json(json!({"success": true, "tenants": out})))
+}
+
+#[derive(Deserialize)]
+pub struct TenantCheckRequest {
+    pub csrf: String,
+    pub domain: String,
+}
+
+#[derive(Serialize)]
+pub struct TenantCheckResponse {
+    pub success: bool,
+    /// validated | no_record | insecure | bogus | wrong_key
+    pub dns: String,
+    pub status: TenantStatus,
+    /// Whether the record's host= names this deployment (routing sanity).
+    pub host_ok: Option<bool>,
+}
+
+/// POST /wsapi/tenant/check — run the DNSSEC checker once. When the
+/// published, DNSSEC-validated record carries this attempt's key, the tenant
+/// activates and the onboarder becomes first admin.
+pub async fn tenant_check<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<TenantCheckRequest>,
+) -> Result<Json<TenantCheckResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    // Gate: session + CSRF + (creator or admin). The check mutates nothing
+    // unless the record validates, but it does trigger outbound DNS, so it
+    // is not anonymous.
+    let session =
+        super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+            .ok_or(BrokerError::NotAuthenticated)?;
+    if session.csrf_token != req.csrf {
+        return Err(BrokerError::InvalidCsrf);
+    }
+    let domain = req.domain.trim().to_lowercase();
+    let tenant = state
+        .user_store
+        .get_tenant(&domain)?
+        .ok_or(BrokerError::TenantNotFound)?;
+    let allowed = {
+        let mut ok = false;
+        for email in state.user_store.list_emails(session.user_id)? {
+            if email.verified
+                && (email.email == tenant.created_by
+                    || state.user_store.is_tenant_admin(&domain, &email.email)?)
+            {
+                ok = true;
+                break;
+            }
+        }
+        ok
+    };
+    if !allowed {
+        return Err(BrokerError::PolicyRefused("not this tenant's onboarder or admin".into()));
+    }
+
+    let fetcher = crate::dns_fetcher::DnsFetcher::new()
+        .map_err(|e| BrokerError::Internal(format!("dns fetcher: {e}")))?;
+    let result = fetcher.lookup(&domain).await;
+    use browserid_core::DnssecStatus;
+    let (dns, host_ok) = match result.dnssec_status {
+        DnssecStatus::Bogus => ("bogus".to_string(), None),
+        DnssecStatus::Insecure => ("insecure".to_string(), None),
+        DnssecStatus::Secure => match result.record {
+            None => ("no_record".to_string(), None),
+            Some(record) => {
+                let host_ok = record
+                    .host
+                    .as_deref()
+                    .map(|h| h.eq_ignore_ascii_case(&state.idp_host));
+                if record.public_key.to_base64() == tenant.public_key {
+                    ("validated".to_string(), host_ok)
+                } else {
+                    ("wrong_key".to_string(), host_ok)
+                }
+            }
+        },
+    };
+    if dns == "validated" && tenant.status == TenantStatus::PendingDns {
+        state.user_store.set_tenant_status(&domain, TenantStatus::Active)?;
+        state.analytics.capture("tenant_activated", crate::analytics::distinct_id_for_email(&tenant.created_by), serde_json::json!({}));
+        tracing::info!(domain = %domain, admin = %tenant.created_by, "hosted primary: tenant activated");
+    }
+    let tenant = state
+        .user_store
+        .get_tenant(&domain)?
+        .ok_or(BrokerError::TenantNotFound)?;
+    Ok(Json(TenantCheckResponse {
+        success: true,
+        dns,
+        status: tenant.status,
+        host_ok,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct RosterCreateRequest {
+    pub csrf: String,
+    pub domain: String,
+    pub local_part: String,
+    pub password: String,
+}
+
+/// POST /wsapi/tenant/roster — admin creates a user with a set password.
+pub async fn roster_create<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<RosterCreateRequest>,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let domain = req.domain.trim().to_lowercase();
+    let admin = session_admin_identity(state.as_ref(), &cookies, &req.csrf, &domain)?;
+    let tenant = active_tenant(state.user_store.as_ref(), &domain)?;
+    let local = req.local_part.trim().to_lowercase();
+    if !valid_local_part(&local) {
+        return Err(BrokerError::ValidationError(
+            "invalid local part (letters, digits, . - _ only)".into(),
+        ));
+    }
+    if req.password.len() < 8 {
+        return Err(BrokerError::PasswordTooShort);
+    }
+    if req.password.len() > 80 {
+        return Err(BrokerError::PasswordTooLong);
+    }
+    let hash = crate::crypto::hash_password(&req.password)
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+    state
+        .user_store
+        .create_roster_entry(tenant.id, &local, &hash, &admin)?;
+    tracing::info!(tenant = %domain, local = %local, "hosted primary: roster user created");
+    Ok(Json(json!({"success": true, "email": format!("{local}@{domain}")})))
+}
+
+#[derive(Deserialize)]
+pub struct RosterListQuery {
+    pub domain: String,
+    pub csrf: String,
+}
+
+/// GET /wsapi/tenant/roster?domain=&csrf= — the roster, sans hashes.
+pub async fn roster_list<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Query(q): Query<RosterListQuery>,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let domain = q.domain.trim().to_lowercase();
+    session_admin_identity(state.as_ref(), &cookies, &q.csrf, &domain)?;
+    let tenant = state
+        .user_store
+        .get_tenant(&domain)?
+        .ok_or(BrokerError::TenantNotFound)?;
+    let roster: Vec<_> = state
+        .user_store
+        .list_roster(tenant.id)?
+        .into_iter()
+        .map(|r| {
+            json!({
+                "local_part": r.local_part,
+                "email": format!("{}@{}", r.local_part, domain),
+                "state": r.state,
+                "must_change_password": r.must_change_password,
+                "created_by": r.created_by,
+                "created_at": r.created_at.to_rfc3339(),
+                "last_login_at": r.last_login_at.map(|d| d.to_rfc3339()),
+            })
+        })
+        .collect();
+    let admins = state.user_store.list_tenant_admins(&domain)?;
+    Ok(Json(json!({"success": true, "roster": roster, "admins": admins})))
+}
+
+#[derive(Deserialize)]
+pub struct RosterStateRequest {
+    pub csrf: String,
+    pub domain: String,
+    pub local_part: String,
+    /// "active" | "disabled"
+    pub state: String,
+}
+
+/// POST /wsapi/tenant/roster/state — enable/disable a roster user.
+pub async fn roster_state<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<RosterStateRequest>,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let domain = req.domain.trim().to_lowercase();
+    session_admin_identity(state.as_ref(), &cookies, &req.csrf, &domain)?;
+    let tenant = state
+        .user_store
+        .get_tenant(&domain)?
+        .ok_or(BrokerError::TenantNotFound)?;
+    let new_state = RosterState::parse(&req.state)
+        .ok_or_else(|| BrokerError::ValidationError("state must be active or disabled".into()))?;
+    let local = req.local_part.trim().to_lowercase();
+    if !state.user_store.set_roster_state(tenant.id, &local, new_state)? {
+        return Err(BrokerError::UserNotFound);
+    }
+    Ok(Json(json!({"success": true})))
+}
+
+#[derive(Deserialize)]
+pub struct RosterPasswordRequest {
+    pub csrf: String,
+    pub domain: String,
+    pub local_part: String,
+    pub password: String,
+}
+
+/// POST /wsapi/tenant/roster/password — admin reset (must-change back on).
+pub async fn roster_password<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<RosterPasswordRequest>,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let domain = req.domain.trim().to_lowercase();
+    session_admin_identity(state.as_ref(), &cookies, &req.csrf, &domain)?;
+    let tenant = state
+        .user_store
+        .get_tenant(&domain)?
+        .ok_or(BrokerError::TenantNotFound)?;
+    if req.password.len() < 8 {
+        return Err(BrokerError::PasswordTooShort);
+    }
+    if req.password.len() > 80 {
+        return Err(BrokerError::PasswordTooLong);
+    }
+    let hash = crate::crypto::hash_password(&req.password)
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+    let local = req.local_part.trim().to_lowercase();
+    if !state
+        .user_store
+        .set_roster_password(tenant.id, &local, &hash, true)?
+    {
+        return Err(BrokerError::UserNotFound);
+    }
+    Ok(Json(json!({"success": true})))
+}
+
+#[derive(Deserialize)]
+pub struct TenantAdminAddRequest {
+    pub csrf: String,
+    pub domain: String,
+    pub identity: String,
+}
+
+/// POST /wsapi/tenant/admins — add an admin identity.
+pub async fn tenant_admin_add<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<TenantAdminAddRequest>,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let domain = req.domain.trim().to_lowercase();
+    let admin = session_admin_identity(state.as_ref(), &cookies, &req.csrf, &domain)?;
+    let identity = req.identity.trim().to_lowercase();
+    if split_email(&identity).is_none() {
+        return Err(BrokerError::InvalidEmail);
+    }
+    state.user_store.add_tenant_admin(&domain, &identity, &admin)?;
+    Ok(Json(json!({"success": true})))
+}

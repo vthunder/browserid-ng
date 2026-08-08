@@ -311,3 +311,98 @@ pub struct Session {
     pub csrf_token: String,
     pub created_at: DateTime<Utc>,
 }
+
+/// Lifecycle of a hosted-primary tenant domain (bean g5qt).
+///
+/// `PendingDns` from onboarding until the domain's DNSSEC `_browserid`
+/// record carrying this tenant's public key validates; `Active` while the
+/// broker issues for the domain; `Suspended` stops issuance without
+/// deleting anything (the DNS record is the tenant-side kill switch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TenantStatus {
+    PendingDns,
+    Active,
+    Suspended,
+}
+
+impl TenantStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TenantStatus::PendingDns => "pending_dns",
+            TenantStatus::Active => "active",
+            TenantStatus::Suspended => "suspended",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pending_dns" => Some(TenantStatus::PendingDns),
+            "active" => Some(TenantStatus::Active),
+            "suspended" => Some(TenantStatus::Suspended),
+            _ => None,
+        }
+    }
+}
+
+/// A hosted-primary tenant: a domain browserid.me issues for under a
+/// custodial per-tenant key. The private key is sealed at rest
+/// (`crate::tenant_keys`); `public_key` is the base64url raw Ed25519 point
+/// that must appear in the domain's `_browserid` DNSSEC record.
+#[derive(Debug, Clone)]
+pub struct Tenant {
+    pub id: u64,
+    pub domain: String,
+    pub public_key: String,
+    pub private_key_sealed: String,
+    pub status: TenantStatus,
+    /// Allow mailbox-proof self-claims for unrostered local parts (post-MVP;
+    /// stored so the policy exists from day one).
+    pub self_claim: bool,
+    /// Identity of the onboarder (becomes first admin at activation).
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub activated_at: Option<DateTime<Utc>>,
+}
+
+/// State of one roster entry. Disabled blocks login and minting; certs
+/// already issued age out (access certs ≤24h).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RosterState {
+    Active,
+    Disabled,
+}
+
+impl RosterState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RosterState::Active => "active",
+            RosterState::Disabled => "disabled",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "active" => Some(RosterState::Active),
+            "disabled" => Some(RosterState::Disabled),
+            _ => None,
+        }
+    }
+}
+
+/// An admin-managed user at a tenant domain. Authoritative for its local
+/// part: while a roster entry exists, mailbox self-claim for the address is
+/// refused. `password_hash` is admin-set (bcrypt); `must_change_password`
+/// forces a change on first interactive login.
+#[derive(Debug, Clone)]
+pub struct RosterEntry {
+    pub tenant_id: u64,
+    pub local_part: String,
+    pub password_hash: String,
+    pub state: RosterState,
+    pub must_change_password: bool,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub last_login_at: Option<DateTime<Utc>>,
+}

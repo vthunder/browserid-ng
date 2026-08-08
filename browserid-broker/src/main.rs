@@ -101,6 +101,26 @@ async fn main() -> Result<()> {
     if let Some(url) = &state.marketing_url {
         tracing::info!(marketing_url = %url, "Origin split: marketing routes redirect to marketing site");
     }
+    // Hosted-primary tenancy (bean g5qt). `IDP_HOST` is the host tenants name
+    // in their DNSSEC `host=` (a dedicated origin, e.g. idp.browserid.me);
+    // defaults to the broker's own domain when unset (shared origin — fine for
+    // local/test). `TENANT_KEYSTORE_KEY` (64 hex chars) seals custodial tenant
+    // private keys at rest; absent → tenant onboarding is refused.
+    if let Some(h) = std::env::var("IDP_HOST").ok().filter(|s| !s.trim().is_empty()) {
+        state.idp_host = h.trim().to_string();
+    }
+    match std::env::var("TENANT_KEYSTORE_KEY") {
+        Ok(v) if !v.trim().is_empty() => {
+            match browserid_broker::tenant_keys::KeystoreKey::from_env_value(&v) {
+                Ok(k) => {
+                    state.tenant_keystore = Some(k);
+                    tracing::info!(idp_host = %state.idp_host, "Hosted-primary tenancy enabled");
+                }
+                Err(e) => tracing::error!("TENANT_KEYSTORE_KEY invalid, tenancy disabled: {e}"),
+            }
+        }
+        _ => {}
+    }
     // Server-side product analytics (auth-origin funnel). Enabled iff POSTHOG_TOKEN set.
     state.analytics = browserid_broker::analytics::Analytics::from_env();
     if state.analytics.enabled() {

@@ -10,6 +10,7 @@ mod fedcm;
 mod guestbook;
 mod handle_claim;
 mod holders;
+mod hosted_idp;
 mod primary;
 mod reset;
 pub(crate) mod session;
@@ -164,6 +165,29 @@ where
         .route("/auth/verify", post(fallback_idp::auth_verify))
         .route("/whoami", get(fallback_idp::whoami))
         .route("/auth/device_cert", post(fallback_idp::device_cert))
+        // Hosted-primary IdP surface (bean g5qt): the §7 pages + APIs a
+        // TENANT domain delegates to. Reached only via discovery + host=;
+        // the dialog is untouched.
+        .route("/idp/login", post(hosted_idp::idp_login))
+        .route("/idp/whoami", get(hosted_idp::idp_whoami))
+        .route("/idp/password", post(hosted_idp::idp_password))
+        .route("/idp/device_cert", post(hosted_idp::idp_device_cert))
+        .route("/idp/access_cert", post(hosted_idp::idp_access_cert))
+        .route_service(
+            "/idp/device-authorize",
+            ServeFile::new(format!("{}/idp/device-authorize.html", static_path)),
+        )
+        .route("/status/:domain", get(hosted_idp::tenant_status_list))
+        // Tenant onboarding + roster admin (broker session + CSRF).
+        .route("/wsapi/tenant/create", post(hosted_idp::tenant_create))
+        .route("/wsapi/tenant/list", get(hosted_idp::tenant_list))
+        .route("/wsapi/tenant/check", post(hosted_idp::tenant_check))
+        .route("/wsapi/tenant/roster", get(hosted_idp::roster_list).post(hosted_idp::roster_create))
+        .route("/wsapi/tenant/roster/state", post(hosted_idp::roster_state))
+        .route("/wsapi/tenant/roster/password", post(hosted_idp::roster_password))
+        .route("/wsapi/tenant/admins", post(hosted_idp::tenant_admin_add))
+        .route_service("/domains", ServeFile::new(format!("{}/domains.html", static_path)))
+        .route_service("/domains/:domain", ServeFile::new(format!("{}/domains.html", static_path)))
         // Compatibility routes for include.js
         .route("/sign_in", get(sign_in_return))
         .nest_service("/relay", ServeDir::new(format!("{}/relay", static_path)))

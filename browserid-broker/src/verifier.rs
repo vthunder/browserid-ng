@@ -267,17 +267,22 @@ fn is_global_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
-/// The list's signer must be the URI's own host — the credential's issuer
-/// chose the URI, and a list served there is only authoritative if signed by
-/// that host's key (else a compromised host could serve someone else's
-/// all-clear list).
-fn uri_matches_issuer(uri: &str, iss: &str) -> bool {
+/// The list's signer must be authoritative for the URI's host — the
+/// credential's issuer chose the URI, and a list served there is only
+/// honored if signed by a key that answers for that host (else a
+/// compromised host could serve someone else's all-clear list). Two hosts
+/// qualify: the issuer domain itself, and the issuer's DNSSEC-declared
+/// `host=` serving host (a hosted primary publishes no web content at its
+/// own domain, so its list lives on its provider; the declaration rides
+/// the same authenticated record as the key, bean g5qt).
+fn uri_matches_issuer(uri: &str, iss: &str, serving_host: Option<&str>) -> bool {
     let Ok(u) = reqwest::Url::parse(uri) else { return false };
     let Some(host) = u.host_str() else { return false };
-    match u.port() {
-        Some(p) => format!("{host}:{p}") == iss,
-        None => host == iss,
-    }
+    let uri_host = match u.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
+    };
+    uri_host == iss || serving_host.is_some_and(|sh| uri_host == sh)
 }
 
 /// Read a response body into a String, rejecting once more than `max` bytes
@@ -361,13 +366,13 @@ pub(crate) async fn fetch_foreign_status_list(
     let token = StatusListToken::parse(body.trim()).map_err(|e| e.to_string())?;
 
     let iss = token.claims().iss.clone();
-    if !uri_matches_issuer(uri, &iss) {
-        return Err(format!("list at {uri} signed by non-authoritative issuer '{iss}'"));
-    }
     let disc = discoverer
         .discover(&iss)
         .await
         .map_err(|e| format!("status issuer discovery '{iss}': {e}"))?;
+    if !uri_matches_issuer(uri, &iss, disc.serving_host.as_deref()) {
+        return Err(format!("list at {uri} signed by non-authoritative issuer '{iss}'"));
+    }
     let key = disc
         .document
         .public_key

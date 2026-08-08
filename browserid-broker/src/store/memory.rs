@@ -8,8 +8,9 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    DeviceCertRecord, Email, EmailType, Namespace, PendingVerification, ProofMethod, Session, SessionId, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
-    SessionStore, StoreResult, User, UserId, UserStore, VerificationType,
+    DeviceCertRecord, Email, EmailType, Namespace, PendingVerification, ProofMethod, RosterEntry,
+    RosterState, Session, SessionId, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
+    SessionStore, StoreResult, Tenant, TenantStatus, User, UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
 
@@ -32,6 +33,15 @@ pub struct InMemoryUserStore {
     /// (user_id, holder_id) -> friendly label
     holder_labels: RwLock<HashMap<(UserId, String), String>>,
     holder_moves: RwLock<HashMap<(UserId, String), String>>,
+    /// domain -> tenant (bean g5qt)
+    tenants: RwLock<HashMap<String, Tenant>>,
+    next_tenant_id: AtomicU64,
+    /// (tenant_id) -> admin identities
+    tenant_admins: RwLock<HashMap<u64, Vec<String>>>,
+    /// (tenant_id, local_part) -> roster entry
+    tenant_roster: RwLock<HashMap<(u64, String), RosterEntry>>,
+    /// (tenant_id, subject) -> (idx, revoked); per-tenant idx allocation
+    tenant_status: RwLock<HashMap<(u64, String), (u64, bool)>>,
 }
 
 impl InMemoryUserStore {
@@ -51,6 +61,11 @@ impl InMemoryUserStore {
             namespaces: RwLock::new(HashMap::new()),
             holder_labels: RwLock::new(HashMap::new()),
             holder_moves: RwLock::new(HashMap::new()),
+            tenants: RwLock::new(HashMap::new()),
+            next_tenant_id: AtomicU64::new(1),
+            tenant_admins: RwLock::new(HashMap::new()),
+            tenant_roster: RwLock::new(HashMap::new()),
+            tenant_status: RwLock::new(HashMap::new()),
         }
     }
 
@@ -739,6 +754,255 @@ impl UserStore for InMemoryUserStore {
             .filter(|((uid, _), _)| *uid == user_id)
             .map(|((_, hid), label)| (hid.clone(), label.clone()))
             .collect())
+    }
+
+    // --- Hosted-primary tenants (bean g5qt) ---
+
+    fn create_tenant(
+        &self,
+        domain: &str,
+        public_key: &str,
+        private_key_sealed: &str,
+        created_by: &str,
+    ) -> StoreResult<Tenant> {
+        let mut tenants = self.tenants.write().unwrap();
+        if tenants.contains_key(domain) {
+            return Err(BrokerError::TenantExists);
+        }
+        let tenant = Tenant {
+            id: self.next_tenant_id.fetch_add(1, Ordering::SeqCst),
+            domain: domain.to_string(),
+            public_key: public_key.to_string(),
+            private_key_sealed: private_key_sealed.to_string(),
+            status: TenantStatus::PendingDns,
+            self_claim: false,
+            created_by: created_by.to_string(),
+            created_at: Utc::now(),
+            activated_at: None,
+        };
+        tenants.insert(domain.to_string(), tenant.clone());
+        Ok(tenant)
+    }
+
+    fn get_tenant(&self, domain: &str) -> StoreResult<Option<Tenant>> {
+        Ok(self.tenants.read().unwrap().get(domain).cloned())
+    }
+
+    fn list_tenants_for(&self, identity: &str) -> StoreResult<Vec<Tenant>> {
+        let admins = self.tenant_admins.read().unwrap();
+        let mut out: Vec<Tenant> = self
+            .tenants
+            .read()
+            .unwrap()
+            .values()
+            .filter(|t| {
+                t.created_by == identity
+                    || admins.get(&t.id).is_some_and(|a| a.iter().any(|i| i == identity))
+            })
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        Ok(out)
+    }
+
+    fn set_tenant_status(&self, domain: &str, status: TenantStatus) -> StoreResult<()> {
+        let mut tenants = self.tenants.write().unwrap();
+        let tenant = tenants.get_mut(domain).ok_or(BrokerError::TenantNotFound)?;
+        tenant.status = status;
+        if status == TenantStatus::Active {
+            tenant.activated_at.get_or_insert_with(Utc::now);
+            let mut admins = self.tenant_admins.write().unwrap();
+            let list = admins.entry(tenant.id).or_default();
+            if !list.iter().any(|i| *i == tenant.created_by) {
+                list.push(tenant.created_by.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn is_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {
+        let Some(tenant) = self.tenants.read().unwrap().get(domain).cloned() else {
+            return Ok(false);
+        };
+        Ok(self
+            .tenant_admins
+            .read()
+            .unwrap()
+            .get(&tenant.id)
+            .is_some_and(|a| a.iter().any(|i| i == identity)))
+    }
+
+    fn add_tenant_admin(&self, domain: &str, identity: &str, _added_by: &str) -> StoreResult<()> {
+        let tenant = self
+            .tenants
+            .read()
+            .unwrap()
+            .get(domain)
+            .cloned()
+            .ok_or(BrokerError::TenantNotFound)?;
+        let mut admins = self.tenant_admins.write().unwrap();
+        let list = admins.entry(tenant.id).or_default();
+        if !list.iter().any(|i| i == identity) {
+            list.push(identity.to_string());
+        }
+        Ok(())
+    }
+
+    fn list_tenant_admins(&self, domain: &str) -> StoreResult<Vec<String>> {
+        let Some(tenant) = self.tenants.read().unwrap().get(domain).cloned() else {
+            return Ok(Vec::new());
+        };
+        Ok(self
+            .tenant_admins
+            .read()
+            .unwrap()
+            .get(&tenant.id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn create_roster_entry(
+        &self,
+        tenant_id: u64,
+        local_part: &str,
+        password_hash: &str,
+        created_by: &str,
+    ) -> StoreResult<()> {
+        let mut roster = self.tenant_roster.write().unwrap();
+        let key = (tenant_id, local_part.to_string());
+        if roster.contains_key(&key) {
+            return Err(BrokerError::RosterEntryExists);
+        }
+        roster.insert(
+            key,
+            RosterEntry {
+                tenant_id,
+                local_part: local_part.to_string(),
+                password_hash: password_hash.to_string(),
+                state: RosterState::Active,
+                must_change_password: true,
+                created_by: created_by.to_string(),
+                created_at: Utc::now(),
+                last_login_at: None,
+            },
+        );
+        Ok(())
+    }
+
+    fn get_roster_entry(&self, tenant_id: u64, local_part: &str) -> StoreResult<Option<RosterEntry>> {
+        Ok(self
+            .tenant_roster
+            .read()
+            .unwrap()
+            .get(&(tenant_id, local_part.to_string()))
+            .cloned())
+    }
+
+    fn list_roster(&self, tenant_id: u64) -> StoreResult<Vec<RosterEntry>> {
+        let mut out: Vec<RosterEntry> = self
+            .tenant_roster
+            .read()
+            .unwrap()
+            .values()
+            .filter(|r| r.tenant_id == tenant_id)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.local_part.cmp(&b.local_part));
+        Ok(out)
+    }
+
+    fn set_roster_state(&self, tenant_id: u64, local_part: &str, state: RosterState) -> StoreResult<bool> {
+        let mut roster = self.tenant_roster.write().unwrap();
+        match roster.get_mut(&(tenant_id, local_part.to_string())) {
+            Some(entry) => {
+                entry.state = state;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    fn set_roster_password(
+        &self,
+        tenant_id: u64,
+        local_part: &str,
+        password_hash: &str,
+        must_change: bool,
+    ) -> StoreResult<bool> {
+        let mut roster = self.tenant_roster.write().unwrap();
+        match roster.get_mut(&(tenant_id, local_part.to_string())) {
+            Some(entry) => {
+                entry.password_hash = password_hash.to_string();
+                entry.must_change_password = must_change;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    fn touch_roster_login(&self, tenant_id: u64, local_part: &str) -> StoreResult<()> {
+        if let Some(entry) = self
+            .tenant_roster
+            .write()
+            .unwrap()
+            .get_mut(&(tenant_id, local_part.to_string()))
+        {
+            entry.last_login_at = Some(Utc::now());
+        }
+        Ok(())
+    }
+
+    fn tenant_status_allocate(&self, tenant_id: u64, subject: &str) -> StoreResult<u64> {
+        let mut entries = self.tenant_status.write().unwrap();
+        let key = (tenant_id, subject.to_string());
+        if let Some((idx, _)) = entries.get(&key) {
+            return Ok(*idx);
+        }
+        let next = entries
+            .iter()
+            .filter(|((tid, _), _)| *tid == tenant_id)
+            .map(|(_, (idx, _))| *idx)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        entries.insert(key, (next, false));
+        Ok(next)
+    }
+
+    fn tenant_status_revoke(&self, tenant_id: u64, subject: &str) -> StoreResult<bool> {
+        let mut entries = self.tenant_status.write().unwrap();
+        match entries.get_mut(&(tenant_id, subject.to_string())) {
+            Some((_, revoked)) => {
+                *revoked = true;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    fn tenant_status_is_revoked(&self, tenant_id: u64, idx: u64) -> StoreResult<bool> {
+        Ok(self
+            .tenant_status
+            .read()
+            .unwrap()
+            .iter()
+            .any(|((tid, _), (i, revoked))| *tid == tenant_id && *i == idx && *revoked))
+    }
+
+    fn tenant_status_snapshot(&self, tenant_id: u64) -> StoreResult<(Vec<u64>, u64)> {
+        let entries = self.tenant_status.read().unwrap();
+        let mut revoked = Vec::new();
+        let mut max = 0;
+        for ((tid, _), (idx, is_revoked)) in entries.iter() {
+            if *tid != tenant_id {
+                continue;
+            }
+            max = max.max(*idx);
+            if *is_revoked {
+                revoked.push(*idx);
+            }
+        }
+        Ok((revoked, max))
     }
 }
 

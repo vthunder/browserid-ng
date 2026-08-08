@@ -34,6 +34,7 @@ impl Discoverer for BrokerFallback {
             document: SupportDocument::new(self.key.clone()),
             authoritative_domain: BROKER.to_string(),
             is_primary: false,
+            serving_host: None,
         });
         async move { res }
     }

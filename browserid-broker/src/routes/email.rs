@@ -603,33 +603,37 @@ where
 
         if let Some(ref result) = discovery {
             if result.is_primary {
-                // Primary IdP - use domain as issuer
+                // Primary IdP - use domain as issuer. Support-doc paths are
+                // served from the DNS record's `host=` when set (a hosted
+                // primary's pages live on its provider, bean g5qt), else from
+                // the domain itself.
+                let base = result.serving_host.as_deref().unwrap_or(domain);
                 let auth_url = result
                     .document
                     .authentication
                     .as_ref()
-                    .map(|path| format!("https://{}{}", domain, path));
+                    .map(|path| format!("https://{}{}", base, path));
                 let prov_url = result
                     .document
                     .provisioning
                     .as_ref()
-                    .map(|path| format!("https://{}{}", domain, path));
+                    .map(|path| format!("https://{}{}", base, path));
                 // Device-cert model endpoints from the discovery document.
                 device_auth = result
                     .document
                     .device_authorization
                     .as_ref()
-                    .map(|path| format!("https://{}{}", domain, path));
+                    .map(|path| format!("https://{}{}", base, path));
                 access_mint = result
                     .document
                     .access_cert
                     .as_ref()
-                    .map(|path| format!("https://{}{}", domain, path));
+                    .map(|path| format!("https://{}{}", base, path));
                 agent_device_auth = result
                     .document
                     .agent_device_authorization
                     .as_ref()
-                    .map(|path| format!("https://{}{}", domain, path));
+                    .map(|path| format!("https://{}{}", base, path));
                 (
                     "primary",
                     EmailType::Primary,

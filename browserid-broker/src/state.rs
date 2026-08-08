@@ -97,6 +97,15 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// (they are checked authoritatively against the store). std RwLock:
     /// never held across an await.
     pub foreign_status_lists: std::sync::RwLock<HashMap<String, browserid_core::StatusListToken>>,
+    /// Hosted-primary tenant key sealing (bean g5qt). `None` = the keystore
+    /// secret is not configured; tenant onboarding is refused, everything
+    /// else is unaffected.
+    pub tenant_keystore: Option<crate::tenant_keys::KeystoreKey>,
+    /// Host serving the hosted-primary §7 surface — what tenants' DNS
+    /// records name in `host=` (e.g. `idp.browserid.me`; the broker's own
+    /// host locally). Used to build the tenant support doc's absolute
+    /// status URIs and the generated DNS record text.
+    pub idp_host: String,
 }
 
 /// Default per-user agent identity quota
@@ -113,6 +122,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
         session_store: S,
         email_sender: E,
     ) -> Self {
+        let domain_for_idp = domain.clone();
         Self {
             keypair,
             domain,
@@ -134,6 +144,8 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             used_attestation_jtis: std::sync::RwLock::new(HashMap::new()),
             authority: crate::authority::AuthorityChecker::disabled(),
             foreign_status_lists: std::sync::RwLock::new(HashMap::new()),
+            tenant_keystore: None,
+            idp_host: domain_for_idp,
         }
     }
 
@@ -145,6 +157,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
         session_store: Arc<S>,
         email_sender: Arc<E>,
     ) -> Self {
+        let domain_for_idp = domain.clone();
         Self {
             keypair,
             domain,
@@ -166,6 +179,8 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             used_attestation_jtis: std::sync::RwLock::new(HashMap::new()),
             authority: crate::authority::AuthorityChecker::disabled(),
             foreign_status_lists: std::sync::RwLock::new(HashMap::new()),
+            tenant_keystore: None,
+            idp_host: domain_for_idp,
         }
     }
 
