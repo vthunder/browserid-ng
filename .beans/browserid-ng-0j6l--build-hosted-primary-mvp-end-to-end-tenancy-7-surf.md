@@ -1,11 +1,11 @@
 ---
 # browserid-ng-0j6l
 title: 'Build: hosted-primary MVP end-to-end (tenancy + §7 surface + onboarding + deploy)'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-08-08T17:42:39Z
-updated_at: 2026-08-08T18:10:38Z
+updated_at: 2026-08-08T18:26:47Z
 parent: browserid-ng-g5qt
 ---
 
@@ -20,11 +20,30 @@ Overnight build of the g5qt plan, MVP scoped to make the sandmill.org cutover te
 - [x] Support doc: well_known.rs is Host-aware — idp host serves tenant_support_document() (no key, /idp/* paths); apex serves broker doc
 - [x] Onboarding: /domains + wizard (static/domains.html + common/js/domains.js): tenant_create generates attempt-bound sealed keypair + record text; tenant_check runs the DNSSEC checker and activates + seats first admin on a matching validated record
 - [x] Roster admin: /domains/<domain> console — create user w/ set password, disable/enable, reset password, add admin; roster_* + tenant_admin_add endpoints (session+CSRF+admin gated)
-- [ ] Integration tests green (ssh localtest)
-- [ ] Commit(s) with beans; push; CI image; release to id-host; verify production
-- [ ] Write sandmill.org cutover test instructions for Dan
+- [x] Integration tests green: hosted_primary_test.rs (3) + tenant_keys unit (4); full broker suite green, no regressions
+- [x] Committed (4272f38)+pushed; CI built+pushed GHCR image; released via manual git:from-image (mini-ops; CI ssh step still fails per o7ip); idp.browserid.me vhost+SAN cert; production verified
+- [x] Cutover instructions in Summary below
 
 ## Build log
 
 - Protocol finding: verifier's uri_matches_issuer locks status-list URIs to the cert iss host; hosted tenants serve no web content at their domain → extend authority rule to accept the iss's DNSSEC-declared host= as status-list host (broker verifier + browserid-rp + spec §6.3 note). Tenant lists: signed by tenant key, iss=tenant, served at https://<host>/status/<tenant-domain>.
 - Substrate design: migration v23 — tenants (custodial keypair, private key AEAD-sealed w/ env key; status pending_dns→active→suspended; self_claim policy), tenant_admins (identity-keyed), tenant_roster (local_part, admin-set bcrypt hash, must_change_password, state). Tenant-scoped status entries via tenant_id column.
+
+## Summary of Changes
+
+Hosted-primary IdP-as-a-service shipped end to end and live in production on idp.browserid.me. Commit 4272f38; design docs/plans/2026-08-08-hosted-primary-idp-as-a-service.md.
+
+### Live deployment
+- App `id` now serves browserid.me + idp.browserid.me (same app, SAN cert). Env on `id`: IDP_HOST=idp.browserid.me, TENANT_KEYSTORE_KEY=<64hex in dokku config>. sandmill-infra/apps/id.conf DOMAINS updated + committed.
+- ACTION NEEDED (durability): add IDP_HOST + TENANT_KEYSTORE_KEY to sandmill-infra/secrets/id.env.age so they survive an app destroy/recreate (they persist across normal git:from-image redeploys).
+
+### sandmill.org cutover test (for Dan)
+1. Sign in at https://browserid.me/account with any account holding a verified identity you own (e.g. vthunder@gmail.com).
+2. https://browserid.me/domains -> Add a domain -> enter sandmill.org, pick admin identity -> Generate DNS record. Copy the TXT record.
+3. At Namecheap, REPLACE _browserid.sandmill.org TXT with the generated one (new tenant key + host=idp.browserid.me). Existing sandmill-issued certs die at the flip (new key) — expected.
+4. On /domains, Check DNS until it validates. Tenant activates; you become first admin.
+5. Domain console -> add user danmills with a password (forced change on first sign-in).
+6. Sign in as danmills@sandmill.org at an RP (e.g. https://browserid.me/guestbook): dialog discovers sandmill.org primary -> host=idp.browserid.me -> /idp/device-authorize password login -> certs signed by the tenant key, iss=sandmill.org. Roll back anytime by restoring the old DNS record.
+
+### Deferred follow-ups
+Recovery/transfer guardrails (hold-down, notify, clean-roster); admin recent-strong-auth gate; tenant branding; roster-vs-selfclaimed collision rule; e2e Playwright for the tenant lane; self-claim policy wiring.
