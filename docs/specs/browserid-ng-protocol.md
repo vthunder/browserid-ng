@@ -2,13 +2,14 @@
    - License, v. 2.0. If a copy of the MPL was not distributed with this
    - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
 
-# browserid-ng — Protocol Specification (core)
+# browserid-ng — Protocol Specification
 
-> **Status: draft.** This is the standalone specification of the browserid-ng
-> protocol: the actors, the credential artifacts they exchange, and how a relying
-> party verifies a presentation. Two capabilities are layered as separate modules:
-> agent provisioning & grant exchange, and SBO on-chain attribution (built on the
-> offline verification of §6.3). A plain relying party needs neither.
+> **Status: draft.** This is the standalone, complete specification of the
+> browserid-ng protocol: the actors, the credential artifacts they exchange, how a
+> holder obtains and presents them, and how a relying party verifies a presentation.
+> An agent is simply a holder and is covered throughout — there is no separate
+> "agent protocol." One capability lives outside this spec: **on-chain attribution**
+> (§10), whose trust anchors and dependency direction are genuinely distinct.
 
 ## 1. Overview
 
@@ -28,8 +29,7 @@ module).
   authenticated and runs the **mint** that exchanges a device-signed request for a
   fresh-key **access cert** (§4). A domain that publishes the §3 discovery records
   is its own **primary IdP**; an email whose domain does not is served by a
-  **fallback IdP** (§8). Every IdP MUST implement device-cert issuance (both
-  purposes) and the mint (§7, §9).
+  **fallback IdP** (§8). Its required operations are specified in §7.
 - **Relying Party (RP)** — a site or service that accepts an identity by
   **verifying** a presentation bundle (§6).
 
@@ -99,8 +99,8 @@ for an IdP's identity key.**
 |---|---|
 | `authentication` | Path to the interactive authentication page (§7). |
 | `provisioning` | Path to the provisioning page (§7). |
-| `device-cert` | Path to the **batch device-cert issuance API** (session/interactive-authed): issues the user (`authentication`) + config (`authorization`) device certs. REQUIRED for conformance (§9). |
-| `access-cert` | Path to the **headless access-cert mint API** (§7): device-signed access request → short-lived access cert. The device cert is the credential, so agents mint with no browser. REQUIRED for conformance (§9). |
+| `device-cert` | Path to the **batch device-cert issuance API** (session/interactive-authed): issues the user (`authentication`) + config (`authorization`) device certs. REQUIRED — every IdP MUST implement it (§7). |
+| `access-cert` | Path to the **headless access-cert mint API** (§7): device-signed access request → short-lived access cert. The device cert is the credential, so agents mint with no browser. REQUIRED — every IdP MUST implement it (§7). |
 | `device-authorization` | Path to the browser-facing device-authorization page — the login popup hand-off that gets a device its certs first-party. |
 | `agent-device-authorization` | Optional. The device-authorization page's agent mode (merged provisioning): issues a **named-agent** device cert (an identity differing from the session's, e.g. a `+tag` sub-address). Absent ⇒ named agents unsupported here; "as-you" agents need no support. |
 | `device-revoke` | Optional. Browser-facing device-**revocation** page so the **user** (never a registrar on its own authority) can revoke certs this IdP issued. Absent ⇒ no remote-initiated revocation (certs run to expiry). |
@@ -362,6 +362,11 @@ config-cert / grantor) may differ.
 8. Return the attributed identity (grantor), the grantee (actor of record), the
    grantor and grantee issuers, the `holder`, and the scopes.
 
+A conforming verifier performs **every** step. In particular, accepting anything
+but exactly the four-object bundle (step 1), skipping the per-identity issuer
+authority check (step 2), or honoring any object without its fail-closed status
+check (step 7) is non-conforming.
+
 ### 6.2 Offline verification with detached DNSSEC proofs
 
 Because the trust root is DNSSEC (§3), a certificate or backed assertion can be
@@ -423,44 +428,43 @@ instant revocation at the mint (a revoked device cert mints no new access cert),
 ≤ cache-window for live sessions at status-checking RPs, and fail-closed
 rejection if any of the three authorities is unreachable.
 
-## 7. IdP operations
+## 7. Issuance & obtaining credentials
 
-An IdP produces the credentials the rest of the protocol consumes. Every IdP MUST
-implement two operations (§9); a holder — a browser, an agent, a service — is just
-a client of them.
+This section is what an **IdP** and a **client broker** implement; a plain **RP**
+(which only verifies, §6) can skip it. It covers how a holder — a browser, an
+agent, a service — gets its device certs, mints access certs, and obtains warrants.
+The holder type never changes the machinery; only *how the holder authenticates*
+differs (interactive login §7.3, or device-grant §7.4).
 
 ### 7.1 Device-cert issuance
 
-The IdP authenticates the holder, then signs one or more **device certs** (§4.1)
-for keys the holder generated locally (ideally non-extractable, so a private key
-never leaves the holder). A single authenticated request MAY return a batch — an
-`authentication` device cert together with a `authorization` config cert — so a
-login yields both the ability to mint and the ability to authorize in one step.
-How the holder authenticates is the IdP's choice (an interactive login for a
-browser; the **agent device-grant** below for an agent).
-
-**Agent device-grant.** An agent generates its keypair off-device and cannot
-authenticate to the IdP itself. Instead the **user authorizes** the issuance: the
-agent's public key reaches the IdP through the user's session, the user approves
-the constraints (which identities, the holder — assigned in the user's
-`agents`/`services` namespace, which the agent cannot choose — and the validity),
-and the IdP signs the agent's device cert. (Detailed in the agent-provisioning
-module.)
+**Every IdP MUST implement device-cert issuance for both purposes**
+(`authentication` and `authorization`). The IdP authenticates the holder, then
+signs one or more **device certs** (§4.1) for keys the holder generated locally
+(ideally non-extractable, so a private key never leaves the holder). A single
+authenticated request MAY return a batch — an `authentication` device cert together
+with a `authorization` config cert — so a login yields both the ability to mint and
+the ability to authorize in one step; it MAY also return an auth cert alone, for a
+holder that should be able to log in but not create warrants (§7.5). How the holder
+authenticates is the IdP's choice: an **interactive login** for a browser (§7.3),
+or the **device-grant** for a headless holder (§7.4).
 
 ### 7.2 The access-cert mint
 
-The holder signs an **access request** (§4.2) with its `authentication` device
-key and posts it to the mint endpoint. The IdP verifies the device cert online —
-own signature, unrevoked, in validity, identity in its list — and returns a
-short-lived **access cert** certifying the request's fresh key. The IdP MAY refuse
-even a nominally-valid device cert (abuse or compromise), in which case the holder
-re-authenticates.
+**Every IdP MUST implement the access-cert mint.** The holder signs an **access
+request** (§4.2) with its `authentication` device key and posts it to the mint
+endpoint. The IdP verifies the device cert online —
+own signature, unrevoked, in validity, and the requested identity in its list
+(exact-match; subaddressing does not widen the mint, §4.6) — and returns a
+short-lived **access cert** certifying the request's fresh key, carrying the
+device's holder verbatim. The IdP MAY refuse even a nominally-valid device cert
+(abuse or compromise), in which case the holder re-authenticates.
 
 Minting online on a fresh key each time is what lets a credential be **cookie-free**
-(no session cookie to lose to browser storage policies) and lets an **agent mint
-headlessly**, with no browser and no user present.
+(no session cookie to lose to browser storage policies) and lets a headless holder
+**mint with no browser and no user present**.
 
-### 7.3 The web login exchange
+### 7.3 Interactive login: the web exchange
 
 For a browser RP, obtaining a presentation is an interactive exchange, kept
 **first-party** so signing keys never leave the origin that holds them:
@@ -471,15 +475,108 @@ For a browser RP, obtaining a presentation is an interactive exchange, kept
    RP will accept for a no-primary email. It is a call argument, not fetched from
    the RP.
 2. The mediator opens the identity flow in a **first-party popup**. There the
-   holder authenticates to its IdP, obtains its device certs (§7.1), mints an
-   access cert (§7.2), and signs the assertion and warrant — each signing step
-   performed in the origin that holds the corresponding key.
+   holder authenticates to its IdP, obtains its device cert(s) (§7.1), mints an
+   access cert (§7.2), and assembles the bundle — signing the assertion, and, **if
+   it holds a config cert**, a fresh login **warrant** for this audience. A holder
+   issued only an auth cert instead presents a **preexisting** warrant whose
+   holder-matcher covers it (§7.5). Each signing step happens in the origin that
+   holds the key.
 3. The mediator returns the **presentation bundle** (§5) to the RP, which verifies
    it (§6).
 
 `acceptedFallbacks` only routes the exchange and lets it fail fast; it grants
 nothing, because the RP's verifier independently enforces its trusted-issuer set
 (§8.1).
+
+### 7.4 Headless issuance: the device-grant
+
+A headless holder (an agent or service) generates its keypair off-browser and
+cannot authenticate to the IdP interactively. Instead the **user authorizes** the
+issuance:
+
+1. The holder presents its device **public key** to the user's client broker (a
+   pairing / device-grant hand-off).
+2. The user approves the constraints — the `identities` (one email, several, or an
+   explicit `user+*@domain` glob), the **holder** (assigned by the broker in the
+   account's `agents`/`services` namespace; the holder cannot choose it), and the
+   validity.
+3. The IdP signs the device cert directly (§4.1) — it is the direct issuer, gated
+   only by the user's approval.
+
+An **IdP that issues to headless holders MUST support the device-grant.** It SHOULD
+enforce a per-user quota of active headless device certs (reference default: 25),
+and MAY refuse issuance. The holder then mints access certs headlessly (§7.2).
+Attribution lives in the identities the holder acts as and, at presentation, in the
+warrant's grantor/grantee (§5).
+
+### 7.5 Obtaining warrants
+
+A warrant (§5) authorizes a `grantor → grantee` at one audience, signed by the
+grantor's **config cert** client-side — so only a party holding a config cert can
+create one. The IdP never sees an audience or scopes; the signed warrant is stored
+in the hosted-broker registry for device-agnostic reuse (§5) and per-grant
+revocation (§6.3).
+
+How a holder comes to present a warrant depends on what it was issued:
+
+- **A holder with a config cert** signs its own warrants — at an interactive login
+  the browser signs a fresh login warrant in the popup (§7.3), and it can author
+  warrants for other holders it grants to.
+- **A holder with only an auth cert** (least privilege — a login on a shared
+  machine, or a headless holder not trusted to authorize) cannot create warrants. It
+  presents a **preexisting** warrant whose holder-matcher covers it (e.g. a standing
+  grant to the `browsers` category), and obtains new ones through the just-in-time
+  consent flow below, where a party holding the config cert (the user, at their
+  broker) signs on its behalf.
+
+The **just-in-time consent flow** lets a holder obtain a warrant with the user
+approving out of band. A **broker that serves such holders MUST host it and the
+warrant registry.** It keeps the shape of the OAuth device authorization grant
+(RFC 8628):
+
+1. **Request.** The holder posts an object signed by its device key, naming its
+   identity (the prospective grantee) and **1–8 grants**, each a
+   `{ audience, scopes }` (duplicate audiences MUST be rejected). Two optional
+   fields shape the consent: **`grantor`** pins whom the warrants attribute to
+   (absent or `*`: the approver chooses; `self`: the holder itself; a concrete
+   email: that identity — a pin is **never silently substituted**, and an
+   unsatisfiable pin fails the request immediately); **`message`** is the holder's
+   own ≤500-char rationale, shown quoted and marked unverified. The broker verifies
+   the signature against the holder's device cert and returns a `code`,
+   `verification_uri`, `expires_in`, and `interval`.
+2. **Consent.** The broker serves the consent page at `verification_uri` to the
+   signed-in user only. It MUST show the holder's identity and **user-chosen
+   display name** (the requester's own label only ever shown marked unverified),
+   and — for **every** grant, each with equal prominence — the **verified audience**
+   and its requested scopes, prefilled from the request, never user-typed. A
+   request from a holder the account has never met MUST render a deny-only card
+   (the poll learns a machine reason, e.g. `unknown_agent`). Approval MUST be
+   deliberate (no default-focused button) and is all-or-nothing over the displayed
+   set; on approval the page signs one warrant per grant with the config cert and
+   records each in the registry.
+3. **Poll.** The holder polls with `{ code }`: `pending` → retry after `interval`;
+   `approved` → the warrants (one per grant, in order); `denied` (optionally with a
+   machine reason); `expired`; or `429` if polling faster than `interval`. `code`
+   is single-use, ≥ 128-bit, short-lived; the pending request is deleted on
+   delivery, while the issued warrants persist in the registry.
+
+**Two-stage provisioning.** A single hand-off MAY both issue the device cert
+(§7.4) and grant warrants, approved in two stages under one code: an **identity
+stage** (verify the pairing, mint the device cert — no "permission" language) then
+a **grants stage** (the consent question above, identity fixed). Declining the
+grants stage is honest, not fatal: the identity exists, and the pickup delivers the
+credential with no warrants and a `grants_denied` reason.
+
+The consent page is the trust boundary against consent-phishing: it MUST render the
+verified target origin (not only a friendly name), and approval MUST be deliberate.
+
+### 7.6 Managing issued certs
+
+An IdP SHOULD expose authenticated surfaces (in the user's client broker) to
+**list** a user's active device certs and **revoke** one. Revoking flips the cert's
+`status` bit (§6.3), so it mints no further access certs and its outstanding access
+certs are rejected fail-closed within one access-cert TTL. Holders and identities
+are never recycled.
 
 ## 8. Fallback IdPs
 
@@ -545,33 +642,42 @@ any RP's accepted-fallbacks choice.
 > issuer-carried certs, reuse gating — lets anyone stand up another fallback
 > with no further protocol change.
 
-## 9. Conformance
+## 9. Grant exchange (optional)
 
-Every IdP **MUST** implement **device-cert issuance for both purposes**
-(`authentication` and `authorization`) and the **access-cert mint API** (§7).
-No-primary domains are served by the fallback IdP (browserid.me); a domain
-**with** a primary MUST have that primary implement the full API — the fallback
-cannot issue on its behalf (§8). So login and agents ride one required API.
+> **Optional, and served by the RP.** These endpoints live on the **relying
+> party**, not on any IdP or broker — so there is nothing here for a broker to
+> implement. An RP that verifies a presentation (§6) and mints its own session
+> however it likes needs none of this; it is a convenience for **API relying
+> parties** that want a standard OAuth-shaped token swap, and it applies equally to
+> any holder.
 
-A **verifier** conforms only if it (a) accepts exactly the four-object bundle,
-(b) enforces **per-identity issuer authority** — the access-cert issuer
-authoritative for the grantee's identity and the config-cert issuer for the
-grantor's identity (§6.1 step 2) — and (c) checks all **three status authorities
-fail-closed** (§6.1).
+An RP MAY opt in with one endpoint that exchanges the presentation bundle (§5) for
+the RP's own token (RFC 7521 assertion-grant shape). Grant type:
+`urn:x-browserid:grant-type:assertion`.
 
-## 10. Layered modules
+- **In-band discovery.** An unauthenticated request to a protected resource returns
+  `401` with a `WWW-Authenticate: BrowserID` challenge carrying `audience`
+  (REQUIRED — the exact audience assertions and warrants must name; the RP is the
+  sole authority for it), `token_endpoint` (REQUIRED, absolute URL), and optional
+  `scopes` and `realm`. Unknown parameters MUST be ignored.
+- **Token endpoint.** `POST <token_endpoint>` (`application/x-www-form-urlencoded`)
+  with `grant_type=urn:x-browserid:grant-type:assertion` and `assertion=<bundle>`.
+  The RP MUST verify the bundle per §6 before issuing a token, and MUST NOT grant
+  authority beyond the intersection of the warrant's `scopes` and its own. Success
+  is an OAuth-shaped `{ access_token, token_type, expires_in, email (=grantor),
+  grantee, scopes }`; failure a `400` with `invalid_grant` /
+  `unsupported_grant_type`.
+- **Out-of-band discovery.** RPs SHOULD serve
+  `/.well-known/oauth-authorization-server` (RFC 8414) advertising the
+  `token_endpoint`, the grant type, and `scopes_supported`.
 
-- **[Agent provisioning, warrants & grant exchange](./agent-provisioning-and-grant-api.md)** —
-  how the IdP issues an agent device cert (with a broker-assigned holder in the
-  `agents`/`services` namespace) after the user authorizes it (device-grant), how
-  the agent **mints access certs headlessly**, and how a config-cert-signed
-  **warrant** confines it to the audiences and scopes its principal approved.
-  Defines the consent + grant-exchange surfaces that produce and consume the
-  `access_cert~assertion~warrant~config_cert` bundle §5/§6 verify.
-- **On-chain attribution** — attributing an email identity to an `ed25519:` key on
-  a ledger, built on the offline-verification primitive (§6.3). Specified
-  separately as the attribution module: its concepts are ledger-specific, and it
-  depends on this core protocol, not the reverse.
+## 10. On-chain attribution (external module)
+
+Attributing an email identity to an `ed25519:` key on a ledger is built on the
+offline-verification primitive (§6.2) and specified **separately** as the
+attribution module: its concepts are ledger-specific, and it depends on this
+protocol, not the reverse. This is the one capability that lives outside this spec,
+because its trust anchors and dependency direction are genuinely distinct.
 
 ## Appendix A — Lineage
 
