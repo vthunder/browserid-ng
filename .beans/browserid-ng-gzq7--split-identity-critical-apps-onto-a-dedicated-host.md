@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-08-06T14:12:15Z
-updated_at: 2026-08-07T15:30:01Z
+updated_at: 2026-08-08T16:50:44Z
 ---
 
 Rebuild sandmill.org dokku host into two: an identity host (browserid.me broker, bsky-bridge, bsky-pds, browserid-wallet) and a hobby host (everything else), driven by a reproducible setup script with secrets in an encrypted git repo.
@@ -147,3 +147,12 @@ NOT yet verified end to end: provision-host.sh and restore-state.sh have never r
 - [x] Migrated apps STOPPED on the old host 2026-08-07 (id, www, guestbook-mcp, browserid-wallet, bsky-bridge, bsky-pds). Data left in place — the old host is still the rollback path, so do NOT destroy it yet. Hobby apps unaffected and verified.
 - [ ] Decommission the old host once confident (after the hobby rebuild).
 - Hobby host rebuild from the same scripts (stage 5).
+
+## 2026-08-08 post-migration gap found (via browserid-ng deploy)
+
+A browserid-ng push deployed via CI while DOKKU_HOST still said sandmill.org: the release went to the OLD host's stopped rollback apps and RESTARTED id + browserid-wallet there (production browserid.me was untouched and stale). Fixed in-session:
+- Deployed 12e2129 manually: ssh dokku@browserid.me git:from-image id/browserid-wallet <ghcr image:sha> (mini-ops key).
+- Re-stopped id + browserid-wallet on sandmill.org (rollback state restored).
+- Set the browserid-ng repo variable DOKKU_HOST=browserid.me.
+
+REMAINING (needs laptop-admin/root): the id-host dokku user authorizes only laptop-admin + mini-ops — no CI deploy key. Until one is added (per-repo key per infra README: authorize on id-host dokku user + commit pubkey to keys/dokku/ + set browserid-ng secret DOKKU_SSH_KEY), every browserid-ng CI deploy fails loudly at the ssh step and needs the manual git:from-image fallback. Same will apply to deploy-www / deploy-guestbook / bsky-bridge CI if they target the id-host.
