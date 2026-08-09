@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: normal
 created_at: 2026-08-08T17:42:39Z
-updated_at: 2026-08-09T06:09:38Z
+updated_at: 2026-08-09T06:56:57Z
 parent: browserid-ng-g5qt
 ---
 
@@ -59,3 +59,12 @@ Store create_roster_entry gained a must_change param; API RosterCreateRequest.re
 ## Delete tenant (2026-08-09, commit 0bd01f5, deployed)
 
 Added tenant deletion for start-over testing: store delete_tenant (cascades admins/roster/status), POST /wsapi/tenant/delete (admin-gated + typed domain confirmation), console 'Danger zone' section. Test: delete_tenant_clears_rows_and_frees_the_domain.
+
+## Admin-flow redesign + revoke-on-verify (2026-08-09, commit 4e83b36, deployed)
+
+Per Dan's feedback:
+- Onboarding is now ONE admin question ("Who administers this domain?"): existing identity (dropdown filtered to exclude emails at the domain being configured; no password; sign in with browserid) OR an email at the domain (set password; that email is admin + login). Helper copy reframed to "how you'll sign in". No separate first-user step.
+- Tenants gain owner_user_id (migration v24): the onboarding account always retains console access even when the admin-of-record is a fresh domain-local email. Local admin login is pre-created at tenant_create (hashed, must_change=false, usable once active).
+- On activation, revoke_domain_device_certs retires broker/fallback-issued certs for identities at the domain (fail-closed). External-IdP certs die via the DNS key change.
+
+Tests: create_local_admin_preseeds_login_no_forced_change, activation_revokes_prior_broker_certs_for_the_domain. Suite green. Verified live: new wizard copy serving, tenant/create gated, migration applied.
