@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: normal
 created_at: 2026-08-08T17:42:39Z
-updated_at: 2026-08-08T18:26:47Z
+updated_at: 2026-08-09T04:14:54Z
 parent: browserid-ng-g5qt
 ---
 
@@ -47,3 +47,11 @@ Hosted-primary IdP-as-a-service shipped end to end and live in production on idp
 
 ### Deferred follow-ups
 Recovery/transfer guardrails (hold-down, notify, clean-roster); admin recent-strong-auth gate; tenant branding; roster-vs-selfclaimed collision rule; e2e Playwright for the tenant lane; self-claim policy wiring.
+
+## Post-testing UX fixes (2026-08-09, commit 89041b0, deployed)
+
+From Dan's initial testing:
+1. Onboarding now collects the first user's username + password (with Generate) up front and creates that roster entry the instant DNS validates — no separate step.
+2. Forced password-change is now a parameter, not always-on. The onboarding first-user is created with require_password_change=false (the admin chose the password, so no confusing change prompt on their own first sign-in). Console Add-user exposes it as a checkbox (default on = provisioning others). Change-screen copy reframed to be about the user's own password.
+
+Store create_roster_entry gained a must_change param; API RosterCreateRequest.require_password_change (default true). Test: roster_user_without_forced_change_issues_directly.
