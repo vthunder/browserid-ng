@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: normal
 created_at: 2026-08-08T17:42:39Z
-updated_at: 2026-08-09T04:14:54Z
+updated_at: 2026-08-09T06:09:38Z
 parent: browserid-ng-g5qt
 ---
 
@@ -55,3 +55,7 @@ From Dan's initial testing:
 2. Forced password-change is now a parameter, not always-on. The onboarding first-user is created with require_password_change=false (the admin chose the password, so no confusing change prompt on their own first sign-in). Console Add-user exposes it as a checkbox (default on = provisioning others). Change-screen copy reframed to be about the user's own password.
 
 Store create_roster_entry gained a must_change param; API RosterCreateRequest.require_password_change (default true). Test: roster_user_without_forced_change_issues_directly.
+
+## Delete tenant (2026-08-09, commit 0bd01f5, deployed)
+
+Added tenant deletion for start-over testing: store delete_tenant (cascades admins/roster/status), POST /wsapi/tenant/delete (admin-gated + typed domain confirmation), console 'Danger zone' section. Test: delete_tenant_clears_rows_and_frees_the_domain.
