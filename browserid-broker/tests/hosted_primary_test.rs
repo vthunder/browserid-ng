@@ -26,18 +26,24 @@ const IDP_HOST: &str = "idp.localhost:3000";
 const TENANT: &str = "tenant.example";
 
 fn make_server() -> (TestServer, Arc<InMemoryUserStore>) {
+    let (server, store, _sender) = make_server_full();
+    (server, store)
+}
+
+fn make_server_full() -> (TestServer, Arc<InMemoryUserStore>, MockEmailSender) {
     let user_store = Arc::new(InMemoryUserStore::new());
+    let sender = MockEmailSender::new();
     let mut state = AppState::new_with_arcs(
         KeyPair::generate(),
         BROKER.to_string(),
         user_store.clone(),
         Arc::new(InMemorySessionStore::new()),
-        Arc::new(MockEmailSender::new()),
+        Arc::new(MockEmailSender { sent: sender.sent.clone() }),
     );
     state.idp_host = IDP_HOST.to_string();
     state.tenant_keystore = Some(KeystoreKey::from_env_value(&"ab".repeat(32)).unwrap());
     let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
-    (server, user_store)
+    (server, user_store, sender)
 }
 
 /// Create + activate a tenant directly in the store, returning its public key.
@@ -45,7 +51,7 @@ fn seed_active_tenant(store: &InMemoryUserStore) -> String {
     let ks = KeystoreKey::from_env_value(&"ab".repeat(32)).unwrap();
     let (public_key, sealed) = ks.generate_sealed(TENANT).unwrap();
     store
-        .create_tenant(TENANT, &public_key, &sealed, "admin@example.org")
+        .create_tenant(TENANT, &public_key, &sealed, None, "admin@example.org")
         .unwrap();
     store.set_tenant_status(TENANT, TenantStatus::Active).unwrap();
     public_key
@@ -279,11 +285,78 @@ async fn delete_tenant_clears_rows_and_frees_the_domain() {
         .generate_sealed(TENANT)
         .unwrap();
     store
-        .create_tenant(TENANT, &pubkey2, &sealed2, "someone@else.org")
+        .create_tenant(TENANT, &pubkey2, &sealed2, None, "someone@else.org")
         .expect("domain should be free to onboard again");
     // The recreated tenant is a clean slate (no leftover roster).
     let fresh = store.get_tenant(TENANT).unwrap().unwrap();
     assert!(store.get_roster_entry(fresh.id, "eve").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn create_local_admin_preseeds_login_no_forced_change() {
+    // Onboarding with a domain-local admin pre-creates that login (hashed at
+    // create time), tied to the onboarding account as owner, with no forced
+    // change. It becomes usable once the tenant is active.
+    let (server, store, sender) = make_server_full();
+    // A signed-in account with a verified email (the operator).
+    let session = common::create_user(&server, &sender, "operator@op.example", "operatorpass1").await;
+    let csrf = common::get_csrf(&server, &session).await;
+    let created: Value = server
+        .post("/wsapi/tenant/create")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({
+            "csrf": csrf, "domain": TENANT,
+            "admin_email": format!("boss@{TENANT}"), "password": "bosspassword1",
+        }))
+        .await
+        .json();
+    assert_eq!(created["success"], true, "create: {created}");
+
+    // Pending tenant: the login exists but can't be used yet.
+    let tenant = store.get_tenant(TENANT).unwrap().unwrap();
+    assert_eq!(tenant.status, TenantStatus::PendingDns);
+    assert_eq!(tenant.owner_user_id.is_some(), true, "tenant is owned by the operator");
+    let entry = store.get_roster_entry(tenant.id, "boss").unwrap().unwrap();
+    assert_eq!(entry.must_change_password, false, "admin chose the password");
+
+    // Activate directly (DNS is unit-tested elsewhere) and log in — no change prompt.
+    store.set_tenant_status(TENANT, TenantStatus::Active).unwrap();
+    let (_, login) = idp_login(&server, &format!("boss@{TENANT}"), "bosspassword1").await;
+    assert_eq!(login["success"], true, "{login}");
+    assert_eq!(login["must_change_password"], false);
+}
+
+#[tokio::test]
+async fn activation_revokes_prior_broker_certs_for_the_domain() {
+    use browserid_broker::store::DeviceCertRecord;
+    use chrono::Utc;
+    let (_server, store) = make_server();
+    // A broker-issued (fallback) device cert for an identity at the domain,
+    // with a broker status index, exists before onboarding.
+    let uid = store.create_user_no_password().unwrap();
+    let idx = store.get_or_allocate_status("device", "somepub").unwrap();
+    store
+        .insert_device_cert(DeviceCertRecord {
+            id: 0,
+            user_id: uid,
+            identities: vec![format!("legacy@{TENANT}")],
+            purpose: "authentication".into(),
+            holder: "br.x".into(),
+            pubkey: "somepub".into(),
+            iss: BROKER.into(),
+            issued_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::days(90),
+            revoked_at: None,
+            status_idx: Some(idx),
+        })
+        .unwrap();
+    assert!(!store.is_status_revoked_idx(idx).unwrap());
+
+    let n = store.revoke_domain_device_certs(TENANT).unwrap();
+    assert_eq!(n, 1, "the domain's broker cert should be revoked");
+    assert!(store.is_status_revoked_idx(idx).unwrap(), "status bit flipped");
+    // A cert at another domain is untouched.
+    assert_eq!(store.revoke_domain_device_certs("other.example").unwrap(), 0);
 }
 
 #[tokio::test]

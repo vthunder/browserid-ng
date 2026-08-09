@@ -119,48 +119,105 @@
     return out;
   }
 
+  // Verified account emails that are NOT at `domain` (those go under the
+  // "email at this domain" option instead).
+  function externalIdentities(domain) {
+    return identities.filter(function (e) {
+      var at = e.lastIndexOf("@");
+      return at === -1 || e.slice(at + 1).toLowerCase() !== domain;
+    });
+  }
+
   function renderWizard() {
     var w = document.getElementById("wizard");
-    var opts = identities.map(function (e) { return '<option value="' + esc(e) + '">' + esc(e) + '</option>'; }).join("");
     w.innerHTML =
       '<label for="wiz-domain">Domain</label>' +
       '<input id="wiz-domain" placeholder="example.com" autocapitalize="off" autocorrect="off" />' +
-      '<label for="wiz-id">Admin identity (manages this domain — becomes the first admin)</label>' +
-      '<select id="wiz-id">' + opts + '</select>' +
-      '<label for="wiz-user">First user at this domain</label>' +
-      '<div class="toolbar" style="gap:8px">' +
-        '<div style="flex:2"><input id="wiz-user" placeholder="alice" autocapitalize="off" autocorrect="off" /></div>' +
-        '<div style="flex:2"><input id="wiz-pw" type="text" placeholder="password (min 8)" autocapitalize="off" autocorrect="off" /></div>' +
-        '<div style="flex:0"><button id="wiz-gen" class="ghost" type="button">Generate</button></div>' +
+      '<label style="margin-top:16px">Who administers this domain?</label>' +
+      // Option 1: existing identity
+      '<div class="card" style="margin:8px 0;padding:14px">' +
+        '<label style="font-weight:600;margin-top:0"><input type="radio" name="wiz-mode" value="existing" checked style="width:auto;margin-right:8px" />An identity I already have</label>' +
+        '<select id="wiz-existing" style="margin-top:8px"></select>' +
+        '<p class="muted" id="wiz-existing-help" style="margin:6px 0 0">You will use browserid to sign in with this email.</p>' +
       '</div>' +
-      '<p class="muted" style="margin-top:6px">This login is created with the password above — no forced change on first sign-in. ' +
-      'You can add more users (and require a change) from the console afterward.</p>' +
+      // Option 2: email at this domain
+      '<div class="card" style="margin:8px 0;padding:14px">' +
+        '<label style="font-weight:600;margin-top:0"><input type="radio" name="wiz-mode" value="local" style="width:auto;margin-right:8px" />An email at <span id="wiz-suffix-label">this domain</span></label>' +
+        '<div class="toolbar" style="gap:8px;margin-top:8px">' +
+          '<div style="flex:2"><input id="wiz-local" placeholder="you" autocapitalize="off" autocorrect="off" /></div>' +
+          '<div style="flex:0;align-self:center" class="muted">@<span id="wiz-suffix">domain</span></div>' +
+        '</div>' +
+        '<div class="toolbar" style="gap:8px;margin-top:8px">' +
+          '<div style="flex:2"><input id="wiz-pw" type="text" placeholder="password (min 8)" autocapitalize="off" autocorrect="off" /></div>' +
+          '<div style="flex:0"><button id="wiz-gen" class="ghost" type="button">Generate</button></div>' +
+        '</div>' +
+        '<p class="muted" style="margin:6px 0 0">You will use this password to sign in.</p>' +
+      '</div>' +
       '<div style="margin-top:16px"><button id="wiz-go">Generate DNS record</button></div>' +
       '<div class="err" id="wiz-err"></div>' +
       '<div id="wiz-out" class="hidden record"></div>';
+
+    var domainInput = document.getElementById("wiz-domain");
+
+    function refresh() {
+      var domain = domainInput.value.trim().toLowerCase();
+      document.getElementById("wiz-suffix").textContent = domain || "domain";
+      document.getElementById("wiz-suffix-label").textContent = domain || "this domain";
+      var ext = externalIdentities(domain);
+      var sel = document.getElementById("wiz-existing");
+      if (ext.length) {
+        sel.innerHTML = ext.map(function (e) { return '<option value="' + esc(e) + '">' + esc(e) + '</option>'; }).join("");
+        sel.disabled = false;
+        document.getElementById("wiz-existing-help").textContent = "You will use browserid to sign in with this email.";
+      } else {
+        sel.innerHTML = '<option value="">(no other identities)</option>';
+        sel.disabled = true;
+        document.getElementById("wiz-existing-help").textContent =
+          "You have no browserid identity outside this domain — use an email at the domain instead.";
+      }
+    }
+    domainInput.addEventListener("input", refresh);
+    refresh();
+
     document.getElementById("wiz-gen").addEventListener("click", function () {
       document.getElementById("wiz-pw").value = genPassword();
+      // Choosing to set a password implies the local option.
+      document.querySelector('input[name="wiz-mode"][value="local"]').checked = true;
     });
+
     document.getElementById("wiz-go").addEventListener("click", function () {
-      var domain = document.getElementById("wiz-domain").value.trim().toLowerCase();
-      var identity = document.getElementById("wiz-id").value;
-      var user = document.getElementById("wiz-user").value.trim().toLowerCase();
-      var pw = document.getElementById("wiz-pw").value;
+      var domain = domainInput.value.trim().toLowerCase();
+      var mode = (document.querySelector('input[name="wiz-mode"]:checked') || {}).value;
       var err = document.getElementById("wiz-err");
       err.className = "err"; err.textContent = "";
       if (!domain) { err.textContent = "Enter a domain."; return; }
-      if (!user) { err.textContent = "Enter a username for the first user."; return; }
-      if (pw.length < 8) { err.textContent = "First user's password must be at least 8 characters."; return; }
-      postJSON("/wsapi/tenant/create", { csrf: csrf, domain: domain, identity: identity }).then(function (res) {
+
+      var body = { csrf: csrf, domain: domain };
+      var adminLabel;
+      if (mode === "local") {
+        var local = document.getElementById("wiz-local").value.trim().toLowerCase();
+        var pw = document.getElementById("wiz-pw").value;
+        if (!local) { err.textContent = "Enter the email's username."; return; }
+        if (pw.length < 8) { err.textContent = "Password must be at least 8 characters."; return; }
+        body.admin_email = local + "@" + domain;
+        body.password = pw;
+        adminLabel = body.admin_email + " (you'll sign in with your password)";
+      } else {
+        var identity = document.getElementById("wiz-existing").value;
+        if (!identity) { err.textContent = "You have no identity outside this domain — choose an email at the domain."; return; }
+        body.admin_email = identity;
+        adminLabel = identity + " (you'll sign in with browserid)";
+      }
+
+      postJSON("/wsapi/tenant/create", body).then(function (res) {
         if (!res.ok || !res.body.success) { err.textContent = (res.body && res.body.reason) || "could not create"; return; }
         var out = document.getElementById("wiz-out");
         out.classList.remove("hidden");
         out.innerHTML =
           '<div class="muted">Publish this TXT record on your DNS (the zone must be DNSSEC-signed):</div>' +
           '<code>' + esc(res.body.record_name) + '</code><br><code>' + esc(res.body.record) + '</code>' +
-          '<div class="muted" style="margin-top:8px">Publishing this record is what makes <strong>' + esc(identity) +
-          '</strong> the admin for this domain. Your first user <strong>' + esc(user) + '@' + esc(domain) +
-          '</strong> will be created when DNS verifies.</div>' +
+          '<div class="muted" style="margin-top:8px">Publishing this record makes <strong>' + esc(adminLabel) +
+          '</strong> the administrator once DNS verifies.</div>' +
           '<div style="margin-top:12px"><button id="wiz-check">Check DNS now</button></div>' +
           '<div class="err" id="wiz-check-err"></div>';
         document.getElementById("wiz-check").addEventListener("click", function () {
@@ -169,17 +226,8 @@
           postJSON("/wsapi/tenant/check", { csrf: csrf, domain: domain }).then(function (r2) {
             var b = r2.body || {};
             if (b.dns === "validated" && b.status === "active") {
-              ce.className = "err ok"; ce.textContent = "Verified — creating your first user…";
-              // The admin chose this password, so no forced change on first login.
-              postJSON("/wsapi/tenant/roster", {
-                csrf: csrf, domain: domain, local_part: user, password: pw, require_password_change: false,
-              }).then(function (r3) {
-                if (!r3.ok || !r3.body.success) {
-                  ce.className = "err"; ce.textContent = "Domain active, but the first user could not be created: " +
-                    ((r3.body && r3.body.reason) || "unknown") + ". Add them from the console.";
-                }
-                setTimeout(function () { location.href = "/domains/" + encodeURIComponent(domain); }, 900);
-              });
+              ce.className = "err ok"; ce.textContent = "Verified — domain is active. Opening the console…";
+              setTimeout(function () { location.href = "/domains/" + encodeURIComponent(domain); }, 900);
             } else {
               ce.className = "err"; ce.textContent = dnsMessage(b.dns, b.host_ok);
             }

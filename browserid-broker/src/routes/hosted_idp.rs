@@ -570,35 +570,11 @@ where
 // Onboarding + roster admin (broker session + CSRF)
 // ===========================================================================
 
-/// Session + CSRF + identity-ownership gate: the session's account must own
-/// `identity` (verified). Returns the normalized identity.
-fn owned_identity<U: UserStore, S: SessionStore, E: EmailSender>(
-    state: &AppState<U, S, E>,
-    cookies: &Cookies,
-    csrf: &str,
-    identity: &str,
-) -> Result<String, BrokerError> {
-    let session = super::session::get_session_from_cookies(cookies, state.session_store.as_ref())
-        .ok_or(BrokerError::NotAuthenticated)?;
-    if session.csrf_token != csrf {
-        return Err(BrokerError::InvalidCsrf);
-    }
-    let identity = identity.trim().to_lowercase();
-    let owned = state
-        .user_store
-        .list_emails(session.user_id)?
-        .into_iter()
-        .any(|e| e.verified && e.email == identity);
-    if !owned {
-        return Err(BrokerError::PolicyRefused(
-            "identity not verified on this account".into(),
-        ));
-    }
-    Ok(identity)
-}
-
-/// Admin gate: some verified identity on the session's account administers
-/// `domain`. Returns that identity.
+/// Admin gate: the session's account either OWNS the tenant (onboarded it —
+/// always retains access, even before any admin email is on the account) or
+/// holds a verified identity that is a tenant admin. Returns an identity
+/// string for audit (the matching admin email, else a verified account email,
+/// else an owner marker).
 fn session_admin_identity<U: UserStore, S: SessionStore, E: EmailSender>(
     state: &AppState<U, S, E>,
     cookies: &Cookies,
@@ -610,10 +586,22 @@ fn session_admin_identity<U: UserStore, S: SessionStore, E: EmailSender>(
     if session.csrf_token != csrf {
         return Err(BrokerError::InvalidCsrf);
     }
-    for email in state.user_store.list_emails(session.user_id)? {
+    let tenant = state.user_store.get_tenant(domain)?.ok_or(BrokerError::TenantNotFound)?;
+    let emails = state.user_store.list_emails(session.user_id)?;
+    // Admin-of-record match wins (better audit identity).
+    for email in &emails {
         if email.verified && state.user_store.is_tenant_admin(domain, &email.email)? {
-            return Ok(email.email);
+            return Ok(email.email.clone());
         }
+    }
+    // Owner of the tenant always retains access.
+    if tenant.owner_user_id == Some(session.user_id) {
+        let who = emails
+            .iter()
+            .find(|e| e.verified)
+            .map(|e| e.email.clone())
+            .unwrap_or_else(|| format!("owner:{}", session.user_id.0));
+        return Ok(who);
     }
     Err(BrokerError::PolicyRefused("not a tenant admin".into()))
 }
@@ -643,12 +631,20 @@ fn valid_local_part(local: &str) -> bool {
 pub struct TenantCreateRequest {
     pub csrf: String,
     pub domain: String,
-    /// The identity claiming the domain — becomes first admin at activation.
-    pub identity: String,
+    /// Who administers the domain. Either an identity the account already
+    /// holds (external — no password), or an email AT this domain (local —
+    /// `password` required; it becomes the admin's login once verified).
+    pub admin_email: String,
+    /// Required iff `admin_email` is at `domain`; must be empty otherwise.
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 /// POST /wsapi/tenant/create — start an onboarding attempt: generate the
-/// custodial keypair and return the record to publish.
+/// custodial keypair and return the record to publish. Records the admin of
+/// record, ties the tenant to the onboarding account (owner), and — for a
+/// domain-local admin — pre-creates that login (hashed now, usable only once
+/// the tenant is active).
 pub async fn tenant_create<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
@@ -659,13 +655,54 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    let identity = owned_identity(state.as_ref(), &cookies, &req.csrf, &req.identity)?;
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    if session.csrf_token != req.csrf {
+        return Err(BrokerError::InvalidCsrf);
+    }
     let domain = req.domain.trim().to_lowercase();
     if !valid_tenant_domain(&domain) {
         return Err(BrokerError::ValidationError("invalid domain".into()));
     }
     if domain == state.domain.to_lowercase() || domain == state.idp_host.to_lowercase() {
         return Err(BrokerError::PolicyRefused("that domain is this service".into()));
+    }
+    let admin_email = req.admin_email.trim().to_lowercase();
+    let (admin_local, admin_domain) =
+        split_email(&admin_email).ok_or(BrokerError::InvalidEmail)?;
+    let password = req.password.as_deref().unwrap_or("");
+    let is_local_admin = admin_domain == domain;
+    if is_local_admin {
+        // Local admin: the domain will be authoritative for it, so it needs a
+        // login password now. It need not (and usually will not) be on the
+        // account yet — owner linkage keeps the operator's console access.
+        if !valid_local_part(&admin_local) {
+            return Err(BrokerError::ValidationError("invalid admin email local part".into()));
+        }
+        if password.len() < 8 {
+            return Err(BrokerError::PasswordTooShort);
+        }
+        if password.len() > 80 {
+            return Err(BrokerError::PasswordTooLong);
+        }
+    } else {
+        // External admin: must be an identity the account already controls
+        // (that is how we know they hold it), and no password applies.
+        if !password.is_empty() {
+            return Err(BrokerError::ValidationError(
+                "a password only applies to an email at this domain".into(),
+            ));
+        }
+        let owned = state
+            .user_store
+            .list_emails(session.user_id)?
+            .into_iter()
+            .any(|e| e.verified && e.email == admin_email);
+        if !owned {
+            return Err(BrokerError::PolicyRefused(
+                "that identity is not verified on your account".into(),
+            ));
+        }
     }
     let keystore = state
         .tenant_keystore
@@ -674,10 +711,28 @@ where
     let (public_key, sealed) = keystore
         .generate_sealed(&domain)
         .map_err(BrokerError::Internal)?;
-    let tenant = state
-        .user_store
-        .create_tenant(&domain, &public_key, &sealed, &identity)?;
-    state.analytics.capture("tenant_onboarding_started", crate::analytics::distinct_id_for_email(&identity), serde_json::json!({}));
+    let tenant = state.user_store.create_tenant(
+        &domain,
+        &public_key,
+        &sealed,
+        Some(session.user_id),
+        &admin_email,
+    )?;
+    // Pre-create the local admin's login (hashed now; gated by active_tenant
+    // so unusable until the DNS record verifies). No forced change — the
+    // admin chose this password.
+    if is_local_admin {
+        let hash = crate::crypto::hash_password(password)
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        state
+            .user_store
+            .create_roster_entry(tenant.id, &admin_local, &hash, false, &admin_email)?;
+    }
+    state.analytics.capture(
+        "tenant_onboarding_started",
+        crate::analytics::distinct_id_for_email(&admin_email),
+        serde_json::json!({}),
+    );
     Ok(Json(json!({
         "success": true,
         "domain": tenant.domain,
@@ -766,7 +821,7 @@ where
         .user_store
         .get_tenant(&domain)?
         .ok_or(BrokerError::TenantNotFound)?;
-    let allowed = {
+    let allowed = tenant.owner_user_id == Some(session.user_id) || {
         let mut ok = false;
         for email in state.user_store.list_emails(session.user_id)? {
             if email.verified
@@ -807,6 +862,18 @@ where
     };
     if dns == "validated" && tenant.status == TenantStatus::PendingDns {
         state.user_store.set_tenant_status(&domain, TenantStatus::Active)?;
+        // A domain browserid already knew may have broker/fallback-issued
+        // certs for identities there; the domain is now authoritative under
+        // its own key, so retire those prior credentials (fail-closed). Certs
+        // from the domain's previous external IdP aren't ours and die when its
+        // DNS key changed to the tenant key.
+        match state.user_store.revoke_domain_device_certs(&domain) {
+            Ok(n) if n > 0 => {
+                tracing::info!(domain = %domain, revoked = n, "hosted primary: revoked prior broker-issued certs on activation");
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(domain = %domain, "revoke prior certs failed: {e}"),
+        }
         state.analytics.capture("tenant_activated", crate::analytics::distinct_id_for_email(&tenant.created_by), serde_json::json!({}));
         tracing::info!(domain = %domain, admin = %tenant.created_by, "hosted primary: tenant activated");
     }

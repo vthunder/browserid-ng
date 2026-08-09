@@ -763,6 +763,7 @@ impl UserStore for InMemoryUserStore {
         domain: &str,
         public_key: &str,
         private_key_sealed: &str,
+        owner_user_id: Option<UserId>,
         created_by: &str,
     ) -> StoreResult<Tenant> {
         let mut tenants = self.tenants.write().unwrap();
@@ -776,6 +777,7 @@ impl UserStore for InMemoryUserStore {
             private_key_sealed: private_key_sealed.to_string(),
             status: TenantStatus::PendingDns,
             self_claim: false,
+            owner_user_id,
             created_by: created_by.to_string(),
             created_at: Utc::now(),
             activated_at: None,
@@ -834,6 +836,35 @@ impl UserStore for InMemoryUserStore {
             .unwrap()
             .retain(|(tid, _), _| *tid != tenant.id);
         Ok(())
+    }
+
+    fn revoke_domain_device_certs(&self, domain: &str) -> StoreResult<u64> {
+        let suffix = format!("@{}", domain.to_lowercase());
+        let mut certs = self.device_certs.write().unwrap();
+        let mut status = self.status_entries.write().unwrap();
+        let mut count = 0u64;
+        for cert in certs.values_mut() {
+            if cert.revoked_at.is_some() {
+                continue;
+            }
+            if !cert
+                .identities
+                .iter()
+                .any(|i| i.to_lowercase().ends_with(&suffix))
+            {
+                continue;
+            }
+            cert.revoked_at = Some(Utc::now());
+            if let Some(idx) = cert.status_idx {
+                for (_, (i, revoked)) in status.iter_mut() {
+                    if *i == idx {
+                        *revoked = true;
+                    }
+                }
+            }
+            count += 1;
+        }
+        Ok(count)
     }
 
     fn is_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {

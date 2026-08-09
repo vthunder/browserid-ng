@@ -359,7 +359,12 @@ pub struct Tenant {
     /// Allow mailbox-proof self-claims for unrostered local parts (post-MVP;
     /// stored so the policy exists from day one).
     pub self_claim: bool,
-    /// Identity of the onboarder (becomes first admin at activation).
+    /// The browserid account that onboarded this domain. It controls the
+    /// domain (it did the DNS) and always retains console access, even when
+    /// the admin-of-record is a domain-local email not yet on the account.
+    pub owner_user_id: Option<UserId>,
+    /// Admin-of-record identity (becomes first admin at activation). Either an
+    /// existing identity the owner holds, or an email at this domain.
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub activated_at: Option<DateTime<Utc>>,

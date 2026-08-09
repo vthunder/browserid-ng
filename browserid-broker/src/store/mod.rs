@@ -284,14 +284,27 @@ pub trait UserStore: Send + Sync {
 
     /// Create a tenant in `PendingDns` with a freshly generated custodial
     /// keypair (public b64url, private sealed by `crate::tenant_keys`).
-    /// Errors with `TenantExists` if the domain already has a tenant row.
+    /// `owner_user_id` is the onboarding account (retains console access);
+    /// `created_by` is the admin-of-record identity. Errors with
+    /// `TenantExists` if the domain already has a tenant row.
     fn create_tenant(
         &self,
         domain: &str,
         public_key: &str,
         private_key_sealed: &str,
+        owner_user_id: Option<UserId>,
         created_by: &str,
     ) -> StoreResult<Tenant>;
+
+    /// Revoke every broker-issued device cert (and, via the shared status
+    /// bit, the access certs derived from it) for identities at `domain`.
+    /// Flips each cert's revocation bit in the broker's own status list and
+    /// stamps `revoked_at`. Used when a domain that browserid already knew is
+    /// verified as a tenant, so prior fallback credentials stop working.
+    /// Returns the number of device-cert rows revoked. Certs issued by the
+    /// domain's previous external IdP are not in this registry and are not
+    /// affected (the DNS key change retires those).
+    fn revoke_domain_device_certs(&self, domain: &str) -> StoreResult<u64>;
 
     /// Look up a tenant by domain (exact, lowercase).
     fn get_tenant(&self, domain: &str) -> StoreResult<Option<Tenant>>;

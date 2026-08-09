@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 23;
+const SCHEMA_VERSION: i32 = 24;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -131,6 +131,9 @@ impl SqliteStore {
             }
             if current_version < 23 {
                 Self::migrate_v23(conn)?;
+            }
+            if current_version < 24 {
+                Self::migrate_v24(conn)?;
             }
 
             // Update schema version
@@ -692,6 +695,15 @@ impl SqliteStore {
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v24(conn: &Connection) -> Result<(), BrokerError> {
+        // Owner account link (bean g5qt): the account that onboarded a tenant
+        // retains console access even when the admin-of-record is a
+        // domain-local email not yet on that account.
+        conn.execute_batch("ALTER TABLE tenants ADD COLUMN owner_user_id INTEGER;")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
 }
@@ -1946,6 +1958,7 @@ impl UserStore for SqliteStore {
         domain: &str,
         public_key: &str,
         private_key_sealed: &str,
+        owner_user_id: Option<UserId>,
         created_by: &str,
     ) -> StoreResult<Tenant> {
         let conn = self.conn.lock().unwrap();
@@ -1953,9 +1966,16 @@ impl UserStore for SqliteStore {
         let n = conn
             .execute(
                 "INSERT OR IGNORE INTO tenants
-                 (domain, public_key, private_key_sealed, status, self_claim, created_by, created_at)
-                 VALUES (?1, ?2, ?3, 'pending_dns', 0, ?4, ?5)",
-                params![domain, public_key, private_key_sealed, created_by, now.to_rfc3339()],
+                 (domain, public_key, private_key_sealed, status, self_claim, owner_user_id, created_by, created_at)
+                 VALUES (?1, ?2, ?3, 'pending_dns', 0, ?4, ?5, ?6)",
+                params![
+                    domain,
+                    public_key,
+                    private_key_sealed,
+                    owner_user_id.map(|u| u.0 as i64),
+                    created_by,
+                    now.to_rfc3339()
+                ],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         if n == 0 {
@@ -1969,7 +1989,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             "SELECT id, domain, public_key, private_key_sealed, status, self_claim,
-                    created_by, created_at, activated_at
+                    created_by, created_at, activated_at, owner_user_id
              FROM tenants WHERE domain = ?1",
             params![domain],
             tenant_from_row,
@@ -1983,7 +2003,7 @@ impl UserStore for SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT DISTINCT t.id, t.domain, t.public_key, t.private_key_sealed, t.status,
-                        t.self_claim, t.created_by, t.created_at, t.activated_at
+                        t.self_claim, t.created_by, t.created_at, t.activated_at, t.owner_user_id
                  FROM tenants t
                  LEFT JOIN tenant_admins a ON a.tenant_id = t.id
                  WHERE t.created_by = ?1 OR a.identity = ?1
@@ -2044,6 +2064,57 @@ impl UserStore for SqliteStore {
                 .map_err(|e| BrokerError::Internal(e.to_string()))?;
         }
         Ok(())
+    }
+
+    fn revoke_domain_device_certs(&self, domain: &str) -> StoreResult<u64> {
+        let suffix = format!("@{}", domain.to_lowercase());
+        let conn = self.conn.lock().unwrap();
+        // Scan active device certs, match identities client-side (identities is
+        // a JSON array), flip each match's status bit and stamp revoked_at. The
+        // set is small (one deployment's fallback certs); a scan is fine.
+        let rows: Vec<(i64, String, Option<i64>)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, identities, status_idx FROM device_certs WHERE revoked_at IS NULL")
+                .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            let mapped = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                })
+                .map_err(|e| BrokerError::Internal(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            mapped
+        };
+        let now = Utc::now().to_rfc3339();
+        let mut count = 0u64;
+        for (id, identities_json, status_idx) in rows {
+            let identities: Vec<String> =
+                serde_json::from_str(&identities_json).unwrap_or_default();
+            let hit = identities
+                .iter()
+                .any(|i| i.to_lowercase().ends_with(&suffix));
+            if !hit {
+                continue;
+            }
+            if let Some(idx) = status_idx {
+                conn.execute(
+                    "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1) WHERE idx = ?2",
+                    params![now, idx],
+                )
+                .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            }
+            conn.execute(
+                "UPDATE device_certs SET revoked_at = COALESCE(revoked_at, ?1) WHERE id = ?2",
+                params![now, id],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            count += 1;
+        }
+        Ok(count)
     }
 
     fn is_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {
@@ -2265,6 +2336,7 @@ fn tenant_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tenant> {
         created_by: row.get(6)?,
         created_at: parse_ts(row.get(7)?),
         activated_at: row.get::<_, Option<String>>(8)?.map(parse_ts),
+        owner_user_id: row.get::<_, Option<i64>>(9)?.map(|v| UserId(v as u64)),
     })
 }
 
@@ -2634,9 +2706,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
         domain: &str,
         public_key: &str,
         private_key_sealed: &str,
+        owner_user_id: Option<UserId>,
         created_by: &str,
     ) -> StoreResult<Tenant> {
-        (**self).create_tenant(domain, public_key, private_key_sealed, created_by)
+        (**self).create_tenant(domain, public_key, private_key_sealed, owner_user_id, created_by)
     }
 
     fn get_tenant(&self, domain: &str) -> StoreResult<Option<Tenant>> {
@@ -2653,6 +2726,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn delete_tenant(&self, domain: &str) -> StoreResult<()> {
         (**self).delete_tenant(domain)
+    }
+
+    fn revoke_domain_device_certs(&self, domain: &str) -> StoreResult<u64> {
+        (**self).revoke_domain_device_certs(domain)
     }
 
     fn is_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {
