@@ -2071,6 +2071,7 @@ impl UserStore for SqliteStore {
         tenant_id: u64,
         local_part: &str,
         password_hash: &str,
+        must_change: bool,
         created_by: &str,
     ) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
@@ -2078,8 +2079,8 @@ impl UserStore for SqliteStore {
             .execute(
                 "INSERT OR IGNORE INTO tenant_roster
                  (tenant_id, local_part, password_hash, state, must_change_password, created_by, created_at)
-                 VALUES (?1, ?2, ?3, 'active', 1, ?4, ?5)",
-                params![tenant_id as i64, local_part, password_hash, created_by, Utc::now().to_rfc3339()],
+                 VALUES (?1, ?2, ?3, 'active', ?4, ?5, ?6)",
+                params![tenant_id as i64, local_part, password_hash, must_change as i64, created_by, Utc::now().to_rfc3339()],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         if n == 0 {
@@ -2647,9 +2648,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
         tenant_id: u64,
         local_part: &str,
         password_hash: &str,
+        must_change: bool,
         created_by: &str,
     ) -> StoreResult<()> {
-        (**self).create_roster_entry(tenant_id, local_part, password_hash, created_by)
+        (**self).create_roster_entry(tenant_id, local_part, password_hash, must_change, created_by)
     }
 
     fn get_roster_entry(&self, tenant_id: u64, local_part: &str) -> StoreResult<Option<RosterEntry>> {

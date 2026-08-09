@@ -312,13 +312,17 @@ pub trait UserStore: Send + Sync {
     /// List a tenant's admin identities.
     fn list_tenant_admins(&self, domain: &str) -> StoreResult<Vec<String>>;
 
-    /// Create a roster entry (admin-set bcrypt hash, `must_change_password`
-    /// on). Errors with `RosterEntryExists` for a duplicate local part.
+    /// Create a roster entry (admin-set bcrypt hash). `must_change` forces a
+    /// password change on the user's first interactive login — set when an
+    /// admin provisions someone else with a temporary password, cleared when
+    /// the eventual user chose the password themselves (onboarding). Errors
+    /// with `RosterEntryExists` for a duplicate local part.
     fn create_roster_entry(
         &self,
         tenant_id: u64,
         local_part: &str,
         password_hash: &str,
+        must_change: bool,
         created_by: &str,
     ) -> StoreResult<()>;
 

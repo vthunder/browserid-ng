@@ -828,6 +828,12 @@ pub struct RosterCreateRequest {
     pub domain: String,
     pub local_part: String,
     pub password: String,
+    /// Force a password change on the user's first login. Defaults to `true`
+    /// (an admin provisioning someone else with a temporary password); the
+    /// onboarding wizard sends `false` when the admin sets up their own first
+    /// account with a password they chose.
+    #[serde(default)]
+    pub require_password_change: Option<bool>,
 }
 
 /// POST /wsapi/tenant/roster — admin creates a user with a set password.
@@ -858,9 +864,10 @@ where
     }
     let hash = crate::crypto::hash_password(&req.password)
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
+    let must_change = req.require_password_change.unwrap_or(true);
     state
         .user_store
-        .create_roster_entry(tenant.id, &local, &hash, &admin)?;
+        .create_roster_entry(tenant.id, &local, &hash, must_change, &admin)?;
     tracing::info!(tenant = %domain, local = %local, "hosted primary: roster user created");
     Ok(Json(json!({"success": true, "email": format!("{local}@{domain}")})))
 }

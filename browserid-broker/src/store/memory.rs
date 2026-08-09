@@ -866,6 +866,7 @@ impl UserStore for InMemoryUserStore {
         tenant_id: u64,
         local_part: &str,
         password_hash: &str,
+        must_change: bool,
         created_by: &str,
     ) -> StoreResult<()> {
         let mut roster = self.tenant_roster.write().unwrap();
@@ -880,7 +881,7 @@ impl UserStore for InMemoryUserStore {
                 local_part: local_part.to_string(),
                 password_hash: password_hash.to_string(),
                 state: RosterState::Active,
-                must_change_password: true,
+                must_change_password: must_change,
                 created_by: created_by.to_string(),
                 created_at: Utc::now(),
                 last_login_at: None,

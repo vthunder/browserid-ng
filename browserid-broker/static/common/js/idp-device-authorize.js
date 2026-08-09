@@ -119,8 +119,8 @@
     $("login-form").classList.add("hidden");
     $("forgot").classList.add("hidden");
     $("change-form").classList.remove("hidden");
-    $("title").textContent = "Set a new password";
-    $("subtitle").textContent = "Your administrator requires a password change before continuing.";
+    $("title").textContent = "Choose your password";
+    $("subtitle").textContent = "Set a password for " + email + " to finish signing in.";
     $("cur").focus();
   }
 

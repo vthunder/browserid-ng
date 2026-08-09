@@ -109,23 +109,48 @@
     }
   }
 
+  function genPassword() {
+    // Readable, unambiguous alphabet; ~72 bits over 14 chars.
+    var alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    var bytes = new Uint8Array(14);
+    (window.crypto || window.msCrypto).getRandomValues(bytes);
+    var out = "";
+    for (var i = 0; i < bytes.length; i++) out += alphabet[bytes[i] % alphabet.length];
+    return out;
+  }
+
   function renderWizard() {
     var w = document.getElementById("wizard");
     var opts = identities.map(function (e) { return '<option value="' + esc(e) + '">' + esc(e) + '</option>'; }).join("");
     w.innerHTML =
       '<label for="wiz-domain">Domain</label>' +
       '<input id="wiz-domain" placeholder="example.com" autocapitalize="off" autocorrect="off" />' +
-      '<label for="wiz-id">Admin identity (becomes the first admin)</label>' +
+      '<label for="wiz-id">Admin identity (manages this domain — becomes the first admin)</label>' +
       '<select id="wiz-id">' + opts + '</select>' +
+      '<label for="wiz-user">First user at this domain</label>' +
+      '<div class="toolbar" style="gap:8px">' +
+        '<div style="flex:2"><input id="wiz-user" placeholder="alice" autocapitalize="off" autocorrect="off" /></div>' +
+        '<div style="flex:2"><input id="wiz-pw" type="text" placeholder="password (min 8)" autocapitalize="off" autocorrect="off" /></div>' +
+        '<div style="flex:0"><button id="wiz-gen" class="ghost" type="button">Generate</button></div>' +
+      '</div>' +
+      '<p class="muted" style="margin-top:6px">This login is created with the password above — no forced change on first sign-in. ' +
+      'You can add more users (and require a change) from the console afterward.</p>' +
       '<div style="margin-top:16px"><button id="wiz-go">Generate DNS record</button></div>' +
       '<div class="err" id="wiz-err"></div>' +
       '<div id="wiz-out" class="hidden record"></div>';
+    document.getElementById("wiz-gen").addEventListener("click", function () {
+      document.getElementById("wiz-pw").value = genPassword();
+    });
     document.getElementById("wiz-go").addEventListener("click", function () {
       var domain = document.getElementById("wiz-domain").value.trim().toLowerCase();
       var identity = document.getElementById("wiz-id").value;
+      var user = document.getElementById("wiz-user").value.trim().toLowerCase();
+      var pw = document.getElementById("wiz-pw").value;
       var err = document.getElementById("wiz-err");
       err.className = "err"; err.textContent = "";
       if (!domain) { err.textContent = "Enter a domain."; return; }
+      if (!user) { err.textContent = "Enter a username for the first user."; return; }
+      if (pw.length < 8) { err.textContent = "First user's password must be at least 8 characters."; return; }
       postJSON("/wsapi/tenant/create", { csrf: csrf, domain: domain, identity: identity }).then(function (res) {
         if (!res.ok || !res.body.success) { err.textContent = (res.body && res.body.reason) || "could not create"; return; }
         var out = document.getElementById("wiz-out");
@@ -134,7 +159,8 @@
           '<div class="muted">Publish this TXT record on your DNS (the zone must be DNSSEC-signed):</div>' +
           '<code>' + esc(res.body.record_name) + '</code><br><code>' + esc(res.body.record) + '</code>' +
           '<div class="muted" style="margin-top:8px">Publishing this record is what makes <strong>' + esc(identity) +
-          '</strong> the admin for this domain.</div>' +
+          '</strong> the admin for this domain. Your first user <strong>' + esc(user) + '@' + esc(domain) +
+          '</strong> will be created when DNS verifies.</div>' +
           '<div style="margin-top:12px"><button id="wiz-check">Check DNS now</button></div>' +
           '<div class="err" id="wiz-check-err"></div>';
         document.getElementById("wiz-check").addEventListener("click", function () {
@@ -143,8 +169,17 @@
           postJSON("/wsapi/tenant/check", { csrf: csrf, domain: domain }).then(function (r2) {
             var b = r2.body || {};
             if (b.dns === "validated" && b.status === "active") {
-              ce.className = "err ok"; ce.textContent = "Verified — domain is active.";
-              setTimeout(function () { location.href = "/domains/" + encodeURIComponent(domain); }, 900);
+              ce.className = "err ok"; ce.textContent = "Verified — creating your first user…";
+              // The admin chose this password, so no forced change on first login.
+              postJSON("/wsapi/tenant/roster", {
+                csrf: csrf, domain: domain, local_part: user, password: pw, require_password_change: false,
+              }).then(function (r3) {
+                if (!r3.ok || !r3.body.success) {
+                  ce.className = "err"; ce.textContent = "Domain active, but the first user could not be created: " +
+                    ((r3.body && r3.body.reason) || "unknown") + ". Add them from the console.";
+                }
+                setTimeout(function () { location.href = "/domains/" + encodeURIComponent(domain); }, 900);
+              });
             } else {
               ce.className = "err"; ce.textContent = dnsMessage(b.dns, b.host_ok);
             }
@@ -164,8 +199,12 @@
       '<div class="card"><div class="toolbar">' +
         '<div><label for="nu-local">Username</label><input id="nu-local" placeholder="alice" autocapitalize="off" /></div>' +
         '<div><label for="nu-pw">Initial password</label><input id="nu-pw" type="text" placeholder="min 8 chars" /></div>' +
+        '<div style="flex:0"><button id="nu-gen" class="ghost" type="button">Generate</button></div>' +
         '<div style="flex:0"><button id="nu-add">Add user</button></div>' +
-      '</div><div class="err" id="nu-err"></div></div>' +
+      '</div>' +
+      '<label style="font-weight:400;margin-top:10px"><input type="checkbox" id="nu-mc" checked style="width:auto;margin-right:6px" />' +
+        'Require this user to change the password on first sign-in</label>' +
+      '<div class="err" id="nu-err"></div></div>' +
       '<div id="roster"></div>' +
       '<h2>Administrators</h2>' +
       '<div id="admins" class="card"></div>' +
@@ -175,6 +214,9 @@
       '</div><div class="err" id="na-err"></div></div>';
 
     document.getElementById("nu-add").addEventListener("click", function () { addUser(domain); });
+    document.getElementById("nu-gen").addEventListener("click", function () {
+      document.getElementById("nu-pw").value = genPassword();
+    });
     document.getElementById("na-add").addEventListener("click", function () { addAdmin(domain); });
     loadRoster(domain);
   }
@@ -225,9 +267,10 @@
   function addUser(domain) {
     var local = document.getElementById("nu-local").value.trim().toLowerCase();
     var pw = document.getElementById("nu-pw").value;
+    var mustChange = document.getElementById("nu-mc").checked;
     var err = document.getElementById("nu-err");
     err.className = "err"; err.textContent = "";
-    postJSON("/wsapi/tenant/roster", { csrf: csrf, domain: domain, local_part: local, password: pw }).then(function (res) {
+    postJSON("/wsapi/tenant/roster", { csrf: csrf, domain: domain, local_part: local, password: pw, require_password_change: mustChange }).then(function (res) {
       if (!res.ok || !res.body.success) { err.textContent = (res.body && res.body.reason) || "could not add"; return; }
       document.getElementById("nu-local").value = ""; document.getElementById("nu-pw").value = "";
       loadRoster(domain);

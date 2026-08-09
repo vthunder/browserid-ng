@@ -56,7 +56,7 @@ fn add_roster(server: &TestServer, store: &InMemoryUserStore, local: &str, passw
     // Use the store directly so the test owns the hash (admin-set password).
     let hash = bcrypt_hash(password);
     store
-        .create_roster_entry(tenant.id, local, &hash, "admin@example.org")
+        .create_roster_entry(tenant.id, local, &hash, true, "admin@example.org")
         .unwrap();
     let _ = server; // (kept for symmetry with other helpers)
 }
@@ -224,6 +224,37 @@ async fn mint_refused_after_roster_disable() {
         .json(&json!({ "device_cert": issued["device_cert"], "access_request": areq.encoded() }))
         .await;
     assert_eq!(refused.status_code(), 403, "disabled user must not mint");
+}
+
+#[tokio::test]
+async fn roster_user_without_forced_change_issues_directly() {
+    // The onboarding path creates the first user with require_password_change
+    // = false; that user logs in and issues certs with no change prompt.
+    let (server, store) = make_server();
+    seed_active_tenant(&store);
+    let tenant = store.get_tenant(TENANT).unwrap().unwrap();
+    store
+        .create_roster_entry(tenant.id, "dana", &bcrypt_hash("chosenbyadmin1"), false, "admin@example.org")
+        .unwrap();
+    let email = format!("dana@{TENANT}");
+
+    let (cookie, login) = idp_login(&server, &email, "chosenbyadmin1").await;
+    assert_eq!(login["success"], true, "{login}");
+    assert_eq!(login["must_change_password"], false, "no forced change expected");
+
+    let device_kp = KeyPair::generate();
+    let config_kp = KeyPair::generate();
+    let issued: Value = server
+        .post("/idp/device_cert")
+        .add_cookie(cookie::Cookie::new("idp_session", cookie))
+        .json(&json!({
+            "email": email,
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": config_kp.public_key().to_base64(),
+        }))
+        .await
+        .json();
+    assert_eq!(issued["success"], true, "issuance should not be blocked: {issued}");
 }
 
 #[tokio::test]
