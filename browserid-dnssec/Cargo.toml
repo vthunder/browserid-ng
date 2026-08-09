@@ -1,0 +1,18 @@
+[package]
+name = "browserid-dnssec"
+description = "DNSSEC-authenticated _browserid discovery — the sole root of trust for an IdP's key"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+browserid-core = { path = "../browserid-core" }
+hickory-client.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+futures-util = "0.3"
+tokio.workspace = true
+rand.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]

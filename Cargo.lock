@@ -278,6 +278,7 @@ dependencies = [
  "base64 0.22.1",
  "bcrypt",
  "browserid-core",
+ "browserid-dnssec",
  "browserid-registrar",
  "chacha20poly1305",
  "chrono",
@@ -325,6 +326,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "browserid-dnssec"
+version = "0.1.0"
+dependencies = [
+ "browserid-core",
+ "futures-util",
+ "hickory-client",
+ "rand",
+ "rustls 0.21.12",
+ "tokio",
+ "tracing",
+ "webpki-roots 0.25.4",
+]
+
+[[package]]
 name = "browserid-registrar"
 version = "0.1.0"
 dependencies = [
@@ -347,6 +362,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "browserid-core",
+ "browserid-dnssec",
  "chrono",
  "rand",
  "reqwest",

@@ -28,8 +28,9 @@
 //! use browserid_rp::{Verifier, TokenStore};
 //!
 //! let verifier = Verifier::new("https://api.example.com")
-//!     .trust_issuer_from_well_known("https://browserid.me")
-//!     .await?;
+//!     .accept_fallback("browserid.me"); // key DNSSEC-resolved at verify time
+//! // let fetcher = browserid_dnssec::DnsFetcher::new().unwrap();
+//! // let id = verifier.verify_dnssec(&presentation, &fetcher).await?;
 //! let tokens = TokenStore::new(chrono::Duration::hours(1));
 //!
 //! // In the /token handler:
@@ -130,6 +131,11 @@ pub struct Verifier {
     /// **fallbacks**: they may vouch for identities at domains that have no
     /// declared primary.
     primaries: std::collections::HashSet<String>,
+    /// Accepted **fallback** issuer domains (spec §8.1) — the brokers this RP
+    /// will honor for a no-primary email. Keys are DNSSEC-resolved at verify
+    /// time (a fallback broker publishes its own `_browserid` record), so this
+    /// is policy only, never a pinned key.
+    accepted_fallbacks: std::collections::HashSet<String>,
     /// The RP's own scope vocabulary — advertised in the challenge, and the
     /// upper bound on what an agent token is granted
     scopes: Vec<String>,
@@ -151,6 +157,7 @@ impl Verifier {
             audience: audience.into(),
             issuer_keys: HashMap::new(),
             primaries: std::collections::HashSet::new(),
+            accepted_fallbacks: std::collections::HashSet::new(),
             scopes: Vec::new(),
             status_cache: None,
             require_status_checks: true,
@@ -188,30 +195,35 @@ impl Verifier {
         &self.scopes
     }
 
-    /// Trust `domain` as an accepted **fallback** issuer signed by `key`
-    /// (pinned): it may vouch for identities at any domain that has no
-    /// primary declared via [`Verifier::trust_primary`].
-    pub fn trust_issuer(mut self, domain: impl Into<String>, key: PublicKey) -> Self {
-        self.issuer_keys.insert(domain.into(), key);
+    /// Accept `domain` as a **fallback** broker (spec §8.1): it may vouch for
+    /// identities at any domain that is not itself a DNSSEC primary. Policy
+    /// only — the key is DNSSEC-resolved at verify time
+    /// ([`Verifier::verify_dnssec`]).
+    pub fn accept_fallback(mut self, domain: impl Into<String>) -> Self {
+        self.accepted_fallbacks.insert(domain.into());
         self
     }
 
-    /// Trust `domain` as a **primary** IdP signed by `key` (pinned):
-    /// authoritative for exactly `*@domain` — presentations it issues for
-    /// any other domain are rejected, and once a primary is declared for a
-    /// domain, no fallback may vouch for that domain either.
+    /// **Offline/testing only** — pin `domain` as an accepted **fallback**
+    /// issuer signed by `key`, for the synchronous [`Verifier::verify`] path
+    /// (no network). Production uses [`Verifier::verify_dnssec`], which resolves
+    /// keys from the DNSSEC `_browserid` record — the sole root of trust — and
+    /// never from a pinned or `.well-known`-served key.
+    pub fn trust_issuer(mut self, domain: impl Into<String>, key: PublicKey) -> Self {
+        let domain = domain.into();
+        self.accepted_fallbacks.insert(domain.clone());
+        self.issuer_keys.insert(domain, key);
+        self
+    }
+
+    /// **Offline/testing only** — pin `domain` as a **primary** IdP signed by
+    /// `key`, for the synchronous [`Verifier::verify`] path. Authoritative for
+    /// exactly `*@domain`. Production uses [`Verifier::verify_dnssec`].
     pub fn trust_primary(mut self, domain: impl Into<String>, key: PublicKey) -> Self {
         let domain = domain.into();
         self.primaries.insert(domain.clone());
         self.issuer_keys.insert(domain, key);
         self
-    }
-
-    /// [`Verifier::trust_primary`], fetching the key from the IdP's
-    /// `/.well-known/browserid` support document.
-    pub async fn trust_primary_from_well_known(self, idp_base: &str) -> Result<Self, RpError> {
-        let (domain, key) = fetch_well_known_key(idp_base).await?;
-        Ok(self.trust_primary(domain, key))
     }
 
     /// Is `iss` authoritative for `identity` under this RP's trust policy?
@@ -225,14 +237,6 @@ impl Verifier {
             return iss == domain;
         }
         self.issuer_keys.contains_key(iss)
-    }
-
-    /// Trust an IdP as an accepted **fallback** by fetching its
-    /// `/.well-known/browserid` support document. The trusted domain is the
-    /// URL's host (with port, if any).
-    pub async fn trust_issuer_from_well_known(self, idp_base: &str) -> Result<Self, RpError> {
-        let (domain, key) = fetch_well_known_key(idp_base).await?;
-        Ok(self.trust_issuer(domain, key))
     }
 
     /// The audience this verifier (and its challenge) is bound to
@@ -287,6 +291,87 @@ impl Verifier {
             })
             .map_err(|e| ExchangeError::InvalidAssertion(e.to_string()))?;
 
+        self.finish_verify(verified, |identity, iss| self.issuer_conformant(identity, iss))
+    }
+
+    /// Verify a presentation the **conformant** way (spec §3): resolve every
+    /// issuer's key from its authenticated `_browserid` DNSSEC record — the
+    /// sole root of trust — never from a pinned or `.well-known`-served key,
+    /// and honoring a hosted primary's `host=` implicitly (the key is in the
+    /// record, so the tenant domain is never fetched for it). An identity's
+    /// own domain is authoritative iff it is a DNSSEC primary; otherwise an
+    /// accepted fallback ([`Verifier::accept_fallback`]) may vouch for it.
+    pub async fn verify_dnssec(
+        &self,
+        presentation: &str,
+        fetcher: &browserid_dnssec::DnsFetcher,
+    ) -> Result<VerifiedIdentity, ExchangeError> {
+        let pres = AccessPresentation::parse(presentation)
+            .map_err(|e| ExchangeError::InvalidAssertion(e.to_string()))?;
+
+        let ce =
+            |iss: &str, e: browserid_dnssec::ResolveError| ExchangeError::InvalidAssertion(format!("issuer '{iss}': {e}"));
+
+        // Resolve the two IdP keys (grantee's access-cert issuer, grantor's
+        // config-cert issuer) from DNSSEC.
+        let access_iss = pres.access_cert.claims().iss.clone();
+        let config_iss = pres.config_cert.claims().iss.clone();
+        let mut keys: HashMap<String, PublicKey> = HashMap::new();
+        for iss in [&access_iss, &config_iss] {
+            if !keys.contains_key(iss) {
+                let key = browserid_dnssec::resolve_idp_key(fetcher, iss)
+                    .await
+                    .map_err(|e| ce(iss, e))?;
+                keys.insert(iss.clone(), key);
+            }
+        }
+
+        // Which identity domains are DNSSEC primaries? (Determines whether the
+        // issuer must equal the domain, or an accepted fallback may vouch.)
+        let grantor = pres.warrant.claims().grantor.clone();
+        let grantee = pres.access_cert.claims().identity.clone();
+        let mut primary_domains: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for id in [&grantor, &grantee] {
+            if let Some(domain) = id.split('@').nth(1) {
+                if !primary_domains.contains(domain)
+                    && browserid_dnssec::resolve_idp_key(fetcher, domain).await.is_ok()
+                {
+                    primary_domains.insert(domain.to_string());
+                }
+            }
+        }
+
+        let verified = pres
+            .verify(&self.audience, |domain| {
+                keys.get(domain)
+                    .cloned()
+                    .ok_or_else(|| browserid_core::Error::DiscoveryFailed {
+                        domain: domain.to_string(),
+                        reason: "issuer key not DNSSEC-resolved".to_string(),
+                    })
+            })
+            .map_err(|e| ExchangeError::InvalidAssertion(e.to_string()))?;
+
+        self.finish_verify(verified, |identity, iss| {
+            let Some(domain) = identity.split('@').nth(1) else {
+                return false;
+            };
+            if primary_domains.contains(domain) {
+                iss == domain
+            } else {
+                self.accepted_fallbacks.contains(iss)
+            }
+        })
+    }
+
+    /// Shared post-join checks (status + issuer conformance) and result
+    /// assembly, parameterized by how issuer authority is decided (pinned
+    /// policy for [`verify`], DNSSEC for [`verify_dnssec`]).
+    fn finish_verify(
+        &self,
+        verified: browserid_core::device::VerifiedAccess,
+        is_conformant: impl Fn(&str, &str) -> bool,
+    ) -> Result<VerifiedIdentity, ExchangeError> {
         // Revocation status (core §6.4): the three checks are mandatory and
         // fail-closed. Revoked → reject; unknown/stale → reject unless the
         // cache was explicitly built `fail_open()`; refs present with no
@@ -336,7 +421,7 @@ impl Verifier {
             (&verified.email, &verified.issuer),
             (&verified.grantee, &verified.grantee_issuer),
         ] {
-            if !self.issuer_conformant(identity, iss) {
+            if !is_conformant(identity, iss) {
                 return Err(ExchangeError::InvalidAssertion(format!(
                     "issuer '{iss}' is not authoritative for '{identity}'"
                 )));
@@ -529,38 +614,6 @@ fn grant_scopes(warrant_scopes: &[String], rp_scopes: &[String]) -> Vec<String> 
 
 /// Fetch an IdP's key from its `/.well-known/browserid`; returns
 /// `(domain, key)` where domain is the URL's host (with port, if any).
-async fn fetch_well_known_key(idp_base: &str) -> Result<(String, PublicKey), RpError> {
-    let idp_base = idp_base.trim_end_matches('/');
-    let url = format!("{idp_base}/.well-known/browserid");
-    // no_proxy: skip platform proxy detection (~11s stall on macOS, bean 7g2q).
-    let doc: browserid_core::discovery::SupportDocument = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .expect("failed to build HTTP client")
-        .get(&url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-
-    let domain = idp_base
-        .strip_prefix("https://")
-        .or_else(|| idp_base.strip_prefix("http://"))
-        .ok_or_else(|| RpError::WellKnown(format!("idp_base must be a URL: {idp_base}")))?
-        .to_string();
-    if domain.contains('/') {
-        return Err(RpError::WellKnown(format!(
-            "idp_base must be an origin with no path: {idp_base}"
-        )));
-    }
-
-    let public_key = doc
-        .public_key
-        .ok_or_else(|| RpError::WellKnown(format!("{idp_base} published no public key")))?;
-    Ok((domain, public_key))
-}
-
 /// RFC 8414 authorization-server metadata for out-of-band discovery. Serve
 /// as JSON at `/.well-known/oauth-authorization-server`. `issuer` is the
 /// RP's base URL.
