@@ -211,9 +211,20 @@
       '<div class="card"><div class="toolbar">' +
         '<div><label for="na-id">Add admin (an identity)</label><input id="na-id" placeholder="person@example.com" autocapitalize="off" /></div>' +
         '<div style="flex:0"><button id="na-add" class="ghost">Add admin</button></div>' +
-      '</div><div class="err" id="na-err"></div></div>';
+      '</div><div class="err" id="na-err"></div></div>' +
+      '<h2>Danger zone</h2>' +
+      '<div class="card">' +
+        '<p class="muted" style="margin-top:0">Delete this domain from browserid.me: removes the tenant, its users, and admins so you can onboard it fresh. ' +
+        'Certificates already issued stop working once you remove or replace the DNS record. This cannot be undone.</p>' +
+        '<div class="toolbar">' +
+          '<div><label for="del-confirm">Type <code>' + esc(domain) + '</code> to confirm</label>' +
+            '<input id="del-confirm" placeholder="' + esc(domain) + '" autocapitalize="off" autocorrect="off" /></div>' +
+          '<div style="flex:0"><button id="del-btn" class="danger">Delete domain</button></div>' +
+        '</div><div class="err" id="del-err"></div>' +
+      '</div>';
 
     document.getElementById("nu-add").addEventListener("click", function () { addUser(domain); });
+    document.getElementById("del-btn").addEventListener("click", function () { deleteDomain(domain); });
     document.getElementById("nu-gen").addEventListener("click", function () {
       document.getElementById("nu-pw").value = genPassword();
     });
@@ -274,6 +285,18 @@
       if (!res.ok || !res.body.success) { err.textContent = (res.body && res.body.reason) || "could not add"; return; }
       document.getElementById("nu-local").value = ""; document.getElementById("nu-pw").value = "";
       loadRoster(domain);
+    });
+  }
+
+  function deleteDomain(domain) {
+    var confirm = document.getElementById("del-confirm").value.trim().toLowerCase();
+    var err = document.getElementById("del-err");
+    err.className = "err"; err.textContent = "";
+    if (confirm !== domain) { err.textContent = "Type the domain exactly to confirm."; return; }
+    postJSON("/wsapi/tenant/delete", { csrf: csrf, domain: domain, confirm: confirm }).then(function (res) {
+      if (!res.ok || !res.body.success) { err.textContent = (res.body && res.body.reason) || "could not delete"; return; }
+      err.className = "err ok"; err.textContent = "Deleted. Returning to your domains…";
+      setTimeout(function () { location.href = "/domains"; }, 800);
     });
   }
 

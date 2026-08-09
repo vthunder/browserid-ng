@@ -2026,6 +2026,26 @@ impl UserStore for SqliteStore {
         Ok(())
     }
 
+    fn delete_tenant(&self, domain: &str) -> StoreResult<()> {
+        let Some(tenant) = self.get_tenant(domain)? else {
+            return Ok(());
+        };
+        let conn = self.conn.lock().unwrap();
+        // Explicit child deletes (not relying on the FK cascade) so the intent
+        // is visible and correct even if PRAGMA foreign_keys is ever off.
+        let tid = tenant.id as i64;
+        for sql in [
+            "DELETE FROM tenant_status WHERE tenant_id = ?1",
+            "DELETE FROM tenant_roster WHERE tenant_id = ?1",
+            "DELETE FROM tenant_admins WHERE tenant_id = ?1",
+            "DELETE FROM tenants WHERE id = ?1",
+        ] {
+            conn.execute(sql, params![tid])
+                .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     fn is_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
@@ -2629,6 +2649,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn set_tenant_status(&self, domain: &str, status: TenantStatus) -> StoreResult<()> {
         (**self).set_tenant_status(domain, status)
+    }
+
+    fn delete_tenant(&self, domain: &str) -> StoreResult<()> {
+        (**self).delete_tenant(domain)
     }
 
     fn is_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {

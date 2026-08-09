@@ -820,6 +820,22 @@ impl UserStore for InMemoryUserStore {
         Ok(())
     }
 
+    fn delete_tenant(&self, domain: &str) -> StoreResult<()> {
+        let Some(tenant) = self.tenants.write().unwrap().remove(domain) else {
+            return Ok(());
+        };
+        self.tenant_admins.write().unwrap().remove(&tenant.id);
+        self.tenant_roster
+            .write()
+            .unwrap()
+            .retain(|(tid, _), _| *tid != tenant.id);
+        self.tenant_status
+            .write()
+            .unwrap()
+            .retain(|(tid, _), _| *tid != tenant.id);
+        Ok(())
+    }
+
     fn is_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {
         let Some(tenant) = self.tenants.read().unwrap().get(domain).cloned() else {
             return Ok(false);

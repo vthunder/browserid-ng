@@ -258,6 +258,35 @@ async fn roster_user_without_forced_change_issues_directly() {
 }
 
 #[tokio::test]
+async fn delete_tenant_clears_rows_and_frees_the_domain() {
+    let (_server, store) = make_server();
+    let store = &*store;
+    seed_active_tenant(store);
+    let tenant = store.get_tenant(TENANT).unwrap().unwrap();
+    store
+        .create_roster_entry(tenant.id, "eve", &bcrypt_hash("evepassword1"), true, "admin@example.org")
+        .unwrap();
+    store.tenant_status_allocate(tenant.id, "somekey").unwrap();
+    assert!(store.get_tenant(TENANT).unwrap().is_some());
+
+    store.delete_tenant(TENANT).unwrap();
+
+    // Everything scoped to the tenant is gone, and the domain can be recreated.
+    assert!(store.get_tenant(TENANT).unwrap().is_none());
+    assert!(store.list_tenant_admins(TENANT).unwrap().is_empty());
+    let (pubkey2, sealed2) = KeystoreKey::from_env_value(&"ab".repeat(32))
+        .unwrap()
+        .generate_sealed(TENANT)
+        .unwrap();
+    store
+        .create_tenant(TENANT, &pubkey2, &sealed2, "someone@else.org")
+        .expect("domain should be free to onboard again");
+    // The recreated tenant is a clean slate (no leftover roster).
+    let fresh = store.get_tenant(TENANT).unwrap().unwrap();
+    assert!(store.get_roster_entry(fresh.id, "eve").unwrap().is_none());
+}
+
+#[tokio::test]
 async fn login_rejects_wrong_password_and_unknown_tenant() {
     let (server, store) = make_server();
     seed_active_tenant(&store);

@@ -1020,3 +1020,38 @@ where
     state.user_store.add_tenant_admin(&domain, &identity, &admin)?;
     Ok(Json(json!({"success": true})))
 }
+
+#[derive(Deserialize)]
+pub struct TenantDeleteRequest {
+    pub csrf: String,
+    pub domain: String,
+    /// Must equal `domain` — a typed confirmation so a delete can't be a
+    /// fat-finger. The console asks the admin to type the domain to confirm.
+    pub confirm: String,
+}
+
+/// POST /wsapi/tenant/delete — remove a tenant and all its broker-side rows
+/// (admins, roster, status), so the domain can be onboarded from scratch. The
+/// tenant's certs die once its DNS record is removed or re-onboarded (its key
+/// no longer resolves). Admin-gated.
+pub async fn tenant_delete<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<TenantDeleteRequest>,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let domain = req.domain.trim().to_lowercase();
+    if req.confirm.trim().to_lowercase() != domain {
+        return Err(BrokerError::ValidationError(
+            "confirmation does not match the domain".into(),
+        ));
+    }
+    let admin = session_admin_identity(state.as_ref(), &cookies, &req.csrf, &domain)?;
+    state.user_store.delete_tenant(&domain)?;
+    tracing::info!(tenant = %domain, by = %admin, "hosted primary: tenant deleted");
+    Ok(Json(json!({"success": true})))
+}

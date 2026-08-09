@@ -303,6 +303,13 @@ pub trait UserStore: Send + Sync {
     /// once and seats `created_by` as the first admin.
     fn set_tenant_status(&self, domain: &str, status: TenantStatus) -> StoreResult<()>;
 
+    /// Delete a tenant and everything scoped to it — admins, roster, status
+    /// index space. The tenant's certs (signed under a key that now vanishes)
+    /// die once the DNS record is removed or re-onboarded; this only forgets
+    /// the broker-side rows so the domain can be onboarded fresh. No-op if the
+    /// domain has no tenant.
+    fn delete_tenant(&self, domain: &str) -> StoreResult<()>;
+
     /// Whether `identity` administers `domain`'s tenant.
     fn is_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool>;
 
