@@ -1,11 +1,11 @@
 ---
 # browserid-ng-0p5f
 title: Make all verifiers DNSSEC-conformant (key from _browserid record, support host=, never .well-known keys)
-status: in-progress
+status: completed
 type: feature
 priority: high
 created_at: 2026-08-09T15:05:49Z
-updated_at: 2026-08-09T15:05:49Z
+updated_at: 2026-08-09T15:42:03Z
 parent: browserid-ng-g5qt
 ---
 
@@ -15,12 +15,15 @@ Hosted tenants publish their key ONLY in the DNSSEC _browserid record (+ host= f
 danmills@sandmill.org (now a hosted tenant: DNS has tenant key EzZwk1X_ + host=idp.browserid.me) signs into mingo.place. mingo's verifier (mingo-idp/src/verify.rs) resolves the key via browserid-core discover()+HttpFetcher → fetches sandmill.org/.well-known (still self-serves the OLD key 5T9Vg…) → verifies tenant-signed certs against the old key → "Signature verification failed."
 
 ## Plan (DNSSEC-only, one pass)
-- [ ] Extract a shared `browserid-dnssec` crate: move broker dns_fetcher.rs; add a DnssecDiscoverer that resolves {key, host, endpoints} from _browserid (key ALWAYS from the DNSSEC record; .well-known fetched at host= for endpoints only).
-- [ ] Rewire browserid-broker to consume it (behavior identical; fallback_fetcher uses the shared fetcher).
-- [ ] browserid-rp: DNSSEC-only trust — resolve every issuer key from the _browserid record + host=; drop the .well-known-key path (closes audit kh0j/H2). Keep an explicit offline pin escape hatch only if needed.
-- [ ] mingo mingo-idp/src/verify.rs: resolve the issuer key via DNSSEC (shared crate), not HttpFetcher .well-known. Bump mingo's browserid-ng git pins.
-- [ ] Tests across broker + rp; build mingo.
-- [ ] Deploy broker + mingo; verify sandmill.org → mingo login end to end.
+- [x] Extracted browserid-dnssec crate: moved dns_fetcher; added resolve_idp_key() (key always from the DNSSEC record; verifiers never fetch the domain for a key, so host= is honored implicitly).
+- [x] Broker consumes the crate (dns_fetcher re-exports it); behavior identical, tests green; redeployed to prod (1e0fed4).
+- [x] browserid-rp: added verify_dnssec() (resolves every issuer key via DNSSEC; primary iff record present, else accept_fallback broker). Removed trust_*_from_well_known + fetch_well_known_key. Pinned trust_*/sync verify() kept as explicit offline/test mode. Tests green.
+- [x] mingo verify.rs rewritten to DNSSEC (browserid-dnssec::resolve_idp_key); dropped HttpFetcher + dead fetch_domain_pubkey; routes.rs uses a DnsFetcher (no spawn_blocking). Pins bumped to bc8eaad. Committed + pushed (mingo 4aaf01e). Builds + tests green.
+- [x] Tests green across broker + rp; mingo workspace builds + tests green.
+- [~] Broker deployed + verified. MINGO DEPLOY PENDING (USER): the mingo deploy key ~/.ssh/donotuse_id_ed25519_service is not on this machine — run `make deploy-mingo` (git push to dokku@sandmill.org; slow host-build ~40min due to the new hickory dep on the 24G host; dokku keeps the current release if the build fails). Then re-test the sandmill.org → mingo login.
 
 ## Deferred (separate bean)
 On-chain / SBO verifier conformance — file after the above.
+
+## Deferred
+On-chain / SBO verifier conformance filed as browserid-ng-k3rg.
