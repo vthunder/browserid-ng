@@ -27,3 +27,6 @@ jobs:
       - name: nextauth tests
         working-directory: sdk/nextauth
         run: npm install --no-audit --no-fund && node --test test/*.test.mjs
+      - name: express tests
+        working-directory: sdk/express
+        run: npm install --no-audit --no-fund && node --test test/*.test.mjs
