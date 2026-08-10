@@ -65,3 +65,18 @@ release manually with `ssh -i ~/.ssh/mini-ops dokku@<host> git:from-image <app>
 3. **Python/FastMCP** port of mcp-auth.
 4. Security-hardening backlog / conformance-suite extraction (credibility).
 5. e2e environment health (`dk6d`/`tnwb`).
+
+## Update (later 2026-08-10) — more autonomous work shipped
+
+- **Security (deployed to prod, broker sha 0dcadc4):** M1/`mmnp`+`7ydv`
+  fail-closed device-cert revocation gate at the fallback `/access/mint`;
+  `zexp` — the served `.well-known` no longer advertises a key (DNSSEC is the
+  sole root). Both tested, broker suite green.
+- **`@browserid-ng/express`** — Passport strategy + middleware (7 tests).
+- **`browserid-mcp-auth` (Python/FastMCP)** — port of mcp-auth (14 tests).
+- **Directory-sync exploration** (`mhvi`) — Workspace tenants auto-provision via
+  OIDC (JIT), avoiding the self-claim UX. Design note written.
+
+Remaining autonomous candidates: Remix/SvelteKit adapters (off the same core);
+a FastMCP reference server; more security-backlog items. Still user-gated: OIDC
+wiring (Google creds), GitHub flagship (App), all npm/PyPI publishes.
