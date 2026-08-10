@@ -155,3 +155,85 @@ artifact.
 - **Hosted-primary recovery/transfer guardrails, admin recent-strong-auth,
   roster-vs-self-claimed collision, tenant branding** (g5qt follow-ups, bean
   `0j6l`).
+
+## Product decisions to make (after landing)
+
+Calls only you can make — each shapes or gates a build. My recommendation is
+noted so you can quickly agree or override. Grouped by area.
+
+### Hosted-primary — provisioning strategy
+- **Self-claim vs directory sync.** You're ambivalent on self-claim (`j91f`)
+  because its UX resembles the fallback. Decision: **drop self-claim in favor
+  of directory sync** (`mhvi`) for Workspace tenants, keep admin-managed roster
+  for the rest? *(Recommend: yes — directory sync is the tighter answer;
+  revisit self-claim only for mail-domains with no directory.)*
+- **Directory sync — `auth_method`** per tenant ∈ `{password, oidc, both}`.
+  *(Recommend `both`: Workspace users sign in with Google, but the admin can
+  still create password users for service/shared accounts.)*
+- **Directory sync — JIT policy.** Auto-provision a roster entry on any valid
+  `@domain` Google login (hd-matched), or require a per-user admin approval the
+  first time? *(Recommend auto-provision — that's the whole point.)*
+- **Directory sync — deprovisioning bar.** Is "suspended-in-Google ⇒
+  next-login blocked + certs age out" enough for v1, or must v1 include Depth-2
+  directory sync for immediate cutoff? *(Recommend v1 = next-login-blocked;
+  Depth-2 as the enterprise follow-up.)*
+
+### Hosted-primary — hardening (g5qt / 0j6l follow-ups)
+- **Domain re-claim / transfer ceremony:** hold-down window length before a
+  re-claim over an ACTIVE tenant activates; notify existing admins (yes);
+  roster on re-claim = **clean** (new owner) with export for the outgoing
+  admin, vs inherited. *(Recommend clean-with-export — inheriting leaks the old
+  owner's user list.)*
+- **Admin recent-strong-auth gate** on destructive console actions (delete
+  domain, disable users, rotate)? *(Recommend yes — cheap, closes the
+  "admin identity is the keys to the kingdom" gap.)*
+- **Roster vs. self-claimed collision:** if an admin creates a roster entry for
+  a local part that already self-claimed — adopt, or block until the admin
+  confirms takeover? *(Security-sensitive; recommend block-until-confirm.)*
+- **Tenant branding** on the §7 auth pages (logo/name, "via browserid.me")?
+  *(Product/GTM call; not blocking.)*
+
+### GitHub flagship (v8ll)
+- **Server↔GitHub credential:** GitHub App (per-repo human consent, bot
+  attribution) vs OAuth user-token vs a service PAT. *(Recommend GitHub App —
+  a service PAT undercuts the "no PAT" message.)*
+- **Build our own reference server** vs fork/PR a popular OSS GitHub MCP
+  server. *(Recommend build-our-own first, upstream PR as a follow-up.)*
+- **Single-install demo** for v1 vs the multi-tenant install→identity mapping
+  up front. *(Recommend single-install v1.)*
+- **Hosting:** local/controlled for the recorded demo first vs host
+  `github-mcp.browserid.me` (holds an App private key + writes real repos).
+  *(Recommend local-first, host after review.)*
+
+### MCP distribution
+- **Hosted authorization-code AS** ("Login with BrowserID" / a hosted AS for
+  MCP servers that want zero AS code) — offer it *in addition* to the
+  in-middleware AS? It re-centralizes *redemption* (not authority), a
+  convenience/decentralization trade. *(Recommend defer; the in-middleware AS
+  is the clean default.)*
+- **Scope-conventions public registry** (documented `repo:`/`path:`/`action:`
+  families so approval cards render legibly) — stand one up? *(Cheap,
+  compounding; recommend yes, low priority.)*
+
+### Security / policy calls (deferred pending your decision)
+- **`bls2` — subaddressing at the mint.** Keep the current by-design behavior
+  (`user@domain` authorizes `user+tag@domain`; the verifier enforces the real
+  binding via the warrant grantee) vs tighten to exact-identity on the auth
+  path. *(Recommend keep — tightening breaks agent identities, which are
+  `+tags`; the verifier already binds.)* Flagged, not touched.
+- **`7ww7` — fallback `/auth/device_cert` password-bypass.** Audit item
+  deferred "for product decisions": confirm the intended gate for fallback
+  device-cert issuance. *(Needs your read on the intended policy before I
+  change anything.)*
+- **`dw35` — account enumeration** on the *staging/reset* flows (login itself
+  is already non-enumerating): make those flows uniform at the cost of some UX
+  clarity? *(Recommend yes, carefully; has a UX trade-off worth your call.)*
+- **`jaa1` — identifiers changing hands / revoke-on-flip:** should the broker
+  revoke on an identity flip (handle move/takedown), like the bridge does, or
+  stay user-or-expiry-only? *(Open DECISION bean; multi-broker world needs it
+  on paper.)*
+
+### RP-side reach
+- **Which frameworks next** after NextAuth + Express: Remix, SvelteKit,
+  Fastify, Hono? *(All thin off the same core; recommend by your users'
+  stacks — I can build whichever you name.)*
