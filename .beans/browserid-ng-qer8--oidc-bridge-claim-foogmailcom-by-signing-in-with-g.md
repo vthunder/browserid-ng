@@ -1,11 +1,11 @@
 ---
 # browserid-ng-qer8
 title: 'OIDC bridge: claim foo@gmail.com by signing in with Google (in-broker proof method)'
-status: draft
+status: in-progress
 type: feature
 priority: high
 created_at: 2026-08-10T04:30:45Z
-updated_at: 2026-08-10T04:37:02Z
+updated_at: 2026-08-10T05:07:37Z
 ---
 
 Claim a mailbox by signing in with its provider (Google first) instead of a mailed code. An in-broker OIDC proof method that UPGRADES the mailbox ceremony for a no-primary MX domain with a known OIDC issuer — per-mailbox scope (behaves exactly like smtp), SMTP stays as the equal-strength fallback ceremony.
@@ -18,3 +18,12 @@ Build new: ProofMethod::Oidc; browserid-broker/src/oidc/ (auth-code client + PKC
 Decisions pending (in the spec): providers for v1 (Google only recommended); Workspace/custom-domain detection (static consumer-domain allowlist for v1 recommended); provider secrets in broker env / id.env.age.
 
 ## Decisions settled (2026-08-10): Google only; Workspace detection YES via MX (offer Google for any no-primary domain whose MX is *.google.com; scope stays per-mailbox — hd/email_verified, exact-email equality, never widen to domain); provider secrets in broker env / id.env.age.
+
+## Core BUILT + committed, INERT (2026-08-10, commit a2d2bc4)
+browserid-broker/src/oidc/ = the tested security-critical engine (provider config, Google detection incl. Workspace-via-MX, PKCE, auth URL, flow store, JWKS, RS256 ID-token verification with all claim checks incl. Workspace hd guard) + ProofMethod::Oidc. 12 unit tests green; full broker suite green; NOT wired into the login path (unconfigured = no effect).
+
+REMAINING (SUPERVISED — needs Google client creds + review of production login routing):
+- routes: /oidc/claim (build auth URL, begin flow) + /oidc/callback (exchange code at Google token endpoint, fetch+cache JWKS, verify_id_token, then attach via the same match table as complete_handle_claim minus attestation: get_email/transfer_email/add_email_with_type/create_user_no_password + verify_email + set_email_proof(email, Oidc, Some(<iss>#<sub>)) + session create/cookie).
+- authority.rs: expose the resolved MX host so a Google-domain check can layer on the Smtp answer; address_info emits proof:"oidc" + claim="/oidc/claim?..." for Google domains (SMTP escape hatch intact).
+- dialog.js: a proof==='oidc' lane parallel to the atproto one (reuse CLAIM_RESUME_* navigate-out/resume); redeem collapses to a session_context status check (callback already attached).
+- config/main.rs: OIDC_GOOGLE_CLIENT_ID/SECRET (-> sandmill-infra id.env.age), build the provider + wire OidcFlows into AppState.
