@@ -1,0 +1,18 @@
+{
+  "name": "browserid-nextauth-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference Next.js (App Router) app using @browserid-ng/nextauth for Sign in with BrowserID.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@browserid-ng/nextauth": "file:../../sdk/nextauth",
+    "next": "^14 || ^15",
+    "next-auth": "^5.0.0-beta",
+    "react": "^18 || ^19",
+    "react-dom": "^18 || ^19"
+  }
+}
