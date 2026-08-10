@@ -39,13 +39,21 @@ where
         return Json(super::hosted_idp::tenant_support_document());
     }
 
-    let doc = SupportDocument::new(state.keypair.public_key())
+    let mut doc = SupportDocument::new(state.keypair.public_key())
         .with_authentication("/auth")
         .with_provisioning("/provision")
         // Device-cert conformance: browser device issuance rides the fallback
         // SMTP surface; the mint is headless (device cert = the credential).
         .with_device_cert("/auth/device_cert")
         .with_access_cert("/access/mint");
+
+    // The support document carries NO key (spec §3/§3.1, bean zexp): an IdP's
+    // identity key comes solely from the authenticated `_browserid` DNSSEC
+    // record. Serving an advisory key here is a downgrade vector for any
+    // verifier that reads it instead of DNS — exactly what bean 0p5f closed
+    // across our verifiers. The struct field stays (the DNSSEC resolver fills
+    // it in from the record); we simply do not advertise one.
+    doc.public_key = None;
 
     Json(doc)
 }

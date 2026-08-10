@@ -9,14 +9,16 @@ mod common;
 use browserid_core::device::{
     AccessPresentation, AccessRequest, DeviceCert, HolderMatcher, Purpose, Warrant,
 };
-use browserid_core::{Assertion, KeyPair, PublicKey};
+use browserid_core::{Assertion, KeyPair};
 use chrono::Duration;
 use common::create_test_server;
 use serde_json::{json, Value};
 
 #[tokio::test]
 async fn smtp_auth_then_device_cert_issues_the_pair() {
-    let (server, email_sender) = create_test_server();
+    let ctx = common::create_test_context();
+    let server = &ctx.server;
+    let email_sender = &ctx.email_sender;
     let email = "someone@gmail.com"; // a domain this broker does NOT own
     let device_kp = KeyPair::generate();
     let config_kp = KeyPair::generate();
@@ -112,9 +114,9 @@ async fn smtp_auth_then_device_cert_issues_the_pair() {
         body["config_cert"].as_str().unwrap()
     );
 
-    // The broker's public key, as an RP would discover it.
-    let wk: Value = server.get("/.well-known/browserid").await.json();
-    let broker_key = PublicKey::from_base64(wk["public-key"]["publicKey"].as_str().unwrap()).unwrap();
+    // The broker's public key — an RP resolves this from the `_browserid`
+    // DNSSEC record (the served `.well-known` carries no key, bean zexp).
+    let broker_key = ctx.broker_key.clone();
 
     let verified = AccessPresentation::parse(&presentation)
         .unwrap()

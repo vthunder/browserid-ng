@@ -65,12 +65,13 @@ macro_rules! own_status_ctx {
 
 #[tokio::test]
 async fn fedcm_mints_verifiable_assertion() {
-    let (server, email_sender) = create_test_server();
+    let ctx = common::create_test_context();
+    let server = &ctx.server;
+    let email_sender = &ctx.email_sender;
 
-    // The broker signing key — used to verify the token offline exactly as an
-    // RP's call to /verify would.
-    let doc: SupportDocument = server.get("/.well-known/browserid").await.json();
-    let broker_pub = doc.public_key.expect("broker pubkey in support doc");
+    // The broker signing key — resolved from the `_browserid` DNSSEC record in
+    // production (the served `.well-known` carries no key, bean zexp).
+    let broker_pub = ctx.broker_key.clone();
 
     // A fallback (SMTP-verified Secondary) identity + its session.
     let session = create_user(&server, &email_sender, "alice@example.com", "Password123!").await;

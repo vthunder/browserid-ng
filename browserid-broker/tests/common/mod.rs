@@ -17,6 +17,10 @@ pub struct TestContext {
     pub server: TestServer,
     pub email_sender: MockEmailSender,
     pub user_store: Arc<InMemoryUserStore>,
+    /// The broker's public key — in production an RP resolves this from the
+    /// `_browserid` DNSSEC record (the served `.well-known` carries no key,
+    /// bean zexp); tests that verify broker-issued certs use it directly.
+    pub broker_key: browserid_core::PublicKey,
 }
 
 /// Mock email sender that captures verification codes
@@ -72,6 +76,7 @@ pub fn create_test_server() -> (TestServer, MockEmailSender) {
 /// Create a test context with access to underlying stores
 pub fn create_test_context() -> TestContext {
     let keypair = KeyPair::generate();
+    let broker_key = keypair.public_key();
     let email_sender = Arc::new(MockEmailSender::new());
     let user_store = Arc::new(InMemoryUserStore::new());
     let session_store = Arc::new(InMemorySessionStore::new());
@@ -93,6 +98,7 @@ pub fn create_test_context() -> TestContext {
             sent: email_sender.sent.clone(),
         },
         user_store,
+        broker_key,
     }
 }
 
@@ -110,6 +116,7 @@ pub fn create_test_context_customized(
     customize: impl FnOnce(&mut AppState<InMemoryUserStore, InMemorySessionStore, MockEmailSender>),
 ) -> TestContext {
     let keypair = KeyPair::generate();
+    let broker_key = keypair.public_key();
     let email_sender = Arc::new(MockEmailSender::new());
     let user_store = Arc::new(InMemoryUserStore::new());
     let session_store = Arc::new(InMemorySessionStore::new());
@@ -132,6 +139,7 @@ pub fn create_test_context_customized(
             sent: email_sender.sent.clone(),
         },
         user_store,
+        broker_key,
     }
 }
 
