@@ -512,20 +512,27 @@ mod csp_tests {
     use base64::Engine;
     use sha2::{Digest, Sha256};
 
-    /// Extract the first inline (non-`src`) `<script>` body from an HTML string.
-    fn first_inline_script(html: &str) -> Option<&str> {
+    /// Extract EVERY inline (non-`src`) `<script>` body from an HTML string
+    /// (bean ya11: checking only the first would let a second inline script's
+    /// hash drift out of INLINE_SCRIPT_HASHES and be silently blocked by the
+    /// strict CSP in production).
+    fn all_inline_scripts(html: &str) -> Vec<&str> {
+        let mut out = Vec::new();
         let mut cursor = 0;
-        loop {
-            let start = html[cursor..].find("<script")? + cursor;
-            let gt = html[start..].find('>')? + start;
+        while let Some(rel) = html[cursor..].find("<script") {
+            let start = rel + cursor;
+            let Some(gtr) = html[start..].find('>') else { break };
+            let gt = gtr + start;
             let open_tag = &html[start..=gt];
+            let content_start = gt + 1;
+            let Some(endr) = html[content_start..].find("</script>") else { break };
+            let end = endr + content_start;
             if !open_tag.contains("src=") {
-                let content_start = gt + 1;
-                let end = html[content_start..].find("</script>")? + content_start;
-                return Some(&html[content_start..end]);
+                out.push(&html[content_start..end]);
             }
-            cursor = gt + 1;
+            cursor = end + "</script>".len();
         }
+        out
     }
 
     fn hash_of(script: &str) -> String {
@@ -550,23 +557,26 @@ mod csp_tests {
         ] {
             let html = std::fs::read_to_string(file)
                 .unwrap_or_else(|e| panic!("read {file}: {e}"));
-            let script = first_inline_script(&html)
-                .unwrap_or_else(|| panic!("no inline script in {file}"));
+            let scripts = all_inline_scripts(&html);
+            assert!(!scripts.is_empty(), "no inline script in {file}");
+            for script in scripts {
+                let h = hash_of(script);
+                assert!(
+                    INLINE_SCRIPT_HASHES.contains(&h.as_str()),
+                    "{file}: inline-script hash {h} not in INLINE_SCRIPT_HASHES — update the CSP"
+                );
+                checked += 1;
+            }
+        }
+        // The /sign_in page (served from a Rust const).
+        for script in all_inline_scripts(SIGN_IN_HTML) {
             let h = hash_of(script);
             assert!(
                 INLINE_SCRIPT_HASHES.contains(&h.as_str()),
-                "{file}: inline-script hash {h} not in INLINE_SCRIPT_HASHES — update the CSP"
+                "/sign_in: inline-script hash {h} not in INLINE_SCRIPT_HASHES — update the CSP"
             );
             checked += 1;
         }
-        // The /sign_in page (served from a Rust const).
-        let script = first_inline_script(SIGN_IN_HTML).expect("sign_in inline script");
-        let h = hash_of(script);
-        assert!(
-            INLINE_SCRIPT_HASHES.contains(&h.as_str()),
-            "/sign_in: inline-script hash {h} not in INLINE_SCRIPT_HASHES — update the CSP"
-        );
-        checked += 1;
         assert_eq!(checked, INLINE_SCRIPT_HASHES.len(), "unexpected number of inline scripts");
     }
 
