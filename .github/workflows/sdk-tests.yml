@@ -30,6 +30,12 @@ jobs:
       - name: express tests
         working-directory: sdk/express
         run: npm install --no-audit --no-fund && node --test test/*.test.mjs
+      - name: hono tests
+        working-directory: sdk/hono
+        run: npm install --no-audit --no-fund && node --test test/*.test.mjs
+      - name: fastify tests
+        working-directory: sdk/fastify
+        run: npm install --no-audit --no-fund && node --test test/*.test.mjs
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
