@@ -17,3 +17,4 @@ node_modules
 wallet-service/wallet.db*
 wallet-service/.dev-kek
 wallet-service/.dev-session-secret
+__pycache__
