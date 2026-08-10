@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "browserid-mcp-auth"
+version = "0.1.0"
+description = "Warrant-gated MCP tools over MCP's own OAuth 2.1: a BrowserID 7521 assertion-grant AS + fail-closed per-call revocation checks."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MPL-2.0"
+keywords = ["browserid", "mcp", "oauth", "agent", "warrant", "fastmcp", "rfc7521"]
+
+[project.urls]
+Repository = "https://github.com/vthunder/browserid-ng"
+
+[tool.hatch.build.targets.wheel]
+packages = ["browserid_mcp_auth"]
