@@ -80,3 +80,78 @@ release manually with `ssh -i ~/.ssh/mini-ops dokku@<host> git:from-image <app>
 Remaining autonomous candidates: Remix/SvelteKit adapters (off the same core);
 a FastMCP reference server; more security-backlog items. Still user-gated: OIDC
 wiring (Google creds), GitHub flagship (App), all npm/PyPI publishes.
+
+## Manual steps for when you land (credential/decision-gated)
+
+These need your login/creds or a product decision; once done, the rest is
+autonomous. Ordered by leverage.
+
+### 1. OIDC bridge — Google OAuth client (unblocks bean `qer8`)
+Google Cloud Console → APIs & Services → Credentials → Create OAuth client ID:
+- Type **Web application**.
+- Authorized redirect URI: **`https://browserid.me/oidc/callback`**
+  (add `http://localhost:3000/oidc/callback` for local dev).
+- OAuth consent screen: scopes `openid`, `email` (external, or internal if a
+  Workspace test). Note the **client ID** + **client secret**.
+Then set on the `id` app: `OIDC_GOOGLE_CLIENT_ID`, `OIDC_GOOGLE_CLIENT_SECRET`
+(`ssh -i ~/.ssh/mini-ops dokku@browserid.me config:set id …`) and fold both
+into `sandmill-infra/secrets/id.env.age`. → then I wire the routes/authority/
+address_info/dialog (the code handoff is in bean `qer8`; the core is built +
+tested + inert) and we test the live gmail claim.
+
+### 2. GitHub flagship — register the App (unblocks bean `v8ll`)
+GitHub → Settings → Developer settings → GitHub Apps → New:
+- Name "BrowserID Agent"; permissions **Contents: read**, **Issues: read &
+  write**; no webhook needed for v1.
+- Generate a **private key** (PEM); note the **App ID**; install on a test repo.
+Provide `GITHUB_APP_ID` + the PEM. → I build the warrant-gated server
+(recommend running local/controlled first — it holds the App key and writes to
+real repos). Spec: `docs/plans/2026-08-10-github-flagship-build-spec.md`.
+
+### 3. Publishes (need registry auth)
+`npm publish` (public): `@browserid-ng/mcp-auth`, `@browserid-ng/nextauth`,
+`@browserid-ng/express` (and confirm `@browserid-ng/verify` is current).
+`PyPI`: `browserid-mcp-auth` (needs a PyPI token). I can prep everything;
+publishing needs your `npm login` / token.
+
+### 4. Durability + infra (supervised)
+- Fold `IDP_HOST` + `TENANT_KEYSTORE_KEY` into `sandmill-infra/secrets/
+  id.env.age` (currently only in dokku config; deliberately not edited
+  unattended — the age re-encryption is risky to do blind).
+- Rebuild the **hobby host** with the new provision scripts (mini-ops was
+  added manually as an interim) — separate infra bean.
+
+### 5. Directory-sync decisions (unblocks a Depth-1 build of `mhvi`)
+Confirm in `docs/plans/2026-08-10-tenant-directory-sync-design.md`:
+auth_method `{password, oidc, both}` (recommend `both`); JIT provisioning
+policy (recommend auto-create any valid `@domain` Google login); whether
+"next-login-blocked + certs age out" deprovisioning is sufficient for v1.
+
+### 6. Demo capture (needs a human approval)
+The mcp-demo / GitHub "revoke kills the agent mid-conversation" screen capture —
+needs a real warrant approval through the wallet; record it as the distribution
+artifact.
+
+## Deferred backlog (not blocking; from the specs/beans)
+
+- **OIDC:** Microsoft + Apple providers; the bridge-shape secret isolation.
+- **NextAuth/RP:** Remix + SvelteKit adapters off the same core (Express done);
+  the OAuth-against-wallet-service path as a package; a generic hosted
+  authorization-code AS ("Login with BrowserID", zero RP backend).
+- **MCP:** a live FastMCP reference server; MCPB/DXT desktop bundle + registry
+  listings; the scope-conventions public registry; per-call attestation hook
+  for high-value tools; remote-wallet identity portability.
+- **GitHub flagship:** per-repo path scopes; install→identity multi-tenant
+  mapping; an upstream PR to a popular OSS GitHub MCP server; webhook-driven
+  revocation reactions; more tools (PRs, actions).
+- **Directory sync:** Entra + Okta SCIM (Depth 2); Google groups → scopes/roles;
+  a tenant "connect your directory" onboarding step; near-real-time push.
+- **Security backlog (self-contained, autonomous next time):** `bls2` (exact
+  identity match at mint — no subaddressing on the auth path); `oawf`
+  (rate-limit, enumeration, fallback pw-bypass); `ya11` low-severity hygiene
+  batch; `o92d` fallback-abuse guardrails.
+- **e2e health:** `dk6d` / `tnwb` (34 pre-existing failures + untrustworthy
+  summaries) — fixing the harness unblocks confident shipping.
+- **Hosted-primary recovery/transfer guardrails, admin recent-strong-auth,
+  roster-vs-self-claimed collision, tenant branding** (g5qt follow-ups, bean
+  `0j6l`).
