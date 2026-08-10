@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: high
 created_at: 2026-08-09T15:05:49Z
-updated_at: 2026-08-09T15:42:03Z
+updated_at: 2026-08-10T02:51:20Z
 parent: browserid-ng-g5qt
 ---
 
@@ -27,3 +27,6 @@ On-chain / SBO verifier conformance — file after the above.
 
 ## Deferred
 On-chain / SBO verifier conformance filed as browserid-ng-k3rg.
+
+## Mingo deploy blocked (2026-08-10)
+Cannot deploy mingo from this machine: the deploy key ~/.ssh/donotuse_id_ed25519_service is absent, and no other on-disk/agent key (nor root@sandmill.org) authorizes dokku@sandmill.org. USER must run `make deploy-mingo` (or place the service key here). Code fix is committed + pushed (mingo 4aaf01e); dokku keeps the current release if the host-build fails, so re-running is safe.
