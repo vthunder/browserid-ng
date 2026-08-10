@@ -1,0 +1,81 @@
+# Build the MCP-auth demo in CI and deploy the IMAGE to dokku — same pattern
+# as deploy-guestbook.yml (the host never builds; git:from-image pulls it).
+#
+# One-time setup (on the id-host, done at first deploy via mini-ops):
+#     dokku apps:create mcp-demo
+#     dokku builder:set mcp-demo selected dockerfile
+#     dokku domains:set mcp-demo mcp-demo.browserid.me
+#     dokku ports:set mcp-demo http:80:3300
+#     dokku config:set mcp-demo MCP_RESOURCE=https://mcp-demo.browserid.me
+#     dokku letsencrypt:enable mcp-demo   (after the *.browserid.me wildcard resolves)
+# DNS: covered by the *.browserid.me wildcard → the id-host.
+# GHCR package inherits the public repo's visibility (no manual step).
+#
+# Stateless service, no storage mount, no secrets. The CI ssh-deploy step is a
+# no-op unless DOKKU_HOST is set + the CI key is authorized (bean o7ip); the
+# working release path is a manual `git:from-image` with the mini-ops key.
+
+name: deploy-mcp-demo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mcp-demo/**"
+      - "sdk/mcp-auth/**"
+      - ".github/workflows/deploy-mcp-demo.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/vthunder/browserid-ng/mcp-demo
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node tests aren't covered by test.yml (Rust only) — gate the deploy on
+      # the mcp-auth package's unit suite here.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Test @browserid-ng/mcp-auth
+        working-directory: sdk/mcp-auth
+        run: node --test test/*.test.mjs
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: mcp-demo/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to dokku
+        if: ${{ vars.DOKKU_HOST != '' }}
+        env:
+          DOKKU_SSH_KEY: ${{ secrets.DOKKU_SSH_KEY }}
+          DOKKU_HOST: ${{ vars.DOKKU_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DOKKU_SSH_KEY" > ~/.ssh/dokku_key
+          chmod 600 ~/.ssh/dokku_key
+          ssh -i ~/.ssh/dokku_key -o StrictHostKeyChecking=accept-new \
+            "dokku@$DOKKU_HOST" git:from-image mcp-demo "$IMAGE:$GITHUB_SHA"

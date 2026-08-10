@@ -1,0 +1,24 @@
+{
+  "name": "@browserid-ng/mcp-demo",
+  "version": "0.1.0",
+  "description": "Reference warrant-gated MCP server on @browserid-ng/mcp-auth: no API keys, attributed + revocable tool calls.",
+  "type": "module",
+  "private": true,
+  "main": "./src/server.mjs",
+  "scripts": {
+    "start": "node src/server.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@browserid-ng/mcp-auth": "file:../sdk/mcp-auth",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0 || ^4.0.0"
+  },
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vthunder/browserid-ng"
+  }
+}
