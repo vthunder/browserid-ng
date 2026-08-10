@@ -15,6 +15,26 @@ Live at **[browserid.me](https://browserid.me)**. Descended from Mozilla
 [BrowserID protocol]: https://github.com/mozilla/id-specs
 [Persona]: https://github.com/mozilla/persona
 
+## Start here
+
+| You are… | Go to |
+|---|---|
+| **An app developer** adding sign-in | Drop-in adapters: [NextAuth](./sdk/nextauth) · [Express](./sdk/express) · [Hono](./sdk/hono) · [Fastify](./sdk/fastify) — or the [one-call verifier](#for-app-developers-verify-in-one-call). |
+| **Building an agent / MCP server** | Warrant-gate your tools with [`@browserid-ng/mcp-auth`](./sdk/mcp-auth) (JS) or [`browserid-mcp-auth`](./sdk/python-mcp-auth) (Python). See [For agent authors](#for-agent-authors-give-your-agent-an-identity). |
+| **A domain owner** | [Run identity for your domain](#for-domain-owners-run-identity-for-your-domain) with one DNS record — browserid.me issues certs *as your domain*. |
+| **Just exploring** | The [live demos & services](#live-demos--services) below. |
+
+## Live demos & services
+
+| | |
+|---|---|
+| [**browserid.me**](https://browserid.me) | the broker / fallback IdP + hosted verifier |
+| [**idp.browserid.me**](https://idp.browserid.me) | the hosted-primary IdP surface a delegating domain points at |
+| [**browserid.me/guestbook**](https://browserid.me/guestbook) | a public guestbook only a verified identity can sign |
+| [**mcp-demo.browserid.me**](https://mcp-demo.browserid.me) | a warrant-gated MCP server (JS) — "revoke kills the agent" |
+| [**python-mcp-demo.browserid.me**](https://python-mcp-demo.browserid.me) | the same, on FastMCP (Python) |
+| `npx @browserid-ng/wallet` | the local wallet MCP server — gives an agent its own identity |
+
 ## Why
 
 Agents act everywhere now — and they sign in by borrowing passwords, scraping
@@ -79,6 +99,17 @@ but as a relying party you never parse it: you POST it and read back
   `/verify` HTTP contract with Python / Go / curl examples.
 - No registration, no client IDs, no secrets to manage.
 
+**Drop-in framework adapters** — "Sign in with BrowserID" for your stack, each a
+thin, tested wrapper over the verifier (audience-pinned, fail-closed, humans-only
+by default):
+
+| Framework | Package | Shape |
+|---|---|---|
+| Next.js / [Auth.js](https://authjs.dev) | [`@browserid-ng/nextauth`](./sdk/nextauth) | Credentials provider + client helper |
+| [Express](https://expressjs.com) | [`@browserid-ng/express`](./sdk/express) | Passport strategy + middleware |
+| [Hono](https://hono.dev) (edge: Workers/Bun/Deno) | [`@browserid-ng/hono`](./sdk/hono) | middleware |
+| [Fastify](https://fastify.dev) | [`@browserid-ng/fastify`](./sdk/fastify) | preHandler hook |
+
 **Runnable examples:**
 - [`examples/rp-quickstart`](./examples/rp-quickstart) — a complete relying party
   in one file: passwordless human sign-in, verify → session.
@@ -103,6 +134,33 @@ signs the **public guestbook** at [browserid.me/guestbook](https://browserid.me/
 — where your message appears attributed to the agent *and to you*. See
 [`sdk/wallet`](./sdk/wallet).
 
+### Warrant-gate *your* MCP server (no PATs in configs)
+
+Instead of pasting a long-lived API key into an MCP server's config — which the
+agent effectively owns, unscoped and unrevocable — wrap your tools so the agent
+presents its human's **warrant** and you get scoped, attributed, revocable
+authority per call. Riding MCP's own OAuth 2.1 (the RFC 7521 assertion grant),
+so hosts speak it unmodified:
+
+| | Package | Runnable server |
+|---|---|---|
+| **JavaScript** | [`@browserid-ng/mcp-auth`](./sdk/mcp-auth) | [`mcp-demo`](./mcp-demo) → [mcp-demo.browserid.me](https://mcp-demo.browserid.me) |
+| **Python / FastMCP** | [`browserid-mcp-auth`](./sdk/python-mcp-auth) | [`python-mcp-demo`](./python-mcp-demo) → [python-mcp-demo.browserid.me](https://python-mcp-demo.browserid.me) |
+
+Every tool call exposes `grantor` (the human) and `grantee` (the agent), enforces
+the tool's scopes, and re-checks revocation **fail-closed** — so a revoke at
+`browserid.me/account` kills the agent on its *next* call, with no key rotation.
+
+## For domain owners: run identity for your domain
+
+Be your own identity provider without running one. Publish a single DNSSEC
+`_browserid` record and browserid.me operates the full IdP surface **as your
+domain** — certs are issued with `iss = yourdomain.com`, your users manage
+nothing, and every relying party that already accepts browserid.me accepts your
+domain with zero config. Your off-ramp is a DNS flip to a self-hosted key.
+Onboard at [browserid.me/domains](https://browserid.me/domains); design in
+[`docs/plans/2026-08-08-hosted-primary-idp-as-a-service.md`](./docs/plans/2026-08-08-hosted-primary-idp-as-a-service.md).
+
 ## Repository layout
 
 | Crate / dir | What it is |
@@ -115,6 +173,10 @@ signs the **public guestbook** at [browserid.me/guestbook](https://browserid.me/
 | **sdk/js** | `@browserid-ng/verify` — the zero-dependency hosted-verify client (RP side) |
 | **sdk/agent** | `@browserid-ng/agent` — the Node agent-side SDK (provision, warrants, assertions) |
 | **sdk/wallet** | `@browserid-ng/wallet` — an MCP server (run via `npx`) giving an agent a browserid-ng identity; ships the guestbook demo |
+| **sdk/nextauth · express · hono · fastify** | Drop-in "Sign in with BrowserID" RP adapters for [NextAuth](./sdk/nextauth), [Express](./sdk/express), [Hono](./sdk/hono), [Fastify](./sdk/fastify) |
+| **sdk/mcp-auth** | `@browserid-ng/mcp-auth` — warrant-gate MCP tools over MCP's OAuth 2.1 (7521 AS + fail-closed per-call status) |
+| **sdk/python-mcp-auth** | `browserid-mcp-auth` — the Python / FastMCP port of mcp-auth |
+| **mcp-demo · python-mcp-demo** | runnable warrant-gated MCP reference servers (JS + Python) — the "revoke kills the agent" demo |
 | **e2e-tests** | Playwright end-to-end suite (90+ tests) |
 | **docs/** | Design plans and the verification quickstart |
 
