@@ -540,3 +540,72 @@ async fn cert_revocation_status_answers_from_the_authority() {
     let body: Value = get(norf_id).await.json();
     assert_eq!(body["state"], "unknown");
 }
+
+// A revoked device cert must mint NOTHING new (audit M1 / bean mmnp):
+// fail-closed revocation gate at /access/mint.
+#[tokio::test]
+async fn revoked_device_cert_cannot_mint() {
+    let (server, sender) = make_server();
+    let email = "revoke-me@localhost:3000";
+    let session = create_user(&server, &sender, email, "testpassword").await;
+    let c = csrf(&server, &session).await;
+
+    // Issue + persist the device/config certs under the account.
+    let device_kp = KeyPair::generate();
+    let config_kp = KeyPair::generate();
+    let issued: Value = server
+        .post("/device/issue")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({
+            "csrf": c, "email": email,
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": config_kp.public_key().to_base64(),
+        }))
+        .await
+        .json();
+    assert_eq!(issued["success"], true, "issue: {issued}");
+
+    // Minting works before revocation.
+    let access_kp = KeyPair::generate();
+    let dc = DeviceCert::parse(issued["device_cert"].as_str().unwrap()).unwrap();
+    let areq = AccessRequest::create(
+        DOMAIN, email, dc.holder().clone(), &access_kp.public_key(), "nonce-pre", &device_kp,
+    ).unwrap();
+    let pre: Value = server
+        .post("/access/mint")
+        .json(&json!({ "device_cert": issued["device_cert"], "access_request": areq.encoded() }))
+        .await
+        .json();
+    assert_eq!(pre["success"], true, "pre-revoke mint should work: {pre}");
+
+    // Find the authentication device cert's id and revoke it.
+    let certs: Value = server
+        .get("/wsapi/device_certs")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    let id = certs["certs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["purpose"] == "authentication")
+        .and_then(|c| c["id"].as_u64())
+        .expect("authentication cert id");
+    let revoked: Value = server
+        .post("/wsapi/revoke_device_cert")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "id": id }))
+        .await
+        .json();
+    assert_eq!(revoked["success"], true, "revoke: {revoked}");
+
+    // Now the mint must refuse even a nominally-valid request.
+    let areq2 = AccessRequest::create(
+        DOMAIN, email, dc.holder().clone(), &access_kp.public_key(), "nonce-post", &device_kp,
+    ).unwrap();
+    let post = server
+        .post("/access/mint")
+        .json(&json!({ "device_cert": issued["device_cert"], "access_request": areq2.encoded() }))
+        .await;
+    assert_eq!(post.status_code(), 403, "revoked device cert must not mint");
+}

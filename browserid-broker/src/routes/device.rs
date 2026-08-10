@@ -291,6 +291,19 @@ where
     if device_cert.purpose() != Purpose::Authentication {
         return Err(BrokerError::PolicyRefused("device cert cannot mint access certs (not authentication)".into()));
     }
+    // Fail-closed revocation gate at the mint (audit M1 / bean mmnp): a revoked
+    // device cert must mint nothing new. The spec's "instant revocation at the
+    // mint" (§6.3) depends on this check — without it a revoked device keeps
+    // minting fresh 24h access certs until its own cert expires. Only the
+    // broker's OWN status list is authoritative here (the device cert is
+    // broker-issued); its bit is checked directly.
+    if let Some(status) = &device_cert.claims().status {
+        if status.uri == browserid_registrar::consent::status_list_uri(&state.domain)
+            && state.user_store.is_status_revoked_idx(status.idx)?
+        {
+            return Err(BrokerError::PolicyRefused("device cert revoked".into()));
+        }
+    }
     let areq = AccessRequest::parse(&req.access_request).map_err(ce)?;
     areq.verify(device_cert.public_key()).map_err(ce)?;
     if areq.is_expired() {
