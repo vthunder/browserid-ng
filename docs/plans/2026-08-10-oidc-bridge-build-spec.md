@@ -87,25 +87,34 @@ emailed-code flow. No pinning — the ceremony is chosen per claim.
   (`email.rs:261–285`) must still accept an OIDC domain so "email me a code
   instead" works when Google is down.
 
-## Decisions to confirm (build-blocking)
+## Decisions (settled 2026-08-10)
 
-1. **Providers for v1** — Google only (covers Gmail + Workspace), or Google
-   + Microsoft (Outlook/O365) together? Recommend **Google only** first.
-2. **Workspace/custom-domain detection** — how does the broker know
-   `acme.com` (a Google Workspace domain) uses Google OIDC? Options: (a)
-   static allowlist of consumer domains only (gmail.com, googlemail.com) for
-   v1, Workspace deferred; (b) detect Google Workspace via MX
-   (`aspmx.l.google.com`) and offer Google for those too. Recommend **(a)
-   static consumer-domain allowlist for v1** — Workspace detection is a fast
-   follow but adds a domain-verification wrinkle (a domain's MX pointing at
-   Google doesn't prove the *user* controls the mailbox any more than SMTP
-   does, but the `hd` claim + `email_verified` cover it).
-3. **Provider config location** — env vars on the broker
-   (`OIDC_GOOGLE_CLIENT_ID/SECRET`), added to `sandmill-infra/secrets/
-   id.env.age`. Confirm the in-broker custody (vs. the back-pocket bridge
-   shape that keeps secrets off the broker). Recommend **in-broker** per the
-   design doc.
+1. **Providers for v1 — Google only.** Covers Gmail + (per #2) Google
+   Workspace domains. Microsoft/Apple are fast follows.
+2. **Workspace detection — YES, via MX.** Offer the Google sign-in for any
+   no-primary domain whose MX is Google (`*.google.com`, e.g.
+   `aspmx.l.google.com`), not just the consumer allowlist (gmail.com,
+   googlemail.com). Mechanics:
+   - The authority checker gains an "is this a Google-OIDC domain?" probe:
+     consumer allowlist OR MX resolves to Google. It layers on top of the
+     existing `Smtp` answer (the domain still has MX and still degrades to
+     the SMTP loop) — so this is an *additional* `oidc` capability flag on a
+     mailbox domain, surfaced by `address_info` as `proof: "oidc"` with the
+     SMTP escape hatch intact. Implement as a check layered over
+     `no_primary_authority` rather than a new `SecondaryAuthority` variant.
+   - **Scope stays per-mailbox regardless.** A Workspace domain's MX pointing
+     at Google proves the *domain* uses Google, not that the claimant owns
+     any mailbox — so authority is still the single verified address. The ID
+     token's `email` (with `email_verified`, and for Workspace the `hd`
+     hosted-domain claim matching the domain) must exactly equal the claimed
+     address. Never widen to the domain from `hd`.
+   - Reuse the MX probe already in `authority.rs` (`MxProbe`) — it resolves
+     MX today for the SMTP gate; extend it to expose the MX host so the
+     Google check can pattern-match `*.google.com`.
+3. **Provider config — in-broker env**, `OIDC_GOOGLE_CLIENT_ID/SECRET` added
+   to `sandmill-infra/secrets/id.env.age` (same custody as SMTP creds), per
+   the design doc.
 
 ## Deferred (follow-ups)
-Microsoft/Apple providers; Google Workspace domain detection; the
-bridge-shape secret isolation; any UI beyond the dialog lane.
+Microsoft/Apple providers; the bridge-shape secret isolation; any UI beyond
+the dialog lane.

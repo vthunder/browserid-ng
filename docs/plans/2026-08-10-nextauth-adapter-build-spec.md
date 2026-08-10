@@ -96,17 +96,16 @@ a `@auth/core` core + thin next-auth wrappers cover both.
 - For scoped API access (not plain login) the audience must be
   `<origin>/<path>` — documented, but the default login audience is the origin.
 
-## Decisions to confirm (build-blocking)
+## Decisions (settled 2026-08-10)
 
-1. **Primary provider shape** — Credentials (recommended) as the drop-in, with
-   the OAuth-against-wallet-service path documented as the alternative? Or
-   invest in a first-class hosted authorization-code AS so a *stock* NextAuth
-   OAuth provider works with zero backend code? Recommend **Credentials
-   primary**; a hosted generic AS is a larger, separate bet.
-2. **Auth.js version target** — v5 primary + v4 compat note (recommended), or
-   v4 primary (still very widely deployed)? Recommend **v5 primary**.
-3. **Package name** — `@browserid-ng/nextauth` (recommended) vs
-   `@auth/browserid` (would need Auth.js-org buy-in to publish under `@auth`).
+1. **Credentials provider is the primary drop-in.** Verify the presentation
+   server-side at `/verify-access`; zero new infra. The
+   OAuth-against-wallet-service path is *documented* as the alternative for
+   OAuth-native apps, not built. A generic hosted authorization-code AS is a
+   separate, larger bet (deferred).
+2. **Auth.js v5 primary + v4 compat note.** Framework-agnostic provider core;
+   thin v5 wiring; a short v4 compatibility note.
+3. **Package name `@browserid-ng/nextauth`.**
 
 ## Deferred (follow-ups)
 The OAuth-provider-against-wallet-service path as a supported package; a
