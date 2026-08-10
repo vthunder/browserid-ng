@@ -1,11 +1,11 @@
 ---
 # browserid-ng-o92d
 title: Fallback-IdP abuse vectors — audit + guardrails
-status: todo
+status: completed
 type: task
 priority: high
 created_at: 2026-07-11T20:37:12Z
-updated_at: 2026-07-23T11:02:41Z
+updated_at: 2026-08-10T07:35:47Z
 ---
 
 The fallback IdP exposes public, unauthenticated endpoints (/auth/send emails a code to any address; /auth/verify; /cert_key). Audit the abuse surface and put guardrails in place. Registration/API keys are NOT the answer (the broker holds RP attribution from mediation; keys were an Auth0-shaped mistake) — the fix is rate limiting + template hygiene.
@@ -30,3 +30,5 @@ The fallback IdP exposes public, unauthenticated endpoints (/auth/send emails a 
 
 ## Related
 Surfaced in the monetization/abuse discussion for apgv (browserid-ng-apgv). The broker-side attribution + agent-governance-is-the-revenue framing means the fallback stays free/open, so abuse control (not billing) is the real reason for these limits.
+
+## Verified already implemented (2026-08-10): check_and_record_send in routes/fallback_idp.rs enforces both MAX_SENDS_PER_EMAIL (5/window) and MAX_SENDS_GLOBAL (300/window), pruned per call — the mailbombing + quota-burn guardrails this bean called for. Fixed email template (no attacker content). Closing; the bean was stale (code was done).

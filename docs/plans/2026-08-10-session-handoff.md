@@ -76,7 +76,9 @@ release manually with `ssh -i ~/.ssh/mini-ops dokku@<host> git:from-image <app>
 - **`@browserid-ng/hono`** (edge/serverless) + **`@browserid-ng/fastify`** — RP
   adapters off the same core (6 + 5 tests). NextAuth+Express+Hono+Fastify now
   cover the dominant JS server frameworks.
-- **`browserid-mcp-auth` (Python/FastMCP)** — port of mcp-auth (14 tests).
+- **`browserid-mcp-auth` (Python/FastMCP)** — port of mcp-auth (14 tests) +
+  a live reference server: **python-mcp-demo.browserid.me** (FastMCP, deployed;
+  integration test gates its CI).
 - **Directory-sync exploration** (`mhvi`) — Workspace tenants auto-provision via
   OIDC (JIT), avoiding the self-claim UX. Design note written.
 
