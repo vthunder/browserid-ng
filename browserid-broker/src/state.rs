@@ -97,6 +97,12 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// (they are checked authoritatively against the store). std RwLock:
     /// never held across an await.
     pub foreign_status_lists: std::sync::RwLock<HashMap<String, browserid_core::StatusListToken>>,
+    /// Per-client-IP password-login throttle (bean ytjn): fixed-window failed-
+    /// attempt counts on `/wsapi/authenticate_user`, keyed by client IP so a
+    /// brute-forcer is throttled without letting anyone lock out a victim
+    /// account. Auto-resets each window (no permanent lockout). std RwLock:
+    /// never held across an await.
+    pub login_attempts: std::sync::RwLock<HashMap<String, (std::time::Instant, u32)>>,
     /// Hosted-primary tenant key sealing (bean g5qt). `None` = the keystore
     /// secret is not configured; tenant onboarding is refused, everything
     /// else is unaffected.
@@ -144,6 +150,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             used_attestation_jtis: std::sync::RwLock::new(HashMap::new()),
             authority: crate::authority::AuthorityChecker::disabled(),
             foreign_status_lists: std::sync::RwLock::new(HashMap::new()),
+            login_attempts: std::sync::RwLock::new(HashMap::new()),
             tenant_keystore: None,
             idp_host: domain_for_idp,
         }
@@ -179,6 +186,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             used_attestation_jtis: std::sync::RwLock::new(HashMap::new()),
             authority: crate::authority::AuthorityChecker::disabled(),
             foreign_status_lists: std::sync::RwLock::new(HashMap::new()),
+            login_attempts: std::sync::RwLock::new(HashMap::new()),
             tenant_keystore: None,
             idp_host: domain_for_idp,
         }

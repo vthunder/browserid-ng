@@ -74,3 +74,35 @@ async fn test_auth_success() {
     // Should have session cookie
     assert!(response.maybe_cookie("browserid_session").is_some());
 }
+
+// Brute-force throttle on password login (bean ytjn): repeated failures from
+// one client get 429'd, without letting anyone lock out an account.
+#[tokio::test]
+async fn login_is_rate_limited_after_repeated_failures() {
+    let (server, email_sender) = create_test_server();
+    let email = "throttle-me@localhost:3000";
+    create_user(&server, &email_sender, email, "correct-password").await;
+
+    // 10 failed attempts are each rejected as invalid credentials (401).
+    for _ in 0..10 {
+        let r = server
+            .post("/wsapi/authenticate_user")
+            .json(&json!({ "email": email, "pass": "wrong" }))
+            .await;
+        assert_eq!(r.status_code(), 401);
+    }
+    // The 11th (still wrong) is throttled with 429, not 401.
+    let throttled = server
+        .post("/wsapi/authenticate_user")
+        .json(&json!({ "email": email, "pass": "wrong" }))
+        .await;
+    assert_eq!(throttled.status_code(), 429, "should be rate-limited");
+
+    // Even a CORRECT password is throttled once the window is exhausted (the
+    // brute-forcer's own IP is blocked); the window auto-resets later.
+    let blocked = server
+        .post("/wsapi/authenticate_user")
+        .json(&json!({ "email": email, "pass": "correct-password" }))
+        .await;
+    assert_eq!(blocked.status_code(), 429);
+}

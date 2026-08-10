@@ -34,9 +34,36 @@ pub struct AuthenticateResponse {
 }
 
 /// POST /wsapi/authenticate_user
+/// Conservative brute-force throttle for password login (bean ytjn): at most
+/// this many FAILED attempts per client IP per window, then 429 until the
+/// window rolls over. Keyed by IP (not account) so no one can lock out a
+/// victim; auto-resets, so there is no permanent lockout.
+const LOGIN_MAX_FAILURES: u32 = 10;
+const LOGIN_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Best-effort client IP behind nginx/dokku (X-Forwarded-For's first hop, then
+/// X-Real-IP). Falls back to a shared bucket when absent — still bounds a
+/// header-less attacker, just coarsely.
+fn client_ip(headers: &axum::http::HeaderMap) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.trim().to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 pub async fn authenticate_user<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
+    headers: axum::http::HeaderMap,
     Json(req): Json<AuthenticateRequest>,
 ) -> Result<Json<AuthenticateResponse>, BrokerError>
 where
@@ -44,19 +71,51 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    // Find user by email
-    let user = state
-        .user_store
-        .get_user_by_email(&req.email)?
-        .ok_or(BrokerError::InvalidCredentials)?;
+    let ip = client_ip(&headers);
+
+    // Throttle check (before any password work), fail-closed to 429.
+    {
+        let mut attempts = state.login_attempts.write().unwrap();
+        let now = std::time::Instant::now();
+        attempts.retain(|_, (start, _)| now.duration_since(*start) < LOGIN_WINDOW);
+        if let Some((start, count)) = attempts.get(&ip) {
+            if now.duration_since(*start) < LOGIN_WINDOW && *count >= LOGIN_MAX_FAILURES {
+                return Err(BrokerError::LoginRateLimited);
+            }
+        }
+    }
+
+    // Record a failed attempt against `ip` (a fresh window if none/expired).
+    let record_failure = || {
+        let mut attempts = state.login_attempts.write().unwrap();
+        let now = std::time::Instant::now();
+        let entry = attempts.entry(ip.clone()).or_insert((now, 0));
+        if now.duration_since(entry.0) >= LOGIN_WINDOW {
+            *entry = (now, 0);
+        }
+        entry.1 += 1;
+    };
+
+    // Find user by email (same error as a bad password — no enumeration).
+    let user = match state.user_store.get_user_by_email(&req.email)? {
+        Some(u) => u,
+        None => {
+            record_failure();
+            return Err(BrokerError::InvalidCredentials);
+        }
+    };
 
     // Verify password
     let valid = verify_password(&req.pass, &user.password_hash)
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
 
     if !valid {
+        record_failure();
         return Err(BrokerError::InvalidCredentials);
     }
+
+    // Success clears this IP's failure counter.
+    state.login_attempts.write().unwrap().remove(&ip);
 
     // Create session
     let session = state.session_store.create(user.id)?;

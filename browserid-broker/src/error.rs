@@ -19,6 +19,9 @@ pub enum BrokerError {
     #[error("Invalid credentials")]
     InvalidCredentials,
 
+    #[error("Too many login attempts; please wait and try again")]
+    LoginRateLimited,
+
     #[error("Invalid verification code")]
     InvalidVerificationCode,
 
@@ -157,6 +160,9 @@ impl IntoResponse for BrokerError {
             BrokerError::EmailNotFound => (StatusCode::NOT_FOUND, "Email not found"),
             BrokerError::EmailAlreadyExists => (StatusCode::CONFLICT, "Email already exists"),
             BrokerError::InvalidCredentials => (StatusCode::UNAUTHORIZED, "Invalid credentials"),
+            BrokerError::LoginRateLimited => {
+                (StatusCode::TOO_MANY_REQUESTS, "Too many login attempts; please wait and try again")
+            }
             BrokerError::InvalidVerificationCode => {
                 (StatusCode::BAD_REQUEST, "Invalid verification code")
             }
