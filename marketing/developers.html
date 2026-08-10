@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Passwordless sign-in in ~10 lines — works with the email your users already have. Drop-in adapters for NextAuth, Express, Hono, and Fastify, or one verify call. No registration, no client IDs, no secrets.">
+<title>browserid.me — sign-in for your app</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='90'%3E%F0%9F%AA%AA%3C/text%3E%3C/svg%3E">
+<script src="/config.js"></script>
+<script src="/vendor/posthog.js"></script>
+<script src="/analytics.js" defer></script>
+<script>
+  (function () {
+    var t;
+    try { t = localStorage.getItem("browserid:theme"); } catch (e) {}
+    document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+  })();
+</script>
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+
+<div class="nav-outer">
+  <div class="wrap nav">
+    <a href="/" class="brand"><span class="ring"><i></i></span><span>browserid<span class="me">.me</span></span></a>
+    <nav>
+      <a href="/agents" class="spoke">Agents</a>
+      <a href="/developers" class="spoke" style="color:var(--gold-hi)">Developers</a>
+      <a href="/domains" class="spoke">Domains</a>
+      <a href="/#demos" class="hide-sm">Demos</a>
+      <a href="https://github.com/vthunder/browserid-ng/blob/main/README.md" class="hide-sm">Docs</a>
+      <a href="/account" data-auth-href="/account" class="signin">Sign in</a>
+      <button class="theme-toggle" id="themeToggle" title="Toggle color theme" aria-label="Toggle color theme">
+        <span class="theme-icon-moon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"></circle><path d="M8 1.2v1.8M8 13v1.8M1.2 8H3M13 8h1.8M3.2 3.2l1.3 1.3M11.5 11.5l1.3 1.3M12.8 3.2l-1.3 1.3M4.5 11.5l-1.3 1.3"></path></svg></span>
+        <span class="theme-icon-sun"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path></svg></span>
+      </button>
+    </nav>
+  </div>
+</div>
+
+<section>
+  <div class="wrap hero-lite">
+    <span class="kicker">For apps</span>
+    <h1>Passwordless sign-in that works with the email your users already have.</h1>
+    <p class="lede">No passwords to store, no user-secret table, no client IDs, no provider billing you per user. Add one verification call — or a drop-in adapter for your framework — and accept people and their agents alike.</p>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="#adapters">Pick your framework →</a>
+      <a class="btn btn-ghost" href="#verify">Or verify in one call</a>
+    </div>
+    <div class="hero-sub">Any email · any domain · no registration · fail-closed</div>
+  </div>
+</section>
+
+<section id="adapters">
+  <div class="wrap" style="padding:24px 0 60px">
+    <span class="kicker">Drop-in adapters</span>
+    <h2 class="sec">One line for your stack.</h2>
+    <p class="sec-lede" style="max-width:36em">Each adapter wraps the same audience-pinned, fail-closed verification and hands your app back a verified identity. Humans by default; opt in to their agents when you want them.</p>
+    <div class="cards4" style="margin-top:30px">
+      <div class="democell">
+        <span class="tag">next.js · live</span>
+        <h4>NextAuth</h4>
+        <p>A Credentials provider — <code>BrowserID(config)</code> — plus a client helper to start sign-in. Drops into your existing NextAuth setup.</p>
+        <a href="https://github.com/vthunder/browserid-ng/tree/main/sdk/nextauth" target="_blank" rel="noopener">@browserid-ng/nextauth →</a>
+      </div>
+      <div class="democell">
+        <span class="tag">node · live</span>
+        <h4>Express</h4>
+        <p>A Passport <code>Strategy</code> and middleware. Attaches the verified identity to <code>req</code> and 401s on failure.</p>
+        <a href="https://github.com/vthunder/browserid-ng/tree/main/sdk/express" target="_blank" rel="noopener">@browserid-ng/express →</a>
+      </div>
+      <div class="democell">
+        <span class="tag">edge · live</span>
+        <h4>Hono</h4>
+        <p>Middleware for edge and workers runtimes — verifies at the boundary, sets the identity on the context.</p>
+        <a href="https://github.com/vthunder/browserid-ng/tree/main/sdk/hono" target="_blank" rel="noopener">@browserid-ng/hono →</a>
+      </div>
+      <div class="democell">
+        <span class="tag">node · live</span>
+        <h4>Fastify</h4>
+        <p>A <code>preHandler</code> that attaches <code>request.browserid</code> on success and short-circuits with a 401 otherwise.</p>
+        <a href="https://github.com/vthunder/browserid-ng/tree/main/sdk/fastify" target="_blank" rel="noopener">@browserid-ng/fastify →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="verify">
+  <div class="wrap split rp center" style="padding:60px 0">
+    <div>
+      <span class="kicker">Or verify in one call</span>
+      <h2 class="sec">Know who signed in — and who's answerable.</h2>
+      <p class="sec-lede">No adapter for your language? It's one HTTP call to <code class="mono" style="font-size:14.5px">/verify-access</code>, pinned to your audience. When a human signs in, <code class="mono" style="font-size:14.5px">grantee === email</code>. When an agent acted, you get both names and the exact scopes their human signed for your site.</p>
+      <div class="pillrow">
+        <span class="pill cyan">Attributed + actor, verified</span>
+        <span class="pill cyan">Human-signed scopes</span>
+        <span class="pill plain">No registration</span>
+        <span class="pill plain">Any language</span>
+      </div>
+      <div class="linkrow">
+        <a href="https://www.npmjs.com/package/@browserid-ng/verify" target="_blank" rel="noopener">@browserid-ng/verify →</a>
+        <a href="https://github.com/vthunder/browserid-ng/tree/main/examples/rp-quickstart" target="_blank" rel="noopener">rp-quickstart example →</a>
+      </div>
+    </div>
+    <div>
+      <div class="codebox">
+        <div class="bar"><i></i><i></i><i></i>&nbsp;signin.js<span class="r">server</span></div>
+        <pre><span class="c">// One call — a verified identity for whoever signs in</span>
+<span class="kw">const</span> who = <span class="kw">await</span> <b>verify</b>(assertion, audience, { allowAgent: <span class="kw">true</span> })
+
+who.email    <span class="c">// <span class="s">"alice@gmail.com"</span> — attributed to: the human</span>
+who.grantee  <span class="c">// <span class="s">"alice+researcher@gmail.com"</span> — the agent</span>
+who.scopes   <span class="c">// <span class="s">["post"]</span> — what Alice signed for your site</span>
+who.issuer   <span class="c">// <span class="s">"gmail.com"</span> — verified offline against DNS</span>
+
+<span class="c">// humans sign in the same way — then grantee === email.</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="trustband">
+  <div class="wrap inner">
+    <div class="glyph">✓</div>
+    <p><b>No company sits between you and your users.</b> The assertion verifies offline against the DNS a domain already controls — you never call our servers at sign-in time, there are no client secrets to leak, and nothing breaks if we disappear.</p>
+  </div>
+</section>
+
+<section id="claim">
+  <div class="wrap split rp center" style="padding:60px 0">
+    <div>
+      <span class="kicker">For your users</span>
+      <h2 class="sec">Claim the email you already have.</h2>
+      <p class="sec-lede">First time signing in with a Gmail or Google Workspace address? Prove it by signing in with Google — mailbox verified, no new password — and it becomes a BrowserID identity your users can use anywhere that accepts browserid-ng.</p>
+      <ul class="checklist">
+        <li>Works with the address they already use — nothing to sign up for.</li>
+        <li>Google confirms the mailbox; we never see or store a Google password.</li>
+        <li>From then on it's the same identity their agents delegate from.</li>
+      </ul>
+    </div>
+    <div>
+      <div class="signin-mock">
+        <div class="apphead">notes app</div>
+        <div class="title">Sign in</div>
+        <div class="field"><span>Email</span><span>alice@gmail.com</span></div>
+        <div class="ok"><i>✓</i> Verified with Google — no password needed</div>
+        <hr>
+        <div class="agents-head">Agents acting for you</div>
+        <div class="agentrow"><span class="a">▸ alice+researcher</span><span class="lab">acting for you</span><span class="st">active</span></div>
+        <div class="agentnote">The same identity your agents delegate from — sign in once, and everything they do lands on your account, attributed.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap pad">
+    <span class="kicker">In practice</span>
+    <div class="why3">
+      <div><div class="slug">// you add</div><h3>One call per sign-in</h3><p>Send the assertion to <code class="inline">/verify-access</code>, pinned to your audience. Back comes the attributed human — and when an agent acted, its identity and the exact scopes.</p></div>
+      <div><div class="slug">// you skip</div><h3>Registration, secrets, lock-in</h3><p>No client IDs, no API keys to rotate, no provider billing you per user. Point the verifier at your own broker or self-host whenever you like.</p></div>
+      <div><div class="slug">// you can trust</div><h3>Proof, not a promise</h3><p>Every identity checks out offline against DNS signatures. Nobody has to vouch for it, and nothing breaks if we disappear.</p></div>
+    </div>
+    <div class="crosslink" style="margin-top:30px">
+      <a href="/agents">Building an agent instead? → Agents</a>
+      <a href="/domains">Issue identities for your domain → Domains</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <span>browserid-ng — identity for agents and the humans behind them. Descended from Mozilla Persona.</span>
+    <span><a href="https://github.com/vthunder/browserid-ng">GitHub</a> · <a href="https://github.com/vthunder/browserid-ng/tree/main/docs/specs">Spec</a> · Open protocol · MPL-2.0</span>
+  </div>
+</footer>
+
+<script src="/site.js"></script>
+</body>
+</html>
