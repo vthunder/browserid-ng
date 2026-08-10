@@ -58,6 +58,10 @@ pub enum ProofMethod {
     Smtp,
     /// An atproto handle attestation proved the whole domain.
     Atproto,
+    /// The mailbox provider's OIDC sign-in proved the specific mailbox
+    /// (browserid-ng-qer8). Per-mailbox scope, exactly like `Smtp` — the
+    /// `proof_subject` is `<iss>#<sub>` (the stable provider account id).
+    Oidc,
 }
 
 impl ProofMethod {
@@ -65,6 +69,7 @@ impl ProofMethod {
         match self {
             ProofMethod::Smtp => "smtp",
             ProofMethod::Atproto => "atproto",
+            ProofMethod::Oidc => "oidc",
         }
     }
 
@@ -72,6 +77,7 @@ impl ProofMethod {
         match s {
             "smtp" => Some(ProofMethod::Smtp),
             "atproto" => Some(ProofMethod::Atproto),
+            "oidc" => Some(ProofMethod::Oidc),
             _ => None,
         }
     }

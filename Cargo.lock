@@ -288,6 +288,7 @@ dependencies = [
  "hickory-client",
  "hickory-resolver",
  "http 1.4.0",
+ "jsonwebtoken",
  "lettre",
  "rand",
  "reqwest",
