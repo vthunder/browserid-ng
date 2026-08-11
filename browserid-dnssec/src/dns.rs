@@ -192,17 +192,20 @@ impl DnsFetcher {
         classify_response(&response, domain)
     }
 
-    /// Does `domain` publish a usable MX record? Step 3 of the claim-time
-    /// authority hierarchy (browserid-ng-tsqk): a no-primary, no-handle
-    /// domain may only take the SMTP verification loop if it actually
-    /// accepts mail.
+    /// Does `domain` publish a usable MX record — and which host takes its
+    /// mail? Step 3 of the claim-time authority hierarchy (browserid-ng-tsqk):
+    /// a no-primary, no-handle domain may only take the SMTP verification
+    /// loop if it actually accepts mail. The returned exchange host
+    /// (preferred MX, lowercased, no trailing dot) additionally lets the
+    /// broker recognize provider-hosted mail domains (e.g. Google Workspace's
+    /// `aspmx.l.google.com`) and offer an OIDC proof of the same mailbox.
     ///
-    /// `Ok(true)`/`Ok(false)` are definitive answers; `Err` is a transport
-    /// failure carrying no signal, and the caller decides how to degrade
-    /// (the authority checker fails open). No DNSSEC requirement here — SMTP
-    /// itself offers none, so demanding it of the routing decision would
-    /// protect nothing.
-    pub async fn lookup_mx(&self, domain: &str) -> Result<bool, String> {
+    /// `Ok(Some(host))`/`Ok(None)` are definitive answers; `Err` is a
+    /// transport failure carrying no signal, and the caller decides how to
+    /// degrade (the authority checker fails open). No DNSSEC requirement
+    /// here — SMTP itself offers none, so demanding it of the routing
+    /// decision would protect nothing.
+    pub async fn lookup_mx(&self, domain: &str) -> Result<Option<String>, String> {
         let name = Name::from_str(&format!("{}.", domain))
             .map_err(|e| format!("invalid domain {domain}: {e}"))?;
         let client = self.connect().await?;
@@ -229,20 +232,31 @@ impl DnsFetcher {
     }
 }
 
-/// Interpret an MX response. NXDomain and an empty answer are the definitive
-/// "does not accept mail"; a null MX (`MX 0 .`, RFC 7505) is the domain
+/// Interpret an MX response into the preferred (lowest-preference) usable
+/// exchange host. NXDomain and an empty answer are the definitive "does not
+/// accept mail" (`None`); a null MX (`MX 0 .`, RFC 7505) is the domain
 /// *saying* it accepts no mail and counts the same way. Anything that is not
-/// a definitive answer is an error, never a silent false — refusing a claim
+/// a definitive answer is an error, never a silent `None` — refusing a claim
 /// wants a real "no", not a resolver hiccup.
-fn classify_mx_response(response: &Message) -> Result<bool, String> {
+fn classify_mx_response(response: &Message) -> Result<Option<String>, String> {
     match response.response_code() {
         ResponseCode::NoError | ResponseCode::NXDomain => {}
         other => return Err(format!("MX query answered {other}")),
     }
-    Ok(response.answers().iter().any(|record| match record.data() {
-        Some(RData::MX(mx)) => !mx.exchange().is_root(),
-        _ => false,
-    }))
+    Ok(response
+        .answers()
+        .iter()
+        .filter_map(|record| match record.data() {
+            Some(RData::MX(mx)) if !mx.exchange().is_root() => Some(mx),
+            _ => None,
+        })
+        .min_by_key(|mx| mx.preference())
+        .map(|mx| {
+            mx.exchange()
+                .to_utf8()
+                .trim_end_matches('.')
+                .to_ascii_lowercase()
+        }))
 }
 
 /// Classify a DNS response into a BrowserID lookup result
@@ -463,28 +477,37 @@ mod tests {
     }
 
     #[test]
-    fn mx_present_is_definitively_true() {
+    fn mx_present_yields_the_preferred_exchange() {
         assert_eq!(
             classify_mx_response(&mx_response(ResponseCode::NoError, &["mx.example.com."])),
-            Ok(true)
+            Ok(Some("mx.example.com".to_string()))
+        );
+        // Lowest preference wins (mx_response assigns preference by index),
+        // and the host comes back lowercased without the trailing dot.
+        assert_eq!(
+            classify_mx_response(&mx_response(
+                ResponseCode::NoError,
+                &["ASPMX.L.GOOGLE.COM.", "alt1.aspmx.l.google.com."]
+            )),
+            Ok(Some("aspmx.l.google.com".to_string()))
         );
     }
 
     #[test]
     fn mx_absent_and_nxdomain_are_definitively_false() {
-        assert_eq!(classify_mx_response(&mx_response(ResponseCode::NoError, &[])), Ok(false));
-        assert_eq!(classify_mx_response(&mx_response(ResponseCode::NXDomain, &[])), Ok(false));
+        assert_eq!(classify_mx_response(&mx_response(ResponseCode::NoError, &[])), Ok(None));
+        assert_eq!(classify_mx_response(&mx_response(ResponseCode::NXDomain, &[])), Ok(None));
     }
 
     /// RFC 7505: `MX 0 .` is the domain declaring it accepts no mail — that
     /// is a "no", not a usable exchange.
     #[test]
     fn null_mx_reads_as_no_mail() {
-        assert_eq!(classify_mx_response(&mx_response(ResponseCode::NoError, &["."])), Ok(false));
+        assert_eq!(classify_mx_response(&mx_response(ResponseCode::NoError, &["."])), Ok(None));
         // …but a null MX alongside a real one does not mask it.
         assert_eq!(
             classify_mx_response(&mx_response(ResponseCode::NoError, &[".", "mx.example.com."])),
-            Ok(true)
+            Ok(Some("mx.example.com".to_string()))
         );
     }
 

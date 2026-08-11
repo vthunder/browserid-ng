@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-08-10T04:30:45Z
-updated_at: 2026-08-10T05:07:37Z
+updated_at: 2026-08-11T21:30:57Z
 ---
 
 Claim a mailbox by signing in with its provider (Google first) instead of a mailed code. An in-broker OIDC proof method that UPGRADES the mailbox ceremony for a no-primary MX domain with a known OIDC issuer — per-mailbox scope (behaves exactly like smtp), SMTP stays as the equal-strength fallback ceremony.
@@ -27,3 +27,16 @@ REMAINING (SUPERVISED — needs Google client creds + review of production login
 - authority.rs: expose the resolved MX host so a Google-domain check can layer on the Smtp answer; address_info emits proof:"oidc" + claim="/oidc/claim?..." for Google domains (SMTP escape hatch intact).
 - dialog.js: a proof==='oidc' lane parallel to the atproto one (reuse CLAIM_RESUME_* navigate-out/resume); redeem collapses to a session_context status check (callback already attached).
 - config/main.rs: OIDC_GOOGLE_CLIENT_ID/SECRET (-> sandmill-infra id.env.age), build the provider + wire OidcFlows into AppState.
+
+## Wiring plan (2026-08-11, creds live on id + in id.env.age)
+
+- [x] dnssec: lookup_mx returns the preferred MX exchange host (Option<String>)
+- [x] authority.rs: cache + expose mx host; google_oidc_domain() layered on Smtp
+- [x] oidc/mod.rs: JwksCache, exchange_code, OidcRuntime; flow-binding notes
+- [x] state.rs: oidc: Option<OidcRuntime>
+- [x] routes/oidc.rs: GET /oidc/claim + GET /oidc/callback (flow cookie binds browser — login-CSRF guard), mount
+- [x] email.rs: address_info proof:"oidc" + claim URL for Google domains (SMTP hatch intact)
+- [x] main.rs: OIDC_GOOGLE_CLIENT_ID/SECRET -> OidcRuntime
+- [x] dialog.js: oidc lane (popup + redirect + resume=oidc_claim)
+- [x] tests: oidc_claim_test.rs (10 tests: mock token endpoint + JWKS, full callback attach, reclaim semantics, csrf-bind guard); authority google detection
+- [ ] full broker suite green; deploy; live gmail claim test

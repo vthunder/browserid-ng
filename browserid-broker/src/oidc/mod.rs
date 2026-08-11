@@ -15,11 +15,6 @@
 //! never that the claimant owns a mailbox — so we never widen to the domain
 //! from the `hd` claim. Design: docs/plans/2026-08-10-oidc-bridge-build-spec.md.
 
-// Inert until wired: several items are unused until the routes/authority/
-// dialog integration lands (a supervised step needing the Google client
-// creds). Allow dead_code so the broker build stays warning-clean meanwhile.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -228,6 +223,78 @@ pub struct ConsumedFlow {
     pub session_id: Option<String>,
 }
 
+// --- Runtime bundle -----------------------------------------------------------
+
+/// Everything a configured deployment needs to run OIDC claims: the provider,
+/// the in-flight flow store, the JWKS cache, and one HTTP client for the
+/// token/JWKS round-trips. Lives in `AppState.oidc` as `Option` — `None`
+/// (unconfigured) keeps the whole bridge inert.
+pub struct OidcRuntime {
+    pub provider: OidcProvider,
+    pub flows: OidcFlows,
+    pub jwks: JwksCache,
+    pub http: reqwest::Client,
+}
+
+impl OidcRuntime {
+    pub fn new(provider: OidcProvider) -> Self {
+        Self {
+            provider,
+            flows: OidcFlows::new(),
+            jwks: JwksCache::new(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .expect("reqwest client"),
+        }
+    }
+}
+
+// --- Token exchange -----------------------------------------------------------
+
+#[derive(Deserialize)]
+struct TokenResponse {
+    id_token: Option<String>,
+}
+
+/// Redeem the authorization code at the provider's token endpoint
+/// (server-side, with the client secret + PKCE verifier) and return the raw
+/// ID token. The access token is deliberately ignored — the mailbox proof is
+/// the ID token, and we hold no Google API scope to spend it on.
+pub async fn exchange_code(
+    provider: &OidcProvider,
+    http: &reqwest::Client,
+    code: &str,
+    redirect_uri: &str,
+    code_verifier: &str,
+) -> Result<String, OidcError> {
+    let resp = http
+        .post(&provider.token_endpoint)
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("client_id", provider.client_id.as_str()),
+            ("client_secret", provider.client_secret.as_str()),
+            ("redirect_uri", redirect_uri),
+            ("code_verifier", code_verifier),
+        ])
+        .send()
+        .await
+        .map_err(|e| OidcError::TokenExchange(e.to_string()))?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(OidcError::TokenExchange(format!(
+            "token endpoint answered {status}: {}",
+            body.chars().take(300).collect::<String>()
+        )));
+    }
+    serde_json::from_str::<TokenResponse>(&body)
+        .map_err(|e| OidcError::TokenExchange(format!("bad token response: {e}")))?
+        .id_token
+        .ok_or_else(|| OidcError::TokenExchange("token response had no id_token".into()))
+}
+
 // --- JWKS + ID-token verification -------------------------------------------
 
 #[derive(Debug, Clone, Deserialize)]
@@ -253,10 +320,73 @@ impl Jwks {
     }
 }
 
+/// Short-lived cache of the provider's JWKS. Google rotates signing keys on
+/// the order of days and serves generous HTTP cache headers; a fixed 1-hour
+/// TTL keeps the callback path off the network without tracking headers. On
+/// a refresh failure a stale copy is served rather than failing the sign-in
+/// (an unknown-kid token still fails closed in verification).
+pub struct JwksCache {
+    cached: std::sync::RwLock<Option<(Jwks, Instant)>>,
+    ttl: Duration,
+}
+
+impl Default for JwksCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl JwksCache {
+    pub fn new() -> Self {
+        Self {
+            cached: std::sync::RwLock::new(None),
+            ttl: Duration::from_secs(3600),
+        }
+    }
+
+    pub async fn get(&self, http: &reqwest::Client, uri: &str) -> Result<Jwks, OidcError> {
+        // std RwLock: never held across an await.
+        if let Some((jwks, at)) = self.cached.read().unwrap().clone() {
+            if at.elapsed() < self.ttl {
+                return Ok(jwks);
+            }
+        }
+        let fetched: Result<Jwks, OidcError> = async {
+            let body = http
+                .get(uri)
+                .send()
+                .await
+                .and_then(|r| r.error_for_status())
+                .map_err(|e| OidcError::Jwks(e.to_string()))?
+                .text()
+                .await
+                .map_err(|e| OidcError::Jwks(e.to_string()))?;
+            Jwks::parse(&body)
+        }
+        .await;
+        match fetched {
+            Ok(jwks) => {
+                *self.cached.write().unwrap() = Some((jwks.clone(), Instant::now()));
+                Ok(jwks)
+            }
+            Err(e) => match self.cached.read().unwrap().clone() {
+                Some((stale, _)) => {
+                    tracing::warn!("JWKS refresh failed ({e}); serving stale copy");
+                    Ok(stale)
+                }
+                None => Err(e),
+            },
+        }
+    }
+}
+
 /// The verified claims we care about.
 #[derive(Debug, Clone, Deserialize)]
 struct IdTokenClaims {
     iss: String,
+    /// Enforced by jsonwebtoken's `set_audience`, never read directly —
+    /// present so a token without `aud` fails deserialization outright.
+    #[allow(dead_code)]
     aud: String,
     exp: usize,
     email: String,
@@ -287,6 +417,7 @@ impl<'de> Deserialize<'de> for EmailVerified {
 #[derive(Debug)]
 pub enum OidcError {
     Jwks(String),
+    TokenExchange(String),
     UnknownKid(String),
     TokenInvalid(String),
     EmailUnverified,
@@ -299,6 +430,7 @@ impl std::fmt::Display for OidcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OidcError::Jwks(e) => write!(f, "jwks: {e}"),
+            OidcError::TokenExchange(e) => write!(f, "token exchange: {e}"),
             OidcError::UnknownKid(k) => write!(f, "id token signed by unknown kid '{k}'"),
             OidcError::TokenInvalid(e) => write!(f, "id token invalid: {e}"),
             OidcError::EmailUnverified => write!(f, "email_verified is not true"),

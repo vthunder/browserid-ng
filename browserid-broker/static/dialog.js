@@ -252,6 +252,12 @@
   const CLAIM_RESUME_CHANNEL = 'browserid:handle_claim_resume';
   const CLAIM_RESUME_PATH = '/dialog/dialog.html?resume=handle_claim';
 
+  // OIDC (Google) claims (browserid-ng-qer8) reuse the same navigate-out/
+  // resume shape, but the broker's /oidc/callback has already verified and
+  // attached the identity server-side by the time the resume page loads — so
+  // only an ok-or-error status crosses back, never an attestation.
+  const OIDC_RESUME_CHANNEL = 'browserid:oidc_claim_resume';
+
   // The public key a device cert certifies, or null if the cert doesn't
   // declare one in a shape we can read. The claim is advisory (DNSSEC is the
   // trust root), so absence is normal for some IdPs.
@@ -606,6 +612,16 @@
            addressInfo.state === 'transition_no_password' ||
            addressInfo.state === 'unverified')) {
         return await handleAtprotoClaim(email, addressInfo);
+      }
+
+      // Google-hosted mailbox (browserid-ng-qer8): prove it by signing in
+      // with Google instead of a mailed code. A 'known' identity with a
+      // password still gets the password screen.
+      if (addressInfo.proof === 'oidc' &&
+          (addressInfo.state === 'unknown' ||
+           addressInfo.state === 'transition_no_password' ||
+           addressInfo.state === 'unverified')) {
+        return await handleOidcClaim(email, addressInfo);
       }
 
       if (addressInfo.state === 'transition_to_secondary') {
@@ -1505,10 +1521,11 @@
     } catch (e) {
       if (e && e.popupBlocked) {
         // Blocked — re-run from a fresh tap gesture (mobile).
-        state.pendingClaim = { email, info };
+        state.pendingClaim = { kind: 'atproto', email, info };
         document.querySelectorAll('.claim-handle').forEach(el => {
           el.textContent = email.split('@')[1];
         });
+        document.querySelectorAll('.claim-provider').forEach(el => { el.textContent = 'Bluesky'; });
         showScreen('claimContinue');
         return;
       }
@@ -1617,6 +1634,245 @@
     }
     try {
       await redeemHandleAttestation(claimed, attestation);
+      await completeSignIn(claimed);
+    } catch (e) {
+      showError(e.message || String(e));
+    }
+  }
+
+  // --- OIDC (Google) claims (browserid-ng-qer8) -----------------------------
+  //
+  // A Google-hosted mailbox (gmail.com, or a Workspace domain whose MX is
+  // Google) can be claimed by signing in with Google instead of a mailed
+  // code. One navigation out to the broker's /oidc/claim (which 302s to
+  // Google), one return to /dialog/dialog.html?resume=oidc_claim — by which
+  // time the broker's /oidc/callback has verified the ID token and attached
+  // the identity to a session, cookie included. "Redeem" therefore collapses
+  // to completing sign-in on that session. The SMTP loop stays an
+  // equal-strength fallback ceremony on the broker for the same domain.
+
+  // Mirror the broker's Gmail normalization (dots/+tag collapse on consumer
+  // domains) so the typed address recognizes the canonical one the callback
+  // attached.
+  function normalizeGoogleEmail(email) {
+    const lower = String(email || '').toLowerCase();
+    const at = lower.lastIndexOf('@');
+    if (at < 0) return lower;
+    let local = lower.slice(0, at);
+    const domain = lower.slice(at + 1);
+    if (domain === 'gmail.com' || domain === 'googlemail.com') {
+      local = local.split('+')[0].replace(/\./g, '');
+    }
+    return local + '@' + domain;
+  }
+
+  function oidcEmailsMatch(a, b) {
+    return normalizeGoogleEmail(a) === normalizeGoogleEmail(b);
+  }
+
+  function oidcClaimUrl(email, info) {
+    return info.claim + '?email=' + encodeURIComponent(email);
+  }
+
+  // Popup lane. Resolves with the attached (broker-normalized) email.
+  function oidcPopupFlow(email, info) {
+    return new Promise((resolve, reject) => {
+      const popup = window.open(oidcClaimUrl(email, info), 'browserid_oidc_claim', 'width=600,height=700');
+      if (!popup) {
+        reject({ popupBlocked: true });
+        return;
+      }
+      showScreen('loading', 'Signing you in with Google...');
+
+      const TIMEOUT_MS = 3 * 60 * 1000;
+      let timeoutId = null;
+      let chan = null;
+      let settled = false;
+
+      function cleanup() {
+        clearTimeout(timeoutId);
+        if (chan) { try { chan.close(); } catch (e) { /* closed */ } chan = null; }
+      }
+      function finish(err, attachedEmail) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (err) reject(err); else resolve(attachedEmail);
+      }
+
+      // The popup 302s straight to Google, whose COOP severs our window
+      // handle — popup.closed cannot distinguish "user closed it" from
+      // "still signing in", so there is no closed-poll here. The result
+      // arrives on this same-origin channel from the resume page;
+      // abandonment falls to the timeout.
+      try {
+        chan = new BroadcastChannel(OIDC_RESUME_CHANNEL);
+        chan.onmessage = (ev) => {
+          const m = ev.data || {};
+          if (m.type !== 'browserid:oidc_claim_result') return;
+          if (!oidcEmailsMatch(email, m.email)) return;
+          try { chan.postMessage({ type: 'browserid:oidc_claim_ack', nonce: m.nonce }); } catch (e) { /* closed */ }
+          if (m.ok) finish(null, m.email);
+          else finish(new Error(m.reason || 'Google sign-in failed'));
+        };
+      } catch (e) {
+        // No BroadcastChannel: the popup result cannot reach us — use the
+        // same-tab lane instead of hanging until the timeout.
+        try { popup.close(); } catch (e2) { /* gone */ }
+        reject({ popupBlocked: true });
+        return;
+      }
+
+      timeoutId = setTimeout(() => {
+        try { popup.close(); } catch (e) { /* gone */ }
+        finish(new Error('Timed out waiting for Google sign-in'));
+      }, TIMEOUT_MS);
+    });
+  }
+
+  // Same-tab hop (redirect mode): park the dialog's state and navigate. The
+  // broker's callback redirects to our resume entry point by itself — no
+  // return_url crosses, and no keys are parked (the session cookie is the
+  // only thing that comes back).
+  async function oidcRedirectHop(email, info) {
+    await Keystore.putPending({
+      kind: 'oidc_claim',
+      email,
+      dialog: {
+        origin: state.origin,
+        redirect: state.redirect,
+        sboSign: state.sboSign,
+        fedcm: !!state.fedcm,
+        provisionEmail: state.provisionEmail,
+        acceptedFallbacks: state.acceptedFallbacks,
+        emails: state.emails
+      }
+    });
+    window.location.assign(oidcClaimUrl(email, info));
+  }
+
+  async function handleOidcClaim(email, info) {
+    if (!info.claim) {
+      showError('This identity needs Google sign-in, but it is unavailable right now.');
+      return;
+    }
+    if (state.redirect) return await oidcRedirectHop(email, info);
+    let attached;
+    try {
+      attached = await oidcPopupFlow(email, info);
+    } catch (e) {
+      if (e && e.popupBlocked) {
+        // Blocked — re-run from a fresh tap gesture (mobile).
+        state.pendingClaim = { kind: 'oidc', email, info };
+        document.querySelectorAll('.claim-handle').forEach(el => { el.textContent = email; });
+        document.querySelectorAll('.claim-provider').forEach(el => { el.textContent = 'Google'; });
+        showScreen('claimContinue');
+        return;
+      }
+      showError('Google sign-in failed: ' + (e.message || e));
+      return;
+    }
+    try {
+      showScreen('loading', 'Finishing sign-in...');
+      await completeSignIn(attached);
+    } catch (e) {
+      showError('Could not complete sign-in: ' + (e.message || e));
+    }
+  }
+
+  // Hand the claim outcome to the dialog window still waiting in
+  // oidcPopupFlow (same origin — BroadcastChannel). Resolves true once that
+  // window acknowledges, false if nobody claims it.
+  function handoffOidcResume(email, ok, errReason) {
+    return new Promise((resolve) => {
+      let chan = null;
+      try { chan = new BroadcastChannel(OIDC_RESUME_CHANNEL); } catch (e) { return resolve(false); }
+      if (!email) {
+        try { chan.close(); } catch (e) { /* ignore */ }
+        return resolve(false);
+      }
+      const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      const payload = {
+        type: 'browserid:oidc_claim_result',
+        email,
+        ok: !!ok,
+        reason: errReason || null,
+        nonce
+      };
+      let settled = false;
+      let retryId = null;
+      chan.onmessage = (ev) => {
+        const m = ev.data || {};
+        if (m.type !== 'browserid:oidc_claim_ack' || m.nonce !== nonce || settled) return;
+        settled = true;
+        clearInterval(retryId);
+        try { chan.close(); } catch (e) { /* ignore */ }
+        // This window was opened by script; if the browser refuses to close
+        // it, say something honest — the sign-in completed next door.
+        window.close();
+        showScreen('loading', 'Signed in — you can close this window.');
+        resolve(true);
+      };
+      try { chan.postMessage(payload); } catch (e) { /* ignore */ }
+      retryId = setInterval(() => { try { chan.postMessage(payload); } catch (e) { /* ignore */ } }, 300);
+      setTimeout(() => {
+        if (settled) return;
+        clearInterval(retryId);
+        try { chan.close(); } catch (e) { /* ignore */ }
+        resolve(false);
+      }, 3000);
+    });
+  }
+
+  // Entry point for /dialog/dialog.html?resume=oidc_claim — the return leg
+  // of both lanes. The identity is already attached (or the attempt already
+  // failed); the fragment only says which.
+  async function resumeOidcClaim() {
+    showScreen('loading', 'Finishing sign-in...');
+    const frag = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    history.replaceState(null, '', window.location.pathname); // status out of the URL bar
+    const email = frag.get('email') || '';
+    const ok = frag.get('status') === 'ok';
+    const errReason = frag.get('oidc_error');
+
+    let pending = null;
+    try { pending = await Keystore.getPending(); } catch (e) { /* fall through */ }
+    if (pending && pending.kind !== 'oidc_claim') pending = null;
+    if (pending) { try { await Keystore.clearPending(); } catch (e) { /* best-effort */ } }
+
+    if (!pending || !pending.dialog) {
+      // Popup lane: the dialog window that opened the claim popup is still
+      // open and still holds the RP response path — hand the result over.
+      if (await handoffOidcResume(email, ok, errReason)) return;
+      showError('Sign-in state was lost — go back to the site and click sign in again.');
+      return;
+    }
+
+    state.origin = pending.dialog.origin;
+    state.redirect = pending.dialog.redirect;
+    state.sboSign = !!pending.dialog.sboSign;
+    state.provisionEmail = pending.dialog.provisionEmail || null;
+    state.acceptedFallbacks = pending.dialog.acceptedFallbacks || null;
+    state.emails = pending.dialog.emails || [];
+    maybeShowFedcmOptin(!!pending.dialog.fedcm);
+    document.querySelectorAll('.rp-name').forEach(el => {
+      try { el.textContent = new URL(state.origin).hostname; } catch (e) { /* leave */ }
+    });
+
+    if (!ok) {
+      showError('Google sign-in failed: ' + (errReason || 'try again'));
+      return;
+    }
+    const claimed = email || pending.email;
+    if (!claimed) {
+      showError('Google sign-in returned nothing — try again.');
+      return;
+    }
+    if (pending.email && !oidcEmailsMatch(pending.email, claimed)) {
+      showError('Sign-in state did not match — try again.');
+      return;
+    }
+    try {
       await completeSignIn(claimed);
     } catch (e) {
       showError(e.message || String(e));
@@ -1852,6 +2108,14 @@
                addressInfo.state === 'transition_no_password' ||
                addressInfo.state === 'unverified')) {
             return await handleAtprotoClaim(email, addressInfo);
+          }
+          // Google-hosted mailbox (browserid-ng-qer8): same shape, proven by
+          // a Google sign-in at the broker.
+          if (addressInfo.proof === 'oidc' &&
+              (addressInfo.state === 'unknown' ||
+               addressInfo.state === 'transition_no_password' ||
+               addressInfo.state === 'unverified')) {
+            return await handleOidcClaim(email, addressInfo);
           }
           if (addressInfo.proof === 'none' && addressInfo.state === 'unknown') {
             showError(email.split('@')[1] + ' can’t receive email and isn’t a ' +
@@ -2105,6 +2369,13 @@
           return;
         }
 
+        // Same for a Google-hosted mailbox (browserid-ng-qer8): the OIDC
+        // callback attaches to the signed-in session when one exists.
+        if (addressInfo.proof === 'oidc') {
+          await handleOidcClaim(email, addressInfo);
+          return;
+        }
+
         await apiCall(API.stageEmail, 'POST', { email });
         showScreen('addEmailVerify');
       } catch (e) {
@@ -2174,13 +2445,15 @@
       }
     });
 
-    // Tap-to-continue for a blocked handle-claim popup (browserid-ng-xcy6):
-    // same shape as the primary one — re-run from a real user gesture.
+    // Tap-to-continue for a blocked claim popup (atproto browserid-ng-xcy6,
+    // OIDC browserid-ng-qer8): same shape as the primary one — re-run from a
+    // real user gesture.
     document.getElementById('continue-handle-claim').addEventListener('click', async () => {
       const p = state.pendingClaim;
       if (!p) return showScreen('email');
       state.pendingClaim = null;
-      await handleAtprotoClaim(p.email, p.info);
+      if (p.kind === 'oidc') await handleOidcClaim(p.email, p.info);
+      else await handleAtprotoClaim(p.email, p.info);
     });
 
     // Back to pick email buttons
@@ -2397,7 +2670,10 @@
 
   const params = new URLSearchParams(window.location.search);
 
-  if (params.get('resume') === 'device_auth') {
+  if (params.get('resume') === 'oidc_claim') {
+    // Returning from the Google claim hop (browserid-ng-qer8).
+    resumeOidcClaim();
+  } else if (params.get('resume') === 'device_auth') {
     // Returning from the same-tab primary hop (redirect mode).
     resumeDeviceAuth();
   } else if (params.get('resume') === 'handle_claim') {

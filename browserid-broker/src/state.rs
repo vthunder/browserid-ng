@@ -112,6 +112,11 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// host locally). Used to build the tenant support doc's absolute
     /// status URIs and the generated DNS record text.
     pub idp_host: String,
+    /// OIDC claim ceremony (browserid-ng-qer8): claim a Google-hosted
+    /// mailbox by signing in with Google instead of a mailed code. `None`
+    /// (no `OIDC_GOOGLE_CLIENT_ID/SECRET`) keeps the whole bridge inert —
+    /// `/oidc/*` refuses and `address_info` never advertises the ceremony.
+    pub oidc: Option<crate::oidc::OidcRuntime>,
 }
 
 /// Default per-user agent identity quota
@@ -153,6 +158,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             login_attempts: std::sync::RwLock::new(HashMap::new()),
             tenant_keystore: None,
             idp_host: domain_for_idp,
+            oidc: None,
         }
     }
 
@@ -189,6 +195,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             login_attempts: std::sync::RwLock::new(HashMap::new()),
             tenant_keystore: None,
             idp_host: domain_for_idp,
+            oidc: None,
         }
     }
 

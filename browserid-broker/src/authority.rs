@@ -67,14 +67,24 @@ pub enum HandleProbe {
     Disabled,
 }
 
-/// How the checker answers "does this domain accept mail?".
+/// How the checker answers "does this domain accept mail?" (and, when it
+/// does, which exchange host takes it — the input to the Google-OIDC
+/// ceremony check, browserid-ng-qer8).
 pub enum MxProbe {
     /// A real MX lookup over the authenticated DoT channel.
     Dns(DnsFetcher),
-    /// Tests: the set of domains that have MX.
-    Static(HashSet<String>),
-    /// The MX gate is off: every domain reads as accepting mail.
+    /// Tests: domain -> its MX exchange host, when one is known.
+    Static(HashMap<String, Option<String>>),
+    /// The MX gate is off: every domain reads as accepting mail (with an
+    /// unknown exchange host, so no OIDC upgrade is ever offered).
     Off,
+}
+
+/// One MX probe answer: does the domain accept mail, and through which host.
+#[derive(Debug, Clone)]
+struct MxAnswer {
+    accepts_mail: bool,
+    host: Option<String>,
 }
 
 /// Runs steps 2–4 of the hierarchy (step 1, the DNSSEC `_browserid` check,
@@ -88,7 +98,7 @@ pub struct AuthorityChecker {
     /// Where the dialog sends the user to claim a handle identity, when the
     /// atproto lane is live (the bridge's claim page).
     claim_url: Option<String>,
-    cache: RwLock<HashMap<String, (SecondaryAuthority, Instant)>>,
+    cache: RwLock<HashMap<String, (SecondaryAuthority, Option<String>, Instant)>>,
 }
 
 impl AuthorityChecker {
@@ -120,6 +130,20 @@ impl AuthorityChecker {
         mx: HashSet<String>,
         claim_url: Option<String>,
     ) -> Self {
+        Self::fixed_with_mx_hosts(
+            handles,
+            mx.into_iter().map(|d| (d, None)).collect(),
+            claim_url,
+        )
+    }
+
+    /// Tests: like [`Self::fixed`], but each mail domain can also carry its
+    /// MX exchange host (what the Google-OIDC check pattern-matches).
+    pub fn fixed_with_mx_hosts(
+        handles: HashMap<String, String>,
+        mx: HashMap<String, Option<String>>,
+        claim_url: Option<String>,
+    ) -> Self {
         let mut checker = Self::new(HandleProbe::Static(handles), MxProbe::Static(mx));
         checker.claim_url = claim_url;
         checker
@@ -134,33 +158,58 @@ impl AuthorityChecker {
     /// primary. Never errors: outages degrade (see module docs) rather than
     /// failing the caller.
     pub async fn no_primary_authority(&self, domain: &str) -> SecondaryAuthority {
+        self.authority_and_mx(domain).await.0
+    }
+
+    /// Ceremony upgrade check (browserid-ng-qer8): may a mailbox at this
+    /// no-primary domain be proven by a Google sign-in instead of a mailed
+    /// code? True for the consumer Gmail domains, and for an SMTP-authority
+    /// domain whose mail is hosted at Google (Workspace, recognized by its
+    /// MX host). This layers on the Smtp answer — the SMTP loop stays an
+    /// equal-strength fallback ceremony for the same domain, and scope stays
+    /// per-mailbox either way.
+    pub async fn google_oidc_domain(&self, domain: &str) -> bool {
+        let domain = domain.to_ascii_lowercase();
+        if crate::oidc::is_google_domain(&domain, None) {
+            return true;
+        }
+        let (authority, mx_host) = self.authority_and_mx(&domain).await;
+        authority == SecondaryAuthority::Smtp
+            && crate::oidc::is_google_domain(&domain, mx_host.as_deref())
+    }
+
+    /// The cached hierarchy answer plus the MX exchange host it rested on.
+    async fn authority_and_mx(&self, domain: &str) -> (SecondaryAuthority, Option<String>) {
         let domain = domain.to_ascii_lowercase();
 
         // Local dev domains are never probed — no DNS, no bridge; they keep
         // the SMTP loop (which dev runs with a console/mock sender anyway).
         if domain.starts_with("localhost") || domain.starts_with("127.") {
-            return SecondaryAuthority::Smtp;
+            return (SecondaryAuthority::Smtp, None);
         }
 
-        if let Some((authority, at)) = self.cache.read().unwrap().get(&domain).cloned() {
+        if let Some((authority, mx_host, at)) = self.cache.read().unwrap().get(&domain).cloned() {
             if at.elapsed() < Duration::from_secs(AUTHORITY_CACHE_SECONDS) {
-                return authority;
+                return (authority, mx_host);
             }
         }
 
-        let authority = if let Some(did) = self.handle_did(&domain).await {
-            SecondaryAuthority::Atproto { did }
-        } else if self.has_mx(&domain).await {
-            SecondaryAuthority::Smtp
+        let (authority, mx_host) = if let Some(did) = self.handle_did(&domain).await {
+            (SecondaryAuthority::Atproto { did }, None)
         } else {
-            SecondaryAuthority::Unprovable
+            let mx = self.mx(&domain).await;
+            if mx.accepts_mail {
+                (SecondaryAuthority::Smtp, mx.host)
+            } else {
+                (SecondaryAuthority::Unprovable, None)
+            }
         };
 
         self.cache
             .write()
             .unwrap()
-            .insert(domain, (authority.clone(), Instant::now()));
-        authority
+            .insert(domain, (authority.clone(), mx_host.clone(), Instant::now()));
+        (authority, mx_host)
     }
 
     /// Step 2: a binding that *resolves* — both atproto resolution methods,
@@ -194,18 +243,23 @@ impl AuthorityChecker {
         }
     }
 
-    /// Step 3: does the domain accept mail? Presence of a usable MX record,
-    /// per the design — the RFC 5321 implicit-MX fallback is deliberately
-    /// not honored as a proof route.
-    async fn has_mx(&self, domain: &str) -> bool {
+    /// Step 3: does the domain accept mail, and through which exchange host?
+    /// Presence of a usable MX record, per the design — the RFC 5321
+    /// implicit-MX fallback is deliberately not honored as a proof route.
+    async fn mx(&self, domain: &str) -> MxAnswer {
         match &self.mx {
-            MxProbe::Off => true,
-            MxProbe::Static(set) => set.contains(domain),
+            MxProbe::Off => MxAnswer { accepts_mail: true, host: None },
+            MxProbe::Static(map) => MxAnswer {
+                accepts_mail: map.contains_key(domain),
+                host: map.get(domain).cloned().flatten(),
+            },
             MxProbe::Dns(fetcher) => match fetcher.lookup_mx(domain).await {
-                Ok(present) => present,
+                Ok(host) => MxAnswer { accepts_mail: host.is_some(), host },
                 Err(e) => {
                     tracing::warn!(%domain, "MX probe failed ({e}); failing open");
-                    true
+                    // Fail open on mail, but with no known host: an outage
+                    // must not invent a Google-OIDC eligibility.
+                    MxAnswer { accepts_mail: true, host: None }
                 }
             },
         }
@@ -282,6 +336,30 @@ mod tests {
         assert_eq!(c.claim_url(), None);
     }
 
+    /// The Google-OIDC ceremony check (browserid-ng-qer8): consumer Gmail
+    /// domains always qualify; a Workspace domain qualifies through its
+    /// Google MX host; anything else — including an atproto-authority domain
+    /// that happens to route mail through Google — does not.
+    #[tokio::test]
+    async fn google_oidc_layers_on_the_smtp_answer() {
+        let c = AuthorityChecker::fixed_with_mx_hosts(
+            HashMap::from([("handle.test".to_string(), "did:plc:h".to_string())]),
+            HashMap::from([
+                ("acme.test".to_string(), Some("aspmx.l.google.com".to_string())),
+                ("plain.test".to_string(), Some("mx.plain.test".to_string())),
+                ("hostless.test".to_string(), None),
+                ("handle.test".to_string(), Some("aspmx.l.google.com".to_string())),
+            ]),
+            None,
+        );
+        assert!(c.google_oidc_domain("gmail.com").await); // consumer, no probe needed
+        assert!(c.google_oidc_domain("acme.test").await); // Workspace via MX
+        assert!(!c.google_oidc_domain("plain.test").await); // non-Google MX
+        assert!(!c.google_oidc_domain("hostless.test").await); // MX host unknown
+        assert!(!c.google_oidc_domain("handle.test").await); // atproto outranks
+        assert!(!c.google_oidc_domain("nomx.test").await); // unprovable
+    }
+
     /// The claim URL is derived from the bridge base, since that is where
     /// the dialog must send the user for the atproto proof.
     #[test]
@@ -310,7 +388,7 @@ mod tests {
         let cached = std::mem::take(&mut *c.cache.write().unwrap());
         let c = AuthorityChecker {
             handles: HandleProbe::Disabled,
-            mx: MxProbe::Static(HashSet::new()),
+            mx: MxProbe::Static(HashMap::new()),
             claim_url: None,
             cache: RwLock::new(cached),
         };

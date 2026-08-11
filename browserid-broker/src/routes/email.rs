@@ -503,14 +503,17 @@ pub struct AddressInfoResponse {
     pub agent_device_auth: Option<String>,
     /// Secondary (no-primary) domains only: which proof the fallback demands
     /// before issuing for this domain — `"smtp"` (the email verification
-    /// loop), `"atproto"` (the domain is a resolved handle binding; ownership
-    /// is proven via atproto OAuth at the bridge), or `"none"` (no proof
-    /// method; claims are refused). The claim-time authority hierarchy,
-    /// browserid-ng-tsqk.
+    /// loop), `"oidc"` (Google-hosted mail; ownership is proven by signing
+    /// in with Google, with the SMTP loop as an equal-strength fallback
+    /// ceremony), `"atproto"` (the domain is a resolved handle binding;
+    /// ownership is proven via atproto OAuth at the bridge), or `"none"` (no
+    /// proof method; claims are refused). The claim-time authority
+    /// hierarchy, browserid-ng-tsqk; the OIDC ceremony, browserid-ng-qer8.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proof: Option<String>,
-    /// Where the atproto proof happens (the bridge's claim page), when
-    /// `proof == "atproto"`.
+    /// Where the proof happens when it is a navigation: the bridge's claim
+    /// page (`proof == "atproto"`) or this broker's `/oidc/claim` endpoint
+    /// (`proof == "oidc"`; the dialog appends `?email=`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claim: Option<String>,
 }
@@ -659,7 +662,20 @@ where
             crate::authority::SecondaryAuthority::Atproto { .. } => {
                 (Some("atproto".to_string()), state.authority.claim_url())
             }
-            crate::authority::SecondaryAuthority::Smtp => (Some("smtp".to_string()), None),
+            crate::authority::SecondaryAuthority::Smtp => {
+                // Google-hosted mail upgrades the *ceremony* (sign in with
+                // Google instead of a mailed code, browserid-ng-qer8) — the
+                // authority is still the mailbox, and the SMTP loop stays
+                // available as the escape hatch.
+                if state.oidc.is_some() && state.authority.google_oidc_domain(domain).await {
+                    (
+                        Some("oidc".to_string()),
+                        Some(super::oidc::claim_url(&state.domain)),
+                    )
+                } else {
+                    (Some("smtp".to_string()), None)
+                }
+            }
             crate::authority::SecondaryAuthority::Unprovable => (Some("none".to_string()), None),
         }
     } else {

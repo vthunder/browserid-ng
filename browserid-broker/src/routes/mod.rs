@@ -11,6 +11,7 @@ mod guestbook;
 mod handle_claim;
 mod holders;
 mod hosted_idp;
+mod oidc;
 mod primary;
 mod reset;
 pub(crate) mod session;
@@ -111,6 +112,10 @@ where
         .route("/wsapi/update_password", post(auth::update_password))
         .route("/wsapi/list_emails", get(email::list_emails))
         .route("/wsapi/stage_email", post(email::stage_email))
+        // OIDC claim ceremony (browserid-ng-qer8): both legs are top-level
+        // navigations, not wsapi XHR calls.
+        .route("/oidc/claim", get(oidc::oidc_claim))
+        .route("/oidc/callback", get(oidc::oidc_callback))
         .route(
             "/wsapi/complete_handle_claim",
             post(handle_claim::complete_handle_claim),

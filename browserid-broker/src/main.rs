@@ -187,6 +187,24 @@ async fn main() -> Result<()> {
             "claim-time authority hierarchy configured"
         );
     }
+    // OIDC claim ceremony (browserid-ng-qer8): claim a Google-hosted mailbox
+    // by signing in with Google. Enabled iff both halves of the Google OAuth
+    // client are set; unconfigured, the whole bridge is inert.
+    match (
+        std::env::var("OIDC_GOOGLE_CLIENT_ID").ok().filter(|s| !s.trim().is_empty()),
+        std::env::var("OIDC_GOOGLE_CLIENT_SECRET").ok().filter(|s| !s.trim().is_empty()),
+    ) {
+        (Some(id), Some(secret)) => {
+            state.oidc = Some(browserid_broker::oidc::OidcRuntime::new(
+                browserid_broker::oidc::OidcProvider::google(id.trim(), secret.trim()),
+            ));
+            tracing::info!("OIDC claim ceremony enabled (Google)");
+        }
+        (None, None) => {}
+        _ => tracing::error!(
+            "OIDC_GOOGLE_CLIENT_ID/SECRET must both be set; OIDC claim ceremony disabled"
+        ),
+    }
 
     let state = Arc::new(state);
 
