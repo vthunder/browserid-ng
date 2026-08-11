@@ -1,0 +1,25 @@
+{
+  "name": "@browserid-ng/github-mcp",
+  "version": "0.1.0",
+  "description": "The GitHub flagship: a warrant-gated GitHub MCP server on @browserid-ng/mcp-auth — replace the PAT in your MCP config with a human's scoped, attributed, revocable BrowserID warrant.",
+  "type": "module",
+  "private": true,
+  "main": "./src/server.mjs",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@browserid-ng/mcp-auth": "file:../sdk/mcp-auth",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0 || ^4.0.0"
+  },
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vthunder/browserid-ng"
+  }
+}
