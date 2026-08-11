@@ -202,8 +202,9 @@ where
         .nest_service("/common/js", ServeDir::new(format!("{}/common/js", static_path)))
         // SBO signer popup (first-party broker window for cross-site typed signing)
         .route_service("/sign", ServeFile::new(format!("{}/sign.html", static_path)))
-        // Agent-key management UI (tdxf) — create/list/revoke provisioning certs
-        .route_service("/agents", ServeFile::new(format!("{}/agents.html", static_path)))
+        // Old agent-key management URL — the UI moved to /account long ago;
+        // keep the redirect for printed links.
+        .route("/agents", get(|| async { axum::response::Redirect::permanent("/account") }))
         // Warrant consent surface (spec §6.3) — approve/deny agent requests.
         // The {code} deep link and the bare list are the same page.
         .route_service("/consent", ServeFile::new(format!("{}/consent.html", static_path)))
@@ -219,21 +220,16 @@ where
         .route_service("/authorize", ServeFile::new(format!("{}/authorize.html", static_path)))
         // Demo RP on the device-cert model.
         .route_service("/broker-demo", ServeFile::new(format!("{}/broker-demo.html", static_path)))
-        // Landing page at the root. When the origin split is deployed
-        // (MARKETING_URL set), redirect to the static marketing site instead;
-        // otherwise serve index.html locally.
+        // Root: with the origin split deployed (MARKETING_URL set), redirect to
+        // the marketing site. Without it (local dev) there is no landing page —
+        // the auth origin's own front door is the account dashboard.
         .route("/", get({
-            let index_path = format!("{}/index.html", static_path);
             move |State(state): State<Arc<AppState<U, S, E>>>| {
-                let index_path = index_path.clone();
                 async move {
                     if let Some(url) = &state.marketing_url {
                         return axum::response::Redirect::permanent(url).into_response();
                     }
-                    match tokio::fs::read_to_string(&index_path).await {
-                        Ok(body) => Html(body).into_response(),
-                        Err(_) => axum::http::StatusCode::NOT_FOUND.into_response(),
-                    }
+                    axum::response::Redirect::temporary("/account").into_response()
                 }
             }
         }))
@@ -297,7 +293,6 @@ const INLINE_SCRIPT_HASHES: &[&str] = &[
     "'sha256-pvi535HAc2wbfP7Jq7zNJS6foEnr3zzyfjRwhUdXmkM='", // account.html
     "'sha256-XRWE73ZH1qCk6vmO+hv85g2743sS42s8Y64PjFX8z98='", // authorize.html
     "'sha256-KcSFrbxTD/FQlLnEbwRfQuYxTudagOb8OQNj5vSg5T8='", // consent.html
-    "'sha256-+XqUYbHj+ZXqocYeM/oRYCX1zljIPfY94AJwWAtU2Do='", // agents.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)
 ];
 
@@ -558,7 +553,6 @@ mod csp_tests {
             "static/account.html",
             "static/authorize.html",
             "static/consent.html",
-            "static/agents.html",
         ] {
             let html = std::fs::read_to_string(file)
                 .unwrap_or_else(|e| panic!("read {file}: {e}"));
