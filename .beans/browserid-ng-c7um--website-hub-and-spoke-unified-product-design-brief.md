@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-10T12:18:12Z
-updated_at: 2026-08-10T12:35:15Z
+updated_at: 2026-08-10T13:03:52Z
 ---
 
 Expand www into hub-and-spoke unified product: home hub + /agents, /developers, /domains spokes, demos index, docs router. Design brief to feed Claude Design; then build.
@@ -37,4 +37,4 @@ All pages serve 200 locally; assets resolve; sections balanced.
 TODO next:
 - [ ] Owner eyeball / tweak copy
 - [ ] Demos index page + Docs router (deferred; nav Docs → GitHub for now)
-- [ ] Deploy www (CI/dokku) after review
+- [x] Deployed www (image f01f10b released via mini-ops; /agents /developers /domains live)

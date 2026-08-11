@@ -23,7 +23,7 @@ holder. Only on-chain attribution lives outside it.
 
 | Document | What it covers |
 |---|---|
-| **[Protocol Specification](./browserid-ng-protocol.md)** | **The whole protocol.** Actors & holders, the DNSSEC trust root & discovery, **device / access / config certificates**, warrants & the four-object bundle, verification (per-identity issuer authority + three fail-closed status checks), issuance & obtaining credentials (interactive login, the device-grant for headless holders, and just-in-time warrant consent), the fallback broker, and the optional grant-exchange binding for API relying parties. |
+| **[Protocol Specification](./browserid-ng-protocol.md)** | **The whole protocol.** Actors & holders, the DNSSEC trust root & discovery, **device / access / config certificates**, constraints & managed identities, warrants & the four-object bundle, verification (per-identity issuer authority + three fail-closed status checks), issuance & obtaining credentials (interactive login, the device-grant for headless holders, and just-in-time warrant consent), the fallback broker, and the optional grant-exchange binding for API relying parties. |
 | **[SBO Attribution Specification](https://github.com/vthunder/sbo/blob/main/specs/SBO%20Attribution%20Specification.md)** *(sbo repo)* | *External module.* How a ledger attributes an email identity to an on-chain `ed25519:` key, built on the protocol's offline-verification primitive (§6.2). Lives in the sbo repo because it is ledger-specific and sbo depends on browserid-ng, not the reverse. |
 | **[Divergence Analysis](./browserid-ng-divergence-analysis.md)** | *Background.* A point-by-point comparison with Mozilla BrowserID and the rationale for each deliberate departure. |
 

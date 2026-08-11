@@ -105,6 +105,7 @@ for an IdP's identity key.**
 | `agent-device-authorization` | Optional. The device-authorization page's agent mode (merged provisioning): issues a **named-agent** device cert (an identity differing from the session's, e.g. a `+tag` sub-address). Absent ⇒ named agents unsupported here; "as-you" agents need no support. |
 | `device-revoke` | Optional. Browser-facing device-**revocation** page so the **user** (never a registrar on its own authority) can revoke certs this IdP issued. Absent ⇒ no remote-initiated revocation (certs run to expiry). |
 | `authority` | Optional delegation pointer to another domain's IdP. |
+| `terms` | Optional. URL of a human-readable policy page for a domain issuing **managed identities** (§4.7). UAs SHOULD link it alongside — never instead of — the claims-derived constraint disclosure. |
 
 A domain opts out simply by publishing no records. The document carries no key —
 the mint endpoint is published as `access-cert`, not `mint`.
@@ -151,6 +152,7 @@ out.
 | `identities` | Array of emails (or single-`*` globs, e.g. `*`) this device may act for — all rooted at this IdP. MUST be non-empty. A bare `user@domain` entry also authorizes `user+tag@domain` sub-addresses (RFC 5233 subaddressing is a protocol rule, §4.6). |
 | `public-key` | The certified device key (base64url Ed25519). |
 | `status` | Optional revocation ref `{ "uri", "idx" }` (§6.3); revoking it logs the device/agent out. |
+| `constraints` | OPTIONAL managed-identity restriction object (§4.7). Device certs are never presented, so these bind through the mint rule (§7.2): a minted access cert MUST NOT be weaker. |
 
 A single issuance request MAY return **several** device certs at once — e.g. an
 `authentication` device cert for login together with a **config cert** for
@@ -192,6 +194,7 @@ agents mint headlessly.
 | `holder` | Copied verbatim from the issuing device cert at mint (the isolation guarantee: the requester cannot choose or forge it). |
 | `public-key` | The certified **fresh** access key. |
 | `status` | Optional revocation ref, rooted at the **issuing device's** status index (revoking one device kills its access certs, not the whole identity). |
+| `constraints` | OPTIONAL managed-identity restriction object (§4.7), enforced at verification (§6.1 step 7). |
 
 ### 4.3 Config certificate (`browserid-device-cert-v1`, `purpose: authorization`)
 
@@ -253,6 +256,66 @@ access certs for `user@domain` *exactly*. Acting as `user+tag@domain` requires a
 auth cert issued for that sub-identity (e.g. an agent provisioned at
 `user+agent@domain`). So a user delegates to a named sub-identity by having one
 issued — not by an existing device silently speaking as it.
+
+### 4.7 Constraints & managed identities
+
+> **Planned extension — not yet implemented.** The design is settled; this
+> section specifies the target.
+
+Any **IdP-signed certificate** (device cert of either purpose, access cert) MAY
+carry a `constraints` claim: restrictions on the presentations the certificate
+may participate in. An identity whose certs carry constraints is a **managed
+identity** — the vocabulary of a domain that answers for its users and their
+agents, scoping what its own vouching covers. Constraints restrict only
+identities their issuer is authoritative for; a user's identities from other
+issuers are untouched. The role split is fixed: constraints are **authored by
+IdPs, enforced by verifiers, and disclosed by user agents** — a broker/UA is
+never an enforcement point.
+
+| Key | Meaning |
+|---|---|
+| `aud` | `{ "salt": "<base64url>", "hashes": ["<base64url>", …] }` — allowlist of permitted audiences. An audience satisfies it iff `b64url(SHA-256(salt ‖ audience))` ∈ `hashes`, with the audience normalized exactly as assertion `aud` (§5). Hashed because certs are presented to every RP the holder visits — a cleartext list would enumerate the domain's application roster ecosystem-wide. Hashing protects the domain from RPs, not the user from the IdP. |
+| `scopes` | Array of strings: the presented warrant MUST NOT carry a scope outside this set. |
+| `max-ttl` | Seconds: the presented warrant's `exp − iat` MUST NOT exceed this. |
+
+**Constraints bind the presentation, as presented.** A presentation satisfies a
+cert's constraints iff the RP audience (== assertion `aud` == `warrant.audience`,
+§6.1) satisfies `aud`, and the warrant satisfies `scopes` and `max-ttl`.
+Constraints are evaluated at verification time against the certificate copies
+**in the bundle** — so policy freshness is set by the TTL of the presented
+certs, which is the issuing IdP's knob. The reference TTLs (§4.1–4.2) are
+consumer defaults; a managing domain is expected to deviate. The natural policy
+point is the **access-cert mint** (§7.2): every presentation — human login or
+delegated agent, each minting through the identity's IdP — embeds a fresh
+(reference ~24 h) access cert, so constraints stamped there govern humans and
+agents uniformly on a short policy loop, with no new endpoint or object.
+
+**Fail closed on unknown keys.** A verifier that encounters a `constraints` key
+it does not implement MUST reject the presentation. Constraints are
+restrictions; ignoring one is escaping it. (This is also what keeps future
+vocabulary additions safe: verifiers predating a key reject rather than
+silently waive it.)
+
+**User-agent duties.** A UA/broker handling a managed identity SHOULD: disclose
+the constraints to the user before storing its certs, in terms derived from the
+claims themselves (never from issuer-provided copy; the domain's `terms` page
+(§3.1) may be linked alongside); present managed identities distinctly wherever
+identities are chosen; re-disclose whenever the constraint set changes in any
+way at reissue; and teach that **a managed identity carries no expectation of
+privacy from its issuer** — the managing domain controls issuance and may
+restrict, and thereby learn, where the identity can be used. The UA MUST NOT
+enforce constraints; its role is disclosure.
+
+**Privacy.** The access request carries no RP audience (§4.2) and the mint MUST
+stay RP-blind: constraint enforcement adds no usage reporting. A managing IdP
+learns the *allowed* set it stamps, not which audiences were used; a narrow
+allowlist makes usage visible through negotiation (each new audience is a
+request to the IdP), and that dial belongs to the managing domain — consistent
+with the no-expectation-of-privacy doctrine above.
+
+**Deployment.** A constraint binds only at verifiers that enforce this section;
+earlier verifiers ignore unknown cert claims. A domain SHOULD NOT rely on
+constraints until the verifiers it cares about conform.
 
 ## 5. Assertions, warrants & the presentation bundle
 
@@ -355,17 +418,22 @@ config-cert / grantor) may differ.
    unexpired and that the join holds: `warrant.grantee == access_cert.identity`,
    `warrant.holder` (matcher) covers `access_cert.holder`, and `warrant.audience`
    == the RP audience.
-7. **Three fail-closed status authorities.** Check the revocation ref on each of
+7. **Enforce constraints** (§4.7). For each presented cert carrying a
+   `constraints` claim (access cert, config cert), check the presentation
+   satisfies it: the RP audience against `aud` (by salted hash), the warrant
+   against `scopes` and `max-ttl`. A constraint key the verifier does not
+   implement ⇒ reject — fail-closed.
+8. **Three fail-closed status authorities.** Check the revocation ref on each of
    the three objects that carries one — the **access cert** (→ its IdP, per-device
    index), the **config cert** (→ its IdP), and the **warrant** (→ hosted broker
    registry). All three checks are **fail-closed** (§6.3).
-8. Return the attributed identity (grantor), the grantee (actor of record), the
+9. Return the attributed identity (grantor), the grantee (actor of record), the
    grantor and grantee issuers, the `holder`, and the scopes.
 
 A conforming verifier performs **every** step. In particular, accepting anything
 but exactly the four-object bundle (step 1), skipping the per-identity issuer
-authority check (step 2), or honoring any object without its fail-closed status
-check (step 7) is non-conforming.
+authority check (step 2), waiving a constraint (step 7), or honoring any object
+without its fail-closed status check (step 8) is non-conforming.
 
 ### 6.2 Offline verification with detached DNSSEC proofs
 
@@ -386,7 +454,7 @@ consumer is the **attribution module**.
 
 There are **three revocation authorities**, one per RP-facing object that
 carries a `status` ref, and the verifier checks **all three fail-closed** (§6.1
-step 7):
+step 8):
 
 - the **access cert** → its **IdP**, rooted at the **issuing device's** status
   index (revoking one device kills its access certs, not the whole identity);
@@ -477,6 +545,12 @@ own signature, unrevoked, in validity, and the requested identity in its list
 short-lived **access cert** certifying the request's fresh key, carrying the
 device's holder verbatim. The IdP MAY refuse even a nominally-valid device cert
 (abuse or compromise), in which case the holder re-authenticates.
+
+If the device cert carries `constraints` (§4.7), the minted access cert MUST
+carry constraints at least as strict — device certs are never presented, so the
+mint is where theirs take effect. The mint MAY also add restrictions of its own:
+for a managing domain, the mint is the natural per-~24 h policy decision point.
+Either way the access request stays audience-free — the mint remains RP-blind.
 
 Minting online on a fresh key each time is what lets a credential be **cookie-free**
 (no session cookie to lose to browser storage policies) and lets a headless holder
