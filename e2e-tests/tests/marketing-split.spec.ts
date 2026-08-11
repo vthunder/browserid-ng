@@ -65,7 +65,14 @@ class MarketingServer {
       res.end(`window.BROWSERID = { authOrigin: ${JSON.stringify(baseUrl)} };`);
       return;
     }
-    const file = path === '/' ? 'index.html' : path === '/guestbook' ? 'guestbook.html' : path.slice(1);
+    // Mirror nginx.conf: v3 redirects + clean URLs for the support pages.
+    if (path === '/agents' || path === '/guestbook') {
+      res.writeHead(301, { Location: path === '/agents' ? '/' : '/#guestbook' });
+      res.end();
+      return;
+    }
+    const clean = /^\/(developers|domains|demos)$/.exec(path);
+    const file = path === '/' ? 'index.html' : clean ? `${clean[1]}.html` : path.slice(1);
     try {
       const body = await readFile(join(marketingDir, file));
       const type = file.endsWith('.js') ? 'application/javascript' : 'text/html';
@@ -88,35 +95,34 @@ test.describe('Origin split — marketing site', () => {
     await mkt.stop();
   });
 
-  test('marketing guestbook renders the broker feed cross-origin; audience unchanged', async ({
+  test('home-page wall renders the broker feed cross-origin (v3: guestbook lives on index)', async ({
     page,
     request,
   }) => {
     // Read the broker feed directly (the source of truth), then assert the
-    // marketing page — served on a DIFFERENT origin — fetches and renders it
-    // faithfully. Parity-based so it holds whether the feed is empty or full,
-    // without depending on the (separately-broken) provisioning UI.
+    // marketing home page — served on a DIFFERENT origin — fetches and renders
+    // it faithfully. Parity-based so it holds whether the feed is empty or
+    // full, without depending on the (separately-broken) provisioning UI.
     const feed = await (await request.get(`${baseUrl}/guestbook/feed`)).json();
     const entries: any[] = feed.entries || [];
 
-    await page.goto(`${mkt.origin()}/guestbook`);
+    await page.goto(`${mkt.origin()}/#guestbook`);
     // Sanity: this page is NOT the broker origin — the render is cross-origin.
     expect(new URL(page.url()).origin).not.toBe(new URL(baseUrl).origin);
-    // The displayed audience is the auth origin's, unchanged by the split.
-    await expect(page.locator('#aud')).toHaveText(`${baseUrl}/guestbook`);
 
     if (entries.length === 0) {
-      await expect(page.locator('#entries')).toContainText('No one has signed yet', { timeout: 10000 });
+      await expect(page.locator('#wall')).toContainText('No one has signed yet', { timeout: 10000 });
     } else {
-      // Every entry the feed reports must render, attributed to agent + human.
+      // The wall shows the latest entries (capped at 4), display-name attributed.
       const latest = entries[0];
-      await expect(page.locator('#entries')).toContainText(latest.message, { timeout: 10000 });
-      await expect(page.locator('#entries')).toContainText(latest.parent);
-      await expect(page.locator('#entries li')).toHaveCount(entries.length);
+      await expect(page.locator('#wall')).toContainText(latest.message, { timeout: 10000 });
+      const name = latest.name || String(latest.agent || '').split('@')[0];
+      await expect(page.locator('#wall')).toContainText(name);
+      await expect(page.locator('#wall .wall-entry')).toHaveCount(Math.min(entries.length, 4));
     }
   });
 
-  test('marketing guestbook shows a graceful error when the broker feed is unreachable', async ({
+  test('home-page wall shows a graceful error when the broker feed is unreachable', async ({
     page,
   }) => {
     // Point the marketing page at a dead auth origin; it must not hang or throw.
@@ -126,8 +132,8 @@ test.describe('Origin split — marketing site', () => {
         body: `window.BROWSERID = { authOrigin: "http://127.0.0.1:1" };`,
       })
     );
-    await page.goto(`${mkt.origin()}/guestbook`);
-    await expect(page.locator('#entries')).toContainText('Couldn’t load the guestbook', { timeout: 10000 });
+    await page.goto(`${mkt.origin()}/`);
+    await expect(page.locator('#wall')).toContainText('Couldn’t load the wall', { timeout: 10000 });
   });
 
   test('marketing landing "Sign in" points at the auth origin, not the marketing origin', async ({
@@ -136,6 +142,28 @@ test.describe('Origin split — marketing site', () => {
     await page.goto(`${mkt.origin()}/`);
     const href = await page.getAttribute('[data-auth-href]', 'href');
     expect(href).toBe(`${baseUrl}/account`);
+  });
+
+  test('v3 nav: Demos is a page, Agents is gone, and the old URLs redirect', async ({
+    page,
+    request,
+  }) => {
+    await page.goto(`${mkt.origin()}/`);
+    await expect(page.locator('nav a[href="/demos"]')).toHaveText('Demos');
+    await expect(page.locator('nav a[href="/agents"]')).toHaveCount(0);
+
+    // /agents and /guestbook 301 (nginx in prod; mirrored by the test server).
+    const agents = await request.get(`${mkt.origin()}/agents`, { maxRedirects: 0 });
+    expect(agents.status()).toBe(301);
+    expect(agents.headers()['location']).toBe('/');
+    const gb = await request.get(`${mkt.origin()}/guestbook`, { maxRedirects: 0 });
+    expect(gb.status()).toBe(301);
+    expect(gb.headers()['location']).toBe('/#guestbook');
+
+    // The demos page serves at its clean URL with the wallet setup panel.
+    await page.goto(`${mkt.origin()}/demos`);
+    await expect(page.locator('.setup-panel')).toContainText('Give your agent the browserid wallet');
+    await expect(page.locator('.demorow')).toHaveCount(6);
   });
 });
 

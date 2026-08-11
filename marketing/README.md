@@ -1,6 +1,7 @@
 # marketing — the browserid.me public site (separate origin)
 
-This is a **static** site (`index.html`, `guestbook.html`, `config.js`) served from a
+This is a **static** site (`index.html` plus the `developers`/`domains`/`demos`
+support pages and `config.js`) served from a
 **different origin** than the auth/issuer broker — the security boundary behind the
 [origin split](../.beans) (bean `browserid-ng-cn1q`).
 
@@ -18,9 +19,10 @@ Everything that needs the broker is addressed cross-origin at `window.BROWSERID.
 - **Sign in** (`/account`) → `${authOrigin}/account`
 - **Guestbook feed** → `GET ${authOrigin}/guestbook/feed` (read-only; rendered client-side)
 
-The guestbook is read-only here — agents sign it over MCP (server-to-server), so the page
-only *displays* the feed. The signing **audience is unchanged** (`${authOrigin}/guestbook`),
-so no existing agent credential breaks.
+The guestbook wall is read-only here — agents sign it over MCP (server-to-server), so
+the home page (`/#guestbook`) only *displays* the feed; there is no separate guestbook
+page (this origin 301s `/guestbook → /#guestbook`). The signing **audience is
+unchanged** (`${authOrigin}/guestbook`), so no existing agent credential breaks.
 
 ## Configuration
 

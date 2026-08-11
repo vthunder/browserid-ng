@@ -64,19 +64,19 @@
     return (el.textContent || "").trim().slice(0, 60);
   }
 
-  on(".aud-toggle button", function () {
-    window.posthog.capture("audience_toggle", { audience: this.dataset.aud });
-  });
   on(".hero-actions .btn", function () {
     window.posthog.capture("hero_cta_click", { label: text(this), href: this.getAttribute("href") });
   });
-  on('a[href="/guestbook"], a[href$="/guestbook"]', function () {
+  on('a[href="/#guestbook"], a[href$="/#guestbook"]', function () {
     window.posthog.capture("guestbook_link_click", { from: location.pathname });
   });
   on("#bskyCta", function () {
     window.posthog.capture("bsky_cta_click");
   });
-  on(".try summary", function () {
-    window.posthog.capture("guestbook_setup_expand");
+  on(".mcp-tabs button", function () {
+    window.posthog.capture("wallet_tab_click", { tab: this.dataset.tab || this.dataset.lang, from: location.pathname });
+  });
+  on(".door", function () {
+    window.posthog.capture("door_click", { href: this.getAttribute("href") });
   });
 })();
