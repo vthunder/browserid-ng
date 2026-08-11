@@ -353,6 +353,23 @@
     </section>
 
     <!-- SBO Signing Consent Screen (typed signing extension) -->
+    <section id="managed-consent-screen" class="screen">
+      <div class="content">
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <h2 style="margin-bottom:14px">This identity is managed</h2>
+        <div class="consent-card"><span class="email-display"></span> is a <b>managed
+          identity</b>: <b class="managed-issuer"></b> controls its issuance and may
+          restrict — and see — where it is used.</div>
+        <p class="muted-note">There is no expectation of privacy from the issuer when
+          using a managed identity. Your identities from other providers are unaffected.</p>
+
+        <div class="button-row">
+          <button type="button" id="managed-consent-continue" class="primary">Continue</button>
+          <button type="button" id="managed-consent-cancel" class="secondary">Cancel</button>
+        </div>
+      </div>
+    </section>
+
     <section id="sbo-consent-screen" class="screen">
       <div class="content">
         <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>

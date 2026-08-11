@@ -79,6 +79,7 @@
     primaryTransition: document.getElementById('primary-transition-screen'),
     primaryAuthContinue: document.getElementById('primary-auth-continue-screen'),
     claimContinue: document.getElementById('claim-continue-screen'),
+    managedConsent: document.getElementById('managed-consent-screen'),
     sboConsent: document.getElementById('sbo-consent-screen'),
     success: document.getElementById('success-screen'),
     error: document.getElementById('error-screen')
@@ -317,23 +318,33 @@
     return { device, config };
   }
 
+  // Managed-identity disclosure (spec §4.7 UA duty) as an in-dialog consent
+  // screen. NOT native confirm(): browsers block confirm() in popup/iframe
+  // contexts and silently return false, which made every managed login fail
+  // as "declined" without the user ever seeing a prompt.
+  let managedConsentPending = null;
+  function managedDisclosure(issuer, email) {
+    return new Promise((resolve, reject) => {
+      managedConsentPending = { resolve, reject };
+      const e = screens.managedConsent.querySelector('.email-display');
+      if (e) e.textContent = email;
+      const i = screens.managedConsent.querySelector('.managed-issuer');
+      if (i) i.textContent = issuer;
+      showScreen('managedConsent');
+    });
+  }
+
   async function storeDevicePair(issuer, email, keys, certs) {
-    // Managed-identity disclosure (spec §4.7 UA duties): BEFORE storing certs
-    // marked `managed: true`, tell the user what that means — once per
-    // identity, re-shown if the marker (re)appears after an unmanaged period.
+    // BEFORE storing certs marked `managed: true`, tell the user what that
+    // means — once per identity, re-shown if the marker (re)appears after an
+    // unmanaged period.
     const dc = decodeJws(certs.device_cert);
     if (dc && dc.managed === true) {
       const ackKey = 'browserid:managed-ack:' + email;
       let acked = null;
       try { acked = localStorage.getItem(ackKey); } catch (e) { }
       if (!acked) {
-        const ok = confirm(
-          email + ' is a MANAGED identity.\n\n' + issuer + ' controls its issuance and may ' +
-          'restrict — and see — where it is used. There is no expectation of privacy ' +
-          'from ' + issuer + ' when using this identity. Your identities from other ' +
-          'providers are unaffected.\n\nContinue with this identity?'
-        );
-        if (!ok) throw new Error('managed identity declined');
+        await managedDisclosure(issuer, email);
         try { localStorage.setItem(ackKey, String(Date.now())); } catch (e) { }
       }
     }
@@ -2208,6 +2219,22 @@
         sendResponse(buildResponse(presentation));
       }, 1000);
     }
+    // Managed-identity disclosure: Continue resumes the sign-in (the flow is
+    // awaiting the promise inside storeDevicePair); Cancel aborts the flow and
+    // returns control to the RP as a user cancellation.
+    document.getElementById('managed-consent-continue').addEventListener('click', () => {
+      const p = managedConsentPending;
+      managedConsentPending = null;
+      showScreen('loading', 'Signing in…');
+      if (p) p.resolve();
+    });
+    document.getElementById('managed-consent-cancel').addEventListener('click', () => {
+      const p = managedConsentPending;
+      managedConsentPending = null;
+      if (p) p.reject(new Error('managed identity declined'));
+      sendCancel();
+    });
+
     document.getElementById('sbo-consent-allow').addEventListener('click', () => {
       grantSboSign(state.origin);
       finishAfterConsent();
