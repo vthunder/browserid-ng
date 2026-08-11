@@ -80,5 +80,11 @@ jobs:
           mkdir -p ~/.ssh
           echo "$DOKKU_SSH_KEY" > ~/.ssh/dokku_key
           chmod 600 ~/.ssh/dokku_key
-          ssh -i ~/.ssh/dokku_key -o StrictHostKeyChecking=accept-new \
-            "dokku@$DOKKU_HOST" git:from-image guestbook-mcp "$IMAGE:$GITHUB_SHA"
+          # `git:from-image` exits 1 on an unchanged image digest — a re-run of an
+          # already-released sha is a no-op, not a failure.
+          out=$(ssh -i ~/.ssh/dokku_key -o StrictHostKeyChecking=accept-new \
+            "dokku@$DOKKU_HOST" git:from-image guestbook-mcp "$IMAGE:$GITHUB_SHA" 2>&1) \
+            || { echo "$out" | grep -q "No changes detected" \
+                 && echo "no-op: image digest unchanged (already deployed)" \
+                 || { echo "$out" | tail -30; exit 1; }; }
+          echo "$out" | tail -5

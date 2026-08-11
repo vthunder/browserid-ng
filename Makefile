@@ -6,13 +6,14 @@
 #   make watch            watch CI runs for HEAD until they all finish
 #   make release          release HEAD's images to dokku (all apps)
 #   make release-<app>    one app: broker | www | wallet | mcp-demo | python-mcp-demo | guestbook
-#   make deploy           push + watch + release
+#   make deploy           push + watch (CI releases the images itself)
 #
-# Deploy model: CI builds GHCR images per app (.github/workflows/deploy-*.yml);
-# the CI ssh-release step fails on this host (deploy key not authorized — bean
-# o7ip), so `release` does the `git:from-image` from here via the mini-ops key.
-# `git:from-image` exits 1 on an unchanged image digest ("No changes detected")
-# — expected when an app's paths didn't change — so release targets tolerate it.
+# Deploy model: CI builds GHCR images per app (.github/workflows/deploy-*.yml)
+# and releases them itself (browserid-ng-ci dokku key, fixed 2026-08-11 — bean
+# o7ip). `release` is the manual fallback via the mini-ops key, e.g. for
+# re-releasing an already-built image. `git:from-image` exits 1 on an unchanged
+# image digest ("No changes detected") — expected when an app's paths didn't
+# change — so release targets tolerate it.
 
 SHA  := $(shell git rev-parse HEAD)
 HOST ?= dokku@browserid.me
@@ -49,4 +50,4 @@ release-guestbook:       ; -$(SSH) $(HOST) git:from-image guestbook-mcp    $(REG
 
 release: release-broker release-www release-wallet release-mcp-demo release-python-mcp-demo release-guestbook
 
-deploy: push watch release
+deploy: push watch
