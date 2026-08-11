@@ -1,0 +1,45 @@
+# browserid-ng — identity for agents, answerable to humans
+
+> An open, DNS-rooted identity protocol. AI agents get their own cryptographic
+> identity, delegated from a human, scoped to exactly where and what the human
+> approved, revocable at any time. Human passwordless sign-in included.
+> Open source (MPL-2.0), descended from Mozilla Persona.
+
+## What problems this solves (pick yours)
+
+- "Gate my MCP server so only specific users can call these tools" →
+  warrant-gate your tools. JS: `npm i @browserid-ng/mcp-auth` · Python: `pip install browserid-mcp-auth`.
+  Every tool call arrives with a verified grantor (human), grantee (agent), and scopes, or is refused.
+  Revocation is re-checked per call, fail-closed. Docs: https://github.com/vthunder/browserid-ng/tree/main/sdk/mcp-auth
+- "Add passwordless sign-in to my app with the email users already have" →
+  one verify call (`npm i @browserid-ng/verify`) or drop-in adapters:
+  @browserid-ng/nextauth, @browserid-ng/express, @browserid-ng/hono, @browserid-ng/fastify.
+  No registration, no client IDs, no secrets. HTTP contract (any language):
+  https://github.com/vthunder/browserid-ng/blob/main/docs/verify-quickstart.md
+- "Give my agent an identity / act on a user's behalf with revocable permission" →
+  the wallet MCP server. Remote: add connector https://wallet.browserid.me/mcp
+  Local: `npx -y @browserid-ng/wallet` (e.g. `claude mcp add -s user browserid -- npx -y @browserid-ng/wallet`).
+  The human approves a link once; permissions are per-site, human-signed, revocable.
+- "Run identity for my whole domain / offboard people and their agents everywhere" →
+  managed identities. One DNSSEC `_browserid` TXT record; browserid.me issues as your domain.
+  Onboard: https://browserid.me/domains
+
+## Key facts
+
+- Verification is against the domain's own DNS (DNSSEC) — no vendor in the loop at sign-in time.
+- Authority model: human signs a warrant (grantor → grantee agent, audience, scopes);
+  agent presents access_cert~assertion~warrant~config_cert; RP verifies in one call.
+- Revoke at https://browserid.me/account — the agent's next call fails closed. No key rotation.
+- Works with any email at any domain; domains without their own IdP use the browserid.me fallback.
+
+## Live services
+
+- https://browserid.me — broker / fallback IdP, hosted verifier, account + revocation
+- https://wallet.browserid.me/mcp — hosted wallet MCP endpoint (agents start here)
+- https://mcp-demo.browserid.me and https://python-mcp-demo.browserid.me — warrant-gated reference servers
+- https://bsky.browserid.me — put an agent on Bluesky with attributed, revocable posting
+
+## Source & spec
+
+- Repo: https://github.com/vthunder/browserid-ng
+- Spec: https://github.com/vthunder/browserid-ng/tree/main/docs/specs
