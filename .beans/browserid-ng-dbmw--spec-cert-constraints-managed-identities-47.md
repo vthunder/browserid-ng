@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: normal
 created_at: 2026-08-11T12:03:09Z
-updated_at: 2026-08-11T12:04:57Z
+updated_at: 2026-08-11T12:15:14Z
 ---
 
 Integrate the constraints/managed-identity design into the core protocol spec: constraints claim on IdP-signed certs (aud hashed allowlist, scopes, max-ttl), fail-closed unknown keys, verification step, mint inheritance, UA disclosure SHOULDs, terms in support doc, privacy+deployment notes. Design settled in chat 2026-08-10/11; implementation (hosted tenant mint-time stamping + verifier checks) is follow-up.
@@ -39,3 +39,15 @@ reissue) and is moot with cert-side constraints. `holders` constraint rejected
 profile (follow-up, not started): hosted tenant stamps constraints at the
 access-cert mint only; verifier checks needed across hosted /verify-access,
 SDK verifiers, mingo, on-chain before any tenant enables constraints.
+
+## Follow-up (2026-08-11, same commit thread)
+
+Corrected after review: device-cert constraints are a DECLARATION (issuance-time
+disclosure basis), not a mint-enforced mechanism — MUST-not-be-weaker downgraded
+to SHOULD-not-stamp-looser (both certs come from the same authority; nothing to
+enforce). Added optional `audience` to the access request: managing IdPs MAY
+require it and mint audience-scoped access certs (several concurrent per
+identity allowed) — recovers cosign's used-set visibility as an opt-in posture
+with zero new endpoints; mint refusal surfaces org policy at login time.
+Guardrail: IdP MUST NOT require `audience` for unmanaged identities (RP-blind
+stays the consumer invariant). §4.7 Privacy rewritten to the two-posture model.

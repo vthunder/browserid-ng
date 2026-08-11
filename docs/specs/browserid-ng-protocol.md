@@ -152,7 +152,7 @@ out.
 | `identities` | Array of emails (or single-`*` globs, e.g. `*`) this device may act for — all rooted at this IdP. MUST be non-empty. A bare `user@domain` entry also authorizes `user+tag@domain` sub-addresses (RFC 5233 subaddressing is a protocol rule, §4.6). |
 | `public-key` | The certified device key (base64url Ed25519). |
 | `status` | Optional revocation ref `{ "uri", "idx" }` (§6.3); revoking it logs the device/agent out. |
-| `constraints` | OPTIONAL managed-identity restriction object (§4.7). Device certs are never presented, so these bind through the mint rule (§7.2): a minted access cert MUST NOT be weaker. |
+| `constraints` | OPTIONAL managed-identity restriction object (§4.7). On a device cert this is a **declaration** of standing policy — the basis for issuance-time disclosure (§4.7), never a mechanism: enforcement is only ever via presented certs. The mint SHOULD NOT stamp looser than declared (§7.2). |
 
 A single issuance request MAY return **several** device certs at once — e.g. an
 `authentication` device cert for login together with a **config cert** for
@@ -182,6 +182,7 @@ agents mint headlessly.
 | `identity` | Which identity to mint for (∈ the device cert's `identities`). |
 | `holder` | The holder the minted access cert must carry — MUST equal the device cert's holder; the mint MUST NOT let the requester choose a different value. |
 | `access-key` | The fresh key to certify (never the device key). |
+| `audience` | OPTIONAL. The RP audience this access cert is requested for. Absent by default; an IdP MUST NOT require it for identities whose certs carry no constraints — the mint stays **RP-blind for unmanaged identities**. A managing IdP MAY require it and scope the minted cert to that audience (a single-entry `aud` constraint, §4.7); this is the used-set-visibility posture (§4.7 Privacy). |
 
 **Access cert claims:**
 
@@ -306,12 +307,14 @@ privacy from its issuer** — the managing domain controls issuance and may
 restrict, and thereby learn, where the identity can be used. The UA MUST NOT
 enforce constraints; its role is disclosure.
 
-**Privacy.** The access request carries no RP audience (§4.2) and the mint MUST
-stay RP-blind: constraint enforcement adds no usage reporting. A managing IdP
-learns the *allowed* set it stamps, not which audiences were used; a narrow
-allowlist makes usage visible through negotiation (each new audience is a
-request to the IdP), and that dial belongs to the managing domain — consistent
-with the no-expectation-of-privacy doctrine above.
+**Privacy.** For an unmanaged identity the access request carries no RP
+audience and the mint stays RP-blind (§4.2, §7.2) — constraints change nothing
+for consumers. A managing domain chooses its **visibility posture**: stamp a
+broad uniform allowlist and learn only the *allowed* set (its mint stays
+RP-blind too), or require per-audience minting (§4.2 `audience`) and see each
+audience as it is first used. Both postures are the domain's dial over
+identities it issues — consistent with the no-expectation-of-privacy doctrine
+above — and the UA's disclosure SHOULD say which applies.
 
 **Deployment.** A constraint binds only at verifiers that enforce this section;
 earlier verifiers ignore unknown cert claims. A domain SHOULD NOT rely on
@@ -546,11 +549,20 @@ short-lived **access cert** certifying the request's fresh key, carrying the
 device's holder verbatim. The IdP MAY refuse even a nominally-valid device cert
 (abuse or compromise), in which case the holder re-authenticates.
 
-If the device cert carries `constraints` (§4.7), the minted access cert MUST
-carry constraints at least as strict — device certs are never presented, so the
-mint is where theirs take effect. The mint MAY also add restrictions of its own:
-for a managing domain, the mint is the natural per-~24 h policy decision point.
-Either way the access request stays audience-free — the mint remains RP-blind.
+The mint is where a managing domain applies **current policy**: the IdP decides
+what it is willing to stamp, and the constraints in the minted access cert
+(§4.7) bind regardless of what the device cert carries. Device-cert
+`constraints` are a declaration, not a mechanism — the mint SHOULD NOT issue an
+access cert looser than its device cert declares, so issuance-time disclosure
+stays truthful; stricter is always the IdP's call.
+
+If the access request names an `audience` (§4.2), the IdP MAY scope the minted
+cert to exactly that audience, and a holder MAY hold **several concurrent
+access certs** for one identity — one per audience — with the client minting
+more as needed. A refusal then surfaces policy at login time ("this identity is
+not permitted at this site") rather than as an opaque verifier reject. An IdP
+MUST NOT require `audience` for unmanaged identities: absent constraints, the
+mint stays RP-blind.
 
 Minting online on a fresh key each time is what lets a credential be **cookie-free**
 (no session cookie to lose to browser storage policies) and lets a headless holder
