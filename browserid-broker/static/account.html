@@ -28,6 +28,11 @@
     .bar .mark { width: 15px; height: 15px; border-radius: 4px; background: #17171a; flex: none; }
     .bar .brand { font-weight: 600; font-size: 14px; color: #17171a; }
     .bar .brand .me { color: #4a90d9; }
+    .bar nav { display: flex; gap: 18px; margin-left: 20px; }
+    .bar nav a { font: 500 13px system-ui, sans-serif; color: #6b6b74; }
+    .bar nav a:hover { text-decoration: none; color: #17171a; }
+    .bar nav .cur { font: 600 13px system-ui, sans-serif; color: #17171a;
+      border-bottom: 2px solid #17171a; padding-bottom: 1px; }
     .ghost { font: 500 12px system-ui, sans-serif; color: #6b6b74; background: none;
       border: 1px solid rgba(0,0,0,.14); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
     .ghost:hover { background: #faf9f7; }
@@ -88,6 +93,13 @@
     .badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; vertical-align: 1px; }
     .b-green { background: #e6f4ea; color: #2f855a; }
     .b-gray { background: #eef2f7; color: #55607a; }
+    .b-amber { background: #fbf3e4; color: #b7791f; }
+
+    /* Managed-identity indicators (domains-integration handoff) */
+    .mpill { font: 600 9.5px system-ui, sans-serif; color: #b7791f;
+      border: 1px solid rgba(183,121,31,.45); border-radius: 999px; padding: 1px 6px;
+      vertical-align: 1px; cursor: default; }
+    .mnote { display: block; font: 11.5px/1.5 system-ui, sans-serif; color: #b7791f; margin-top: 4px; }
 
     /* Expanded row / permission lines */
     .expand { padding: 0 16px 13px 62px; }
@@ -277,7 +289,11 @@
 <div class="bar">
   <div class="mark"></div>
   <span class="brand">browserid<span class="me">.me</span></span>
-  <button class="ghost" id="signout" style="margin-left:auto" hidden>Sign out</button>
+  <nav>
+    <span class="cur">Account</span>
+    <a href="/domains">Domains</a>
+  </nav>
+  <button class="ghost" id="signout" style="margin-left:auto" title="Signs out this browser only" hidden>Sign out</button>
 </div>
 
 <div id="gate" class="signwrap"><div class="signcard"><p class="lead" style="margin:0">Checking your session…</p></div></div>
@@ -352,6 +368,8 @@
           <div class="rtitle">Your addresses</div>
           <div class="rsub">The emails you are. Signing in with any of them opens this same account.</div>
           <div class="addrlist" id="addrlist"></div>
+          <div id="addr-managed-note" style="font:10.5px/1.5 system-ui, sans-serif;color:#8a8a93;margin-top:8px" hidden>
+            Managed addresses belong to their domain — it can see and limit where they're used.</div>
           <div id="addr-closed">
             <button class="rlink" id="addr-start" style="margin-top:12px">+ Add an address</button>
           </div>
@@ -380,15 +398,10 @@
           <button class="rlink" id="open-sites">See site by site ›</button>
         </div>
         <div class="rcard">
-          <div class="rtitle tight">Goes well with</div>
-          <div class="rlist">
-            <div><a href="https://wallet.browserid.me/">MCP wallet ↗</a>
-              <div class="d">Give agents in Claude (or any MCP client) a browserid identity.</div></div>
-            <div><a href="https://bsky.browserid.me/">Bluesky bridge ↗</a>
-              <div class="d">Sign in with your Bluesky handle; let agents post to Bluesky.</div></div>
-            <div><a href="/guestbook">Guestbook demo ↗</a>
-              <div class="d">See agent attribution in action — try your first agent here.</div></div>
-          </div>
+          <div class="rtitle tight">Try it out</div>
+          <div class="rsub" style="margin-bottom:8px;line-height:1.6">See what browserid can do — give an agent
+            an identity, sign a guestbook, bridge to Bluesky.</div>
+          <a href="https://www.browserid.me/demos" style="font:500 12px system-ui, sans-serif">Browse the demos ↗</a>
         </div>
         <div class="rcard">
           <div class="rtitle tight">Account settings</div>
@@ -469,7 +482,7 @@ const post = (path, body) => api(path, {
   body: JSON.stringify({ csrf: account.csrf, ...body }),
 });
 
-let account = { emails: [], agents: [], parentOf: {}, publicNames: {}, warrants: [],
+let account = { emails: [], agents: [], parentOf: {}, publicNames: {}, managedOf: {}, warrants: [],
   deviceCerts: [], holders: { namespaces: [], holders_without_namespace: [] }, csrf: null };
 let deviceCache = []; // this browser's DEVICE-store records
 // Client view state (server data above; this is pure UI).
@@ -754,9 +767,15 @@ function actorRowHtml(actor, perms) {
     const shown = actorPerms(actor, perms);
     const blanket = actor.kind === 'browser' ? trusted : [];
     const blanketHtml = blanket.length
-      ? `<div class="permcol" style="margin-bottom:8px">${blanket.map(email =>
-          `<div class="blanket"><b>Anything</b> as <span class="mono">${escapeHtml(email)}</span>
-            <span class="dim">— sign in anywhere, act, approve new permissions</span></div>`).join('')}</div>`
+      ? `<div class="permcol" style="margin-bottom:8px">${blanket.map(email => {
+          const md = account.managedOf[email];
+          const caveat = md
+            ? `— sign in, act, approve permissions, where ${escapeHtml(md)} allows`
+            : '— sign in anywhere, act, approve new permissions';
+          return `<div class="blanket"><b>Anything</b> as <span class="mono">${escapeHtml(email)}</span>${
+            md ? ' <span class="mpill">managed</span>' : ''}
+            <span class="dim">${caveat}</span></div>`;
+        }).join('')}</div>`
       : '';
     const nShown = distinctSites(liveOf(shown)).length;
     const title = actor.kind === 'browser'
@@ -848,8 +867,11 @@ function renderMain() {
   // Addresses rail
   $('addrlist').innerHTML = rootIds().map(email => {
     const via = account.parentOf[email];
-    return `<div title="${escapeHtml(email)}">${escapeHtml(email)}${via ? ` <span class="via">via ${escapeHtml(via)}</span>` : ''}</div>`;
+    const md = account.managedOf[email];
+    const mpill = md ? ` <span class="mpill" title="${escapeHtml(md)} manages this address — it can see and limit where it's used">managed</span>` : '';
+    return `<div title="${escapeHtml(email)}">${escapeHtml(email)}${via ? ` <span class="via">via ${escapeHtml(via)}</span>` : ''}${mpill}</div>`;
   }).join('') || '<div class="via">No addresses yet.</div>';
+  $('addr-managed-note').hidden = !rootIds().some(email => account.managedOf[email]);
 
   // wiring
   for (const b of $('sections').querySelectorAll('.rowtoggle')) b.onclick = () => {
@@ -996,17 +1018,26 @@ function renderDetail() {
 
   const idsHtml = actor.kind === 'browser' && actor.ids.length ? `
     <div class="dsecthead">Addresses it can use</div>
-    <div class="dtable">${actor.ids.map(i => `
+    <div class="dtable">${actor.ids.map(i => {
+      const md = account.managedOf[i.email];
+      const mpill = md ? `<span class="badge b-amber" style="cursor:default" title="${escapeHtml(md)} decides where this address works and can see where it's used">managed by ${escapeHtml(md)}</span>` : '';
+      return `
       <div class="didrow"><span class="em">${escapeHtml(i.email)}</span>
-        ${i.trusted ? '<span class="badge b-green">can approve permissions</span>'
-                    : '<span class="badge b-gray">sign-in only</span>'}</div>`).join('')}
+        ${mpill}${i.trusted ? '<span class="badge b-green">can approve permissions</span>'
+                    : '<span class="badge b-gray">sign-in only</span>'}</div>`;
+    }).join('')}
     </div>` : '';
 
   const blanketHtml = actor.kind === 'browser' && trusted.length ? `
-    <div class="dblanket">${trusted.map(email => `
-      <div class="row"><b>Anything as <span class="mono">${escapeHtml(email)}</span></b><span class="dim">
+    <div class="dblanket">${trusted.map(email => {
+      const md = account.managedOf[email];
+      return `
+      <div class="row"><b>Anything as <span class="mono">${escapeHtml(email)}</span></b>${
+        md ? ' <span class="mpill">managed</span>' : ''}<span class="dim">
         — it can sign in anywhere, act, and approve new permissions for this address.
-        Individual grants aren't listed; they'd be redundant.</span></div>`).join('')}
+        Individual grants aren't listed; they'd be redundant.</span>${
+        md ? `<span class="mnote">This address is managed: ${escapeHtml(md)} decides where it works, caps how long grants last, and can see each site where it's used.</span>` : ''}</div>`;
+    }).join('')}
     </div>` : '';
 
   const noPerms = !secs.length && !(actor.kind === 'browser' && trusted.length);
@@ -1573,6 +1604,8 @@ async function reloadAccount() {
   account.agents = resp.agents || [];
   account.parentOf = Object.fromEntries((resp.derived || []).map(d => [d.email, d.parent_email]));
   account.publicNames = Object.fromEntries((resp.public_names || []).map(p => [p.email, p.public_name]));
+  // Managed addresses (domains-integration handoff): email → managing domain.
+  account.managedOf = Object.fromEntries((resp.managed || []).map(m => [m.email, m.domain]));
   account.warrants = warrants;
   account.deviceCerts = deviceCerts;
   account.holders = holders;

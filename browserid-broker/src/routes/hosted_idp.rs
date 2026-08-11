@@ -404,7 +404,15 @@ where
         (Ok(d), Ok(c)) => (d, c),
         (Err(e), _) | (_, Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("status: {e}")),
     };
-    let ttl = Duration::days(DEVICE_CERT_VALIDITY_DAYS);
+    // Device-cert validity: a managed tenant's policy sets how long a
+    // signed-in device stays signed in; otherwise the fallback's default.
+    let ttl = tenant
+        .management
+        .as_ref()
+        .filter(|m| m.enabled)
+        .and_then(|m| m.device_cert_ttl)
+        .map(Duration::seconds)
+        .unwrap_or_else(|| Duration::days(DEVICE_CERT_VALIDITY_DAYS));
     let config_identities = vec![email.clone(), format!("{local}+*@{domain}")];
     // Managed marker (spec §4.7): stamped on EVERY device cert of a managed
     // identity, before the mint ever applies constraints — the durable,
@@ -553,6 +561,12 @@ where
         constraints = constraints_from_policy(p, if p.per_audience { requested } else { None })
             .map_err(|e| BrokerError::Internal(format!("constraints: {e}")))?;
     }
+    // Access-cert validity: the policy's split knob wins; the legacy single
+    // `max_ttl` bounds it for policies saved before the split; else 24h.
+    let access_ttl = policy
+        .and_then(|p| p.access_cert_ttl.or(p.max_ttl))
+        .map(Duration::seconds)
+        .unwrap_or_else(|| Duration::hours(24));
     let access_cert = {
         let now = chrono::Utc::now();
         AccessCert::from_claims(
@@ -560,7 +574,7 @@ where
                 typ: browserid_core::device::TYP_ACCESS_CERT.to_string(),
                 iss: tenant.domain.clone(),
                 iat: now.timestamp(),
-                exp: (now + Duration::hours(24)).timestamp(),
+                exp: (now + access_ttl).timestamp(),
                 identity: c.identity.clone(),
                 holder: device_cert.holder().clone(),
                 access_key: c.access_key.clone(),
@@ -850,6 +864,7 @@ where
         }
         for t in state.user_store.list_tenants_for(&email.email)? {
             if seen.insert(t.domain.clone()) {
+                let users = state.user_store.list_roster(t.id)?.len();
                 out.push(json!({
                     "domain": t.domain,
                     "status": t.status,
@@ -857,6 +872,7 @@ where
                     "record_name": format!("_browserid.{}", t.domain),
                     "record": tenant_dns_record(&t.public_key, &state.idp_host),
                     "activated_at": t.activated_at.map(|d| d.to_rfc3339()),
+                    "users": users,
                 }));
             }
         }
@@ -1175,6 +1191,90 @@ where
 }
 
 #[derive(Deserialize)]
+pub struct TenantAdminRemoveRequest {
+    pub csrf: String,
+    pub domain: String,
+    pub identity: String,
+}
+
+/// POST /wsapi/tenant/admins/remove — remove an admin identity. Two floors:
+/// you cannot remove yourself (any verified identity on your own account),
+/// and a tenant can never drop below one admin.
+pub async fn tenant_admin_remove<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<TenantAdminRemoveRequest>,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let domain = req.domain.trim().to_lowercase();
+    let admin = session_admin_identity(state.as_ref(), &cookies, &req.csrf, &domain)?;
+    let identity = req.identity.trim().to_lowercase();
+    // "Yourself" = any verified identity on the session's account, not just
+    // the one session_admin_identity happened to match.
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    let is_own = state
+        .user_store
+        .list_emails(session.user_id)?
+        .iter()
+        .any(|e| e.verified && e.email == identity);
+    if is_own {
+        return Err(BrokerError::PolicyRefused(
+            "you cannot remove yourself as an administrator".into(),
+        ));
+    }
+    let admins = state.user_store.list_tenant_admins(&domain)?;
+    if !admins.iter().any(|a| a == &identity) {
+        return Err(BrokerError::PolicyRefused("not an administrator of this domain".into()));
+    }
+    if admins.len() <= 1 {
+        return Err(BrokerError::PolicyRefused(
+            "a domain must keep at least one administrator".into(),
+        ));
+    }
+    state.user_store.remove_tenant_admin(&domain, &identity)?;
+    tracing::info!(tenant = %domain, removed = %identity, by = %admin, "hosted primary: admin removed");
+    Ok(Json(json!({"success": true})))
+}
+
+#[derive(Deserialize)]
+pub struct TenantRevokeAllRequest {
+    pub csrf: String,
+    pub domain: String,
+}
+
+/// POST /wsapi/tenant/revoke_all — the standalone "sign everyone out" lever:
+/// revoke every outstanding credential for the domain right now (tenant-list
+/// bits + broker-fallback certs), independent of the management policy — it
+/// works whether or not managed identities are on. Admin-gated.
+pub async fn tenant_revoke_all<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<TenantRevokeAllRequest>,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let domain = req.domain.trim().to_lowercase();
+    let admin = session_admin_identity(state.as_ref(), &cookies, &req.csrf, &domain)?;
+    let tenant = state
+        .user_store
+        .get_tenant(&domain)?
+        .ok_or(BrokerError::TenantNotFound)?;
+    let mut revoked = state.user_store.tenant_status_revoke_all(tenant.id)?;
+    revoked += state.user_store.revoke_domain_device_certs(&domain)?;
+    tracing::info!(tenant = %domain, by = %admin, revoked,
+        "hosted primary: revoked all outstanding credentials");
+    Ok(Json(json!({"success": true, "revoked": revoked})))
+}
+
+#[derive(Deserialize)]
 pub struct TenantDeleteRequest {
     pub csrf: String,
     pub domain: String,
@@ -1248,6 +1348,8 @@ where
             "audiences": m.audiences,
             "scopes": m.scopes,
             "max_ttl": m.max_ttl,
+            "device_cert_ttl": m.device_cert_ttl,
+            "access_cert_ttl": m.access_cert_ttl,
         },
     })))
 }
@@ -1270,6 +1372,12 @@ pub struct ManagementSetRequest {
     pub scopes: Option<Vec<String>>,
     #[serde(default)]
     pub max_ttl: Option<i64>,
+    /// Device-cert validity in seconds (None = default 90 days).
+    #[serde(default)]
+    pub device_cert_ttl: Option<i64>,
+    /// Access-cert validity in seconds (None = `max_ttl`, else default 24h).
+    #[serde(default)]
+    pub access_cert_ttl: Option<i64>,
 }
 
 pub async fn tenant_management_set<U, S, E>(
@@ -1311,6 +1419,8 @@ where
         audiences,
         scopes: req.scopes.filter(|s| !s.is_empty()),
         max_ttl: req.max_ttl.filter(|t| *t > 0),
+        device_cert_ttl: req.device_cert_ttl.filter(|t| *t > 0),
+        access_cert_ttl: req.access_cert_ttl.filter(|t| *t > 0),
         salt,
     };
     state.user_store.set_tenant_management(&domain, &policy)?;

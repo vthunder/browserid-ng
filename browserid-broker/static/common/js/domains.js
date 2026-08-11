@@ -1,16 +1,21 @@
-// Hosted-primary onboarding + admin console (bean g5qt).
+// Hosted-primary onboarding + admin console (bean g5qt; redesign bean r9gn).
 //
 // Two views off one page:
-//   /domains           → list your domains + "add a domain" wizard
-//   /domains/<domain>  → that tenant's admin console (roster, admins)
+//   /domains           → list your domains + the stepped add-domain wizard
+//   /domains/<domain>  → that tenant's admin console (Users / Administrators /
+//                        Managed identities / Settings)
 // All privileged calls carry the broker session CSRF token. The add-domain
 // wizard IS the roadmap's record generator + DNSSEC checker: publishing the
 // generated record is the proof of domain control that seats first admin.
+// Destructive actions use in-content two-click or typed confirms — NEVER
+// window.confirm()/prompt(): browsers suppress those when the tab isn't
+// frontmost, silently swallowing the click.
 (function () {
   "use strict";
 
   var app = document.getElementById("app");
   var signedOut = document.getElementById("signed-out");
+  var signoutBtn = document.getElementById("signout");
   var csrf = null;
   var identities = [];
 
@@ -32,70 +37,20 @@
     return m ? decodeURIComponent(m[1]).toLowerCase() : null;
   }
 
-  // --- Boot ----------------------------------------------------------------
-  Promise.all([getJSON("/wsapi/session_context"), getJSON("/wsapi/list_emails")])
-    .then(function (res) {
-      var ctx = res[0], emails = res[1];
-      if (!ctx || !ctx.authenticated) { signedOut.classList.remove("hidden"); return; }
-      csrf = ctx.csrf_token;
-      identities = (emails && emails.emails) || [];
-      app.classList.remove("hidden");
-      var domain = currentDomain();
-      if (domain) renderConsole(domain); else renderList();
-    })
-    .catch(function () { signedOut.classList.remove("hidden"); });
-
-  // --- List view + add-domain wizard --------------------------------------
-  function renderList() {
-    app.innerHTML =
-      '<h1>Your domains</h1>' +
-      '<p class="muted">Run browserid.me as the identity provider for a domain you control. ' +
-      'Add a domain, publish one DNS record, and every site that accepts browserid.me accepts your domain — no other setup.</p>' +
-      '<div id="list"></div>' +
-      '<h2>Add a domain</h2>' +
-      '<div class="card" id="wizard"></div>';
-    loadList();
-    renderWizard();
+  function fmtMonthYear(iso) {
+    var t = Date.parse(iso);
+    if (!t) return "";
+    return new Date(t).toLocaleDateString("en-US", { month: "short", year: "numeric" });
   }
 
-  function loadList() {
-    var el = document.getElementById("list");
-    getJSON("/wsapi/tenant/list").then(function (j) {
-      var tenants = (j && j.tenants) || [];
-      if (!tenants.length) { el.innerHTML = '<p class="muted">No domains yet.</p>'; return; }
-      el.innerHTML = tenants.map(function (t) {
-        var active = t.status === "active";
-        return '<div class="card"><div class="row">' +
-          '<div><strong>' + esc(t.domain) + '</strong> ' +
-          '<span class="pill ' + (active ? "active" : "pending") + '">' + esc(t.status) + '</span></div>' +
-          (active ? '<a class="ghost" href="/domains/' + encodeURIComponent(t.domain) + '"><button class="ghost">Manage</button></a>'
-                  : '<button class="ghost" data-check="' + esc(t.domain) + '">Check DNS</button>') +
-          '</div>' +
-          (active ? '' : '<div class="record"><div class="muted">Publish this TXT record, then check DNS:</div>' +
-            '<code>' + esc(t.record_name) + '</code><br><code>' + esc(t.record) + '</code>' +
-            '<div class="err" data-status="' + esc(t.domain) + '"></div></div>') +
-          '</div>';
-      }).join("");
-      Array.prototype.forEach.call(el.querySelectorAll("[data-check]"), function (btn) {
-        btn.addEventListener("click", function () { checkDns(btn.getAttribute("data-check")); });
-      });
-    });
-  }
-
-  function checkDns(domain) {
-    var msg = document.querySelector('[data-status="' + CSS.escape(domain) + '"]');
-    if (msg) { msg.className = "err"; msg.textContent = "Checking…"; }
-    postJSON("/wsapi/tenant/check", { csrf: csrf, domain: domain }).then(function (res) {
-      if (!msg) return;
-      var b = res.body || {};
-      if (b.dns === "validated" && b.status === "active") {
-        msg.className = "err ok"; msg.textContent = "Verified — domain is active. Reloading…";
-        setTimeout(loadList, 900);
-      } else {
-        msg.className = "err";
-        msg.textContent = dnsMessage(b.dns, b.host_ok);
-      }
-    });
+  function fmtDay(iso) {
+    var t = Date.parse(iso);
+    if (!t) return "never";
+    var d = new Date(t);
+    var sameYear = d.getFullYear() === new Date().getFullYear();
+    return d.toLocaleDateString("en-US", sameYear
+      ? { month: "short", day: "numeric" }
+      : { month: "short", day: "numeric", year: "numeric" });
   }
 
   function dnsMessage(dns, hostOk) {
@@ -120,7 +75,7 @@
   }
 
   // Verified account emails that are NOT at `domain` (those go under the
-  // "email at this domain" option instead).
+  // "new address at this domain" option instead).
   function externalIdentities(domain) {
     return identities.filter(function (e) {
       var at = e.lastIndexOf("@");
@@ -128,311 +83,873 @@
     });
   }
 
-  function renderWizard() {
-    var w = document.getElementById("wizard");
-    w.innerHTML =
-      '<label for="wiz-domain">Domain</label>' +
-      '<input id="wiz-domain" placeholder="example.com" autocapitalize="off" autocorrect="off" />' +
-      '<label style="margin-top:16px">Who administers this domain?</label>' +
-      // Option 1: existing identity
-      '<div class="card" style="margin:8px 0;padding:14px">' +
-        '<label style="font-weight:600;margin-top:0"><input type="radio" name="wiz-mode" value="existing" checked style="width:auto;margin-right:8px" />An identity I already have</label>' +
-        '<select id="wiz-existing" style="margin-top:8px"></select>' +
-        '<p class="muted" id="wiz-existing-help" style="margin:6px 0 0">You will use browserid to sign in with this email.</p>' +
-      '</div>' +
-      // Option 2: email at this domain
-      '<div class="card" style="margin:8px 0;padding:14px">' +
-        '<label style="font-weight:600;margin-top:0"><input type="radio" name="wiz-mode" value="local" style="width:auto;margin-right:8px" />An email at <span id="wiz-suffix-label">this domain</span></label>' +
-        '<div class="toolbar" style="gap:8px;margin-top:8px">' +
-          '<div style="flex:2"><input id="wiz-local" placeholder="you" autocapitalize="off" autocorrect="off" /></div>' +
-          '<div style="flex:0;align-self:center" class="muted">@<span id="wiz-suffix">domain</span></div>' +
-        '</div>' +
-        '<div class="toolbar" style="gap:8px;margin-top:8px">' +
-          '<div style="flex:2"><input id="wiz-pw" type="text" placeholder="password (min 8)" autocapitalize="off" autocorrect="off" /></div>' +
-          '<div style="flex:0"><button id="wiz-gen" class="ghost" type="button">Generate</button></div>' +
-        '</div>' +
-        '<p class="muted" style="margin:6px 0 0">You will use this password to sign in.</p>' +
-      '</div>' +
-      '<div style="margin-top:16px"><button id="wiz-go">Generate DNS record</button></div>' +
-      '<div class="err" id="wiz-err"></div>' +
-      '<div id="wiz-out" class="hidden record"></div>';
-
-    var domainInput = document.getElementById("wiz-domain");
-
-    function refresh() {
-      var domain = domainInput.value.trim().toLowerCase();
-      document.getElementById("wiz-suffix").textContent = domain || "domain";
-      document.getElementById("wiz-suffix-label").textContent = domain || "this domain";
-      var ext = externalIdentities(domain);
-      var sel = document.getElementById("wiz-existing");
-      if (ext.length) {
-        sel.innerHTML = ext.map(function (e) { return '<option value="' + esc(e) + '">' + esc(e) + '</option>'; }).join("");
-        sel.disabled = false;
-        document.getElementById("wiz-existing-help").textContent = "You will use browserid to sign in with this email.";
-      } else {
-        sel.innerHTML = '<option value="">(no other identities)</option>';
-        sel.disabled = true;
-        document.getElementById("wiz-existing-help").textContent =
-          "You have no browserid identity outside this domain — use an email at the domain instead.";
-      }
-    }
-    domainInput.addEventListener("input", refresh);
-    refresh();
-
-    document.getElementById("wiz-gen").addEventListener("click", function () {
-      document.getElementById("wiz-pw").value = genPassword();
-      // Choosing to set a password implies the local option.
-      document.querySelector('input[name="wiz-mode"][value="local"]').checked = true;
-    });
-
-    document.getElementById("wiz-go").addEventListener("click", function () {
-      var domain = domainInput.value.trim().toLowerCase();
-      var mode = (document.querySelector('input[name="wiz-mode"]:checked') || {}).value;
-      var err = document.getElementById("wiz-err");
-      err.className = "err"; err.textContent = "";
-      if (!domain) { err.textContent = "Enter a domain."; return; }
-
-      var body = { csrf: csrf, domain: domain };
-      var adminLabel;
-      if (mode === "local") {
-        var local = document.getElementById("wiz-local").value.trim().toLowerCase();
-        var pw = document.getElementById("wiz-pw").value;
-        if (!local) { err.textContent = "Enter the email's username."; return; }
-        if (pw.length < 8) { err.textContent = "Password must be at least 8 characters."; return; }
-        body.admin_email = local + "@" + domain;
-        body.password = pw;
-        adminLabel = body.admin_email + " (you'll sign in with your password)";
-      } else {
-        var identity = document.getElementById("wiz-existing").value;
-        if (!identity) { err.textContent = "You have no identity outside this domain — choose an email at the domain."; return; }
-        body.admin_email = identity;
-        adminLabel = identity + " (you'll sign in with browserid)";
-      }
-
-      postJSON("/wsapi/tenant/create", body).then(function (res) {
-        if (!res.ok || !res.body.success) { err.textContent = (res.body && res.body.reason) || "could not create"; return; }
-        var out = document.getElementById("wiz-out");
-        out.classList.remove("hidden");
-        out.innerHTML =
-          '<div class="muted">Publish this TXT record on your DNS (the zone must be DNSSEC-signed):</div>' +
-          '<code>' + esc(res.body.record_name) + '</code><br><code>' + esc(res.body.record) + '</code>' +
-          '<div class="muted" style="margin-top:8px">Publishing this record makes <strong>' + esc(adminLabel) +
-          '</strong> the administrator once DNS verifies.</div>' +
-          '<div style="margin-top:12px"><button id="wiz-check">Check DNS now</button></div>' +
-          '<div class="err" id="wiz-check-err"></div>';
-        document.getElementById("wiz-check").addEventListener("click", function () {
-          var ce = document.getElementById("wiz-check-err");
-          ce.className = "err"; ce.textContent = "Checking…";
-          postJSON("/wsapi/tenant/check", { csrf: csrf, domain: domain }).then(function (r2) {
-            var b = r2.body || {};
-            if (b.dns === "validated" && b.status === "active") {
-              ce.className = "err ok"; ce.textContent = "Verified — domain is active. Opening the console…";
-              setTimeout(function () { location.href = "/domains/" + encodeURIComponent(domain); }, 900);
-            } else {
-              ce.className = "err"; ce.textContent = dnsMessage(b.dns, b.host_ok);
-            }
-          });
-        });
+  // Copy button: clipboard write + a 1.4s "Copied" flip, no re-render.
+  function wireCopyButtons(root) {
+    Array.prototype.forEach.call(root.querySelectorAll("[data-copy]"), function (btn) {
+      btn.addEventListener("click", function () {
+        try { navigator.clipboard.writeText(btn.getAttribute("data-copy")); } catch (e) {}
+        btn.textContent = "Copied";
+        setTimeout(function () { btn.textContent = "Copy"; }, 1400);
       });
     });
   }
 
-  // --- Admin console (per domain) -----------------------------------------
-  function renderConsole(domain) {
-    app.innerHTML =
-      '<p class="backlink"><a href="/domains">← All domains</a></p>' +
-      '<h1>' + esc(domain) + '</h1>' +
-      '<div id="console-err" class="err"></div>' +
-      '<h2>Users</h2>' +
-      '<div class="card"><div class="toolbar">' +
-        '<div><label for="nu-local">Username</label><input id="nu-local" placeholder="alice" autocapitalize="off" /></div>' +
-        '<div><label for="nu-pw">Initial password</label><input id="nu-pw" type="text" placeholder="min 8 chars" /></div>' +
-        '<div style="flex:0"><button id="nu-gen" class="ghost" type="button">Generate</button></div>' +
-        '<div style="flex:0"><button id="nu-add">Add user</button></div>' +
-      '</div>' +
-      '<label style="font-weight:400;margin-top:10px"><input type="checkbox" id="nu-mc" checked style="width:auto;margin-right:6px" />' +
-        'Require this user to change the password on first sign-in</label>' +
-      '<div class="err" id="nu-err"></div></div>' +
-      '<div id="roster"></div>' +
-      '<h2>Administrators</h2>' +
-      '<div id="admins" class="card"></div>' +
-      '<div class="card"><div class="toolbar">' +
-        '<div><label for="na-id">Add admin (an identity)</label><input id="na-id" placeholder="person@example.com" autocapitalize="off" /></div>' +
-        '<div style="flex:0"><button id="na-add" class="ghost">Add admin</button></div>' +
-      '</div><div class="err" id="na-err"></div></div>' +
-      '<h2>Managed-identity policy</h2>' +
-      '<div class="card" id="mgmt-card">' +
-        '<p class="muted" style="margin-top:0">Manage where identities at this domain can be used and what their agents may be granted. ' +
-        'Identities become <strong>managed</strong>: users are told the domain controls issuance and may restrict — and see — where they are used. ' +
-        '<strong>Turning this on signs everyone out once</strong> so their credentials are reissued with the managed marker.</p>' +
-        '<label style="font-weight:400"><input type="checkbox" id="mg-enabled" style="width:auto;margin-right:6px" />Enable managed identities for this domain</label>' +
-        '<label style="font-weight:400;margin-top:8px"><input type="checkbox" id="mg-peraud" style="width:auto;margin-right:6px" />Per-site credentials: each sign-in mints for one named site (you see each site as it is first used)</label>' +
-        '<label for="mg-aud">Allowed sites (one origin per line; empty = allow all)</label>' +
-        '<textarea id="mg-aud" rows="3" placeholder="https://app.example.com" style="width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font-size:14px;background:var(--bg);color:inherit;font-family:inherit"></textarea>' +
-        '<div class="toolbar">' +
-          '<div><label for="mg-scopes">Allowed agent scopes (space-separated; empty = unrestricted)</label><input id="mg-scopes" placeholder="post read" autocapitalize="off" /></div>' +
-          '<div><label for="mg-ttl">Max grant lifetime (days; empty = default)</label><input id="mg-ttl" type="number" min="1" placeholder="90" /></div>' +
-        '</div>' +
-        '<div class="toolbar" style="margin-top:12px">' +
-          '<div style="flex:0"><button id="mg-save">Save policy</button></div>' +
-          '<div style="flex:0"><button id="mg-revoke" class="danger" type="button">Sign everyone out now</button></div>' +
-        '</div>' +
-        '<div class="err" id="mg-err"></div>' +
-      '</div>' +
-      '<h2>Danger zone</h2>' +
-      '<div class="card">' +
-        '<p class="muted" style="margin-top:0">Delete this domain from browserid.me: removes the tenant, its users, and admins so you can onboard it fresh. ' +
-        'Certificates already issued stop working once you remove or replace the DNS record. This cannot be undone.</p>' +
-        '<div class="toolbar">' +
-          '<div><label for="del-confirm">Type <code>' + esc(domain) + '</code> to confirm</label>' +
-            '<input id="del-confirm" placeholder="' + esc(domain) + '" autocapitalize="off" autocorrect="off" /></div>' +
-          '<div style="flex:0"><button id="del-btn" class="danger">Delete domain</button></div>' +
-        '</div><div class="err" id="del-err"></div>' +
-      '</div>';
+  function copyBlock(text) {
+    return '<div class="coderow"><code class="codebox">' + esc(text) + '</code>' +
+      '<button class="btn-copy" data-copy="' + esc(text) + '">Copy</button></div>';
+  }
 
-    document.getElementById("nu-add").addEventListener("click", function () { addUser(domain); });
-    document.getElementById("del-btn").addEventListener("click", function () { deleteDomain(domain); });
+  // --- Boot ----------------------------------------------------------------
+  Promise.all([getJSON("/wsapi/session_context"), getJSON("/wsapi/list_emails")])
+    .then(function (res) {
+      var ctx = res[0], emails = res[1];
+      if (!ctx || !ctx.authenticated) { signedOut.hidden = false; return; }
+      csrf = ctx.csrf_token;
+      identities = (emails && emails.emails) || [];
+      app.hidden = false;
+      signoutBtn.hidden = false;
+      signoutBtn.addEventListener("click", function () {
+        postJSON("/wsapi/logout", { csrf: csrf }).then(
+          function () { location.reload(); },
+          function () { location.reload(); }
+        );
+      });
+      var domain = currentDomain();
+      if (domain) initConsole(domain); else initList();
+    })
+    .catch(function () { signedOut.hidden = false; });
+
+  // =========================================================================
+  // List view + stepped add-domain wizard
+  // =========================================================================
+
+  var list = {
+    tenants: [],
+    wiz: null, // null = closed; else { step, domain, mode, existing, pw, err, recordName, record, adminLabel }
+  };
+
+  function initList() {
+    loadTenants().then(renderList);
+  }
+
+  function loadTenants() {
+    return getJSON("/wsapi/tenant/list").then(function (j) {
+      list.tenants = (j && j.tenants) || [];
+    });
+  }
+
+  function tenantRowHtml(t) {
+    var active = t.status === "active";
+    var pending = t.status === "pending_dns";
+    var pillCls = active ? "green" : pending ? "amber" : "gray";
+    var pillText = active ? "Active" : pending ? "Waiting for DNS" : "Suspended";
+    var sub = "";
+    if (active) {
+      var n = typeof t.users === "number" ? t.users : 0;
+      sub = n + " user" + (n === 1 ? "" : "s") +
+        (t.activated_at ? " · since " + fmtMonthYear(t.activated_at) : "");
+    }
+    var html = '<div class="card"><div class="domrow">' +
+      '<span class="domname">' + esc(t.domain) + '</span>' +
+      '<span class="pill ' + pillCls + '">' + pillText + '</span>' +
+      (sub ? '<span class="meta">' + esc(sub) + '</span>' : "") +
+      (active
+        ? '<button class="ghost" data-manage="' + esc(t.domain) + '" style="margin-left:auto">Manage ›</button>'
+        : "") +
+      "</div>";
+    if (pending) {
+      html +=
+        '<div class="pendbox">' +
+          '<div class="pendhint">Publish this TXT record on your DNS, then check. The zone must be DNSSEC-signed.</div>' +
+          '<div class="codecol">' + copyBlock(t.record_name) + copyBlock(t.record) + '</div>' +
+          '<div style="display:flex;align-items:center;gap:12px;margin-top:10px">' +
+            '<button class="btn" data-check="' + esc(t.domain) + '">Check DNS</button>' +
+            '<span class="msg warn" data-status="' + esc(t.domain) + '"></span>' +
+          "</div>" +
+        "</div>";
+    }
+    return html + "</div>";
+  }
+
+  function renderList() {
+    var w = list.wiz;
+    app.innerHTML =
+      '<div class="wrap">' +
+        '<div class="h1row">' +
+          "<h1>Your domains</h1>" +
+          (list.tenants.length && !w
+            ? '<button class="btn" id="wiz-start" style="margin-left:auto">+ Add a domain</button>'
+            : "") +
+        "</div>" +
+        '<p class="intro">Run browserid.me as the identity provider for a domain you control. ' +
+          "Publish one DNS record, and every site that accepts browserid.me accepts addresses at your domain " +
+          "— nothing to host, nothing else to set up.</p>" +
+        '<div class="domlist" id="domlist">' +
+          (list.tenants.length
+            ? list.tenants.map(tenantRowHtml).join("")
+            : '<div class="card empty">' +
+                '<div style="font:500 13px system-ui;color:#6b6b74">No domains yet.</div>' +
+                (w ? "" : '<button class="btn" id="wiz-start-empty" style="margin-top:10px;padding:8px 16px">+ Add a domain</button>') +
+              "</div>") +
+        "</div>" +
+        (w ? wizardHtml() : "") +
+      "</div>";
+
+    wireCopyButtons(app);
+    var start = document.getElementById("wiz-start") || document.getElementById("wiz-start-empty");
+    if (start) start.addEventListener("click", function () {
+      list.wiz = { step: 1, domain: "", mode: "existing", existing: "", pw: "", err: "" };
+      renderList();
+    });
+    Array.prototype.forEach.call(app.querySelectorAll("[data-manage]"), function (btn) {
+      btn.addEventListener("click", function () {
+        location.href = "/domains/" + encodeURIComponent(btn.getAttribute("data-manage"));
+      });
+    });
+    Array.prototype.forEach.call(app.querySelectorAll("[data-check]"), function (btn) {
+      btn.addEventListener("click", function () { checkPendingDns(btn.getAttribute("data-check")); });
+    });
+    if (w) wireWizard();
+  }
+
+  function checkPendingDns(domain) {
+    var msg = document.querySelector('[data-status="' + CSS.escape(domain) + '"]');
+    if (msg) { msg.className = "msg warn"; msg.textContent = "Checking…"; }
+    postJSON("/wsapi/tenant/check", { csrf: csrf, domain: domain }).then(function (res) {
+      if (!msg) return;
+      var b = res.body || {};
+      if (b.dns === "validated" && b.status === "active") {
+        msg.className = "msg ok";
+        msg.textContent = "Verified — " + domain + " is active.";
+        setTimeout(function () { loadTenants().then(renderList); }, 900);
+      } else {
+        msg.className = "msg warn";
+        msg.textContent = dnsMessage(b.dns, b.host_ok);
+      }
+    });
+  }
+
+  // --- Wizard --------------------------------------------------------------
+
+  function wizardHtml() {
+    var w = list.wiz;
+    var labels = ["Domain", "Administrator", "Publish record"];
+    var steps = labels.map(function (label, i) {
+      var n = i + 1;
+      var cls = n === w.step ? "cur" : n < w.step ? "done" : "";
+      var num = n < w.step ? "✓" : String(n);
+      return '<div class="wizstep ' + cls + '"><span class="n">' + num + '</span>' +
+        '<span class="l">' + label + "</span></div>";
+    }).join("");
+    return "<h2>Add a domain</h2>" +
+      '<div class="card flush">' +
+        '<div class="wizsteps">' + steps + "</div>" +
+        '<div class="wizbody">' +
+          (w.step === 1 ? wizStep1Html() : w.step === 2 ? wizStep2Html() : wizStep3Html()) +
+        "</div>" +
+      "</div>";
+  }
+
+  function wizStep1Html() {
+    var w = list.wiz;
+    return '<label class="f" for="wiz-domain">Domain</label>' +
+      '<input class="inp big" id="wiz-domain" placeholder="example.com" value="' + esc(w.domain) + '"' +
+        ' autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+      '<div class="help" style="margin-top:8px">You\'ll need to publish one TXT record on this domain\'s DNS, ' +
+        "and the zone must be DNSSEC-signed. Nothing changes for the domain's email or website.</div>" +
+      '<div class="btnline">' +
+        '<button class="btn lg" id="wiz-continue">Continue</button>' +
+        '<button class="btn-plain" id="wiz-cancel">Cancel</button>' +
+        '<span class="err" id="wiz-err">' + esc(w.err) + "</span>" +
+      "</div>";
+  }
+
+  function wizStep2Html() {
+    var w = list.wiz;
+    var d = w.domain;
+    var ext = externalIdentities(d);
+    var existing = w.existing || ext[0] || "";
+    var isExisting = w.mode === "existing";
+    return '<div style="font:600 12px system-ui;color:#17171a;margin-bottom:8px">Who administers ' + esc(d) + "?</div>" +
+      '<div style="display:flex;flex-direction:column;gap:8px">' +
+        '<div class="optcard' + (isExisting ? " sel" : "") + '" data-mode="existing">' +
+          '<label class="head"><input type="radio" name="wiz-mode" value="existing"' + (isExisting ? " checked" : "") + ">" +
+            "An address you already have</label>" +
+          '<div class="body">' +
+            '<select class="inp" id="wiz-existing"' + (ext.length ? "" : " disabled") + ">" +
+              (ext.length
+                ? ext.map(function (e) {
+                    return '<option value="' + esc(e) + '"' + (e === existing ? " selected" : "") + ">" + esc(e) + "</option>";
+                  }).join("")
+                : "") +
+            "</select>" +
+            '<div class="help" style="margin-top:6px">' +
+              (ext.length
+                ? "You'll keep signing in with browserid as this address."
+                : "You have no browserid address outside this domain — use an address at the domain instead.") +
+            "</div>" +
+          "</div>" +
+        "</div>" +
+        '<div class="optcard' + (isExisting ? "" : " sel") + '" data-mode="local">' +
+          '<label class="head"><input type="radio" name="wiz-mode" value="local"' + (isExisting ? "" : " checked") + ">" +
+            "A new address at " + esc(d) + "</label>" +
+          '<div class="body" style="display:flex;flex-direction:column;gap:8px">' +
+            '<div class="fieldrow" style="flex-wrap:nowrap">' +
+              '<input class="inp" id="wiz-local" placeholder="you" style="flex:1;min-width:0"' +
+                ' autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+              '<span class="suffix">@' + esc(d) + "</span>" +
+            "</div>" +
+            '<div class="fieldrow" style="flex-wrap:nowrap">' +
+              '<input class="inp" id="wiz-pw" placeholder="password (min 8 characters)" value="' + esc(w.pw) + '"' +
+                ' style="flex:1;min-width:0" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+              '<button class="btn-gen" id="wiz-gen" type="button">Generate</button>' +
+            "</div>" +
+            '<div class="help">You\'ll sign in at browserid.me with this address and password.</div>' +
+          "</div>" +
+        "</div>" +
+      "</div>" +
+      '<div class="btnline">' +
+        '<button class="btn-back" id="wiz-back">← Back</button>' +
+        '<button class="btn lg" id="wiz-go">Generate DNS record</button>' +
+        '<span class="err" id="wiz-err">' + esc(w.err) + "</span>" +
+      "</div>";
+  }
+
+  function wizStep3Html() {
+    var w = list.wiz;
+    return '<div style="font:12.5px/1.6 system-ui;color:#17171a;margin-bottom:10px">' +
+        "Publish this TXT record on " + esc(w.domain) + "'s DNS. Once it verifies, <b>" + esc(w.adminLabel) +
+        "</b> becomes the administrator.</div>" +
+      '<div class="codecol">' + copyBlock(w.recordName) + copyBlock(w.record) + "</div>" +
+      '<div class="help" style="margin-top:8px">The zone must be DNSSEC-signed. DNS can take a few minutes ' +
+        "to propagate — you can leave this page; the domain stays listed above as waiting for DNS.</div>" +
+      '<div class="btnline" style="margin-top:14px">' +
+        '<button class="btn lg" id="wiz-check">Check DNS now</button>' +
+        '<button class="btn-plain" id="wiz-done">Done for now</button>' +
+        '<span class="msg warn" id="wiz-check-msg"></span>' +
+      "</div>";
+  }
+
+  function wizardSyncInputs() {
+    // Persist typed values into state before a re-render tears the DOM down.
+    var w = list.wiz;
+    var dom = document.getElementById("wiz-domain");
+    if (dom) w.domain = dom.value.trim().toLowerCase();
+    var pw = document.getElementById("wiz-pw");
+    if (pw) w.pw = pw.value;
+    var ex = document.getElementById("wiz-existing");
+    if (ex && !ex.disabled) w.existing = ex.value;
+    var local = document.getElementById("wiz-local");
+    if (local) w.local = local.value.trim().toLowerCase();
+  }
+
+  function wireWizard() {
+    var w = list.wiz;
+    var cancel = document.getElementById("wiz-cancel") || document.getElementById("wiz-done");
+    if (cancel) cancel.addEventListener("click", function () {
+      list.wiz = null;
+      loadTenants().then(renderList);
+    });
+
+    if (w.step === 1) {
+      document.getElementById("wiz-continue").addEventListener("click", function () {
+        wizardSyncInputs();
+        var d = w.domain;
+        if (!d || d.indexOf(".") < 1) { setWizErr("Enter a domain like example.com."); return; }
+        if (list.tenants.some(function (t) { return t.domain === d; })) {
+          setWizErr("That domain is already on your list."); return;
+        }
+        w.step = 2; w.err = "";
+        renderList();
+      });
+    }
+
+    if (w.step === 2) {
+      Array.prototype.forEach.call(app.querySelectorAll(".optcard"), function (card) {
+        card.addEventListener("click", function () {
+          var mode = card.getAttribute("data-mode");
+          if (w.mode === mode) return;
+          wizardSyncInputs();
+          w.mode = mode; w.err = "";
+          renderList();
+          // Restore the transient local-part input (not kept in the value attr).
+          var local = document.getElementById("wiz-local");
+          if (local && w.local) local.value = w.local;
+        });
+      });
+      var localInp = document.getElementById("wiz-local");
+      if (localInp && w.local) localInp.value = w.local;
+      document.getElementById("wiz-gen").addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        wizardSyncInputs();
+        w.pw = genPassword();
+        // Generating a password implies the new-address option.
+        w.mode = "local"; w.err = "";
+        renderList();
+        var local2 = document.getElementById("wiz-local");
+        if (local2 && w.local) local2.value = w.local;
+      });
+      document.getElementById("wiz-back").addEventListener("click", function () {
+        wizardSyncInputs();
+        w.step = 1; w.err = "";
+        renderList();
+      });
+      document.getElementById("wiz-go").addEventListener("click", function () {
+        wizardSyncInputs();
+        var d = w.domain;
+        var body = { csrf: csrf, domain: d };
+        if (w.mode === "local") {
+          if (!w.local) { setWizErr("Enter the address's username."); return; }
+          if (w.pw.length < 8) { setWizErr("Password must be at least 8 characters."); return; }
+          body.admin_email = w.local + "@" + d;
+          body.password = w.pw;
+        } else {
+          var ext = externalIdentities(d);
+          var chosen = w.existing || ext[0] || "";
+          if (!chosen) { setWizErr("Choose an address at the domain instead."); return; }
+          body.admin_email = chosen;
+        }
+        postJSON("/wsapi/tenant/create", body).then(function (res) {
+          if (!res.ok || !res.body.success) {
+            setWizErr((res.body && res.body.reason) || "could not create");
+            return;
+          }
+          w.step = 3; w.err = "";
+          w.adminLabel = body.admin_email;
+          w.recordName = res.body.record_name;
+          w.record = res.body.record;
+          loadTenants().then(renderList);
+        });
+      });
+    }
+
+    if (w.step === 3) {
+      document.getElementById("wiz-check").addEventListener("click", function () {
+        var msg = document.getElementById("wiz-check-msg");
+        msg.className = "msg warn"; msg.textContent = "Checking…";
+        postJSON("/wsapi/tenant/check", { csrf: csrf, domain: w.domain }).then(function (res) {
+          var b = res.body || {};
+          if (b.dns === "validated" && b.status === "active") {
+            msg.className = "msg ok";
+            msg.textContent = "Verified — " + w.domain + " is active. Opening the console…";
+            setTimeout(function () {
+              location.href = "/domains/" + encodeURIComponent(w.domain);
+            }, 900);
+          } else {
+            msg.className = "msg warn";
+            msg.textContent = dnsMessage(b.dns, b.host_ok);
+          }
+        });
+      });
+    }
+  }
+
+  function setWizErr(text) {
+    list.wiz.err = text;
+    var el = document.getElementById("wiz-err");
+    if (el) el.textContent = text;
+  }
+
+  // =========================================================================
+  // Admin console (per domain)
+  // =========================================================================
+
+  var con = {
+    domain: null,
+    tab: "users",
+    roster: [],
+    admins: [],
+    loadErr: "",
+    // users tab
+    nuPw: "", nuMc: true, nuErr: "",
+    resettingLocal: null, resetPw: "",
+    // admins tab
+    naErr: "", adminErr: "",
+    // policy tab
+    mg: { enabled: false, per_audience: false, audiences: [], scopes: [], deviceDays: "", accessHours: "" },
+    mgSavedEnabled: false, mgConfirm: false, mgMsg: "", mgMsgOk: false,
+    // settings tab
+    revokeConfirm: false, revokeMsg: "", revokeOk: false, delErr: "",
+  };
+
+  function initConsole(domain) {
+    con.domain = domain;
+    Promise.all([loadRoster(), loadManagement()]).then(renderConsole);
+  }
+
+  function loadRoster() {
+    var q = "?domain=" + encodeURIComponent(con.domain) + "&csrf=" + encodeURIComponent(csrf);
+    return getJSON("/wsapi/tenant/roster" + q).then(function (j) {
+      if (!j || !j.success) {
+        con.loadErr = (j && j.reason) || "You are not an administrator of this domain.";
+        return;
+      }
+      con.loadErr = "";
+      con.roster = j.roster || [];
+      con.admins = j.admins || [];
+    });
+  }
+
+  function loadManagement() {
+    var q = "?domain=" + encodeURIComponent(con.domain) + "&csrf=" + encodeURIComponent(csrf);
+    return getJSON("/wsapi/tenant/management" + q).then(function (j) {
+      if (!j || !j.success) return; // loadErr already covers not-admin
+      var m = j.management || {};
+      var access = m.access_cert_ttl != null ? m.access_cert_ttl : m.max_ttl;
+      con.mg = {
+        enabled: !!m.enabled,
+        per_audience: !!m.per_audience,
+        audiences: m.audiences || [],
+        scopes: m.scopes || [],
+        deviceDays: m.device_cert_ttl ? String(Math.round(m.device_cert_ttl / 86400)) : "",
+        accessHours: access ? String(Math.round(access / 3600)) : "",
+      };
+      con.mgSavedEnabled = !!m.enabled;
+    });
+  }
+
+  function renderConsole() {
+    var tabs = [
+      { id: "users", label: "Users" },
+      { id: "admins", label: "Administrators" },
+      { id: "policy", label: "Managed identities" },
+      { id: "settings", label: "Settings" },
+    ];
+    app.innerHTML =
+      '<div class="wrap console">' +
+        '<button class="backlink" id="back-to-list">← All domains</button>' +
+        '<div class="h1row" style="flex-wrap:wrap;gap:10px">' +
+          '<h1 class="mono">' + esc(con.domain) + "</h1>" +
+          '<span class="pill green">Active</span>' +
+        "</div>" +
+        '<div class="consolesub">Hosted identity provider · browserid.me answers for addresses at this domain</div>' +
+        (con.loadErr
+          ? '<div class="err">' + esc(con.loadErr) + "</div>"
+          : '<div class="tabs">' +
+              tabs.map(function (t) {
+                return '<button class="tab' + (t.id === con.tab ? " active" : "") + '" data-tab="' + t.id + '">' +
+                  t.label + "</button>";
+              }).join("") +
+            "</div>" +
+            '<div id="tabbody">' + tabBodyHtml() + "</div>") +
+      "</div>";
+
+    document.getElementById("back-to-list").addEventListener("click", function () {
+      location.href = "/domains";
+    });
+    Array.prototype.forEach.call(app.querySelectorAll(".tab"), function (btn) {
+      btn.addEventListener("click", function () {
+        con.tab = btn.getAttribute("data-tab");
+        con.mgConfirm = false; con.mgMsg = "";
+        con.revokeConfirm = false; con.revokeMsg = "";
+        con.delErr = ""; con.nuErr = ""; con.naErr = ""; con.adminErr = "";
+        con.resettingLocal = null;
+        renderConsole();
+      });
+    });
+    if (!con.loadErr) wireTab();
+  }
+
+  function tabBodyHtml() {
+    switch (con.tab) {
+      case "users": return usersTabHtml();
+      case "admins": return adminsTabHtml();
+      case "policy": return policyTabHtml();
+      case "settings": return settingsTabHtml();
+    }
+    return "";
+  }
+
+  // --- Users tab -----------------------------------------------------------
+
+  function usersTabHtml() {
+    var rows = con.roster.map(function (r, i) {
+      var disabled = r.state === "disabled";
+      var resetting = con.resettingLocal === r.local_part;
+      return '<div class="rwrap">' +
+        '<div class="rgrid">' +
+          '<span class="remail' + (disabled ? " off" : "") + '" title="' + esc(r.email) + '">' + esc(r.email) + "</span>" +
+          "<span>" +
+            '<span class="pill ' + (disabled ? "gray" : "green") + '">' + (disabled ? "disabled" : "active") + "</span>" +
+            (r.must_change_password ? '<span class="rmust">must change pw</span>' : "") +
+          "</span>" +
+          '<span class="meta">' + esc(r.last_login_at ? fmtDay(r.last_login_at) : "never") + "</span>" +
+          '<span class="ractions">' +
+            '<button class="btn-row" data-reset="' + esc(r.local_part) + '">Reset password</button>' +
+            (disabled
+              ? '<button class="btn-row" data-toggle="' + esc(r.local_part) + '" data-to="active">Enable</button>'
+              : '<button class="btn-rowdanger" data-toggle="' + esc(r.local_part) + '" data-to="disabled">Disable</button>') +
+          "</span>" +
+        "</div>" +
+        (resetting
+          ? '<div class="resetrow">' +
+              '<span style="font:12px system-ui;color:#17171a">New password:</span>' +
+              '<code class="npw">' + esc(con.resetPw) + "</code>" +
+              '<span class="help">They\'ll be asked to change it at next sign-in.</span>' +
+              '<span class="tail">' +
+                '<button class="btn-sm" id="reset-go">Set password</button>' +
+                '<button class="btn-sm-plain" id="reset-cancel">Cancel</button>' +
+              "</span>" +
+            "</div>"
+          : "") +
+        "</div>";
+    }).join("");
+    return '<div class="card" style="margin-bottom:14px">' +
+        '<div class="cardtitle">Add a user</div>' +
+        '<div class="fieldrow">' +
+          '<input class="inp" id="nu-local" placeholder="alice" style="flex:1;min-width:120px"' +
+            ' autocapitalize="off" spellcheck="false" />' +
+          '<span class="suffix">@' + esc(con.domain) + "</span>" +
+          '<input class="inp" id="nu-pw" placeholder="initial password" value="' + esc(con.nuPw) + '"' +
+            ' style="flex:1;min-width:140px" autocapitalize="off" spellcheck="false" />' +
+          '<button class="btn-gen" id="nu-gen" type="button">Generate</button>' +
+          '<button class="btn" id="nu-add">Add user</button>' +
+        "</div>" +
+        '<label style="display:flex;align-items:center;gap:7px;font:12px system-ui;color:#6b6b74;margin-top:10px;cursor:pointer">' +
+          '<input type="checkbox" id="nu-mc"' + (con.nuMc ? " checked" : "") + ' style="margin:0">' +
+          "Ask them to change the password at first sign-in</label>" +
+        '<div class="err" id="nu-err" style="margin-top:6px;min-height:14px">' + esc(con.nuErr) + "</div>" +
+      "</div>" +
+      '<div class="card flush">' +
+        '<div class="rgrid head"><span>User</span><span>Status</span><span>Last sign-in</span><span></span></div>' +
+        (rows || '<div style="padding:14px 16px;font:12.5px system-ui;color:#8a8a93">No users yet.</div>') +
+      "</div>";
+  }
+
+  function wireUsersTab() {
     document.getElementById("nu-gen").addEventListener("click", function () {
       document.getElementById("nu-pw").value = genPassword();
     });
-    document.getElementById("na-add").addEventListener("click", function () { addAdmin(domain); });
-    document.getElementById("mg-save").addEventListener("click", function () { saveManagement(domain, false); });
-    document.getElementById("mg-revoke").addEventListener("click", function () { saveManagement(domain, true); });
-    loadRoster(domain);
-    loadManagement(domain);
-  }
-
-  function loadManagement(domain) {
-    var q = "?domain=" + encodeURIComponent(domain) + "&csrf=" + encodeURIComponent(csrf);
-    getJSON("/wsapi/tenant/management" + q).then(function (j) {
-      if (!j || !j.success) return; // console-err already covers not-admin
-      var m = j.management || {};
-      document.getElementById("mg-enabled").checked = !!m.enabled;
-      document.getElementById("mg-peraud").checked = !!m.per_audience;
-      document.getElementById("mg-aud").value = (m.audiences || []).join("\n");
-      document.getElementById("mg-scopes").value = (m.scopes || []).join(" ");
-      document.getElementById("mg-ttl").value = m.max_ttl ? Math.round(m.max_ttl / 86400) : "";
+    document.getElementById("nu-add").addEventListener("click", function () {
+      var local = document.getElementById("nu-local").value.trim().toLowerCase();
+      var pw = document.getElementById("nu-pw").value;
+      var mustChange = document.getElementById("nu-mc").checked;
+      con.nuMc = mustChange; con.nuPw = pw;
+      if (!local) { setErr("nu-err", "Enter a username."); return; }
+      if (pw.length < 8) { setErr("nu-err", "Password must be at least 8 characters."); return; }
+      postJSON("/wsapi/tenant/roster", {
+        csrf: csrf, domain: con.domain, local_part: local, password: pw,
+        require_password_change: mustChange,
+      }).then(function (res) {
+        if (!res.ok || !res.body.success) {
+          setErr("nu-err", (res.body && res.body.reason) || "could not add");
+          return;
+        }
+        con.nuPw = ""; con.nuErr = "";
+        loadRoster().then(renderConsole);
+      });
+    });
+    Array.prototype.forEach.call(app.querySelectorAll("[data-toggle]"), function (btn) {
+      btn.addEventListener("click", function () {
+        postJSON("/wsapi/tenant/roster/state", {
+          csrf: csrf, domain: con.domain,
+          local_part: btn.getAttribute("data-toggle"),
+          state: btn.getAttribute("data-to"),
+        }).then(function () { loadRoster().then(renderConsole); });
+      });
+    });
+    // Reset password: inline expanding row with a pre-generated password —
+    // never prompt().
+    Array.prototype.forEach.call(app.querySelectorAll("[data-reset]"), function (btn) {
+      btn.addEventListener("click", function () {
+        var local = btn.getAttribute("data-reset");
+        if (con.resettingLocal === local) { con.resettingLocal = null; }
+        else { con.resettingLocal = local; con.resetPw = genPassword(); }
+        renderConsole();
+      });
+    });
+    var resetGo = document.getElementById("reset-go");
+    if (resetGo) resetGo.addEventListener("click", function () {
+      postJSON("/wsapi/tenant/roster/password", {
+        csrf: csrf, domain: con.domain, local_part: con.resettingLocal, password: con.resetPw,
+      }).then(function (res) {
+        if (!res.ok || !res.body.success) {
+          setErr("nu-err", "Password reset failed: " + ((res.body && res.body.reason) || "unknown error"));
+          return;
+        }
+        con.resettingLocal = null;
+        loadRoster().then(renderConsole);
+      });
+    });
+    var resetCancel = document.getElementById("reset-cancel");
+    if (resetCancel) resetCancel.addEventListener("click", function () {
+      con.resettingLocal = null;
+      renderConsole();
     });
   }
 
-  function saveManagement(domain, revokeNow) {
-    var err = document.getElementById("mg-err");
-    var btn = document.getElementById(revokeNow ? "mg-revoke" : "mg-save");
-    err.className = "err"; err.textContent = "";
-    var enabled = document.getElementById("mg-enabled").checked;
-    // In-content confirm — NEVER window.confirm(): browsers suppress it when
-    // the tab isn't frontmost, silently swallowing the click.
-    var needsConfirm = revokeNow || enabled;
-    if (needsConfirm && btn.dataset.confirm !== "1") {
-      btn.dataset.confirm = "1";
-      btn.textContent = revokeNow ? "Confirm — revoke all credentials" : "Confirm — signs everyone out once";
-      err.textContent = revokeNow
-        ? "Revokes every outstanding credential for this domain NOW (and saves the policy as shown): every user and agent is signed out and must sign in again. Click again to confirm."
-        : "Saving with management newly enabled revokes outstanding credentials: " +
-          "every user signs in again and comes back with a managed identity. Click again to confirm.";
-      return;
-    }
-    btn.dataset.confirm = "";
-    btn.textContent = revokeNow ? "Sign everyone out now" : "Save policy";
-    var scopesRaw = document.getElementById("mg-scopes").value.trim();
-    var ttlDays = parseInt(document.getElementById("mg-ttl").value, 10);
-    postJSON("/wsapi/tenant/management", {
-      csrf: csrf,
-      domain: domain,
-      enabled: enabled,
-      per_audience: document.getElementById("mg-peraud").checked,
-      audiences: document.getElementById("mg-aud").value.split("\n").map(function (s) { return s.trim(); }).filter(Boolean),
-      scopes: scopesRaw ? scopesRaw.split(/\s+/) : null,
-      max_ttl: isNaN(ttlDays) ? null : ttlDays * 86400,
-      revoke_now: !!revokeNow,
-    }).then(function (res) {
-      if (!res.ok || !res.body.success) { err.textContent = (res.body && res.body.reason) || "could not save"; return; }
-      err.className = "err ok";
-      err.textContent = "Saved." + (res.body.revoked ? " Revoked " + res.body.revoked + " credential(s) — everyone signs in again." : "");
-    });
+  // --- Administrators tab --------------------------------------------------
+
+  function isYou(email) {
+    return identities.some(function (e) { return e.toLowerCase() === email.toLowerCase(); });
   }
 
-  function loadRoster(domain) {
-    var q = "?domain=" + encodeURIComponent(domain) + "&csrf=" + encodeURIComponent(csrf);
-    getJSON("/wsapi/tenant/roster" + q).then(function (j) {
-      if (!j || !j.success) {
-        document.getElementById("console-err").textContent =
-          (j && j.reason) || "You are not an administrator of this domain.";
+  function adminsTabHtml() {
+    var rows = con.admins.map(function (a) {
+      var you = isYou(a);
+      var removable = !you && con.admins.length > 1;
+      return '<div class="adminrow">' +
+        '<span class="em">' + esc(a) + "</span>" +
+        (you ? '<span class="pill you">you</span>' : "") +
+        (removable
+          ? '<button class="btn-rowdanger right" data-remove="' + esc(a) + '" style="padding:5px 10px">Remove</button>'
+          : "") +
+        "</div>";
+    }).join("");
+    return '<p style="margin:0 0 14px;font:12.5px/1.6 system-ui;color:#6b6b74;max-width:540px">' +
+        "Administrators have full control of " + esc(con.domain) + " on browserid.me — users, policy, and deletion. " +
+        "They sign in with their own browserid account.</p>" +
+      '<div class="card flush" style="margin-bottom:14px">' + rows + "</div>" +
+      (con.adminErr ? '<div class="err" style="margin:-6px 0 14px">' + esc(con.adminErr) + "</div>" : "") +
+      '<div class="card">' +
+        '<div class="cardtitle">Add an administrator</div>' +
+        '<div class="fieldrow">' +
+          '<input class="inp" id="na-id" placeholder="person@example.com" style="flex:1;min-width:200px"' +
+            ' autocapitalize="off" spellcheck="false" />' +
+          '<button class="btn" id="na-add">Add admin</button>' +
+        "</div>" +
+        '<div class="help" style="margin-top:8px">Any browserid identity works — it doesn\'t have to be at ' +
+          esc(con.domain) + ".</div>" +
+        '<div class="err" id="na-err" style="margin-top:4px;min-height:14px">' + esc(con.naErr) + "</div>" +
+      "</div>";
+  }
+
+  function wireAdminsTab() {
+    document.getElementById("na-add").addEventListener("click", function () {
+      var id = document.getElementById("na-id").value.trim().toLowerCase();
+      if (!id || id.indexOf("@") < 1) {
+        setErr("na-err", "Enter a full address, like person@example.com.");
         return;
       }
-      var el = document.getElementById("roster");
-      var rows = (j.roster || []).map(function (r) {
-        var disabled = r.state === "disabled";
-        return '<tr>' +
-          '<td><code>' + esc(r.email) + '</code></td>' +
-          '<td>' + (disabled ? '<span class="pill">disabled</span>' : '<span class="pill active">active</span>') +
-            (r.must_change_password ? ' <span class="muted">(must change pw)</span>' : '') + '</td>' +
-          '<td class="muted">' + (r.last_login_at ? esc(r.last_login_at.slice(0, 10)) : "never") + '</td>' +
-          '<td style="text-align:right">' +
-            '<button class="ghost" data-reset="' + esc(r.local_part) + '">Reset pw</button> ' +
-            '<button class="' + (disabled ? "ghost" : "danger") + '" data-toggle="' + esc(r.local_part) +
-              '" data-to="' + (disabled ? "active" : "disabled") + '">' + (disabled ? "Enable" : "Disable") + '</button>' +
-          '</td></tr>';
-      }).join("");
-      el.innerHTML = '<table><thead><tr><th>User</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody>' +
-        (rows || '<tr><td colspan="4" class="muted">No users yet.</td></tr>') + '</tbody></table>';
-      Array.prototype.forEach.call(el.querySelectorAll("[data-toggle]"), function (btn) {
-        btn.addEventListener("click", function () {
-          postJSON("/wsapi/tenant/roster/state", { csrf: csrf, domain: domain, local_part: btn.getAttribute("data-toggle"), state: btn.getAttribute("data-to") })
-            .then(function () { loadRoster(domain); });
+      if (con.admins.some(function (a) { return a.toLowerCase() === id; })) {
+        setErr("na-err", "Already an administrator.");
+        return;
+      }
+      postJSON("/wsapi/tenant/admins", { csrf: csrf, domain: con.domain, identity: id }).then(function (res) {
+        if (!res.ok || !res.body.success) {
+          setErr("na-err", (res.body && res.body.reason) || "could not add");
+          return;
+        }
+        con.naErr = "";
+        loadRoster().then(renderConsole);
+      });
+    });
+    Array.prototype.forEach.call(app.querySelectorAll("[data-remove]"), function (btn) {
+      btn.addEventListener("click", function () {
+        postJSON("/wsapi/tenant/admins/remove", {
+          csrf: csrf, domain: con.domain, identity: btn.getAttribute("data-remove"),
+        }).then(function (res) {
+          if (!res.ok || !res.body.success) {
+            con.adminErr = (res.body && res.body.reason) || "could not remove";
+            renderConsole();
+            return;
+          }
+          con.adminErr = "";
+          loadRoster().then(renderConsole);
         });
       });
-      Array.prototype.forEach.call(el.querySelectorAll("[data-reset]"), function (btn) {
-        btn.addEventListener("click", function () {
-          var pw = prompt("New password for " + btn.getAttribute("data-reset") + "@" + domain + " (min 8 chars). They will be asked to change it on next sign-in.");
-          if (!pw) return;
-          postJSON("/wsapi/tenant/roster/password", { csrf: csrf, domain: domain, local_part: btn.getAttribute("data-reset"), password: pw })
-            .then(function (res) {
-              if (!res.ok || !res.body.success) {
-                document.getElementById("console-err").textContent =
-                  "Password reset failed: " + ((res.body && res.body.reason) || "unknown error");
-              } else { loadRoster(domain); }
-            });
-        });
+    });
+  }
+
+  // --- Managed identities tab ----------------------------------------------
+
+  function policyTabHtml() {
+    var m = con.mg;
+    var detail = !m.enabled ? "" :
+      '<div class="divide">' +
+        '<label class="checkline">' +
+          '<input type="checkbox" id="mg-peraud"' + (m.per_audience ? " checked" : "") + ">" +
+          "<span>" +
+            '<span class="cs">Per-site credentials</span>' +
+            '<span class="cd sm">Each sign-in mints for one named site — you see each site as it\'s first used.</span>' +
+          "</span>" +
+        "</label>" +
+        "<div>" +
+          '<label class="f" for="mg-aud">Allowed sites <span class="opt">— one origin per line; empty allows all</span></label>' +
+          '<textarea class="inp" id="mg-aud" rows="3" placeholder="https://app.example.com">' +
+            esc(m.audiences.join("\n")) + "</textarea>" +
+        "</div>" +
+        "<div>" +
+          '<label class="f" for="mg-scopes">Allowed agent scopes <span class="opt">— empty = unrestricted</span></label>' +
+          '<input class="inp" id="mg-scopes" placeholder="post read" value="' + esc(m.scopes.join(" ")) + '"' +
+            ' style="width:100%" autocapitalize="off" spellcheck="false" />' +
+        "</div>" +
+        "<div>" +
+          '<div style="font:600 12px system-ui;color:#17171a;margin-bottom:2px">Certificate lifetimes</div>' +
+          '<div class="help" style="margin-bottom:8px">How long a signed-in device stays signed in, and how long ' +
+            "each site credential lasts before it's silently reissued.</div>" +
+          '<div class="ttls">' +
+            "<div>" +
+              '<label for="mg-devttl">Device certificate <span class="u">— days</span></label>' +
+              '<input class="inp num" id="mg-devttl" type="number" min="1" placeholder="90" value="' + esc(m.deviceDays) + '" />' +
+            "</div>" +
+            "<div>" +
+              '<label for="mg-accttl">Access certificate <span class="u">— hours</span></label>' +
+              '<input class="inp num" id="mg-accttl" type="number" min="1" placeholder="24" value="' + esc(m.accessHours) + '" />' +
+            "</div>" +
+          "</div>" +
+        "</div>" +
+      "</div>";
+    return '<div class="card" style="margin-bottom:14px">' +
+        '<label class="checkline">' +
+          '<input type="checkbox" id="mg-enabled"' + (m.enabled ? " checked" : "") + ">" +
+          "<span>" +
+            '<span class="ct">Managed identities</span>' +
+            '<span class="cd">Control where addresses at ' + esc(con.domain) + " can be used and what their agents " +
+              "may be granted. Users are told the domain manages issuance and may restrict — and see — where they are used.</span>" +
+          "</span>" +
+        "</label>" +
+        detail +
+        '<div class="btnline">' +
+          '<button class="btn lg" id="mg-save">' +
+            (con.mgConfirm ? "Confirm — signs everyone out once" : "Save policy") + "</button>" +
+          '<span class="msg ' + (con.mgMsgOk ? "ok" : "warn") + '" id="mg-msg">' + esc(con.mgMsg) + "</span>" +
+        "</div>" +
+      "</div>";
+  }
+
+  function policySyncInputs() {
+    var m = con.mg;
+    var el;
+    if ((el = document.getElementById("mg-enabled"))) m.enabled = el.checked;
+    if ((el = document.getElementById("mg-peraud"))) m.per_audience = el.checked;
+    if ((el = document.getElementById("mg-aud"))) {
+      m.audiences = el.value.split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
+    }
+    if ((el = document.getElementById("mg-scopes"))) {
+      var raw = el.value.trim();
+      m.scopes = raw ? raw.split(/\s+/) : [];
+    }
+    if ((el = document.getElementById("mg-devttl"))) m.deviceDays = el.value;
+    if ((el = document.getElementById("mg-accttl"))) m.accessHours = el.value;
+  }
+
+  function wirePolicyTab() {
+    document.getElementById("mg-enabled").addEventListener("change", function () {
+      policySyncInputs();
+      con.mgConfirm = false; con.mgMsg = "";
+      renderConsole();
+    });
+    document.getElementById("mg-save").addEventListener("click", function () {
+      policySyncInputs();
+      var m = con.mg;
+      // Two-click in-content confirm when ENABLING: the save revokes every
+      // outstanding credential so certs come back with the managed marker.
+      if (m.enabled && !con.mgSavedEnabled && !con.mgConfirm) {
+        con.mgConfirm = true;
+        con.mgMsgOk = false;
+        con.mgMsg = "Enabling management reissues credentials: everyone at " + con.domain +
+          " signs in again and comes back managed. Click again to confirm.";
+        renderConsole();
+        return;
+      }
+      con.mgConfirm = false;
+      var deviceDays = parseInt(m.deviceDays, 10);
+      var accessHours = parseInt(m.accessHours, 10);
+      postJSON("/wsapi/tenant/management", {
+        csrf: csrf,
+        domain: con.domain,
+        enabled: m.enabled,
+        per_audience: m.per_audience,
+        audiences: m.audiences,
+        scopes: m.scopes.length ? m.scopes : null,
+        device_cert_ttl: isNaN(deviceDays) ? null : deviceDays * 86400,
+        access_cert_ttl: isNaN(accessHours) ? null : accessHours * 3600,
+      }).then(function (res) {
+        if (!res.ok || !res.body.success) {
+          con.mgMsgOk = false;
+          con.mgMsg = (res.body && res.body.reason) || "could not save";
+          renderConsole();
+          return;
+        }
+        con.mgSavedEnabled = m.enabled;
+        con.mgMsgOk = true;
+        con.mgMsg = m.enabled ? "Saved. Everyone signs in again with a managed identity." : "Saved.";
+        renderConsole();
       });
-      var admins = document.getElementById("admins");
-      admins.innerHTML = (j.admins || []).map(function (a) { return '<div>' + esc(a) + '</div>'; }).join("") || '<span class="muted">None</span>';
     });
   }
 
-  function addUser(domain) {
-    var local = document.getElementById("nu-local").value.trim().toLowerCase();
-    var pw = document.getElementById("nu-pw").value;
-    var mustChange = document.getElementById("nu-mc").checked;
-    var err = document.getElementById("nu-err");
-    err.className = "err"; err.textContent = "";
-    postJSON("/wsapi/tenant/roster", { csrf: csrf, domain: domain, local_part: local, password: pw, require_password_change: mustChange }).then(function (res) {
-      if (!res.ok || !res.body.success) { err.textContent = (res.body && res.body.reason) || "could not add"; return; }
-      document.getElementById("nu-local").value = ""; document.getElementById("nu-pw").value = "";
-      loadRoster(domain);
+  // --- Settings tab --------------------------------------------------------
+
+  function settingsTabHtml() {
+    return '<div class="card" style="margin-bottom:14px">' +
+        '<div class="cardtitle" style="margin-bottom:0">Sign everyone out</div>' +
+        '<p class="settext">Revokes every outstanding credential for ' + esc(con.domain) +
+          " right now. Every user and agent is signed out and must sign in again. " +
+          "Works whether or not managed identities are on.</p>" +
+        '<div class="fieldrow" style="gap:12px">' +
+          '<button class="btn-danger" id="revoke-all">' +
+            (con.revokeConfirm ? "Confirm — revoke all credentials" : "Sign everyone out now") + "</button>" +
+          '<span class="msg ' + (con.revokeOk ? "ok" : "warn") + '">' + esc(con.revokeMsg) + "</span>" +
+        "</div>" +
+      "</div>" +
+      '<div class="card dangerzone">' +
+        '<div class="cardtitle red">Delete this domain</div>' +
+        '<p class="settext">Removes ' + esc(con.domain) + ", its users and its administrators from browserid.me, " +
+          "so it can be onboarded fresh. Credentials already issued stop working once you remove or replace " +
+          "the DNS record. This cannot be undone.</p>" +
+        '<div class="fieldrow">' +
+          '<input class="inp" id="del-confirm" placeholder="type ' + esc(con.domain) + ' to confirm"' +
+            ' style="flex:1;min-width:220px" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+          '<button class="btn-danger" id="del-btn">Delete domain</button>' +
+        "</div>" +
+        '<div class="err" id="del-err" style="margin-top:6px;min-height:14px">' + esc(con.delErr) + "</div>" +
+      "</div>";
+  }
+
+  function wireSettingsTab() {
+    document.getElementById("revoke-all").addEventListener("click", function () {
+      if (!con.revokeConfirm) {
+        con.revokeConfirm = true;
+        con.revokeOk = false;
+        con.revokeMsg = "Every user and agent at " + con.domain +
+          " is signed out immediately. Click again to confirm.";
+        renderConsole();
+        return;
+      }
+      con.revokeConfirm = false;
+      postJSON("/wsapi/tenant/revoke_all", { csrf: csrf, domain: con.domain }).then(function (res) {
+        if (!res.ok || !res.body.success) {
+          con.revokeOk = false;
+          con.revokeMsg = (res.body && res.body.reason) || "could not revoke";
+        } else {
+          var n = res.body.revoked || 0;
+          con.revokeOk = true;
+          con.revokeMsg = "Revoked " + n + " credential" + (n === 1 ? "" : "s") + " — everyone signs in again.";
+        }
+        renderConsole();
+      });
+    });
+    document.getElementById("del-btn").addEventListener("click", function () {
+      var typed = document.getElementById("del-confirm").value.trim().toLowerCase();
+      if (typed !== con.domain) {
+        setErr("del-err", "Type the domain exactly to confirm.");
+        return;
+      }
+      postJSON("/wsapi/tenant/delete", { csrf: csrf, domain: con.domain, confirm: typed }).then(function (res) {
+        if (!res.ok || !res.body.success) {
+          setErr("del-err", (res.body && res.body.reason) || "could not delete");
+          return;
+        }
+        var el = document.getElementById("del-err");
+        if (el) { el.className = "err ok"; el.textContent = "Deleted. Returning to your domains…"; }
+        setTimeout(function () { location.href = "/domains"; }, 800);
+      });
     });
   }
 
-  function deleteDomain(domain) {
-    var confirm = document.getElementById("del-confirm").value.trim().toLowerCase();
-    var err = document.getElementById("del-err");
-    err.className = "err"; err.textContent = "";
-    if (confirm !== domain) { err.textContent = "Type the domain exactly to confirm."; return; }
-    postJSON("/wsapi/tenant/delete", { csrf: csrf, domain: domain, confirm: confirm }).then(function (res) {
-      if (!res.ok || !res.body.success) { err.textContent = (res.body && res.body.reason) || "could not delete"; return; }
-      err.className = "err ok"; err.textContent = "Deleted. Returning to your domains…";
-      setTimeout(function () { location.href = "/domains"; }, 800);
-    });
+  function wireTab() {
+    switch (con.tab) {
+      case "users": wireUsersTab(); break;
+      case "admins": wireAdminsTab(); break;
+      case "policy": wirePolicyTab(); break;
+      case "settings": wireSettingsTab(); break;
+    }
   }
 
-  function addAdmin(domain) {
-    var id = document.getElementById("na-id").value.trim().toLowerCase();
-    var err = document.getElementById("na-err");
-    err.className = "err"; err.textContent = "";
-    postJSON("/wsapi/tenant/admins", { csrf: csrf, domain: domain, identity: id }).then(function (res) {
-      if (!res.ok || !res.body.success) { err.textContent = (res.body && res.body.reason) || "could not add"; return; }
-      document.getElementById("na-id").value = "";
-      loadRoster(domain);
-    });
+  function setErr(id, text) {
+    var el = document.getElementById(id);
+    if (el) { el.className = "err"; el.textContent = text; }
   }
 })();

@@ -192,6 +192,8 @@ where
         .route("/wsapi/tenant/roster/state", post(hosted_idp::roster_state))
         .route("/wsapi/tenant/roster/password", post(hosted_idp::roster_password))
         .route("/wsapi/tenant/admins", post(hosted_idp::tenant_admin_add))
+        .route("/wsapi/tenant/admins/remove", post(hosted_idp::tenant_admin_remove))
+        .route("/wsapi/tenant/revoke_all", post(hosted_idp::tenant_revoke_all))
         .route("/wsapi/tenant/delete", post(hosted_idp::tenant_delete))
         .route(
             "/wsapi/tenant/management",
@@ -295,7 +297,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-pvi535HAc2wbfP7Jq7zNJS6foEnr3zzyfjRwhUdXmkM='", // account.html
+    "'sha256-f2+Jfj05KGetVDE/2h1vliDQ+usQGxLOfVvSEgXAytE='", // account.html
     "'sha256-XRWE73ZH1qCk6vmO+hv85g2743sS42s8Y64PjFX8z98='", // authorize.html
     "'sha256-KcSFrbxTD/FQlLnEbwRfQuYxTudagOb8OQNj5vSg5T8='", // consent.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)

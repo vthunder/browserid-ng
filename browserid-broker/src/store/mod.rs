@@ -342,6 +342,11 @@ pub trait UserStore: Send + Sync {
     /// Add an admin identity to a tenant (idempotent).
     fn add_tenant_admin(&self, domain: &str, identity: &str, added_by: &str) -> StoreResult<()>;
 
+    /// Remove an admin identity from a tenant. Ok(false) if it wasn't one.
+    /// Policy (self-removal, last-admin floor) is the ROUTE's job — the store
+    /// just forgets the row.
+    fn remove_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool>;
+
     /// List a tenant's admin identities.
     fn list_tenant_admins(&self, domain: &str) -> StoreResult<Vec<String>>;
 

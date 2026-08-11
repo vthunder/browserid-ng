@@ -375,9 +375,19 @@ pub struct ManagementPolicy {
     /// Allowed warrant scopes. None = unrestricted.
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
-    /// Max warrant TTL in seconds. None = unrestricted.
+    /// Max warrant TTL in seconds. None = unrestricted. Legacy single knob:
+    /// when `access_cert_ttl` is absent it also bounds the access-cert
+    /// validity (backward compat for policies saved before the split).
     #[serde(default)]
     pub max_ttl: Option<i64>,
+    /// Device-cert validity in seconds — how long a signed-in device stays
+    /// signed in. None = the default (90 days).
+    #[serde(default)]
+    pub device_cert_ttl: Option<i64>,
+    /// Access-cert validity in seconds — how long each site credential lasts
+    /// before it's silently reissued. None = `max_ttl`, else the default (24h).
+    #[serde(default)]
+    pub access_cert_ttl: Option<i64>,
     /// base64url salt for audience hashing; generated when the policy is first
     /// saved.
     #[serde(default)]

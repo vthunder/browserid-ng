@@ -39,12 +39,24 @@ pub struct ListEmailsResponse {
     /// identities with a name actually set appear; absence = the local-part
     /// fallback applies. Own-account only, like everything here.
     pub public_names: Vec<PublicNameEntry>,
+    /// The subset of `emails` whose domain is an ACTIVE hosted tenant with
+    /// managed identities enabled, each with its managing domain — the
+    /// account page's "managed" indicators. Absence = unmanaged.
+    pub managed: Vec<ManagedAddress>,
 }
 
 #[derive(Serialize)]
 pub struct PublicNameEntry {
     pub email: String,
     pub public_name: String,
+}
+
+#[derive(Serialize)]
+pub struct ManagedAddress {
+    /// An account email whose domain runs managed identities here.
+    pub email: String,
+    /// The managing domain — it can see and limit where the address is used.
+    pub domain: String,
 }
 
 /// GET /wsapi/list_emails
@@ -88,12 +100,43 @@ where
         })
         .collect();
 
+    // Managed indicator: an address is managed when its domain is an active
+    // hosted tenant with managed identities enabled. One store lookup per
+    // distinct domain.
+    let mut managed_domains: std::collections::HashMap<String, bool> =
+        std::collections::HashMap::new();
+    let mut managed = Vec::new();
+    for e in &emails {
+        let Some((_, domain)) = e.email.rsplit_once('@') else {
+            continue;
+        };
+        let domain = domain.to_lowercase();
+        let is_managed = match managed_domains.get(&domain) {
+            Some(v) => *v,
+            None => {
+                let v = state
+                    .user_store
+                    .get_tenant(&domain)?
+                    .is_some_and(|t| {
+                        t.status == crate::store::TenantStatus::Active
+                            && t.management.as_ref().is_some_and(|m| m.enabled)
+                    });
+                managed_domains.insert(domain.clone(), v);
+                v
+            }
+        };
+        if is_managed {
+            managed.push(ManagedAddress { email: e.email.clone(), domain });
+        }
+    }
+
     Ok(Json(ListEmailsResponse {
         success: true,
         emails: emails.into_iter().map(|e| e.email).collect(),
         derived,
         agents,
         public_names,
+        managed,
     }))
 }
 

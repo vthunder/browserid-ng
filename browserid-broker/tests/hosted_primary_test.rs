@@ -396,6 +396,8 @@ async fn managed_tenant_marks_certs_and_stamps_mint_policy() {
                 audiences: vec![allowed.to_string()],
                 scopes: Some(vec!["post".into()]),
                 max_ttl: Some(86_400),
+                device_cert_ttl: None,
+                access_cert_ttl: None,
                 salt: "c2FsdHktc2FsdA".into(),
             },
         )
@@ -605,4 +607,342 @@ async fn forget_holder_revokes_at_the_tenant_authority() {
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
     assert_eq!(unrevocable, vec!["foreign.example".to_string()], "{body}");
+}
+
+// --- domains console redesign (bean r9gn): remove-admin, split TTLs, ---------
+// --- standalone revoke-all, per-address managed flag -------------------------
+
+/// The remove-admin endpoint enforces the one-admin floor, removes otherwise,
+/// and refuses identities that aren't admins at all.
+#[tokio::test]
+async fn admin_remove_enforces_floor_then_removes() {
+    // Owner console access with a domain-LOCAL first admin: the operator is
+    // not an admin identity themself, so the last-admin floor is testable
+    // independently of the self-removal rule.
+    let (server, store, sender) = make_server_full();
+    let session = common::create_user(&server, &sender, "operator@op.example", "operatorpass1").await;
+    let csrf = common::get_csrf(&server, &session).await;
+    let created: Value = server
+        .post("/wsapi/tenant/create")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({
+            "csrf": csrf, "domain": TENANT,
+            "admin_email": format!("boss@{TENANT}"), "password": "bosspassword1",
+        }))
+        .await
+        .json();
+    assert_eq!(created["success"], true, "create: {created}");
+    store.set_tenant_status(TENANT, TenantStatus::Active).unwrap();
+    assert_eq!(store.list_tenant_admins(TENANT).unwrap(), vec![format!("boss@{TENANT}")]);
+
+    // The floor: the sole admin cannot be removed.
+    let refused = server
+        .post("/wsapi/tenant/admins/remove")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({"csrf": csrf, "domain": TENANT, "identity": format!("boss@{TENANT}")}))
+        .await;
+    assert_eq!(refused.status_code(), 403, "{}", refused.text());
+    assert!(refused.text().contains("at least one administrator"), "{}", refused.text());
+
+    // With a second admin seated, the first becomes removable.
+    let added: Value = server
+        .post("/wsapi/tenant/admins")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({"csrf": csrf, "domain": TENANT, "identity": "carol@other.example"}))
+        .await
+        .json();
+    assert_eq!(added["success"], true, "{added}");
+    let removed = server
+        .post("/wsapi/tenant/admins/remove")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({"csrf": csrf, "domain": TENANT, "identity": format!("boss@{TENANT}")}))
+        .await;
+    assert_eq!(removed.status_code(), 200, "{}", removed.text());
+    assert_eq!(store.list_tenant_admins(TENANT).unwrap(), vec!["carol@other.example".to_string()]);
+
+    // A non-admin identity is refused, not silently ignored.
+    let refused = server
+        .post("/wsapi/tenant/admins/remove")
+        .add_cookie(cookie::Cookie::new("browserid_session", session))
+        .json(&json!({"csrf": csrf, "domain": TENANT, "identity": "nobody@x.example"}))
+        .await;
+    assert_eq!(refused.status_code(), 403, "{}", refused.text());
+}
+
+/// You can never remove yourself — even when another admin would remain.
+#[tokio::test]
+async fn admin_remove_refuses_self() {
+    let (server, store, sender) = make_server_full();
+    let session = common::create_user(&server, &sender, "operator@op.example", "operatorpass1").await;
+    let csrf = common::get_csrf(&server, &session).await;
+    // External admin-of-record = the operator's own verified identity.
+    let created: Value = server
+        .post("/wsapi/tenant/create")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({"csrf": csrf, "domain": TENANT, "admin_email": "operator@op.example"}))
+        .await
+        .json();
+    assert_eq!(created["success"], true, "create: {created}");
+    store.set_tenant_status(TENANT, TenantStatus::Active).unwrap();
+    let added: Value = server
+        .post("/wsapi/tenant/admins")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({"csrf": csrf, "domain": TENANT, "identity": "carol@other.example"}))
+        .await
+        .json();
+    assert_eq!(added["success"], true, "{added}");
+
+    let refused = server
+        .post("/wsapi/tenant/admins/remove")
+        .add_cookie(cookie::Cookie::new("browserid_session", session))
+        .json(&json!({"csrf": csrf, "domain": TENANT, "identity": "operator@op.example"}))
+        .await;
+    assert_eq!(refused.status_code(), 403, "{}", refused.text());
+    assert!(refused.text().contains("yourself"), "{}", refused.text());
+    assert_eq!(store.list_tenant_admins(TENANT).unwrap().len(), 2, "nothing removed");
+}
+
+/// The split TTL knobs bound issuance at their own sites — device_cert_ttl at
+/// /idp/device_cert, access_cert_ttl at the mint — and the legacy single
+/// max_ttl still bounds the access cert when the split knob is absent.
+#[tokio::test]
+async fn split_cert_ttls_bound_issuance_with_max_ttl_fallback() {
+    use browserid_broker::store::ManagementPolicy;
+
+    let (server, store) = make_server();
+    seed_active_tenant(&store);
+    let tenant = store.get_tenant(TENANT).unwrap().unwrap();
+    store
+        .create_roster_entry(tenant.id, "tina", &bcrypt_hash("hunter2secret"), false, "admin@example.org")
+        .unwrap();
+    let email = format!("tina@{TENANT}");
+    store
+        .set_tenant_management(
+            TENANT,
+            &ManagementPolicy {
+                enabled: true,
+                device_cert_ttl: Some(3600),
+                access_cert_ttl: Some(600),
+                salt: "c2FsdHktc2FsdA".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let (cookie, login) = idp_login(&server, &email, "hunter2secret").await;
+    assert_eq!(login["success"], true, "login: {login}");
+    let device_kp = KeyPair::generate();
+    let issued: Value = server
+        .post("/idp/device_cert")
+        .add_cookie(cookie::Cookie::new("idp_session", cookie.clone()))
+        .json(&json!({
+            "email": email,
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": KeyPair::generate().public_key().to_base64(),
+        }))
+        .await
+        .json();
+    assert_eq!(issued["success"], true, "device_cert: {issued}");
+    let device_cert = DeviceCert::parse(issued["device_cert"].as_str().unwrap()).unwrap();
+    let c = device_cert.claims();
+    assert_eq!(c.exp - c.iat, 3600, "device cert bound by device_cert_ttl");
+
+    let access_kp = KeyPair::generate();
+    let areq = AccessRequest::create(
+        TENANT, &email, device_cert.holder().clone(), &access_kp.public_key(), "nonce-ttl-1", &device_kp,
+    )
+    .unwrap();
+    let minted: Value = server
+        .post("/idp/access_cert")
+        .json(&json!({ "device_cert": issued["device_cert"], "access_request": areq.encoded() }))
+        .await
+        .json();
+    assert_eq!(minted["success"], true, "mint: {minted}");
+    let ac = AccessCert::parse(minted["access_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(ac.claims().exp - ac.claims().iat, 600, "access cert bound by access_cert_ttl");
+
+    // Backward compat: a pre-split policy carrying only max_ttl bounds the
+    // access cert with it; the device cert falls back to the 90-day default.
+    store
+        .set_tenant_management(
+            TENANT,
+            &ManagementPolicy {
+                enabled: true,
+                max_ttl: Some(7200),
+                salt: "c2FsdHktc2FsdA".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let device_kp2 = KeyPair::generate();
+    let issued2: Value = server
+        .post("/idp/device_cert")
+        .add_cookie(cookie::Cookie::new("idp_session", cookie))
+        .json(&json!({
+            "email": email,
+            "device_pubkey": device_kp2.public_key().to_base64(),
+            "config_pubkey": KeyPair::generate().public_key().to_base64(),
+        }))
+        .await
+        .json();
+    assert_eq!(issued2["success"], true, "device_cert: {issued2}");
+    let device_cert2 = DeviceCert::parse(issued2["device_cert"].as_str().unwrap()).unwrap();
+    let c2 = device_cert2.claims();
+    assert_eq!(c2.exp - c2.iat, 90 * 86_400, "device cert back to the default");
+    let areq2 = AccessRequest::create(
+        TENANT, &email, device_cert2.holder().clone(), &access_kp.public_key(), "nonce-ttl-2", &device_kp2,
+    )
+    .unwrap();
+    let minted2: Value = server
+        .post("/idp/access_cert")
+        .json(&json!({ "device_cert": issued2["device_cert"], "access_request": areq2.encoded() }))
+        .await
+        .json();
+    assert_eq!(minted2["success"], true, "mint: {minted2}");
+    let ac2 = AccessCert::parse(minted2["access_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(ac2.claims().exp - ac2.claims().iat, 7200, "legacy max_ttl bounds the access cert");
+}
+
+/// The policy endpoints round-trip the split TTLs.
+#[tokio::test]
+async fn management_endpoint_roundtrips_split_ttls() {
+    let (server, store, sender) = make_server_full();
+    let session = common::create_user(&server, &sender, "operator@op.example", "operatorpass1").await;
+    let csrf = common::get_csrf(&server, &session).await;
+    let created: Value = server
+        .post("/wsapi/tenant/create")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({"csrf": csrf, "domain": TENANT, "admin_email": "operator@op.example"}))
+        .await
+        .json();
+    assert_eq!(created["success"], true, "create: {created}");
+    store.set_tenant_status(TENANT, TenantStatus::Active).unwrap();
+
+    let saved: Value = server
+        .post("/wsapi/tenant/management")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({
+            "csrf": csrf, "domain": TENANT, "enabled": true,
+            "device_cert_ttl": 30 * 86_400, "access_cert_ttl": 3600,
+        }))
+        .await
+        .json();
+    assert_eq!(saved["success"], true, "save: {saved}");
+
+    let got: Value = server
+        .get(&format!("/wsapi/tenant/management?domain={TENANT}&csrf={csrf}"))
+        .add_cookie(cookie::Cookie::new("browserid_session", session))
+        .await
+        .json();
+    assert_eq!(got["success"], true, "get: {got}");
+    assert_eq!(got["management"]["device_cert_ttl"], 30 * 86_400, "{got}");
+    assert_eq!(got["management"]["access_cert_ttl"], 3600, "{got}");
+    assert_eq!(got["management"]["max_ttl"], Value::Null, "{got}");
+}
+
+/// The standalone revoke-all endpoint revokes every outstanding credential
+/// (management OFF — it must not depend on the policy) and reports the count;
+/// the policy endpoint's revoke_now keeps working alongside it.
+#[tokio::test]
+async fn revoke_all_endpoint_counts_and_kills_mints() {
+    let (server, store, sender) = make_server_full();
+    let session = common::create_user(&server, &sender, "operator@op.example", "operatorpass1").await;
+    let csrf = common::get_csrf(&server, &session).await;
+    let created: Value = server
+        .post("/wsapi/tenant/create")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({
+            "csrf": csrf, "domain": TENANT,
+            "admin_email": format!("boss@{TENANT}"), "password": "bosspassword1",
+        }))
+        .await
+        .json();
+    assert_eq!(created["success"], true, "create: {created}");
+    store.set_tenant_status(TENANT, TenantStatus::Active).unwrap();
+
+    // A signed-in tenant user with outstanding device + config certs.
+    let email = format!("boss@{TENANT}");
+    let (cookie, login) = idp_login(&server, &email, "bosspassword1").await;
+    assert_eq!(login["success"], true, "{login}");
+    let device_kp = KeyPair::generate();
+    let issued: Value = server
+        .post("/idp/device_cert")
+        .add_cookie(cookie::Cookie::new("idp_session", cookie))
+        .json(&json!({
+            "email": email,
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": KeyPair::generate().public_key().to_base64(),
+        }))
+        .await
+        .json();
+    assert_eq!(issued["success"], true, "{issued}");
+    let device_cert = DeviceCert::parse(issued["device_cert"].as_str().unwrap()).unwrap();
+
+    let revoked: Value = server
+        .post("/wsapi/tenant/revoke_all")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({"csrf": csrf, "domain": TENANT}))
+        .await
+        .json();
+    assert_eq!(revoked["success"], true, "revoke_all: {revoked}");
+    assert!(revoked["revoked"].as_u64().unwrap() >= 2, "device + config bits: {revoked}");
+
+    // The revoked device cert can no longer mint.
+    let areq = AccessRequest::create(
+        TENANT, &email, device_cert.holder().clone(),
+        &KeyPair::generate().public_key(), "nonce-ra-1", &device_kp,
+    )
+    .unwrap();
+    let refused = server
+        .post("/idp/access_cert")
+        .json(&json!({ "device_cert": issued["device_cert"], "access_request": areq.encoded() }))
+        .await;
+    assert_eq!(refused.status_code(), 403, "{}", refused.text());
+    assert!(refused.text().contains("revoked"), "{}", refused.text());
+
+    // revoke_now on the policy save keeps functioning.
+    let again: Value = server
+        .post("/wsapi/tenant/management")
+        .add_cookie(cookie::Cookie::new("browserid_session", session))
+        .json(&json!({"csrf": csrf, "domain": TENANT, "enabled": false, "revoke_now": true}))
+        .await
+        .json();
+    assert_eq!(again["success"], true, "revoke_now: {again}");
+}
+
+/// /wsapi/list_emails flags addresses whose domain runs managed identities,
+/// naming the managing domain.
+#[tokio::test]
+async fn list_emails_flags_managed_addresses() {
+    use browserid_broker::store::ManagementPolicy;
+
+    let (server, store, sender) = make_server_full();
+    let email = format!("amira@{TENANT}");
+    let session = common::create_user(&server, &sender, &email, "somepassword1").await;
+    seed_active_tenant(&store);
+
+    // Active tenant, management off: not managed.
+    let resp: Value = server
+        .get("/wsapi/list_emails")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json();
+    assert_eq!(resp["managed"].as_array().unwrap().len(), 0, "{resp}");
+
+    // Enable management: the address is flagged with its managing domain.
+    store
+        .set_tenant_management(
+            TENANT,
+            &ManagementPolicy { enabled: true, salt: "c2FsdHktc2FsdA".into(), ..Default::default() },
+        )
+        .unwrap();
+    let resp: Value = server
+        .get("/wsapi/list_emails")
+        .add_cookie(cookie::Cookie::new("browserid_session", session))
+        .await
+        .json();
+    let managed = resp["managed"].as_array().unwrap();
+    assert_eq!(managed.len(), 1, "{resp}");
+    assert_eq!(managed[0]["email"], email.as_str(), "{resp}");
+    assert_eq!(managed[0]["domain"], TENANT, "{resp}");
 }
