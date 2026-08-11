@@ -2217,6 +2217,18 @@ impl UserStore for SqliteStore {
         Ok(())
     }
 
+    fn remove_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {
+        let tenant = self.get_tenant(domain)?.ok_or(BrokerError::TenantNotFound)?;
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "DELETE FROM tenant_admins WHERE tenant_id = ?1 AND identity = ?2",
+                params![tenant.id as i64, identity],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(n > 0)
+    }
+
     fn list_tenant_admins(&self, domain: &str) -> StoreResult<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
@@ -2826,6 +2838,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn add_tenant_admin(&self, domain: &str, identity: &str, added_by: &str) -> StoreResult<()> {
         (**self).add_tenant_admin(domain, identity, added_by)
+    }
+
+    fn remove_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {
+        (**self).remove_tenant_admin(domain, identity)
     }
 
     fn list_tenant_admins(&self, domain: &str) -> StoreResult<Vec<String>> {

@@ -927,6 +927,23 @@ impl UserStore for InMemoryUserStore {
         Ok(())
     }
 
+    fn remove_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {
+        let tenant = self
+            .tenants
+            .read()
+            .unwrap()
+            .get(domain)
+            .cloned()
+            .ok_or(BrokerError::TenantNotFound)?;
+        let mut admins = self.tenant_admins.write().unwrap();
+        let Some(list) = admins.get_mut(&tenant.id) else {
+            return Ok(false);
+        };
+        let before = list.len();
+        list.retain(|i| i != identity);
+        Ok(list.len() < before)
+    }
+
     fn list_tenant_admins(&self, domain: &str) -> StoreResult<Vec<String>> {
         let Some(tenant) = self.tenants.read().unwrap().get(domain).cloned() else {
             return Ok(Vec::new());

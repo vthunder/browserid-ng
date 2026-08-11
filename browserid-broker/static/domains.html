@@ -4,49 +4,218 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Your domains — browserid.me</title>
+  <!-- Hosted-IdP onboarding + per-domain admin console (domains redesign
+       handoff): list view + stepped add-domain wizard on /domains, a
+       four-tab console (Users / Administrators / Managed identities /
+       Settings) on /domains/<domain>. All rendering lives in
+       /common/js/domains.js — no inline scripts (CSP hash hygiene). -->
   <style>
-    :root { color-scheme: light dark; --bg:#f6f7f9; --card:#fff; --fg:#1a1a1a; --muted:#6b7280; --line:#e5e7eb; --brand:#2563eb; --danger:#dc2626; --ok:#16a34a; }
-    @media (prefers-color-scheme: dark) { :root { --bg:#16181c; --card:#22252b; --fg:#e8e8ea; --muted:#9096a1; --line:#33363d; } }
     * { box-sizing: border-box; }
-    body { font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin:0; background:var(--bg); color:var(--fg); }
-    .wrap { max-width: 760px; margin: 0 auto; padding: 32px 20px 80px; }
-    h1 { font-size: 24px; margin: 0 0 6px; }
-    h2 { font-size: 17px; margin: 28px 0 10px; }
-    .muted { color: var(--muted); }
-    a { color: var(--brand); text-decoration: none; }
-    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin: 14px 0; }
-    .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .pill { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); }
-    .pill.active { color: var(--ok); border-color: var(--ok); }
-    .pill.pending { color: #d97706; border-color: #d97706; }
-    label { display:block; font-size: 13px; font-weight: 600; margin: 12px 0 5px; }
-    input, select { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; font-size: 15px; background: var(--bg); color: inherit; }
-    button { padding: 9px 16px; border: 0; border-radius: 8px; background: var(--brand); color:#fff; font-size: 14px; font-weight: 600; cursor: pointer; }
-    button.ghost { background: transparent; color: var(--brand); border: 1px solid var(--line); }
-    button.danger { background: transparent; color: var(--danger); border: 1px solid var(--line); }
-    button:disabled { opacity: .55; cursor: default; }
-    table { width: 100%; border-collapse: collapse; margin-top: 6px; }
-    th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); font-size: 14px; }
-    th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
-    code { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; font-size: 13px; word-break: break-all; }
-    .record { display:block; padding: 12px; margin-top: 8px; }
-    .err { color: var(--danger); font-size: 13px; min-height: 18px; margin-top: 8px; }
-    .ok { color: var(--ok); }
-    .hidden { display: none; }
-    .toolbar { display:flex; gap: 10px; flex-wrap: wrap; align-items:flex-end; }
-    .toolbar > div { flex: 1; min-width: 140px; }
-    .backlink { font-size: 14px; }
+    [hidden] { display: none !important; }
+    body { margin: 0; background: #f5f5f4; color: #17171a;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 14px; line-height: 1.5; min-height: 100vh; }
+    a { color: #1f6feb; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    button { font-family: inherit; }
+    .mono { font-family: ui-monospace, Menlo, monospace; }
+
+    /* Shared navbar */
+    .bar { display: flex; align-items: center; gap: 12px; padding: 16px 28px;
+      background: #fff; border-bottom: 1px solid rgba(0,0,0,.08); }
+    .bar .mark { width: 15px; height: 15px; border-radius: 4px; background: #17171a; flex: none; }
+    .bar .brand { font-weight: 600; font-size: 14px; color: #17171a; }
+    .bar .brand .me { color: #4a90d9; }
+    .bar nav { display: flex; gap: 18px; margin-left: 20px; }
+    .bar nav a { font: 500 13px system-ui, sans-serif; color: #6b6b74; }
+    .bar nav a:hover { text-decoration: none; color: #17171a; }
+    .bar nav .cur { font: 600 13px system-ui, sans-serif; color: #17171a;
+      border-bottom: 2px solid #17171a; padding-bottom: 1px; }
+    .ghost { font: 500 12px system-ui, sans-serif; color: #6b6b74; background: none;
+      border: 1px solid rgba(0,0,0,.14); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+    .ghost:hover { background: #faf9f7; }
+
+    /* Layout */
+    .wrap { max-width: 720px; margin: 0 auto; padding: 28px 20px 64px; }
+    .wrap.console { padding-top: 24px; }
+    .h1row { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+    h1 { margin: 0; font: 600 22px/1.3 system-ui, sans-serif; letter-spacing: -.01em; }
+    h1.mono { font-family: ui-monospace, Menlo, monospace; }
+    h2 { margin: 32px 0 12px; font: 600 15px system-ui, sans-serif; }
+    .intro { margin: 0 0 24px; font: 13px/1.6 system-ui, sans-serif; color: #6b6b74; max-width: 560px; }
+
+    /* Buttons */
+    .btn { font: 600 12px system-ui, sans-serif; color: #fff; background: #17171a;
+      border: none; border-radius: 6px; padding: 7px 14px; cursor: pointer; flex: none; }
+    .btn.lg { font-size: 12.5px; border-radius: 7px; padding: 9px 16px; }
+    .btn:hover:not(:disabled) { background: #000; }
+    .btn:disabled { opacity: .55; cursor: default; }
+    .btn-back { font: 500 12px system-ui, sans-serif; color: #6b6b74; background: none;
+      border: 1px solid rgba(0,0,0,.14); border-radius: 7px; padding: 9px 14px; cursor: pointer; }
+    .btn-back:hover { background: #faf9f7; }
+    .btn-plain { font: 500 12px system-ui, sans-serif; color: #6b6b74; background: none;
+      border: none; padding: 0; cursor: pointer; }
+    .btn-plain:hover { text-decoration: underline; }
+    .btn-gen { font: 500 11.5px system-ui, sans-serif; color: #1f6feb; background: none;
+      border: 1px solid rgba(0,0,0,.14); border-radius: 6px; padding: 7px 10px; cursor: pointer; flex: none; }
+    .btn-gen:hover { background: #faf9f7; }
+    .btn-danger { font: 600 12px system-ui, sans-serif; color: #9d2f26; background: none;
+      border: 1px solid rgba(157,47,38,.35); border-radius: 7px; padding: 8px 14px; cursor: pointer; flex: none; }
+    .btn-danger:hover { background: #fdf6f5; }
+    .btn-rowdanger { font: 11.5px system-ui, sans-serif; color: #9d2f26; background: none;
+      border: 1px solid rgba(157,47,38,.3); border-radius: 6px; padding: 5px 9px; cursor: pointer; flex: none; }
+    .btn-rowdanger:hover { background: #fdf6f5; }
+    .btn-row { font: 11.5px system-ui, sans-serif; color: #6b6b74; background: none;
+      border: 1px solid rgba(0,0,0,.14); border-radius: 6px; padding: 5px 9px; cursor: pointer; flex: none; }
+    .btn-row:hover { background: #faf9f7; }
+    .btn-copy { font: 11px system-ui, sans-serif; color: #1f6feb; background: none;
+      border: none; cursor: pointer; flex: none; padding: 0; }
+    .btn-link { font: 500 12.5px system-ui, sans-serif; color: #1f6feb; background: none;
+      border: none; padding: 0; cursor: pointer; }
+    .btn-link:hover { text-decoration: underline; }
+
+    /* Cards, pills, code */
+    .card { background: #fff; border: 1px solid rgba(0,0,0,.09); border-radius: 10px; padding: 16px 18px; }
+    .card.flush { padding: 0; overflow: hidden; }
+    .card.empty { border-style: dashed; border-color: rgba(0,0,0,.15); padding: 22px; text-align: center; }
+    .cardtitle { font: 600 12.5px system-ui, sans-serif; margin-bottom: 10px; }
+    .pill { font: 600 10.5px system-ui, sans-serif; padding: 2px 8px; border-radius: 999px;
+      border: 1px solid; flex: none; }
+    .pill.green { color: #1a7f37; border-color: rgba(26,127,55,.4); }
+    .pill.amber { color: #b7791f; border-color: rgba(183,121,31,.45); }
+    .pill.gray { color: #6b6b74; border-color: rgba(0,0,0,.18); }
+    .pill.you { font-weight: 600; padding: 1px 7px; color: #1f6feb; border-color: rgba(31,111,235,.35); }
+    .codebox { flex: 1; font: 11.5px ui-monospace, Menlo, monospace; background: #f5f5f4;
+      border: 1px solid rgba(0,0,0,.08); border-radius: 6px; padding: 6px 9px; word-break: break-all; }
+    .coderow { display: flex; align-items: center; gap: 8px; }
+    .codecol { display: flex; flex-direction: column; gap: 6px; }
+
+    /* Text */
+    .meta { font: 11.5px system-ui, sans-serif; color: #8a8a93; }
+    .help { font: 11.5px/1.6 system-ui, sans-serif; color: #8a8a93; }
+    .body12 { font: 12px/1.6 system-ui, sans-serif; color: #6b6b74; }
+    .err { font: 12px system-ui, sans-serif; color: #9d2f26; }
+    .ok { color: #1a7f37 !important; }
+    .warn { color: #b7791f !important; }
+    .msg { font: 12px/1.5 system-ui, sans-serif; max-width: 420px; }
+
+    /* Inputs */
+    .inp { font: 12.5px ui-monospace, Menlo, monospace; color: #17171a; padding: 8px 10px;
+      border: 1px solid rgba(0,0,0,.14); border-radius: 7px; outline: none; background: #fff; }
+    .inp:focus { border-color: rgba(0,0,0,.3); }
+    .inp.big { width: 100%; font-size: 13px; padding: 9px 11px; }
+    .inp.num { font: 12px ui-monospace, Menlo, monospace; width: 100%; }
+    textarea.inp { width: 100%; font-size: 12px; resize: vertical; font-family: ui-monospace, Menlo, monospace; }
+    select.inp { width: 100%; }
+    label.f { display: block; font: 600 12px system-ui, sans-serif; color: #17171a; margin-bottom: 5px; }
+    label.f .opt { font-weight: 400; color: #8a8a93; }
+    .suffix { font: 12.5px ui-monospace, Menlo, monospace; color: #8a8a93; flex: none; }
+    .btnline { display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+    .fieldrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .checkline { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+    .checkline input { margin: 2px 0 0; }
+    .checkline .ct { display: block; font: 600 13px system-ui, sans-serif; color: #17171a; }
+    .checkline .cs { display: block; font: 500 12.5px system-ui, sans-serif; color: #17171a; }
+    .checkline .cd { display: block; font: 12px/1.6 system-ui, sans-serif; color: #6b6b74; margin-top: 3px; max-width: 520px; }
+    .checkline .cd.sm { font: 11.5px/1.5 system-ui, sans-serif; color: #8a8a93; margin-top: 2px; }
+
+    /* Domain list rows */
+    .domlist { display: flex; flex-direction: column; gap: 12px; }
+    .domrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .domname { font: 600 14px ui-monospace, Menlo, monospace; color: #17171a; }
+    .pendbox { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(0,0,0,.07); }
+    .pendhint { font: 12px/1.5 system-ui, sans-serif; color: #6b6b74; margin-bottom: 8px; }
+
+    /* Wizard */
+    .wizsteps { display: flex; border-bottom: 1px solid rgba(0,0,0,.07); }
+    .wizstep { flex: 1; display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
+    .wizstep.cur { background: #f4f6fb; }
+    .wizstep .n { width: 20px; height: 20px; border-radius: 999px; display: flex; align-items: center;
+      justify-content: center; font: 600 11px system-ui, sans-serif; flex: none;
+      color: #8a8a93; border: 1px solid rgba(0,0,0,.2); }
+    .wizstep.cur .n { background: #17171a; color: #fff; border: none; }
+    .wizstep.done .n { background: #e7efe9; color: #1a7f37; border: none; }
+    .wizstep .l { font: 500 12px system-ui, sans-serif; color: #8a8a93; }
+    .wizstep.cur .l { font-weight: 600; color: #17171a; }
+    .wizbody { padding: 18px; }
+    .optcard { border: 1px solid rgba(0,0,0,.1); background: #fff; border-radius: 8px;
+      padding: 12px 14px; cursor: pointer; }
+    .optcard.sel { border-color: rgba(31,111,235,.5); background: #fbfcfe; }
+    .optcard .head { display: flex; align-items: center; gap: 8px;
+      font: 500 13px system-ui, sans-serif; cursor: pointer; }
+    .optcard .head input { margin: 0; }
+    .optcard .body { padding-left: 22px; margin-top: 8px; }
+
+    /* Console */
+    .backlink { font: 500 12.5px system-ui, sans-serif; color: #1f6feb; background: none;
+      border: none; padding: 0; cursor: pointer; margin-bottom: 14px; display: inline-block; }
+    .backlink:hover { text-decoration: underline; }
+    .consolesub { font: 12px system-ui, sans-serif; color: #8a8a93; margin: 4px 0 20px; }
+    .tabs { display: flex; gap: 20px; border-bottom: 1px solid rgba(0,0,0,.1); margin-bottom: 20px; }
+    .tab { font: 500 13px system-ui, sans-serif; color: #6b6b74; background: none; border: none;
+      border-bottom: 2px solid transparent; padding: 0 2px 9px; cursor: pointer; margin-bottom: -1px; }
+    .tab:hover { color: #17171a; }
+    .tab.active { font-weight: 600; color: #17171a; border-bottom-color: #17171a; }
+
+    /* Roster table */
+    .rgrid { display: grid; grid-template-columns: 1fr 110px 100px 190px; gap: 8px;
+      align-items: center; padding: 11px 16px; }
+    .rgrid.head { padding: 9px 16px; font: 600 10.5px system-ui, sans-serif; color: #8a8a93;
+      letter-spacing: .05em; text-transform: uppercase; border-bottom: 1px solid rgba(0,0,0,.07); }
+    .rwrap { border-top: 1px solid rgba(0,0,0,.06); }
+    .rwrap:first-of-type { border-top: none; }
+    .remail { font: 12.5px ui-monospace, Menlo, monospace; color: #17171a; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; }
+    .remail.off { color: #8a8a93; }
+    .rmust { display: block; font: 10.5px system-ui, sans-serif; color: #8a8a93; margin-top: 2px; }
+    .ractions { display: flex; gap: 6px; justify-content: flex-end; }
+    .resetrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 16px;
+      background: #f4f6fb; border-top: 1px solid rgba(0,0,0,.05); }
+    .resetrow .npw { font: 12px ui-monospace, Menlo, monospace; background: #fff;
+      border: 1px solid rgba(0,0,0,.1); border-radius: 6px; padding: 4px 8px; }
+    .resetrow .tail { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+    .btn-sm { font: 600 11.5px system-ui, sans-serif; color: #fff; background: #17171a; border: none;
+      border-radius: 6px; padding: 6px 11px; cursor: pointer; }
+    .btn-sm-plain { font: 500 11.5px system-ui, sans-serif; color: #6b6b74; background: none;
+      border: none; padding: 6px 2px; cursor: pointer; }
+
+    /* Admin rows */
+    .adminrow { display: flex; align-items: center; gap: 10px; padding: 11px 16px;
+      border-top: 1px solid rgba(0,0,0,.06); }
+    .adminrow:first-child { border-top: none; }
+    .adminrow .em { font: 12.5px ui-monospace, Menlo, monospace; color: #17171a; }
+    .adminrow .right { margin-left: auto; }
+
+    /* Policy / settings */
+    .divide { margin-top: 14px; padding-top: 14px; border-top: 1px solid rgba(0,0,0,.07);
+      display: flex; flex-direction: column; gap: 14px; }
+    .ttls { display: flex; gap: 12px; flex-wrap: wrap; }
+    .ttls > div { width: 190px; flex: none; }
+    .ttls label { display: block; font: 500 11.5px system-ui, sans-serif; color: #6b6b74; margin-bottom: 4px; }
+    .ttls label .u { color: #8a8a93; }
+    .card.dangerzone { border-color: rgba(157,47,38,.25); }
+    .cardtitle.red { color: #9d2f26; margin-bottom: 0; }
+    .settext { margin: 4px 0 12px; font: 12px/1.6 system-ui, sans-serif; color: #6b6b74; max-width: 520px; }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div id="signed-out" class="hidden">
-      <h1>Your domains</h1>
-      <p class="muted">You need to <a href="/account">sign in</a> to manage domains.</p>
-    </div>
-
-    <div id="app" class="hidden"></div>
+  <div class="bar">
+    <div class="mark"></div>
+    <span class="brand">browserid<span class="me">.me</span></span>
+    <nav>
+      <a href="/account">Account</a>
+      <span class="cur">Domains</span>
+    </nav>
+    <button class="ghost" id="signout" style="margin-left:auto" title="Signs out this browser only" hidden>Sign out</button>
   </div>
+
+  <div id="signed-out" class="wrap" hidden>
+    <h1>Your domains</h1>
+    <p class="intro">You need to <a href="/account">sign in</a> to manage domains.</p>
+  </div>
+
+  <div id="app" hidden></div>
+
   <script src="/common/js/domains.js"></script>
 </body>
 </html>
