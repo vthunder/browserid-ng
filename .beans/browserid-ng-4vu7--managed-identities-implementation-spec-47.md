@@ -1,11 +1,11 @@
 ---
 # browserid-ng-4vu7
 title: 'Managed identities: implementation (spec §4.7)'
-status: todo
+status: completed
 type: epic
 priority: normal
 created_at: 2026-08-11T12:29:56Z
-updated_at: 2026-08-11T13:03:25Z
+updated_at: 2026-08-11T14:15:09Z
 ---
 
 Implement cert constraints + managed marker per spec §4.7/§6.1/§7.2 (beans dbmw = spec work). Sequencing: verifiers first (constraints bind only at enforcing verifiers), then issuance/tenant policy, then client UX, then positioning.
@@ -36,3 +36,29 @@ govern/offboard + new "Managed identities" section with offboard-cascade story.
 
 Pending: full broker suite (running), commit, deploy broker+www, mingo pin
 bump + deploy, verify prod.
+
+## Deploy status (2026-08-11)
+
+- broker (id), www, wallet released to browserid.me host at a04ddf7; verified:
+  /wsapi/tenant/management live (401 auth-gated), /dialog/dialog.js +
+  /common/js/domains.js carry the new code, /domains page has the managed
+  section, verify-access healthy.
+- mingo: pin bumped to a04ddf7 (commit e12eb60), tests green (70), deploy
+  re-running after a stale deploy lock (first push hit a 10m timeout;
+  apps:unlock cleared it).
+- Still open under this epic: SBO on-chain verifier conformance audit for
+  §6.1 step 7 (constraints) — separate repo.
+
+## Summary of Changes
+
+All four phases built, tested, and deployed:
+- browserid-ng a04ddf7: verifier enforcement (core), tenant policy + mint
+  stamping + admin console (broker/UI), client disclosure + per-audience
+  minting (dialog, JS+Rust agent SDKs), /domains www re-center. Released to
+  the id-host (id, www, browserid-wallet apps) via mini-ops; verified live.
+- mingo e12eb60/6adc908: pin bump to a04ddf7, deployed to sandmill.org
+  (confirmed via container GIT_REV; the host's `git:report` sha field is
+  stale/unreliable — and the app repo's HEAD points at master while deploys
+  use main, so `ps:rebuild` builds the WRONG branch; use ref-changing pushes).
+- Follow-ups filed: SBO on-chain verifier audit (separate bean); nicer
+  managed-disclosure UI + account badges (noted in vy1a).
