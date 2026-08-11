@@ -1639,6 +1639,15 @@ impl UserStore for SqliteStore {
 
     fn insert_device_cert(&self, mut rec: DeviceCertRecord) -> StoreResult<u64> {
         let conn = self.conn.lock().unwrap();
+        // Upsert on pubkey: the row is the registry entry for the LATEST cert
+        // certifying this key, so every field — including `revoked_at` —
+        // reflects the incoming record. Clearing a stale revoked_at here is
+        // safe because recording only happens after the presented cert passes
+        // fail-closed verification (a revoked cert can never reach this code
+        // to resurrect its row); without it, a browser whose certs were swept
+        // (e.g. revoke-on-enable of managed identities) stayed "inactive" in
+        // the account view forever, since device keys are long-lived and every
+        // reissued cert upserts onto the old revoked row.
         conn.execute(
             "INSERT INTO device_certs (user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
@@ -1649,6 +1658,7 @@ impl UserStore for SqliteStore {
                iss = excluded.iss,
                issued_at = excluded.issued_at,
                expires_at = excluded.expires_at,
+               revoked_at = excluded.revoked_at,
                status_idx = excluded.status_idx",
             params![
                 rec.user_id.0 as i64,

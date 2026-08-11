@@ -286,3 +286,46 @@ fn test_primary_config_cert_holder_recorded() {
     assert_eq!(listed[0].purpose, "authorization");
     assert_eq!(listed[0].iss, "sandmill.org");
 }
+
+#[test]
+fn test_reissued_cert_clears_stale_revocation_on_upsert() {
+    // Device keys are long-lived, so a reissued cert upserts onto the same
+    // pubkey row. After a revocation sweep (e.g. managed-identity
+    // revoke-on-enable), recording a NEWLY VERIFIED cert must clear the stale
+    // revoked_at — recording only happens post-verification, so a genuinely
+    // revoked cert can never reach the upsert. Regression: the browser stayed
+    // "inactive" in the account view forever after re-login.
+    use browserid_broker::store::DeviceCertRecord;
+    use chrono::Utc;
+
+    let (store, _dir) = create_test_store();
+    let user_id = store.create_user("hash").unwrap();
+    let rec = |revoked_at| DeviceCertRecord {
+        id: 0,
+        user_id,
+        identities: vec!["dan@tenant.example".into()],
+        purpose: "authorization".into(),
+        holder: "br1a2b3c.9f8e7d6c".into(),
+        pubkey: "stable-device-pubkey".into(),
+        iss: "tenant.example".into(),
+        issued_at: Utc::now(),
+        expires_at: Utc::now(),
+        revoked_at,
+        status_idx: Some(7),
+    };
+
+    store.insert_device_cert(rec(None)).unwrap();
+    // The sweep stamps the row revoked.
+    let swept = store.revoke_domain_device_certs("tenant.example").unwrap();
+    assert_eq!(swept, 1);
+    assert!(store.list_device_certs(user_id).unwrap()[0].revoked_at.is_some());
+
+    // Re-login records the fresh cert for the SAME device key → row is live again.
+    store.insert_device_cert(rec(None)).unwrap();
+    let listed = store.list_device_certs(user_id).unwrap();
+    assert_eq!(listed.len(), 1, "upsert, not a duplicate row");
+    assert!(
+        listed[0].revoked_at.is_none(),
+        "a freshly recorded (verified) cert must clear the stale revoked_at"
+    );
+}
