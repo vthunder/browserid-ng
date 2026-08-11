@@ -195,6 +195,98 @@ impl From<HolderMatcher> for String {
 }
 
 // ===========================================================================
+// Constraints & managed identities (spec §4.7).
+// ===========================================================================
+
+/// Hashed-audience allowlist: an audience satisfies it iff
+/// `b64url(SHA-256(salt ‖ audience))` ∈ `hashes` (audience normalized exactly
+/// as assertion `aud`). Hashed because certs are presented to every RP the
+/// holder visits — a cleartext list would enumerate the issuing domain's
+/// application roster ecosystem-wide.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudConstraint {
+    /// base64url (no pad), decoded and prepended to the audience bytes.
+    pub salt: String,
+    /// base64url (no pad) SHA-256 digests.
+    pub hashes: Vec<String>,
+}
+
+impl AudConstraint {
+    pub fn hash_audience(salt_b64: &str, audience: &str) -> Result<String> {
+        use base64::Engine;
+        use sha2::{Digest, Sha256};
+        let salt = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(salt_b64)
+            .map_err(|_| invalid("constraints", "aud salt is not base64url"))?;
+        let mut h = Sha256::new();
+        h.update(&salt);
+        h.update(audience.as_bytes());
+        Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(h.finalize()))
+    }
+
+    pub fn permits(&self, audience: &str) -> bool {
+        match Self::hash_audience(&self.salt, audience) {
+            Ok(digest) => self.hashes.iter().any(|x| x == &digest),
+            Err(_) => false, // malformed salt can never permit — fail-closed
+        }
+    }
+}
+
+/// Managed-identity restrictions (spec §4.7), carried by the PRESENTED certs
+/// (access cert, config cert) and enforced at verification against the
+/// presentation as presented (§6.1 step 7). Unknown keys are captured — not
+/// dropped — so verification can reject them fail-closed: constraints are
+/// restrictions, and ignoring one is escaping it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Constraints {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aud: Option<AudConstraint>,
+    /// The presented warrant must not carry a scope outside this set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    /// The presented warrant's `exp − iat` must not exceed this (seconds).
+    #[serde(rename = "max-ttl", skip_serializing_if = "Option::is_none")]
+    pub max_ttl: Option<i64>,
+    /// Constraint keys this implementation does not know. MUST reject at
+    /// verification (spec §4.7 fail-closed rule).
+    #[serde(flatten)]
+    pub unknown: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl Constraints {
+    /// Enforce this cert's constraints against the presentation (spec §6.1
+    /// step 7). `object` names the carrying cert for error messages.
+    pub fn check(&self, object: &str, audience: &str, warrant: &WarrantClaims) -> Result<()> {
+        if !self.unknown.is_empty() {
+            let keys: Vec<&str> = self.unknown.keys().map(String::as_str).collect();
+            return Err(invalid(
+                object,
+                format!("unrecognized constraint key(s): {}", keys.join(", ")),
+            ));
+        }
+        if let Some(aud) = &self.aud {
+            if !aud.permits(audience) {
+                return Err(invalid(object, "audience not permitted by constraints"));
+            }
+        }
+        if let Some(allowed) = &self.scopes {
+            if let Some(s) = warrant.scopes.iter().find(|s| !allowed.contains(s)) {
+                return Err(invalid(
+                    object,
+                    format!("warrant scope '{s}' not permitted by constraints"),
+                ));
+            }
+        }
+        if let Some(max) = self.max_ttl {
+            if warrant.exp - warrant.iat > max {
+                return Err(invalid(object, "warrant validity exceeds constraints max-ttl"));
+            }
+        }
+        Ok(())
+    }
+}
+
+// ===========================================================================
 // Device certificate (IdP-signed): a device key + purpose + subject + identities.
 // ===========================================================================
 
@@ -215,6 +307,17 @@ pub struct DeviceCertClaims {
     /// Revocation ref: revoking this device cert logs the device (or agent) out.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<StatusRef>,
+    /// Managed-identity marker (spec §4.7): set on every device cert of a
+    /// managed identity, BEFORE the IdP ever stamps constraints or requires a
+    /// mint audience — the durable, issuance-time signal driving UA disclosure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed: Option<bool>,
+    /// Restrictions (spec §4.7). Meaningful only on a CONFIG cert (presented;
+    /// binds warrants at verification). An auth cert MUST NOT carry it —
+    /// issuance-side rule; the parser is lenient, the verifier only reads
+    /// presented certs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<Constraints>,
 }
 
 #[derive(Debug, Clone)]
@@ -249,6 +352,8 @@ impl DeviceCert {
             identities,
             public_key: device_pub.clone(),
             status,
+            managed: None,
+            constraints: None,
         }, idp_key)
     }
 
@@ -315,6 +420,12 @@ pub struct AccessRequestClaims {
     /// The fresh key to certify (never the device key).
     #[serde(rename = "access-key")]
     pub access_key: PublicKey,
+    /// OPTIONAL — managed identities only (spec §4.2/§4.7). The RP audience
+    /// this access cert is requested for. A client MUST NOT send it unless its
+    /// device cert carries `managed: true`; an IdP MUST NOT require or honor
+    /// it otherwise (the mint stays RP-blind for unmanaged identities).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -342,6 +453,34 @@ impl AccessRequest {
             identity: identity.to_string(),
             holder,
             access_key: access_pub.clone(),
+            audience: None,
+        }, device_key)
+    }
+
+    /// Create an access request naming the RP audience it is for — **managed
+    /// identities only** (spec §4.2): callers MUST hold a `managed: true`
+    /// device cert. The IdP MAY scope the minted cert to this audience.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_for_audience(
+        domain: &str,
+        identity: &str,
+        holder: Holder,
+        access_pub: &PublicKey,
+        jti: &str,
+        audience: &str,
+        device_key: &KeyPair,
+    ) -> Result<Self> {
+        let now = Utc::now();
+        Self::from_claims(AccessRequestClaims {
+            typ: TYP_ACCESS_REQUEST.to_string(),
+            iat: now.timestamp(),
+            exp: (now + Duration::minutes(ACCESS_REQUEST_VALIDITY_MINUTES)).timestamp(),
+            jti: jti.to_string(),
+            domain: domain.to_string(),
+            identity: identity.to_string(),
+            holder,
+            access_key: access_pub.clone(),
+            audience: Some(audience.to_string()),
         }, device_key)
     }
 
@@ -391,6 +530,11 @@ pub struct AccessCertClaims {
     /// one device kills its access certs, not the whole identity).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<StatusRef>,
+    /// Managed-identity restrictions (spec §4.7), stamped at the mint — the
+    /// managing domain's per-~24 h policy decision point — and enforced at
+    /// verification (§6.1 step 7).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<Constraints>,
 }
 
 #[derive(Debug, Clone)]
@@ -419,6 +563,7 @@ impl AccessCert {
             holder,
             access_key: access_pub.clone(),
             status,
+            constraints: None,
         }, idp_key)
     }
 
@@ -674,6 +819,18 @@ impl AccessPresentation {
         }
         if wc.audience != expected_audience {
             return Err(invalid("warrant", "audience mismatch"));
+        }
+
+        // Constraints (spec §4.7, §6.1 step 7): each PRESENTED cert carrying a
+        // `constraints` claim must be satisfied by the presentation as
+        // presented — the RP audience against the salted-hash allowlist, the
+        // warrant against scopes/max-ttl. Unknown constraint keys reject
+        // (fail-closed): a restriction ignored is a restriction escaped.
+        if let Some(c) = &ac.constraints {
+            c.check("access cert", expected_audience, wc)?;
+        }
+        if let Some(c) = &cc.constraints {
+            c.check("config cert", expected_audience, wc)?;
         }
 
         Ok(VerifiedAccess {

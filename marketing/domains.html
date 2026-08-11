@@ -42,7 +42,7 @@
   <div class="wrap hero-lite">
     <span class="kicker">For domains</span>
     <h1>Be your own identity provider — with one DNS record.</h1>
-    <p class="lede">browserid.me issues certificates <em>as your domain</em>, so your users sign in as <span class="mono" style="font-size:0.92em">you@yourdomain.com</span> everywhere that accepts browserid-ng. Your users manage nothing, every app accepts you with zero config — and it's your domain, so you can leave anytime.</p>
+    <p class="lede">browserid.me issues certificates <em>as your domain</em>, so your users sign in as <span class="mono" style="font-size:0.92em">you@yourdomain.com</span> everywhere that accepts browserid-ng. Govern every identity — and every agent acting under one — from a single console, and cut anyone off everywhere with one click. It's your domain, so you can leave anytime.</p>
     <div class="hero-actions">
       <a class="btn btn-primary" href="/domains" data-auth-href="/domains">Add your domain →</a>
       <a class="btn btn-ghost" href="#how">See how it works</a>
@@ -70,6 +70,32 @@ _browserid.yourdomain.com. <span class="kw">IN TXT</span>
 
 <span class="c">; issuer = yourdomain.com — RPs verify from here.</span>
 <span class="c">; swap in your own key anytime to self-host.</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="manage">
+  <div class="wrap split rp center" style="padding:60px 0 30px">
+    <div>
+      <span class="kicker">Managed identities</span>
+      <h2 class="sec">Govern your people — and their agents. Offboard with one click.</h2>
+      <p class="sec-lede">Turn on management and every identity at your domain becomes a <strong style="color:var(--text)">managed identity</strong>: you decide who exists (the roster), where identities can be used, and what agents acting under them may be granted — scopes, sites, lifetimes. Policy applies fresh every day, from your console, without touching a certificate by hand.</p>
+      <p class="sec-lede"><strong style="color:var(--text)">The offboard button is the point.</strong> When someone leaves, one revocation cascades through the protocol: their sign-ins stop, and every agent grant they ever signed dies at its next verification — everywhere, without you knowing or asking where "everywhere" is.</p>
+      <ul class="checklist">
+        <li>Roster: only identities you created (or approved) exist.</li>
+        <li>Constraints ride in the certificates and are enforced by verifiers — not by trust in us.</li>
+        <li>Users see plainly that a managed identity answers to its domain; their personal identities are untouched.</li>
+      </ul>
+    </div>
+    <div>
+      <div class="signin-mock">
+        <div class="apphead">yourdomain.com · console</div>
+        <div class="title">Managed-identity policy</div>
+        <div class="field"><span>Allowed sites</span><span>3 origins</span></div>
+        <div class="field" style="margin-top:10px"><span>Agent scopes</span><span>post · read</span></div>
+        <div class="field" style="margin-top:10px"><span>sam@yourdomain.com</span><span style="color:var(--green)">active · 2 agents</span></div>
+        <div class="ok" style="color:var(--muted)"><i style="background:var(--gold-tint)">⏻</i> Offboard revokes sam — and both agents — everywhere, on their next check.</div>
       </div>
     </div>
   </div>

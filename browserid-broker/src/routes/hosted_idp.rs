@@ -406,16 +406,31 @@ where
     };
     let ttl = Duration::days(DEVICE_CERT_VALIDITY_DAYS);
     let config_identities = vec![email.clone(), format!("{local}+*@{domain}")];
+    // Managed marker (spec §4.7): stamped on EVERY device cert of a managed
+    // identity, before the mint ever applies constraints — the durable,
+    // issuance-time signal that drives UA disclosure.
+    let managed = tenant
+        .management
+        .as_ref()
+        .filter(|m| m.enabled)
+        .map(|_| true);
     let issue = |pubkey: &PublicKey, purpose: Purpose, identities: Vec<String>, status: StatusRef| {
-        DeviceCert::create(
-            &tenant.domain,
-            pubkey,
-            purpose,
-            holder.clone(),
-            identities,
-            ttl,
+        let now = chrono::Utc::now();
+        DeviceCert::from_claims(
+            browserid_core::device::DeviceCertClaims {
+                typ: browserid_core::device::TYP_DEVICE_CERT.to_string(),
+                iss: tenant.domain.clone(),
+                iat: now.timestamp(),
+                exp: (now + ttl).timestamp(),
+                purpose,
+                holder: holder.clone(),
+                identities,
+                public_key: pubkey.clone(),
+                status: Some(status),
+                managed,
+                constraints: None,
+            },
             &keypair,
-            Some(status),
         )
     };
     let (device_cert, config_cert) = match (
@@ -510,21 +525,92 @@ where
             _ => return Err(BrokerError::PolicyRefused("roster entry is not active".into())),
         }
     }
-    let access_cert = AccessCert::create(
-        &tenant.domain,
-        &c.identity,
-        device_cert.holder().clone(),
-        &c.access_key,
-        Duration::hours(24),
-        &keypair,
-        device_cert.claims().status.clone(),
-    )
-    .map_err(ce)?;
+    // Managed-identity policy (spec §4.7/§7.2): the mint is the per-~24 h
+    // policy decision point. The `audience` request claim is honored ONLY for
+    // a marked device cert (unmanaged mints stay RP-blind); constraints are
+    // decided fresh from the tenant's current policy at every mint.
+    let policy = tenant.management.as_ref().filter(|m| m.enabled);
+    let mut constraints: Option<browserid_core::device::Constraints> = None;
+    if let Some(p) = policy {
+        let requested = c
+            .audience
+            .as_deref()
+            .filter(|_| device_cert.claims().managed == Some(true));
+        if let Some(aud) = requested {
+            // Early, comprehensible policy failure at login time — not an
+            // opaque verifier reject.
+            if !p.audiences.is_empty() && !p.audiences.iter().any(|a| a == aud) {
+                return Err(BrokerError::PolicyRefused(
+                    "identity not permitted at this site (managed-identity policy)".into(),
+                ));
+            }
+        }
+        if p.per_audience && requested.is_none() {
+            return Err(BrokerError::PolicyRefused(
+                "audience required: this managed identity mints per-audience access certs".into(),
+            ));
+        }
+        constraints = constraints_from_policy(p, if p.per_audience { requested } else { None })
+            .map_err(|e| BrokerError::Internal(format!("constraints: {e}")))?;
+    }
+    let access_cert = {
+        let now = chrono::Utc::now();
+        AccessCert::from_claims(
+            browserid_core::device::AccessCertClaims {
+                typ: browserid_core::device::TYP_ACCESS_CERT.to_string(),
+                iss: tenant.domain.clone(),
+                iat: now.timestamp(),
+                exp: (now + Duration::hours(24)).timestamp(),
+                identity: c.identity.clone(),
+                holder: device_cert.holder().clone(),
+                access_key: c.access_key.clone(),
+                status: device_cert.claims().status.clone(),
+                constraints,
+            },
+            &keypair,
+        )
+        .map_err(ce)?
+    };
     Ok(Json(json!({
         "success": true,
         "access_cert": access_cert.encoded(),
         "email": c.identity,
     })))
+}
+
+/// Build the wire `Constraints` from a tenant's policy. `single_audience`
+/// (per-audience posture) scopes the cert to exactly that audience; otherwise
+/// the full allowlist is hashed (broad posture — empty allowlist = no aud
+/// constraint at all). Returns None when the policy restricts nothing.
+fn constraints_from_policy(
+    p: &crate::store::ManagementPolicy,
+    single_audience: Option<&str>,
+) -> Result<Option<browserid_core::device::Constraints>, browserid_core::Error> {
+    use browserid_core::device::{AudConstraint, Constraints};
+    let aud = match single_audience {
+        Some(a) => Some(AudConstraint {
+            salt: p.salt.clone(),
+            hashes: vec![AudConstraint::hash_audience(&p.salt, a)?],
+        }),
+        None if !p.audiences.is_empty() => Some(AudConstraint {
+            salt: p.salt.clone(),
+            hashes: p
+                .audiences
+                .iter()
+                .map(|a| AudConstraint::hash_audience(&p.salt, a))
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        None => None,
+    };
+    if aud.is_none() && p.scopes.is_none() && p.max_ttl.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(Constraints {
+        aud,
+        scopes: p.scopes.clone(),
+        max_ttl: p.max_ttl,
+        unknown: Default::default(),
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,4 +1207,122 @@ where
     state.user_store.delete_tenant(&domain)?;
     tracing::info!(tenant = %domain, by = %admin, "hosted primary: tenant deleted");
     Ok(Json(json!({"success": true})))
+}
+
+// ---------------------------------------------------------------------------
+// Managed-identity policy admin (spec §4.7; bean 4vu7).
+// GET  /wsapi/tenant/management?domain=&csrf=   → current policy
+// POST /wsapi/tenant/management                 → save; enabling revokes the
+//   tenant's outstanding certs (everyone re-logs in and comes back with
+//   `managed: true` device certs — the marker MUST precede any stamping).
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct ManagementQuery {
+    pub csrf: String,
+    pub domain: String,
+}
+
+pub async fn tenant_management_get<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Query(q): Query<ManagementQuery>,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let domain = q.domain.trim().to_lowercase();
+    session_admin_identity(state.as_ref(), &cookies, &q.csrf, &domain)?;
+    let tenant = state
+        .user_store
+        .get_tenant(&domain)?
+        .ok_or(BrokerError::TenantNotFound)?;
+    let m = tenant.management.unwrap_or_default();
+    Ok(Json(json!({
+        "success": true,
+        "management": {
+            "enabled": m.enabled,
+            "per_audience": m.per_audience,
+            "audiences": m.audiences,
+            "scopes": m.scopes,
+            "max_ttl": m.max_ttl,
+        },
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct ManagementSetRequest {
+    pub csrf: String,
+    pub domain: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub per_audience: bool,
+    #[serde(default)]
+    pub audiences: Vec<String>,
+    #[serde(default)]
+    pub scopes: Option<Vec<String>>,
+    #[serde(default)]
+    pub max_ttl: Option<i64>,
+}
+
+pub async fn tenant_management_set<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<ManagementSetRequest>,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let domain = req.domain.trim().to_lowercase();
+    let admin = session_admin_identity(state.as_ref(), &cookies, &req.csrf, &domain)?;
+    let tenant = state
+        .user_store
+        .get_tenant(&domain)?
+        .ok_or(BrokerError::TenantNotFound)?;
+
+    let was_enabled = tenant.management.as_ref().is_some_and(|m| m.enabled);
+    // Keep the existing salt across saves (the hashes in outstanding certs
+    // stay checkable); generate one the first time.
+    let salt = tenant
+        .management
+        .as_ref()
+        .map(|m| m.salt.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(crate::crypto::generate_salt_b64);
+
+    let audiences: Vec<String> = req
+        .audiences
+        .into_iter()
+        .map(|a| a.trim().trim_end_matches('/').to_string())
+        .filter(|a| !a.is_empty())
+        .collect();
+    let policy = crate::store::ManagementPolicy {
+        enabled: req.enabled,
+        per_audience: req.per_audience,
+        audiences,
+        scopes: req.scopes.filter(|s| !s.is_empty()),
+        max_ttl: req.max_ttl.filter(|t| *t > 0),
+        salt,
+    };
+    state.user_store.set_tenant_management(&domain, &policy)?;
+
+    // Enable transition: revoke every outstanding tenant credential so users
+    // re-login and come back with MARKED device certs (spec §4.7: the marker
+    // precedes any constraint stamping). Also sweep broker-fallback certs for
+    // the domain, same as domain activation does.
+    let mut revoked = 0;
+    if policy.enabled && !was_enabled {
+        revoked = state.user_store.tenant_status_revoke_all(tenant.id)?;
+        revoked += state.user_store.revoke_domain_device_certs(&domain)?;
+        tracing::info!(tenant = %domain, by = %admin, revoked,
+            "management enabled: revoked outstanding certs for re-issue with managed marker");
+    } else {
+        tracing::info!(tenant = %domain, by = %admin, enabled = policy.enabled,
+            "management policy updated");
+    }
+    Ok(Json(json!({"success": true, "revoked": revoked})))
 }

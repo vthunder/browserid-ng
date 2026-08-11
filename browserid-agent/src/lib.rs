@@ -383,7 +383,11 @@ pub struct DeviceAgent {
     device_cert: DeviceCert,
     email: String,
     holder: Holder,
-    access: Option<AccessSession>,
+    // Access certs by audience slot. Unmanaged identities always use the ""
+    // slot (one shared, audience-free cert — the mint stays RP-blind). A
+    // MANAGED identity (device cert `managed: true`, spec §4.7) mints per
+    // audience so the IdP can scope each cert.
+    access: std::collections::HashMap<String, AccessSession>,
     /// audience → (warrant signed by the user's config cert, that config cert)
     grants: std::collections::HashMap<String, (DeviceWarrant, DeviceCert)>,
 }
@@ -434,7 +438,7 @@ impl DeviceAgent {
             device_cert,
             email,
             holder,
-            access: None,
+            access: std::collections::HashMap::new(),
             grants: std::collections::HashMap::new(),
         })
     }
@@ -481,19 +485,47 @@ impl DeviceAgent {
         self.grants.keys().map(String::as_str).collect()
     }
 
+    /// Whether this identity is managed (device cert `managed: true`, §4.7).
+    pub fn is_managed(&self) -> bool {
+        self.device_cert.claims().managed == Some(true)
+    }
+
+    /// The access-cert cache slot for `audience`: managed identities key per
+    /// audience; unmanaged share one audience-free cert.
+    fn aud_key(&self, audience: Option<&str>) -> String {
+        if self.is_managed() {
+            audience.unwrap_or("").to_string()
+        } else {
+            String::new()
+        }
+    }
+
     /// Mint (or re-mint) an access cert: generate a fresh access key, sign an
     /// access request with the device key, POST the IdP's `/access/mint`.
-    pub async fn mint(&mut self) -> Result<()> {
+    /// For a MANAGED identity the request names `audience` (spec §4.2) so the
+    /// IdP can scope the cert; unmanaged requests stay audience-free.
+    pub async fn mint(&mut self, audience: Option<&str>) -> Result<()> {
         let access_key = KeyPair::generate();
         let jti = format!("{}{}", random_hex(), random_hex());
-        let request = AccessRequest::create(
-            &self.idp_domain,
-            &self.email,
-            self.holder.clone(),
-            &access_key.public_key(),
-            &jti,
-            &self.device_key,
-        )?;
+        let request = match audience.filter(|_| self.is_managed()) {
+            Some(aud) => AccessRequest::create_for_audience(
+                &self.idp_domain,
+                &self.email,
+                self.holder.clone(),
+                &access_key.public_key(),
+                &jti,
+                aud,
+                &self.device_key,
+            )?,
+            None => AccessRequest::create(
+                &self.idp_domain,
+                &self.email,
+                self.holder.clone(),
+                &access_key.public_key(),
+                &jti,
+                &self.device_key,
+            )?,
+        };
         let mint_url = self
             .credential
             .access_mint
@@ -524,18 +556,19 @@ impl DeviceAgent {
             return Err(AgentError::Idp { status: status.as_u16(), reason });
         }
         let cert = AccessCert::parse(cert_jws.expect("checked above"))?;
-        self.access = Some(AccessSession { key: access_key, cert });
+        self.access
+            .insert(self.aud_key(audience), AccessSession { key: access_key, cert });
         Ok(())
     }
 
-    async fn ensure_fresh_access(&mut self) -> Result<()> {
+    async fn ensure_fresh_access(&mut self, audience: &str) -> Result<()> {
         let deadline = (Utc::now() + Duration::seconds(ACCESS_REFRESH_MARGIN_SECONDS)).timestamp();
-        let stale = match &self.access {
+        let stale = match self.access.get(&self.aud_key(Some(audience))) {
             None => true,
             Some(s) => s.cert.claims().exp <= deadline,
         };
         if stale {
-            self.mint().await?;
+            self.mint(Some(audience)).await?;
         }
         Ok(())
     }
@@ -548,7 +581,7 @@ impl DeviceAgent {
         let presentation = self.assertion_for(audience).await?;
         let seed = *self
             .access
-            .as_ref()
+            .get(&self.aud_key(Some(audience)))
             .expect("assertion_for minted an access session")
             .key
             .secret_bytes();
@@ -559,13 +592,16 @@ impl DeviceAgent {
     /// for `audience`. Re-mints the access cert first if stale. Requires a held
     /// config-cert-signed warrant for `audience` ([`Self::add_grant`]).
     pub async fn assertion_for(&mut self, audience: &str) -> Result<String> {
-        self.ensure_fresh_access().await?;
+        self.ensure_fresh_access(audience).await?;
         let (warrant, config_cert) = self
             .grants
             .get(audience)
             .ok_or_else(|| AgentError::NoWarrant { audience: audience.to_string() })?
             .clone();
-        let session = self.access.as_ref().expect("ensure_fresh_access set it");
+        let session = self
+            .access
+            .get(&self.aud_key(Some(audience)))
+            .expect("ensure_fresh_access set it");
         let assertion = Assertion::create(
             audience,
             Duration::minutes(ASSERTION_VALIDITY_MINUTES),

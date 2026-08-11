@@ -54,7 +54,7 @@ const ACCESS_REQUEST_VALIDITY_S = 10 * 60;
 /** A `browserid-access-request-v1`, signed with the DEVICE key: "certify this
  *  fresh access key for this identity". The holder is copied from the device
  *  cert — the mint must not let a requester choose a different one. */
-export function accessRequest(deviceKey, { domain, identity, holder, accessKeyB64, jti }) {
+export function accessRequest(deviceKey, { domain, identity, holder, accessKeyB64, jti, audience }) {
   const iat = nowS();
   return deviceKey.jws(HEADER, {
     typ: "browserid-access-request-v1",
@@ -65,6 +65,9 @@ export function accessRequest(deviceKey, { domain, identity, holder, accessKeyB6
     identity,
     holder,
     "access-key": publicKeyField(accessKeyB64),
+    // Managed identities only (spec §4.2): callers pass `audience` iff the
+    // device cert carries `managed: true`; unmanaged mints stay RP-blind.
+    ...(audience ? { audience } : {}),
   });
 }
 

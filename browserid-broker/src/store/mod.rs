@@ -316,6 +316,14 @@ pub trait UserStore: Send + Sync {
     /// once and seats `created_by` as the first admin.
     fn set_tenant_status(&self, domain: &str, status: TenantStatus) -> StoreResult<()>;
 
+    /// Save the tenant's managed-identity policy (spec §4.7).
+    fn set_tenant_management(&self, domain: &str, policy: &ManagementPolicy) -> StoreResult<()>;
+
+    /// Revoke EVERY credential on the tenant's status list (device, config,
+    /// and access certs alike) — the enable-management transition: everyone
+    /// re-logs in and comes back with marked certs. Returns bits set.
+    fn tenant_status_revoke_all(&self, tenant_id: u64) -> StoreResult<u64>;
+
     /// Delete a tenant and everything scoped to it — admins, roster, status
     /// index space. The tenant's certs (signed under a key that now vanishes)
     /// die once the DNS record is removed or re-onboarded; this only forgets

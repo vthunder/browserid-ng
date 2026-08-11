@@ -32,10 +32,12 @@ struct Fixture {
     idp: KeyPair,
     access_key: KeyPair,
     config_key: KeyPair,
+    access_constraints: Option<Constraints>,
+    config_constraints: Option<Constraints>,
 }
 impl Fixture {
     fn new() -> Self {
-        Self { idp: seed_key(1), access_key: seed_key(3), config_key: seed_key(4) }
+        Self { idp: seed_key(1), access_key: seed_key(3), config_key: seed_key(4), access_constraints: None, config_constraints: None }
     }
     fn idp_domain(&self) -> &'static str {
         "sandmill.org"
@@ -58,6 +60,7 @@ impl Fixture {
                 holder: Holder::new("br.main").unwrap(),
                 access_key: self.access_key.public_key(),
                 status: status("https://sandmill.org/.well-known/browserid-status", 7),
+                constraints: self.access_constraints.clone(),
             },
             &self.idp,
         )
@@ -75,6 +78,8 @@ impl Fixture {
                 identities: vec![self.email().into()],
                 public_key: self.config_key.public_key(),
                 status: status("https://sandmill.org/.well-known/browserid-status", 2),
+                managed: None,
+                constraints: self.config_constraints.clone(),
             },
             idp,
         )
@@ -171,7 +176,7 @@ fn config_not_authorized_for_identity_rejected() {
             typ: TYP_DEVICE_CERT.into(), iss: f.idp_domain().into(), iat: IAT, exp: IAT + 90 * DAY,
             purpose: Purpose::Authorization, holder: Holder::new("br.main").unwrap(),
             identities: vec!["someone-else@sandmill.org".into()],
-            public_key: f.config_key.public_key(), status: None,
+            public_key: f.config_key.public_key(), status: None, managed: None, constraints: None,
         },
         &f.idp,
     ).unwrap();
@@ -188,7 +193,7 @@ fn authentication_purpose_config_cert_rejected() {
         DeviceCertClaims {
             typ: TYP_DEVICE_CERT.into(), iss: f.idp_domain().into(), iat: IAT, exp: IAT + 90 * DAY,
             purpose: Purpose::Authentication, holder: Holder::new("br.main").unwrap(),
-            identities: vec![f.email().into()], public_key: f.config_key.public_key(), status: None,
+            identities: vec![f.email().into()], public_key: f.config_key.public_key(), status: None, managed: None, constraints: None,
         },
         &f.idp,
     ).unwrap();
@@ -345,6 +350,8 @@ impl Fixture {
             identities: vec![self.email().into()],
             public_key: seed_key(2).public_key(),
             status: status("https://sandmill.org/.well-known/browserid-status", 1),
+            managed: None,
+            constraints: None,
         }
     }
 }
@@ -369,4 +376,152 @@ fn base_identity_authorizes_subaddresses() {
     // Degenerate empty tag ("dan+@") matches the base rule — harmless: the
     // warrant identifier still pins the exact presentable identity.
     assert!(super::identity_matches("dan@mingo.place", "dan+@mingo.place"));
+}
+
+// --- constraints & managed identities (spec §4.7, §6.1 step 7) -------------
+
+fn aud_allow(audiences: &[&str]) -> AudConstraint {
+    let salt = "c2FsdHktc2FsdA"; // b64url("salty-salt")
+    AudConstraint {
+        salt: salt.into(),
+        hashes: audiences
+            .iter()
+            .map(|a| AudConstraint::hash_audience(salt, a).unwrap())
+            .collect(),
+    }
+}
+
+fn constraints(
+    aud: Option<AudConstraint>,
+    scopes: Option<Vec<String>>,
+    max_ttl: Option<i64>,
+) -> Constraints {
+    Constraints { aud, scopes, max_ttl, unknown: Default::default() }
+}
+
+#[test]
+fn constraints_satisfied_passes() {
+    let mut f = Fixture::new();
+    f.access_constraints = Some(constraints(
+        Some(aud_allow(&[f.audience(), "https://other.example"])),
+        Some(vec!["login".into(), "post".into()]),
+        Some(91 * DAY),
+    ));
+    let idp_pub = f.idp.public_key();
+    let v = f.presentation().verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap();
+    assert_eq!(v.email, f.email());
+}
+
+#[test]
+fn constraints_audience_not_allowed_rejects() {
+    let mut f = Fixture::new();
+    f.access_constraints =
+        Some(constraints(Some(aud_allow(&["https://only-this.example"])), None, None));
+    let idp_pub = f.idp.public_key();
+    let err = f.presentation().verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+    assert!(err.to_string().contains("audience not permitted"), "{err}");
+}
+
+#[test]
+fn constraints_scope_outside_allowlist_rejects() {
+    // warrant carries scope "login"; allowlist permits only "post".
+    let mut f = Fixture::new();
+    f.access_constraints = Some(constraints(None, Some(vec!["post".into()]), None));
+    let idp_pub = f.idp.public_key();
+    let err = f.presentation().verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+    assert!(err.to_string().contains("scope 'login' not permitted"), "{err}");
+}
+
+#[test]
+fn constraints_max_ttl_exceeded_rejects() {
+    // warrant is 90 days; cap at 1 day.
+    let mut f = Fixture::new();
+    f.access_constraints = Some(constraints(None, None, Some(DAY)));
+    let idp_pub = f.idp.public_key();
+    let err = f.presentation().verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+    assert!(err.to_string().contains("max-ttl"), "{err}");
+}
+
+#[test]
+fn constraints_on_config_cert_enforced_too() {
+    let mut f = Fixture::new();
+    f.config_constraints =
+        Some(constraints(Some(aud_allow(&["https://elsewhere.example"])), None, None));
+    let idp_pub = f.idp.public_key();
+    let err = f.presentation().verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+    assert!(err.to_string().contains("config cert"), "{err}");
+}
+
+#[test]
+fn unknown_constraint_key_rejects_fail_closed() {
+    // A constraint vocabulary this build does not implement MUST reject —
+    // a restriction ignored is a restriction escaped (spec §4.7).
+    let mut unknown = std::collections::BTreeMap::new();
+    unknown.insert("delegation".to_string(), serde_json::json!("none"));
+    let mut f = Fixture::new();
+    f.access_constraints = Some(Constraints { aud: None, scopes: None, max_ttl: None, unknown });
+    let idp_pub = f.idp.public_key();
+    let err = f.presentation().verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+    assert!(err.to_string().contains("unrecognized constraint key"), "{err}");
+}
+
+#[test]
+fn unknown_constraint_key_survives_wire_roundtrip() {
+    // serde must CAPTURE unknown keys (flatten), not drop them — else a
+    // re-encoded cert would silently shed the very restriction that should
+    // fail it closed.
+    let mut unknown = std::collections::BTreeMap::new();
+    unknown.insert("cosign".to_string(), serde_json::json!({"endpoint": "/x"}));
+    let c = Constraints { aud: None, scopes: None, max_ttl: Some(3600), unknown };
+    let wire = serde_json::to_string(&c).unwrap();
+    let back: Constraints = serde_json::from_str(&wire).unwrap();
+    assert_eq!(back.unknown.len(), 1);
+    assert!(back.unknown.contains_key("cosign"));
+    assert_eq!(back.max_ttl, Some(3600));
+}
+
+#[test]
+fn managed_marker_roundtrips_and_absent_stays_absent() {
+    let f = Fixture::new();
+    let mut claims = f.auth_device_cert_claims();
+    claims.managed = Some(true);
+    let cert = DeviceCert::from_claims(claims, &f.idp).unwrap();
+    let parsed = DeviceCert::parse(cert.encoded()).unwrap();
+    assert_eq!(parsed.claims().managed, Some(true));
+    // Unmanaged wire form carries NO managed key at all (consumer certs
+    // byte-identical to pre-§4.7 builds).
+    let plain = DeviceCert::from_claims(f.auth_device_cert_claims(), &f.idp).unwrap();
+    let payload = plain.encoded().split('.').nth(1).unwrap();
+    use base64::Engine;
+    let json = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).unwrap();
+    assert!(!String::from_utf8(json).unwrap().contains("managed"));
+}
+
+#[test]
+fn access_request_audience_roundtrips() {
+    let f = Fixture::new();
+    let device_key = seed_key(9);
+    let req = AccessRequest::create_for_audience(
+        f.idp_domain(),
+        f.email(),
+        Holder::new("br.main").unwrap(),
+        &f.access_key.public_key(),
+        "jti-1",
+        f.audience(),
+        &device_key,
+    )
+    .unwrap();
+    let parsed = AccessRequest::parse(req.encoded()).unwrap();
+    assert_eq!(parsed.claims().audience.as_deref(), Some(f.audience()));
+    // The default constructor stays audience-free (RP-blind).
+    let plain = AccessRequest::create(
+        f.idp_domain(),
+        f.email(),
+        Holder::new("br.main").unwrap(),
+        &f.access_key.public_key(),
+        "jti-2",
+        &device_key,
+    )
+    .unwrap();
+    assert!(plain.claims().audience.is_none());
 }

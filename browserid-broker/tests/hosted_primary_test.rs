@@ -371,3 +371,155 @@ async fn login_rejects_wrong_password_and_unknown_tenant() {
     let (_, no_tenant) = idp_login(&server, "someone@no-such-tenant.example", "whatever").await;
     assert_eq!(no_tenant["success"], false);
 }
+
+// --- managed identities (spec §4.7; bean 4vu7) -----------------------------
+
+/// Enable management + full spine: the device cert carries the marker, the
+/// mint stamps constraints per current policy, per-audience posture requires
+/// (and scopes to) the requested audience, and off-list audiences fail with a
+/// comprehensible policy error at the mint — not a verifier reject.
+#[tokio::test]
+async fn managed_tenant_marks_certs_and_stamps_mint_policy() {
+    use browserid_broker::store::ManagementPolicy;
+    use browserid_core::device::AudConstraint;
+
+    let (server, store) = make_server();
+    seed_active_tenant(&store);
+    let allowed = "https://app.allowed.example";
+    store
+        .set_tenant_management(
+            TENANT,
+            &ManagementPolicy {
+                enabled: true,
+                per_audience: true,
+                audiences: vec![allowed.to_string()],
+                scopes: Some(vec!["post".into()]),
+                max_ttl: Some(86_400),
+                salt: "c2FsdHktc2FsdA".into(),
+            },
+        )
+        .unwrap();
+
+    // Roster user without forced change so issuance flows directly.
+    let tenant = store.get_tenant(TENANT).unwrap().unwrap();
+    store
+        .create_roster_entry(tenant.id, "bob", &bcrypt_hash("hunter2secret"), false, "admin@example.org")
+        .unwrap();
+    let email = format!("bob@{TENANT}");
+    let (cookie, login) = idp_login(&server, &email, "hunter2secret").await;
+    assert_eq!(login["success"], true, "login: {login}");
+
+    let device_kp = KeyPair::generate();
+    let config_kp = KeyPair::generate();
+    let issued: Value = server
+        .post("/idp/device_cert")
+        .add_cookie(cookie::Cookie::new("idp_session", cookie))
+        .json(&json!({
+            "email": email,
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": config_kp.public_key().to_base64(),
+        }))
+        .await
+        .json();
+    assert_eq!(issued["success"], true, "device_cert: {issued}");
+    let device_cert = DeviceCert::parse(issued["device_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(device_cert.claims().managed, Some(true), "managed marker on the device cert");
+    let config_cert = DeviceCert::parse(issued["config_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(config_cert.claims().managed, Some(true), "marker on the config cert too");
+
+    // Per-audience posture: an audience-free mint is refused with the
+    // audience-required reason.
+    let access_kp = KeyPair::generate();
+    let blind = AccessRequest::create(
+        TENANT, &email, device_cert.holder().clone(),
+        &access_kp.public_key(), "nonce-mg-1", &device_kp,
+    )
+    .unwrap();
+    let refused = server
+        .post("/idp/access_cert")
+        .json(&json!({ "device_cert": issued["device_cert"], "access_request": blind.encoded() }))
+        .await;
+    assert_eq!(refused.status_code(), 403, "audience-free mint refused: {}", refused.text());
+    assert!(refused.text().contains("audience required"), "{}", refused.text());
+
+    // An off-list audience fails at the mint with the policy reason.
+    let off = AccessRequest::create_for_audience(
+        TENANT, &email, device_cert.holder().clone(),
+        &access_kp.public_key(), "nonce-mg-2", "https://forbidden.example", &device_kp,
+    )
+    .unwrap();
+    let refused = server
+        .post("/idp/access_cert")
+        .json(&json!({ "device_cert": issued["device_cert"], "access_request": off.encoded() }))
+        .await;
+    assert_eq!(refused.status_code(), 403);
+    assert!(refused.text().contains("not permitted"), "{}", refused.text());
+
+    // The allowed audience mints a cert scoped to EXACTLY that audience,
+    // carrying the policy's scopes + max-ttl.
+    let ok = AccessRequest::create_for_audience(
+        TENANT, &email, device_cert.holder().clone(),
+        &access_kp.public_key(), "nonce-mg-3", allowed, &device_kp,
+    )
+    .unwrap();
+    let minted: Value = server
+        .post("/idp/access_cert")
+        .json(&json!({ "device_cert": issued["device_cert"], "access_request": ok.encoded() }))
+        .await
+        .json();
+    assert_eq!(minted["success"], true, "mint: {minted}");
+    let ac = AccessCert::parse(minted["access_cert"].as_str().unwrap()).unwrap();
+    let cons = ac.claims().constraints.as_ref().expect("constraints stamped");
+    let aud = cons.aud.as_ref().expect("aud constraint");
+    assert_eq!(aud.hashes.len(), 1, "scoped to exactly the requested audience");
+    assert!(aud.permits(allowed));
+    assert!(!aud.permits("https://forbidden.example"));
+    assert_eq!(cons.scopes.as_deref(), Some(&["post".to_string()][..]));
+    assert_eq!(cons.max_ttl, Some(86_400));
+}
+
+/// Unmanaged tenants are untouched: no marker, no constraints — and an
+/// `audience` in the request is IGNORED, never honored (the mint stays
+/// RP-blind for unmanaged identities even against a nonconforming client).
+#[tokio::test]
+async fn unmanaged_tenant_ignores_audience_and_stamps_nothing() {
+    let (server, store) = make_server();
+    seed_active_tenant(&store);
+    let tenant = store.get_tenant(TENANT).unwrap().unwrap();
+    store
+        .create_roster_entry(tenant.id, "carol", &bcrypt_hash("hunter2secret"), false, "admin@example.org")
+        .unwrap();
+    let email = format!("carol@{TENANT}");
+    let (cookie, _) = idp_login(&server, &email, "hunter2secret").await;
+
+    let device_kp = KeyPair::generate();
+    let config_kp = KeyPair::generate();
+    let issued: Value = server
+        .post("/idp/device_cert")
+        .add_cookie(cookie::Cookie::new("idp_session", cookie))
+        .json(&json!({
+            "email": email,
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": config_kp.public_key().to_base64(),
+        }))
+        .await
+        .json();
+    let device_cert = DeviceCert::parse(issued["device_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(device_cert.claims().managed, None, "no marker for an unmanaged tenant");
+
+    let access_kp = KeyPair::generate();
+    // A nonconforming client sends an audience anyway — it must be ignored.
+    let areq = AccessRequest::create_for_audience(
+        TENANT, &email, device_cert.holder().clone(),
+        &access_kp.public_key(), "nonce-um-1", "https://spy.example", &device_kp,
+    )
+    .unwrap();
+    let minted: Value = server
+        .post("/idp/access_cert")
+        .json(&json!({ "device_cert": issued["device_cert"], "access_request": areq.encoded() }))
+        .await
+        .json();
+    assert_eq!(minted["success"], true, "mint: {minted}");
+    let ac = AccessCert::parse(minted["access_cert"].as_str().unwrap()).unwrap();
+    assert!(ac.claims().constraints.is_none(), "no constraints on an unmanaged cert");
+}

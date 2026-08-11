@@ -8,7 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    DeviceCertRecord, Email, EmailType, Namespace, PendingVerification, ProofMethod, RosterEntry,
+    DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, Tenant, TenantStatus, User, UserId, UserStore, VerificationType,
 };
@@ -781,6 +781,7 @@ impl UserStore for InMemoryUserStore {
             created_by: created_by.to_string(),
             created_at: Utc::now(),
             activated_at: None,
+            management: None,
         };
         tenants.insert(domain.to_string(), tenant.clone());
         Ok(tenant)
@@ -820,6 +821,25 @@ impl UserStore for InMemoryUserStore {
             }
         }
         Ok(())
+    }
+
+    fn set_tenant_management(&self, domain: &str, policy: &ManagementPolicy) -> StoreResult<()> {
+        let mut tenants = self.tenants.write().unwrap();
+        let t = tenants.get_mut(domain).ok_or(BrokerError::TenantNotFound)?;
+        t.management = Some(policy.clone());
+        Ok(())
+    }
+
+    fn tenant_status_revoke_all(&self, tenant_id: u64) -> StoreResult<u64> {
+        let mut status = self.tenant_status.write().unwrap();
+        let mut n = 0;
+        for ((tid, _), (_, revoked)) in status.iter_mut() {
+            if *tid == tenant_id && !*revoked {
+                *revoked = true;
+                n += 1;
+            }
+        }
+        Ok(n)
     }
 
     fn delete_tenant(&self, domain: &str) -> StoreResult<()> {

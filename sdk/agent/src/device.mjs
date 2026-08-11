@@ -278,7 +278,11 @@ export class PendingWarrants {
  */
 export class DeviceAgent {
   #deviceKey;
-  #access = null; // { key, cert, claims }
+  // Access certs by audience. Unmanaged identities always use the "" slot
+  // (one shared, audience-free cert — the mint stays RP-blind). A MANAGED
+  // identity (device cert `managed: true`, spec §4.7) mints per audience so
+  // the IdP can scope each cert; several concurrent certs may be held.
+  #access = new Map(); // audienceKey -> { key, cert, claims }
   #grants = new Map(); // audience -> { warrant, configCert }
 
   constructor(credential, { http = fetch } = {}) {
@@ -347,8 +351,20 @@ export class DeviceAgent {
     }));
   }
 
-  /** Mint (or re-mint) an access cert over a FRESH key. */
-  async mint() {
+  /** Whether this identity is managed (device cert `managed: true`). */
+  get isManaged() {
+    return this.deviceCertClaims?.managed === true;
+  }
+
+  /** The cache slot for `audience`: managed identities key per audience. */
+  #audKey(audience) {
+    return this.isManaged ? (audience ?? "") : "";
+  }
+
+  /** Mint (or re-mint) an access cert over a FRESH key. For a managed
+   *  identity the request names the audience (spec §4.2) so the IdP can
+   *  scope the cert; unmanaged requests stay audience-free (RP-blind). */
+  async mint(audience) {
     const accessKey = KeyPair.generate();
     const jti = b64u(globalThis.crypto.getRandomValues(new Uint8Array(8)));
     const request = accessRequest(this.#deviceKey, {
@@ -357,6 +373,7 @@ export class DeviceAgent {
       holder: this.holder,
       accessKeyB64: accessKey.publicKeyB64,
       jti,
+      ...(this.isManaged && audience ? { audience } : {}),
     });
     const url =
       this.credential.access_mint || `${trim(this.credential.idp)}/access/mint`;
@@ -370,13 +387,15 @@ export class DeviceAgent {
     if (!res.ok || !cert) {
       throw new RequestError("access mint", res.status, json.reason || json.error || "no reason given");
     }
-    this.#access = { key: accessKey, cert, claims: decodeJwtClaims(cert) };
+    this.#access.set(this.#audKey(audience), { key: accessKey, cert, claims: decodeJwtClaims(cert) });
     return cert;
   }
 
-  async #ensureFreshAccess() {
+  async #ensureFreshAccess(audience) {
     const deadline = nowS() + ACCESS_REFRESH_MARGIN_S;
-    if (!this.#access || (this.#access.claims.exp ?? 0) <= deadline) await this.mint();
+    const cur = this.#access.get(this.#audKey(audience));
+    if (!cur || (cur.claims.exp ?? 0) <= deadline) await this.mint(audience);
+    return this.#access.get(this.#audKey(audience));
   }
 
   /**
@@ -385,12 +404,12 @@ export class DeviceAgent {
    * cert if stale. Requires a held warrant for the audience.
    */
   async assertionFor(audience) {
-    await this.#ensureFreshAccess();
+    const access = await this.#ensureFreshAccess(audience);
     const grant = this.#grants.get(audience);
     if (!grant) throw new NoWarrantError(audience);
     return accessPresentation({
-      accessCert: this.#access.cert,
-      assertion: makeAssertion(this.#access.key, audience),
+      accessCert: access.cert,
+      assertion: makeAssertion(access.key, audience),
       warrant: grant.warrant,
       configCert: grant.configCert,
     });
@@ -404,7 +423,8 @@ export class DeviceAgent {
    */
   async assertionWithAccessKey(audience) {
     const presentation = await this.assertionFor(audience);
-    return { presentation, accessKey: this.#access.key, accessCert: this.#access.cert };
+    const access = this.#access.get(this.#audKey(audience));
+    return { presentation, accessKey: access.key, accessCert: access.cert };
   }
 }
 

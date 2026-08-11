@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    DeviceCertRecord, Email, EmailType, Namespace, PendingVerification, ProofMethod, RosterEntry,
+    DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionStore, StoreResult, Tenant, TenantStatus, User, UserId,
     UserStore, VerificationType, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
 };
@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 24;
+const SCHEMA_VERSION: i32 = 25;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -134,6 +134,9 @@ impl SqliteStore {
             }
             if current_version < 24 {
                 Self::migrate_v24(conn)?;
+            }
+            if current_version < 25 {
+                Self::migrate_v25(conn)?;
             }
 
             // Update schema version
@@ -703,6 +706,14 @@ impl SqliteStore {
         // retains console access even when the admin-of-record is a
         // domain-local email not yet on that account.
         conn.execute_batch("ALTER TABLE tenants ADD COLUMN owner_user_id INTEGER;")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v25(conn: &Connection) -> Result<(), BrokerError> {
+        // Managed-identity policy (spec §4.7, bean 4vu7): one JSON blob so the
+        // vocabulary can evolve without further migrations.
+        conn.execute_batch("ALTER TABLE tenants ADD COLUMN management TEXT;")
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
@@ -1989,7 +2000,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             "SELECT id, domain, public_key, private_key_sealed, status, self_claim,
-                    created_by, created_at, activated_at, owner_user_id
+                    created_by, created_at, activated_at, owner_user_id, management
              FROM tenants WHERE domain = ?1",
             params![domain],
             tenant_from_row,
@@ -2003,7 +2014,8 @@ impl UserStore for SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT DISTINCT t.id, t.domain, t.public_key, t.private_key_sealed, t.status,
-                        t.self_claim, t.created_by, t.created_at, t.activated_at, t.owner_user_id
+                        t.self_claim, t.created_by, t.created_at, t.activated_at, t.owner_user_id,
+                        t.management
                  FROM tenants t
                  LEFT JOIN tenant_admins a ON a.tenant_id = t.id
                  WHERE t.created_by = ?1 OR a.identity = ?1
@@ -2044,6 +2056,33 @@ impl UserStore for SqliteStore {
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         }
         Ok(())
+    }
+
+    fn set_tenant_management(&self, domain: &str, policy: &ManagementPolicy) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let json = serde_json::to_string(policy).map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let n = conn
+            .execute(
+                "UPDATE tenants SET management = ?1 WHERE domain = ?2",
+                params![json, domain],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if n == 0 {
+            return Err(BrokerError::TenantNotFound);
+        }
+        Ok(())
+    }
+
+    fn tenant_status_revoke_all(&self, tenant_id: u64) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE tenant_status SET revoked_at = ?1
+                 WHERE tenant_id = ?2 AND revoked_at IS NULL",
+                params![Utc::now().to_rfc3339(), tenant_id as i64],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(n as u64)
     }
 
     fn delete_tenant(&self, domain: &str) -> StoreResult<()> {
@@ -2337,6 +2376,9 @@ fn tenant_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tenant> {
         created_at: parse_ts(row.get(7)?),
         activated_at: row.get::<_, Option<String>>(8)?.map(parse_ts),
         owner_user_id: row.get::<_, Option<i64>>(9)?.map(|v| UserId(v as u64)),
+        management: row
+            .get::<_, Option<String>>(10)?
+            .and_then(|j| serde_json::from_str(&j).ok()),
     })
 }
 
@@ -2722,6 +2764,12 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn set_tenant_status(&self, domain: &str, status: TenantStatus) -> StoreResult<()> {
         (**self).set_tenant_status(domain, status)
+    }
+    fn set_tenant_management(&self, domain: &str, policy: &ManagementPolicy) -> StoreResult<()> {
+        (**self).set_tenant_management(domain, policy)
+    }
+    fn tenant_status_revoke_all(&self, tenant_id: u64) -> StoreResult<u64> {
+        (**self).tenant_status_revoke_all(tenant_id)
     }
 
     fn delete_tenant(&self, domain: &str) -> StoreResult<()> {

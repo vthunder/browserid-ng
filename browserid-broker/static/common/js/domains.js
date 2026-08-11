@@ -260,6 +260,22 @@
         '<div><label for="na-id">Add admin (an identity)</label><input id="na-id" placeholder="person@example.com" autocapitalize="off" /></div>' +
         '<div style="flex:0"><button id="na-add" class="ghost">Add admin</button></div>' +
       '</div><div class="err" id="na-err"></div></div>' +
+      '<h2>Managed-identity policy</h2>' +
+      '<div class="card" id="mgmt-card">' +
+        '<p class="muted" style="margin-top:0">Manage where identities at this domain can be used and what their agents may be granted. ' +
+        'Identities become <strong>managed</strong>: users are told the domain controls issuance and may restrict — and see — where they are used. ' +
+        '<strong>Turning this on signs everyone out once</strong> so their credentials are reissued with the managed marker.</p>' +
+        '<label style="font-weight:400"><input type="checkbox" id="mg-enabled" style="width:auto;margin-right:6px" />Enable managed identities for this domain</label>' +
+        '<label style="font-weight:400;margin-top:8px"><input type="checkbox" id="mg-peraud" style="width:auto;margin-right:6px" />Per-site credentials: each sign-in mints for one named site (you see each site as it is first used)</label>' +
+        '<label for="mg-aud">Allowed sites (one origin per line; empty = allow all)</label>' +
+        '<textarea id="mg-aud" rows="3" placeholder="https://app.example.com" style="width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font-size:14px;background:var(--bg);color:inherit;font-family:inherit"></textarea>' +
+        '<div class="toolbar">' +
+          '<div><label for="mg-scopes">Allowed agent scopes (space-separated; empty = unrestricted)</label><input id="mg-scopes" placeholder="post read" autocapitalize="off" /></div>' +
+          '<div><label for="mg-ttl">Max grant lifetime (days; empty = default)</label><input id="mg-ttl" type="number" min="1" placeholder="90" /></div>' +
+        '</div>' +
+        '<div class="toolbar" style="margin-top:12px"><div style="flex:0"><button id="mg-save">Save policy</button></div></div>' +
+        '<div class="err" id="mg-err"></div>' +
+      '</div>' +
       '<h2>Danger zone</h2>' +
       '<div class="card">' +
         '<p class="muted" style="margin-top:0">Delete this domain from browserid.me: removes the tenant, its users, and admins so you can onboard it fresh. ' +
@@ -277,7 +293,45 @@
       document.getElementById("nu-pw").value = genPassword();
     });
     document.getElementById("na-add").addEventListener("click", function () { addAdmin(domain); });
+    document.getElementById("mg-save").addEventListener("click", function () { saveManagement(domain); });
     loadRoster(domain);
+    loadManagement(domain);
+  }
+
+  function loadManagement(domain) {
+    var q = "?domain=" + encodeURIComponent(domain) + "&csrf=" + encodeURIComponent(csrf);
+    getJSON("/wsapi/tenant/management" + q).then(function (j) {
+      if (!j || !j.success) return; // console-err already covers not-admin
+      var m = j.management || {};
+      document.getElementById("mg-enabled").checked = !!m.enabled;
+      document.getElementById("mg-peraud").checked = !!m.per_audience;
+      document.getElementById("mg-aud").value = (m.audiences || []).join("\n");
+      document.getElementById("mg-scopes").value = (m.scopes || []).join(" ");
+      document.getElementById("mg-ttl").value = m.max_ttl ? Math.round(m.max_ttl / 86400) : "";
+    });
+  }
+
+  function saveManagement(domain) {
+    var err = document.getElementById("mg-err");
+    err.className = "err"; err.textContent = "";
+    var enabled = document.getElementById("mg-enabled").checked;
+    if (enabled && !confirm("Save managed-identity policy for " + domain + "? " +
+        "If you are turning management ON, every user is signed out once and their credentials reissue as managed.")) return;
+    var scopesRaw = document.getElementById("mg-scopes").value.trim();
+    var ttlDays = parseInt(document.getElementById("mg-ttl").value, 10);
+    postJSON("/wsapi/tenant/management", {
+      csrf: csrf,
+      domain: domain,
+      enabled: enabled,
+      per_audience: document.getElementById("mg-peraud").checked,
+      audiences: document.getElementById("mg-aud").value.split("\n").map(function (s) { return s.trim(); }).filter(Boolean),
+      scopes: scopesRaw ? scopesRaw.split(/\s+/) : null,
+      max_ttl: isNaN(ttlDays) ? null : ttlDays * 86400,
+    }).then(function (res) {
+      if (!res.ok || !res.body.success) { err.textContent = (res.body && res.body.reason) || "could not save"; return; }
+      err.className = "err ok";
+      err.textContent = "Saved." + (res.body.revoked ? " Signed out " + res.body.revoked + " credential(s) for managed reissue." : "");
+    });
   }
 
   function loadRoster(domain) {

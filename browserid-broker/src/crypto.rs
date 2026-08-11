@@ -79,3 +79,13 @@ mod tests {
         assert_ne!(s1, s2);
     }
 }
+
+/// Random base64url salt for managed-identity audience hashing (spec §4.7).
+/// Generated once per tenant policy and kept stable across saves so the
+/// hashes in outstanding certs stay checkable.
+pub fn generate_salt_b64() -> String {
+    use base64::Engine;
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}

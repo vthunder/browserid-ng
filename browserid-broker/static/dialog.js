@@ -318,6 +318,25 @@
   }
 
   async function storeDevicePair(issuer, email, keys, certs) {
+    // Managed-identity disclosure (spec §4.7 UA duties): BEFORE storing certs
+    // marked `managed: true`, tell the user what that means — once per
+    // identity, re-shown if the marker (re)appears after an unmanaged period.
+    const dc = decodeJws(certs.device_cert);
+    if (dc && dc.managed === true) {
+      const ackKey = 'browserid:managed-ack:' + email;
+      let acked = null;
+      try { acked = localStorage.getItem(ackKey); } catch (e) { }
+      if (!acked) {
+        const ok = confirm(
+          email + ' is a MANAGED identity.\n\n' + issuer + ' controls its issuance and may ' +
+          'restrict — and see — where it is used. There is no expectation of privacy ' +
+          'from ' + issuer + ' when using this identity. Your identities from other ' +
+          'providers are unaffected.\n\nContinue with this identity?'
+        );
+        if (!ok) throw new Error('managed identity declined');
+        try { localStorage.setItem(ackKey, String(Date.now())); } catch (e) { }
+      }
+    }
     await Keystore.putDevice(issuer, email, 'device', {
       publicKeyX: keys.device.publicKeyX, privateKey: keys.device.privateKey, cert: certs.device_cert
     });
@@ -371,7 +390,7 @@
 
     // 1. Fresh access key + device-signed access request → IdP mint.
     const access = await Keystore.generate();
-    const accessRequest = await signJws(pair.device.privateKey, {
+    const accessRequestClaims = {
       typ: 'browserid-access-request-v1',
       iat: nowS(),
       exp: nowS() + 600,
@@ -380,12 +399,31 @@
       identity: email,
       holder: holder,
       'access-key': { algorithm: 'Ed25519', publicKey: access.publicKeyX }
-    });
+    };
+    // Managed identities ONLY (spec §4.2/§4.7): a marked device cert may name
+    // the audience so the IdP can scope the cert (per-audience posture).
+    // Unmanaged mints MUST stay audience-free — the mint is RP-blind for
+    // consumers, enforced here, by the user's own agent.
+    const deviceClaims = decodeJws(pair.device.cert);
+    if (deviceClaims && deviceClaims.managed === true) {
+      accessRequestClaims.audience = audience;
+    }
+    const accessRequest = await signJws(pair.device.privateKey, accessRequestClaims);
     const minted = await postJson(mintUrl, {
       device_cert: pair.device.cert,
       access_request: accessRequest
     });
     if (!minted.access_cert) throw new Error(minted.reason || 'mint failed');
+    // Mismatch rule (spec §4.7): an issuer constraining an UNMARKED identity
+    // is inconsistent — surface it; the UA treats the identity as managed.
+    if (minted.access_cert && (!deviceClaims || deviceClaims.managed !== true)) {
+      const mc = decodeJws(minted.access_cert);
+      if (mc && mc.constraints) {
+        console.warn('browserid: issuer stamped constraints on an unmarked identity (' +
+          email + ' @ ' + issuer + ') — treating as managed');
+        try { localStorage.removeItem('browserid:managed-ack:' + email); } catch (e) { }
+      }
+    }
 
     // 2. Login warrant, signed by the CONFIG key: (identity, holder-matcher) → audience.
     // Registered with the hosted broker (best-effort) so it shows up — and is

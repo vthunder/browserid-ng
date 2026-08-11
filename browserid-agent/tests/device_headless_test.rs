@@ -88,7 +88,7 @@ async fn headless_device_cert_roundtrip() {
     // --- Headless: build the agent, mint an access cert via the broker. ---
     let mut agent = DeviceAgent::new(credential).unwrap();
     assert_eq!(agent.email(), agent_email);
-    agent.mint().await.expect("headless mint at /access/mint");
+    agent.mint(None).await.expect("headless mint at /access/mint");
 
     // --- The user's CONFIG cert (authorization) + a warrant it signs. This is
     // what the warrant consent flow yields: a config-cert-signed device-model

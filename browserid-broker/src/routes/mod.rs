@@ -187,6 +187,10 @@ where
         .route("/wsapi/tenant/roster/password", post(hosted_idp::roster_password))
         .route("/wsapi/tenant/admins", post(hosted_idp::tenant_admin_add))
         .route("/wsapi/tenant/delete", post(hosted_idp::tenant_delete))
+        .route(
+            "/wsapi/tenant/management",
+            get(hosted_idp::tenant_management_get).post(hosted_idp::tenant_management_set),
+        )
         .route_service("/domains", ServeFile::new(format!("{}/domains.html", static_path)))
         .route_service("/domains/:domain", ServeFile::new(format!("{}/domains.html", static_path)))
         // Compatibility routes for include.js

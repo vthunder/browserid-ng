@@ -24,9 +24,9 @@ const json = (body, status = 200) =>
  * the device key and pinned to this IdP, and refuses to let a requester
  * choose its own holder.
  */
-function mockServer({ pendingPolls = 1 } = {}) {
+function mockServer({ pendingPolls = 1, managed = false } = {}) {
   const idpKey = KeyPair.generate();
-  const state = { polls: 0, deviceCert: null, seen: {} };
+  const state = { polls: 0, deviceCert: null, seen: {}, mints: [] };
 
   const issueDeviceCert = (devicePubB64) =>
     idpKey.jws(HDR, {
@@ -38,6 +38,7 @@ function mockServer({ pendingPolls = 1 } = {}) {
       holder: HOLDER,
       identities: [EMAIL],
       "public-key": publicKeyField(devicePubB64),
+      ...(managed ? { managed: true } : {}),
     });
 
   const issueWarrant = () =>
@@ -80,6 +81,7 @@ function mockServer({ pendingPolls = 1 } = {}) {
     if (url === `${IDP}/access/mint`) {
       state.seen.mint = body;
       const req = decodeJwtClaims(body.access_request);
+      state.mints.push(req);
       const devClaims = decodeJwtClaims(body.device_cert);
       // The access request must be signed by the key the device cert certifies.
       const devPub = PublicKey.fromB64u(devClaims["public-key"].publicKey);
@@ -233,4 +235,37 @@ test("the grantor/grantee pins ride along, and as-you omits them", async () => {
   assert.equal(state.seen.request.grantor, "alice@idp.test");
   assert.equal(state.seen.request.grantee, "poster@other.test");
   assert.equal(state.seen.request.grantee_holder, "abc.def");
+});
+
+// --- managed identities (spec §4.2/§4.7) -----------------------------------
+
+test("unmanaged mints are RP-blind: no audience in the access request", async () => {
+  const { agent, state } = await provisionedAgent();
+  await agent.assertionFor(AUD);
+  assert.equal(state.mints.length, 1);
+  assert.equal(state.mints[0].audience, undefined,
+    "unmanaged access request MUST NOT name the audience");
+});
+
+test("a managed identity mints per audience and caches per audience", async () => {
+  const { agent, state, idpKey } = await provisionedAgent({ managed: true });
+  await agent.assertionFor(AUD);
+  assert.equal(state.mints.length, 1);
+  assert.equal(state.mints[0].audience, AUD, "managed request names the audience");
+
+  // A second audience needs its own warrant AND its own access cert.
+  const aud2 = "https://second.test";
+  const w2 = idpKey.jws(HDR, {
+    typ: "browserid-warrant-v1", iat: nowS(), exp: nowS() + 999,
+    grantor: EMAIL, grantee: EMAIL, holder: HOLDER, audience: aud2, scopes: ["post"],
+  });
+  agent.addGrant(`${w2}~${state.deviceCert}`);
+  await agent.assertionFor(aud2);
+  assert.equal(state.mints.length, 2, "second audience minted its own cert");
+  assert.equal(state.mints[1].audience, aud2);
+
+  // Both certs stay cached concurrently — repeat use re-mints neither.
+  await agent.assertionFor(AUD);
+  await agent.assertionFor(aud2);
+  assert.equal(state.mints.length, 2, "no re-mint while both certs are fresh");
 });

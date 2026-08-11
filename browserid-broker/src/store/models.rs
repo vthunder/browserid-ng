@@ -351,6 +351,34 @@ impl TenantStatus {
     }
 }
 
+/// Managed-identity policy for a tenant (spec §4.7). Stored as one JSON blob
+/// so vocabulary can evolve without migrations. `enabled` gates everything:
+/// when true, device certs are stamped `managed: true` and the mint applies
+/// current policy to every access cert.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ManagementPolicy {
+    pub enabled: bool,
+    /// Per-audience posture: the mint requires the access request to name its
+    /// audience and scopes the cert to it (used-set visibility). Default off =
+    /// broad posture (uniform allowlist, RP-blind mint).
+    #[serde(default)]
+    pub per_audience: bool,
+    /// Allowed audiences (cleartext here, admin-managed; hashed on the wire).
+    /// Empty = allow all.
+    #[serde(default)]
+    pub audiences: Vec<String>,
+    /// Allowed warrant scopes. None = unrestricted.
+    #[serde(default)]
+    pub scopes: Option<Vec<String>>,
+    /// Max warrant TTL in seconds. None = unrestricted.
+    #[serde(default)]
+    pub max_ttl: Option<i64>,
+    /// base64url salt for audience hashing; generated when the policy is first
+    /// saved.
+    #[serde(default)]
+    pub salt: String,
+}
+
 /// A hosted-primary tenant: a domain browserid.me issues for under a
 /// custodial per-tenant key. The private key is sealed at rest
 /// (`crate::tenant_keys`); `public_key` is the base64url raw Ed25519 point
@@ -374,6 +402,8 @@ pub struct Tenant {
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub activated_at: Option<DateTime<Utc>>,
+    /// Managed-identity policy (spec §4.7); None = never configured.
+    pub management: Option<ManagementPolicy>,
 }
 
 /// State of one roster entry. Disabled blocks login and minting; certs
