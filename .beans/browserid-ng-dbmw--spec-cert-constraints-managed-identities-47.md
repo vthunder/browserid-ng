@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: normal
 created_at: 2026-08-11T12:03:09Z
-updated_at: 2026-08-11T12:15:14Z
+updated_at: 2026-08-11T12:23:53Z
 ---
 
 Integrate the constraints/managed-identity design into the core protocol spec: constraints claim on IdP-signed certs (aud hashed allowlist, scopes, max-ttl), fail-closed unknown keys, verification step, mint inheritance, UA disclosure SHOULDs, terms in support doc, privacy+deployment notes. Design settled in chat 2026-08-10/11; implementation (hosted tenant mint-time stamping + verifier checks) is follow-up.
@@ -51,3 +51,21 @@ identity allowed) — recovers cosign's used-set visibility as an opt-in posture
 with zero new endpoints; mint refusal surfaces org policy at login time.
 Guardrail: IdP MUST NOT require `audience` for unmanaged identities (RP-blind
 stays the consumer invariant). §4.7 Privacy rewritten to the two-posture model.
+
+## Follow-up 2 (2026-08-11): the managed marker
+
+Gap found in review: mint-time-only constraints give no issuance-time signal
+that an identity is managed — the disclosure moment never fires. Fix:
+- `managed: true` boolean on every device cert of a managed identity; MUST be
+  set before the IdP ever stamps constraints or requires a mint audience.
+- `constraints` now allowed ONLY on presented certs: access cert (normal case,
+  fresh policy per mint) and config cert (kept deliberately — the org's only
+  lever over delegation to grantees at OTHER IdPs, where the org signs nothing
+  else in the bundle). Auth certs MUST NOT carry constraints.
+- Mint `audience` gated on the marker BOTH ways: client MUST NOT send unless
+  marked (structural consumer RP-blindness enforced by the user's own agent);
+  IdP MUST NOT require/honor otherwise.
+- UA duties rekeyed to the marker: categorical disclosure at issuance,
+  re-disclose on unmanaged→managed transition, per-mint constraint variation
+  needs no re-prompt, mismatch rule (constraints/audience demand on unmarked
+  identity → treat as managed, disclose, surface issuer inconsistency).
