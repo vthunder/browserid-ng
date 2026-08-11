@@ -313,10 +313,20 @@
 
   function saveManagement(domain) {
     var err = document.getElementById("mg-err");
+    var btn = document.getElementById("mg-save");
     err.className = "err"; err.textContent = "";
     var enabled = document.getElementById("mg-enabled").checked;
-    if (enabled && !confirm("Save managed-identity policy for " + domain + "? " +
-        "If you are turning management ON, every user is signed out once and their credentials reissue as managed.")) return;
+    // In-content confirm — NEVER window.confirm(): browsers suppress it when
+    // the tab isn't frontmost, silently swallowing the click.
+    if (enabled && btn.dataset.confirm !== "1") {
+      btn.dataset.confirm = "1";
+      btn.textContent = "Confirm — signs everyone out once";
+      err.textContent = "Saving with management enabled revokes outstanding credentials: " +
+        "every user signs in again and comes back with a managed identity. Click again to confirm.";
+      return;
+    }
+    btn.dataset.confirm = "";
+    btn.textContent = "Save policy";
     var scopesRaw = document.getElementById("mg-scopes").value.trim();
     var ttlDays = parseInt(document.getElementById("mg-ttl").value, 10);
     postJSON("/wsapi/tenant/management", {
@@ -369,7 +379,12 @@
           var pw = prompt("New password for " + btn.getAttribute("data-reset") + "@" + domain + " (min 8 chars). They will be asked to change it on next sign-in.");
           if (!pw) return;
           postJSON("/wsapi/tenant/roster/password", { csrf: csrf, domain: domain, local_part: btn.getAttribute("data-reset"), password: pw })
-            .then(function (res) { if (!res.ok || !res.body.success) alert((res.body && res.body.reason) || "failed"); else loadRoster(domain); });
+            .then(function (res) {
+              if (!res.ok || !res.body.success) {
+                document.getElementById("console-err").textContent =
+                  "Password reset failed: " + ((res.body && res.body.reason) || "unknown error");
+              } else { loadRoster(domain); }
+            });
         });
       });
       var admins = document.getElementById("admins");
