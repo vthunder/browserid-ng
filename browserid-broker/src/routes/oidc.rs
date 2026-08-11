@@ -229,12 +229,17 @@ where
         return resume_err("", "Google sign-in is not enabled on this broker");
     };
     let Some(state_token) = q.state.as_deref().filter(|s| !s.is_empty()) else {
+        tracing::warn!("oidc callback without a state parameter");
         return resume_err("", "the sign-in response was malformed — try again");
     };
     // Single-use: the flow is consumed whatever happens next, so a replayed
-    // callback URL is dead on arrival.
+    // callback URL is dead on arrival. A miss here is either a >10min-old
+    // flow or a DUPLICATE delivery of the redirect (e.g. the user reloading
+    // Google's page mid-login replays the response) — the first delivery
+    // already won, or nothing did; either way the user just retries.
     let Some(flow) = rt.flows.take(state_token) else {
-        return resume_err("", "the sign-in expired — try again");
+        tracing::warn!("oidc callback with unknown/expired/already-used state");
+        return resume_err("", "the sign-in expired or was already used — try signing in again");
     };
     let email = flow.claimed_email.clone();
 

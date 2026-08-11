@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-08-10T04:30:45Z
-updated_at: 2026-08-11T21:30:57Z
+updated_at: 2026-08-11T21:36:26Z
 ---
 
 Claim a mailbox by signing in with its provider (Google first) instead of a mailed code. An in-broker OIDC proof method that UPGRADES the mailbox ceremony for a no-primary MX domain with a known OIDC issuer — per-mailbox scope (behaves exactly like smtp), SMTP stays as the equal-strength fallback ceremony.
@@ -39,4 +39,5 @@ REMAINING (SUPERVISED — needs Google client creds + review of production login
 - [x] main.rs: OIDC_GOOGLE_CLIENT_ID/SECRET -> OidcRuntime
 - [x] dialog.js: oidc lane (popup + redirect + resume=oidc_claim)
 - [x] tests: oidc_claim_test.rs (10 tests: mock token endpoint + JWKS, full callback attach, reclaim semantics, csrf-bind guard); authority google detection
-- [ ] full broker suite green; deploy; live gmail claim test
+- [x] full broker suite green (5a07031); deployed to prod 2026-08-11, verified: OIDC enabled in logs, address_info advertises oidc, /oidc/claim 303s to Google with PKCE + flow cookie
+- [ ] live gmail claim test through the dialog (user, in progress)

@@ -1710,7 +1710,11 @@
         chan.onmessage = (ev) => {
           const m = ev.data || {};
           if (m.type !== 'browserid:oidc_claim_result') return;
-          if (!oidcEmailsMatch(email, m.email)) return;
+          // An error may arrive without an email (the broker had no flow to
+          // name it with); any waiting claim accepts those — concurrent OIDC
+          // claims in one browser are not a real case.
+          const anonymousError = !m.ok && !m.email;
+          if (!anonymousError && !oidcEmailsMatch(email, m.email)) return;
           try { chan.postMessage({ type: 'browserid:oidc_claim_ack', nonce: m.nonce }); } catch (e) { /* closed */ }
           if (m.ok) finish(null, m.email);
           else finish(new Error(m.reason || 'Google sign-in failed'));
@@ -1787,7 +1791,10 @@
     return new Promise((resolve) => {
       let chan = null;
       try { chan = new BroadcastChannel(OIDC_RESUME_CHANNEL); } catch (e) { return resolve(false); }
-      if (!email) {
+      // A success with no email is useless to the dialog; an ERROR without
+      // one (expired/replayed state — the broker had no flow to name) still
+      // hands off, so the waiting window fails fast instead of timing out.
+      if (!email && ok) {
         try { chan.close(); } catch (e) { /* ignore */ }
         return resolve(false);
       }
@@ -1844,6 +1851,13 @@
       // Popup lane: the dialog window that opened the claim popup is still
       // open and still holds the RP response path — hand the result over.
       if (await handoffOidcResume(email, ok, errReason)) return;
+      // No taker (or no email to hand off, e.g. an expired/replayed state
+      // reaches the callback with no flow): show the REAL reason when we
+      // have one instead of the generic lost-state message.
+      if (!ok && errReason) {
+        showError('Google sign-in failed: ' + errReason);
+        return;
+      }
       showError('Sign-in state was lost — go back to the site and click sign in again.');
       return;
     }
