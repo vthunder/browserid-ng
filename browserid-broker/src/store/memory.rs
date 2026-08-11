@@ -842,6 +842,18 @@ impl UserStore for InMemoryUserStore {
         Ok(n)
     }
 
+    fn tenant_status_revoke_idx(&self, tenant_id: u64, idx: u64) -> StoreResult<bool> {
+        let mut status = self.tenant_status.write().unwrap();
+        for ((tid, _), (i, revoked)) in status.iter_mut() {
+            if *tid == tenant_id && *i == idx {
+                let was = *revoked;
+                *revoked = true;
+                return Ok(!was || true);
+            }
+        }
+        Ok(false)
+    }
+
     fn delete_tenant(&self, domain: &str) -> StoreResult<()> {
         let Some(tenant) = self.tenants.write().unwrap().remove(domain) else {
             return Ok(());

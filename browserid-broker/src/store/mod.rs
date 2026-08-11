@@ -324,6 +324,11 @@ pub trait UserStore: Send + Sync {
     /// re-logs in and comes back with marked certs. Returns bits set.
     fn tenant_status_revoke_all(&self, tenant_id: u64) -> StoreResult<u64>;
 
+    /// Revoke one slot on a tenant's status list by INDEX (the registry rows
+    /// carry (status_uri, idx); forget/remove routes revocation to the right
+    /// authority — bean pbzn).
+    fn tenant_status_revoke_idx(&self, tenant_id: u64, idx: u64) -> StoreResult<bool>;
+
     /// Delete a tenant and everything scoped to it — admins, roster, status
     /// index space. The tenant's certs (signed under a key that now vanishes)
     /// die once the DNS record is removed or re-onboarded; this only forgets

@@ -437,6 +437,7 @@ async fn foreign_issued_cert_revocation_never_touches_the_broker_status_list() {
         issued_at: chrono::Utc::now(),
         expires_at: chrono::Utc::now() + chrono::Duration::days(90),
         revoked_at: None,
+        status_uri: None,
         status_idx: Some(idx),
     };
     ctx.user_store.insert_device_cert(mk("localhost:3000", own_idx, "br1.own")).unwrap();
@@ -502,6 +503,7 @@ async fn cert_revocation_status_answers_from_the_authority() {
         issued_at: chrono::Utc::now(),
         expires_at: chrono::Utc::now() + chrono::Duration::days(90),
         revoked_at: None,
+        status_uri: None,
         status_idx: idx,
     };
     ctx.user_store.insert_device_cert(mk("localhost:3000", Some(own_idx), "br3.own")).unwrap();

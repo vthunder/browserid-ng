@@ -225,6 +225,7 @@ where
             issued_at: chrono::DateTime::from_timestamp(cc.iat, 0).unwrap_or_else(chrono::Utc::now),
             expires_at: chrono::DateTime::from_timestamp(cc.exp, 0).unwrap_or_else(chrono::Utc::now),
             revoked_at: None,
+            status_uri: cc.status.as_ref().map(|s| s.uri.clone()),
             status_idx: cc.status.as_ref().map(|s| s.idx),
         };
         if let Err(e) = state.user_store.insert_device_cert(rec) {
@@ -244,4 +245,132 @@ where
     }
 
     Ok(Json(AuthWithPresentationResponse { success: true, email }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct RecordDeviceCertRequest {
+    pub config_cert: String,
+}
+
+/// POST /wsapi/record_device_cert — self-healing holder registry (bean pbzn).
+/// The dialog fire-and-forgets the config cert after every successful sign-in
+/// so the account view converges to observed reality: rows removed or swept
+/// while the device kept valid certs re-record on next use, instead of the
+/// registry silently diverging from what can actually sign in.
+///
+/// Sessionless by design; the gate is cryptographic — issuer-conformant
+/// signature (key from DNSSEC discovery), validity window, and a FAIL-CLOSED
+/// status check at the cert's OWN authority (our list, a hosted tenant's
+/// list, or a verified foreign list). A revoked or unverifiable cert records
+/// nothing, so this endpoint can never resurrect a revoked credential — it
+/// can only assert facts that verify right now.
+pub async fn record_device_cert<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    Json(req): Json<RecordDeviceCertRequest>,
+) -> Result<Json<serde_json::Value>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    use browserid_core::device::{DeviceCert, Purpose};
+    let refuse = |reason: &str| Ok(Json(serde_json::json!({"success": false, "reason": reason})));
+
+    let cert = DeviceCert::parse(&req.config_cert)
+        .map_err(|e| BrokerError::InvalidAssertion(format!("config cert: {e}")))?;
+    let cc = cert.claims();
+    if cc.purpose != Purpose::Authorization {
+        return refuse("only authorization (config) certs are recorded");
+    }
+    if cert.is_expired() {
+        return refuse("cert expired");
+    }
+
+    // Whose registry row is this? The first concrete identity with an account
+    // here. No account → nothing to record (not an error; the identity may
+    // simply never have used this broker).
+    let Some((identity, user_id)) = cc
+        .identities
+        .iter()
+        .filter(|i| !i.contains('*'))
+        .find_map(|i| {
+            state
+                .user_store
+                .get_email(i)
+                .ok()
+                .flatten()
+                .map(|rec| (i.clone(), rec.user_id))
+        })
+    else {
+        return refuse("no account holds this identity");
+    };
+    let Some(domain) = identity.split('@').nth(1).map(str::to_string) else {
+        return refuse("malformed identity");
+    };
+
+    // Issuer-conformant key from DNSSEC discovery; signature must verify.
+    let fetcher = state
+        .fallback_fetcher()
+        .await
+        .map_err(|e| BrokerError::Internal(format!("DNS discovery not configured: {e}")))?;
+    let accepted = vec![state.domain.clone()];
+    let key = crate::verifier::resolve_conformant_key(fetcher.as_ref(), &accepted, &domain, &cc.iss)
+        .await
+        .map_err(BrokerError::InvalidAssertion)?;
+    if cert.verify(&key).is_err() {
+        return refuse("signature does not verify under the issuer's key");
+    }
+
+    // Status: FAIL-CLOSED at the cert's own authority.
+    if let Some(r) = &cc.status {
+        let own_uri = browserid_registrar::consent::status_list_uri(&state.domain);
+        let idp_status_prefix = format!(
+            "{}/status/",
+            browserid_registrar::consent::public_origin(&state.idp_host)
+        );
+        let revoked = if r.uri == own_uri {
+            state.user_store.is_status_revoked_idx(r.idx)?
+        } else if let Some(tenant) = r
+            .uri
+            .strip_prefix(&idp_status_prefix)
+            .and_then(|d| state.user_store.get_tenant(&d.to_lowercase()).ok().flatten())
+        {
+            state.user_store.tenant_status_is_revoked(tenant.id, r.idx)?
+        } else {
+            crate::verifier::check_foreign_status_fresh(
+                r,
+                fetcher.as_ref(),
+                &state.foreign_status_lists,
+                !crate::routes::session::cookie_secure(&state.domain),
+            )
+            .await
+            .map_err(|e| BrokerError::InvalidAssertion(format!("status unverifiable: {e}")))?
+        };
+        if revoked {
+            return refuse("cert is revoked");
+        }
+    }
+
+    // A holder mid-move must not resurrect its old row (same guard as the
+    // session-join recording path).
+    if let Ok(Some(_)) = state.user_store.resolve_holder_move(user_id, cc.holder.as_str()) {
+        return refuse("holder was moved; re-issue pending");
+    }
+
+    let rec = crate::store::DeviceCertRecord {
+        id: 0,
+        user_id,
+        identities: cc.identities.clone(),
+        purpose: "authorization".into(),
+        holder: cc.holder.as_str().to_string(),
+        pubkey: cc.public_key.to_base64(),
+        iss: cc.iss.clone(),
+        issued_at: chrono::DateTime::from_timestamp(cc.iat, 0).unwrap_or_else(chrono::Utc::now),
+        expires_at: chrono::DateTime::from_timestamp(cc.exp, 0).unwrap_or_else(chrono::Utc::now),
+        revoked_at: None,
+        status_uri: cc.status.as_ref().map(|s| s.uri.clone()),
+        status_idx: cc.status.as_ref().map(|s| s.idx),
+    };
+    state.user_store.insert_device_cert(rec)?;
+    Ok(Json(serde_json::json!({"success": true})))
 }

@@ -862,9 +862,31 @@ function renderMain() {
   const it = $('inactive-toggle');
   if (it) it.onclick = () => { ui.inactiveOpen = !ui.inactiveOpen; renderMain(); };
   for (const b of $('inactive').querySelectorAll('.dangerout')) b.onclick = async () => {
-    if (!confirm('Remove it for good? This clears it from the list; nothing regains access.')) return;
-    try { await post('/wsapi/forget_holder', { holder_id: b.dataset.h }); await reloadAccount(); renderMain(); }
-    catch (e) { alert('Remove failed: ' + e.message); }
+    // In-content confirm — never window.confirm(): browsers suppress it when
+    // the tab isn't frontmost, silently no-oping the click.
+    if (b.dataset.confirm !== '1') {
+      b.dataset.confirm = '1';
+      b.textContent = 'Confirm — remove & revoke';
+      return;
+    }
+    b.dataset.confirm = ''; b.disabled = true;
+    try {
+      const r = await post('/wsapi/forget_holder', { holder_id: b.dataset.h });
+      if (r && r.unrevocable && r.unrevocable.length) {
+        // Honesty over tidiness: certs we are not the authority for stay
+        // live until expiry — say so before the row disappears.
+        const note = document.createElement('p');
+        note.style.cssText = 'color:#b45309;font-size:13px;margin:8px 0';
+        note.textContent = 'Removed — but certificates issued by ' + r.unrevocable.join(', ') +
+          ' could not be revoked from here; that device can still sign in with them until they expire.';
+        b.parentElement && b.parentElement.appendChild(note);
+        await new Promise(res => setTimeout(res, 4000));
+      }
+      await reloadAccount(); renderMain();
+    } catch (e) {
+      b.disabled = false;
+      b.textContent = 'Remove failed — retry';
+    }
   };
   wirePermActions($('sections'), renderMain);
 }

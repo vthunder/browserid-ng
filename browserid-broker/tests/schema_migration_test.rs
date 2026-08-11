@@ -276,6 +276,7 @@ fn test_primary_config_cert_holder_recorded() {
             issued_at: Utc::now(),
             expires_at: Utc::now(),
             revoked_at: None,
+            status_uri: None,
             status_idx: Some(3),
         })
         .unwrap();
@@ -311,6 +312,7 @@ fn test_reissued_cert_clears_stale_revocation_on_upsert() {
         issued_at: Utc::now(),
         expires_at: Utc::now(),
         revoked_at,
+        status_uri: None,
         status_idx: Some(7),
     };
 

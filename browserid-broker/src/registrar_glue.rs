@@ -146,6 +146,7 @@ fn to_reg_device_cert(c: crate::store::DeviceCertRecord) -> reg::DeviceCertRecor
         issued_at: c.issued_at,
         expires_at: c.expires_at,
         revoked_at: c.revoked_at,
+        status_uri: c.status_uri,
         status_idx: c.status_idx,
     }
 }
@@ -162,6 +163,7 @@ fn from_reg_device_cert(c: reg::DeviceCertRecord) -> crate::store::DeviceCertRec
         issued_at: c.issued_at,
         expires_at: c.expires_at,
         revoked_at: c.revoked_at,
+        status_uri: c.status_uri,
         status_idx: c.status_idx,
     }
 }
@@ -342,6 +344,10 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
             issued_at: ts(issued_at),
             expires_at: ts(expires_at),
             revoked_at: None,
+            // Agent certs recorded here are broker-issued (the registrar's
+            // provisioning path) — their bits live on the broker's own list.
+            status_uri: status_idx
+                .map(|_| browserid_registrar::consent::status_list_uri(&self.domain)),
             status_idx,
         };
         if let Err(e) = self.user_store.insert_device_cert(rec) {

@@ -1257,6 +1257,11 @@ pub struct ManagementSetRequest {
     pub csrf: String,
     pub domain: String,
     pub enabled: bool,
+    /// Revoke every outstanding credential NOW, independent of the
+    /// enable-transition (the explicit "sign everyone out" lever — saving an
+    /// already-enabled policy deliberately does not re-revoke).
+    #[serde(default)]
+    pub revoke_now: bool,
     #[serde(default)]
     pub per_audience: bool,
     #[serde(default)]
@@ -1315,7 +1320,7 @@ where
     // precedes any constraint stamping). Also sweep broker-fallback certs for
     // the domain, same as domain activation does.
     let mut revoked = 0;
-    if policy.enabled && !was_enabled {
+    if req.revoke_now || (policy.enabled && !was_enabled) {
         revoked = state.user_store.tenant_status_revoke_all(tenant.id)?;
         revoked += state.user_store.revoke_domain_device_certs(&domain)?;
         tracing::info!(tenant = %domain, by = %admin, revoked,

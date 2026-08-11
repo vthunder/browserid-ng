@@ -299,6 +299,11 @@ pub struct DeviceCertRecord {
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// The cert's status-list URI — WHICH revocation authority `status_idx`
+    /// indexes into (the broker's own list, a hosted tenant's list, or a
+    /// foreign IdP's). Without it revocation flips a bit on the wrong list
+    /// (bean pbzn). None on legacy rows (treated as the broker's own list).
+    pub status_uri: Option<String>,
     /// The cert's status-list index (its revocation bit), when it has one
     pub status_idx: Option<u64>,
 }

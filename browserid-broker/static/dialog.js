@@ -477,6 +477,16 @@
     // 3. Assertion for the RP's audience, signed by the fresh access key.
     const assertion = await signJws(access.privateKey, { exp: nowS() + 300, aud: audience });
 
+    // Self-healing registry (fire-and-forget): re-record this device's config
+    // cert so the account view converges to reality on EVERY login — a row
+    // removed or swept server-side while the device kept valid certs comes
+    // back on next use. Server-side the record is gated cryptographically
+    // (signature + fail-closed status), so this can't resurrect a revoked cert.
+    try {
+      apiCall('/wsapi/record_device_cert', 'POST', { config_cert: pair.config.cert })
+        .catch(() => { /* best-effort */ });
+    } catch (e) { /* best-effort */ }
+
     return `${minted.access_cert}~${assertion}~${warrant}~${pair.config.cert}`;
   }
 

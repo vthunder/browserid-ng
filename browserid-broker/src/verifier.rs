@@ -404,7 +404,7 @@ pub(crate) async fn fetch_foreign_status_list(
 /// is the conformance rule applied independently to each identity in a
 /// presentation — the grantee (access cert) under its domain, and the grantor
 /// (config cert) under its own, which need not be the same IdP.
-async fn resolve_conformant_key(
+pub(crate) async fn resolve_conformant_key(
     discoverer: &impl crate::fallback_fetcher::Discoverer,
     accepted_fallbacks: &[String],
     domain: &str,

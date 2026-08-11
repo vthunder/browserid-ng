@@ -273,7 +273,10 @@
           '<div><label for="mg-scopes">Allowed agent scopes (space-separated; empty = unrestricted)</label><input id="mg-scopes" placeholder="post read" autocapitalize="off" /></div>' +
           '<div><label for="mg-ttl">Max grant lifetime (days; empty = default)</label><input id="mg-ttl" type="number" min="1" placeholder="90" /></div>' +
         '</div>' +
-        '<div class="toolbar" style="margin-top:12px"><div style="flex:0"><button id="mg-save">Save policy</button></div></div>' +
+        '<div class="toolbar" style="margin-top:12px">' +
+          '<div style="flex:0"><button id="mg-save">Save policy</button></div>' +
+          '<div style="flex:0"><button id="mg-revoke" class="danger" type="button">Sign everyone out now</button></div>' +
+        '</div>' +
         '<div class="err" id="mg-err"></div>' +
       '</div>' +
       '<h2>Danger zone</h2>' +
@@ -293,7 +296,8 @@
       document.getElementById("nu-pw").value = genPassword();
     });
     document.getElementById("na-add").addEventListener("click", function () { addAdmin(domain); });
-    document.getElementById("mg-save").addEventListener("click", function () { saveManagement(domain); });
+    document.getElementById("mg-save").addEventListener("click", function () { saveManagement(domain, false); });
+    document.getElementById("mg-revoke").addEventListener("click", function () { saveManagement(domain, true); });
     loadRoster(domain);
     loadManagement(domain);
   }
@@ -311,22 +315,25 @@
     });
   }
 
-  function saveManagement(domain) {
+  function saveManagement(domain, revokeNow) {
     var err = document.getElementById("mg-err");
-    var btn = document.getElementById("mg-save");
+    var btn = document.getElementById(revokeNow ? "mg-revoke" : "mg-save");
     err.className = "err"; err.textContent = "";
     var enabled = document.getElementById("mg-enabled").checked;
     // In-content confirm — NEVER window.confirm(): browsers suppress it when
     // the tab isn't frontmost, silently swallowing the click.
-    if (enabled && btn.dataset.confirm !== "1") {
+    var needsConfirm = revokeNow || enabled;
+    if (needsConfirm && btn.dataset.confirm !== "1") {
       btn.dataset.confirm = "1";
-      btn.textContent = "Confirm — signs everyone out once";
-      err.textContent = "Saving with management enabled revokes outstanding credentials: " +
-        "every user signs in again and comes back with a managed identity. Click again to confirm.";
+      btn.textContent = revokeNow ? "Confirm — revoke all credentials" : "Confirm — signs everyone out once";
+      err.textContent = revokeNow
+        ? "Revokes every outstanding credential for this domain NOW (and saves the policy as shown): every user and agent is signed out and must sign in again. Click again to confirm."
+        : "Saving with management newly enabled revokes outstanding credentials: " +
+          "every user signs in again and comes back with a managed identity. Click again to confirm.";
       return;
     }
     btn.dataset.confirm = "";
-    btn.textContent = "Save policy";
+    btn.textContent = revokeNow ? "Sign everyone out now" : "Save policy";
     var scopesRaw = document.getElementById("mg-scopes").value.trim();
     var ttlDays = parseInt(document.getElementById("mg-ttl").value, 10);
     postJSON("/wsapi/tenant/management", {
@@ -337,10 +344,11 @@
       audiences: document.getElementById("mg-aud").value.split("\n").map(function (s) { return s.trim(); }).filter(Boolean),
       scopes: scopesRaw ? scopesRaw.split(/\s+/) : null,
       max_ttl: isNaN(ttlDays) ? null : ttlDays * 86400,
+      revoke_now: !!revokeNow,
     }).then(function (res) {
       if (!res.ok || !res.body.success) { err.textContent = (res.body && res.body.reason) || "could not save"; return; }
       err.className = "err ok";
-      err.textContent = "Saved." + (res.body.revoked ? " Signed out " + res.body.revoked + " credential(s) for managed reissue." : "");
+      err.textContent = "Saved." + (res.body.revoked ? " Revoked " + res.body.revoked + " credential(s) — everyone signs in again." : "");
     });
   }
 

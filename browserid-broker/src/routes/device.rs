@@ -235,6 +235,7 @@ where
             issued_at: now,
             expires_at: expires,
             revoked_at: None,
+            status_uri: Some(browserid_registrar::consent::status_list_uri(&state.domain)),
             status_idx: Some(status_idx),
         })?;
     }

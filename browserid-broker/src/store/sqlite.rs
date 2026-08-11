@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 25;
+const SCHEMA_VERSION: i32 = 26;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -137,6 +137,9 @@ impl SqliteStore {
             }
             if current_version < 25 {
                 Self::migrate_v25(conn)?;
+            }
+            if current_version < 26 {
+                Self::migrate_v26(conn)?;
             }
 
             // Update schema version
@@ -717,6 +720,15 @@ impl SqliteStore {
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v26(conn: &Connection) -> Result<(), BrokerError> {
+        // Which revocation authority a cert record's status_idx indexes into
+        // (bean pbzn): without the URI, forget/revoke flips a bit on the
+        // broker's own list even for tenant-/foreign-issued certs.
+        conn.execute_batch("ALTER TABLE device_certs ADD COLUMN status_uri TEXT;")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → DeviceCertRecord mapping (DC Phase 3/4)
@@ -748,12 +760,13 @@ fn device_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceCertR
         issued_at: parse_ts(row.get(7)?),
         expires_at: parse_ts(row.get(8)?),
         revoked_at: parse_ts_opt(row.get(9)?),
+        status_uri: row.get(11)?,
         status_idx: status_idx.map(|i| i as u64),
     })
 }
 
 const DEVICE_CERT_COLUMNS: &str =
-    "id, user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx";
+    "id, user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx, status_uri";
 
 // Row → WarrantRecord mapping (jipx registry)
 fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantRecord> {
@@ -1649,8 +1662,8 @@ impl UserStore for SqliteStore {
         // the account view forever, since device keys are long-lived and every
         // reissued cert upserts onto the old revoked row.
         conn.execute(
-            "INSERT INTO device_certs (user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO device_certs (user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx, status_uri)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(pubkey) DO UPDATE SET
                identities = excluded.identities,
                purpose = excluded.purpose,
@@ -1659,7 +1672,8 @@ impl UserStore for SqliteStore {
                issued_at = excluded.issued_at,
                expires_at = excluded.expires_at,
                revoked_at = excluded.revoked_at,
-               status_idx = excluded.status_idx",
+               status_idx = excluded.status_idx,
+               status_uri = excluded.status_uri",
             params![
                 rec.user_id.0 as i64,
                 serde_json::to_string(&rec.identities).unwrap_or_else(|_| "[]".into()),
@@ -1671,6 +1685,7 @@ impl UserStore for SqliteStore {
                 rec.expires_at.to_rfc3339(),
                 rec.revoked_at.map(|t| t.to_rfc3339()),
                 rec.status_idx.map(|i| i as i64),
+                rec.status_uri,
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2093,6 +2108,18 @@ impl UserStore for SqliteStore {
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(n as u64)
+    }
+
+    fn tenant_status_revoke_idx(&self, tenant_id: u64, idx: u64) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE tenant_status SET revoked_at = COALESCE(revoked_at, ?1)
+                 WHERE tenant_id = ?2 AND idx = ?3",
+                params![Utc::now().to_rfc3339(), tenant_id as i64, idx as i64],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(n > 0)
     }
 
     fn delete_tenant(&self, domain: &str) -> StoreResult<()> {
@@ -2780,6 +2807,9 @@ impl UserStore for std::sync::Arc<SqliteStore> {
     }
     fn tenant_status_revoke_all(&self, tenant_id: u64) -> StoreResult<u64> {
         (**self).tenant_status_revoke_all(tenant_id)
+    }
+    fn tenant_status_revoke_idx(&self, tenant_id: u64, idx: u64) -> StoreResult<bool> {
+        (**self).tenant_status_revoke_idx(tenant_id, idx)
     }
 
     fn delete_tenant(&self, domain: &str) -> StoreResult<()> {

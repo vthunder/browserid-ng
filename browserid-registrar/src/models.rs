@@ -113,6 +113,9 @@ pub struct DeviceCertRecord {
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// The status-list URI `status_idx` indexes into (which revocation
+    /// authority — bean pbzn). None on legacy rows.
+    pub status_uri: Option<String>,
     /// The cert's status-list index (its revocation bit), when it has one
     pub status_idx: Option<u64>,
 }

@@ -611,7 +611,7 @@ pub async fn forget_holder<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
     Json(req): Json<ForgetHolderRequest>,
-) -> Result<Json<OkResponse>, BrokerError>
+) -> Result<Json<serde_json::Value>, BrokerError>
 where
     U: UserStore,
     S: SessionStore,
@@ -630,15 +630,56 @@ where
         return Err(BrokerError::PolicyRefused("no such holder".into()));
     }
     // Revoke BEFORE deleting: deletion alone would leave live signed certs
-    // verifying at RPs that don't know the rows are gone.
+    // verifying at RPs that don't know the rows are gone. Route each cert to
+    // ITS revocation authority (bean pbzn): the broker's own list, a hosted
+    // tenant's list (the broker hosts those too), or — for a genuinely foreign
+    // issuer — nobody we can reach, which the response surfaces so the UI can
+    // say so instead of silently pretending.
+    let own_uri = browserid_registrar::consent::status_list_uri(&state.domain);
+    let mut unrevocable: Vec<String> = Vec::new();
     for cert in &certs {
-        if let Some(idx) = cert.status_idx {
-            state.user_store.set_status_revoked_idx(idx)?;
+        let Some(idx) = cert.status_idx else {
+            // No status ref at all: nothing to revoke anywhere; the cert runs
+            // to expiry. Surface it like a foreign issuer.
+            unrevocable.push(cert.iss.clone());
+            continue;
+        };
+        match cert.status_uri.as_deref() {
+            // Legacy rows (pre-status_uri) were all broker-issued.
+            None => {
+                state.user_store.set_status_revoked_idx(idx)?;
+            }
+            Some(uri) if uri == own_uri => {
+                state.user_store.set_status_revoked_idx(idx)?;
+            }
+            Some(uri) => {
+                // A hosted tenant's list? (`…/status/<domain>` on our idp host)
+                let tenant_domain = uri
+                    .rsplit_once("/status/")
+                    .map(|(_, d)| d.to_lowercase())
+                    .filter(|_| uri.starts_with(&format!(
+                        "{}/status/",
+                        browserid_registrar::consent::public_origin(&state.idp_host)
+                    )));
+                match tenant_domain.and_then(|d| state.user_store.get_tenant(&d).ok().flatten()) {
+                    Some(tenant) => {
+                        state.user_store.tenant_status_revoke_idx(tenant.id, idx)?;
+                    }
+                    None => unrevocable.push(cert.iss.clone()),
+                }
+            }
         }
     }
+    unrevocable.sort();
+    unrevocable.dedup();
     cleanup_holder_warrants(state.user_store.as_ref(), session.user_id, &req.holder_id);
     state.user_store.forget_holder(session.user_id, &req.holder_id)?;
-    Ok(Json(OkResponse { success: true }))
+    Ok(Json(serde_json::json!({
+        "success": true,
+        // Issuers whose certs we could NOT revoke: the device can keep signing
+        // in with them until they expire — only that issuer can cut them off.
+        "unrevocable": unrevocable,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -849,6 +890,7 @@ mod tests {
                 issued_at: chrono::Utc::now(),
                 expires_at: chrono::Utc::now(),
                 revoked_at: None,
+                status_uri: None,
                 status_idx: None,
             })
             .unwrap();

@@ -347,6 +347,7 @@ async fn activation_revokes_prior_broker_certs_for_the_domain() {
             issued_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::days(90),
             revoked_at: None,
+            status_uri: None,
             status_idx: Some(idx),
         })
         .unwrap();
@@ -522,4 +523,86 @@ async fn unmanaged_tenant_ignores_audience_and_stamps_nothing() {
     assert_eq!(minted["success"], true, "mint: {minted}");
     let ac = AccessCert::parse(minted["access_cert"].as_str().unwrap()).unwrap();
     assert!(ac.claims().constraints.is_none(), "no constraints on an unmanaged cert");
+}
+
+/// "Remove for good" must revoke at the cert's OWN authority (bean pbzn): a
+/// tenant-issued cert's status bit lives on the TENANT's list — flipping the
+/// broker's list (the old behavior) left the cert live while the account view
+/// showed nothing. Foreign-issuer certs we cannot revoke are surfaced in
+/// `unrevocable` instead of silently pretending.
+#[tokio::test]
+async fn forget_holder_revokes_at_the_tenant_authority() {
+    use browserid_broker::store::DeviceCertRecord;
+    use chrono::Utc;
+    use common::create_user;
+
+    let (server, store, sender) = make_server_full();
+    seed_active_tenant(&store);
+    let tenant = store.get_tenant(TENANT).unwrap().unwrap();
+
+    let session = create_user(&server, &sender, "human@localhost:3000", "testpassword").await;
+    let user_id = store.get_email("human@localhost:3000").unwrap().unwrap().user_id;
+
+    // A tenant-issued config cert recorded for this account (as the dialog's
+    // record path would), with its bit on the TENANT's status list.
+    let idx = store.tenant_status_allocate(tenant.id, "cfg-pubkey-tenant").unwrap();
+    let tenant_uri = format!("https://{IDP_HOST}/status/{TENANT}");
+    let holder = "brtest.tenantdev";
+    let mk = |pubkey: &str, iss: &str, uri: Option<String>, idx: Option<u64>| DeviceCertRecord {
+        id: 0,
+        user_id,
+        identities: vec![format!("dan@{iss}")],
+        purpose: "authorization".into(),
+        holder: holder.into(),
+        pubkey: pubkey.into(),
+        iss: iss.into(),
+        issued_at: Utc::now(),
+        expires_at: Utc::now(),
+        revoked_at: None,
+        status_uri: uri,
+        status_idx: idx,
+    };
+    store
+        .insert_device_cert(mk("cfg-pubkey-tenant", TENANT, Some(tenant_uri), Some(idx)))
+        .unwrap();
+    // And one from a genuinely foreign issuer we are no authority for.
+    store
+        .insert_device_cert(mk(
+            "cfg-pubkey-foreign",
+            "foreign.example",
+            Some("https://foreign.example/.well-known/browserid-status".into()),
+            Some(9),
+        ))
+        .unwrap();
+
+    let csrf: String = server
+        .get("/wsapi/session_context")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await
+        .json::<Value>()["csrf_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = server
+        .post("/wsapi/forget_holder")
+        .add_cookie(cookie::Cookie::new("browserid_session", session))
+        .json(&json!({ "csrf": csrf, "holder_id": holder }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "{}", resp.text());
+    let body: Value = resp.json();
+
+    // The tenant-list bit is flipped — the cert now fails the mint gate and
+    // fail-closed verifiers, matching what the account claims.
+    assert!(
+        store.tenant_status_is_revoked(tenant.id, idx).unwrap(),
+        "tenant-authority bit must be revoked"
+    );
+    // The foreign cert is honestly reported as beyond our reach.
+    let unrevocable: Vec<String> = body["unrevocable"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(unrevocable, vec!["foreign.example".to_string()], "{body}");
 }

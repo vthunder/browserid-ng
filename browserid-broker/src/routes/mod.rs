@@ -145,6 +145,7 @@ where
         .route("/wsapi/holders", get(holders::holders))
         .route("/wsapi/rename_holder", post(holders::rename_holder))
         .route("/wsapi/forget_holder", post(holders::forget_holder))
+        .route("/wsapi/record_device_cert", post(primary::record_device_cert))
         .route("/wsapi/move_holder", post(holders::move_holder))
         .route("/wsapi/holder_assignment", get(holders::holder_assignment))
         .route("/wsapi/rename_namespace", post(holders::rename_namespace))
@@ -293,7 +294,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-oXpf2sN5zgHD+OVvSqudWqhPtDQvgBZ4ipFSt4s2gUU='", // account.html
+    "'sha256-pvi535HAc2wbfP7Jq7zNJS6foEnr3zzyfjRwhUdXmkM='", // account.html
     "'sha256-XRWE73ZH1qCk6vmO+hv85g2743sS42s8Y64PjFX8z98='", // authorize.html
     "'sha256-KcSFrbxTD/FQlLnEbwRfQuYxTudagOb8OQNj5vSg5T8='", // consent.html
     "'sha256-+XqUYbHj+ZXqocYeM/oRYCX1zljIPfY94AJwWAtU2Do='", // agents.html
