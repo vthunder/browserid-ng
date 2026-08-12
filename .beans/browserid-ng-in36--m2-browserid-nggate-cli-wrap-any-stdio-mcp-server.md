@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-08-12T12:21:46Z
-updated_at: 2026-08-12T14:43:24Z
+updated_at: 2026-08-12T14:45:19Z
 parent: browserid-ng-81s6
 blocked_by:
     - browserid-ng-b6pp
@@ -34,3 +34,6 @@ Routes mounted: GET /.well-known/oauth-protected-resource, GET /.well-known/oaut
 Tests prove: discovery serves both lanes; Lane B DCR mounted; child tools proxied with real schemas; a mcp-auth bearer reaches tools/call and gets a real filesystem result; attribution line emitted; allowlist-rejected grantor refused 403 before the tool runs; fail-closed revoke on a proxied call; 401 challenge without bearer. `npm test` = 8 pass / 0 fail.
 
 mcp-auth integration: clean, no bugs found, no mcp-auth/agent/broker code touched. Used createAuthCodeLane for /token so BOTH grants terminate in one handler; lane.authorizationServerMetadata() advertises both lanes. The one ergonomic note: the low-level MCP `Server` (not `McpServer`) was the right proxy primitive — it lets tools/list return the child's JSON-Schema tools verbatim, which McpServer.registerTool (Zod-shape only) can't do.
+
+## Reviewed + merged 2026-08-12
+Reviewed the gating path: /mcp authenticates the bearer first (401 fail-closed incl. per-call revocation re-check), then allowlist-checks grantor (403 before anything), then a per-request proxy Server bound to THAT request's verified ctx scope-gates each tools/call before forwarding to the ONE shared child. No path to the child bypasses the gate; per-request ctx binding = no cross-request leakage. Self-contained (only sdk/gate/). 8 tests pass. Merged to main. No deploy (CLI). Publish deferred with agent 0.4.1 + mcp-auth.
