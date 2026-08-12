@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { detectFunnel, ensureFunnel, funnelOffHint, FUNNEL_PORTS } from "../src/tunnel.mjs";
+import { detectFunnel, ensureFunnel, claimFunnel, funnelOffHint, FUNNEL_PORTS } from "../src/tunnel.mjs";
 
 const STATUS = {
   Web: {
@@ -65,6 +65,35 @@ test("ensureFunnel creates a funnel on the first free port when none exists", as
   const url = await ensureFunnel(9000, { run });
   assert.equal(url, "https://host.tail.ts.net:8443");
   assert.deepEqual(funnelArgs, ["funnel", "--bg", "--https=8443", "9000"]);
+});
+
+test("claimFunnel is idempotent when 443 already maps to our port", async () => {
+  const status = {
+    Web: { "host.tail.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9000" } } } },
+    AllowFunnel: { "host.tail.ts.net:443": true },
+  };
+  let claimed = null;
+  const run = runWith(status, (args) => { claimed = args; });
+  assert.equal(await claimFunnel(9000, { run }), "https://host.tail.ts.net");
+  assert.equal(claimed, null, "must not re-claim when already mapped to our port");
+});
+
+test("claimFunnel re-points 443 from a STALE port to our current port (auto-port restarts)", async () => {
+  // 443 currently maps to a dead previous-run port; we want it on 9000.
+  let repointed = false;
+  const run = async (args) => {
+    if (args[0] === "serve") {
+      return { stdout: JSON.stringify({
+        Web: { "host.tail.ts.net:443": { Handlers: { "/": { Proxy: `http://127.0.0.1:${repointed ? 9000 : 55555}` } } } },
+        AllowFunnel: { "host.tail.ts.net:443": true },
+      }) };
+    }
+    if (args[0] === "funnel") { repointed = true; return { stdout: "" }; }
+    throw new Error("unexpected");
+  };
+  const url = await claimFunnel(9000, { run });
+  assert.equal(url, "https://host.tail.ts.net");
+  assert.ok(repointed, "must re-point 443 to the current local port");
 });
 
 test("funnelOffHint derives the teardown command port", () => {

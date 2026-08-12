@@ -116,6 +116,46 @@ export async function ensureFunnel(localPort, { run = defaultRun } = {}) {
   return url;
 }
 
+/**
+ * CLAIM a specific public funnel port (default 443) for `localPort`, re-pointing
+ * a stale mapping if one exists. This is what an appliance-style gateway wants:
+ * it OWNS the standard port, and its local port changes each run (auto-port), so
+ * "pick a free port" would keep dodging 443 and land on 8443/10000 — which
+ * managed hosts (claude.ai) reject. Idempotent: if the port already maps here,
+ * no-op. Returns the public https URL (no port suffix for 443).
+ * @param {number} localPort
+ * @param {{run?: (args:string[])=>Promise<{stdout:string}>, publicPort?: number}} [opts]
+ */
+export async function claimFunnel(localPort, { run = defaultRun, publicPort = 443 } = {}) {
+  // Already publicly mapped to this exact local port? Keep it.
+  const existing = await detectFunnel(localPort, { run });
+  if (existing) return existing;
+  const st = await serveStatus(run);
+  if (st === null) {
+    throw new Error(
+      "tailscale not available (is it installed and running?). " +
+        "Use --resource to set the public URL manually, or --console-local, or cloudflared."
+    );
+  }
+  // Claim (or re-point) the standard port at our local port.
+  try {
+    await run(["funnel", "--bg", `--https=${publicPort}`, String(localPort)]);
+  } catch (e) {
+    throw new Error(
+      `could not claim tailscale funnel :${publicPort} → :${localPort} (${e?.message || e}). ` +
+        "Funnel must be enabled for your tailnet; see https://tailscale.com/kb/1223/funnel."
+    );
+  }
+  const url = await detectFunnel(localPort, { run });
+  if (!url) {
+    throw new Error(
+      `claimed funnel :${publicPort} → :${localPort} but its URL could not be read back ` +
+        "from `tailscale serve status`."
+    );
+  }
+  return url;
+}
+
 /** The teardown hint for a funnel URL (its port), for printing on exit. */
 export function funnelOffHint(resourceUrl) {
   try {

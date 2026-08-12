@@ -22,7 +22,7 @@
 import { createGateService } from "../src/gate.mjs";
 import { createGateway } from "../src/gateway.mjs";
 import { ensureCredential } from "../src/credential.mjs";
-import { detectFunnel, ensureFunnel, funnelOffHint } from "../src/tunnel.mjs";
+import { detectFunnel, ensureFunnel, claimFunnel, funnelOffHint } from "../src/tunnel.mjs";
 
 function parseArgs(argv) {
   const out = { allow: [], child: null };
@@ -109,7 +109,10 @@ async function runConsole(args, broker) {
     consoleLocal: args.consoleLocal,
     // If --resource is given, skip the funnel and use it as the public origin.
     origin: args.resource,
-    ensureFunnel: (port) => ensureFunnel(port),
+    // The console is an appliance: it CLAIMS 443 (re-pointing across restarts,
+    // since the local port is auto-picked) so hosts like claude.ai — which
+    // reject non-standard ports — can reach it.
+    ensureFunnel: (port) => claimFunnel(port),
   });
 
   const shutdown = async () => { await gateway.close(); process.exit(0); };
