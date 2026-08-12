@@ -76,6 +76,15 @@ fn split_email(email: &str) -> Option<(String, String)> {
     Some((local.to_lowercase(), domain.to_lowercase()))
 }
 
+/// The roster user a local part belongs to: the part before any `+tag`.
+/// An agent identity is a subaddress of a roster user (`dan+poster` acts for
+/// roster user `dan`), so roster/policy decisions about an agent are decided
+/// on its base. RFC 5233 subaddressing; the same base-covers-`+tag` rule the
+/// device cert and warrant already enforce.
+fn base_local(local: &str) -> &str {
+    local.split('+').next().unwrap_or(local)
+}
+
 /// Look up an ACTIVE tenant or refuse.
 fn active_tenant<U: UserStore>(store: &U, domain: &str) -> Result<Tenant, BrokerError> {
     let tenant = store.get_tenant(domain)?.ok_or(BrokerError::TenantNotFound)?;
@@ -526,9 +535,11 @@ where
     }
     // The roster stays authoritative at mint time: a disabled (or vanished)
     // user stops minting immediately, bounding a live session by the access
-    // cert's 24h TTL even without touching the status list.
+    // cert's 24h TTL even without touching the status list. An agent identity
+    // (`dan+poster`) is checked against its base roster user (`dan`) — the
+    // device cert already proved the base authorizes the subaddress.
     if let Some((local, _)) = split_email(&c.identity) {
-        match state.user_store.get_roster_entry(tenant.id, &local)? {
+        match state.user_store.get_roster_entry(tenant.id, base_local(&local))? {
             Some(entry) if entry.state == RosterState::Active => {}
             _ => return Err(BrokerError::PolicyRefused("roster entry is not active".into())),
         }

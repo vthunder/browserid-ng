@@ -232,6 +232,72 @@ async fn mint_refused_after_roster_disable() {
     assert_eq!(refused.status_code(), 403, "disabled user must not mint");
 }
 
+/// An agent identity is a `+tag` subaddress of a roster user (`bob+poster`
+/// acts for roster user `bob`). The access mint must resolve it to its base
+/// roster entry — regression for the live github-mcp demo failure where a
+/// hosted-tenant agent (`danmills+claude-github@sandmill.org`) hit "roster
+/// entry is not active" because the full `+tag` local part was looked up.
+#[tokio::test]
+async fn agent_subaddress_mints_against_its_base_roster_user() {
+    let (server, store) = make_server();
+    seed_active_tenant(&store);
+    add_roster(&server, &store, "bob", "correcthorse");
+    let email = format!("bob@{TENANT}");
+    let agent = format!("bob+poster@{TENANT}");
+    let tenant = store.get_tenant(TENANT).unwrap().unwrap();
+    store
+        .set_roster_password(tenant.id, "bob", &bcrypt_hash("correcthorse"), false)
+        .unwrap();
+
+    let (cookie, _) = idp_login(&server, &email, "correcthorse").await;
+    let device_kp = KeyPair::generate();
+    let config_kp = KeyPair::generate();
+    let issued: Value = server
+        .post("/idp/device_cert")
+        .add_cookie(cookie::Cookie::new("idp_session", cookie))
+        .json(&json!({
+            "email": email,
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": config_kp.public_key().to_base64(),
+        }))
+        .await
+        .json();
+    assert_eq!(issued["success"], true, "{issued}");
+    let device_cert = DeviceCert::parse(issued["device_cert"].as_str().unwrap()).unwrap();
+    // The base device cert covers the agent subaddress (RFC 5233).
+    assert!(device_cert.authorizes_identity(&agent));
+
+    // Mint an access cert AS THE AGENT subaddress: the roster check resolves
+    // `bob+poster` to roster user `bob`, so it succeeds.
+    let access_kp = KeyPair::generate();
+    let areq = AccessRequest::create(
+        TENANT, &agent, device_cert.holder().clone(), &access_kp.public_key(), "nonce-agent-1", &device_kp,
+    )
+    .unwrap();
+    let minted: Value = server
+        .post("/idp/access_cert")
+        .json(&json!({ "device_cert": issued["device_cert"], "access_request": areq.encoded() }))
+        .await
+        .json();
+    assert_eq!(minted["success"], true, "agent subaddress must mint: {minted}");
+    let ac = AccessCert::parse(minted["access_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(ac.claims().identity, agent, "the cert names the agent subaddress");
+
+    // Disabling the BASE user stops the agent minting too.
+    store
+        .set_roster_state(tenant.id, "bob", browserid_broker::store::RosterState::Disabled)
+        .unwrap();
+    let areq2 = AccessRequest::create(
+        TENANT, &agent, device_cert.holder().clone(), &access_kp.public_key(), "nonce-agent-2", &device_kp,
+    )
+    .unwrap();
+    let refused = server
+        .post("/idp/access_cert")
+        .json(&json!({ "device_cert": issued["device_cert"], "access_request": areq2.encoded() }))
+        .await;
+    assert_eq!(refused.status_code(), 403, "disabling the base user stops the agent");
+}
+
 #[tokio::test]
 async fn roster_user_without_forced_change_issues_directly() {
     // The onboarding path creates the first user with require_password_change
