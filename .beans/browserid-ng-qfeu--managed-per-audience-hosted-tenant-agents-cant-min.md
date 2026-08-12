@@ -1,11 +1,11 @@
 ---
 # browserid-ng-qfeu
 title: Managed per-audience hosted-tenant agents can't mint (device cert managed marker / SDK audience)
-status: in-progress
+status: completed
 type: bug
 priority: high
 created_at: 2026-08-12T08:57:21Z
-updated_at: 2026-08-12T09:35:34Z
+updated_at: 2026-08-12T09:43:54Z
 ---
 
 Live github-mcp demo, 2026-08-12: an agent identity on a managed hosted tenant (sandmill.org, managed identities + per_audience ON) fails at the access mint with 'audience required: this managed identity mints per-audience access certs'. The broker honors a per-audience request only when the access request carries an audience AND the device cert is stamped managed:true. Either (a) the agent's device cert isn't getting the managed marker in the agent-provision path (the primary-signed cert comes from /idp/device_cert for a hosted tenant), or (b) the agent SDK / hosted wallet doesn't pass the audience on mint. Third in a series of hosted-tenant+agent gaps (serving-host mint origin, +tag roster resolution both fixed). Fix with a local repro + tests, then deploy.
@@ -23,3 +23,5 @@ Fix shipped: the mint now detects the non-managed-cert-on-managed-tenant case an
 Fresh re-provision gave a managed:true cert (confirmed: mint returned the OLD 'audience required', not my new pre-managed message → cert IS managed). Yet the wallet still didn't send the mint audience. Cause: the managed-identities commit a04ddf7 added per-audience minting to sdk/agent/src/device.mjs but NEVER bumped the version — npm @browserid-ng/agent@0.3.0 predates it (published from 0879a38). The local wallet runs via npx and pulls the stale 0.3.0, which never sends the audience → managed tenant rejects. Would bite every external managed-tenant user.
 
 Fix: @browserid-ng/agent 0.3.0→0.4.0 (per-audience mint), @browserid-ng/wallet 0.4.4→0.4.5 (dep bumped to ^0.4.0). Needs republish + wallet connector restart.
+
+Resolved: agent 0.4.0 + wallet 0.4.5 published, wallet reconnected, demo minted per-audience and completed end-to-end (issue #18, then fail-closed on revoke).
