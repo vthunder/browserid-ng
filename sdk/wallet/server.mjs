@@ -148,11 +148,24 @@ class NeedCredential extends Error {
   constructor() { super("no identity yet"); }
 }
 
+// The one lesson of live testing (browserid-ng bean, 2026-08-12): chat UIs
+// collapse tool activity AND text written between tool calls — the human
+// reliably sees only the agent's FINAL message of a turn. An approval link
+// that is followed by more tool calls is therefore invisible, and the whole
+// flow reads as a hang. So the contract is: end the turn with the link as
+// the last line; never wait by polling.
+const APPROVAL_HANDOFF =
+  `⚠ STOP — end your turn NOW with a short reply whose LAST LINE is the APPROVE_URL above. ` +
+  `Chat UIs collapse tool output and mid-turn text: the human reliably sees only your FINAL ` +
+  `message, so a link followed by more tool calls is invisible and this flow looks hung. ` +
+  `Do not call more tools to wait.`;
+
 function explain(e) {
   if (e instanceof PendingApproval)
     return text(
-      `STILL WAITING for the human to approve — this is normal. Keep this link visible and call your ` +
-        `tool AGAIN to keep waiting (each call polls ~45s):\n${e.url}`
+      `NOT APPROVED YET. If the human may not have seen the link, END YOUR TURN with it as the ` +
+        `last line of your reply — more polling shows them nothing (each call just waits ~45s). ` +
+        `The link:\n${e.url}`
     );
   if (e instanceof RequestError)
     return text(
@@ -245,9 +258,8 @@ server.registerTool(
         `APPROVE_URL: ${pairing.verificationUriComplete}\n` +
           `(or go to ${pairing.verificationUri} and enter code ${pairing.userCode})\n` +
           `Agent key fingerprint: ${pairing.fingerprint}\n\n` +
-          `⚠ Show the human this APPROVE_URL and ask them to open it and approve. ` +
-          `Then IMMEDIATELY call your next tool (e.g. identity) — it waits for their ` +
-          `approval and continues automatically. Do NOT wait for the human to tell you; just call the next tool.`
+          APPROVAL_HANDOFF +
+          ` After the human replies that they approved, call your next tool (e.g. identity) to continue.`
       );
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);
@@ -355,8 +367,9 @@ server.registerTool(
       if (r.ready) return text(`READY — authorized for ${audience}. Call get_assertion.`);
       if (denied && !r.pending) lastDenial.delete(audience);
       return text(
-        `APPROVE_URL: ${r.approveUrl}\n⚠ Show the human this link and ask them to approve. ` +
-          `Then IMMEDIATELY call get_assertion — it waits for their approval and continues. Do NOT wait for the human to tell you.`
+        `APPROVE_URL: ${r.approveUrl}\n` +
+          APPROVAL_HANDOFF +
+          ` After the human replies that they approved, call get_assertion to continue.`
       );
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);
@@ -389,7 +402,7 @@ server.registerTool(
   {
     title: "Sign the guestbook (demo)",
     description:
-      "Sign the public browserid.me guestbook as yourself, acting for the human. If you have no identity yet, call `provision` FIRST — it gives you your own name and address to sign with. Draft a SHORT, FUN, ORIGINAL message in your own voice — a quip, an observation, a tiny haiku; avoid generic 'Hello world' — and SHOW THE DRAFT TO YOUR HUMAN FIRST, asking if they want tweaks. Only call this tool with a message they approved. If not yet authorized it returns an APPROVE_URL: relay that link to them immediately in your reply, then call again with the same message once they approve. The guestbook displays your PUBLIC DISPLAY NAME with a verified badge — never your email. The `identity` tool shows you that name; your human edits it at browserid.me/account.",
+      "Sign the public browserid.me guestbook as yourself, acting for the human. If you have no identity yet, call `provision` FIRST — it gives you your own name and address to sign with. Draft a SHORT, FUN, ORIGINAL message in your own voice — a quip, an observation, a tiny haiku; avoid generic 'Hello world' — and SHOW THE DRAFT TO YOUR HUMAN FIRST, asking if they want tweaks. Only call this tool with a message they approved. If not yet authorized it returns an APPROVE_URL: END YOUR TURN with that link as the last line of your reply (chat UIs hide mid-turn text), and call again with the same message after they approve. The guestbook displays your PUBLIC DISPLAY NAME with a verified badge — never your email. The `identity` tool shows you that name; your human edits it at browserid.me/account.",
     inputSchema: {
       message: z.string().describe("your own short, original, fun message (max ~280 chars) — surprise us, don't just say hello"),
     },
@@ -400,9 +413,9 @@ server.registerTool(
       const w = await ensureWarrant(agent, GUESTBOOK_URL, ["guestbook-sign"]);
       if (!w.ready)
         return text(
-          `APPROVE_URL: ${w.approveUrl}\n⚠ Show the human this link and ask them to approve you signing ` +
-            `the guestbook. Then IMMEDIATELY call sign_guestbook again with the same message — it waits for ` +
-            `their approval and continues. Do NOT wait for the human to tell you.`
+          `APPROVE_URL: ${w.approveUrl}\n` +
+            APPROVAL_HANDOFF +
+            ` After the human replies that they approved, call sign_guestbook again with the same message.`
         );
 
       const assertion = await agent.assertionFor(GUESTBOOK_URL);

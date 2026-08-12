@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-08-10T04:37:02Z
-updated_at: 2026-08-11T22:01:20Z
+updated_at: 2026-08-12T06:18:58Z
 parent: browserid-ng-4w3n
 ---
 
@@ -27,3 +27,5 @@ Build delegated to a worktree agent: github-mcp/ per docs/plans/2026-08-10-githu
 Installation verified 2026-08-11: id 153029791 on vthunder, repository_selection=selected, repo vthunder/bud2. Full chain smoke-tested by hand: App JWT -> installation token -> GET /installation/repositories returns exactly bud2.
 
 Progress 2026-08-12 (build agent): github-mcp/ built — mcp-demo skeleton on @browserid-ng/mcp-auth (OAuth discovery + 7521 /token + bearer-gated /mcp), five tools (list_repos/read_file/list_issues @ repo:read; create_issue/comment_issue @ issues:create), per-tool scope gate + fail-closed status re-check (MCP_STATUS_CACHE_S default 5s), one attribution log line {grantor,grantee,tool,repo} per call. Server->GitHub: hand-rolled GitHub App auth on node:crypto (no octokit; deps stay at mcp-demo's 3): RS256 App JWT -> installation token, cached, refresh near expiry + one-shot re-mint on surprise 401. v1 single-install (first of GET /app/installations, GITHUB_INSTALLATION_ID to pin). GITHUB_API_URL env makes GitHub mockable. Tests: 23 green (node --test), GitHub + broker fully mocked. Live sanity check ran: App JWT -> GET /app = 200 (BrowserID Agent, contents:read/issues:write) — key read in place, not copied. NOT done yet: App has no installation; live end-to-end demo (install -> warrant -> create_issue -> revoke) still to run.
+
+CORRECTION (from the user, same session): the browserid agent MCP server does NOT run on the human's machine — it's a remote connector. Fix #1 (local auto-open) only worked in this demo because the agent host (Claude Code) happened to have shell access on the human's laptop; it is not generalizable. The primary fix must be host-independent: the wallet push channel (#2) — a pending-approval should surface in the wallet the human already has open (browserid-wallet web, claude.ai wallet MCP), not depend on the requesting agent's host UI at all. The APPROVE_URL in tool output stays as fallback only.

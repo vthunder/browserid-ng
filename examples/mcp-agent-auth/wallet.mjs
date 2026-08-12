@@ -128,7 +128,8 @@ server.registerTool(
         `APPROVE_URL: ${pairing.verificationUriComplete}\n` +
           `(or go to ${pairing.verificationUri} and enter code ${pairing.userCode})\n` +
           `Agent key fingerprint: ${pairing.fingerprint}\n` +
-          `Show the human this link. Once they approve, I'll have my identity — then call identity or authorize.`
+          `END YOUR TURN with this link as the last line of your reply — chat UIs hide mid-turn ` +
+          `text, so the human only sees your final message. After they approve, call identity or authorize.`
       );
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);
