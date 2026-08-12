@@ -1,6 +1,6 @@
 {
   "name": "@browserid-ng/gate",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Wrap any stdio MCP server as a remote, BrowserID-gated HTTP endpoint: you decide by email whose agents may connect, every tool call is scoped, attributed, and revocable. Built on @browserid-ng/mcp-auth (both auth lanes).",
   "type": "module",
   "main": "./src/gate.mjs",

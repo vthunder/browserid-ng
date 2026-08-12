@@ -34,6 +34,8 @@ function parseArgs(argv) {
     else if (a.startsWith("--allow=")) out.allow.push(...splitList(a.slice(8)));
     else if (a === "--name") out.name = argv[++i];
     else if (a.startsWith("--name=")) out.name = a.slice(7);
+    else if (a === "--handle") out.handle = argv[++i];
+    else if (a.startsWith("--handle=")) out.handle = a.slice(9);
     else if (a === "--port") out.port = Number(argv[++i]);
     else if (a.startsWith("--port=")) out.port = Number(a.slice(7));
     else if (a === "--resource") out.resource = argv[++i];
@@ -47,6 +49,20 @@ function parseArgs(argv) {
 }
 const splitList = (s) => String(s || "").split(/[\s,]+/).filter(Boolean);
 
+// A BrowserID identity handle for the gateway agent: lowercased, non-alnum →
+// hyphens, trimmed, bounded. "Dan's Notes" → "dans-notes". Never empty (an
+// empty handle would request the base identity — the "become you" trap).
+function slugifyHandle(name) {
+  const s = String(name || "")
+    .toLowerCase()
+    .replace(/['’]/g, "") // drop apostrophes: "Dan's" → "dans", not "dan-s"
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/g, "");
+  return s || "mcp-gateway";
+}
+
 const HELP = `gate — wrap a stdio MCP server as a BrowserID-gated HTTP endpoint
 
   npx @browserid-ng/gate --allow you@example.com,friend@gmail.com --name "Dan's Notes" -- \\
@@ -54,6 +70,7 @@ const HELP = `gate — wrap a stdio MCP server as a BrowserID-gated HTTP endpoin
 
   --allow <emails>   grantor allowlist — whose humans may connect (required)
   --name <label>     display name (consent cards + landing)
+  --handle <slug>    the gateway agent's identity handle (default: slug of --name)
   --port <n>         listen port (default 8787 / $PORT)
   --resource <url>   public URL of this gate = the OAuth audience (default http://localhost:<port>)
   --broker <url>     BrowserID broker (default $BROWSERID_BROKER or https://browserid.me)
@@ -80,10 +97,17 @@ async function main() {
   const name = args.name || "mcp gateway";
 
   // 1. The gateway's own identity (Lane B). Provision once, then reuse.
+  //    It MUST be a distinct named agent, never the operator's base identity —
+  //    requesting a `handle` is what makes it "an agent acting for you" rather
+  //    than "you" (omitting it trips BrowserID's "it's asking to become you"
+  //    refusal). Derive the handle from --name (or --handle), so "Dan's Notes"
+  //    provisions e.g. `<you>+dans-notes@<domain>`.
   //    The approval link must be the LAST line, so print status to stderr and
   //    the link to stdout as the final thing before we block on approval.
+  const handle = slugifyHandle(args.handle || name);
   const credential = await ensureCredential({
     broker,
+    handle,
     label: name,
     onApproveUrl: (url, info) => {
       console.error("");

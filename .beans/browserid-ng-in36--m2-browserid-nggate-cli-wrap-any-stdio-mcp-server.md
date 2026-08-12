@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-08-12T12:21:46Z
-updated_at: 2026-08-12T14:45:19Z
+updated_at: 2026-08-12T15:13:23Z
 parent: browserid-ng-81s6
 blocked_by:
     - browserid-ng-b6pp
@@ -37,3 +37,6 @@ mcp-auth integration: clean, no bugs found, no mcp-auth/agent/broker code touche
 
 ## Reviewed + merged 2026-08-12
 Reviewed the gating path: /mcp authenticates the bearer first (401 fail-closed incl. per-call revocation re-check), then allowlist-checks grantor (403 before anything), then a per-request proxy Server bound to THAT request's verified ctx scope-gates each tools/call before forwarding to the ONE shared child. No path to the child bypasses the gate; per-request ctx binding = no cross-request leakage. Self-contained (only sdk/gate/). 8 tests pass. Merged to main. No deploy (CLI). Publish deferred with agent 0.4.1 + mcp-auth.
+
+## Bugfix 0.1.2: gateway must be a distinct agent, not the operator's base identity
+Live test caught it: the CLI called ensureCredential WITHOUT a handle, so requestProvision requested the base identity → BrowserID's 'it's asking to become you' refusal. Fixed: derive a handle from --name (slugified, apostrophes dropped: 'Dan's Notes' → 'dans-notes'; empty → 'mcp-gateway'), add optional --handle override. Now provisions a distinct named agent (e.g. <you>+dans-notes@<domain>) — grantee distinct from grantor, exactly like the wallet's provision. gate 0.1.1 → 0.1.2.
