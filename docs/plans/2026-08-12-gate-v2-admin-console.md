@@ -54,11 +54,33 @@ backs every mount's Lane B warrant requests; audiences differ per mount, so
 warrants and revocation stay per-mount. Attribution is Option A
 (gateway-as-agent), as today.
 
-### Config store + dynamic lifecycle
+### Config store + STAGED changes (restart to apply) — a safety property
 `~/.browserid-gate/config.json`: `{ mounts: [{ id, name, mount, command:[…],
-allow:[…], enabled }] }`. On startup, spawn + mount every enabled entry. The
-console's config API adds/removes/enables/disables: persist, then spawn/kill
-the child and add/remove the router mount live (no gate restart).
+allow:[…], enabled }] }`. On startup, spawn + mount every enabled entry AND
+print each command to the terminal (the review point). 
+
+**Config changes from the console are STAGED, not applied live.** The console
+API writes the config file; it does NOT spawn/kill children or add/remove
+router mounts. The running set of child commands is fixed at startup and only
+changes on a restart (`Ctrl-C` + rerun). This is deliberate defense-in-depth:
+the console runs arbitrary commands, so a login bypass must NOT be an
+immediate RCE — a bypasser can only edit config *data*; the malicious command
+doesn't execute until the admin restarts, and a web attacker can't trigger a
+restart (needs terminal access). The restart is a human-gated, out-of-band
+checkpoint.
+
+Consequences:
+- The console shows BOTH the **running** mounts (from the live process) and the
+  **saved** config, with a clear "N pending changes — restart to apply" banner
+  when they differ (and which mounts are new/changed/removed).
+- A newly-added mount's tool→scope map is derived at startup when its child is
+  actually spawned (nothing runs from web input before then).
+- Emergency stop is `Ctrl-C` (kills everything now). (A future refinement MAY
+  allow immediate *stop* of a running mount — reducing privilege is always safe
+  to do live — but v1 stages everything for a single simple model.)
+- Later (not v1): summarize config changes since last restart so the admin can
+  spot dangerous additions at a glance — the terminal command-print is the v1
+  stand-in.
 
 ### Auto-port + auto-funnel
 Bind the HTTP server to port 0 (OS picks free), read back the actual port,
@@ -124,8 +146,10 @@ so its safety rests entirely on the admin login:
    child + allowlist + scopes, resource=`https://host/<mount>`) is a unit; one
    HTTP server routes `/<mount>/*` to the right mount. Prove two mounts serve
    independently (discovery + a gated call each) with a mock broker.
-2. **Config store + lifecycle:** persist mounts; add/remove/enable/disable
-   spawns/kills + mounts/unmounts live.
+2. **Config store + STAGED changes:** persist mounts; console writes config
+   only. Startup reads config, spawns+mounts, and PRINTS each command. NO live
+   spawn/kill from the console — restart applies changes. Console surfaces a
+   "pending changes — restart to apply" diff (running vs saved).
 3. **Auto-port + auto-funnel** wired into the `--admin` launch.
 4. **Admin auth:** `/admin/login` (verify presentation, email===admin, session
    cookie) + session middleware + CSRF. Tests: right identity in, wrong
