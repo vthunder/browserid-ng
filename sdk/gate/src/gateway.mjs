@@ -188,6 +188,23 @@ export function createGateway(opts) {
         return admin(rq, res, { url, path, adminOrigin: adminOriginFor(rq) });
       }
 
+      // RFC 8414 / RFC 9728 PATH-INSERTED discovery: a mount's OAuth issuer is
+      // `<origin>/<mount>`, so a spec client (claude.ai) fetches the metadata at
+      // `/.well-known/<doc>/<mount>` (inserted), NOT `/<mount>/.well-known/<doc>`
+      // (suffixed — what mcp-auth's URLs use). For a root single-server the two
+      // coincide; for a mount they differ. Serve the inserted form by rewriting
+      // to the suffixed subpath the mount already handles.
+      const wk = /^\/\.well-known\/(oauth-authorization-server|oauth-protected-resource)\/([^/]+)$/.exec(path);
+      if (rq.method === "GET" && wk) {
+        const m = mounts.get(wk[2]);
+        if (m) {
+          const handled = await m.handle(rq, res, { subpath: `/.well-known/${wk[1]}`, url });
+          if (!handled) json(res, 404, { error: "not_found" });
+          return;
+        }
+        return json(res, 404, { error: "not_found" });
+      }
+
       const seg = path.slice(1).split("/")[0];
       const mount = mounts.get(seg);
       if (mount) {

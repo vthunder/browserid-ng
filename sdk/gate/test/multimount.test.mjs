@@ -112,6 +112,23 @@ test("each mount's discovery is path-prefixed to its own /<slug>", async () => {
   }
 });
 
+test("PATH-INSERTED discovery works (RFC 8414/9728 — what claude.ai actually fetches)", async () => {
+  for (const slug of ["notes", "docs"]) {
+    // A spec client derives the AS metadata URL from the issuer <origin>/<slug>
+    // by INSERTING the well-known between host and path — not suffixing it.
+    const asRes = await fetch(`${ORIGIN}/.well-known/oauth-authorization-server/${slug}`);
+    assert.equal(asRes.status, 200, `${slug} AS metadata must be at the path-inserted location`);
+    const asm = await asRes.json();
+    assert.equal(asm.registration_endpoint, `${ORIGIN}/${slug}/register`);
+    assert.equal(asm.token_endpoint, `${ORIGIN}/${slug}/token`);
+    const prRes = await fetch(`${ORIGIN}/.well-known/oauth-protected-resource/${slug}`);
+    assert.equal(prRes.status, 200, `${slug} PR metadata must be at the path-inserted location too`);
+    assert.equal((await prRes.json()).resource, `${ORIGIN}/${slug}`);
+  }
+  // A bogus mount slug in the inserted form is a 404, not a crash.
+  assert.equal((await fetch(`${ORIGIN}/.well-known/oauth-authorization-server/nope`)).status, 404);
+});
+
 test("the /<slug>/mcp 401 challenge points at the prefixed metadata", async () => {
   const res = await fetch(`${ORIGIN}/notes/mcp`, {
     method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },

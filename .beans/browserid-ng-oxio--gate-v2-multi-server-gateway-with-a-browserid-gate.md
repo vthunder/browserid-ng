@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: high
 created_at: 2026-08-12T16:11:26Z
-updated_at: 2026-08-12T16:43:18Z
+updated_at: 2026-08-12T17:09:42Z
 parent: browserid-ng-81s6
 ---
 
@@ -60,3 +60,6 @@ against main 0f70fad. supersedes m2-gate's stale 30f2bab.
 
 ## Reviewed + merged 2026-08-12
 Verified the security-critical + staged-config items directly in code (not just the report): login audience is server-pinned (publicOrigin in public mode, NOT client Host header; gateway.mjs:209), email exact lowercased match (gateway.mjs:242), verifyPresentation fail-closed→403, CSRF on writes (gateway.mjs:301), argv-not-shell spawn (mount.mjs:56-60 StdioClientTransport), HMAC session (session.mjs, per-install secret 0600, timingSafeEqual). STAGED CONFIG confirmed: config write handlers only push/splice+persistConfig; spawnMount is startup-only — no live spawn from HTTP (the mid-build design change stuck). v1 fixes preserved (rebased on 0f70fad; CORS via applyCors in mount.mjs, tunnel.mjs, distinct-agent, request-log). 37 tests pass. Merged to main. Version 0.3.0. Publish (agent 0.4.1 already up, mcp-auth 0.2.0 up, gate 0.3.0) needs user OTP.
+
+## 0.3.3: multi-mount OAuth discovery — serve path-INSERTED well-known (RFC 8414/9728)
+Live claude.ai failure (from the gate request log): claude fetched /.well-known/oauth-authorization-server/notes (path-inserted per RFC 8414, since the mount issuer is <origin>/notes) → 404, because mcp-auth only serves the path-SUFFIXED /notes/.well-known/oauth-authorization-server. For a root single-server the two coincide (why 0.2.x worked); for a mount they differ and clients use the inserted form. The hermetic tests fetched the suffixed URL, missing it. Fix: gateway routes /.well-known/{oauth-authorization-server,oauth-protected-resource}/<mount> to the mount by rewriting to the suffixed subpath it already serves. Regression test now fetches the path-inserted URL.
