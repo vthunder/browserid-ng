@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-08-12T12:21:46Z
-updated_at: 2026-08-12T14:18:51Z
+updated_at: 2026-08-12T14:30:17Z
 parent: browserid-ng-81s6
 ---
 
@@ -53,3 +53,6 @@ Built the full authorization-code lane (Lane B), both halves, all tests green.
 
 ### Curl walkthrough
 Documented in sdk/mcp-auth/README.md ("curl walkthrough (local broker)"): wallet-provision the gateway identity → discovery → POST /register → openssl PKCE pair → /authorize 302 → approve in browser (browser auto-returns via the validated return_url) → POST /token within 60s → gated call; revoke at /account fails the next call closed. Real-browser localhost run left for the human (per the milestone exit criteria).
+
+## Reviewed + merged 2026-08-12
+Reviewed the security-critical parts directly: cross-user mutex (withAgent holds the lock across the async assertionFor — no interleaving; per-code warrant re-hold is correct and better than the spec sketch), validate_return_url (rejects non-http(s), origin ∈ identity-domain ∨ audience-origin — gateway rides the audience rule), verifyPkceS256 (RFC 7636 + timingSafeEqual). All sound. Merged to main (ff). Rust 284 pass, mcp-auth 34 pass. Broker return_url deploying. SDK publish (agent 0.4.1 + mcp-auth) deferred until M2 needs npx.
