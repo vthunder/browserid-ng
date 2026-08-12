@@ -565,6 +565,19 @@ where
             }
         }
         if p.per_audience && requested.is_none() {
+            // Two ways to land here: a current credential that simply omitted
+            // the audience, or a device cert issued BEFORE the domain turned
+            // on managed identities (no `managed` marker, so the agent never
+            // knows to mint per-audience). The stale-credential case is the
+            // common one when a tenant enables management on an existing
+            // roster, and it recovers only by re-provisioning — say so.
+            if device_cert.claims().managed != Some(true) {
+                return Err(BrokerError::PolicyRefused(format!(
+                    "this credential predates managed-identity settings for {}; \
+                     sign out and provision the identity again to continue",
+                    tenant.domain
+                )));
+            }
             return Err(BrokerError::PolicyRefused(
                 "audience required: this managed identity mints per-audience access certs".into(),
             ));

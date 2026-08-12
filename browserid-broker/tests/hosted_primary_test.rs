@@ -298,6 +298,153 @@ async fn agent_subaddress_mints_against_its_base_roster_user() {
     assert_eq!(refused.status_code(), 403, "disabling the base user stops the agent");
 }
 
+/// The full managed-agent path (regression for the github-mcp demo block):
+/// a managed, per-audience tenant issues a device cert to the base roster
+/// user (the shape the agent-provision user-mode hop produces), and an AGENT
+/// `+tag` subaddress mints a per-audience access cert against it. Proves the
+/// device cert carries `managed: true` and the mint honors the audience for
+/// the agent subaddress — the two things that must both hold for a hosted
+/// managed tenant's agents to work.
+#[tokio::test]
+async fn managed_tenant_agent_subaddress_mints_per_audience() {
+    use browserid_broker::store::ManagementPolicy;
+
+    let (server, store) = make_server();
+    seed_active_tenant(&store);
+    let allowed = "http://localhost:3400";
+    store
+        .set_tenant_management(
+            TENANT,
+            &ManagementPolicy {
+                enabled: true,
+                per_audience: true,
+                audiences: vec![allowed.to_string()],
+                scopes: None,
+                max_ttl: Some(86_400),
+                device_cert_ttl: None,
+                access_cert_ttl: None,
+                salt: "c2FsdHktc2FsdA".into(),
+            },
+        )
+        .unwrap();
+
+    let tenant = store.get_tenant(TENANT).unwrap().unwrap();
+    store
+        .create_roster_entry(tenant.id, "dan", &bcrypt_hash("hunter2secret"), false, "admin@example.org")
+        .unwrap();
+    let email = format!("dan@{TENANT}");
+    let agent = format!("dan+poster@{TENANT}");
+
+    // The device cert the agent holds is issued by the user-mode hop: it
+    // names the SESSION (base) identity but is over the agent's key.
+    let (cookie, _) = idp_login(&server, &email, "hunter2secret").await;
+    let device_kp = KeyPair::generate();
+    let config_kp = KeyPair::generate();
+    let issued: Value = server
+        .post("/idp/device_cert")
+        .add_cookie(cookie::Cookie::new("idp_session", cookie))
+        .json(&json!({
+            "email": email,
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": config_kp.public_key().to_base64(),
+        }))
+        .await
+        .json();
+    assert_eq!(issued["success"], true, "device_cert: {issued}");
+    let device_cert = DeviceCert::parse(issued["device_cert"].as_str().unwrap()).unwrap();
+    // The managed marker MUST be present — its absence is exactly what makes
+    // the agent SDK skip the audience and the mint reject "audience required".
+    assert_eq!(device_cert.claims().managed, Some(true), "agent device cert must be managed");
+    assert!(device_cert.authorizes_identity(&agent), "base cert covers the +tag agent");
+
+    // The agent mints a per-audience access cert (what DeviceAgent.mint does
+    // for a managed identity) naming its +tag subaddress.
+    let access_kp = KeyPair::generate();
+    let areq = AccessRequest::create_for_audience(
+        TENANT, &agent, device_cert.holder().clone(),
+        &access_kp.public_key(), "nonce-ma-1", allowed, &device_kp,
+    )
+    .unwrap();
+    let minted: Value = server
+        .post("/idp/access_cert")
+        .json(&json!({ "device_cert": issued["device_cert"], "access_request": areq.encoded() }))
+        .await
+        .json();
+    assert_eq!(minted["success"], true, "managed agent per-audience mint: {minted}");
+    let ac = AccessCert::parse(minted["access_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(ac.claims().identity, agent);
+    assert!(ac.claims().constraints.as_ref().and_then(|c| c.aud.as_ref()).is_some(), "aud-scoped");
+}
+
+/// A device cert issued BEFORE the domain enabled managed identities has no
+/// `managed` marker, so its agent never mints per-audience and the mint would
+/// otherwise reject with the opaque "audience required". The mint instead
+/// tells it to re-provision — the only real recovery. Regression for the live
+/// github-mcp block, where the agent held a pre-managed credential.
+#[tokio::test]
+async fn stale_pre_managed_credential_is_told_to_reprovision() {
+    use browserid_broker::store::ManagementPolicy;
+
+    let (server, store) = make_server();
+    let tenant_pub = seed_active_tenant(&store);
+    let tenant = store.get_tenant(TENANT).unwrap().unwrap();
+    store
+        .create_roster_entry(tenant.id, "dan", &bcrypt_hash("hunter2secret"), false, "admin@example.org")
+        .unwrap();
+    let email = format!("dan@{TENANT}");
+
+    // Issue a device cert while the tenant is UNMANAGED — no managed marker.
+    let (cookie, _) = idp_login(&server, &email, "hunter2secret").await;
+    let device_kp = KeyPair::generate();
+    let config_kp = KeyPair::generate();
+    let issued: Value = server
+        .post("/idp/device_cert")
+        .add_cookie(cookie::Cookie::new("idp_session", cookie))
+        .json(&json!({
+            "email": email,
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": config_kp.public_key().to_base64(),
+        }))
+        .await
+        .json();
+    let device_cert = DeviceCert::parse(issued["device_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(device_cert.claims().managed, None, "pre-managed cert has no marker");
+    let _ = tenant_pub;
+
+    // NOW enable managed + per-audience.
+    store
+        .set_tenant_management(
+            TENANT,
+            &ManagementPolicy {
+                enabled: true,
+                per_audience: true,
+                audiences: vec![],
+                scopes: None,
+                max_ttl: Some(86_400),
+                device_cert_ttl: None,
+                access_cert_ttl: None,
+                salt: "c2FsdHktc2FsdA".into(),
+            },
+        )
+        .unwrap();
+
+    // The stale cert mints audience-free (it never learned it was managed);
+    // the mint tells it to re-provision, not the opaque "audience required".
+    let access_kp = KeyPair::generate();
+    let areq = AccessRequest::create(
+        TENANT, &email, device_cert.holder().clone(),
+        &access_kp.public_key(), "nonce-stale-1", &device_kp,
+    )
+    .unwrap();
+    let refused = server
+        .post("/idp/access_cert")
+        .json(&json!({ "device_cert": issued["device_cert"], "access_request": areq.encoded() }))
+        .await;
+    assert_eq!(refused.status_code(), 403);
+    let body = refused.text();
+    assert!(body.contains("provision the identity again"), "actionable message: {body}");
+}
+
 #[tokio::test]
 async fn roster_user_without_forced_change_issues_directly() {
     // The onboarding path creates the first user with require_password_change
