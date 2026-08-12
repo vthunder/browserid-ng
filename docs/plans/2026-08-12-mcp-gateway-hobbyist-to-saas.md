@@ -222,6 +222,22 @@ OIDC bridge for Gmail onboarding; the whole cert/warrant/holder core.
   for v1, pluggable store for the SaaS lane (mcp-auth already has a
   BearerStore interface).
 
+## Resolved (2026-08-12)
+
+- **M1 mechanism:** reuse §6.6 external warrant-request + RFC-8628 poll; only
+  new broker work is an origin-validated `return_url` on `/consent`. The
+  auth-code `/authorize` orchestration + the gateway's DeviceAgent identity
+  live in a new mcp-auth auth-code lane (mcp-auth gains a warrant-requesting
+  client role alongside its verifier role).
+- **Grantee:** A now, B later, skip C.
+- **First wrap target / demo:** official **filesystem** server — "share my
+  notes vault." Stateless-ish → one shared child. Per-friend scope caps
+  (read-only vs read+write) demoed.
+- **Demo hosting:** laptop + tunnel (tailscale funnel / cloudflared).
+- **Defaults locked:** in-memory DCR+bearer store; short bearers, no refresh
+  v1; literal `tool:<name>` scopes; gateway identity provisioned once at
+  first-run; all-or-nothing friend consent with owner call-time scope cap.
+
 ## Non-goals (gravity wells)
 
 - No relay/tunnel of our own — document existing ones.
