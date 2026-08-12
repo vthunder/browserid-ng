@@ -223,6 +223,9 @@ async fn merged_request_prepare_approve_single_pickup() {
 struct StubResolver {
     domain: String,
     key: PublicKey,
+    /// The `host=` a hosted primary's DNSSEC record names (g5qt); None for a
+    /// self-serving primary.
+    serving_host: Option<String>,
 }
 impl IssuerKeyResolver for StubResolver {
     fn resolve_issuer_key<'a>(
@@ -237,6 +240,25 @@ impl IssuerKeyResolver for StubResolver {
             } else {
                 Err(RegistrarError::ValidationError(format!("unknown issuer '{domain}'")))
             }
+        })
+    }
+
+    fn resolve_issuer<'a>(
+        &'a self,
+        domain: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<browserid_registrar::ResolvedIssuer, RegistrarError>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            Ok(browserid_registrar::ResolvedIssuer {
+                key: self.resolve_issuer_key(domain).await?,
+                serving_host: self.serving_host.clone(),
+            })
         })
     }
 }
@@ -265,6 +287,7 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
     state.issuer_resolver_override = Some(Arc::new(StubResolver {
         domain: PRIMARY.to_string(),
         key: primary_kp.public_key(),
+        serving_host: None,
     }));
     let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
     let sender = MockEmailSender { sent: email_sender.sent.clone() };
@@ -433,6 +456,122 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
     assert_eq!(verified.email, P_DELEGATOR);
     assert_eq!(verified.grantee, P_AGENT);
     assert_eq!(verified.holder.as_str(), holder);
+}
+
+/// Hosted-primary tenant (g5qt): the domain's DNSSEC record names a serving
+/// host (`host=idp.hosted.test`), and that is where its mint actually lives —
+/// so an `access_mint` on the SERVING host's origin is legitimate and must be
+/// accepted, while a foreign origin is still refused. Regression for the live
+/// failure "access_mint must be on the cert issuer's origin" that blocked
+/// every hosted-tenant agent approval.
+#[tokio::test]
+async fn hosted_tenant_agent_cert_allows_the_serving_host_mint() {
+    const TENANT: &str = "acme.test";
+    const T_DELEGATOR: &str = "dan@acme.test";
+    const T_AGENT: &str = "dan+poster@acme.test";
+    const SERVING: &str = "idp.hosted.test";
+
+    let tenant_kp = KeyPair::generate();
+    let keypair = KeyPair::generate();
+    let email_sender = Arc::new(MockEmailSender::new());
+    let mut state = AppState::new_with_arcs(
+        keypair,
+        DOMAIN.to_string(),
+        Arc::new(InMemoryUserStore::new()),
+        Arc::new(InMemorySessionStore::new()),
+        email_sender.clone(),
+    );
+    state.agent_provisioning_enabled = true;
+    state.issuer_resolver_override = Some(Arc::new(StubResolver {
+        domain: TENANT.to_string(),
+        key: tenant_kp.public_key(),
+        serving_host: Some(SERVING.to_string()),
+    }));
+    let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
+    let sender = MockEmailSender { sent: email_sender.sent.clone() };
+    let session = create_user(&server, &sender, T_DELEGATOR, "testpassword").await;
+
+    let config_kp = KeyPair::generate();
+    let config_cert = DeviceCert::create(
+        TENANT, &config_kp.public_key(), Purpose::Authorization, Holder::new("br.main").unwrap(),
+        vec![T_DELEGATOR.to_string(), "dan+*@acme.test".to_string()],
+        Duration::days(90), &tenant_kp, None,
+    )
+    .unwrap();
+
+    let device_kp = KeyPair::generate();
+    let r = server
+        .post("/agent-provision/request")
+        .json(&json!({
+            "provisioning_pubkey": { "algorithm": "Ed25519", "publicKey": device_kp.public_key().to_base64() },
+            "requested_handles": { "names": ["dan+poster"] },
+            "namespace": "services",
+            "grants": [{ "audience": AUDIENCE, "scopes": ["action:post"] }],
+        }))
+        .await;
+    assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
+    let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
+
+    let c = csrf(&server, &session).await;
+    let prep: Value = server
+        .post("/agent-provision/prepare")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code, "identity_email": T_DELEGATOR }))
+        .await
+        .json();
+    assert_eq!(prep["success"], true, "prepare: {prep}");
+    let holder = prep["holder"].as_str().unwrap().to_string();
+    let status_uri = prep["status_uri"].as_str().unwrap().to_string();
+    let status_idx = prep["grants"][0]["status_idx"].as_u64().unwrap();
+
+    let tenant_cert = DeviceCert::create(
+        TENANT, &device_kp.public_key(), Purpose::Authentication,
+        Holder::new(holder.clone()).unwrap(), vec![T_DELEGATOR.to_string()],
+        Duration::days(90), &tenant_kp, None,
+    )
+    .unwrap();
+    let warrant = Warrant::create(
+        T_DELEGATOR, T_AGENT, HolderMatcher::new(&holder).unwrap(), AUDIENCE, vec!["action:post".into()],
+        Duration::days(90), &config_kp,
+        Some(StatusRef { uri: status_uri, idx: status_idx }),
+    )
+    .unwrap();
+
+    // A foreign origin is still refused, serving host or not.
+    let r = server
+        .post("/agent-provision/complete")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code, "approve": true, "identity_email": T_DELEGATOR,
+            "warrants": [warrant.encoded()], "config_cert": config_cert.encoded(),
+            "device_cert": tenant_cert.encoded(),
+            "access_mint": "https://evil.test/access/mint" }))
+        .await;
+    assert_ne!(r.status_code(), 200, "foreign-origin access_mint must be refused");
+
+    // The serving host's mint — where a hosted tenant actually mints — passes.
+    let r = server
+        .post("/agent-provision/complete")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({ "csrf": c, "code": code, "approve": true, "identity_email": T_DELEGATOR,
+            "warrants": [warrant.encoded()], "config_cert": config_cert.encoded(),
+            "device_cert": tenant_cert.encoded(),
+            "access_mint": format!("https://{SERVING}/access/mint") }))
+        .await;
+    assert_eq!(r.status_code(), 200, "serving-host access_mint: {:?}", r.text());
+
+    let poll: Value = server
+        .post("/agent-provision/poll")
+        .json(&json!({ "code": code }))
+        .await
+        .json();
+    assert_eq!(poll["status"], "completed", "{poll}");
+    // The credential's IdP stays the issuer (the identity's authority); the
+    // mint is the serving host's.
+    assert_eq!(poll["credential"]["idp"], format!("https://{TENANT}"));
+    assert_eq!(
+        poll["credential"]["access_mint"],
+        format!("https://{SERVING}/access/mint")
+    );
 }
 
 /// As-you service (holder model): no requested handle → the service holds the

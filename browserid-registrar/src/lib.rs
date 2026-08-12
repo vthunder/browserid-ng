@@ -113,6 +113,31 @@ pub trait IssuerKeyResolver: Send + Sync {
                 + 'a,
         >,
     >;
+
+    /// The key plus the domain's DNSSEC-published serving host (`host=`),
+    /// when its §7 surface is delegated elsewhere (hosted primaries, g5qt).
+    /// The host comes from the SAME validated record as the key, so origins
+    /// derived from it carry the same trust. Default: key only — simple
+    /// test resolvers need not implement it.
+    fn resolve_issuer<'a>(
+        &'a self,
+        domain: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<ResolvedIssuer, RegistrarError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            Ok(ResolvedIssuer {
+                key: self.resolve_issuer_key(domain).await?,
+                serving_host: None,
+            })
+        })
+    }
+}
+
+/// A resolved issuer: identity key + optional DNSSEC-published serving host.
+pub struct ResolvedIssuer {
+    pub key: browserid_core::PublicKey,
+    pub serving_host: Option<String>,
 }
 
 /// Everything the registrar needs from its deployment.

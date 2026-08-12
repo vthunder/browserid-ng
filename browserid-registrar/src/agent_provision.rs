@@ -1343,24 +1343,36 @@ async fn complete_device_cert(
                     "primary-signed agent certs are not accepted here (no issuer discovery)".into(),
                 )
             })?;
-            let idp_key = resolver.resolve_issuer_key(&claims.iss).await?;
-            cert.verify(&idp_key).map_err(|_| {
+            let resolved = resolver.resolve_issuer(&claims.iss).await?;
+            cert.verify(&resolved.key).map_err(|_| {
                 RegistrarError::ValidationError(
                     "supplied device cert is not signed by its domain's IdP".into(),
                 )
             })?;
             let idp_origin = public_origin(&claims.iss);
             // Where this agent mints: the primary's discovered mint URL,
-            // pinned to the issuer's own origin so a page can't point the
-            // agent elsewhere.
+            // pinned so a page can't point the agent elsewhere. Two origins
+            // are legitimate: the issuer's own, and — for a hosted primary
+            // (g5qt) — the serving host its DNSSEC record names in `host=`,
+            // which is where the tenant's mint actually lives.
+            let serving_origin = resolved.serving_host.as_deref().map(public_origin);
+            let pinned = |url: &str| {
+                url.starts_with(&format!("{idp_origin}/"))
+                    || serving_origin
+                        .as_deref()
+                        .is_some_and(|o| url.starts_with(&format!("{o}/")))
+            };
             let access_mint = match req.access_mint.as_deref() {
-                Some(url) if url.starts_with(&format!("{idp_origin}/")) => url.to_string(),
+                Some(url) if pinned(url) => url.to_string(),
                 Some(_) => {
                     return Err(RegistrarError::ValidationError(
-                        "access_mint must be on the cert issuer's origin".into(),
+                        "access_mint must be on the cert issuer's origin or its DNSSEC-published serving host".into(),
                     ))
                 }
-                None => format!("{idp_origin}/access/mint"),
+                None => match &serving_origin {
+                    Some(o) => format!("{o}/access/mint"),
+                    None => format!("{idp_origin}/access/mint"),
+                },
             };
             (jws.to_string(), idp_origin, access_mint)
         }

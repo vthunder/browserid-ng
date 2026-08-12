@@ -544,6 +544,37 @@ impl browserid_registrar::IssuerKeyResolver for BrokerIssuerResolver {
             })
         })
     }
+
+    fn resolve_issuer<'a>(
+        &'a self,
+        domain: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<browserid_registrar::ResolvedIssuer, RegistrarError>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let result = self.fetcher.discover(domain).await.map_err(|e| {
+                RegistrarError::ValidationError(format!(
+                    "issuer discovery failed for '{domain}': {e}"
+                ))
+            })?;
+            let key = result.document.public_key.clone().ok_or_else(|| {
+                RegistrarError::ValidationError(format!(
+                    "no identity key published for '{domain}'"
+                ))
+            })?;
+            Ok(browserid_registrar::ResolvedIssuer {
+                key,
+                // The `host=` of the domain's validated `_browserid` record
+                // (hosted primaries, g5qt) — same trust root as the key.
+                serving_host: result.serving_host.clone(),
+            })
+        })
+    }
 }
 
 #[cfg(test)]
