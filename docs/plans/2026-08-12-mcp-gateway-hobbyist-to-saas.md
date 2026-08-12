@@ -128,14 +128,29 @@ what the browser approval produces:
   per-human-grantor (the axis that matters), not per-host. **Recommended for
   v1.**
 - **(B) Per-connection provisioned identity.** At authorize time the gateway
-  provisions a fresh agent identity bound to the DCR client → full "host X as
-  agent Y for human Z" attribution. Heavier; defer.
+  provisions a fresh agent identity (a sub-identity of the connecting human,
+  e.g. `friend+claude@…`) → full "host X as agent Y for human Z" attribution.
+  Heavier — it's the managed-agent provisioning path we hardened 2026-08-12 —
+  but it's the one that makes an agent **human-meaningfully nameable**, so the
+  gateway owner can *see* and *ban* an individual agent.
 - **(C) Warrant-to-holder-key.** Approval binds the warrant to a bare holder
-  key the gateway generated for the connection — lighter than B, more
-  attributed than A. Design toward this; the holder model may already be
-  close.
+  key the gateway generated for the connection. Lighter than B, and it lets
+  the *connecting human* revoke their own individual agents — but the holder
+  is a deliberately opaque random string (spec), so it gives the **owner** no
+  meaningful way to see or ban one agent. It optimizes the wrong side for the
+  "my server, my friends" case. **Skip it.**
 
-Start at (A), design toward (C). This decision also needs a small addition
+Start at (A), design toward (B) — NOT (C). Rationale (settled 2026-08-12):
+per-*human* revocation is what the wedge case needs, and (A) already delivers
+it (each human signs their own warrant → own status ref → self-revoke at
+browserid.me; owner revokes via the allowlist). The only thing (A) loses is
+per-*agent-of-the-same-human* granularity, and the axis that matters there is
+**owner visibility/control**, which (C)'s opaque holders can't give but (B)'s
+named sub-identities can. So (A) now (correct for one-agent-per-human), (B)
+when multi-agent-per-human is real. Keep the warrant status ref per-warrant
+(per grantor) from day one so A→B is additive, not a re-architecture.
+
+This decision also needs a small addition
 on `browserid.me`: a **browser warrant-approval endpoint** that takes
 `(audience, scopes, grantee = the gateway identity, return_url)`, runs the
 existing consent UI (the user's keystore signs the warrant), and returns a
@@ -179,7 +194,21 @@ OIDC bridge for Gmail onboarding; the whole cert/warrant/holder core.
 
 ## Open questions / decisions to make
 
-- **Grantee model:** confirm (A) for v1, (C) as the target. *(recommend A→C)*
+- **Grantee model:** SETTLED — (A) for v1, (B) as the target, skip (C). See
+  the design decision above.
+- **Per-friend scopes (owner policy, NOT a warrant):** the owner wants "friend
+  A read-only, friend B may post." This needs NO new BrowserID infra and NO
+  cross-user warrant — it's purely gateway-side policy: generalize the
+  allowlist from `{email → allowed}` to `{email → allowed scopes}`, and
+  enforce at CALL time as `warrant.scopes ∩ owner.policy[grantor]`. Call-time
+  (not authorize-time) because the gateway learns *which* human approved only
+  after the browserid.me hop returns the warrant. The friend's warrant is a
+  normal self-delegation (friend → friend's-agent); the owner's cap is local
+  policy layered on top. Both consents must agree → the intersection is the
+  effective scope. Configured in the gateway management UI (below).
+- **Gateway management UI:** an admin-signed-in webpage to configure the
+  allowlist (+ per-friend scopes) and view the attribution log. Start with
+  just allowlist config; grow to logs and scopes. Rich area — own bean.
 - **Refresh tokens in Lane B, or short bearers + silent re-auth?** Bearers
   already carry fail-closed status re-checks; refresh adds a rotation
   surface. *(lean: short bearers, re-run /authorize silently when the host
