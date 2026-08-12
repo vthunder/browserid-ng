@@ -1,6 +1,6 @@
 {
   "name": "@browserid-ng/gate",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Publish stdio MCP servers as remote, BrowserID-gated HTTP endpoints. v0.3 adds a multi-server gateway with a BrowserID-gated admin console (npx @browserid-ng/gate --admin you@example.com). You decide by email whose agents may connect; every tool call is scoped, attributed, and revocable.",
   "type": "module",
   "main": "./src/gate.mjs",
@@ -31,7 +31,7 @@
   "dependencies": {
     "@browserid-ng/agent": "^0.4.1",
     "@browserid-ng/mcp-auth": "^0.2.0",
-    "@browserid-ng/verify": "^0.1.0",
+    "@browserid-ng/verify": "^0.2.0",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "keywords": [
