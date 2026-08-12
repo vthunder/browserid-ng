@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: high
 created_at: 2026-08-12T16:11:26Z
-updated_at: 2026-08-12T17:09:42Z
+updated_at: 2026-08-12T17:23:24Z
 parent: browserid-ng-81s6
 ---
 
@@ -63,3 +63,6 @@ Verified the security-critical + staged-config items directly in code (not just 
 
 ## 0.3.3: multi-mount OAuth discovery — serve path-INSERTED well-known (RFC 8414/9728)
 Live claude.ai failure (from the gate request log): claude fetched /.well-known/oauth-authorization-server/notes (path-inserted per RFC 8414, since the mount issuer is <origin>/notes) → 404, because mcp-auth only serves the path-SUFFIXED /notes/.well-known/oauth-authorization-server. For a root single-server the two coincide (why 0.2.x worked); for a mount they differ and clients use the inserted form. The hermetic tests fetched the suffixed URL, missing it. Fix: gateway routes /.well-known/{oauth-authorization-server,oauth-protected-resource}/<mount> to the mount by rewriting to the suffixed subpath it already serves. Regression test now fetches the path-inserted URL.
+
+## 0.3.4: friendly page for the benign authorize/return double-submit
+Live UX bug: the broker consent page auto-redirects to /authorize/return AND shows a manual 'return to the app' link. The auto-nav consumes the single-use auth record (success → code issued); the manual click hits /authorize/return again → raw JSON error 'unknown or expired authorization'. First hit already succeeded, so the gate now renders a friendly 'You're all set, close this window' HTML page for that invalid_request case instead of the error. ROOT cause (deeper follow-up): the consent page shouldn't both auto-nav and offer a re-triggering manual link — broker-side fix for all return_url flows.

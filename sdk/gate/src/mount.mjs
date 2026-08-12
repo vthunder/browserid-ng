@@ -150,7 +150,16 @@ export async function createMount(opts) {
         const { redirect } = await lane.handleAuthorizeReturn(Object.fromEntries(url.searchParams));
         redirect302(res, redirect);
       } catch (e) {
-        tokenError(res, e);
+        // The authorization record is single-use: the consent page's auto-
+        // redirect consumes it, then its manual "return to the app" link hits
+        // this again with nothing left. The first hit already completed the
+        // sign-in — so show a friendly "you're done" page, not a raw error.
+        if (e instanceof McpAuthError && e.oauthError === "invalid_request") {
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+          res.end(returnDonePage());
+        } else {
+          tokenError(res, e);
+        }
       }
       return true;
     }
@@ -251,6 +260,18 @@ export const json = (res, code, obj, headers = {}) => {
   res.writeHead(code, { "content-type": "application/json", ...headers });
   res.end(JSON.stringify(obj));
 };
+
+/** A friendly page for the already-consumed authorization return (a benign
+ *  double-submit from the consent page's auto-nav + manual link). */
+export function returnDonePage() {
+  return `<!doctype html><meta charset=utf-8><title>All set</title>
+<style>body{font:16px/1.6 -apple-system,system-ui,sans-serif;max-width:420px;margin:18vh auto;padding:0 24px;color:#1a1a1a;text-align:center}
+.ok{font-size:40px}h1{font-size:20px;margin:.4em 0}p{color:#6b6b74}</style>
+<div class="ok">✓</div>
+<h1>You're all set</h1>
+<p>This sign-in is complete — you can close this window and return to the app.
+If the app didn't connect, add it again.</p>`;
+}
 
 export const redirect302 = (res, location) => {
   res.writeHead(302, { location });
