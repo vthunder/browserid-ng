@@ -532,7 +532,7 @@ async function resolve(r, approve, grantor, deniedNote) {
         warrants.push(await signWarrant(config, grantor, r.agent_email, g.audience, g.scopes, st, r.holder));
       }
     }
-    await api('/wsapi/warrant_respond', {
+    const resolved = await api('/wsapi/warrant_respond', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         csrf, code: r.code, approve, warrants, config_cert: configCert,
@@ -546,25 +546,30 @@ async function resolve(r, approve, grantor, deniedNote) {
     status.textContent = approve
       ? `Approved${(r.grants || []).length > 1 ? ' (' + r.grants.length + ' grants)' : ''} — the agent picks this up within a few seconds.`
       : (deniedNote || 'Denied — the agent is told immediately, so it isn’t waiting.');
-    // Done here — hand the user back. Popup blockers force some mobile
-    // browsers to reach this page by same-tab navigation, so when there is
-    // history to return through, offer it; a fresh tab can just be closed.
-    // On approval we also go back automatically after a short, announced
-    // delay — the manual button stays as the fallback (history.back() is a
-    // no-op if the browser has nothing to go back to). Denials never
-    // auto-navigate: the user may want to look at what they just refused.
+    // Done here — hand the user back. A request may carry a return_url the
+    // registrar ORIGIN-VALIDATED against the requesting service (the OAuth
+    // authorization-code lane) — never navigate to anything else. Otherwise,
+    // popup blockers force some mobile browsers to reach this page by
+    // same-tab navigation, so when there is history to return through, offer
+    // it; a fresh tab can just be closed. On approval we also navigate
+    // automatically after a short, announced delay — the manual button stays
+    // as the fallback (history.back() is a no-op if the browser has nothing
+    // to go back to). Denials never auto-navigate: the user may want to look
+    // at what they just refused.
+    const returnUrl = resolved.return_url || null;
     const back = document.createElement('p');
     back.className = 'status muted';
-    if (history.length > 1) {
+    const goBack = returnUrl ? () => location.assign(returnUrl) : () => history.back();
+    if (returnUrl || history.length > 1) {
       const b = document.createElement('button');
       b.className = 'pv-ghost';
       b.style.width = 'auto';
       b.textContent = '← Return to the app';
-      b.onclick = () => history.back();
+      b.onclick = goBack;
       back.appendChild(b);
       if (approve) {
         back.appendChild(document.createTextNode(' returning automatically…'));
-        setTimeout(() => history.back(), 1800);
+        setTimeout(goBack, 1800);
       }
     } else {
       back.textContent = 'All set — you can close this tab.';

@@ -44,6 +44,12 @@ pub struct WarrantRequestRecord {
     /// link, never listed in the pending inbox — and rate-limited per
     /// delegator.
     pub external: bool,
+    /// Where the consent page sends the browser after a successful approval
+    /// (the OAuth authorization-code lane's bounce back to the gateway).
+    /// Origin-validated at request time against the requesting service —
+    /// its identity domain or a requested grant's audience origin — so the
+    /// page only ever redirects somewhere the requester provably is.
+    pub return_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub last_polled_at: Option<DateTime<Utc>>,

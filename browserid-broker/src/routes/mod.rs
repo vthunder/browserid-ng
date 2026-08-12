@@ -299,7 +299,7 @@ where
 const INLINE_SCRIPT_HASHES: &[&str] = &[
     "'sha256-f2+Jfj05KGetVDE/2h1vliDQ+usQGxLOfVvSEgXAytE='", // account.html
     "'sha256-XRWE73ZH1qCk6vmO+hv85g2743sS42s8Y64PjFX8z98='", // authorize.html
-    "'sha256-KcSFrbxTD/FQlLnEbwRfQuYxTudagOb8OQNj5vSg5T8='", // consent.html
+    "'sha256-Dnwq3LA8AmBuJyUJV6Se225W6r/7V0TtTtOVjGoVcWU='", // consent.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)
 ];
 

@@ -229,6 +229,12 @@ pub struct RespondBody {
 #[derive(Serialize)]
 pub struct RespondResponse {
     pub success: bool,
+    /// The request's origin-validated `return_url`, echoed so the consent
+    /// page can send the browser back to the requesting service after a
+    /// successful approval (the OAuth authorization-code lane). Validated
+    /// at request time — never a caller-supplied redirect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
 }
 
 /// POST /wsapi/warrant_respond — resolve a pending request. On approve, the
@@ -258,7 +264,10 @@ pub async fn respond(
         state
             .store
             .respond_warrant_request(user.user_id, &req.code, None)?;
-        return Ok(Json(RespondResponse { success: true }));
+        // Echoed on a denial too: the page offers a manual "return to the
+        // app" link so the requesting service can pick up the denial (it
+        // never auto-navigates on deny).
+        return Ok(Json(RespondResponse { success: true, return_url: rec.return_url }));
     }
 
     // All-or-nothing: exactly one signed warrant per requested grant, in
@@ -338,7 +347,7 @@ pub async fn respond(
     }
     tracing::info!(delegator = %rec.delegator_email, grants = rec.grants.len(),
         "warrant consent approved");
-    Ok(Json(RespondResponse { success: true }))
+    Ok(Json(RespondResponse { success: true, return_url: rec.return_url }))
 }
 
 /// Validate a consent approval's client-signed warrants against the requested
@@ -448,6 +457,71 @@ pub(crate) fn validate_grant_warrants(
         warrants.push(warrant);
     }
     Ok(warrants)
+}
+
+/// The origin of an http(s) URL as `(scheme, host, effective_port)` — a
+/// deliberately strict hand parser (no `url` crate in this workspace).
+/// Refuses userinfo (`user@host` spoofing), backslashes, whitespace/control
+/// characters, and anything that isn't plain `http`/`https`. Host is
+/// lowercased; the port defaults per scheme so `https://a` == `https://a:443`.
+fn url_origin(u: &str) -> Option<(&'static str, String, u16)> {
+    if u.len() > 2048 || u.chars().any(|c| c.is_whitespace() || c.is_control()) || u.contains('\\') {
+        return None;
+    }
+    let (scheme, rest, default_port) = if let Some(r) = u.strip_prefix("https://") {
+        ("https", r, 443)
+    } else if let Some(r) = u.strip_prefix("http://") {
+        ("http", r, 80)
+    } else {
+        return None;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) => (h, p.parse::<u16>().ok()?),
+        None => (authority, default_port),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some((scheme, host.to_ascii_lowercase(), port))
+}
+
+/// Open-redirect guard for the consent flow's `return_url`: the URL must be
+/// plain http(s) — https except for localhost dev — and its origin must
+/// provably belong to the REQUESTER: either its host equals the requesting
+/// agent identity's domain, or its full origin equals the origin of one of
+/// the requested grant audiences (the gateway's `resource`, which is also
+/// what the warrant binds to). Anything else is refused up front, so the
+/// consent page only ever redirects back to the service that raised the
+/// request.
+pub(crate) fn validate_return_url(
+    return_url: &str,
+    identity: &str,
+    audiences: &[&str],
+) -> Result<(), RegistrarError> {
+    let (scheme, host, port) = url_origin(return_url)
+        .ok_or_else(|| bad("return_url must be a plain http(s) URL"))?;
+    if scheme == "http" && !(host == "localhost" || host.starts_with("127.")) {
+        return Err(bad("return_url must be https (http is allowed only for localhost)"));
+    }
+    let identity_domain = identity.rsplit('@').next().unwrap_or_default().to_ascii_lowercase();
+    if !identity_domain.is_empty() && host == identity_domain {
+        return Ok(());
+    }
+    if audiences
+        .iter()
+        .filter_map(|a| url_origin(a))
+        .any(|origin| origin == (scheme, host.clone(), port))
+    {
+        return Ok(());
+    }
+    Err(bad(
+        "return_url origin does not belong to the requesting service \
+         (it must match the requester's identity domain or a requested audience)",
+    ))
 }
 
 /// Shape check on one requested grant (audience + opaque scopes) — shared by
@@ -649,7 +723,7 @@ pub async fn register_warrant(
         None => {}
     }
     state.store.upsert_warrant(record)?;
-    Ok(Json(RespondResponse { success: true }))
+    Ok(Json(RespondResponse { success: true, return_url: None }))
 }
 
 #[derive(Deserialize)]
@@ -670,7 +744,7 @@ pub async fn forget_warrant(
     let user = require_session(&state, &cookies)?;
     require_csrf(&user, &req.csrf)?;
     state.store.delete_warrant(user.user_id, req.id)?;
-    Ok(Json(RespondResponse { success: true }))
+    Ok(Json(RespondResponse { success: true, return_url: None }))
 }
 
 #[derive(Deserialize)]
@@ -751,7 +825,7 @@ pub async fn revoke_warrant(
     state.store.set_status_revoked_idx(idx)?;
     tracing::info!(delegator = %record.delegator_email, audience = %record.audience,
         "warrant revoked (status bit set)");
-    Ok(Json(RespondResponse { success: true }))
+    Ok(Json(RespondResponse { success: true, return_url: None }))
 }
 
 // ===========================================================================
@@ -796,6 +870,14 @@ pub struct WarrantRequestBody {
     /// quoted and marked unverified. Optional but encouraged.
     #[serde(default)]
     pub message: Option<String>,
+    /// Where the consent page should send the browser after the request is
+    /// resolved (the OAuth authorization-code lane's bounce back to the
+    /// requesting service). ORIGIN-VALIDATED here, up front: the URL's origin
+    /// must belong to the requester — its identity's domain, or the origin of
+    /// one of the requested grant audiences — or the whole request is
+    /// refused. The consent page never sees an unvalidated redirect.
+    #[serde(default)]
+    pub return_url: Option<String>,
 }
 
 /// Normalize a warrant request's grantor pin against the (already known)
@@ -896,6 +978,18 @@ pub async fn warrant_request(
     if message.as_deref().is_some_and(|m| m.len() > 500) {
         return Err(bad("message too long (500 chars max)"));
     }
+    // Origin-validate the optional return_url NOW (open-redirect guard):
+    // a request carrying a foreign return_url is refused outright.
+    let return_url = req
+        .return_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if let Some(u) = return_url.as_deref() {
+        let audiences: Vec<&str> = req.grants.iter().map(|g| g.audience.as_str()).collect();
+        validate_return_url(u, &identity, &audiences)?;
+    }
 
     // Route to the delegator's account: the identity with `+tag` stripped
     // must be a verified email on a local account. (Bare agent names on a
@@ -952,6 +1046,7 @@ pub async fn warrant_request(
         status: WarrantRequestStatus::Pending,
         warrants: None,
         external: false,
+        return_url,
         created_at: now,
         expires_at: now + Duration::minutes(REQUEST_TTL_MINUTES),
         last_polled_at: None,
@@ -1092,6 +1187,54 @@ pub async fn status_list(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The consent flow's return_url open-redirect guard: only an origin the
+    /// requester provably is — its identity's domain or a requested grant
+    /// audience's origin — is ever handed back to the browser.
+    #[test]
+    fn return_url_origin_validation() {
+        let ok = |url: &str, identity: &str, auds: &[&str]| {
+            validate_return_url(url, identity, auds).is_ok()
+        };
+        // Matches a requested audience's origin (the gateway's resource).
+        assert!(ok("https://mcp.example.com/authorize/return?st=x",
+            "gate@browserid.me", &["https://mcp.example.com"]));
+        // Port + scheme are part of the origin.
+        assert!(ok("http://localhost:8787/authorize/return",
+            "gate@browserid.me", &["http://localhost:8787"]));
+        assert!(!ok("http://localhost:9999/authorize/return",
+            "gate@browserid.me", &["http://localhost:8787"]));
+        assert!(!ok("http://mcp.example.com/return", // http != https origin
+            "gate@browserid.me", &["https://mcp.example.com"]));
+        // Matches the requesting identity's domain (§6.6 foreign service).
+        assert!(ok("https://svc.example/done", "bot@svc.example", &["https://other.example"]));
+        // A foreign origin is refused.
+        assert!(!ok("https://evil.example/phish",
+            "gate@browserid.me", &["https://mcp.example.com"]));
+        // Sub- and superstring hosts of an audience don't pass.
+        assert!(!ok("https://mcp.example.com.evil.example/x",
+            "gate@browserid.me", &["https://mcp.example.com"]));
+        assert!(!ok("https://evil.example/https://mcp.example.com",
+            "gate@browserid.me", &["https://mcp.example.com"]));
+        // Userinfo spoofing is refused outright.
+        assert!(!ok("https://mcp.example.com@evil.example/x",
+            "gate@browserid.me", &["https://mcp.example.com"]));
+        // Plain-http return to a non-localhost host is refused even when the
+        // audience itself is plain http.
+        assert!(!ok("http://mcp.example.com/x",
+            "gate@browserid.me", &["http://mcp.example.com"]));
+        // Non-http(s) schemes and garbage are refused.
+        assert!(!ok("javascript:alert(1)", "gate@browserid.me", &["https://mcp.example.com"]));
+        assert!(!ok("ftp://mcp.example.com/x", "gate@browserid.me", &["https://mcp.example.com"]));
+        assert!(!ok("https://", "gate@browserid.me", &["https://mcp.example.com"]));
+        // A non-URL audience contributes nothing (but the identity rule may
+        // still match).
+        assert!(!ok("https://mcp.example.com/x", "gate@browserid.me", &["sbo+raw://x:y:1/"]));
+        assert!(ok("https://browserid.me/x", "gate@browserid.me", &["sbo+raw://x:y:1/"]));
+        // Host comparison is case-insensitive.
+        assert!(ok("https://MCP.Example.Com/return",
+            "gate@browserid.me", &["https://mcp.example.com"]));
+    }
 
     #[test]
     fn scope_fingerprint_is_order_insensitive_and_distinct() {

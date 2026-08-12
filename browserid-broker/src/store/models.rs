@@ -190,6 +190,10 @@ pub struct WarrantRequestRecord {
     /// agent, not a registered provisioning credential. Redirect-tied —
     /// excluded from the pending inbox — and rate-limited per delegator.
     pub external: bool,
+    /// Where the consent page sends the browser after a successful approval
+    /// (the OAuth authorization-code lane). Origin-validated by the registrar
+    /// at request time — never a caller-controlled redirect.
+    pub return_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub last_polled_at: Option<DateTime<Utc>>,

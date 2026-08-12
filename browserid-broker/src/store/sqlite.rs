@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 26;
+const SCHEMA_VERSION: i32 = 27;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -140,6 +140,9 @@ impl SqliteStore {
             }
             if current_version < 26 {
                 Self::migrate_v26(conn)?;
+            }
+            if current_version < 27 {
+                Self::migrate_v27(conn)?;
             }
 
             // Update schema version
@@ -729,6 +732,15 @@ impl SqliteStore {
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v27(conn: &Connection) -> Result<(), BrokerError> {
+        // Consent-flow return_url (MCP gateway M1, bean b6pp): where the
+        // consent page bounces the browser after approval. Origin-validated
+        // by the registrar at request time.
+        conn.execute_batch("ALTER TABLE warrant_requests ADD COLUMN return_url TEXT;")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → DeviceCertRecord mapping (DC Phase 3/4)
@@ -830,13 +842,14 @@ fn warrant_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Warrant
         holder: row.get(12)?,
         grantor: row.get(13)?,
         message: row.get(14)?,
+        return_url: row.get(15)?,
         created_at: parse_ts(row.get(8)?),
         expires_at: parse_ts(row.get(9)?),
         last_polled_at: parse_ts_opt(row.get(10)?),
     })
 }
 
-const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, last_polled_at, external, holder, grantor, message";
+const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, last_polled_at, external, holder, grantor, message, return_url";
 
 // Helper to convert VerificationType to/from string
 impl VerificationType {
@@ -1379,8 +1392,8 @@ impl UserStore for SqliteStore {
     fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO warrant_requests (code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, external, holder, grantor, message)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO warrant_requests (code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, external, holder, grantor, message, return_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 req.code,
                 req.user_id.0 as i64,
@@ -1396,6 +1409,7 @@ impl UserStore for SqliteStore {
                 req.holder,
                 req.grantor,
                 req.message,
+                req.return_url,
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
