@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-08-12T12:21:46Z
-updated_at: 2026-08-12T15:13:23Z
+updated_at: 2026-08-12T15:29:21Z
 parent: browserid-ng-81s6
 blocked_by:
     - browserid-ng-b6pp
@@ -40,3 +40,6 @@ Reviewed the gating path: /mcp authenticates the bearer first (401 fail-closed i
 
 ## Bugfix 0.1.2: gateway must be a distinct agent, not the operator's base identity
 Live test caught it: the CLI called ensureCredential WITHOUT a handle, so requestProvision requested the base identity → BrowserID's 'it's asking to become you' refusal. Fixed: derive a handle from --name (slugified, apostrophes dropped: 'Dan's Notes' → 'dans-notes'; empty → 'mcp-gateway'), add optional --handle override. Now provisions a distinct named agent (e.g. <you>+dans-notes@<domain>) — grantee distinct from grantor, exactly like the wallet's provision. gate 0.1.1 → 0.1.2.
+
+## Bugfix 0.1.3: CORS for browser-based OAuth hosts (claude.ai)
+Live test: claude.ai's connector failed DCR ('Couldn't register') because it runs OAuth discovery + registration browser-side, and the gate had NO CORS — the cross-origin OPTIONS preflight on /register 404'd and responses carried no Access-Control-Allow-Origin. (Server-to-server curl worked, masking it — our earlier clients were all agent-side.) Fixed: the HTTP handler sets Access-Control-Allow-Origin:* + Allow-Methods/Headers + Expose-Headers(www-authenticate) on every response and answers OPTIONS preflight with 204. Bearer auth uses the Authorization header (never cookies) so wildcard origin is safe. Regression test added. gate 0.1.2 → 0.1.3.

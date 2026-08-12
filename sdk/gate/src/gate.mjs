@@ -124,6 +124,24 @@ export async function createGateService(opts) {
   const server = createServer(async (rq, res) => {
     const url = new URL(rq.url, resource);
     const path = url.pathname;
+    // CORS: MCP hosts (claude.ai) run OAuth discovery + dynamic client
+    // registration from a browser context, so the cross-origin POST /register
+    // (JSON body) needs a passing preflight and the discovery/token responses
+    // need an allow-origin header — without these the connector fails to
+    // register even though server-to-server calls work. Bearer auth uses the
+    // Authorization header (never cookies), so a wildcard origin is safe.
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "content-type, authorization, mcp-protocol-version, mcp-session-id, last-event-id"
+    );
+    res.setHeader("Access-Control-Expose-Headers", "www-authenticate, mcp-session-id");
+    res.setHeader("Access-Control-Max-Age", "600");
+    if (rq.method === "OPTIONS") {
+      res.writeHead(204);
+      return res.end();
+    }
     try {
       if (rq.method === "GET" && path === "/healthz") return json(res, 200, { ok: true });
 

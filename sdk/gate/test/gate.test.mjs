@@ -158,6 +158,27 @@ test("Lane B dynamic client registration is mounted (POST /register)", async () 
   assert.ok(reg.grant_types.includes("authorization_code"));
 });
 
+test("CORS: browser OAuth (claude.ai) can preflight /register and read discovery cross-origin", async () => {
+  // The preflight a browser sends before a cross-origin JSON POST /register.
+  const pre = await fetch(`${RESOURCE}/register`, {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://claude.ai",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "content-type",
+    },
+  });
+  assert.equal(pre.status, 204);
+  assert.equal(pre.headers.get("access-control-allow-origin"), "*");
+  assert.match(pre.headers.get("access-control-allow-methods") || "", /POST/);
+  assert.match(pre.headers.get("access-control-allow-headers") || "", /content-type/);
+  // And a normal response carries the allow-origin so the browser can read it.
+  const disc = await fetch(`${RESOURCE}/.well-known/oauth-authorization-server`, {
+    headers: { origin: "https://claude.ai" },
+  });
+  assert.equal(disc.headers.get("access-control-allow-origin"), "*");
+});
+
 // --- tools surface + real filesystem result ---------------------------------
 test("the wrapped child's tools are proxied with their real schemas", async () => {
   const bearer = await getBearer("pres-allowed");
