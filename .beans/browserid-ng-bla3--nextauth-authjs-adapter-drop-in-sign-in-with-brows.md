@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-08-10T04:30:45Z
-updated_at: 2026-08-10T05:07:37Z
+updated_at: 2026-08-12T07:00:08Z
 ---
 
 @browserid-ng/nextauth — a Credentials provider + a tiny client helper that makes 'Sign in with BrowserID' a dependency install for the largest JS auth ecosystem (roadmap Theme 5, RP-side distribution).
@@ -22,3 +22,5 @@ Decisions pending (in the spec): Credentials primary (recommended) vs invest in 
 
 ## BUILT + committed (2026-08-10, commit b5ed2e0)
 @browserid-ng/nextauth (sdk/nextauth) complete: Credentials provider (browseridAuthorize/BrowserID) verifying at hosted /verify-access via @browserid-ng/verify (fail-closed, audience-pinned, humans-only default); browseridSessionValid() revocation re-check; client helpers (client.mjs: loadBrowserID/watchBrowserID/requestBrowserID/signInWithBrowserID). 8 unit tests green + index.d.ts + client.d.ts + README + reference app (examples/nextauth-app) + CI sdk-tests.yml. It's a library — nothing to deploy. Remaining (non-urgent): npm publish (supervised); a live end-to-end against a real Next.js app.
+
+Published to npm 2026-08-12: @browserid-ng/nextauth 0.1.0 (deps flipped to registry @browserid-ng/verify ^0.2.0). Scratch-install verified.

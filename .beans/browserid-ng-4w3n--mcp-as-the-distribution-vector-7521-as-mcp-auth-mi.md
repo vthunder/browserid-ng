@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: normal
 created_at: 2026-08-02T21:54:40Z
-updated_at: 2026-08-10T03:55:29Z
+updated_at: 2026-08-12T07:00:08Z
 ---
 
 Design: docs/plans/2026-08-02-mcp-distribution-design.md (companion to the 2026-08-02 roadmap doc, Theme 2).
@@ -34,3 +34,5 @@ Concrete autonomously-buildable slice specced in docs/plans/2026-08-10-mcp-auth-
 - Deploy path: CI builds+pushes GHCR image; released manually via mini-ops git:from-image (CI ssh step still o7ip).
 
 Left for the user (needs a real warrant approval / creds, not autonomous): the live agent-driven "revoke kills the agent mid-conversation" demo; the GitHub flagship conversion; Python/FastMCP middleware; MCPB/DXT bundle + registry publish; scope-conventions registry; per-call attestation hook; remote-wallet identity portability. npm publish of @browserid-ng/mcp-auth deliberately NOT done (supervised release).
+
+Published to npm 2026-08-12: @browserid-ng/mcp-auth 0.1.0 (zero runtime deps). Also out the same day: verify 0.2.0, express/hono/fastify 0.1.0, wallet 0.4.4 (approval-contract fix). All scratch-install verified.
