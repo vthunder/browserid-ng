@@ -66,3 +66,84 @@ export function ensureCredential(opts: {
   onApproveUrl?: (url: string, info: { verificationUri?: string; userCode?: string; fingerprint?: string }) => void;
   http?: typeof fetch;
 }): Promise<GateOptions["credential"]>;
+
+// --- gateway.mjs (the multi-server admin console) ---
+
+export interface MountDef {
+  id?: string;
+  name: string;
+  /** URL path slug ([a-z0-9._-]); the endpoint is <origin>/<mount>/mcp. */
+  mount: string;
+  /** argv — spawned literally, never via a shell. A string is tokenized to argv. */
+  command: string[] | string;
+  /** Allowlisted grantor emails (whose humans may connect). */
+  allow?: string[];
+  enabled?: boolean;
+}
+
+export interface MountStatus {
+  id: string;
+  name: string;
+  mount: string;
+  url: string;
+  command: string[];
+  allow: string[];
+  allowCount: number;
+  enabled: boolean;
+  /** Whether a child is live for this mount (spawned at startup). */
+  running: boolean;
+  tools: string[];
+  toolCount: number;
+  /** null | "new" | "changed" | "removed" — a config edit awaiting a restart. */
+  pending: null | "new" | "changed" | "removed";
+}
+
+export interface GatewayOptions {
+  /** Shared gateway DeviceCredential (Lane B). */
+  credential: GateOptions["credential"];
+  /** The ONE identity allowed into the console (exact match). */
+  adminEmail: string;
+  broker?: string;
+  /** Public origin (skips the funnel; e.g. tests / cloudflared). */
+  origin?: string;
+  /** Bind the console to 127.0.0.1 only; still funnel /<mount>/*. */
+  consoleLocal?: boolean;
+  statusCacheS?: number;
+  /** In-memory config INSTEAD of the on-disk store (tests). */
+  config?: { mounts: MountDef[] };
+  /** Persist config edits to disk (default true unless `config` is given). */
+  persist?: boolean;
+  /** Session HMAC key (default: persisted install secret). */
+  sessionSecret?: Buffer;
+  sessionTtlS?: number;
+  fetch?: typeof fetch;
+  log?: (line: string) => void;
+  /** Override the tunnel (tests). */
+  ensureFunnel?: (port: number) => Promise<string>;
+}
+
+export interface Gateway {
+  /** Bind (auto-port), funnel unless `origin` was given, then spawn enabled
+   *  config mounts. The running set is fixed until the next start(). */
+  start(opts?: { port?: number }): Promise<{ origin: string; port: number; consoleUrl: string; localPort: number | null }>;
+  close(): Promise<void>;
+  /** STAGED config edits — persist only; nothing spawns/kills until restart. */
+  addMount(def: MountDef): MountStatus;
+  updateMount(id: string, patch: Partial<MountDef>): MountStatus;
+  removeMount(id: string): boolean;
+  listMounts(): { mounts: MountStatus[]; pending: number; needsRestart: boolean };
+  readonly origin: string | null;
+  readonly port: number | null;
+  readonly adminEmail: string;
+  readonly broker: string;
+}
+
+export function createGateway(opts: GatewayOptions): Gateway;
+
+// --- config.mjs / session.mjs (advanced) ---
+
+export function configPath(): string;
+export function loadConfig(): { mounts: MountDef[] };
+export function saveConfig(config: { mounts: MountDef[] }): string;
+export function normalizeMountDef(def: MountDef): Required<Omit<MountDef, "command">> & { command: string[] };
+export function tokenizeArgv(s: string): string[];
