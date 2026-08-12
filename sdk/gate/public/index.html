@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP Gateway — admin console</title>
+<link rel="stylesheet" href="/admin/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="dot"></span>
+    <b>MCP Gateway</b>
+    <span class="sub">BrowserID-gated</span>
+  </div>
+  <div id="whoami" class="whoami" hidden>
+    <span id="admin-email"></span>
+    <button id="logout" class="ghost">Sign out</button>
+  </div>
+</header>
+
+<main id="app">
+  <!-- Signed-out view -->
+  <section id="signed-out" class="card center" hidden>
+    <h1>Sign in to manage your gateway</h1>
+    <p class="muted">Only the gateway's admin identity can add or remove MCP servers.</p>
+    <button id="signin" class="primary big">Sign in with BrowserID</button>
+    <p id="signin-error" class="error" hidden></p>
+  </section>
+
+  <!-- Signed-in view -->
+  <section id="signed-in" hidden>
+    <div class="row-between">
+      <h1>Your MCP servers</h1>
+      <button id="add-open" class="primary">Add an MCP</button>
+    </div>
+    <p id="empty" class="muted" hidden>No MCP servers yet. Click <b>Add an MCP</b> to publish one.</p>
+    <ul id="mounts" class="mounts"></ul>
+  </section>
+</main>
+
+<!-- Add-an-MCP dialog -->
+<div id="add-dialog" class="modal" hidden>
+  <div class="modal-card">
+    <h2>Add an MCP server</h2>
+    <label>Name<input id="f-name" type="text" placeholder="Dan's Notes" autocomplete="off"></label>
+    <label>Mount path<div class="mount-input"><span class="prefix" id="mount-prefix">https://…/</span><input id="f-mount" type="text" placeholder="notes" autocomplete="off"></div></label>
+    <label>Command (argv)<input id="f-command" type="text" placeholder="npx -y @modelcontextprotocol/server-filesystem /Users/dan/notes" autocomplete="off"></label>
+    <p class="hint">Run as literal arguments — never through a shell. Exact argv is shown on save.</p>
+    <label>Allowlist (emails, comma or space separated)<input id="f-allow" type="text" placeholder="dan@example.com, friend@gmail.com" autocomplete="off"></label>
+    <p id="add-error" class="error" hidden></p>
+    <div class="modal-actions">
+      <button id="add-cancel" class="ghost">Cancel</button>
+      <button id="add-save" class="primary">Add &amp; publish</button>
+    </div>
+  </div>
+</div>
+
+<script src="/admin/app.js" defer></script>
+</body>
+</html>

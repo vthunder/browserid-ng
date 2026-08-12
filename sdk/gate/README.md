@@ -21,6 +21,83 @@ no config surgery for anyone else.
 
 Built on [`@browserid-ng/mcp-auth`](../mcp-auth) — both auth lanes (see below).
 
+---
+
+## v0.3 — the admin console (multi-server gateway)
+
+```
+npx @browserid-ng/gate --admin you@example.com
+```
+
+Stands up a self-hosted gateway: it picks a free local port, sets up a
+**Tailscale funnel on 443**, provisions the gateway's identity once, and prints
+a console URL, e.g. `https://mac-mini.hamster-ayu.ts.net/`. Open it, **Sign in
+with BrowserID** (only `--admin` gets in), and manage MCP servers from the web:
+add one by **name + mount path + command + allowlist**, and it's published at
+`https://<host>/<mount>/mcp` — one process, one funnel, N servers, each its own
+warrant-gated OAuth resource.
+
+### One-command demo runbook (share "Dan's Notes")
+
+```
+1. npx @browserid-ng/gate --admin danmills@sandmill.org
+   → approve the printed provisioning link once (first run only)
+   → "Configure at https://mac-mini.hamster-ayu.ts.net/"
+2. Open that URL → Sign in with BrowserID as danmills@sandmill.org
+3. "Add an MCP":
+     name:      Dan's Notes
+     mount:     notes
+     command:   npx -y @modelcontextprotocol/server-filesystem /Users/dan/notes
+     allowlist: danmills@sandmill.org, friend@gmail.com
+   → saved. Restart the gate (Ctrl-C + rerun) to apply — see "staged config".
+4. After restart, add   https://mac-mini.hamster-ayu.ts.net/notes/mcp   to Claude.
+5. A friend on Gmail connects, approves with their own identity, acts —
+   attributed; revoke just them at browserid.me/account → next call fails closed.
+```
+
+### Staged config (a deliberate safety property)
+
+The console can spawn **arbitrary commands**, so config edits are **staged, not
+applied live**. The console API only **writes `~/.browserid-gate/config.json`**;
+it never spawns or kills a child. The running set is fixed at **startup** — and
+each command is printed to the terminal (`[gate] starting mount /notes → …`),
+which is the **review checkpoint** — and changes only on a **restart** (Ctrl-C +
+rerun). So a console login bypass is *not* immediate remote code execution: an
+attacker could edit config data, but the injected command doesn't run until the
+operator restarts at a terminal, which a web attacker can't trigger. The console
+shows a **"N pending changes — restart to apply"** banner when the saved config
+differs from what's running.
+
+### Console security model (the console is public — its safety IS the login)
+
+- **`POST /admin/login`** verifies the presentation with `verifyPresentation(p,
+  origin)` where the audience is **exactly the console origin** and the verified
+  `email` **exactly equals `--admin`** (no substring / domain / `+tag`
+  widening). Anything else → `403`.
+- **Session cookie**: a random nonce, **HMAC-signed** with a per-install secret
+  persisted `0600` in `~/.browserid-gate/session-secret` (so restarts don't log
+  you out), `httpOnly` + `Secure` + `SameSite=Lax`, bounded TTL. Forged /
+  tampered / expired cookies are rejected.
+- **CSRF**: every state-changing `/admin/*` call needs the session cookie **and**
+  a double-submit CSRF token (`x-csrf-token`, derived from the session).
+- **Commands spawn via an argv array** (`execFile`-style, no `sh -c`, no shell
+  interpolation) — the command field is admin-supplied argv.
+- Fail closed everywhere: no session → `401`, wrong identity → `403`.
+
+### `--console-local` (safer option)
+
+```
+npx @browserid-ng/gate --admin you@example.com --console-local
+```
+
+Binds the **console** to `127.0.0.1` only (configure from the machine; the
+console is never on the public funnel) while still funneling `/<mount>/*`. The
+default per the UX above is the public console with BrowserID login.
+
+---
+
+## One-shot mode — wrap a single server
+
 ## Quickstart — share your notes vault
 
 ```
@@ -164,7 +241,15 @@ svc.server.listen(8787);
 ## Tests
 
 ```
-npm test   # node --test — 8 checks, hermetic (mock broker, a real-fs stdio child fixture)
+npm test   # node --test — hermetic (mock broker + mock verifier, a real-fs stdio child fixture)
 ```
+
+Coverage: the one-shot gate (discovery/both lanes, gated proxied calls,
+allowlist, attribution, fail-closed revocation), the tunnel detector, the
+**multi-mount** router (two mounts, path-prefixed discovery, independent gated
+calls, separate bearer stores), the **admin** console (exact-audience +
+exact-email login gating, session enforcement, CSRF, forged/expired/tampered
+cookie rejection), and the **staged config lifecycle** (add/remove persist but
+don't spawn live; a restart applies the persisted config).
 
 MPL-2.0.
