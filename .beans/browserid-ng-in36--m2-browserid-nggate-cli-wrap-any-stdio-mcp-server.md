@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-08-12T12:21:46Z
-updated_at: 2026-08-12T15:29:21Z
+updated_at: 2026-08-12T15:43:02Z
 parent: browserid-ng-81s6
 blocked_by:
     - browserid-ng-b6pp
@@ -43,3 +43,6 @@ Live test caught it: the CLI called ensureCredential WITHOUT a handle, so reques
 
 ## Bugfix 0.1.3: CORS for browser-based OAuth hosts (claude.ai)
 Live test: claude.ai's connector failed DCR ('Couldn't register') because it runs OAuth discovery + registration browser-side, and the gate had NO CORS — the cross-origin OPTIONS preflight on /register 404'd and responses carried no Access-Control-Allow-Origin. (Server-to-server curl worked, masking it — our earlier clients were all agent-side.) Fixed: the HTTP handler sets Access-Control-Allow-Origin:* + Allow-Methods/Headers + Expose-Headers(www-authenticate) on every response and answers OPTIONS preflight with 204. Bearer auth uses the Authorization header (never cookies) so wildcard origin is safe. Regression test added. gate 0.1.2 → 0.1.3.
+
+## 0.2.1: per-request logging (debug claude.ai connect)
+Added res.on('finish') → '[gate] METHOD path → status' for every request, so an operator can see a client's whole connect flow (discovery/register/authorize/token/mcp) and where it stops. Debugging a claude.ai 'registration error': funnel confirmed PUBLICLY reachable (WebFetch from outside the tailnet got discovery), registration works via curl (201+CORS), so the log will show whether claude.ai even calls /register (if not → it's rejecting the non-standard :8443 port client-side → move to 443) or calls and we reject it.

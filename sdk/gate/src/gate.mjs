@@ -124,6 +124,10 @@ export async function createGateService(opts) {
   const server = createServer(async (rq, res) => {
     const url = new URL(rq.url, resource);
     const path = url.pathname;
+    // Request log: one line per request with its final status, so an operator
+    // (and we, debugging a host's connect flow) can see exactly what a client
+    // did — discovery, register, authorize, token, /mcp — and where it stopped.
+    res.on("finish", () => log(`[gate] ${rq.method} ${path} → ${res.statusCode}`));
     // CORS: MCP hosts (claude.ai) run OAuth discovery + dynamic client
     // registration from a browser context, so the cross-origin POST /register
     // (JSON body) needs a passing preflight and the discovery/token responses
