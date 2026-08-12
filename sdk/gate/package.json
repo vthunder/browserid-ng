@@ -28,8 +28,8 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@browserid-ng/agent": "file:../agent",
-    "@browserid-ng/mcp-auth": "file:../mcp-auth",
+    "@browserid-ng/agent": "^0.4.1",
+    "@browserid-ng/mcp-auth": "^0.2.0",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "keywords": [
