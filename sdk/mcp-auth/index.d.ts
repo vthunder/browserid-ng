@@ -1,6 +1,7 @@
 // Type definitions for @browserid-ng/mcp-auth
 
 export const JWT_BEARER_GRANT: "urn:ietf:params:oauth:grant-type:jwt-bearer";
+export const AUTH_CODE_GRANT: "authorization_code";
 
 /** A revocation status pointer carried by a verified presentation. */
 export interface StatusRef {
@@ -84,6 +85,10 @@ export interface McpAuth {
   authorizationServerMetadata(): Record<string, unknown>;
   /** Redeem a presentation (token-request body) for a bearer. */
   handleToken(params: { grant_type?: string; assertion?: string; scope?: string }): Promise<TokenResponse>;
+  /** The shared bearer mint: verify a presentation via the broker's
+   *  /verify-access (audience = this resource, fail-closed) and store a
+   *  scoped bearer. Both grants (jwt-bearer + authorization_code) end here. */
+  redeemPresentation(presentation: string, scope?: string): Promise<TokenResponse>;
   /** Validate a Bearer header, re-check status fail-closed, return context. */
   authenticate(authorizationHeader: string | undefined): Promise<WarrantContext>;
   /** authenticate + enforce a tool's required scopes. */
@@ -97,3 +102,74 @@ export interface McpAuth {
 }
 
 export function createMcpAuth(opts: McpAuthOptions): McpAuth;
+
+// ---------------------------------------------------------------------------
+// The OPTIONAL authorization-code lane (Lane B)
+// ---------------------------------------------------------------------------
+
+/** The gateway agent's device credential (the wallet's ~/.browserid shape). */
+export interface DeviceCredential {
+  /** base64url 32-byte Ed25519 seed. */
+  device_key: string;
+  /** The IdP-signed agent device cert (JWS). */
+  agent_device_cert: string;
+  /** The agent's IdP origin (access-cert mint). */
+  idp: string;
+  /** Explicit mint URL, when it differs from `${idp}/access/mint`. */
+  access_mint?: string;
+  /** Which identity in the cert this agent acts as. */
+  identity?: string;
+}
+
+/** PKCE S256 (RFC 7636): base64url(sha256(verifier)) === challenge. */
+export function verifyPkceS256(verifier: unknown, challenge: unknown): boolean;
+
+export interface AuthCodeLaneOptions {
+  /** The `createMcpAuth` instance to extend (bearers land in its store). */
+  mcpAuth: McpAuth;
+  /** Gateway agent credential; enables the lane (and lazily loads
+   *  `@browserid-ng/agent` — Lane-A-only users never do). */
+  credential: DeviceCredential;
+  /** Broker origin. Default: mcpAuth.broker. */
+  broker?: string;
+  /** Injectable fetch (tests). */
+  fetch?: typeof fetch;
+  /** Display label on the consent card. Default "mcp gateway". */
+  label?: string;
+  /** OAuth code lifetime in seconds (single-use regardless). Default 60. */
+  codeTtlS?: number;
+  /** /authorize → /authorize/return window in seconds. Default 900. */
+  pendingTtlS?: number;
+  /** Poll attempts on the return leg. Default 5. */
+  returnPollTries?: number;
+  /** Delay between those attempts (ms). Default 500. */
+  returnPollDelayMs?: number;
+}
+
+/** A handler result that redirects the browser. */
+export interface Redirect {
+  redirect: string;
+}
+
+export interface AuthCodeLane {
+  resource: string;
+  broker: string;
+  /** Lane-A metadata + authorization_endpoint / DCR / S256 additions —
+   *  serve this from /.well-known/oauth-authorization-server. */
+  authorizationServerMetadata(): Record<string, unknown>;
+  /** POST /register (RFC 7591 DCR, public PKCE clients). Throws McpAuthError. */
+  handleRegister(body: unknown): Record<string, unknown>;
+  /** GET /authorize. Resolves to a redirect (consent page, or an OAuth error
+   *  back to the validated redirect_uri). Throws McpAuthError for errors
+   *  that must NOT redirect (unknown client / unregistered redirect_uri). */
+  handleAuthorize(query: Record<string, unknown>): Promise<Redirect>;
+  /** GET /authorize/return?st=… (the consent page's validated bounce).
+   *  Resolves to a redirect to the host's redirect_uri with ?code= or
+   *  ?error=. Throws McpAuthError when the pending record is gone. */
+  handleAuthorizeReturn(query: Record<string, unknown>): Promise<Redirect>;
+  /** POST /token: the authorization_code branch; jwt-bearer requests are
+   *  delegated verbatim to mcpAuth.handleToken. */
+  handleToken(params: Record<string, unknown>): Promise<TokenResponse>;
+}
+
+export function createAuthCodeLane(opts: AuthCodeLaneOptions): AuthCodeLane;

@@ -211,8 +211,14 @@ export class PendingProvision {
  * identity they own. Pass `"self"` (or the agent's own email) to require the
  * agent acts as itself, or a concrete email to require that authority; an
  * unsatisfiable pin fails this call immediately rather than expiring.
+ *
+ * `returnUrl` asks the consent page to bounce the browser there after the
+ * request resolves (the OAuth authorization-code lane). The registrar
+ * ORIGIN-VALIDATES it against this requester — its origin must match the
+ * identity's domain or a requested audience's origin — and refuses the whole
+ * request otherwise.
  */
-export async function requestWarrants(broker, { deviceCert, identity, grants, label, message, grantor, http = fetch }) {
+export async function requestWarrants(broker, { deviceCert, identity, grants, label, message, grantor, returnUrl, http = fetch }) {
   const base = trim(broker);
   const { res, json } = await postJson(http, `${base}/warrant/request`, {
     device_cert: deviceCert,
@@ -221,6 +227,7 @@ export async function requestWarrants(broker, { deviceCert, identity, grants, la
     ...(label ? { label } : {}),
     ...(message ? { message } : {}),
     ...(grantor ? { grantor } : {}),
+    ...(returnUrl ? { return_url: returnUrl } : {}),
   });
   if (!res.ok || json.success !== true) {
     throw new RequestError("warrant request", res.status, json.reason || "no reason given");

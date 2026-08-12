@@ -199,6 +199,10 @@ export function requestWarrants(
      *  they own); "self"/the agent's email or a concrete email pins it. An
      *  unsatisfiable pin rejects the request immediately. */
     grantor?: string;
+    /** Where the consent page bounces the browser after resolution (the
+     *  OAuth authorization-code lane). Origin-validated by the registrar
+     *  against this requester; a foreign origin refuses the request. */
+    returnUrl?: string;
     http?: typeof fetch;
   }
 ): Promise<PendingWarrants>;
