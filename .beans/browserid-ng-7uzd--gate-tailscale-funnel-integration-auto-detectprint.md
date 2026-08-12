@@ -1,11 +1,11 @@
 ---
 # browserid-ng-7uzd
 title: 'gate: tailscale funnel integration — auto-detect/print the public URL (and the claude.ai + share links)'
-status: todo
+status: completed
 type: feature
 priority: high
 created_at: 2026-08-12T15:21:08Z
-updated_at: 2026-08-12T15:21:08Z
+updated_at: 2026-08-12T15:33:51Z
 ---
 
 User feedback during M3 (2026-08-12): setting up the tunnel by hand is fiddly and error-prone — the port-443 conflict (funnel needs 443/8443/10000; 443 was taken by an existing serve), and the easy-to-miss requirement that --resource MUST equal the public funnel URL (else the OAuth audience is http://localhost and claude.ai can't reach it / the warrant audience mismatches). Make the gate tailscale-aware:
@@ -13,3 +13,6 @@ User feedback during M3 (2026-08-12): setting up the tunnel by hand is fiddly an
 - Print a prominent block: the public MCP endpoint URL to paste into claude.ai (<funnel>/mcp), and a one-line 'share this with a friend' string.
 - Optional '--tunnel tailscale' that sets up the funnel itself (tailscale funnel --bg --https=<free port> <localport>, picking 8443/10000 if 443 is taken) and derives --resource from the result; print the 'tailscale funnel --https=<port> off' teardown hint.
 - Fall back cleanly (print manual instructions) if tailscale isn't installed/running. Keep cloudflared documented as the alternative. Design note: docs/plans/2026-08-12-mcp-gateway-hobbyist-to-saas.md said 'don't build a tunnel' — this doesn't build one, it DETECTS/derives the URL from the user's existing tunnel, which is the ergonomic gap. Parent epic browserid-ng-81s6.
+
+## Implemented (gate 0.2.0)
+src/tunnel.mjs: detectFunnel(port) reads 'tailscale serve status --json' and returns the public funnel URL mapping to the gate's local port (host:port key + AllowFunnel), 443 → no port suffix. ensureFunnel(port) creates one on the first free funnel port (443/8443/10000) if absent. CLI: when --resource is not explicit, auto-detect a funnel to --port and use it (passive); --tunnel tailscale sets one up. On listen, prints a prominent block with the claude.ai connector URL (<resource>/mcp) + a share line, or a localhost warning + tunnel hint. Degrades cleanly if tailscale is absent. 7 hermetic tests (injected runner) + verified detect against the user's real tailscale (8787 → https://mac-mini.hamster-ayu.ts.net:8443).

@@ -53,17 +53,23 @@ approval names them as the warrant's grantor, checked against your `--allow`.
 ## Reachability — put a tunnel in front (not ours to build)
 
 The gate binds a local HTTP port. To reach it from claude.ai or your phone, run
-any tunnel and pass its **public** URL as `--resource` (it becomes the OAuth
-audience warrants bind to). Two well-trodden options — the gate builds neither:
+any tunnel; its **public** URL becomes the OAuth audience warrants bind to. The
+gate builds no tunnel — but for **Tailscale** it detects yours automatically.
 
-**Tailscale Funnel** (public HTTPS on your tailnet):
+**Tailscale Funnel** — zero-config. If a funnel already maps to `--port`, the
+gate finds it and uses its URL as `--resource` (no need to pass one); or let
+the gate set the funnel up with `--tunnel tailscale`:
 
 ```
-tailscale funnel 8787
-# → https://your-machine.tailXXXX.ts.net
-npx @browserid-ng/gate --allow you@example.com \
-  --resource https://your-machine.tailXXXX.ts.net \
+# the gate sets up the funnel (picks a free port: 443/8443/10000) and prints
+# the exact claude.ai URL + a share link:
+npx @browserid-ng/gate --allow you@example.com --tunnel tailscale \
   -- npx -y @modelcontextprotocol/server-filesystem ~/notes
+
+# or if you already ran `tailscale funnel --https=8443 8787`, just:
+npx @browserid-ng/gate --allow you@example.com --port 8787 \
+  -- npx -y @modelcontextprotocol/server-filesystem ~/notes
+# → detected tailscale funnel → https://your-machine.tailXXXX.ts.net:8443
 ```
 
 **Cloudflare Tunnel**:

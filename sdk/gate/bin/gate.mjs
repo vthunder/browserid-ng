@@ -23,6 +23,7 @@
 
 import { createGateService } from "../src/gate.mjs";
 import { ensureCredential } from "../src/credential.mjs";
+import { detectFunnel, ensureFunnel, funnelOffHint } from "../src/tunnel.mjs";
 
 function parseArgs(argv) {
   const out = { allow: [], child: null };
@@ -36,6 +37,8 @@ function parseArgs(argv) {
     else if (a.startsWith("--name=")) out.name = a.slice(7);
     else if (a === "--handle") out.handle = argv[++i];
     else if (a.startsWith("--handle=")) out.handle = a.slice(9);
+    else if (a === "--tunnel") out.tunnel = argv[++i];
+    else if (a.startsWith("--tunnel=")) out.tunnel = a.slice(9);
     else if (a === "--port") out.port = Number(argv[++i]);
     else if (a.startsWith("--port=")) out.port = Number(a.slice(7));
     else if (a === "--resource") out.resource = argv[++i];
@@ -72,7 +75,10 @@ const HELP = `gate — wrap a stdio MCP server as a BrowserID-gated HTTP endpoin
   --name <label>     display name (consent cards + landing)
   --handle <slug>    the gateway agent's identity handle (default: slug of --name)
   --port <n>         listen port (default 8787 / $PORT)
-  --resource <url>   public URL of this gate = the OAuth audience (default http://localhost:<port>)
+  --resource <url>   public URL of this gate = the OAuth audience (default: auto-detected
+                     from a tailscale funnel to --port, else http://localhost:<port>)
+  --tunnel tailscale set up a tailscale funnel to --port automatically (picks a free
+                     funnel port) and use its URL as --resource
   --broker <url>     BrowserID broker (default $BROWSERID_BROKER or https://browserid.me)
   --                 the wrapped server command follows
 
@@ -93,8 +99,35 @@ async function main() {
 
   const broker = (args.broker || process.env.BROWSERID_BROKER || "https://browserid.me").replace(/\/+$/, "");
   const port = args.port || Number(process.env.PORT) || 8787;
-  const resource = (args.resource || process.env.MCP_RESOURCE || `http://localhost:${port}`).replace(/\/+$/, "");
   const name = args.name || "mcp gateway";
+
+  // Resolve the public resource (OAuth audience). Precedence: explicit
+  // --resource / $MCP_RESOURCE win; otherwise detect an existing tailscale
+  // funnel to our port (or, with --tunnel tailscale, create one), and fall
+  // back to localhost only if there's no tunnel. The audience MUST be the URL
+  // hosts actually reach — deriving it removes the #1 M3 footgun.
+  let resource = (args.resource || process.env.MCP_RESOURCE || "").replace(/\/+$/, "");
+  let derivedFromTunnel = false;
+  if (!resource) {
+    try {
+      if (args.tunnel === "tailscale") {
+        resource = await ensureFunnel(port);
+        derivedFromTunnel = true;
+        console.error(`[gate] tailscale funnel → ${resource}  (teardown: ${funnelOffHint(resource)})`);
+      } else {
+        const detected = await detectFunnel(port);
+        if (detected) {
+          resource = detected;
+          derivedFromTunnel = true;
+          console.error(`[gate] detected tailscale funnel → ${resource}`);
+        }
+      }
+    } catch (e) {
+      console.error(`[gate] tunnel setup failed: ${e.message}`);
+      // fall through to localhost; the operator can still pass --resource
+    }
+    if (!resource) resource = `http://localhost:${port}`;
+  }
 
   // 1. The gateway's own identity (Lane B). Provision once, then reuse.
   //    It MUST be a distinct named agent, never the operator's base identity —
@@ -135,12 +168,34 @@ async function main() {
   process.on("SIGTERM", shutdown);
 
   svc.server.listen(port, () => {
+    const mcpUrl = `${resource}/mcp`;
+    const isPublic = resource.startsWith("https://");
     console.error(`[gate] "${name}" listening on :${port}`);
     console.error(`[gate]   resource (audience): ${resource}`);
     console.error(`[gate]   broker:              ${broker}`);
     console.error(`[gate]   allowed grantors:    ${args.allow.join(", ")}`);
     console.error(`[gate]   wrapped tools:       ${svc.tools.map((t) => t.name).join(", ") || "(none)"}`);
-    console.error(`[gate]   add to a host as:    ${resource}/mcp`);
+    console.error("");
+    const bar = "─".repeat(64);
+    console.error(bar);
+    console.error(`  ${name} is live and BrowserID-gated.`);
+    console.error("");
+    console.error("  Add to Claude (claude.ai → Settings → Connectors → Add):");
+    console.error(`    ${mcpUrl}`);
+    console.error("");
+    console.error("  Share with a friend (they approve with their own identity):");
+    console.error(`    ${mcpUrl}`);
+    if (!isPublic) {
+      console.error("");
+      console.error("  ⚠ This is a LOCALHOST url — not reachable by Claude or a friend.");
+      console.error("    Put a public tunnel in front and it'll be picked up automatically:");
+      console.error(`      tailscale funnel --https=8443 ${port}      (then rerun, or pass --tunnel tailscale)`);
+      console.error("    or cloudflared, passing its URL as --resource.");
+    } else if (derivedFromTunnel) {
+      console.error("");
+      console.error(`  (public URL derived from your tailscale funnel — teardown: ${funnelOffHint(resource)})`);
+    }
+    console.error(bar);
   });
 }
 
