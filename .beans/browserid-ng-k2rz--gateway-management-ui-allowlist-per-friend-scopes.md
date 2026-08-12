@@ -1,11 +1,11 @@
 ---
 # browserid-ng-k2rz
 title: 'Gateway management UI: allowlist, per-friend scopes, attribution log'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-08-12T13:10:26Z
-updated_at: 2026-08-12T16:11:26Z
+updated_at: 2026-08-12T16:43:18Z
 parent: browserid-ng-81s6
 blocked_by:
     - browserid-ng-in36

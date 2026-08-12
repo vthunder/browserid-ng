@@ -1,11 +1,11 @@
 ---
 # browserid-ng-dwqa
 title: 'gate: multiple wrapped servers on one 443 (path-based mounting) — hobbyists can''t sacrifice the only https port per server'
-status: in-progress
+status: completed
 type: feature
 priority: high
 created_at: 2026-08-12T15:52:27Z
-updated_at: 2026-08-12T16:11:26Z
+updated_at: 2026-08-12T16:43:18Z
 parent: browserid-ng-81s6
 ---
 
