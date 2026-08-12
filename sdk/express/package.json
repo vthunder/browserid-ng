@@ -5,12 +5,36 @@
   "type": "module",
   "main": "./index.mjs",
   "types": "./index.d.ts",
-  "exports": { ".": { "types": "./index.d.ts", "import": "./index.mjs" } },
-  "files": ["index.mjs", "index.d.ts", "README.md"],
-  "scripts": { "test": "node --test test/*.test.mjs" },
-  "engines": { "node": ">=18" },
-  "dependencies": { "@browserid-ng/verify": "file:../js" },
-  "keywords": ["browserid", "express", "passport", "authentication", "sign-in"],
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs"
+    }
+  },
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@browserid-ng/verify": "^0.2.0"
+  },
+  "keywords": [
+    "browserid",
+    "express",
+    "passport",
+    "authentication",
+    "sign-in"
+  ],
   "license": "MPL-2.0",
-  "repository": { "type": "git", "url": "https://github.com/vthunder/browserid-ng" }
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vthunder/browserid-ng"
+  }
 }
