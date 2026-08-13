@@ -23,7 +23,7 @@ jobs:
           node-version: 24
       - name: mcp-auth tests
         working-directory: sdk/mcp-auth
-        run: node --test test/*.test.mjs
+        run: npm install --no-audit --no-fund && node --test test/*.test.mjs
       - name: nextauth tests
         working-directory: sdk/nextauth
         run: npm install --no-audit --no-fund && node --test test/*.test.mjs
