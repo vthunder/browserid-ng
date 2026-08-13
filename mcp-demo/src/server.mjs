@@ -1,23 +1,35 @@
 #!/usr/bin/env node
 // browserid-ng MCP-auth demo — the "stop putting PATs in your MCP config"
-// reference server. A warrant-gated MCP server built on @browserid-ng/mcp-auth:
+// reference server. A warrant-gated MCP server built on @browserid-ng/mcp-auth,
+// mounting BOTH auth lanes:
 //
-//   POST /token                            the embedded AS (7521 assertion grant)
+//   POST /token                            the embedded AS — Lane A (7521
+//                                          assertion grant, headless agents +
+//                                          tests) AND Lane B (authorization_code)
+//   POST /register                         Lane B dynamic client registration
+//   GET  /authorize  /authorize/return     Lane B PKCE dance (302 → broker consent)
 //   GET  /.well-known/oauth-*              RFC 9728 / RFC 8414 discovery
 //   POST /mcp                              the MCP endpoint (bearer-authed)
 //   GET  /  /healthz                       landing + probe
+//
+// Lane B is what real MCP hosts (claude.ai, Claude Code, Cursor) speak — add
+// the /mcp URL as a connector and the host's stock OAuth machinery lands the
+// human on the broker's consent card. It needs the demo's OWN identity
+// (gateway-as-agent): pass the device credential JSON via $BROWSERID_CREDENTIAL;
+// without it the server still runs, Lane A only.
 //
 // Tools: `log_action` (scope demo:write) records an attributed action;
 // `read_log` lists them. Every entry is attributed to "agent X on behalf of
 // human Y" from the warrant — and a revoke at browserid.me/account kills the
 // agent on its next call (fail-closed status re-check in the middleware).
 //
-// Design: docs/plans/2026-08-10-mcp-auth-flight-build-spec.md (bean 4w3n).
+// Design: docs/plans/2026-08-10-mcp-auth-flight-build-spec.md (bean 4w3n);
+// Lane B retrofit: bean kpr4.
 import { createServer } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { createMcpAuth, McpAuthError } from "@browserid-ng/mcp-auth";
+import { createMcpAuth, createAuthCodeLane, McpAuthError } from "@browserid-ng/mcp-auth";
 
 const PORT = Number(process.env.PORT || 3300);
 const BROKER = (process.env.BROWSERID_BROKER || "https://browserid.me").replace(/\/+$/, "");
@@ -30,6 +42,20 @@ const mcpAuth = createMcpAuth({
   broker: BROKER,
   scopesForTool: SCOPES,
 });
+
+// Lane B needs the demo's own provisioned identity (like a gate mount's).
+let lane = null;
+if (process.env.BROWSERID_CREDENTIAL) {
+  let credential;
+  try {
+    credential = JSON.parse(process.env.BROWSERID_CREDENTIAL);
+  } catch (e) {
+    throw new Error(`$BROWSERID_CREDENTIAL is not valid JSON: ${e.message}`);
+  }
+  lane = createAuthCodeLane({ mcpAuth, credential, broker: BROKER, label: "browserid MCP demo" });
+} else {
+  console.warn("[mcp-demo] no $BROWSERID_CREDENTIAL — Lane B (authorization_code) disabled; assertion grant only");
+}
 
 // The demo's "data": an in-memory attributed action log (last 100).
 const LOG = [];
@@ -117,17 +143,78 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, RESOURCE);
   const path = url.pathname;
   try {
+    // CORS: hosts (claude.ai) preflight /register and read discovery
+    // cross-origin during the Lane B dance.
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "content-type, authorization, mcp-protocol-version, mcp-session-id, last-event-id"
+    );
+    res.setHeader("Access-Control-Expose-Headers", "www-authenticate, mcp-session-id");
+    res.setHeader("Access-Control-Max-Age", "600");
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      return res.end();
+    }
+
     if (req.method === "GET" && path === "/healthz") return json(res, 200, { ok: true });
 
     if (req.method === "GET" && path === "/.well-known/oauth-protected-resource") {
       return json(res, 200, mcpAuth.protectedResourceMetadata());
     }
     if (req.method === "GET" && path === "/.well-known/oauth-authorization-server") {
-      return json(res, 200, mcpAuth.authorizationServerMetadata());
+      // The lane's metadata advertises BOTH grants (+ authorize/register).
+      return json(res, 200, lane ? lane.authorizationServerMetadata() : mcpAuth.authorizationServerMetadata());
     }
 
-    // The embedded AS: 7521 assertion-grant token endpoint. Accepts form-
-    // encoded (OAuth default) or JSON bodies.
+    // Lane B: dynamic client registration (RFC 7591).
+    if (lane && req.method === "POST" && path === "/register") {
+      const raw = await readBody(req);
+      let body;
+      try { body = JSON.parse(raw); } catch { body = {}; }
+      try {
+        return json(res, 201, lane.handleRegister(body), { "cache-control": "no-store" });
+      } catch (e) {
+        if (e instanceof McpAuthError) return json(res, e.httpStatus, e.toTokenErrorResponse());
+        throw e;
+      }
+    }
+
+    // Lane B: PKCE authorize → 302 to the broker's consent page.
+    if (lane && req.method === "GET" && path === "/authorize") {
+      try {
+        const { redirect } = await lane.handleAuthorize(Object.fromEntries(url.searchParams));
+        res.writeHead(302, { location: redirect });
+        return res.end();
+      } catch (e) {
+        if (e instanceof McpAuthError) return json(res, e.httpStatus, e.toTokenErrorResponse());
+        throw e;
+      }
+    }
+
+    // Lane B: post-approval bounce → 302 back to the host's redirect_uri.
+    if (lane && req.method === "GET" && path === "/authorize/return") {
+      try {
+        const { redirect } = await lane.handleAuthorizeReturn(Object.fromEntries(url.searchParams));
+        res.writeHead(302, { location: redirect });
+        return res.end();
+      } catch (e) {
+        // The consent page's auto-redirect consumes the single-use record; its
+        // manual "return to the app" link then lands here with nothing left.
+        // The sign-in already completed — show a friendly page, not an error.
+        if (e instanceof McpAuthError && e.oauthError === "invalid_request") {
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+          return res.end(returnDoneHtml());
+        }
+        if (e instanceof McpAuthError) return json(res, e.httpStatus, e.toTokenErrorResponse());
+        throw e;
+      }
+    }
+
+    // The embedded AS token endpoint. With Lane B mounted it serves BOTH
+    // grants (authorization_code + 7521 assertion); Lane A-only otherwise.
+    // Accepts form-encoded (OAuth default) or JSON bodies.
     if (req.method === "POST" && path === "/token") {
       const raw = await readBody(req);
       let params;
@@ -138,7 +225,7 @@ const server = createServer(async (req, res) => {
         params = Object.fromEntries(new URLSearchParams(raw));
       }
       try {
-        const out = await mcpAuth.handleToken(params);
+        const out = await (lane ? lane.handleToken(params) : mcpAuth.handleToken(params));
         return json(res, 200, out, { "cache-control": "no-store" });
       } catch (e) {
         if (e instanceof McpAuthError) return json(res, e.httpStatus, e.toTokenErrorResponse());
@@ -191,11 +278,29 @@ function landingHtml() {
 Authority is a human's short-lived, scoped, <b>revocable</b> warrant; every tool call is
 attributed to "agent X on behalf of human Y", and a revoke at
 <a href="${BROKER}/account">${BROKER}/account</a> kills the agent on its next call.</p>
+${lane ? `<p><b>Try it:</b> add <code>${RESOURCE}/mcp</code> to your MCP host (claude.ai:
+Settings → Connectors → Add custom connector) and approve once — then ask your agent
+to log an action. Full runbook: <a href="https://browserid.me/mcp-demo">browserid.me/mcp-demo</a>.</p>` : ""}
 <p>OAuth discovery: <code>/.well-known/oauth-protected-resource</code> ·
 <code>/.well-known/oauth-authorization-server</code>. MCP endpoint: <code>POST /mcp</code>.</p>
 <p>Tools: <code>log_action</code> (scope <code>demo:write</code>), <code>read_log</code>.</p>`;
 }
 
+/** Friendly page for the already-consumed authorization return (benign
+ *  double-submit from the consent page's auto-nav + manual link). */
+function returnDoneHtml() {
+  return `<!doctype html><meta charset=utf-8><title>All set</title>
+<style>body{font:16px/1.6 -apple-system,system-ui,sans-serif;max-width:420px;margin:18vh auto;padding:0 24px;color:#1a1a1a;text-align:center}
+.ok{font-size:40px}h1{font-size:20px;margin:.4em 0}p{color:#6b6b74}</style>
+<div class="ok">✓</div>
+<h1>You're all set</h1>
+<p>This sign-in is complete — you can close this window and return to the app.
+If the app didn't connect, add it again.</p>`;
+}
+
 server.listen(PORT, () => {
-  console.log(`[mcp-demo] listening on :${PORT} (resource ${RESOURCE}, broker ${BROKER})`);
+  console.log(
+    `[mcp-demo] listening on :${PORT} (resource ${RESOURCE}, broker ${BROKER}, ` +
+      `lanes: assertion${lane ? " + authorization_code" : " only"})`
+  );
 });
