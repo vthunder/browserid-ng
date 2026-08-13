@@ -4,7 +4,7 @@
 FROM nginx:1.27-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY index.html developers.html domains.html demos.html gate.html config.js analytics.js fedcm-demo.html llms.txt site.css site.js /usr/share/nginx/html/
+COPY index.html developers.html domains.html demos.html gate.html mcp-demo.html config.js analytics.js fedcm-demo.html llms.txt site.css site.js /usr/share/nginx/html/
 COPY vendor/ /usr/share/nginx/html/vendor/
 COPY img/ /usr/share/nginx/html/img/
 

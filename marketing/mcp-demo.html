@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Run the warrant-gated MCP demo: point a wallet-carrying coding agent at mcp-demo.browserid.me, log an attributed action, then revoke the grant and watch the agent's next call fail closed.">
+<title>browserid.me — run the warrant-gated MCP demo</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='90'%3E%F0%9F%AA%AA%3C/text%3E%3C/svg%3E">
+<script src="/config.js"></script>
+<script src="/vendor/posthog.js"></script>
+<script src="/analytics.js" defer></script>
+<script>
+  (function () {
+    var t;
+    try { t = localStorage.getItem("browserid:theme"); } catch (e) {}
+    document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+  })();
+</script>
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+
+<div class="nav-outer">
+  <div class="wrap nav">
+    <a href="/" class="brand"><span class="ring"><i></i></span><span>browserid<span class="me">.me</span></span></a>
+    <nav>
+      <a href="/gate" class="spoke">Gate</a>
+      <a href="/developers" class="spoke">Developers</a>
+      <a href="/domains" class="spoke">Domains</a>
+      <a href="/demos" class="spoke" style="color:var(--gold-hi)">Demos</a>
+      <a href="https://github.com/vthunder/browserid-ng/blob/main/README.md" class="hide-sm">Docs</a>
+      <a href="/account" data-auth-href="/account" class="signin">Sign in</a>
+      <button class="theme-toggle" id="themeToggle" title="Toggle color theme" aria-label="Toggle color theme">
+        <span class="theme-icon-moon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"></circle><path d="M8 1.2v1.8M8 13v1.8M1.2 8H3M13 8h1.8M3.2 3.2l1.3 1.3M11.5 11.5l1.3 1.3M12.8 3.2l-1.3 1.3M4.5 11.5l-1.3 1.3"></path></svg></span>
+        <span class="theme-icon-sun"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path></svg></span>
+      </button>
+    </nav>
+  </div>
+</div>
+
+<section>
+  <div class="wrap hero-lite">
+    <span class="kicker">Labs · warrant-gated MCP</span>
+    <h1>Watch a revoke kill an agent, live.</h1>
+    <p class="lede">A tiny MCP server whose auth is browserid natively: no API keys — every tool call carries a warrant naming who granted it, and revocation is re-checked on every single call. Five minutes with a coding agent.</p>
+  </div>
+</section>
+
+<section style="border-top:none">
+  <div class="wrap" style="padding:20px 0 50px">
+    <div class="setup-panel">
+      <div class="label">Heads up · this one needs a terminal agent</div>
+      <div class="intro">The demo server speaks the <b>assertion grant</b>: the agent itself presents a warrant from its wallet, and swaps it for a bearer over plain HTTP. That's a different lane than claude.ai connectors use — a connector runs the browser OAuth dance, which this server deliberately doesn't implement — so <b>claude.ai can't add it</b>. Use a coding agent with a shell (Claude Code, Codex, …) and the browserid wallet.</div>
+    </div>
+
+    <div class="demorows">
+      <div class="demorow">
+        <div class="num">1</div>
+        <div>
+          <div class="titleline"><h3>Give your agent the wallet</h3><span class="meta">once · terminal</span></div>
+          <p class="blurb">The wallet MCP server handles identity, approvals, and signing.</p>
+          <div class="prompt-row" style="margin-top:12px;max-width:44em">
+            <code id="cmdClaude">claude mcp add -s user browserid -- npx -y @browserid-ng/wallet</code>
+            <button class="copy-btn" data-copy="cmdClaude" type="button">Copy</button>
+          </div>
+          <div class="prompt-row" style="margin-top:8px;max-width:44em">
+            <code id="cmdCodex">codex mcp add browserid -- npx -y @browserid-ng/wallet</code>
+            <button class="copy-btn" data-copy="cmdCodex" type="button">Copy</button>
+          </div>
+        </div>
+        <div class="links"></div>
+      </div>
+
+      <div class="demorow">
+        <div class="num">2</div>
+        <div>
+          <div class="titleline"><h3>Point it at the demo server</h3><span class="meta">you'll approve two links</span></div>
+          <p class="blurb">First run, the wallet provisions your agent's identity (one approval), then asks you to approve the demo-site grant — the same permission card as every other browserid approval. The agent does the rest over HTTP.</p>
+          <div class="prompt-row" style="margin-top:12px;max-width:44em">
+            <code id="runPrompt">Using your browserid wallet, get a warrant for https://mcp-demo.browserid.me with scope demo:write. Exchange an assertion for a bearer token at its /token endpoint (jwt-bearer grant), then call its MCP tool log_action with a fun message and read the log back with read_log. Show me the attributed entries.</code>
+            <button class="copy-btn" data-copy="runPrompt" type="button">Copy</button>
+          </div>
+        </div>
+        <div class="links"></div>
+      </div>
+
+      <div class="demorow">
+        <div class="num gold">3</div>
+        <div>
+          <div class="titleline"><h3>Now revoke it</h3><span class="meta">the point of the demo</span></div>
+          <p class="blurb">Open <a href="/account" data-auth-href="/account" style="color:var(--gold)">browserid.me/account</a> → Authorized sites → revoke the mcp-demo grant. Then ask the agent to log one more action: the very next call is refused, fail-closed — the server re-checks the warrant's status on every call. Nothing else you've granted is touched.</p>
+          <div class="prompt-row" style="margin-top:12px;max-width:44em">
+            <code id="killPrompt">Log another action at https://mcp-demo.browserid.me.</code>
+            <button class="copy-btn" data-copy="killPrompt" type="button">Copy</button>
+          </div>
+        </div>
+        <div class="links"></div>
+      </div>
+
+      <div class="demorow">
+        <div class="num dim">＋</div>
+        <div>
+          <div class="titleline"><h3>Read the code</h3><span class="meta">~200 lines each</span></div>
+          <p class="blurb">The server is the reference for building your own: <a href="https://github.com/vthunder/browserid-ng/tree/main/mcp-demo" target="_blank" rel="noopener" style="color:var(--cyan)">mcp-demo</a> (JS, on <code class="mono" style="font-size:12.5px">@browserid-ng/mcp-auth</code>). The same demo also runs in Python at <code class="mono" style="font-size:12.5px">python-mcp-demo.browserid.me</code> — <a href="https://github.com/vthunder/browserid-ng/tree/main/python-mcp-demo" target="_blank" rel="noopener" style="color:var(--cyan)">source</a>, on <code class="mono" style="font-size:12.5px">browserid-mcp-auth</code> — to show both SDKs enforce identically; the prompt above works against either URL.</p>
+        </div>
+        <div class="links"><a href="/demos">All demos →</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <span>browserid-ng — identity for agents and the humans behind them. Descended from Mozilla Persona.<br>Reading this as an agent? Start at <a href="/llms.txt">browserid.me/llms.txt</a>.</span>
+    <span><a href="https://github.com/vthunder/browserid-ng">GitHub</a> · <a href="https://github.com/vthunder/browserid-ng/tree/main/docs/specs">Spec</a> · Open protocol · MPL-2.0</span>
+  </div>
+</footer>
+
+<script src="/site.js"></script>
+</body>
+</html>

@@ -85,33 +85,6 @@
       </div>
 
       <div class="demorow">
-        <div class="num">3</div>
-        <div>
-          <div class="titleline"><h3>Watch a revoke kill an agent</h3><span class="meta">warrant-gated MCP servers · JS &amp; Python</span></div>
-          <p class="blurb">Proves the kill switch: point your agent at a warrant-gated server, call a tool, then revoke at your account — the very next call is refused, fail-closed, and your own access is untouched.</p>
-        </div>
-        <div class="links"><a href="https://mcp-demo.browserid.me" target="_blank" rel="noopener">mcp-demo →</a><a href="https://python-mcp-demo.browserid.me" target="_blank" rel="noopener">python-mcp-demo →</a></div>
-      </div>
-
-      <div class="demorow">
-        <div class="num gold">4</div>
-        <div>
-          <div class="titleline"><h3>Sign in to a real app — no password</h3><span class="meta">humans · no wallet needed</span></div>
-          <p class="blurb">Proves the human half: sign in to mingo.place with the email you already use — or your Bluesky handle, as <code class="mono" style="font-size:12.5px;color:var(--cyan)">me@your-handle</code>.</p>
-        </div>
-        <div class="links"><a href="https://mingo.place" target="_blank" rel="noopener">mingo.place →</a></div>
-      </div>
-
-      <div class="demorow">
-        <div class="num gold">5</div>
-        <div>
-          <div class="titleline"><h3>FedCM sign-in</h3><span class="meta">browser-native · no wallet needed</span></div>
-          <p class="blurb">Proves browser integration: the browser's own account chooser, backed by browserid — no redirect, no popup.</p>
-        </div>
-        <div class="links"><a href="/fedcm-demo.html">Try FedCM →</a></div>
-      </div>
-
-      <div class="demorow">
         <div class="num gold">★</div>
         <div>
           <div class="titleline"><h3>Not a demo — publish your own</h3><span class="meta">the real thing · ~5 min</span></div>
@@ -131,6 +104,42 @@
           <p class="blurb">A complete relying party in one file, and an MCP server whose tools require an agent identity + human-signed warrant.</p>
         </div>
         <div class="links"><a href="https://github.com/vthunder/browserid-ng/tree/main/examples/rp-quickstart" target="_blank" rel="noopener">rp-quickstart →</a><a href="https://github.com/vthunder/browserid-ng/tree/main/examples/mcp-agent-auth" target="_blank" rel="noopener">mcp-agent-auth →</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap" style="padding:44px 0 56px">
+    <span class="kicker">Labs</span>
+    <h2 class="sec">Experiments — live, but further out.</h2>
+    <p class="sec-lede" style="max-width:40em">Working prototypes probing where the protocol can go next. Everything here runs for real; the edges are rougher.</p>
+    <div class="demorows" style="margin-top:24px">
+      <div class="demorow">
+        <div class="num dim">⚗</div>
+        <div>
+          <div class="titleline"><h3>MCP servers with native browserid auth</h3><span class="meta">JS &amp; Python · needs a terminal agent</span></div>
+          <p class="blurb">Experiment: can an MCP server use browserid for auth natively — no API keys, a warrant checked on every call? Two twin reference servers (JS and Python) expose a tiny attributed log; point a wallet-carrying coding agent at one, log an action, then revoke at your account and watch its next call refused.</p>
+        </div>
+        <div class="links"><a href="/mcp-demo">How to run it →</a><a href="https://github.com/vthunder/browserid-ng/tree/main/mcp-demo" target="_blank" rel="noopener">source →</a></div>
+      </div>
+
+      <div class="demorow">
+        <div class="num dim">⚗</div>
+        <div>
+          <div class="titleline"><h3>FedCM sign-in</h3><span class="meta">Chrome · no wallet needed</span></div>
+          <p class="blurb">Experiment: can the browser's own account chooser (FedCM) improve vanilla browserid sign-in in Chrome transparently — same API for the site, no redirect, no popup?</p>
+        </div>
+        <div class="links"><a href="/fedcm-demo.html">Try FedCM →</a></div>
+      </div>
+
+      <div class="demorow">
+        <div class="num dim">⚗</div>
+        <div>
+          <div class="titleline"><h3>Identity on-chain: mingo</h3><span class="meta">live app · no wallet needed</span></div>
+          <p class="blurb">Experiment: can browserid identities sign on-chain transactions and prove who's who on-chain? mingo.place is a tiny social app built that way — sign in with the email you already use (or your Bluesky handle, as <code class="mono" style="font-size:12.5px;color:var(--cyan)">me@your-handle</code>), no password, and post.</p>
+        </div>
+        <div class="links"><a href="https://mingo.place" target="_blank" rel="noopener">mingo.place →</a></div>
       </div>
     </div>
   </div>

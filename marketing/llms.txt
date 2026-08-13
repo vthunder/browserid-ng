@@ -43,6 +43,8 @@
 - https://browserid.me — broker / fallback IdP, hosted verifier, account + revocation
 - https://wallet.browserid.me/mcp — hosted wallet MCP endpoint (agents start here)
 - https://mcp-demo.browserid.me and https://python-mcp-demo.browserid.me — warrant-gated reference servers
+  (assertion-grant lane only, for wallet-carrying agents — not addable as a claude.ai connector;
+  runbook: https://browserid.me/mcp-demo)
 - https://bsky.browserid.me — put an agent on Bluesky with attributed, revocable posting
 
 ## Source & spec
