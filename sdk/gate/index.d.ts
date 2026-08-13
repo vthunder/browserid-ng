@@ -76,9 +76,36 @@ export interface MountDef {
   mount: string;
   /** argv — spawned literally, never via a shell. A string is tokenized to argv. */
   command: string[] | string;
-  /** Allowlisted grantor emails (whose humans may connect). */
-  allow?: string[];
   enabled?: boolean;
+  /** Last-discovered tool names (cached at startup); null until first started. */
+  tools?: string[] | null;
+}
+
+export interface PersonDef {
+  email: string;
+  name: string;
+}
+
+/** One per-mount grant inside a role. `on: ["*"]` = every tool (migration). */
+export interface RoleGrant {
+  mountId: string;
+  on: string[];
+}
+
+/** Roles are the single source of truth for access. The built-in "Full access"
+ *  role grants everything (incl. future mounts) and cannot be deleted. */
+export interface RoleDef {
+  id: string;
+  name: string;
+  builtin: boolean;
+  members: string[];
+  grants: RoleGrant[];
+}
+
+export interface GatewayConfig {
+  mounts: MountDef[];
+  people?: PersonDef[];
+  roles?: RoleDef[];
 }
 
 export interface MountStatus {
@@ -87,15 +114,33 @@ export interface MountStatus {
   mount: string;
   url: string;
   command: string[];
-  allow: string[];
-  allowCount: number;
   enabled: boolean;
   /** Whether a child is live for this mount (spawned at startup). */
   running: boolean;
-  tools: string[];
+  /** Live tool names when running, else the last-discovered cache, else null
+   *  (= unknown until a restart has started this server). */
+  tools: string[] | null;
   toolCount: number;
   /** null | "new" | "changed" | "removed" — a config edit awaiting a restart. */
   pending: null | "new" | "changed" | "removed";
+}
+
+/** One staged-diff entry (the console's "N staged" popover). */
+export interface PendingChange {
+  sign: "+" | "~" | "−";
+  label: string;
+  desc: string;
+}
+
+export interface GatewayState {
+  admin: string;
+  origin: string | null;
+  broker: string;
+  mounts: MountStatus[];
+  people: Array<PersonDef & { admin: boolean }>;
+  roles: RoleDef[];
+  pending: PendingChange[];
+  needsRestart: boolean;
 }
 
 export interface GatewayOptions {
@@ -110,7 +155,7 @@ export interface GatewayOptions {
   consoleLocal?: boolean;
   statusCacheS?: number;
   /** In-memory config INSTEAD of the on-disk store (tests). */
-  config?: { mounts: MountDef[] };
+  config?: GatewayConfig;
   /** Persist config edits to disk (default true unless `config` is given). */
   persist?: boolean;
   /** Session HMAC key (default: persisted install secret). */
@@ -131,7 +176,15 @@ export interface Gateway {
   addMount(def: MountDef): MountStatus;
   updateMount(id: string, patch: Partial<MountDef>): MountStatus;
   removeMount(id: string): boolean;
+  /** Undo a staged removal (copies the startup def back into the config). */
+  restoreMount(id: string): MountStatus;
   listMounts(): { mounts: MountStatus[]; pending: number; needsRestart: boolean };
+  addPerson(def: { email: string; name?: string }): PersonDef;
+  removePerson(email: string): boolean;
+  addRole(def: { name: string }): RoleDef;
+  updateRole(id: string, patch: { members?: string[]; grants?: RoleGrant[] }): RoleDef;
+  removeRole(id: string): boolean;
+  listState(): GatewayState;
   readonly origin: string | null;
   readonly port: number | null;
   readonly adminEmail: string;
@@ -143,7 +196,11 @@ export function createGateway(opts: GatewayOptions): Gateway;
 // --- config.mjs / session.mjs (advanced) ---
 
 export function configPath(): string;
-export function loadConfig(): { mounts: MountDef[] };
-export function saveConfig(config: { mounts: MountDef[] }): string;
-export function normalizeMountDef(def: MountDef): Required<Omit<MountDef, "command">> & { command: string[] };
+export function loadConfig(): Required<GatewayConfig>;
+export function saveConfig(config: GatewayConfig): string;
+/** Normalize a raw config doc; migrates v1 per-mount `allow` lists to roles. */
+export function normalizeConfig(doc: unknown): Required<GatewayConfig>;
+export function normalizeMountDef(def: MountDef): Required<MountDef>;
+export function normalizePersonDef(def: { email: string; name?: string }): PersonDef;
+export function normalizeGrants(grants: RoleGrant[], mounts: MountDef[]): RoleGrant[];
 export function tokenizeArgv(s: string): string[];

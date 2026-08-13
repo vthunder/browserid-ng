@@ -87,7 +87,7 @@ export async function createGateService(opts) {
 export { argsDigest };
 // v0.3 multi-server gateway + admin console, and the config-store helpers.
 export { createGateway } from "./gateway.mjs";
-export { configPath, loadConfig, saveConfig, normalizeMountDef, tokenizeArgv } from "./config.mjs";
+export { configPath, loadConfig, saveConfig, normalizeConfig, normalizeMountDef, normalizePersonDef, normalizeGrants, tokenizeArgv } from "./config.mjs";
 
 function landingHtml({ name, broker, tools, allow }) {
   const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));

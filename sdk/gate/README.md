@@ -9,8 +9,8 @@ Assistant, a SQLite file) into a remote endpoint that:
 - runs the wrapped server as ONE shared **stdio child** and proxies JSON-RPC;
 - gates **every** tool call on a human's short-lived, scoped, **revocable**
   BrowserID warrant (fail-closed per call);
-- enforces a **grantor allowlist** — you decide by email whose humans may
-  connect;
+- enforces **who may connect, by email** — a grantor allowlist in one-shot
+  mode; **roles with per-server, per-tool grants** under the admin console;
 - **auto-maps** the child's tools to `tool:<name>` scopes, so approval cards
   render legibly with zero config;
 - prints **one attribution line per call** — who acted, for whom, which tool.
@@ -23,7 +23,7 @@ Built on [`@browserid-ng/mcp-auth`](../mcp-auth) — both auth lanes (see below)
 
 ---
 
-## v0.3 — the admin console (multi-server gateway)
+## v0.4 — the admin console (multi-server gateway + roles)
 
 ```
 npx @browserid-ng/gate --admin you@example.com
@@ -32,10 +32,25 @@ npx @browserid-ng/gate --admin you@example.com
 Stands up a self-hosted gateway: it picks a free local port, sets up a
 **Tailscale funnel on 443**, provisions the gateway's identity once, and prints
 a console URL, e.g. `https://mac-mini.hamster-ayu.ts.net/`. Open it, **Sign in
-with BrowserID** (only `--admin` gets in), and manage MCP servers from the web:
-add one by **name + mount path + command + allowlist**, and it's published at
-`https://<host>/<mount>/mcp` — one process, one funnel, N servers, each its own
-warrant-gated OAuth resource.
+with BrowserID** (only `--admin` gets in), and manage everything from the web —
+three tabs:
+
+- **Servers** — add an MCP by **name + mount path + command**; it's published
+  at `https://<host>/<mount>/mcp` — one process, one funnel, N servers, each
+  its own warrant-gated OAuth resource. Copy the URL straight into your agent.
+- **People** — an address book (name + email). Being in it grants nothing.
+- **Roles** — **the only way in**: a role = members (people) + per-server,
+  **per-tool** grants. People in the role get exactly those tools; a tool call
+  outside the grant is `ACCESS_DENIED` before it reaches the child, and
+  `tools/list` is filtered to the granted set. The built-in **Full access**
+  role grants every tool on every server (including future ones) and can't be
+  deleted; the `--admin` identity is implicit and never appears in a role.
+
+Tool lists are discovered from each server's `tools/list` at startup, so a
+just-added server shows "tools unknown until restart" — restart once to
+discover, grant, then restart again to enforce. (v1 per-mount `allow` configs
+are migrated automatically: each becomes a role granting every tool on that
+mount.)
 
 ### One-command demo runbook (share "Dan's Notes")
 
@@ -44,29 +59,34 @@ warrant-gated OAuth resource.
    → approve the printed provisioning link once (first run only)
    → "Configure at https://mac-mini.hamster-ayu.ts.net/"
 2. Open that URL → Sign in with BrowserID as danmills@sandmill.org
-3. "Add an MCP":
+3. Servers → "+ Add an MCP":
      name:      Dan's Notes
      mount:     notes
      command:   npx -y @modelcontextprotocol/server-filesystem /Users/dan/notes
-     allowlist: danmills@sandmill.org, friend@gmail.com
-   → saved. Restart the gate (Ctrl-C + rerun) to apply — see "staged config".
-4. After restart, add   https://mac-mini.hamster-ayu.ts.net/notes/mcp   to Claude.
-5. A friend on Gmail connects, approves with their own identity, acts —
-   attributed; revoke just them at browserid.me/account → next call fails closed.
+   → saved ("1 staged"). Restart the gate (Ctrl-C + rerun) to publish + discover tools.
+4. People → add friend@gmail.com. Roles → create "Friends", check the tools to
+   grant on Dan's Notes, toggle the Friends chip on the friend's row.
+   → staged again; restart once more to enforce.
+5. Add   https://mac-mini.hamster-ayu.ts.net/notes/mcp   to Claude.
+6. The friend connects, approves with their own identity, acts — attributed and
+   limited to their granted tools; revoke just them at browserid.me/account →
+   next call fails closed.
 ```
 
 ### Staged config (a deliberate safety property)
 
 The console can spawn **arbitrary commands**, so config edits are **staged, not
-applied live**. The console API only **writes `~/.browserid-gate/config.json`**;
-it never spawns or kills a child. The running set is fixed at **startup** — and
-each command is printed to the terminal (`[gate] starting mount /notes → …`),
-which is the **review checkpoint** — and changes only on a **restart** (Ctrl-C +
+applied live** — every mutation (server add/edit/remove/enable, role
+create/delete/member/grant change) only **writes
+`~/.browserid-gate/config.json`**; the console never spawns or kills a child.
+The running set of commands AND the enforced role set are fixed at **startup**
+— each command is printed to the terminal (`[gate] starting mount /notes → …`),
+which is the **review checkpoint** — and change only on a **restart** (Ctrl-C +
 rerun). So a console login bypass is *not* immediate remote code execution: an
 attacker could edit config data, but the injected command doesn't run until the
-operator restarts at a terminal, which a web attacker can't trigger. The console
-shows a **"N pending changes — restart to apply"** banner when the saved config
-differs from what's running.
+operator restarts at a terminal, which a web attacker can't trigger. The
+header's **"N staged" pill** opens a diff popover (`+`/`~`/`−` per change) with
+"restart to apply" whenever the saved config differs from what's running.
 
 ### Console security model (the console is public — its safety IS the login)
 
@@ -249,7 +269,9 @@ allowlist, attribution, fail-closed revocation), the tunnel detector, the
 **multi-mount** router (two mounts, path-prefixed discovery, independent gated
 calls, separate bearer stores), the **admin** console (exact-audience +
 exact-email login gating, session enforcement, CSRF, forged/expired/tampered
-cookie rejection), and the **staged config lifecycle** (add/remove persist but
-don't spawn live; a restart applies the persisted config).
+cookie rejection), the **roles model** (per-tool enforcement + filtered
+`tools/list`, built-in role protections, people/roles CRUD + staged diffs, v1
+allowlist migration), and the **staged config lifecycle** (add/remove persist
+but don't spawn live; a restart applies the persisted config + role edits).
 
 MPL-2.0.

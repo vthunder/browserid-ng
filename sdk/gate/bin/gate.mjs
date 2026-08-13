@@ -7,9 +7,10 @@
 //     npx @browserid-ng/gate --admin you@example.com
 //   Auto-picks a free local port, sets up a tailscale funnel on 443, provisions
 //   the gateway's own identity once, and prints a console URL. Sign in there
-//   (only --admin gets in) and add MCP servers by name + mount + command +
-//   allowlist; each is published at https://<host>/<mount>/mcp. Add
-//   --console-local to keep the console on 127.0.0.1 (only the mounts funnel).
+//   (only --admin gets in) and add MCP servers by name + mount + command; each
+//   is published at https://<host>/<mount>/mcp. Access is granted via roles
+//   (People + Roles tabs: per-server, per-tool grants). Add --console-local to
+//   keep the console on 127.0.0.1 (only the mounts funnel).
 //
 //   One-shot (library/compat): wrap a single server directly:
 //     npx @browserid-ng/gate --allow you@example.com --name "Notes" -- \

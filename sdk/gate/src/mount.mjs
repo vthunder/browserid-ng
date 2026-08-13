@@ -26,6 +26,11 @@ import { createMcpAuth, createAuthCodeLane, McpAuthError } from "@browserid-ng/m
  * @param {string} opts.resource      Canonical URL of THIS mount (OAuth resource + audience).
  * @param {object} opts.credential    The gateway's device credential (Lane B).
  * @param {string[]} [opts.allow]     Allowlisted grantor emails (whose humans may connect).
+ * @param {(email:string)=>'all'|Set<string>|null} [opts.access]
+ *                                    Role-based resolver (gateway mode): maps a
+ *                                    grantor email to the tools their roles
+ *                                    grant HERE ('all', a Set, or null =
+ *                                    refused). Supersedes `allow` when given.
  * @param {string} [opts.name]        Display label (consent card).
  * @param {{command:string, args?:string[], env?:object, cwd?:string}} [opts.child]
  *                                    The wrapped stdio server to spawn+proxy.
@@ -46,6 +51,7 @@ export async function createMount(opts) {
   const doFetch = opts.fetch || globalThis.fetch;
   const log = opts.log || (() => {});
   const allow = new Set((opts.allow || []).map((e) => String(e).trim().toLowerCase()).filter(Boolean));
+  const access = typeof opts.access === "function" ? opts.access : null;
 
   // --- 1. connect to the wrapped stdio child --------------------------------
   let child = opts.client || null;
@@ -83,12 +89,26 @@ export async function createMount(opts) {
   }
 
   // --- 4. a proxy MCP server bound to one request's verified context --------
-  function buildProxyServer(ctx) {
+  // `granted` is the role-derived tool set for THIS grantor ('all' or a Set);
+  // in allowlist mode (no access resolver) every tool is granted.
+  function buildProxyServer(ctx, granted = "all") {
+    const has = (t) => granted === "all" || granted.has(t);
     const server = new Server({ name: `browserid-gate:${name}`, version: "0.3.0" }, { capabilities: { tools: {} } });
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.filter((t) => has(t.name)) }));
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const toolName = request.params.name;
       const args = request.params.arguments || {};
+      if (!has(toolName)) {
+        return {
+          isError: true,
+          content: [{
+            type: "text",
+            text:
+              `ACCESS_DENIED — your role doesn't grant '${toolName}' on this server. ` +
+              `Ask the gateway's admin to grant it in the console.`,
+          }],
+        };
+      }
       const required = scopesForTool[toolName] || [];
       const missing = required.filter((s) => !ctx.scopes.includes(s));
       if (missing.length) {
@@ -191,8 +211,22 @@ export async function createMount(opts) {
         });
         return true;
       }
-      // Grantor allowlist — refused BEFORE any tool runs (403). Exact email match.
-      if (!allow.has(String(vctx.grantor || "").toLowerCase())) {
+      // Grantor gate — refused BEFORE any tool runs (403). Roles mode (access
+      // resolver): the grantor must have ≥1 tool granted here. Allowlist mode:
+      // exact email match.
+      const grantor = String(vctx.grantor || "").toLowerCase();
+      let granted = "all";
+      if (access) {
+        granted = access(grantor);
+        if (granted !== "all" && !(granted instanceof Set && granted.size)) {
+          log(`[gate] REFUSED grantor=${vctx.grantor} (no role grants tools here)`);
+          json(res, 403, {
+            error: "access_denied",
+            error_description: `'${vctx.grantor}' has no role granting tools on this server`,
+          });
+          return true;
+        }
+      } else if (!allow.has(grantor)) {
         log(`[gate] REFUSED grantor=${vctx.grantor} (not on the allowlist)`);
         json(res, 403, {
           error: "access_denied",
@@ -204,7 +238,7 @@ export async function createMount(opts) {
       if (method === "POST") {
         try { body = JSON.parse(await readBody(rq)); } catch { body = undefined; }
       }
-      const proxy = buildProxyServer(vctx);
+      const proxy = buildProxyServer(vctx, granted);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       res.on("close", () => { transport.close(); proxy.close(); });
       await proxy.connect(transport);

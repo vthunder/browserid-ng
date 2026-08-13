@@ -25,13 +25,14 @@
 // Design: docs/plans/2026-08-12-gate-v2-admin-console.md (bean oxio).
 
 import { createServer } from "node:http";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { verifyPresentation } from "@browserid-ng/verify";
 import { createMount, json, applyCors, readBody } from "./mount.mjs";
 import { createSessionManager, parseCookies } from "./session.mjs";
-import { loadConfig, saveConfig, normalizeMountDef } from "./config.mjs";
+import { loadConfig, saveConfig, normalizeConfig, normalizeMountDef, normalizePersonDef, normalizeGrants } from "./config.mjs";
 import { ensureFunnel } from "./tunnel.mjs";
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
@@ -52,8 +53,9 @@ export function createGateway(opts) {
 
   const mounts = new Map(); // slug -> live mount (spawned at startup, fixed)
   const byId = new Map(); // id -> live mount
-  let startupDefs = []; // snapshot of config at startup (for the pending diff)
-  let config = opts.config ? { mounts: (opts.config.mounts || []).map((m) => ({ ...m })) } : loadConfig();
+  let startupDefs = []; // snapshot of config.mounts at startup (for the pending diff)
+  let startupRoles = []; // snapshot of config.roles at startup — the ENFORCED set
+  let config = opts.config ? normalizeConfig(opts.config) : loadConfig();
 
   let publicOrigin = opts.origin ? String(opts.origin).replace(/\/+$/, "") : null;
   let port = null;
@@ -63,6 +65,32 @@ export function createGateway(opts) {
   const adminSecure = () => (consoleLocal ? false : String(publicOrigin || "").startsWith("https"));
   let sessions = createSessionManager({ secret: opts.sessionSecret, ttlS: opts.sessionTtlS, secure: adminSecure() });
 
+  // --- access resolution (roles are the single source of truth) -------------
+  // Enforcement uses the STARTUP snapshot of roles, matching the staged model:
+  // role edits saved in the console take effect on the next restart. The admin
+  // identity is implicit and always has full access. A grant entry of "*"
+  // means every tool on that mount (legacy-allowlist migration).
+
+  function accessFor(email, mountId) {
+    const e = String(email || "").toLowerCase();
+    if (e === adminEmail) return "all";
+    let all = false;
+    const set = new Set();
+    for (const role of startupRoles) {
+      if (!role.members.includes(e)) continue;
+      if (role.builtin) return "all";
+      for (const g of role.grants) {
+        if (g.mountId !== mountId) continue;
+        for (const t of g.on) {
+          if (t === "*") all = true;
+          else set.add(t);
+        }
+      }
+    }
+    if (all) return "all";
+    return set.size ? set : null;
+  }
+
   // --- startup spawning (the ONLY place a child is ever spawned) ------------
 
   async function spawnMount(def) {
@@ -71,7 +99,7 @@ export function createGateway(opts) {
     const mount = await createMount({
       resource,
       credential,
-      allow: def.allow,
+      access: (email) => accessFor(email, def.id),
       name: def.name,
       child: { command: def.command[0], args: def.command.slice(1) },
       broker,
@@ -104,8 +132,12 @@ export function createGateway(opts) {
     const def = config.mounts.find((m) => m.id === id);
     if (!def) throw notFound("no such mount");
     if (patch.name != null) def.name = String(patch.name).trim() || def.name;
-    if (Array.isArray(patch.allow)) {
-      def.allow = [...new Set(patch.allow.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
+    if (patch.mount != null) {
+      const mount = normalizeMountDef({ ...def, mount: patch.mount }).mount;
+      if (config.mounts.some((m) => m.mount === mount && m.id !== id)) {
+        throw badRequest(`mount path '${mount}' is already in use`);
+      }
+      def.mount = mount;
     }
     if (Array.isArray(patch.command) || typeof patch.command === "string") {
       // Re-validate via normalize (also tokenizes a string form to argv).
@@ -124,12 +156,92 @@ export function createGateway(opts) {
     return true;
   }
 
+  /** Undo a staged removal: copy the startup def back into the saved config. */
+  function restoreMount(id) {
+    if (config.mounts.some((m) => m.id === id)) throw badRequest("mount is not removed");
+    const startDef = startupDefs.find((m) => m.id === id);
+    if (!startDef) throw notFound("no such mount");
+    if (config.mounts.some((m) => m.mount === startDef.mount)) {
+      throw badRequest(`mount path '${startDef.mount}' is already in use`);
+    }
+    const def = { ...startDef, command: [...startDef.command], tools: startDef.tools ? [...startDef.tools] : null };
+    config.mounts.push(def);
+    persistConfig();
+    return statusRow(def);
+  }
+
+  // --- people (address book — grants nothing by itself) ---------------------
+
+  function addPerson(rawDef) {
+    const person = normalizePersonDef(rawDef);
+    if (person.email === adminEmail) throw badRequest("the admin identity is implicit — it can't be added");
+    if (config.people.some((p) => p.email === person.email)) throw badRequest("that person is already in the address book");
+    config.people.push(person);
+    persistConfig();
+    return person;
+  }
+
+  /** Remove a person everywhere: the address book AND every role's members. */
+  function removePerson(email) {
+    const e = String(email || "").trim().toLowerCase();
+    const idx = config.people.findIndex((p) => p.email === e);
+    if (idx < 0) throw notFound("no such person");
+    config.people.splice(idx, 1);
+    for (const role of config.roles) role.members = role.members.filter((m) => m !== e);
+    persistConfig();
+    return true;
+  }
+
+  // --- roles (the single source of truth for access) ------------------------
+
+  function addRole(rawDef) {
+    const name = String(rawDef?.name || "").trim();
+    if (!name) throw badRequest("role name is required");
+    if (name.length > 80) throw badRequest("role name too long");
+    const role = { id: `r_${randomId()}`, name, builtin: false, members: [], grants: [] };
+    config.roles.push(role);
+    persistConfig();
+    return role;
+  }
+
+  function updateRole(id, patch) {
+    const role = config.roles.find((r) => r.id === id);
+    if (!role) throw notFound("no such role");
+    if (Array.isArray(patch?.members)) {
+      const members = [...new Set(patch.members.map((e) => String(e).trim().toLowerCase()).filter((e) => e && e.includes("@")))];
+      if (members.includes(adminEmail)) throw badRequest("the admin identity is implicit — it can't join a role");
+      // Address-book safety net: membership implies presence in people.
+      for (const email of members) {
+        if (!config.people.some((p) => p.email === email)) config.people.push({ email, name: email.split("@")[0] });
+      }
+      role.members = members;
+    }
+    if (patch?.grants != null) {
+      if (role.builtin) throw badRequest("the built-in role's grants are not editable");
+      role.grants = normalizeGrants(patch.grants, config.mounts);
+    }
+    persistConfig();
+    return role;
+  }
+
+  function removeRole(id) {
+    const role = config.roles.find((r) => r.id === id);
+    if (!role) throw notFound("no such role");
+    if (role.builtin) throw badRequest("the built-in role can't be deleted");
+    config.roles = config.roles.filter((r) => r.id !== id);
+    persistConfig();
+    return true;
+  }
+
   // --- status: running (startup) vs saved (config), with the pending diff ---
 
-  const sig = (d) => JSON.stringify({ mount: d.mount, command: d.command, allow: [...d.allow].sort(), enabled: d.enabled !== false });
+  // tools is a runtime-discovered cache, not an edit — excluded on purpose.
+  const sig = (d) => JSON.stringify({ name: d.name, mount: d.mount, command: d.command, enabled: d.enabled !== false });
 
   /** One row per mount id present in either the saved config or the running
-   *  set, tagged with its pending state relative to startup. */
+   *  set, tagged with its pending state relative to startup. `tools` is the
+   *  live list when running, else the last-discovered cache, else null
+   *  (= unknown until a restart has started this server). */
   function statusRow(savedDef) {
     const id = savedDef.id;
     const startDef = startupDefs.find((m) => m.id === id) || null;
@@ -137,18 +249,17 @@ export function createGateway(opts) {
     let pending = null; // null | "new" | "changed" | "removed"
     if (!startDef) pending = "new";
     else if (sig(savedDef) !== sig(startDef)) pending = "changed";
+    const tools = live ? live.toolNames : savedDef.tools || null;
     return {
       id,
       name: savedDef.name,
       mount: savedDef.mount,
       url: `${publicOrigin}/${savedDef.mount}/mcp`,
       command: savedDef.command,
-      allow: savedDef.allow,
-      allowCount: savedDef.allow.length,
       enabled: savedDef.enabled !== false,
       running: !!live,
-      tools: live ? live.toolNames : [],
-      toolCount: live ? live.toolNames.length : 0,
+      tools,
+      toolCount: tools ? tools.length : 0,
       pending, // "new"/"changed" — needs a restart to take effect
     };
   }
@@ -160,16 +271,67 @@ export function createGateway(opts) {
     for (const s of startupDefs) {
       if (!config.mounts.some((m) => m.id === s.id)) {
         const live = byId.get(s.id);
+        const tools = live ? live.toolNames : s.tools || null;
         rows.push({
           id: s.id, name: s.name, mount: s.mount, url: `${publicOrigin}/${s.mount}/mcp`,
-          command: s.command, allow: s.allow, allowCount: s.allow.length,
-          enabled: false, running: !!live, tools: live ? live.toolNames : [],
-          toolCount: live ? live.toolNames.length : 0, pending: "removed",
+          command: s.command, enabled: false, running: !!live,
+          tools, toolCount: tools ? tools.length : 0, pending: "removed",
         });
       }
     }
     const pendingCount = rows.filter((r) => r.pending).length;
     return { mounts: rows, pending: pendingCount, needsRestart: pendingCount > 0 };
+  }
+
+  /** Staged role edits relative to startup, as popover diff entries. */
+  function diffRoles() {
+    const out = [];
+    const label = (r) => `role ${r.name.toLowerCase()}`;
+    const membersSig = (r) => JSON.stringify([...r.members].sort());
+    const grantsSig = (r) =>
+      JSON.stringify(r.grants.map((g) => ({ m: g.mountId, on: [...g.on].sort() })).sort((a, b) => (a.m < b.m ? -1 : 1)));
+    for (const role of config.roles) {
+      const start = startupRoles.find((r) => r.id === role.id);
+      if (!start) { out.push({ sign: "+", label: label(role), desc: "new role" }); continue; }
+      if (membersSig(role) !== membersSig(start)) out.push({ sign: "~", label: label(role), desc: "members edited" });
+      if (grantsSig(role) !== grantsSig(start)) out.push({ sign: "~", label: label(role), desc: "tool scopes edited" });
+    }
+    for (const start of startupRoles) {
+      if (!config.roles.some((r) => r.id === start.id)) out.push({ sign: "−", label: label(start), desc: "will be removed" });
+    }
+    return out;
+  }
+
+  /** The whole console state in one read: what the UI renders. `pending` is
+   *  the staged-changes diff (mount rows carry their own pending tag too). */
+  function listState() {
+    const { mounts: rows } = listMounts();
+    const pending = [
+      ...rows
+        .filter((r) => r.pending)
+        .map((r) => ({
+          sign: r.pending === "new" ? "+" : r.pending === "removed" ? "−" : "~",
+          label: `/${r.mount}`,
+          desc:
+            r.pending === "new" ? `${r.name} — new server`
+            : r.pending === "removed" ? `${r.name} — will be removed`
+            : `${r.name} — edited`,
+        })),
+      ...diffRoles(),
+    ];
+    return {
+      admin: adminEmail,
+      origin: publicOrigin,
+      broker,
+      mounts: rows,
+      people: [
+        { email: adminEmail, name: adminEmail.split("@")[0], admin: true },
+        ...config.people.map((p) => ({ ...p, admin: false })),
+      ],
+      roles: config.roles.map((r) => ({ ...r, members: [...r.members], grants: r.grants.map((g) => ({ mountId: g.mountId, on: [...g.on] })) })),
+      pending,
+      needsRestart: pending.length > 0,
+    };
   }
 
   // --- HTTP router ----------------------------------------------------------
@@ -258,7 +420,9 @@ export function createGateway(opts) {
       }
       if (String(result.email).toLowerCase() !== adminEmail) {
         log(`[gate] admin login DENIED for ${result.email} (not ${adminEmail})`);
-        return json(res, 403, { error: "access_denied", error_description: "not the admin identity" });
+        // `attempted` is the caller's OWN verified email (never the admin's) —
+        // the UI echoes it back in the wrong-identity error.
+        return json(res, 403, { error: "access_denied", error_description: "not the admin identity", attempted: result.email });
       }
       const { csrf, setCookies } = sessions.issue(result.email);
       res.setHeader("Set-Cookie", setCookies);
@@ -279,27 +443,45 @@ export function createGateway(opts) {
       return json(res, 200, { ok: true });
     }
 
+    // A mutating handler: CSRF-gated, 400s with the thrown message.
+    const write = async (fn) => {
+      if (!requireCsrf(rq, res, session)) return;
+      try { return await fn(); }
+      catch (e) { return json(res, e.status || 400, { error: "invalid_request", error_description: e.message }); }
+    };
+
+    if (rq.method === "GET" && path === "/admin/state") {
+      return json(res, 200, { ...listState(), csrf: sessions.csrfForNonce(session.nonce) });
+    }
+
     if (path === "/admin/mounts") {
       if (rq.method === "GET") return json(res, 200, listMounts());
-      if (rq.method === "POST") {
-        if (!requireCsrf(rq, res, session)) return;
-        try { return json(res, 201, { ...addMount(await readJson(rq)), needsRestart: true }); }
-        catch (e) { return json(res, e.status || 400, { error: "invalid_request", error_description: e.message }); }
-      }
+      if (rq.method === "POST") return write(async () => json(res, 201, { ...addMount(await readJson(rq)), needsRestart: true }));
     }
-    const m = /^\/admin\/mounts\/([^/]+)$/.exec(path);
+    const m = /^\/admin\/mounts\/([^/]+)(\/restore)?$/.exec(path);
     if (m) {
       const id = decodeURIComponent(m[1]);
-      if (rq.method === "PATCH") {
-        if (!requireCsrf(rq, res, session)) return;
-        try { return json(res, 200, { ...updateMount(id, await readJson(rq)), needsRestart: true }); }
-        catch (e) { return json(res, e.status || 400, { error: "invalid_request", error_description: e.message }); }
-      }
-      if (rq.method === "DELETE") {
-        if (!requireCsrf(rq, res, session)) return;
-        try { removeMount(id); return json(res, 200, { ok: true, needsRestart: true }); }
-        catch (e) { return json(res, e.status || 400, { error: "invalid_request", error_description: e.message }); }
-      }
+      if (rq.method === "POST" && m[2]) return write(() => json(res, 200, restoreMount(id)));
+      if (rq.method === "PATCH" && !m[2]) return write(async () => json(res, 200, { ...updateMount(id, await readJson(rq)), needsRestart: true }));
+      if (rq.method === "DELETE" && !m[2]) return write(() => { removeMount(id); return json(res, 200, { ok: true, needsRestart: true }); });
+    }
+
+    if (path === "/admin/people" && rq.method === "POST") {
+      return write(async () => json(res, 201, addPerson(await readJson(rq))));
+    }
+    const p = /^\/admin\/people\/([^/]+)$/.exec(path);
+    if (p && rq.method === "DELETE") {
+      return write(() => { removePerson(decodeURIComponent(p[1])); return json(res, 200, { ok: true }); });
+    }
+
+    if (path === "/admin/roles" && rq.method === "POST") {
+      return write(async () => json(res, 201, addRole(await readJson(rq))));
+    }
+    const r = /^\/admin\/roles\/([^/]+)$/.exec(path);
+    if (r) {
+      const id = decodeURIComponent(r[1]);
+      if (rq.method === "PATCH") return write(async () => json(res, 200, updateRole(id, await readJson(rq))));
+      if (rq.method === "DELETE") return write(() => { removeRole(id); return json(res, 200, { ok: true }); });
     }
     json(res, 404, { error: "not_found" });
   }
@@ -347,12 +529,36 @@ export function createGateway(opts) {
 
     // Snapshot the config as the immutable "running set", then spawn enabled
     // entries. Nothing spawned after this until a restart.
-    startupDefs = config.mounts.map((m) => ({ ...m, allow: [...m.allow], command: [...m.command] }));
+    startupDefs = config.mounts.map((m) => ({ ...m, command: [...m.command], tools: m.tools ? [...m.tools] : null }));
     for (const def of startupDefs) {
       if (def.enabled === false) { log(`[gate] mount /${def.mount} is disabled — not started`); continue; }
       try { await spawnMount(def); }
       catch (e) { log(`[gate] FAILED to start mount /${def.mount}: ${e.message}`); }
     }
+
+    // Tool discovery (MCP tools/list) just happened for every spawned child —
+    // cache the lists in config so the console can grant per-tool even while a
+    // server is disabled, and expand any "*" grants (legacy migration) into the
+    // now-known concrete tool lists. This is startup housekeeping, not a staged
+    // edit: it happens at the human-gated restart and is excluded from sig().
+    for (const def of [...startupDefs, ...config.mounts]) {
+      const live = byId.get(def.id);
+      if (live) def.tools = [...live.toolNames];
+    }
+    for (const role of config.roles) {
+      for (const g of role.grants) {
+        const def = config.mounts.find((m) => m.id === g.mountId);
+        if (def?.tools && g.on.includes("*")) g.on = [...def.tools];
+      }
+    }
+    // The ENFORCED role set for this run — snapshotted AFTER expansion so a
+    // clean startup reports "in sync".
+    startupRoles = config.roles.map((r) => ({
+      ...r,
+      members: [...r.members],
+      grants: r.grants.map((g) => ({ mountId: g.mountId, on: [...g.on] })),
+    }));
+    persistConfig();
 
     const consoleUrl = consoleLocal ? `http://127.0.0.1:${localServer.address().port}/` : `${publicOrigin}/`;
     return { origin: publicOrigin, port, consoleUrl, localPort: localServer?.address().port || null };
@@ -374,7 +580,8 @@ export function createGateway(opts) {
   }
 
   return {
-    start, close, addMount, updateMount, removeMount, listMounts,
+    start, close, addMount, updateMount, removeMount, restoreMount, listMounts,
+    addPerson, removePerson, addRole, updateRole, removeRole, listState,
     get origin() { return publicOrigin; },
     get port() { return port; },
     get publicServer() { return publicServer; },
@@ -398,4 +605,5 @@ function listen(server, port, host) {
   });
 }
 function badRequest(msg) { const e = new Error(msg); e.status = 400; return e; }
+function randomId() { return randomBytes(6).toString("hex"); }
 function notFound(msg) { const e = new Error(msg); e.status = 404; return e; }

@@ -87,16 +87,22 @@ test("add is STAGED: persisted + pending, but NOT live until restart", async () 
   const gw = newGateway();
   await gw.start({ port: PORT });
   try {
-    const row = gw.addMount({ name: "Notes", mount: "notes", command: child, allow: [ALLOWED] });
+    const row = gw.addMount({ name: "Notes", mount: "notes", command: child });
+    // Access comes from roles: put the grantor in the built-in Full access
+    // role (also a STAGED edit — enforced only after the restart).
+    gw.updateRole("full", { members: [ALLOWED] });
     assert.equal(row.running, false);
     assert.equal(row.pending, "new");
     // Persisted to disk…
     assert.ok(existsSync(configPath()), "config.json written");
     assert.match(readFileSync(configPath(), "utf8"), /"mount": "notes"/);
+    assert.match(readFileSync(configPath(), "utf8"), /"Full access"/);
     // …but the endpoint is NOT mounted live.
     assert.equal(await reachable("notes"), false, "not reachable before restart");
-    const list = gw.listMounts();
-    assert.equal(list.needsRestart, true);
+    const state = gw.listState();
+    assert.equal(state.needsRestart, true);
+    assert.ok(state.pending.some((c) => c.sign === "+" && c.label === "/notes"), "staged mount add surfaced");
+    assert.ok(state.pending.some((c) => c.label === "role full access" && c.desc === "members edited"), "staged role edit surfaced");
   } finally {
     await gw.close();
   }
@@ -107,10 +113,13 @@ test("restart applies the persisted config: the mount spawns and is gated+reacha
   await gw.start({ port: PORT });
   try {
     assert.ok(gw.mounts.has("notes"), "mount spawned at startup from persisted config");
-    assert.equal(await reachable("notes"), true, "reachable after restart");
-    const list = gw.listMounts();
-    assert.equal(list.needsRestart, false, "no pending changes right after a clean restart");
-    assert.equal(list.mounts.find((m) => m.mount === "notes").running, true);
+    assert.equal(await reachable("notes"), true, "reachable after restart (Full-access membership enforced)");
+    const state = gw.listState();
+    assert.equal(state.needsRestart, false, "no pending changes right after a clean restart");
+    assert.equal(state.mounts.find((m) => m.mount === "notes").running, true);
+    // Tool discovery is cached into the config at startup (grantable while disabled).
+    assert.ok(state.mounts.find((m) => m.mount === "notes").tools.includes("list_directory"));
+    assert.match(readFileSync(configPath(), "utf8"), /"list_directory"/);
   } finally {
     await gw.close();
   }
