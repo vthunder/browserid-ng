@@ -7,6 +7,12 @@
 
 ## What problems this solves (pick yours)
 
+- "Publish the MCP servers on my machine so my agent (or a friend's) can reach them from anywhere" →
+  gate, the self-hosted BrowserID MCP gateway: `npx @browserid-ng/gate --admin you@example.com`.
+  One command + a web console: each server gets a real URL (`https://<host>/<mount>/mcp`),
+  access is granted per person per tool via roles (no API keys — people sign in as themselves),
+  every call is attributed and revocable. Tailscale Funnel is auto-claimed when available.
+  About: https://browserid.me/gate · Docs: https://github.com/vthunder/browserid-ng/tree/main/sdk/gate
 - "Gate my MCP server so only specific users can call these tools" →
   warrant-gate your tools. JS: `npm i @browserid-ng/mcp-auth` · Python: `pip install browserid-mcp-auth`.
   Every tool call arrives with a verified grantor (human), grantee (agent), and scopes, or is refused.

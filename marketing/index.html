@@ -22,6 +22,10 @@
   })();
 </script>
 <link rel="stylesheet" href="/site.css">
+<style>
+  html[data-theme="light"] .gate-shot-dark { display: none !important; }
+  html[data-theme="dark"] .gate-shot-light { display: none !important; }
+</style>
 </head>
 <body>
 
@@ -29,6 +33,7 @@
   <div class="wrap nav">
     <a href="/" class="brand"><span class="ring"><i></i></span><span>browserid<span class="me">.me</span></span></a>
     <nav>
+      <a href="/gate" class="spoke">Gate</a>
       <a href="/developers" class="spoke">Developers</a>
       <a href="/domains" class="spoke">Domains</a>
       <a href="/demos" class="spoke">Demos</a>
@@ -147,6 +152,24 @@
     <div>
       <div class="wall-head">The wall · live</div>
       <div id="wall"><div class="wall-entry"><p class="msg" style="color:var(--muted)">Loading the wall…</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap split bsky center" style="padding:70px 0">
+    <div>
+      <span class="kicker">Beyond demos · gate</span>
+      <h2 class="sec">Your local MCP servers — published, shared, revocable.</h2>
+      <p class="sec-lede">The demos prove the protocol; this is the thing you keep. One command turns the MCP servers on your machine — notes, home automation, a database — into real URLs your agents reach from anywhere. Share one with your partner by email, tool by tool. No API keys; cut anyone off anytime.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:22px">
+        <a class="btn btn-primary" href="/gate">Get your gateway →</a>
+        <code class="mono" style="font-size:12.5px;color:var(--muted)">npx @browserid-ng/gate</code>
+      </div>
+    </div>
+    <div>
+      <img src="/img/gate/servers-light.png" width="1080" height="606" alt="The gate admin console: a local MCP server published at a shareable URL, with per-person, per-tool access" style="display:block;width:100%;height:auto;border:1px solid var(--line-strong);border-radius:14px;box-shadow:var(--card-shadow)" class="gate-shot-light">
+      <img src="/img/gate/servers-dark.png" width="1080" height="606" alt="The gate admin console, dark theme" style="display:block;width:100%;height:auto;border:1px solid var(--line-strong);border-radius:14px;box-shadow:var(--card-shadow)" class="gate-shot-dark">
     </div>
   </div>
 </section>

@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="gate — the BrowserID MCP gateway. One command publishes your local MCP servers at real URLs your agents can reach from anywhere. You decide who connects, by email, per tool. No API keys; revocable anytime.">
+<title>browserid.me — gate: publish your local MCP servers, safely</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='90'%3E%F0%9F%AA%AA%3C/text%3E%3C/svg%3E">
+<script src="/config.js"></script>
+<script src="/vendor/posthog.js"></script>
+<script src="/analytics.js" defer></script>
+<script>
+  (function () {
+    var t;
+    try { t = localStorage.getItem("browserid:theme"); } catch (e) {}
+    document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+  })();
+</script>
+<link rel="stylesheet" href="/site.css">
+<style>
+  /* Real console screenshots, one per theme — the page's theme picks. */
+  .shot { display: block; width: 100%; height: auto; border: 1px solid var(--line-strong); border-radius: 14px; box-shadow: var(--card-shadow); }
+  html[data-theme="light"] .shot.dark { display: none; }
+  html[data-theme="dark"] .shot.light { display: none; }
+  .gate-cmd { display: flex; align-items: center; gap: 10px; margin-top: 22px; max-width: 34em; }
+  .gate-cmd pre { flex: 1; margin: 0; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 10px; padding: 13px 16px; font-size: 13.5px; overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<div class="nav-outer">
+  <div class="wrap nav">
+    <a href="/" class="brand"><span class="ring"><i></i></span><span>browserid<span class="me">.me</span></span></a>
+    <nav>
+      <a href="/gate" class="spoke" style="color:var(--gold-hi)">Gate</a>
+      <a href="/developers" class="spoke">Developers</a>
+      <a href="/domains" class="spoke">Domains</a>
+      <a href="/demos" class="spoke">Demos</a>
+      <a href="https://github.com/vthunder/browserid-ng/blob/main/README.md" class="hide-sm">Docs</a>
+      <a href="/account" data-auth-href="/account" class="signin">Sign in</a>
+      <button class="theme-toggle" id="themeToggle" title="Toggle color theme" aria-label="Toggle color theme">
+        <span class="theme-icon-moon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"></circle><path d="M8 1.2v1.8M8 13v1.8M1.2 8H3M13 8h1.8M3.2 3.2l1.3 1.3M11.5 11.5l1.3 1.3M12.8 3.2l-1.3 1.3M4.5 11.5l-1.3 1.3"></path></svg></span>
+        <span class="theme-icon-sun"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path></svg></span>
+      </button>
+    </nav>
+  </div>
+</div>
+
+<section>
+  <div class="wrap hero-lite">
+    <span class="kicker">gate · your own MCP gateway</span>
+    <h1>Your local MCP servers — published, shared, revocable.</h1>
+    <p class="lede">Your notes, your home automation, your database: MCP servers that only work on your machine. One command gives each a real URL your agents can reach from anywhere — and that you can hand to the people you choose, by email, tool by tool.</p>
+    <div class="gate-cmd">
+      <pre id="gateCmd">npx @browserid-ng/gate --admin you@example.com</pre>
+      <button class="copy-btn" data-copy="gateCmd" type="button">Copy</button>
+    </div>
+    <div class="hero-sub">Node 18+ · no accounts to create, no API keys anywhere · open source (MPL-2.0)</div>
+  </div>
+</section>
+
+<section style="border-top:none">
+  <div class="wrap" style="padding:26px 0 56px">
+    <img class="shot light" src="/img/gate/servers-light.png" width="1080" height="606" alt="The gate admin console: an MCP server published at a shareable URL, its tools, and who can reach it" loading="eager">
+    <img class="shot dark" src="/img/gate/servers-dark.png" width="1080" height="606" alt="The gate admin console, dark theme" loading="eager">
+  </div>
+</section>
+
+<section>
+  <div class="wrap pad">
+    <span class="kicker">Why this and not a tunnel + an API key</span>
+    <p class="bigline">Exposing a local server usually means a bearer token in somebody's config — unscoped, unattributed, and revocable only by breaking everyone. Gate replaces that with identity.</p>
+    <div class="cols3">
+      <div class="prob"><h3>People, not keys</h3><p>Whoever connects signs in as themselves. Nothing to paste, nothing to leak, nothing to rotate — access is a fact about a person, not a string.</p></div>
+      <div class="prob"><h3>Per-server, per-tool</h3><p>Roles decide exactly which tools each person gets — your partner can read your notes without being able to write them.</p></div>
+      <div class="prob"><h3>A real kill switch</h3><p>Every call is attributed — this agent, for that human, this tool. Cut one person off and their agent's very next call fails; nobody else notices.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap split bsky center" style="padding:70px 0">
+    <div>
+      <span class="kicker cyan">Sharing</span>
+      <h2 class="sec">Hand your server to a person, not a key to the world.</h2>
+      <p class="sec-lede">Add someone by email, put them in a role, and check the tools that role gets — per server, per tool. They connect from their own claude.ai with their own identity; you see who did what, and you can take it back at any time without touching anyone else.</p>
+      <ul class="checklist">
+        <li>Works with any email they already have — Gmail included.</li>
+        <li>Their agent connects by URL; MCP's own sign-in flow does the rest.</li>
+        <li>Attribution on every call: which agent, which human, which tool.</li>
+      </ul>
+    </div>
+    <div>
+      <img class="shot light" src="/img/gate/roles-light.png" width="1080" height="606" alt="A role granting four of eight tools on one server and two of four on another, per person">
+      <img class="shot dark" src="/img/gate/roles-dark.png" width="1080" height="606" alt="Role-based per-tool grants, dark theme">
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap" style="padding:60px 0">
+    <span class="kicker cyan">Five minutes, honestly</span>
+    <h2 class="sec">From laptop-only to anywhere.</h2>
+    <div class="demorows" style="margin-top:26px">
+      <div class="demorow">
+        <div class="num">1</div>
+        <div>
+          <div class="titleline"><h3>Run the gateway</h3><span class="meta">one command</span></div>
+          <p class="blurb">It provisions its own identity (approve one link, first run only) and prints your console URL. With <a href="https://tailscale.com/kb/1223/funnel" target="_blank" rel="noopener" style="color:var(--cyan)">Tailscale Funnel</a> it's public automatically at <code class="mono" style="font-size:12.5px">https://your-machine.ts.net</code> — without it, gate runs locally and works with any tunnel you point at it.</p>
+        </div>
+        <div class="links"></div>
+      </div>
+      <div class="demorow">
+        <div class="num">2</div>
+        <div>
+          <div class="titleline"><h3>Add a server, in the web console</h3><span class="meta">name · path · command</span></div>
+          <p class="blurb">Sign in with BrowserID — only the admin email you launched with gets in. Paste the same command you'd put in an MCP config; gate runs it and publishes it at <code class="mono" style="font-size:12.5px">https://&lt;host&gt;/&lt;path&gt;/mcp</code>.</p>
+        </div>
+        <div class="links"></div>
+      </div>
+      <div class="demorow">
+        <div class="num">3</div>
+        <div>
+          <div class="titleline"><h3>Copy the URL — or share it</h3><span class="meta">claude.ai · phone · a friend</span></div>
+          <p class="blurb">Add it to claude.ai as a connector and your agent has your tools everywhere you go. Grant a friend a role and the same URL works for them — as themselves, with exactly the tools you checked.</p>
+        </div>
+        <div class="links"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap pad" style="padding:64px 0 70px">
+    <span class="kicker">Get it</span>
+    <p class="bigline">It's a hundred-kilobyte npm package that runs on your own machine. The identity layer is the open BrowserID protocol — no vendor in the loop when calls are verified.</p>
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:26px">
+      <div class="gate-cmd" style="margin-top:0;min-width:min(34em,100%)">
+        <pre id="gateCmd2">npx @browserid-ng/gate --admin you@example.com</pre>
+        <button class="copy-btn" data-copy="gateCmd2" type="button">Copy</button>
+      </div>
+      <a class="textlink" href="https://github.com/vthunder/browserid-ng/tree/main/sdk/gate" target="_blank" rel="noopener">README →</a>
+      <a class="textlink" href="https://www.npmjs.com/package/@browserid-ng/gate" target="_blank" rel="noopener">npm →</a>
+      <a class="textlink" href="/demos">All demos →</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <span>browserid-ng — identity for agents and the humans behind them. Descended from Mozilla Persona.<br>Reading this as an agent? Start at <a href="/llms.txt">browserid.me/llms.txt</a>.</span>
+    <span><a href="https://github.com/vthunder/browserid-ng">GitHub</a> · <a href="https://github.com/vthunder/browserid-ng/tree/main/docs/specs">Spec</a> · Open protocol · MPL-2.0</span>
+  </div>
+</footer>
+
+<script src="/site.js"></script>
+</body>
+</html>

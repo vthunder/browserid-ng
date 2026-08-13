@@ -24,6 +24,7 @@
   <div class="wrap nav">
     <a href="/" class="brand"><span class="ring"><i></i></span><span>browserid<span class="me">.me</span></span></a>
     <nav>
+      <a href="/gate" class="spoke">Gate</a>
       <a href="/developers" class="spoke">Developers</a>
       <a href="/domains" class="spoke">Domains</a>
       <a href="/demos" class="spoke" style="color:var(--gold-hi)">Demos</a>
@@ -108,6 +109,19 @@
           <p class="blurb">Proves browser integration: the browser's own account chooser, backed by browserid — no redirect, no popup.</p>
         </div>
         <div class="links"><a href="/fedcm-demo.html">Try FedCM →</a></div>
+      </div>
+
+      <div class="demorow">
+        <div class="num gold">★</div>
+        <div>
+          <div class="titleline"><h3>Not a demo — publish your own</h3><span class="meta">the real thing · ~5 min</span></div>
+          <p class="blurb">Everything above proves the protocol; this is the thing you keep. <b style="color:var(--text)">gate</b> publishes the MCP servers on your machine — notes, home automation, a database — at real URLs: your agent reaches them from anywhere, and you can share them by email with per-tool permissions, revocable anytime.</p>
+          <div class="prompt-row" style="margin-top:12px;max-width:44em">
+            <code id="gateCmd">npx @browserid-ng/gate --admin you@example.com</code>
+            <button class="copy-btn" data-copy="gateCmd" type="button">Copy</button>
+          </div>
+        </div>
+        <div class="links"><a href="/gate">About gate →</a></div>
       </div>
 
       <div class="demorow">
