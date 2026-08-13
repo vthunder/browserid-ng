@@ -146,7 +146,11 @@ https URL — that URL becomes the OAuth audience warrants bind to.
 - **Tailscale Funnel (recommended, zero-config)**: with tailscale installed and
   [Funnel enabled](https://tailscale.com/kb/1223/funnel), the gateway claims
   `https://<your-machine>.ts.net` (port 443) automatically on every start —
-  nothing to configure, and the URL survives restarts.
+  nothing to configure, and the URL survives restarts. If 443 already maps to
+  gate's own previous run (a dead target), it's re-pointed silently; if 443 is
+  serving a **live** app, gate never steals it — it takes the next funnel port
+  (8443/10000) and warns that claude.ai requires 443, with the command to free
+  it.
 - **Any other tunnel**: run it yourself and pass its URL, e.g.
 
   ```

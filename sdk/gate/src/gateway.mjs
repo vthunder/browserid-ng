@@ -527,10 +527,17 @@ export function createGateway(opts) {
     // Resolve the public origin: --resource wins; else claim a tailscale
     // funnel; else FALL BACK to localhost so the console always comes up —
     // the caller surfaces "tunnel this to share it" guidance (funnelError).
+    // A funnel can also succeed DEGRADED (443 was busy → a non-standard port):
+    // that comes back as funnelWarning, for the caller to surface loudly.
     let funnelError = null;
+    let funnelWarning = null;
     if (!publicOrigin) {
       try {
-        publicOrigin = (await funnelFn(port)).replace(/\/+$/, "");
+        const res = await funnelFn(port);
+        const url = typeof res === "string" ? res : res.url;
+        funnelWarning = typeof res === "string" ? null : res.warning || null;
+        publicOrigin = url.replace(/\/+$/, "");
+        if (funnelWarning) log(`[gate] ⚠ ${funnelWarning}`);
       } catch (e) {
         funnelError = e?.message || String(e);
         publicOrigin = `http://127.0.0.1:${port}`;
@@ -578,6 +585,7 @@ export function createGateway(opts) {
       localPort: localServer?.address().port || null,
       public: publicOrigin.startsWith("https"),
       funnelError,
+      funnelWarning,
     };
   }
 

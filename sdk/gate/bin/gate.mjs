@@ -129,7 +129,7 @@ async function main() {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  const { origin, consoleUrl, port, public: isPublic, funnelError } = await gateway.start({ port: args.port ?? 0 });
+  const { origin, consoleUrl, port, public: isPublic, funnelError, funnelWarning } = await gateway.start({ port: args.port ?? 0 });
   const bar = "─".repeat(64);
   console.error(bar);
   console.error(`  MCP Gateway is live (admin: ${args.admin}).`);
@@ -151,6 +151,9 @@ async function main() {
     console.error("      gate will claim https://<your-machine>.ts.net automatically;");
     console.error("    • or run any tunnel (e.g. cloudflared) and pass --resource <its-url>.");
     console.error(`    (tunnel detection said: ${funnelError})`);
+  } else if (funnelWarning) {
+    console.error("");
+    console.error(`  ⚠ ${funnelWarning}`);
   } else if (!isPublic && !args.resource) {
     console.error("");
     console.error("  ⚠ non-https origin — hosts like claude.ai need a public https URL.");

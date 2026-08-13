@@ -116,44 +116,111 @@ export async function ensureFunnel(localPort, { run = defaultRun } = {}) {
   return url;
 }
 
+/** The local port a serve entry on `publicPort` currently targets, or null. */
+function occupantOf(st, publicPort) {
+  for (const [key, cfg] of Object.entries(st.Web || {})) {
+    if (!key.endsWith(`:${publicPort}`)) continue;
+    return proxyLocalPort(cfg?.Handlers?.["/"]?.Proxy); // may be null (odd shape)
+  }
+  return undefined; // no entry at all
+}
+
 /**
- * CLAIM a specific public funnel port (default 443) for `localPort`, re-pointing
- * a stale mapping if one exists. This is what an appliance-style gateway wants:
- * it OWNS the standard port, and its local port changes each run (auto-port), so
- * "pick a free port" would keep dodging 443 and land on 8443/10000 — which
- * managed hosts (claude.ai) reject. Idempotent: if the port already maps here,
- * no-op. Returns the public https URL (no port suffix for 443).
- * @param {number} localPort
- * @param {{run?: (args:string[])=>Promise<{stdout:string}>, publicPort?: number}} [opts]
+ * Is anything alive behind `http://127.0.0.1:<port>`? → 'dead' | 'gate' | 'other'.
+ * ECONNREFUSED = nothing listening (a stale mapping from a previous run).
+ * A gate answers /healthz with { ok:true, mounts:N }. Anything else that
+ * responds — or hangs, or resets — is treated as a live foreign app (never
+ * steal on uncertainty).
  */
-export async function claimFunnel(localPort, { run = defaultRun, publicPort = 443 } = {}) {
+async function defaultProbe(port) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 1500);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: ctl.signal });
+    try {
+      const body = await res.json();
+      if (body && body.ok === true && typeof body.mounts === "number") return "gate";
+    } catch { /* not json — some other app */ }
+    return "other";
+  } catch (e) {
+    return e?.cause?.code === "ECONNREFUSED" ? "dead" : "other";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * CLAIM a specific public funnel port (default 443) for `localPort`. This is
+ * what an appliance-style gateway wants: it OWNS the standard port (claude.ai
+ * rejects non-443 URLs), and its local port changes each run (auto-port), so
+ * its own mapping from the previous run must be re-pointed each start.
+ *
+ * But "re-point" must not become "hijack": before taking `publicPort` we probe
+ * whatever it currently targets. A DEAD target is our own stale mapping (the
+ * old process is gone) → re-point silently. A LIVE target (another app, or
+ * another running gate) is never stolen — we claim the next free funnel port
+ * instead and return a warning explaining that claude.ai needs 443 and how to
+ * free it.
+ *
+ * Idempotent: if some funnel already maps to `localPort`, no-op.
+ * @param {number} localPort
+ * @param {{run?: (args:string[])=>Promise<{stdout:string}>, publicPort?: number,
+ *          probe?: (port:number)=>Promise<'dead'|'gate'|'other'>}} [opts]
+ * @returns {Promise<{url: string, warning: string|null}>}
+ */
+export async function claimFunnel(localPort, { run = defaultRun, publicPort = 443, probe = defaultProbe } = {}) {
   // Already publicly mapped to this exact local port? Keep it.
   const existing = await detectFunnel(localPort, { run });
-  if (existing) return existing;
+  if (existing) return { url: existing, warning: null };
   const st = await serveStatus(run);
   if (st === null) {
     throw new Error(
       "tailscale not available (is it installed and running?). " +
-        "Use --resource to set the public URL manually, or --console-local, or cloudflared."
+        "Use --resource to set the public URL manually, or cloudflared."
     );
   }
-  // Claim (or re-point) the standard port at our local port.
+
+  // Who holds `publicPort` right now (funnel OR private serve)?
+  let claimPort = publicPort;
+  let warning = null;
+  const target = occupantOf(st, publicPort);
+  if (target !== undefined) {
+    const liveness = target == null ? "other" : await probe(target);
+    if (liveness !== "dead") {
+      // A live service — never steal it. Take the next free funnel port.
+      const taken = new Set(Object.keys(st.Web || {}).map((k) => Number(k.slice(k.lastIndexOf(":") + 1))));
+      claimPort = FUNNEL_PORTS.find((p) => p !== publicPort && !taken.has(p));
+      const who = liveness === "gate" ? "another running gate instance" : "another live app";
+      if (!claimPort) {
+        throw new Error(
+          `tailscale :${publicPort} is serving ${who} and every other funnel port (${FUNNEL_PORTS.join("/")}) ` +
+            `is taken. Stop one (\`tailscale funnel --https=<port> off\`) and restart gate.`
+        );
+      }
+      warning =
+        `:${publicPort} is already serving ${who} (target 127.0.0.1:${target}) — using :${claimPort} instead. ` +
+        `claude.ai requires port ${publicPort} and will reject this URL. ` +
+        `To give gate port ${publicPort}: stop that service (or \`tailscale funnel --https=${publicPort} off\`), then restart gate.`;
+    }
+    // dead target → our own stale mapping from a previous run → re-point it.
+  }
+
   try {
-    await run(["funnel", "--bg", `--https=${publicPort}`, String(localPort)]);
+    await run(["funnel", "--bg", `--https=${claimPort}`, String(localPort)]);
   } catch (e) {
     throw new Error(
-      `could not claim tailscale funnel :${publicPort} → :${localPort} (${e?.message || e}). ` +
+      `could not claim tailscale funnel :${claimPort} → :${localPort} (${e?.message || e}). ` +
         "Funnel must be enabled for your tailnet; see https://tailscale.com/kb/1223/funnel."
     );
   }
   const url = await detectFunnel(localPort, { run });
   if (!url) {
     throw new Error(
-      `claimed funnel :${publicPort} → :${localPort} but its URL could not be read back ` +
+      `claimed funnel :${claimPort} → :${localPort} but its URL could not be read back ` +
         "from `tailscale serve status`."
     );
   }
-  return url;
+  return { url, warning };
 }
 
 /** The teardown hint for a funnel URL (its port), for printing on exit. */

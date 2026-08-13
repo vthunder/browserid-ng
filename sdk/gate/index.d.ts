@@ -181,6 +181,9 @@ export interface Gateway {
     public: boolean;
     /** Why the tunnel wasn't used (null when it was, or origin was given). */
     funnelError: string | null;
+    /** Set when the funnel succeeded DEGRADED — e.g. 443 was serving another
+     *  live app, so a non-standard port was claimed (claude.ai rejects it). */
+    funnelWarning: string | null;
   }>;
   close(): Promise<void>;
   /** STAGED config edits — persist only; nothing spawns/kills until restart. */

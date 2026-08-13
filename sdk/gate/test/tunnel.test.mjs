@@ -74,13 +74,16 @@ test("claimFunnel is idempotent when 443 already maps to our port", async () => 
   };
   let claimed = null;
   const run = runWith(status, (args) => { claimed = args; });
-  assert.equal(await claimFunnel(9000, { run }), "https://host.tail.ts.net");
+  const { url, warning } = await claimFunnel(9000, { run, probe: async () => "other" });
+  assert.equal(url, "https://host.tail.ts.net");
+  assert.equal(warning, null);
   assert.equal(claimed, null, "must not re-claim when already mapped to our port");
 });
 
-test("claimFunnel re-points 443 from a STALE port to our current port (auto-port restarts)", async () => {
+test("claimFunnel re-points 443 from a STALE (dead) target — our own previous run", async () => {
   // 443 currently maps to a dead previous-run port; we want it on 9000.
   let repointed = false;
+  let probed = null;
   const run = async (args) => {
     if (args[0] === "serve") {
       return { stdout: JSON.stringify({
@@ -91,9 +94,68 @@ test("claimFunnel re-points 443 from a STALE port to our current port (auto-port
     if (args[0] === "funnel") { repointed = true; return { stdout: "" }; }
     throw new Error("unexpected");
   };
-  const url = await claimFunnel(9000, { run });
+  const { url, warning } = await claimFunnel(9000, { run, probe: async (p) => { probed = p; return "dead"; } });
   assert.equal(url, "https://host.tail.ts.net");
+  assert.equal(warning, null, "reclaiming our own stale mapping is silent");
+  assert.equal(probed, 55555, "the current 443 target was probed first");
   assert.ok(repointed, "must re-point 443 to the current local port");
+});
+
+test("claimFunnel never steals 443 from a LIVE app — takes 8443 and warns about claude.ai", async () => {
+  let funnelArgs = null;
+  const run = async (args) => {
+    if (args[0] === "serve") {
+      return { stdout: JSON.stringify({
+        Web: {
+          "host.tail.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:3000" } } },
+          ...(funnelArgs ? { "host.tail.ts.net:8443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9000" } } } } : {}),
+        },
+        AllowFunnel: { "host.tail.ts.net:443": true, ...(funnelArgs ? { "host.tail.ts.net:8443": true } : {}) },
+      }) };
+    }
+    if (args[0] === "funnel") { funnelArgs = args; return { stdout: "" }; }
+    throw new Error("unexpected");
+  };
+  const { url, warning } = await claimFunnel(9000, { run, probe: async () => "other" });
+  assert.equal(url, "https://host.tail.ts.net:8443");
+  assert.deepEqual(funnelArgs, ["funnel", "--bg", "--https=8443", "9000"], "claimed the next free port, not 443");
+  assert.match(warning, /already serving another live app/);
+  assert.match(warning, /claude\.ai requires port 443/);
+  assert.match(warning, /tailscale funnel --https=443 off/);
+});
+
+test("claimFunnel recognizes ANOTHER RUNNING GATE on 443 and says so", async () => {
+  let claimed = false;
+  const run = async (args) => {
+    if (args[0] === "serve") {
+      return { stdout: JSON.stringify({
+        Web: {
+          "host.tail.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:3000" } } },
+          ...(claimed ? { "host.tail.ts.net:8443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9000" } } } } : {}),
+        },
+        AllowFunnel: { "host.tail.ts.net:443": true, ...(claimed ? { "host.tail.ts.net:8443": true } : {}) },
+      }) };
+    }
+    if (args[0] === "funnel") { claimed = true; return { stdout: "" }; }
+    throw new Error("unexpected");
+  };
+  const { warning } = await claimFunnel(9000, { run, probe: async () => "gate" });
+  assert.match(warning, /another running gate instance/);
+});
+
+test("claimFunnel throws when 443 is live and every other funnel port is taken", async () => {
+  const run = runWith({
+    Web: {
+      "host.tail.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:3000" } } },
+      "host.tail.ts.net:8443": { Handlers: { "/": { Proxy: "http://127.0.0.1:3001" } } },
+      "host.tail.ts.net:10000": { Handlers: { "/": { Proxy: "http://127.0.0.1:3002" } } },
+    },
+    AllowFunnel: { "host.tail.ts.net:443": true },
+  });
+  await assert.rejects(
+    () => claimFunnel(9000, { run, probe: async () => "other" }),
+    /every other funnel port .* is taken/
+  );
 });
 
 test("funnelOffHint derives the teardown command port", () => {
