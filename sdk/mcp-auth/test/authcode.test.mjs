@@ -374,11 +374,24 @@ test("the full code exchange mints a working bearer with attribution", async () 
   // The presentation went through the SAME /verify-access, audience-bound.
   assert.equal(l.broker.seen.verifies.length, 1);
   assert.equal(l.broker.seen.verifies[0].audience, RESOURCE);
-  // …and the bearer lives in the same store with the warrant's attribution.
+  // …and the bearer lives in the same store with the warrant's attribution,
+  // tagged with the CONNECTION that custodies it (the OAuth client) so tools
+  // can attribute "via <host>, authorized by <human>".
   const ctx = await l.mcpAuth.authenticate(`Bearer ${tok.access_token}`);
   assert.equal(ctx.grantor, HUMAN);
   assert.equal(ctx.grantee, GATEWAY);
+  assert.deepEqual(ctx.client, { name: "test host", host: "host.example" });
   await l.mcpAuth.requireWarrant(`Bearer ${tok.access_token}`, "read_file");
+});
+
+test("a Lane A bearer carries NO client — the grantee is the acting party", async () => {
+  const l = lane();
+  const tok = await l.mcpAuth.handleToken({
+    grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+    assertion: "pres-ok",
+  });
+  const ctx = await l.mcpAuth.authenticate(`Bearer ${tok.access_token}`);
+  assert.equal(ctx.client, null);
 });
 
 test("the code is SINGLE-USE: a replay finds nothing", async () => {

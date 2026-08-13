@@ -164,7 +164,7 @@ export function createMcpAuth(opts) {
    * (`createAuthCodeLane`) — so every bearer flows through the SAME
    * `/verify-access` check and the same per-call status re-check.
    */
-  async function redeemPresentation(presentation, scope) {
+  async function redeemPresentation(presentation, scope, client = null) {
     let verified;
     try {
       const res = await doFetch(verifyUrl, {
@@ -208,6 +208,12 @@ export function createMcpAuth(opts) {
       grantee: verified.grantee || verified.email || null, // acting identity (agent)
       holder: verified.holder || null,
       issuer: verified.issuer || null,
+      // The CONNECTION this bearer belongs to (auth-code lane: the OAuth
+      // client — e.g. claude.ai — that custodies it). Null on Lane A, where
+      // the grantee itself is the acting party. Lets tools attribute "via
+      // <host>, authorized by <human>" instead of surfacing the gateway's
+      // service identity.
+      client: client || null, // { name, host } | null
       scopes,
       statusRefs: verified.status_refs || [],
       exp,
@@ -230,7 +236,8 @@ export function createMcpAuth(opts) {
    * Re-checks the warrant's status refs FAIL-CLOSED (revoked or unreachable
    * => rejected) unless a recent (< statusCacheS) successful check exists.
    * Throws McpAuthError (401) on any failure.
-   * @returns {Promise<{grantor:string, grantee:string, holder:string, scopes:string[], issuer:string}>}
+   * @returns {Promise<{grantor:string, grantee:string, holder:string, scopes:string[], issuer:string,
+   *                    client: {name:string, host:string}|null}>}
    */
   async function authenticate(authorizationHeader) {
     const m = /^Bearer\s+(.+)$/i.exec(authorizationHeader || "");
@@ -246,6 +253,7 @@ export function createMcpAuth(opts) {
       grantee: grant.grantee,
       holder: grant.holder,
       issuer: grant.issuer,
+      client: grant.client || null,
       scopes: grant.scopes.slice(),
     };
   }
@@ -702,8 +710,13 @@ export function createAuthCodeLane(opts) {
       throw new McpAuthError("invalid_grant", `could not mint a presentation: ${e.message}`);
     }
     // The same verify+mint path as Lane A: /verify-access binds the
-    // audience, fail-closed, and the bearer lands in the same store.
-    return mcpAuth.redeemPresentation(presentation, p.scope);
+    // audience, fail-closed, and the bearer lands in the same store —
+    // tagged with the CONNECTION (the OAuth client) that will custody it.
+    let host = null;
+    try { host = new URL(rec.redirectUri).hostname; } catch { /* validated at register */ }
+    const clientName = clients.get(rec.clientId)?.clientName;
+    const client = host || clientName ? { name: clientName || host, host } : null;
+    return mcpAuth.redeemPresentation(presentation, p.scope, client);
   }
 
   return {

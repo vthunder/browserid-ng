@@ -9,6 +9,14 @@ export interface StatusRef {
   idx: number;
 }
 
+/** The OAuth client (connection) a bearer belongs to — auth-code lane only.
+ *  E.g. { name: "Claude", host: "claude.ai" }. Null on the assertion lane,
+ *  where the grantee itself is the acting party. */
+export interface ClientInfo {
+  name: string;
+  host: string | null;
+}
+
 /** A stored bearer grant. */
 export interface Grant {
   /** Attributed identity (the human the action is on behalf of). */
@@ -19,6 +27,8 @@ export interface Grant {
   holder: string | null;
   /** The issuer that vouched for the acting identity. */
   issuer: string | null;
+  /** The connection custodying this bearer (auth-code lane), or null. */
+  client: ClientInfo | null;
   scopes: string[];
   statusRefs: StatusRef[];
   /** UNIX seconds. */
@@ -49,6 +59,8 @@ export interface WarrantContext {
   grantee: string | null;
   holder: string | null;
   issuer: string | null;
+  /** The connection custodying this bearer (auth-code lane), or null. */
+  client: ClientInfo | null;
   scopes: string[];
 }
 

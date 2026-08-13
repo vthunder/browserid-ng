@@ -63,13 +63,21 @@ function record(action, ctx) {
   const entry = {
     action: String(action).slice(0, 280),
     grantor: ctx.grantor, // the human
-    grantee: ctx.grantee, // the agent acting
+    grantee: ctx.grantee, // the acting identity
+    client: ctx.client, // the connection (auth-code lane: e.g. claude.ai), or null
     holder: ctx.holder,
     at: new Date().toISOString(),
   };
   LOG.unshift(entry);
   LOG.length = Math.min(LOG.length, 100);
   return entry;
+}
+
+// Human-readable attribution: for a connector bearer, name the CONNECTION
+// (the thing the human actually plugged in), not the demo's own service
+// identity; for the assertion lane, the grantee is the acting agent.
+function who(e) {
+  return e.client ? `via ${e.client.name}${e.client.host && e.client.host !== e.client.name ? ` (${e.client.host})` : ""}` : e.grantee;
 }
 
 // Build a fresh MCP server bound to one request's verified context. Each tool
@@ -94,7 +102,10 @@ function buildMcpServer(ctx) {
       }
       const e = record(action, ctx);
       return text(
-        `Logged ✓ — "${e.action}"\nattributed to ${e.grantee} on behalf of ${e.grantor} (holder ${e.holder}).\n` +
+        `Logged ✓ — "${e.action}"\n` +
+          (e.client
+            ? `${who(e)} — authorized by ${e.grantor}.\n`
+            : `attributed to ${e.grantee} on behalf of ${e.grantor} (holder ${e.holder}).\n`) +
           `Your human can revoke this at ${BROKER}/account → Authorized sites; the next call then fails closed.`
       );
     }
@@ -110,7 +121,7 @@ function buildMcpServer(ctx) {
     async () => {
       if (LOG.length === 0) return text("The log is empty. Call log_action first.");
       const lines = LOG.slice(0, 20).map(
-        (e) => `• ${e.at} — "${e.action}" — ${e.grantee} for ${e.grantor}`
+        (e) => `• ${e.at} — "${e.action}" — ${who(e)}, authorized by ${e.grantor}`
       );
       return text(`Recent attributed actions:\n${lines.join("\n")}`);
     }
