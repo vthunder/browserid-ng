@@ -85,6 +85,19 @@
       </div>
 
       <div class="demorow">
+        <div class="num">3</div>
+        <div>
+          <div class="titleline"><h3>Watch a revoke kill an agent</h3><span class="meta">~3 min · no terminal needed</span></div>
+          <p class="blurb">The kill switch, live: add the demo server as a connector (claude.ai: Settings → Connectors → Add custom connector), approve once, and ask your agent to log an action — attributed to it and to you. Then revoke at <a href="/account" data-auth-href="/account" style="color:var(--gold)">your account</a>: the very next call is refused, fail-closed.</p>
+          <div class="prompt-row" style="margin-top:12px;max-width:44em">
+            <code id="mcpDemoUrl">https://mcp-demo.browserid.me/mcp</code>
+            <button class="copy-btn" data-copy="mcpDemoUrl" type="button">Copy</button>
+          </div>
+        </div>
+        <div class="links"><a href="/mcp-demo">Full runbook →</a></div>
+      </div>
+
+      <div class="demorow">
         <div class="num gold">★</div>
         <div>
           <div class="titleline"><h3>Not a demo — publish your own</h3><span class="meta">the real thing · ~5 min</span></div>
@@ -115,15 +128,6 @@
     <h2 class="sec">Experiments — live, but further out.</h2>
     <p class="sec-lede" style="max-width:40em">Working prototypes probing where the protocol can go next. Everything here runs for real; the edges are rougher.</p>
     <div class="demorows" style="margin-top:24px">
-      <div class="demorow">
-        <div class="num dim">⚗</div>
-        <div>
-          <div class="titleline"><h3>MCP servers with native browserid auth</h3><span class="meta">JS &amp; Python · needs a terminal agent</span></div>
-          <p class="blurb">Experiment: can an MCP server use browserid for auth natively — no API keys, a warrant checked on every call? Two twin reference servers (JS and Python) expose a tiny attributed log; point a wallet-carrying coding agent at one, log an action, then revoke at your account and watch its next call refused.</p>
-        </div>
-        <div class="links"><a href="/mcp-demo">How to run it →</a><a href="https://github.com/vthunder/browserid-ng/tree/main/mcp-demo" target="_blank" rel="noopener">source →</a></div>
-      </div>
-
       <div class="demorow">
         <div class="num dim">⚗</div>
         <div>
