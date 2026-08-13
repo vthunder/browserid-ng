@@ -524,7 +524,19 @@ export function createGateway(opts) {
       await listen(localServer, 0, "127.0.0.1");
     }
 
-    if (!publicOrigin) publicOrigin = (await funnelFn(port)).replace(/\/+$/, "");
+    // Resolve the public origin: --resource wins; else claim a tailscale
+    // funnel; else FALL BACK to localhost so the console always comes up —
+    // the caller surfaces "tunnel this to share it" guidance (funnelError).
+    let funnelError = null;
+    if (!publicOrigin) {
+      try {
+        publicOrigin = (await funnelFn(port)).replace(/\/+$/, "");
+      } catch (e) {
+        funnelError = e?.message || String(e);
+        publicOrigin = `http://127.0.0.1:${port}`;
+        log(`[gate] no public tunnel (${funnelError}) — serving on ${publicOrigin} (local only)`);
+      }
+    }
     sessions = createSessionManager({ secret: opts.sessionSecret, ttlS: opts.sessionTtlS, secure: adminSecure() });
 
     // Snapshot the config as the immutable "running set", then spawn enabled
@@ -561,7 +573,12 @@ export function createGateway(opts) {
     persistConfig();
 
     const consoleUrl = consoleLocal ? `http://127.0.0.1:${localServer.address().port}/` : `${publicOrigin}/`;
-    return { origin: publicOrigin, port, consoleUrl, localPort: localServer?.address().port || null };
+    return {
+      origin: publicOrigin, port, consoleUrl,
+      localPort: localServer?.address().port || null,
+      public: publicOrigin.startsWith("https"),
+      funnelError,
+    };
   }
 
   async function close() {

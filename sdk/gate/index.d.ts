@@ -169,8 +169,19 @@ export interface GatewayOptions {
 
 export interface Gateway {
   /** Bind (auto-port), funnel unless `origin` was given, then spawn enabled
-   *  config mounts. The running set is fixed until the next start(). */
-  start(opts?: { port?: number }): Promise<{ origin: string; port: number; consoleUrl: string; localPort: number | null }>;
+   *  config mounts. The running set is fixed until the next start(). If no
+   *  tunnel is available the gateway still starts, on a localhost origin —
+   *  `public` is false and `funnelError` says why (surface it to the user). */
+  start(opts?: { port?: number }): Promise<{
+    origin: string;
+    port: number;
+    consoleUrl: string;
+    localPort: number | null;
+    /** True when the origin is a public https URL (funnel or --resource). */
+    public: boolean;
+    /** Why the tunnel wasn't used (null when it was, or origin was given). */
+    funnelError: string | null;
+  }>;
   close(): Promise<void>;
   /** STAGED config edits — persist only; nothing spawns/kills until restart. */
   addMount(def: MountDef): MountStatus;

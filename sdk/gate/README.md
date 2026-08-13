@@ -9,8 +9,8 @@ Assistant, a SQLite file) into a remote endpoint that:
 - runs the wrapped server as ONE shared **stdio child** and proxies JSON-RPC;
 - gates **every** tool call on a human's short-lived, scoped, **revocable**
   BrowserID warrant (fail-closed per call);
-- enforces **who may connect, by email** — a grantor allowlist in one-shot
-  mode; **roles with per-server, per-tool grants** under the admin console;
+- enforces **who may connect, by email** — **roles with per-server, per-tool
+  grants**, managed in the web console;
 - **auto-maps** the child's tools to `tool:<name>` scopes, so approval cards
   render legibly with zero config;
 - prints **one attribution line per call** — who acted, for whom, which tool.
@@ -23,13 +23,13 @@ Built on [`@browserid-ng/mcp-auth`](../mcp-auth) — both auth lanes (see below)
 
 ---
 
-## v0.4 — the admin console (multi-server gateway + roles)
+## The console (the only mode)
 
 ```
 npx @browserid-ng/gate --admin you@example.com
 ```
 
-Stands up a self-hosted gateway: it picks a free local port, sets up a
+Stands up a self-hosted gateway: it picks a free local port, claims a
 **Tailscale funnel on 443**, provisions the gateway's identity once, and prints
 a console URL, e.g. `https://mac-mini.hamster-ayu.ts.net/`. Open it, **Sign in
 with BrowserID** (only `--admin` gets in), and manage everything from the web —
@@ -51,6 +51,28 @@ just-added server shows "tools unknown until restart" — restart once to
 discover, grant, then restart again to enforce. (v1 per-mount `allow` configs
 are migrated automatically: each becomes a role granting every tool on that
 mount.)
+
+**No tailscale? It still runs.** Without a tunnel the gateway starts on
+`http://127.0.0.1:<port>` and prints a warning: the URL works locally, but to
+share it publicly you need a tunnel in front — **tailscale is recommended**
+(install it with Funnel enabled and rerun; gate claims
+`https://<your-machine>.ts.net` automatically), or run any other tunnel (e.g.
+cloudflared) and pass its URL as `--resource`.
+
+### Flags
+
+| flag | meaning |
+| --- | --- |
+| `--admin <email>` | **required** — the one identity allowed into the console |
+| `--console-local` | bind the console to `127.0.0.1` only (still funnel `/<mount>/*`) |
+| `--handle <slug>` | the gateway agent's identity handle (default `mcp-gateway`) |
+| `--port <n>` | local listen port (default: auto-pick) |
+| `--resource <url>` | public URL = the OAuth audience (default: tailscale funnel on 443; localhost fallback) |
+| `--broker <url>` | BrowserID broker (default `$BROWSERID_BROKER` or `https://browserid.me`) |
+
+> One-shot mode (`--allow … -- <cmd>`) was removed in v0.5 — the console is the
+> only mode. Embedding a single allowlist-gated server is still available as a
+> library via `createGateService` (below).
 
 ### One-command demo runbook (share "Dan's Notes")
 
@@ -116,70 +138,29 @@ default per the UX above is the public console with BrowserID login.
 
 ---
 
-## One-shot mode — wrap a single server
+## Reachability — tunnels
 
-## Quickstart — share your notes vault
+To be reachable from claude.ai or your phone, the gateway needs a **public**
+https URL — that URL becomes the OAuth audience warrants bind to.
 
-```
-npx @browserid-ng/gate \
-  --allow you@example.com,friend@gmail.com \
-  --name "Dan's Notes" \
-  -- npx -y @modelcontextprotocol/server-filesystem ~/notes
-```
+- **Tailscale Funnel (recommended, zero-config)**: with tailscale installed and
+  [Funnel enabled](https://tailscale.com/kb/1223/funnel), the gateway claims
+  `https://<your-machine>.ts.net` (port 443) automatically on every start —
+  nothing to configure, and the URL survives restarts.
+- **Any other tunnel**: run it yourself and pass its URL, e.g.
 
-First run provisions the **gateway's own** BrowserID identity (Lane B needs
-one): it prints an approval link as its **last line** and waits — open it,
-approve once, and the credential is stored in `~/.browserid-gate` and reused on
-every later boot. Then the gate listens (default `:8787`) and prints the URL to
-add to a host: `<resource>/mcp`.
+  ```
+  cloudflared tunnel --url http://localhost:8787
+  # → https://random-words.trycloudflare.com
+  npx @browserid-ng/gate --admin you@example.com --port 8787 \
+    --resource https://random-words.trycloudflare.com
+  ```
 
-A friend on Gmail can be onboarded in one hop via the OIDC bridge; their
-approval names them as the warrant's grantor, checked against your `--allow`.
+- **No tunnel**: the gateway still runs, on `http://127.0.0.1:<port>`, and
+  prints a warning — fine for trying it out locally; agents elsewhere can't
+  reach it until you tunnel it.
 
-### Flags
-
-| flag | meaning |
-| --- | --- |
-| `--allow <emails>` | comma/space-separated grantor allowlist (required) |
-| `--name <label>` | display name on consent cards + the landing page |
-| `--port <n>` | listen port (default `8787`, or `$PORT`) |
-| `--resource <url>` | public URL of this gate = the OAuth audience (default `http://localhost:<port>`) — **set this to your tunnel URL** |
-| `--broker <url>` | BrowserID broker (default `$BROWSERID_BROKER` or `https://browserid.me`) |
-| `-- …` | everything after `--` is the wrapped server command + args |
-
-## Reachability — put a tunnel in front (not ours to build)
-
-The gate binds a local HTTP port. To reach it from claude.ai or your phone, run
-any tunnel; its **public** URL becomes the OAuth audience warrants bind to. The
-gate builds no tunnel — but for **Tailscale** it detects yours automatically.
-
-**Tailscale Funnel** — zero-config. If a funnel already maps to `--port`, the
-gate finds it and uses its URL as `--resource` (no need to pass one); or let
-the gate set the funnel up with `--tunnel tailscale`:
-
-```
-# the gate sets up the funnel (picks a free port: 443/8443/10000) and prints
-# the exact claude.ai URL + a share link:
-npx @browserid-ng/gate --allow you@example.com --tunnel tailscale \
-  -- npx -y @modelcontextprotocol/server-filesystem ~/notes
-
-# or if you already ran `tailscale funnel --https=8443 8787`, just:
-npx @browserid-ng/gate --allow you@example.com --port 8787 \
-  -- npx -y @modelcontextprotocol/server-filesystem ~/notes
-# → detected tailscale funnel → https://your-machine.tailXXXX.ts.net:8443
-```
-
-**Cloudflare Tunnel**:
-
-```
-cloudflared tunnel --url http://localhost:8787
-# → https://random-words.trycloudflare.com
-npx @browserid-ng/gate --allow you@example.com \
-  --resource https://random-words.trycloudflare.com \
-  -- npx -y @modelcontextprotocol/server-filesystem ~/notes
-```
-
-Then add `<resource>/mcp` to your host as a custom MCP/connector URL.
+Then share `https://<host>/<mount>/mcp` as a custom MCP/connector URL.
 
 ## Operator first run — the gateway identity
 
@@ -232,17 +213,19 @@ One line per tool call:
 [gate] grantor=friend@gmail.com grantee=claude@agents.example.com tool=read_text_file args={"path":"todo.md"}
 ```
 
-A refused (non-allowlisted) grantor logs `[gate] REFUSED grantor=… (not on the allowlist)` and the wrapped tool never runs.
+A grantor no role reaches logs `[gate] REFUSED grantor=… (no role grants tools here)` and the wrapped tool never runs.
 
 ## Scopes
 
 Each wrapped tool auto-maps to a single `tool:<name>` scope (queried from the
 child's `tools/list` at startup) — approval cards then show exactly which tools
 an agent is asking for. A warrant lacking `tool:<name>` is refused that tool
-with `INSUFFICIENT_SCOPE`. (Per-friend scope *caps* — "friend A read-only" — are
-a later milestone; today `--allow` is allow/deny.)
+with `INSUFFICIENT_SCOPE`. On top of that, the grantor's **role** caps which
+tools they can reach at all ("friend A read-only" = grant only the read tools).
 
 ## Library use
+
+Embed a single allowlist-gated server (no console) with `createGateService`:
 
 ```js
 import { createGateService } from "@browserid-ng/gate";
@@ -264,8 +247,8 @@ svc.server.listen(8787);
 npm test   # node --test — hermetic (mock broker + mock verifier, a real-fs stdio child fixture)
 ```
 
-Coverage: the one-shot gate (discovery/both lanes, gated proxied calls,
-allowlist, attribution, fail-closed revocation), the tunnel detector, the
+Coverage: the single-server library gate (discovery/both lanes, gated proxied
+calls, allowlist, attribution, fail-closed revocation), the tunnel detector, the
 **multi-mount** router (two mounts, path-prefixed discovery, independent gated
 calls, separate bearer stores), the **admin** console (exact-audience +
 exact-email login gating, session enforcement, CSRF, forged/expired/tampered

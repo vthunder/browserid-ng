@@ -10,11 +10,11 @@
 //   GET  /authorize/return                 Lane B post-approval bounce (302 → host redirect_uri)
 //   GET  /  /healthz                       landing + probe
 //
-// v0.3 refactors the per-server machinery into a reusable `mount` (src/mount.mjs)
+// v0.3 refactored the per-server machinery into a reusable `mount` (src/mount.mjs)
 // that the multi-server gateway (src/gateway.mjs, the `--admin` console) also
-// uses. `createGateService` stays the single-server library entry point with an
-// unchanged surface: the one-shot CLI (`--allow … -- <cmd>`) and the tests both
-// depend on it.
+// uses. Since v0.5 the CLI runs ONLY the console; `createGateService` remains
+// the single-server LIBRARY entry point (allowlist-based) for embedders and
+// the tests.
 //
 // Design: docs/plans/2026-08-12-gate-v2-admin-console.md (bean oxio),
 //         docs/plans/2026-08-12-mcp-gateway-hobbyist-to-saas.md (bean in36).

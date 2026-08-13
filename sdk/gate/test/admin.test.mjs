@@ -173,3 +173,24 @@ test("a validly-signed cookie for a NON-admin email is rejected (401)", async ()
   const res = await fetch(`${ORIGIN}/admin/mounts`, { headers: { cookie: notAdmin } });
   assert.equal(res.status, 401);
 });
+
+// --- tunnel-less startup ------------------------------------------------------
+test("no tunnel available → still starts, on a localhost origin, and says why", async () => {
+  const gw2 = createGateway({
+    credential, adminEmail: ADMIN, broker: BROKER, persist: false,
+    config: { mounts: [] }, sessionSecret: SECRET, log: () => {},
+    ensureFunnel: async () => { throw new Error("tailscale not available (is it installed and running?)"); },
+  });
+  try {
+    const info = await gw2.start({ port: 0 });
+    assert.match(info.origin, /^http:\/\/127\.0\.0\.1:\d+$/, "falls back to localhost");
+    assert.equal(info.public, false);
+    assert.match(info.funnelError, /tailscale not available/);
+    // The console actually serves on that origin.
+    const res = await fetch(`${info.origin}/admin/bootstrap`);
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).signedIn, false);
+  } finally {
+    await gw2.close();
+  }
+});
