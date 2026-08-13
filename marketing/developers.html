@@ -117,7 +117,7 @@ who.issuer   <span class="c">// <span class="s">"gmail.com"</span> — checked a
     <span class="kicker cyan">Thread 2 · your tools</span>
     <h2 class="sec">Restrict MCP tool access to specific users — without API keys.</h2>
     <p class="sec-lede" style="max-width:38em">A personal access token in an agent's config is unscoped, unattributed, and revocable only by rotating the secret everywhere. A warrant is the opposite: <b style="color:var(--text)">this site, these actions, this agent, that human</b> — and revoking it at <a href="/account" data-auth-href="/account" style="color:var(--gold)">browserid.me/account</a> kills the agent's very next call, fail-closed, touching nothing else.</p>
-    <p class="sec-lede" style="max-width:38em">Already have a stdio MCP server? You don't need to write any of this — <code class="mono" style="font-size:14px">npx @browserid-ng/gate</code> wraps it with all of the above, plus a web console for per-person, per-tool access. <a href="/gate" style="color:var(--cyan)">About gate →</a> The library below is the same machinery when you want it in-process.</p>
+    <p class="sec-lede" style="max-width:38em">Already have a stdio MCP server? You don't need to write any of this — <code class="mono" style="font-size:14px">npx @browserid-ng/gate</code> puts it behind the same warrant gate, with a web console for per-person, per-tool access. <a href="/gate" style="color:var(--cyan)">About gate →</a> The library below is the same machinery when you want it in-process.</p>
   </div>
   <div class="wrap split ag center" style="padding:24px 0 60px">
     <div>
