@@ -142,6 +142,7 @@ async function readBody(req, max = 1024 * 1024) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, RESOURCE);
   const path = url.pathname;
+  if (path !== "/healthz") res.on("finish", () => console.log(`[mcp-demo] ${req.method} ${path} → ${res.statusCode}`));
   try {
     // CORS: hosts (claude.ai) preflight /register and read discovery
     // cross-origin during the Lane B dance.
@@ -160,10 +161,15 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && path === "/healthz") return json(res, 200, { ok: true });
 
-    if (req.method === "GET" && path === "/.well-known/oauth-protected-resource") {
+    // Discovery — served at the ROOT form and the PATH-INSERTED form
+    // (/.well-known/<doc>/mcp). Spec hosts (claude.ai) derive the latter from
+    // the connector URL the user typed (…/mcp) per RFC 9728/8414; without it
+    // the first add fails with a connection error before falling back to the
+    // 401 challenge's root-form URL. Same lesson as gate 0.3.3.
+    if (req.method === "GET" && (path === "/.well-known/oauth-protected-resource" || path === "/.well-known/oauth-protected-resource/mcp")) {
       return json(res, 200, mcpAuth.protectedResourceMetadata());
     }
-    if (req.method === "GET" && path === "/.well-known/oauth-authorization-server") {
+    if (req.method === "GET" && (path === "/.well-known/oauth-authorization-server" || path === "/.well-known/oauth-authorization-server/mcp")) {
       // The lane's metadata advertises BOTH grants (+ authorize/register).
       return json(res, 200, lane ? lane.authorizationServerMetadata() : mcpAuth.authorizationServerMetadata());
     }
