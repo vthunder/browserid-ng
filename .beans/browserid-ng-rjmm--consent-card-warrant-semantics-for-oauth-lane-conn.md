@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-13T18:10:47Z
-updated_at: 2026-08-14T16:42:41Z
+updated_at: 2026-08-14T17:37:40Z
 ---
 
 From the Lane B design review with Dan (2026-08-13, after the mcp-demo connector E2E):
@@ -71,3 +71,11 @@ Gotchas from memory: cargo runs via `ssh localtest`; new crates need Dockerfile 
 ## Phase 1 item 1 DONE (2026-08-14, bean 1g9j)
 
 Verifier v2 support landed: core §5 identity comparison (identity.rs), Binding enum + dual-version WarrantClaims + parse shape matrix + create_v2 (device.rs, v1 wire byte-frozen), operation P step-1/step-6 updates, operation A record validation (admission.rs: RecordBundle validate/recheck_live/matches_login), broker validate_record_with_dns + POST /validate-record (no caller auth; /verify-access untouched). Full workspace green. Next: item 3 (broker consent-card connection variant, binding.id mint + registry pairing, request endpoint + audience-proof fetch, /account rendering, behind support advertisement), then mcp-auth credential-less lane.
+
+## Phase 1 items 2+3 DONE (2026-08-14, beans qmvw/h2m1)
+
+Item 2 (commit ea6475e): broker record-request surface per §7.5 — /warrant/record-request (connection + authoring), audience-proof gate (BrokerProofFetcher, SSRF-guarded, verbatim-nonce), deep-linked claim with per-axis status idx allocation, respond validation pinning binding.id/client descriptor/status refs, consent-card connection + authoring variants (v2 client-side signing), /account host↔service connection rendering, record-grants support advertisement, sqlite v28, per-origin rate limit. 5 new integration tests.
+
+Item 3 (commit cb935aa): mcp-auth 0.3.0 — credential-less connection mode with capability detection + agent fallback; validateRecord/mintFromValidatedRecord; bearers ≤1h capped by record exp, bound to (binding.id, record); freshness-backed mint/refresh (every mint backed by fresh /validate-record, fail-closed); rotate-on-use refresh tokens with family burn; client_host binding enforced at return + every exchange; mcp-demo credential-less + proof route.
+
+Deferred follow-ups: per-mint status-snapshot retention (§6.4 SHOULD, needs /validate-record to return snapshot tokens); service-class identities (from the original design directions); npm publish of mcp-auth still not done. Note: guestbook + paired-provisioning e2e specs fail on main pre-existing (stale spec vs authorize-page flow) — unrelated, worth its own bean.
