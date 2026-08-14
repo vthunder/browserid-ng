@@ -43,19 +43,25 @@ const mcpAuth = createMcpAuth({
   scopesForTool: SCOPES,
 });
 
-// Lane B needs the demo's own provisioned identity (like a gate mount's).
-let lane = null;
+// Lane B: credential-less by default — when the broker advertises
+// connection-grant support (spec §7.5) the lane raises connection requests
+// as the AUDIENCE and holds the delivered records; a provisioned
+// $BROWSERID_CREDENTIAL is only the fallback for brokers without support.
+let credential = null;
 if (process.env.BROWSERID_CREDENTIAL) {
-  let credential;
   try {
     credential = JSON.parse(process.env.BROWSERID_CREDENTIAL);
   } catch (e) {
     throw new Error(`$BROWSERID_CREDENTIAL is not valid JSON: ${e.message}`);
   }
-  lane = createAuthCodeLane({ mcpAuth, credential, broker: BROKER, label: "browserid MCP demo" });
-} else {
-  console.warn("[mcp-demo] no $BROWSERID_CREDENTIAL — Lane B (authorization_code) disabled; assertion grant only");
 }
+const lane = createAuthCodeLane({
+  mcpAuth,
+  ...(credential ? { credential } : {}),
+  broker: BROKER,
+  label: "browserid MCP demo",
+  clientName: undefined,
+});
 
 // The demo's "data": an in-memory attributed action log (last 100).
 const LOG = [];
@@ -183,6 +189,19 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && (path === "/.well-known/oauth-authorization-server" || path === "/.well-known/oauth-authorization-server/mcp")) {
       // The lane's metadata advertises BOTH grants (+ authorize/register).
       return json(res, 200, lane ? lane.authorizationServerMetadata() : mcpAuth.authorizationServerMetadata());
+    }
+
+    // Connection mode (spec §7.5): the audience-proof document. Must stay
+    // published until the pending request resolves or expires.
+    if (req.method === "GET" && path.startsWith("/.well-known/browserid-audience-proof/")) {
+      const id = path.slice("/.well-known/browserid-audience-proof/".length);
+      const body = lane.handleAudienceProof(id);
+      if (body == null) {
+        res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+        return res.end("no such pending request");
+      }
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      return res.end(body);
     }
 
     // Lane B: dynamic client registration (RFC 7591).

@@ -23,6 +23,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 const JWT_BEARER_GRANT = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 const AUTH_CODE_GRANT = "authorization_code";
+const REFRESH_GRANT = "refresh_token";
 
 // ---------------------------------------------------------------------------
 // Bearer store — an interface with an in-memory default. A grant record is
@@ -107,6 +108,7 @@ export function createMcpAuth(opts) {
     opts.acceptedFallbacks || [new URL(broker).host];
   const verifyUrl = `${broker}/verify-access`;
   const statusUrl = `${broker}/status/check`;
+  const validateUrl = `${broker}/validate-record`;
 
   // --- OAuth discovery (RFC 9728 / RFC 8414) -------------------------------
 
@@ -229,6 +231,88 @@ export function createMcpAuth(opts) {
     };
   }
 
+  // --- Record-backed bearers (operation A, spec §6.4) ------------------------
+
+  /**
+   * Validate a held `warrant~config_cert` record at the broker's hosted
+   * two-object validator (`POST /validate-record`) — §6.4 steps 1b–1e,
+   * fail-closed, status included. Returns the validation result
+   * ({ grantor, grantee, binding, scopes, status_refs, expires_at, … }).
+   * This IS the freshness evidence for a mint: call it at every bearer
+   * mint/refresh, never cache it across mints (spec §6.4 freshness-backed
+   * minting — no fresh evidence ⇒ no mint).
+   */
+  async function validateRecord(record) {
+    let v;
+    try {
+      const res = await doFetch(validateUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          record,
+          audience: resource,
+          accepted_fallbacks: acceptedFallbacks,
+        }),
+      });
+      v = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new McpAuthError("invalid_grant", `record validator HTTP ${res.status}`);
+      }
+    } catch (e) {
+      if (e instanceof McpAuthError) throw e;
+      // Fail-closed: an unreachable validator is not fresh evidence.
+      throw new McpAuthError("temporarily_unavailable", `record validator unreachable: ${e.message}`, 503);
+    }
+    if (v.status !== "okay") {
+      throw new McpAuthError("invalid_grant", v.reason || "record did not validate");
+    }
+    return v;
+  }
+
+  /**
+   * Mint a bearer from a just-validated record (`validateRecord`'s result).
+   * The bearer is short-lived (tokenTtlS, reference ≤ 1 h) and never
+   * outlives the record; its status refs ride along for the per-call
+   * fail-closed re-check, exactly like presentation-minted bearers.
+   */
+  async function mintFromValidatedRecord(v, scope, client = null, extra = null) {
+    const granted = Array.isArray(v.scopes) ? v.scopes : [];
+    const requested = parseScope(scope);
+    const scopes = requested.length
+      ? requested.filter((s) => granted.includes(s))
+      : granted;
+    if (requested.length && scopes.length !== requested.length) {
+      throw new McpAuthError("invalid_scope", "requested scope exceeds the record's grant");
+    }
+    const token = bearerToken();
+    // A bearer minted from a held record must always be ≪ the record's
+    // remaining life (spec §6.4): cap at the record's exp.
+    const exp = Math.min(nowS() + tokenTtlS, v.expires_at ?? Infinity);
+    if (exp <= nowS()) {
+      throw new McpAuthError("invalid_grant", "record expired");
+    }
+    await store.put(token, {
+      grantor: v.grantor || null,
+      grantee: v.grantee || null,
+      holder: null,
+      issuer: v.issuer || null,
+      client: client || null,
+      scopes,
+      statusRefs: v.status_refs || [],
+      exp,
+      statusCheckedAt: nowS(), // validate-record just checked status fail-closed
+      statusOk: true,
+      bindingId: v.binding?.id || null,
+      ...(extra || {}),
+    });
+    return {
+      access_token: token,
+      token_type: "Bearer",
+      expires_in: exp - nowS(),
+      scope: scopes.join(" "),
+    };
+  }
+
   // --- Per-call bearer validation (fail-closed status re-check) -------------
 
   /**
@@ -322,6 +406,8 @@ export function createMcpAuth(opts) {
     authorizationServerMetadata,
     handleToken,
     redeemPresentation,
+    validateRecord,
+    mintFromValidatedRecord,
     authenticate,
     requireWarrant,
     challenge,
@@ -366,47 +452,94 @@ export function verifyPkceS256(verifier, challenge) {
 }
 
 /**
- * The authorization-code lane. Optional: construct it only when this server
- * holds a gateway agent credential; everything Lane A does is untouched.
+ * The authorization-code lane. Optional: construct it when this server holds
+ * a gateway agent credential, or when the broker supports connection grant
+ * requests (spec §7.5) — the credential-less mode; everything Lane A does is
+ * untouched.
+ *
+ * Two modes, per authorize, capability-detected:
+ * - **connection** (preferred): the broker's support document advertises
+ *   `record-grants`; the resource raises a connection grant request, proves
+ *   audience control (`handleAudienceProof` must be routed at
+ *   `/.well-known/browserid-audience-proof/:id`), and holds the delivered
+ *   v2 connection record (§6.4). Bearers/refresh are bound to
+ *   (binding.id, record); every mint/refresh is backed by a fresh
+ *   `/validate-record` (freshness-backed minting, §6.4). Refresh tokens
+ *   exist only in this mode.
+ * - **agent** (fallback): the gateway-as-agent flow via `credential`.
  *
  * @param {object} opts
  * @param {object} opts.mcpAuth     The `createMcpAuth` instance to extend.
- * @param {object} opts.credential  Gateway agent device credential (the
+ * @param {object} [opts.credential]  Gateway agent device credential (the
  *                                  wallet's shape: { device_key,
  *                                  agent_device_cert, idp, identity? }).
+ *                                  Optional: the connection-mode fallback.
  * @param {string} [opts.broker]    Broker origin (default mcpAuth.broker).
  * @param {typeof fetch} [opts.fetch]  Injectable fetch (tests).
  * @param {string} [opts.label]     Display label on the consent card
  *                                  (default "mcp gateway").
+ * @param {string} [opts.clientName]  Fallback client display name when a DCR
+ *                                  client registered without one.
  * @param {number} [opts.codeTtlS]  OAuth code lifetime (default 60s).
  * @param {number} [opts.pendingTtlS]  /authorize → /authorize/return window
  *                                  (default 900s, the consent request's TTL).
+ * @param {number} [opts.refreshTtlS]  Refresh-token lifetime (default 30d,
+ *                                  always capped by the record's exp).
+ * @param {number} [opts.capabilityCacheS]  How long to cache the broker
+ *                                  capability probe (default 300s).
  * @param {number} [opts.returnPollTries]   Poll attempts on the return leg.
  * @param {number} [opts.returnPollDelayMs] Delay between those attempts.
  */
 export function createAuthCodeLane(opts) {
   const mcpAuth = req(opts, "mcpAuth");
-  const credential = req(opts, "credential");
+  const credential = opts.credential || null;
   const resource = mcpAuth.resource;
   const broker = (opts.broker || mcpAuth.broker).replace(/\/+$/, "");
   const doFetch = opts.fetch || globalThis.fetch;
   const label = opts.label || "mcp gateway";
   const codeTtlS = opts.codeTtlS ?? 60;
   const pendingTtlS = opts.pendingTtlS ?? 900;
+  const refreshTtlS = opts.refreshTtlS ?? 30 * 24 * 3600;
+  const capabilityCacheS = opts.capabilityCacheS ?? 300;
   const returnPollTries = opts.returnPollTries ?? 5;
   const returnPollDelayMs = opts.returnPollDelayMs ?? 500;
 
   // In-memory v1 stores (the design's locked default). A client row is
   // { redirectUris, clientName }; pending is keyed by our internal
-  // auth_state; codes are single-use and short-lived.
+  // auth_state; codes are single-use and short-lived; proofs are the
+  // audience-proof documents this resource currently publishes; refresh
+  // tokens are connection-mode only, rotated on use.
   const clients = new Map(); // client_id -> { redirectUris, clientName }
-  const pendingAuthz = new Map(); // auth_state -> { clientId, redirectUri, hostState, codeChallenge, scope, pollCode, exp }
-  const codes = new Map(); // code -> { clientId, redirectUri, codeChallenge, grant, exp }
+  const pendingAuthz = new Map(); // auth_state -> { mode, clientId, redirectUri, hostState, codeChallenge, scope, pollCode|requestId, exp }
+  const codes = new Map(); // code -> { mode, clientId, redirectUri, codeChallenge, grant|record, exp }
+  const proofs = new Map(); // request_id -> { body, exp }
+  const refreshTokens = new Map(); // token -> { familyId, clientId, redirectUri, record, bindingId, scope, client, exp, rotatedTo }
 
   const sweep = (map) => {
     const t = nowS();
     for (const [k, v] of map) if (v.exp <= t) map.delete(k);
   };
+
+  // --- capability detection (spec §7.5 support advertisement) ---------------
+
+  let capability = null; // { supported, checkedAt }
+  async function connectionSupported() {
+    if (capability && nowS() - capability.checkedAt < capabilityCacheS) {
+      return capability.supported;
+    }
+    let supported = false;
+    try {
+      const res = await doFetch(`${broker}/.well-known/browserid`, {
+        headers: { accept: "application/json" },
+      });
+      const doc = await res.json().catch(() => ({}));
+      supported = res.ok && typeof doc["record-grants"] === "string" && !!doc["record-grants"];
+    } catch {
+      supported = false; // unreachable → fall back (the agent mode still works)
+    }
+    capability = { supported, checkedAt: nowS() };
+    return supported;
+  }
 
   // The embedded DeviceAgent, constructed on first use. All grant-map
   // mutations + presentation mints are serialized through `withAgent`: the
@@ -415,10 +548,18 @@ export function createAuthCodeLane(opts) {
   // could interleave and mint one user's presentation under another user's
   // warrant.
   let agentPromise = null;
-  const getAgent = () =>
-    (agentPromise ??= loadAgentModule().then(
+  const getAgent = () => {
+    if (!credential) {
+      throw new McpAuthError(
+        "temporarily_unavailable",
+        "no gateway credential and the broker does not support connection grants",
+        503
+      );
+    }
+    return (agentPromise ??= loadAgentModule().then(
       ({ DeviceAgent }) => new DeviceAgent(credential, { http: doFetch })
     ));
+  };
   let agentChain = Promise.resolve();
   function withAgent(fn) {
     const run = agentChain.then(async () => fn(await getAgent()));
@@ -439,7 +580,7 @@ export function createAuthCodeLane(opts) {
       ...base,
       authorization_endpoint: `${resource}/authorize`,
       registration_endpoint: `${resource}/register`,
-      grant_types_supported: [...base.grant_types_supported, AUTH_CODE_GRANT],
+      grant_types_supported: [...base.grant_types_supported, AUTH_CODE_GRANT, REFRESH_GRANT],
       response_types_supported: ["code"],
       code_challenge_methods_supported: ["S256"],
     };
@@ -552,6 +693,60 @@ export function createAuthCodeLane(opts) {
     const scopes = parseScope(q.scope);
     const authState = randomBytes(32).toString("base64url");
     const returnUrl = `${resource}/authorize/return?st=${authState}`;
+
+    // Connection mode (spec §7.5), when the broker advertises support: the
+    // RESOURCE raises the request — no gateway credential in the picture —
+    // and the consent card names the CONNECTION (the OAuth client that will
+    // custody the tokens), not an agent.
+    if (await connectionSupported()) {
+      let clientHost = null;
+      try {
+        clientHost = new URL(redirectUri).hostname;
+      } catch {
+        /* unreachable: validated at register */
+      }
+      let pending;
+      try {
+        const res = await doFetch(`${broker}/warrant/record-request`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            type: "connection",
+            audience: resource,
+            scopes,
+            client: {
+              client_host: clientHost,
+              client_name: client.clientName || opts.clientName || undefined,
+            },
+            return_url: returnUrl,
+          }),
+        });
+        pending = await res.json().catch(() => ({}));
+        if (!res.ok || !pending.request_id || !pending.challenge || !pending.consent_uri) {
+          throw new Error(pending.reason || pending.error || `HTTP ${res.status}`);
+        }
+      } catch (e) {
+        return errorRedirect(redirectUri, hostState, "temporarily_unavailable", `connection request failed: ${e.message}`);
+      }
+      // Publish the audience proof (the host app routes
+      // /.well-known/browserid-audience-proof/:id → handleAudienceProof)
+      // and keep it published until the request resolves or expires.
+      const exp = nowS() + pendingTtlS;
+      proofs.set(pending.request_id, { body: pending.challenge, exp });
+      pendingAuthz.set(authState, {
+        mode: "connection",
+        clientId: q.client_id,
+        redirectUri,
+        hostState,
+        codeChallenge: q.code_challenge,
+        scope: q.scope,
+        requestId: pending.request_id,
+        exp,
+      });
+      return { redirect: pending.consent_uri };
+    }
+
+    // Agent mode (fallback): the gateway-as-agent flow via the credential.
     let pending;
     try {
       const { requestWarrants } = await loadAgentModule();
@@ -572,6 +767,7 @@ export function createAuthCodeLane(opts) {
       return errorRedirect(redirectUri, hostState, "temporarily_unavailable", `warrant request failed: ${e.message}`);
     }
     pendingAuthz.set(authState, {
+      mode: "agent",
       clientId: q.client_id,
       redirectUri,
       hostState,
@@ -581,6 +777,19 @@ export function createAuthCodeLane(opts) {
       exp: nowS() + pendingTtlS,
     });
     return { redirect: pending.verificationUriComplete };
+  }
+
+  // --- The audience-proof document (spec §7.5 step 2) -------------------------
+
+  /**
+   * Serve `/.well-known/browserid-audience-proof/:id`: the challenge nonce
+   * verbatim for a request this resource currently has pending, else null
+   * (render 404). MUST stay published until the request resolves or expires.
+   */
+  function handleAudienceProof(requestId) {
+    sweep(proofs);
+    const p = proofs.get(requestId);
+    return p ? p.body : null;
   }
 
   // --- GET /authorize/return ---------------------------------------------------
@@ -604,6 +813,9 @@ export function createAuthCodeLane(opts) {
     }
     // The approval already happened before the browser got here; poll once,
     // with a few short retries to cover propagation.
+    const pollBody = rec.mode === "connection"
+      ? { request_id: rec.requestId }
+      : { code: rec.pollCode };
     let grants = null;
     for (let i = 0; i < returnPollTries; i++) {
       let body;
@@ -611,7 +823,7 @@ export function createAuthCodeLane(opts) {
         const res = await doFetch(`${broker}/warrant/poll`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ code: rec.pollCode }),
+          body: JSON.stringify(pollBody),
         });
         body = await res.json().catch(() => ({}));
         if (body.status === "approved") {
@@ -619,6 +831,7 @@ export function createAuthCodeLane(opts) {
           break;
         }
         if (body.status === "denied" || res.status === 410) {
+          if (rec.mode === "connection") proofs.delete(rec.requestId);
           return errorRedirect(rec.redirectUri, rec.hostState, "access_denied", body.reason || "the approval was denied");
         }
       } catch {
@@ -626,6 +839,7 @@ export function createAuthCodeLane(opts) {
       }
       if (i < returnPollTries - 1) await sleep(returnPollDelayMs);
     }
+    if (rec.mode === "connection") proofs.delete(rec.requestId); // resolved either way
     if (!grants) {
       return errorRedirect(rec.redirectUri, rec.hostState, "access_denied", "the approval could not be confirmed");
     }
@@ -633,6 +847,43 @@ export function createAuthCodeLane(opts) {
     if (!grant) {
       return errorRedirect(rec.redirectUri, rec.hostState, "access_denied", "no warrant was granted for this resource");
     }
+
+    if (rec.mode === "connection") {
+      // Validate the delivered record NOW (§6.4 — a mis-issued record fails
+      // here, not opaquely at /token) and enforce the client binding: the
+      // registered redirect URI's host MUST equal binding.client_host at
+      // every code release and token exchange (spec §5, fail-closed).
+      let v;
+      try {
+        v = await mcpAuth.validateRecord(grant.warrant);
+      } catch (e) {
+        return errorRedirect(rec.redirectUri, rec.hostState, "access_denied", `unusable record: ${e.message}`);
+      }
+      const binding = v.binding || {};
+      let redirectHost = null;
+      try { redirectHost = new URL(rec.redirectUri).hostname; } catch { /* validated at register */ }
+      if (binding.kind !== "connection" || !binding.id || binding.client_host !== redirectHost) {
+        return errorRedirect(rec.redirectUri, rec.hostState, "access_denied", "record does not match this connection");
+      }
+      const code = `oac_${randomBytes(32).toString("base64url")}`;
+      codes.set(code, {
+        mode: "connection",
+        clientId: rec.clientId,
+        redirectUri: rec.redirectUri,
+        codeChallenge: rec.codeChallenge,
+        record: grant.warrant,
+        exp: nowS() + codeTtlS,
+      });
+      return {
+        redirect:
+          `${rec.redirectUri}${rec.redirectUri.includes("?") ? "&" : "?"}` +
+          new URLSearchParams({
+            code,
+            ...(rec.hostState != null ? { state: rec.hostState } : {}),
+          }).toString(),
+      };
+    }
+
     // Hold the warrant now (validates grantee + holder against the gateway
     // credential — a mis-issued warrant fails here, not opaquely at /token)…
     try {
@@ -645,6 +896,7 @@ export function createAuthCodeLane(opts) {
     // each other's warrants.
     const code = `oac_${randomBytes(32).toString("base64url")}`;
     codes.set(code, {
+      mode: "agent",
       clientId: rec.clientId,
       redirectUri: rec.redirectUri,
       codeChallenge: rec.codeChallenge,
@@ -671,11 +923,12 @@ export function createAuthCodeLane(opts) {
    */
   async function handleToken(params) {
     const p = params || {};
+    if (p.grant_type === JWT_BEARER_GRANT) return mcpAuth.handleToken(p);
+    if (p.grant_type === REFRESH_GRANT) return handleRefresh(p);
     if (p.grant_type !== AUTH_CODE_GRANT) {
-      if (p.grant_type === JWT_BEARER_GRANT) return mcpAuth.handleToken(p);
       throw new McpAuthError(
         "unsupported_grant_type",
-        `only ${JWT_BEARER_GRANT} and ${AUTH_CODE_GRANT} are supported`
+        `only ${JWT_BEARER_GRANT}, ${AUTH_CODE_GRANT} and ${REFRESH_GRANT} are supported`
       );
     }
     if (typeof p.code !== "string" || !p.code) {
@@ -698,8 +951,21 @@ export function createAuthCodeLane(opts) {
     if (!verifyPkceS256(p.code_verifier, rec.codeChallenge)) {
       throw new McpAuthError("invalid_grant", "PKCE verification failed");
     }
-    // Mint the presentation under the agent lock, re-holding THIS code's
-    // warrant so the presentation is provably the approving user's.
+
+    let host = null;
+    try { host = new URL(rec.redirectUri).hostname; } catch { /* validated at register */ }
+    const clientName = clients.get(rec.clientId)?.clientName;
+    const client = host || clientName ? { name: clientName || host, host } : null;
+
+    if (rec.mode === "connection") {
+      return mintConnectionTokens(rec, p.scope, client);
+    }
+
+    // Agent mode: mint the presentation under the agent lock, re-holding
+    // THIS code's warrant so the presentation is provably the approving
+    // user's; then the same verify+mint path as Lane A — /verify-access
+    // binds the audience, fail-closed, and the bearer lands in the same
+    // store, tagged with the CONNECTION (the OAuth client) custodying it.
     let presentation;
     try {
       presentation = await withAgent((agent) => {
@@ -709,14 +975,80 @@ export function createAuthCodeLane(opts) {
     } catch (e) {
       throw new McpAuthError("invalid_grant", `could not mint a presentation: ${e.message}`);
     }
-    // The same verify+mint path as Lane A: /verify-access binds the
-    // audience, fail-closed, and the bearer lands in the same store —
-    // tagged with the CONNECTION (the OAuth client) that will custody it.
-    let host = null;
-    try { host = new URL(rec.redirectUri).hostname; } catch { /* validated at register */ }
-    const clientName = clients.get(rec.clientId)?.clientName;
-    const client = host || clientName ? { name: clientName || host, host } : null;
     return mcpAuth.redeemPresentation(presentation, p.scope, client);
+  }
+
+  /**
+   * Connection-mode bearer + refresh mint (spec §6.4 freshness-backed
+   * minting): EVERY mint is backed by a fresh `/validate-record` — status
+   * fail-closed, live expiry — no fresh evidence ⇒ no tokens; and the
+   * client binding (registered redirect-URI host == binding.client_host)
+   * is re-checked at every exchange.
+   */
+  async function mintConnectionTokens(rec, scope, client, rotateFrom = null) {
+    const v = await mcpAuth.validateRecord(rec.record);
+    const binding = v.binding || {};
+    let redirectHost = null;
+    try { redirectHost = new URL(rec.redirectUri).hostname; } catch { /* registered */ }
+    if (binding.kind !== "connection" || !binding.id || binding.client_host !== redirectHost) {
+      throw new McpAuthError("invalid_grant", "record does not match this connection");
+    }
+    const tokens = await mcpAuth.mintFromValidatedRecord(v, scope, client, {
+      // Bearer + refresh state bound to the (binding.id, record) pair —
+      // §6.6 invariant 5's resource-side obligation.
+      record: rec.record,
+    });
+    // Rotate-on-use refresh token, capped by the record's remaining life.
+    const refreshExp = Math.min(nowS() + refreshTtlS, v.expires_at ?? Infinity);
+    const familyId = rotateFrom?.familyId || `rf_${randomBytes(16).toString("base64url")}`;
+    const refreshToken = `mrt_${randomBytes(32).toString("base64url")}`;
+    refreshTokens.set(refreshToken, {
+      familyId,
+      clientId: rec.clientId,
+      redirectUri: rec.redirectUri,
+      record: rec.record,
+      bindingId: binding.id,
+      scope,
+      client,
+      exp: refreshExp,
+      rotatedTo: null,
+    });
+    return { ...tokens, refresh_token: refreshToken };
+  }
+
+  /** `grant_type=refresh_token` — connection mode only, rotation on use,
+   *  family burn on reuse (a replayed refresh token is theft evidence). */
+  async function handleRefresh(p) {
+    sweep(refreshTokens);
+    if (typeof p.refresh_token !== "string" || !p.refresh_token) {
+      throw new McpAuthError("invalid_request", "missing 'refresh_token'");
+    }
+    const rt = refreshTokens.get(p.refresh_token);
+    if (!rt || rt.exp <= nowS()) {
+      throw new McpAuthError("invalid_grant", "unknown or expired refresh token");
+    }
+    if (rt.rotatedTo) {
+      // Reuse of a rotated token: burn the whole family.
+      for (const [k, v] of refreshTokens) {
+        if (v.familyId === rt.familyId) refreshTokens.delete(k);
+      }
+      throw new McpAuthError("invalid_grant", "refresh token reuse detected — connection revoked locally");
+    }
+    if (p.client_id != null && p.client_id !== rt.clientId) {
+      throw new McpAuthError("invalid_grant", "refresh token was not issued to this client");
+    }
+    // Narrow-only: a refresh may request a subset of the original scope.
+    const scope = p.scope ?? rt.scope;
+    const next = await mintConnectionTokens(
+      { clientId: rt.clientId, redirectUri: rt.redirectUri, record: rt.record },
+      scope,
+      rt.client,
+      rt
+    );
+    // Keep the rotated token (marked) until family expiry: its reuse is the
+    // theft signal that burns the family.
+    rt.rotatedTo = next.refresh_token;
+    return next;
   }
 
   return {
@@ -726,6 +1058,7 @@ export function createAuthCodeLane(opts) {
     handleRegister,
     handleAuthorize,
     handleAuthorizeReturn,
+    handleAudienceProof,
     handleToken,
   };
 }
@@ -747,4 +1080,4 @@ function allScopes(map) {
   return [...set];
 }
 
-export { JWT_BEARER_GRANT, AUTH_CODE_GRANT };
+export { JWT_BEARER_GRANT, AUTH_CODE_GRANT, REFRESH_GRANT };

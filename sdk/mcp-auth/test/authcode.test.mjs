@@ -485,7 +485,7 @@ test("lane discovery adds the auth-code endpoints and S256, keeping Lane A intac
   assert.equal(asm.issuer, RESOURCE);
   assert.equal(asm.authorization_endpoint, `${RESOURCE}/authorize`);
   assert.equal(asm.registration_endpoint, `${RESOURCE}/register`);
-  assert.deepEqual(asm.grant_types_supported, [JWT_BEARER_GRANT, "authorization_code"]);
+  assert.deepEqual(asm.grant_types_supported, [JWT_BEARER_GRANT, "authorization_code", "refresh_token"]);
   assert.deepEqual(asm.response_types_supported, ["code"]);
   assert.deepEqual(asm.code_challenge_methods_supported, ["S256"]);
   assert.deepEqual(asm.token_endpoint_auth_methods_supported, ["none"]);

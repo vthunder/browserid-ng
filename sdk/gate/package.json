@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@browserid-ng/agent": "^0.4.1",
-    "@browserid-ng/mcp-auth": "^0.2.0",
+    "@browserid-ng/mcp-auth": "^0.3.0",
     "@browserid-ng/verify": "^0.2.0",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },

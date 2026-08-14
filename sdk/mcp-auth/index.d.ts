@@ -2,6 +2,7 @@
 
 export const JWT_BEARER_GRANT: "urn:ietf:params:oauth:grant-type:jwt-bearer";
 export const AUTH_CODE_GRANT: "authorization_code";
+export const REFRESH_GRANT: "refresh_token";
 
 /** A revocation status pointer carried by a verified presentation. */
 export interface StatusRef {
@@ -88,6 +89,21 @@ export interface TokenResponse {
   token_type: "Bearer";
   expires_in: number;
   scope: string;
+  /** Connection-mode auth-code lane only: rotate-on-use refresh token. */
+  refresh_token?: string;
+}
+
+/** The result of validating a held record at the broker's /validate-record
+ *  (operation A, spec §6.4 steps 1b–1e, fail-closed). */
+export interface ValidatedRecord {
+  status: "okay";
+  grantor: string;
+  grantee: string;
+  binding: Record<string, unknown>;
+  scopes: string[];
+  issuer: string;
+  status_refs?: StatusRef[];
+  expires_at?: number;
 }
 
 export interface McpAuth {
@@ -108,6 +124,18 @@ export interface McpAuth {
     authorizationHeader: string | undefined,
     toolNameOrScopes: string | string[]
   ): Promise<WarrantContext>;
+  /** Validate a held warrant~config_cert record at the broker's
+   *  /validate-record — the freshness evidence for a record-backed mint
+   *  (spec §6.4): call at EVERY mint/refresh, fail-closed. */
+  validateRecord(record: string): Promise<ValidatedRecord>;
+  /** Mint a short-lived bearer from a just-validated record. Never outlives
+   *  the record; status refs ride along for the per-call re-check. */
+  mintFromValidatedRecord(
+    v: ValidatedRecord,
+    scope?: string,
+    client?: ClientInfo | null,
+    extra?: Record<string, unknown> | null
+  ): Promise<TokenResponse>;
   /** RFC 6750 WWW-Authenticate challenge value for a 401. */
   challenge(): string;
   store: BearerStore;
@@ -139,15 +167,24 @@ export function verifyPkceS256(verifier: unknown, challenge: unknown): boolean;
 export interface AuthCodeLaneOptions {
   /** The `createMcpAuth` instance to extend (bearers land in its store). */
   mcpAuth: McpAuth;
-  /** Gateway agent credential; enables the lane (and lazily loads
-   *  `@browserid-ng/agent` — Lane-A-only users never do). */
-  credential: DeviceCredential;
+  /** Gateway agent credential — the agent-mode fallback (lazily loads
+   *  `@browserid-ng/agent`). OPTIONAL: when the broker advertises
+   *  `record-grants` support, the lane runs the credential-less
+   *  connection mode (spec §7.5) instead. */
+  credential?: DeviceCredential;
   /** Broker origin. Default: mcpAuth.broker. */
   broker?: string;
   /** Injectable fetch (tests). */
   fetch?: typeof fetch;
   /** Display label on the consent card. Default "mcp gateway". */
   label?: string;
+  /** Fallback client display name for DCR clients without one. */
+  clientName?: string;
+  /** Refresh-token lifetime seconds (connection mode; capped by the
+   *  record's exp). Default 30 days. */
+  refreshTtlS?: number;
+  /** Broker capability probe cache seconds. Default 300. */
+  capabilityCacheS?: number;
   /** OAuth code lifetime in seconds (single-use regardless). Default 60. */
   codeTtlS?: number;
   /** /authorize → /authorize/return window in seconds. Default 900. */
@@ -179,8 +216,12 @@ export interface AuthCodeLane {
    *  Resolves to a redirect to the host's redirect_uri with ?code= or
    *  ?error=. Throws McpAuthError when the pending record is gone. */
   handleAuthorizeReturn(query: Record<string, unknown>): Promise<Redirect>;
-  /** POST /token: the authorization_code branch; jwt-bearer requests are
-   *  delegated verbatim to mcpAuth.handleToken. */
+  /** Serve /.well-known/browserid-audience-proof/:id — the challenge nonce
+   *  verbatim (connection mode, spec §7.5), or null (render 404). The host
+   *  app MUST route this path for the connection mode to work. */
+  handleAudienceProof(requestId: string): string | null;
+  /** POST /token: the authorization_code + refresh_token branches;
+   *  jwt-bearer requests are delegated verbatim to mcpAuth.handleToken. */
   handleToken(params: Record<string, unknown>): Promise<TokenResponse>;
 }
 
