@@ -232,7 +232,61 @@ The spec text MUST state all of these:
    appear in any other slot (grantor, certs, registries of principals) and
    MUST NOT be treated as authenticatable identities anywhere.
 
-### 3.4 Raising the consent request without a requester identity (§7.5 change)
+### 3.4 Composition: policy records × connection records
+
+A connection is never anonymous. Its identity is pinned at the only moment
+it can be — consent — and is recorded as the **`grantor` of the record that
+binds it**: the broker mints `connection_id` during a flow in which the
+connecting user is logged in and their config cert signs the record. Rule:
+**a connection descriptor exists only inside a record whose grantor is the
+identity that established the connection.** `connection_id` means "this
+identity's consent-instance," never "some pipe between the resource and the
+host."
+
+The shared-resource scenario (admin G grants friend E access to R, E later
+connects via host A) is a **two-record chain** — each record signed by the
+party who knows its contents at signing time; no signed object is ever
+amended or late-bound:
+
+1. **Policy record** (G-signed, at role-grant time):
+   `{grantor: G, grantee: {kind: email, id: E, holder: *}, audience: R,
+   scopes: S}`. G knows E, R, S — and nothing about future connections.
+2. **Connection record** (E-signed, at connection time):
+   `{grantor: E, grantee: {kind: connection, connection_id: C,
+   client_host: A}, audience: R, scopes: S′}`. Born when C is born, at E's
+   own consent card.
+
+Admission at R conjoins them: authenticate the dance bound to C (§3.2 A);
+C's record names E; E matches a policy record; **effective scopes = S ∩ S′**.
+Composition rules:
+
+- **Attribution vs. permission.** The connection record's grantor (E) is the
+  *attributed* identity — E acted. The policy record's grantor (G) is the
+  *permitter* — the reason it was allowed, never the author. Audit rendering:
+  "E, via <client> (<host>), under G's grant." Conflating these is the
+  self-serve special case G = E, where the distinction is invisible.
+- **Two-sided revocation.** E revokes the connection record at E's /account
+  (kills E's own connection, touches nothing else); G revokes the policy
+  record (kills E's access through every connection). Each side holds its
+  own registrar bit.
+- **Optional host constraint.** G MAY constrain custody in the policy record
+  (e.g. `client_hosts: ["claude.ai"]`) — a policy-record constraint field,
+  not part of the base shape; absent means E chooses their hosts.
+- **The chain is exactly two layers, fail-closed.** Policy records (who may
+  enter) and connection records (which custody instance, attributed to whom)
+  conjoin at admission; records MUST NOT confer the authority to mint
+  further records. (A general delegation-chain mechanism is UCAN's product;
+  depth-two conjunction is deliberately all this design admits.)
+- **Self-serve degenerate case:** G = E; the policy record is the admin's
+  implicit full access (today's gate roles for the admin); only the
+  connection record exists concretely — exactly the current flow.
+
+Deployment note: gate's roles table is the policy layer already, unsigned;
+§4's roles-as-signed-grants migrates it to email-kind policy records
+incrementally. The conjunction semantics above hold either way — config-row
+policy and record policy answer the same admission question.
+
+### 3.5 Raising the consent request without a requester identity (§7.5 change)
 
 Today's JIT flow (§7.5) requires the request to be **signed by the holder's
 device key** — the anti-spam/anti-phishing gate, and exactly what the gateway
@@ -273,7 +327,7 @@ by the genuine audience, inside a dance the audience initiates — the attack
 is annoyance-phishing, not authority theft. The proof keeps the consent
 surface clean; it is not guarding a vault.
 
-### 3.5 Redemption, refresh, revocation at the resource
+### 3.6 Redemption, refresh, revocation at the resource
 
 - The resource holds the record; mints bearers from it (same embedded AS,
   same scope-ceiling rule), **bound to `connection_id`**; refresh re-mints
@@ -325,7 +379,7 @@ Net: no attack gets cheaper; the sloppy-resource row gets strictly harder.
 **Downgrade:** invariants 1–2 (§3.3): kind-gated at operation P, typ-gated at
 v1 verifiers.
 
-**Consent phishing:** audience-proof (§3.4) plus §7.5 rendering rules.
+**Consent phishing:** audience-proof (§3.5) plus §7.5 rendering rules.
 Residual: a malicious *resource* can claim any `client_name` — bounded: it
 can only grant access to itself, attributed and revocable; the equivalent
 residual exists today.
@@ -346,7 +400,7 @@ remains available and preferred wherever the subject can present.
 
 | Component | Change |
 |---|---|
-| Core spec | §5: v2 record format, grantee-kind table, instance-binding concept, status REQUIRED, privacy sentence. §6: operation A ("record validation + subject matching") beside §6.1, invariants §3.3. §7.5: connection grant request + audience proof. Vocabulary: "presentation" reserved for operation P. |
+| Core spec | §5: v2 record format, grantee-kind table, instance-binding concept, status REQUIRED, privacy sentence. §6: operation A ("record validation + subject matching") beside §6.1, invariants §3.3. §7.5: connection grant request + audience proof (§3.5); composition semantics (§3.4). Vocabulary: "presentation" reserved for operation P. |
 | Broker | Request endpoint + challenge fetch; consent-card connection variant; `connection_id` mint; registry row (descriptor + status idx); /account connection rendering. |
 | Verifier (crate + hosted) | v2 parsing (both operations); record-validation call (`warrant ~ config_cert`); v1 accepted as email-kind sugar. |
 | mcp-auth | Lane gains a credential-less mode: when the broker advertises connection requests, raise them with the audience proof; else fall back to the credential path (capability detection keeps old brokers working). Bearer/refresh binding to `connection_id`. `ctx.client` (0.2.1, shipped) gains the id. |
