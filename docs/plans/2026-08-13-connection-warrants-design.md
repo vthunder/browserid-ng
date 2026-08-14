@@ -1,21 +1,24 @@
-# Warrant v2 — one authorization record, two operations (presentation & admission)
+# Warrant v2 — one authorization record, two operations, email-rooted bindings
 
-**Date:** 2026-08-13, revised 2026-08-14 after review · **Status:** design proposal · **Bean:** rjmm
+**Date:** 2026-08-13, revised 2026-08-14 (six review rounds) · **Status:** design proposal · **Bean:** rjmm
 **Companions:** `2026-08-02-mcp-distribution-design.md` (the lanes), core spec §5–§7.5.
 **Provenance:** the Lane B design review after the mcp-demo connector E2E — the
-"user→gateway consent is incoherent" critique — refined in review: one record
-format rather than an agent-warrant/resource-warrant split; instance binding
-(`connection_id`) in the signed descriptor; "presentation" vocabulary reserved
-for the operation that actually presents.
+"user→gateway consent is incoherent" critique — refined across review into:
+one record format (not an agent-warrant/resource-warrant split); grantee
+always an email, with **bindings** (holder / connection) as the instance
+qualifier; connection records as **self-grants narrowed to a custody
+channel**; composition of policy × connection records; "presentation"
+vocabulary reserved for the operation that actually presents.
 
 **One line:** a warrant is a grantor-signed, registrar-revocable
-**authorization record**; the record format is one thing (`browserid-warrant-v2`),
-and what varies is the **operation** — an agent *presents* it with proof of key
-possession, or a resource *holds* it and matches an independently authenticated
-subject against it, like a signed row in `/etc/passwd`. This lets OAuth-style
-gateways (gate, mcp-demo) drop their self-dealing service identities while
-keeping the user's signature and the broker-aggregated kill switch — the parts
-doing real work.
+**authorization record** whose grantee is always an email identity; a
+**binding** pins the instance — a `holder` matcher (device; presentable) or a
+`connection` (custody channel; admission-only, always a self-grant). An agent
+*presents* a holder-bound record with proof of key possession; a resource
+*holds* a record and matches an independently authenticated subject against
+it, like a signed row in `/etc/passwd`. This lets OAuth-style gateways (gate,
+mcp-demo) drop their self-dealing service identities while keeping the user's
+signature and the broker-aggregated kill switch — the parts doing real work.
 
 ---
 
@@ -41,7 +44,10 @@ Consequences, observed live on 2026-08-13:
 
 What the flow *actually* produces is a bearer + refresh capability custodied
 by the **host** (claude.ai). The meaningful consent object is that
-**connection**. The warrant should say so.
+**connection** — and the identity behind it was never in doubt: the person
+who approved it. The problem was never that the grantee was an email; it was
+the **wrong** email (infrastructure's). The format lacked a way to say "this
+person, via this custody channel."
 
 ## 2. What each link of a presentation proves — and which are vacuous here
 
@@ -65,75 +71,85 @@ provided the deletion can never be confused with the keyed form (§3.3).
 
 ### 3.1 One record format: `browserid-warrant-v2`
 
-There is **one** warrant object. It is not "the resource-held kind" — it is
-the successor format for all warrants, a strict superset of v1. What differs
-per use is which operation (§3.2) consumes it and which grantee kind it names.
+There is **one** warrant object — the successor format for all warrants, a
+strict superset of v1. The grantee is **always an email identity** (a string,
+exactly as v1); what varies is the **binding** — the instance qualifier that
+pins *which instance of the grantee* may exercise the grant — and which
+operation (§3.2) consumes the record.
 
 ```json
 {
   "typ": "browserid-warrant-v2",
   "iat": …, "exp": …,
-  "grantor": "dan@example.com",
-  "grantee": { … one of the kinds below … },
+  "grantor": "friend@example.com",
+  "grantee": "friend@example.com",
+  "connection": { "id": "cn_8f3a…", "client_host": "claude.ai",
+                  "client_name": "Claude" },
   "audience": "https://gate.dan.dev/notes",
   "scopes": ["tool:read_file", "tool:search_files"],
   "status": { "uri": "https://browserid.me/.well-known/browserid-status", "idx": 168 }
 }
 ```
 
-Signed by the grantor's config cert exactly as v1. `audience` (exactly one,
-exact match) and `scopes` are unchanged. Two format-level differences:
+Signed by the grantor's config cert exactly as v1. `grantor`, `grantee`
+(email strings), `audience` (exactly one, exact match) and `scopes` are
+unchanged from v1. Format-level changes:
 
-- **`grantee` is an object with a mandatory `kind`.** Kinds are a fail-closed
-  registry: a verifier, broker, or resource encountering a kind it does not
-  implement MUST reject (mirrors the §4.7 constraints rule).
+- **Exactly one binding claim** is present — `holder` or `connection`:
+
+  | Binding | Meaning | Subject authenticated by | Operations |
+  |---|---|---|---|
+  | `holder` | v1 semantics verbatim: a matcher (`*`, `ns.*`, exact) over the grantee's device holders | key possession (access cert + assertion), or a browserid login carrying a holder | P and A |
+  | `connection` | a custody channel: `{ id, client_host, client_name }` — `id` broker-minted at consent, exact, no wildcard | the resource's OAuth mechanics: codes released only to the registered redirect URI, PKCE binding the exchange to the authorize initiator | A only |
+
+  Binding kinds are a fail-closed registry: a verifier or resource
+  encountering a binding it does not implement MUST reject (mirrors the
+  §4.7 constraints rule). Bindings are **not identities** and never appear
+  where identities live.
+
+- **`connection` implies a self-grant:** a record carrying a `connection`
+  binding MUST have `grantor == grantee`. The connection record is the
+  grantor's own grant to themselves, narrowed to one custody channel — the
+  exact shape §5 already gives self-logins (grantor == grantee), plus the
+  qualifier. Identities are always emails; a connection is not an identity,
+  but every connection is bound to one: **its record's signer**.
 - **`status` is REQUIRED.** In v1 it is optional because a leaked warrant is
-  inert without the grantee's key; v2 records can authorize with no key in
-  the picture, so the registrar bit is the kill switch and a record without
-  one is malformed. (This also makes the /account ledger complete by
-  construction: every v2 grant is listed and revocable.)
+  inert without the grantee's key; a connection-bound record authorizes with
+  no grantee key in the picture, so the registrar bit is the kill switch and
+  a record without one is malformed. (Requiring it on all v2 records also
+  makes the /account ledger complete by construction.)
 
-**Grantee kinds.** Every kind defines two things: how a subject is
-**authenticated**, and what its **instance-binding** field is — the axis of
-"not just who, but which instance of who":
-
-| Kind | Subject authenticated by | Instance binding | Fields |
-|---|---|---|---|
-| `email` | key possession (presentation) or a browserid login (admission) | `holder` matcher — `*`, `ns.*`, or exact — v1 semantics verbatim | `{ "kind": "email", "id": "<email>", "holder": "<matcher>" }` |
-| `connection` | the resource's OAuth mechanics: codes released only to the registered redirect URI, PKCE binding the exchange to the authorize initiator | `connection_id` — broker-minted at consent, exact match, no wildcard | `{ "kind": "connection", "connection_id": "<id>", "client_host": "<redirect-URI host>", "client_name": "<DCR name, display-only>" }` |
-
-`holder` and `connection_id` are the same concept at different layers.
-`holder` pins an email-identity grant to a device (or device class) of that
-identity — anti-fungibility across the grantee's holders (§5/§6.1). Without
-`connection_id`, a connection grant naming only `client_host: claude.ai`
-would be satisfiable by **any** claude.ai connection to this audience —
-including someone else's, whose agent would then act attributed to the
-grantor, within the grantor's scopes, on the strength of the grantor's
-record. The signed record must pin the instance; resource-internal state must
-not be the only thing standing between "my connection" and "any connection"
-(a buggy rebind or a restore-from-backup is not an attack, and must still be
-unable to cross grants). The broker mints `connection_id` at consent time —
-the same moment it allocates the status index — and records both in the
-registry row; the resource's AS MUST bind the bearers and refresh capability
-it mints to that id.
+**Why `connection.id` must be in the signed record.** Without it, a record
+naming only `client_host: claude.ai` would be satisfiable by **any**
+claude.ai connection to this audience — including someone else's, whose
+agent would then act attributed to the grantor, within the grantor's scopes.
+The signed record must pin the instance; resource-internal state must not be
+the only thing standing between "my connection" and "any connection" (a
+buggy rebind or a restore-from-backup is not an attack, and must still be
+unable to cross grants). `holder` and `connection.id` are the same concept
+at different layers: not just *who*, but *which instance of who* — which
+device of the identity, or which custody channel of the identity.
 
 `client_name` is display-only and marked unverified everywhere it appears.
 `client_host` is the enforceable client datum (registered redirect-URI host)
 and is what the consent card renders.
 
 **v1 compatibility.** `browserid-warrant-v1` remains valid indefinitely and
-is interpreted as `{ kind: "email", id: <grantee string>, holder:
-<holder claim> }`. New signing surfaces SHOULD emit v2; verifiers accept
-both. Nothing deployed breaks; nothing forces migration.
+is interpreted as a v2 record with a `holder` binding. New signing surfaces
+SHOULD emit v2; verifiers accept both. Nothing deployed breaks; nothing
+forces migration. (Old verifiers reject v2 by the existing unknown-`typ`
+rule — see invariants.)
 
 ### 3.2 Two operations
 
 **Operation P — presentation verification** (§6.1, unchanged in substance):
 the grantee proves possession of its key. The bundle is exactly
 `access_cert ~ assertion ~ warrant ~ config_cert`; the join requires
-`grantee.kind == "email"`, `grantee.id == access_cert.identity`, and the
-`holder` matcher to cover `access_cert.holder`. Only the `email` kind can
-appear here — it is the only kind that *can* prove possession.
+`grantee == access_cert.identity` and the `holder` matcher to cover
+`access_cert.holder`. **Presentability is governed mechanically by the
+binding:** §6.1 already fail-closes on a missing `holder`, so a
+connection-bound record (which has none) cannot present — no new rule
+needed, only the existing one restated.
 
 **Operation A — record validation + subject matching** ("admission"): the
 resource **holds** the record. Nothing presents the warrant — the warrant is
@@ -142,38 +158,37 @@ the row that an independently authenticated subject is matched against
 steps, each fail-closed:
 
 1. **Validate the record** (on acquisition, and re-check status per use):
-   a. parse; `typ` must be `browserid-warrant-v2`; `grantee.kind` must be
-      implemented; `status` must be present;
+   a. parse; `typ` must be `browserid-warrant-v2` (or v1, as a
+      holder-binding record); exactly one binding claim, of an implemented
+      kind; `status` present (v2);
    b. resolve `config_cert.iss` via DNSSEC (§3); require it authoritative for
       the grantor's domain (§8.1 fallbacks as today); verify the config cert
       (unexpired, `purpose == authorization`, `identities` cover
       `warrant.grantor`);
    c. verify the warrant under the config cert's key; unexpired; `audience`
-      == this resource (exact);
+      == this resource (exact); if `connection` is present, `grantor ==
+      grantee`;
    d. enforce config-cert constraints (§4.7) against scopes/ttl; unknown
       constraint key ⇒ reject;
    e. check the two status authorities fail-closed: config cert (→ its IdP)
-      and warrant (→ broker registry). (No access-cert authority — no device
-      in the picture.)
-2. **Authenticate the subject** by the kind's method — the OAuth dance it
-   custodies (`connection`), or a browserid login (`email`). Note the
+      and warrant (→ broker registry).
+2. **Authenticate the subject** by the binding's method — the OAuth dance it
+   custodies (`connection`), or a browserid login (`holder`). The
    authenticated artifact here is real and *may itself be a presentation*
    (a login bundle) — but it is the **subject's own** credential, not the
    held record.
-3. **Match** the subject against the grantee, including the instance
-   binding: `connection` — the dance is the one bound to `connection_id`
-   (the resource MUST maintain and check this binding on every mint and
-   refresh); `email` — the login's identity equals `id` AND the `holder`
-   matcher covers the login's holder. If the subject was authenticated by a
-   holder-less method, a non-`*` matcher cannot be evaluated and MUST fail
+3. **Match** the subject against grantee + binding: `connection` — the dance
+   is the one bound to `connection.id` (see the 1:1 rule below);
+   `holder` — the login's identity equals `grantee` AND the matcher covers
+   the login's holder. A matching step that cannot be evaluated (unknown
+   binding; non-`*` matcher with a holder-less authentication) MUST fail
    closed; `*` imposes nothing.
 
-The same record may legitimately serve **both** operations when its kind
-allows both: "Dan authorizes `alice@gmail.com` (holder `*`) at `/notes`" can
-be held by the resource and satisfied by Alice's login (A), or presented by
-Alice's agent with her access cert (P). The authority granted is identical
-and P is the stronger proof, so nothing is gained by forbidding it; the
-`holder` matcher is evaluated in both paths wherever a holder exists.
+The same record may serve **both** operations when its binding allows: "Dan
+authorizes `alice@gmail.com` (holder `*`) at `/notes`" can be held by the
+resource and satisfied by Alice's login (A), or presented by Alice's agent
+with her access cert (P). The authority is identical and P is the stronger
+proof; nothing is gained by forbidding it.
 
 **Why both operations exist** (rationale, for the spec's design notes). The
 two operations are the capabilities/ACL duality: P is **authority that
@@ -182,7 +197,7 @@ later; A is **authority that sits at the resource** — a signed row, right for
 anonymous-client rails where the resource is the enforcement point anyway.
 Neither subsumes the other:
 
-- A cannot replace P, structurally: admitting an `email` subject means
+- A cannot replace P, structurally: admitting an email subject means
   authenticating a browserid login — which *is* a presentation (the §7.3
   self-login bundle). The regress bottoms out at P; A is a composition
   pattern over it for subjects that cannot present.
@@ -196,7 +211,7 @@ Neither subsumes the other:
   (3) **the actor as an independently accountable principal** — P
   establishes the agent (identity, holder, certs) with its own revocation
   axis at its own IdP: two kill switches on orthogonal authorities, where a
-  `connection` admission has exactly one (the record's bit);
+  connection admission has exactly one (the record's bit);
   (4) **non-interactive actorhood** — a headless agent mints and presents
   with no human present (§7.4 → §7.2).
 
@@ -213,67 +228,77 @@ secret", §5) — readable, spendable nowhere.
 
 The spec text MUST state all of these:
 
-1. Operation P accepts only `grantee.kind == "email"` (v1 or v2). A
-   `connection` record MUST NOT verify in a four-object bundle — there is no
-   access cert it could join with, and verifiers MUST reject the kind in
-   that position explicitly, not incidentally.
+1. Operation P requires a `holder` binding; a `connection`-bound record MUST
+   NOT verify in a four-object bundle. (Mechanically: no holder ⇒ §6.1
+   step 1 reject; state it explicitly anyway.)
 2. Conforming v1 verifiers already reject v2 objects (unknown `typ` ⇒ reject,
    §6.1 step 1) — downgrade protection at every deployed verifier is by
    explicit rule, and the new text restates it.
-3. A v2 record without `status` MUST be rejected by verifiers and refused at
-   signing time by conforming brokers.
-4. In operation A, a subject-matching step that cannot be evaluated (unknown
-   kind; non-`*` holder matcher with a holder-less authentication; missing
-   `connection_id` binding) MUST fail closed.
-5. Record validation authenticates no one. Only presentation (P) or the
-   kind's subject authentication (A step 2) establishes an acting party.
-6. **Containment:** email is the protocol's only principal identity type.
-   Grantee-kind descriptors are warrant-local subject matchers; they MUST NOT
-   appear in any other slot (grantor, certs, registries of principals) and
-   MUST NOT be treated as authenticatable identities anywhere.
+3. A v2 record without `status`, or with zero or multiple binding claims, or
+   with an unimplemented binding kind, MUST be rejected. Signing surfaces
+   MUST refuse to mint such records.
+4. A `connection`-bound record MUST be a self-grant (`grantor == grantee`).
+5. **`connection.id` is 1:1 with its record:** the id is minted by the
+   broker in one consent flow and bound to the record signed in that same
+   flow; the resource MUST bind bearers/refresh to that (id, record) pair,
+   and any other record naming the same id is invalid. The registry stores
+   the pairing, making conflicts detectable.
+6. In operation A, a subject-matching step that cannot be evaluated MUST
+   fail closed.
+7. Record validation authenticates no one. Only presentation (P) or the
+   binding's subject authentication (A step 2) establishes an acting party.
+8. **Containment:** email is the protocol's only identity type. Bindings are
+   warrant-local instance qualifiers, not identities; they MUST NOT appear
+   in identity slots (grantor, grantee, certs, principal registries) or be
+   treated as authenticatable identities anywhere. Grants to unattributable
+   subjects ("anyone with this link") are out of scope by design — every
+   grant roots in a signing email; bearer-style anonymous access is
+   antithetical to an attribution protocol. (Invite-link UX, if wanted, is a
+   broker flow converting acceptance into an email policy record.)
 
 ### 3.4 Composition: policy records × connection records
 
-A connection is never anonymous. Its identity is pinned at the only moment
-it can be — consent — and is recorded as the **`grantor` of the record that
-binds it**: the broker mints `connection_id` during a flow in which the
-connecting user is logged in and their config cert signs the record. Rule:
-**a connection descriptor exists only inside a record whose grantor is the
-identity that established the connection.** `connection_id` means "this
-identity's consent-instance," never "some pipe between the resource and the
-host."
+A connection is never anonymous: its identity is **its record's signer**,
+pinned at the only moment it can be — consent — when the broker mints
+`connection.id` during a flow in which the connecting user is logged in and
+their config cert signs the (self-grant) record.
 
-The shared-resource scenario (admin G grants friend E access to R, E later
+The shared-resource scenario (admin G grants friend E access to R; E later
 connects via host A) is a **two-record chain** — each record signed by the
 party who knows its contents at signing time; no signed object is ever
 amended or late-bound:
 
 1. **Policy record** (G-signed, at role-grant time):
-   `{grantor: G, grantee: {kind: email, id: E, holder: *}, audience: R,
-   scopes: S}`. G knows E, R, S — and nothing about future connections.
+   `{grantor: G, grantee: E, holder: "*", audience: R, scopes: S}`.
+   G knows E, R, S — and nothing about future connections (G does not need
+   to know A or C).
 2. **Connection record** (E-signed, at connection time):
-   `{grantor: E, grantee: {kind: connection, connection_id: C,
-   client_host: A}, audience: R, scopes: S′}`. Born when C is born, at E's
-   own consent card.
+   `{grantor: E, grantee: E, connection: {id: C, client_host: A},
+   audience: R, scopes: S′}`. Born when C is born, at E's own consent card
+   ("Connect Claude to Dan's notes — a grant to yourself, exercised through
+   this connection").
 
 Admission at R conjoins them: authenticate the dance bound to C (§3.2 A);
-C's record names E; E matches a policy record; **effective scopes = S ∩ S′**.
-Composition rules:
+C's record is signed by E; E matches a policy record; **effective scopes =
+S ∩ S′**. Composition rules:
 
-- **Attribution vs. permission.** The connection record's grantor (E) is the
+- **Attribution vs. permission.** The connection record's signer (E) is the
   *attributed* identity — E acted. The policy record's grantor (G) is the
-  *permitter* — the reason it was allowed, never the author. Audit rendering:
-  "E, via <client> (<host>), under G's grant." Conflating these is the
-  self-serve special case G = E, where the distinction is invisible.
+  *permitter* — the reason it was allowed, never the author. Audit
+  rendering: "E, via <client> (<host>), under G's grant." Conflating these
+  is the self-serve special case G = E, where the distinction is invisible.
 - **Two-sided revocation.** E revokes the connection record at E's /account
   (kills E's own connection, touches nothing else); G revokes the policy
   record (kills E's access through every connection). Each side holds its
   own registrar bit.
-- **Optional host constraint.** G MAY constrain custody in the policy record
-  (e.g. `client_hosts: ["claude.ai"]`) — a policy-record constraint field,
-  not part of the base shape; absent means E chooses their hosts.
+- **Host constraints — future work.** G MAY want to constrain custody in the
+  policy record ("E may connect via claude.ai but not X"). Warrants
+  currently carry **no** constraints mechanism (§4.7 constraints live on
+  certs and are checked *against* warrants); a policy-record host constraint
+  would be the first warrant-level constraint. Deliberately deferred; the
+  cert-constraint machinery is the precedent to follow if/when.
 - **The chain is exactly two layers, fail-closed.** Policy records (who may
-  enter) and connection records (which custody instance, attributed to whom)
+  enter) and connection records (which custody channel, attributed to whom)
   conjoin at admission; records MUST NOT confer the authority to mint
   further records. (A general delegation-chain mechanism is UCAN's product;
   depth-two conjunction is deliberately all this design admits.)
@@ -282,7 +307,7 @@ Composition rules:
   connection record exists concretely — exactly the current flow.
 
 Deployment note: gate's roles table is the policy layer already, unsigned;
-§4's roles-as-signed-grants migrates it to email-kind policy records
+§4's roles-as-signed-grants migrates it to email policy records
 incrementally. The conjunction semantics above hold either way — config-row
 policy and record policy answer the same admission question.
 
@@ -315,8 +340,9 @@ authenticated by **proof of audience control**:
    as reported by the site — the broker cannot verify the host's
    involvement, and the card must not imply it did (the client binding is
    enforced by the audience's redirect-URI + PKCE mechanics, §3.1). Approval
-   mints `connection_id`, signs the v2 record with the config cert, and
-   stores the registry row (descriptor + status idx) for /account.
+   mints `connection.id`, signs the self-grant record with the approver's
+   config cert, and stores the registry row (id ↔ record pairing + status
+   idx) for /account.
 4. Poll/return: unchanged shape (the lane already polls the return).
 
 Rejected alternatives for the proof: ephemeral per-request keypair endorsed
@@ -330,15 +356,15 @@ surface clean; it is not guarding a vault.
 ### 3.6 Redemption, refresh, revocation at the resource
 
 - The resource holds the record; mints bearers from it (same embedded AS,
-  same scope-ceiling rule), **bound to `connection_id`**; refresh re-mints
-  with no re-consent and no assertion, until record `exp` or revocation.
+  same scope-ceiling rule), **bound to the (connection.id, record) pair**;
+  refresh re-mints with no re-consent and no assertion, until record `exp`
+  or revocation.
 - Per-call enforcement unchanged: bearer validation re-checks the record's
   status ref fail-closed (`/status/check`), same cache window — revocation
   latency identical to today.
 - /account renders the registry row as a connection: `Claude (claude.ai) ↔
   gate.dan.dev/notes · read_file, search_files · Revoke`. Two connections
-  from the same host are two rows (distinct `connection_id`s), independently
-  revocable.
+  from the same host are two rows (distinct ids), independently revocable.
 
 ## 4. What this buys
 
@@ -347,8 +373,8 @@ surface clean; it is not guarding a vault.
   `danmills+gateway@…` artifacts. The only approvals that ever exist are
   per-connection consents that say what they mean. (The concrete prize; the
   demo was the reconnaissance.)
-- **The consent card and /account stop lying.** Grants name the connection,
-  with per-connection revocation rows.
+- **The consent card and /account stop lying.** Grants name the person and
+  the connection, with per-connection revocation rows.
 - **The aggregation property becomes the product.** Vanilla OAuth co-locates
   consent + revocation with each resource's AS — which is why revocation is
   scattered across every site you ever consented to. Here the per-resource AS
@@ -357,10 +383,10 @@ surface clean; it is not guarding a vault.
   the number of services. /account becomes one signed ledger with two
   symmetric halves: *what my agents may do elsewhere* (records they present)
   and *who may enter my things* (records my resources hold).
-- **Sharing and connecting become one primitive.** `email`-kind records in
+- **Sharing and connecting become one primitive.** Email policy records in
   operation A are gate's roles table as signed grants — "admit
   `friend@gmail.com`, these tools" — listed and revocable at the granting
-  admin's /account. No new kind needed; it falls out of the model.
+  admin's /account. It falls out of the model.
 
 ## 5. Security analysis
 
@@ -368,16 +394,16 @@ surface clean; it is not guarding a vault.
 
 | Compromise | Today (keyed, gateway-held) | Proposed (v2, resource-held) |
 |---|---|---|
-| Record exfiltrated from resource | Inert without the gateway key — but the key lives in the same process/env, so realistically both leak together; the thief can mint only *by being the resource* | Attributed paper; redeemable only by the genuine audience, and `connection_id` pins it to one connection even inside that audience |
-| Sloppy resource (buggy rebind, restore-from-backup) | Same class of bug possible in bearer↔warrant state | **Improved:** the instance binding is in the signed record; honest-but-buggy state cannot silently attach a grant to a different connection without failing the `connection_id` match |
+| Record exfiltrated from resource | Inert without the gateway key — but the key lives in the same process/env, so realistically both leak together; the thief can mint only *by being the resource* | Attributed paper; redeemable only by the genuine audience, and the 1:1 `connection.id` rule pins it to one channel even inside that audience |
+| Sloppy resource (buggy rebind, restore-from-backup) | Same class of bug possible in bearer↔warrant state | **Improved:** the instance binding is in the signed record; honest-but-buggy state cannot silently attach a grant to a different connection without failing the id match |
 | Host (claude.ai) compromise | Bearer + refresh theft | Identical — host custody is the real surface in both designs |
 | Resource fully compromised | Game over (it fronts the tools) | Identical |
 | Broker compromise | Consent + revocation authority lost | Identical |
 
 Net: no attack gets cheaper; the sloppy-resource row gets strictly harder.
 
-**Downgrade:** invariants 1–2 (§3.3): kind-gated at operation P, typ-gated at
-v1 verifiers.
+**Downgrade:** invariants 1–2 (§3.3): binding-gated at operation P, typ-gated
+at v1 verifiers.
 
 **Consent phishing:** audience-proof (§3.5) plus §7.5 rendering rules.
 Residual: a malicious *resource* can claim any `client_name` — bounded: it
@@ -390,21 +416,20 @@ discloses which hosts a user connects — same class of metadata; the spec's
 privacy paragraph gains a sentence.
 
 **What is genuinely lost:** cryptographic possession proof at redemption, for
-`connection` records only. That is the correct trade exactly and only when
-custodian = enforcement point; the spec text scopes the kind to that
-topology in plain words, so nobody reaches for it to represent an agent that
-merely hasn't got keys yet. `email` records lose nothing — operation P
+connection-bound records only. That is the correct trade exactly and only
+when custodian = enforcement point; the spec text scopes the binding to that
+topology in plain words. Holder-bound records lose nothing — operation P
 remains available and preferred wherever the subject can present.
 
 ## 6. Component impact
 
 | Component | Change |
 |---|---|
-| Core spec | §5: v2 record format, grantee-kind table, instance-binding concept, status REQUIRED, privacy sentence. §6: operation A ("record validation + subject matching") beside §6.1, invariants §3.3. §7.5: connection grant request + audience proof (§3.5); composition semantics (§3.4). Vocabulary: "presentation" reserved for operation P. |
-| Broker | Request endpoint + challenge fetch; consent-card connection variant; `connection_id` mint; registry row (descriptor + status idx); /account connection rendering. |
-| Verifier (crate + hosted) | v2 parsing (both operations); record-validation call (`warrant ~ config_cert`); v1 accepted as email-kind sugar. |
-| mcp-auth | Lane gains a credential-less mode: when the broker advertises connection requests, raise them with the audience proof; else fall back to the credential path (capability detection keeps old brokers working). Bearer/refresh binding to `connection_id`. `ctx.client` (0.2.1, shipped) gains the id. |
-| gate | Once broker + mcp-auth land: delete first-run provisioning; mounts raise connection requests directly. Existing installs with credentials keep working indefinitely (v1 path untouched). Later: roles-as-signed-grants via email-kind records (§4). |
+| Core spec | §5: v2 record format, bindings table (holder/connection), instance-binding concept, status REQUIRED, self-grant rule, privacy sentence. §6: operation A ("record validation + subject matching") beside §6.1, invariants §3.3, composition §3.4. §7.5: connection grant request + audience proof (§3.5). Vocabulary: "presentation" reserved for operation P; identities are always emails. |
+| Broker | Request endpoint + challenge fetch; consent-card connection variant; `connection.id` mint + id↔record registry pairing; /account connection rendering. |
+| Verifier (crate + hosted) | v2 parsing (both operations); record-validation call (`warrant ~ config_cert`); v1 accepted as holder-binding sugar. |
+| mcp-auth | Lane gains a credential-less mode: when the broker advertises connection requests, raise them with the audience proof; else fall back to the credential path (capability detection keeps old brokers working). Bearer/refresh binding to (connection.id, record). `ctx.client` (0.2.1, shipped) gains the id. |
+| gate | Once broker + mcp-auth land: delete first-run provisioning; mounts raise connection requests directly. Existing installs with credentials keep working indefinitely (v1 path untouched). Later: roles as email policy records (§4). |
 | wallet / Lane A / python SDK | Untouched — keyed presentation is the agent path, unchanged. |
 
 ## 7. Rollout
@@ -412,42 +437,42 @@ remains available and preferred wherever the subject can present.
 0. **Done (mcp-auth 0.2.1):** bearers carry `ctx.client`; demo/gate
    attribution says "via claude.ai" — display honesty independent of the
    spec change.
-1. Spec PR: §5/§6/§7.5 text per above, including the five invariants.
+1. Spec PR: §5/§6/§7.5 text per above, including the eight invariants.
    Verifier + broker land behind support advertisement (broker discovery
    flag).
 2. mcp-auth lane: opportunistic credential-less mode with fallback;
-   `connection_id` binding.
+   (connection.id, record) binding.
 3. gate: first-run without provisioning; console copy update. Demo follows.
 4. Revisit sunset: if MCP hosts ever carry real client identities (client
-   attestation is drifting this way), email-kind presentation absorbs the
-   connection case honestly and `connection`-kind mints taper. The kind is
-   deliberately shaped to be sunset-able: nothing depends on it except the
-   anonymous-host bridge.
+   attestation is drifting this way), holder-bound presentation absorbs the
+   connection case honestly and connection-binding mints taper. The binding
+   is deliberately shaped to be sunset-able: nothing depends on it except
+   the anonymous-host bridge.
 
-## 8. Future grantee kinds (directions, not commitments)
+## 8. Future binding kinds (directions, not commitments)
 
-- **`origin`** — "accept calls from `zapier.com`", subject authenticated by
-  TLS/origin auth; instance binding TBD (per-integration id, same pattern as
-  `connection_id`). Standing service-to-service consent without OAuth.
-- Each kind must ship with its authentication method, its instance-binding
-  field, and its consent-card copy; kinds are fail-closed everywhere they are
-  not implemented. (`person` from the earlier draft is not a kind — it is
-  `email` in operation A.)
+- **`origin`** — "accept calls from `zapier.com`", a self-grant bound to an
+  origin, subject authenticated by TLS/origin auth; instance binding per
+  integration, same pattern as `connection.id`. Standing service-to-service
+  consent without OAuth, attributed to the signer.
+- Each binding must ship with its authentication method, its
+  instance-binding field, and its consent-card copy; bindings are
+  fail-closed everywhere they are not implemented.
 
 ## 9. Open questions
 
 1. Audience-proof granularity for path audiences: is origin-scope proof
    acceptable long-term, or should multi-tenant origins (not gate's shape
    today) require path-scope proof?
-2. `connection_id` shape: opaque broker UUID (proposed) vs something
-   derivable (e.g. hash of client registration) — opaque is safer (no
-   cross-audience correlation), but consider whether the resource should be
-   able to recognize a re-consent for the "same" connection.
+2. `connection.id` shape: opaque broker UUID (proposed) vs something
+   derivable — opaque is safer (no cross-audience correlation), but consider
+   whether the resource should be able to recognize a re-consent as "the
+   same connection."
 3. Registry/account grouping: by client, by audience, or flat? (UX; shapes
    the registry row.)
 4. Broker rate-limiting of connection requests per audience origin, and the
    interaction with legitimate reconnect storms.
-5. Grantee-kind governance: spec-enumerated only, or a registry with
+5. Binding-kind governance: spec-enumerated only, or a registry with
    x-prefixed experimental kinds?
 6. Should operation-A validation results be cacheable at the resource
    (record validated once at acquisition, status re-checked per use — the
@@ -466,14 +491,17 @@ remains available and preferred wherever the subject can present.
    the email canonical anyway; (d) the generic DID-capability product exists
    (UCAN/ZCAP) — the warrant's differentiator is precisely what they lack:
    human-legible email attribution + registrar revocation on DNSSEC roots.
-   Resolution: **email stays the protocol's only principal identity type;
-   grantee-kind descriptors are warrant-local subject matchers, valid
-   nowhere else** (containment invariant — add to §3.3). Foreign identity
-   systems integrate via the existing adapter direction: mapped *into* email
-   space at a bridge domain (the bsky pattern, `did:plc` →
-   `<handle>@bsky.browserid.me`), never the core reaching outward.
-8. Canonical **string rendering** for non-email grantees (logs, audit lines,
-   attribution): the structured object is normative, but a printable form is
+   Resolution: **email stays the protocol's only identity type; bindings are
+   warrant-local instance qualifiers, valid nowhere else** (invariant 8).
+   Foreign identity systems integrate via the existing adapter direction:
+   mapped *into* email space at a bridge domain (the bsky pattern, `did:plc`
+   → `<handle>@bsky.browserid.me`), never the core reaching outward.
+   *(Round 6 note: the grantee-kind vocabulary this entry originally argued
+   about was retired entirely — grantee is now always an email string, and
+   the extension point moved to bindings, which nobody can mistake for
+   identities.)*
+8. Canonical **string rendering** for connections (logs, audit lines,
+   attribution): the structured claim is normative, but a printable form is
    wanted. An email-shaped synthetic namespace
    (`<connection-id>@connections.<broker-domain>`) was considered and is
    disfavored: email-shape in this ecosystem connotes an authenticatable
