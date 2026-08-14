@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: normal
 created_at: 2026-08-14T17:37:40Z
-updated_at: 2026-08-14T19:16:02Z
+updated_at: 2026-08-14T19:35:12Z
 ---
 
 Both specs fail identically on main (verified at commit 5d022b5, pre-warrant-v2-broker changes): guestbook.spec.ts drives the OLD single-stage authorize page (#pv-identity select before any #pv-match step) and paired-provisioning.spec.ts 'no downloaded credential' fails after reaching the Meet screen (agent pickup leg). Reproduced twice on the dirty tree and once on clean HEAD (2 failed / 3 passed each time). Not caused by the warrant-v2 work — the same failures exist without it. Diagnose whether the page flow drifted from the specs (eywc Flow-I refactor?) or the agent pickup broke, and fix spec or page.
@@ -23,3 +23,14 @@ Update 2026-08-14: the full-suite run surfaced two MORE pre-existing failures on
 4. transition-no-password-reset.spec.ts:110 — LIKELY REGRESSION of gg5s. The spec pins: a SIGNED-IN user in transition_no_password keeps the direct set-password screen (session = proof of control, no mailed code). dialog.js handleNoPasswordTransition (static/dialog.js:571) now unconditionally calls stage_reset and shows the reset screen — there is no signed-in branch at all, so the gg5s discrimination is gone from the dialog. Signed-out sibling passes. Fix: restore the authenticated branch in handleNoPasswordTransition (or, if the simplification was deliberate, update the spec and retire gg5s's contract explicitly).
 
 (2) and (4) are product bugs, not just stale specs.
+
+## Fixed (2026-08-14)
+
+All four repaired; the four spec files pass together (13/13) and the full suite is 104 passed / 1 flaky (primary-idp iframe-failure — passes alone and on repeat, fails only under full-suite parallelism; unrelated, left open below).
+
+1. guestbook.spec — rewritten to Flow I (fingerprint #pv-match → #pv-approve → Meet) and the device model: warrant via requestWarrants/PendingWarrants + agent.addGrant; attribution expectations updated to the subaddressed agent identity (local+handle@domain, feed name = local part per tmk8).
+2. Agent.bootstrap (sdk/agent) — pickup now builds a DeviceAgent from the device-cert delivery ({device_cert, idp, identity, access_mint} + the locally held pairing seed) and holds any bundled grants; legacy delegation delivery kept as fallback. The SDK unit-test mock was still legacy-shaped (why the break stayed green) — primary mock updated to the device shape, legacy shape kept as its own compat test. 21/21.
+3. marketing-split.spec — demorow count 6 → 7 (demos.html has 7 rows).
+4. transition-no-password-reset.spec — the redesign collapsed signed-in/-out onto the code-based reset screen (its own comment said so); the stale stageResetCalled=false assertion flipped to true and the retirement of gg5s's discrimination is now stated explicitly in the spec.
+
+Remaining (this bean stays open for it): primary-idp.spec.ts:1012 'handles iframe loading failure gracefully' is flaky under full-suite parallelism only.

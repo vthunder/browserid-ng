@@ -74,7 +74,10 @@ test.describe('Paired agent provisioning (74u1)', () => {
     const domain = email.split('@')[1];
     const agent = await pairing.ready;
     expect(agent.email).toBe(`${local}+${handle}@${domain}`);
-    expect(agent.identity().names).toContain(`${local}+${handle}`);
+    // Device-cert model: the cert names the identity and the broker-assigned
+    // holder (the legacy identity().names constraint is gone).
+    expect(agent.deviceCertClaims.identities).toContain(`${local}+${handle}@${domain}`);
+    expect(agent.holder).toBeTruthy();
   });
 
   test('bundled grants: identity stage, then the permission screen, one pickup (eywc)', async ({ page, request }) => {

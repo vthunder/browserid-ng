@@ -157,8 +157,10 @@ test.describe('transition_no_password routing (gg5s)', () => {
 
     // The dedicated set-password screen was removed with the dialog
     // redesign; signed-in users now also prove control via the code-based
-    // reset screen (direct set-password lives at /account settings).
+    // reset screen (direct set-password lives at /account settings) — so the
+    // reset IS staged here too. gg5s's original signed-in/-out discrimination
+    // is retired with that screen; this test now pins the collapsed routing.
     await expect(page.locator('#reset-password-screen')).toHaveClass(/active/, { timeout: 10000 });
-    expect(stageResetCalled).toBe(false);
+    expect(stageResetCalled).toBe(true);
   });
 });

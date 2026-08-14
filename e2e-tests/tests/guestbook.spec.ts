@@ -5,7 +5,7 @@
  * paired provisioning, warrant consent, the guestbook RP.
  */
 import { test, expect } from '@playwright/test';
-import { Agent } from '../../sdk/agent/index.mjs';
+import { Agent, requestWarrants } from '../../sdk/agent/index.mjs';
 
 const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 const guestbookAud = `${baseUrl}/guestbook`;
@@ -45,22 +45,30 @@ test('agent provisions, gets a sign warrant, and signs the public guestbook', as
   await signIn(page, email, pass);
   const handle = `gb${Date.now().toString(36)}`;
 
-  // 1. Provision (paired) → minted agent.
+  // 1. Provision (paired, Flow I: fingerprint check → name+address → done)
+  //    → the delivered device-model agent. Agent identities sub-address
+  //    their owner: `<owner-local>+<handle>@<owner-domain>`.
   const pairing = await Agent.bootstrap({ broker: baseUrl, requestedHandles: { names: [handle] }, label: 'guestbook agent' });
   await page.goto(pairing.verificationUriComplete);
   await expect(page.locator('#provision')).toBeVisible();
-  await page.selectOption('#pv-identity', email);
-  await page.fill('#pv-handles', handle);
+  await expect(page.locator('#provision')).toContainText(pairing.fingerprint);
+  await page.click('#pv-match');
   await page.click('#pv-approve');
-  await expect(page.locator('#pv-status')).toContainText('Approved', { timeout: 20000 });
+  await expect(page.locator('#provision')).toContainText('Meet', { timeout: 20000 });
   const agent = await pairing.ready;
+  const local = email.split('@')[0];
+  expect(agent.email).toBe(`${local}+${handle}@${email.split('@')[1]}`);
 
   // 2. Obtain a `sign` warrant for the guestbook (consent page approval).
-  let consentUrl: string | undefined;
-  const warrant = agent.obtainWarrant(guestbookAud, ['sign'], (u: string) => { consentUrl = u; });
-  await expect.poll(() => consentUrl, { timeout: 10000 }).toBeTruthy();
-  await approveAt(page, consentUrl!, 'button.approve');
-  await warrant;
+  const pendingWarrant = await requestWarrants(baseUrl, {
+    deviceCert: agent.deviceCert,
+    identity: agent.email,
+    grants: [{ audience: guestbookAud, scopes: ['sign'] }],
+    label: 'guestbook agent',
+  });
+  await approveAt(page, pendingWarrant.verificationUriComplete, 'button.approve');
+  const grants = await pendingWarrant.wait();
+  agent.addGrant(grants[0].grant);
 
   // 3. Sign the guestbook with a warrant-backed assertion.
   const assertion = await agent.assertionFor(guestbookAud);
@@ -69,7 +77,7 @@ test('agent provisions, gets a sign warrant, and signs the public guestbook', as
   expect(res.ok()).toBeTruthy();
   const body = await res.json();
   expect(body.success).toBe(true);
-  expect(body.agent).toBe(`${handle}@${baseUrl.replace(/^https?:\/\//, '')}`);
+  expect(body.agent).toBe(agent.email);
   expect(body.parent).toBe(email);
 
   // 4. The public feed shows it under a display name + verified domain —
@@ -77,8 +85,8 @@ test('agent provisions, gets a sign warrant, and signs the public guestbook', as
   const feed = await (await request.get(`${baseUrl}/guestbook/feed`)).json();
   const entry = feed.entries.find((e: any) => e.message === message);
   expect(entry).toBeTruthy();
-  expect(entry.name).toBe(handle); // no public_name set → local-part (bean tmk8)
-  expect(entry.domain).toBe(baseUrl.replace(/^https?:\/\//, ''));
+  expect(entry.name).toBe(`${local}+${handle}`); // no public_name set → local-part (bean tmk8)
+  expect(entry.domain).toBe(email.split('@')[1]);
   expect(entry.agent).toBeUndefined();
   expect(entry.parent).toBeUndefined();
   expect(entry.scopes).toContain('sign');
@@ -86,7 +94,7 @@ test('agent provisions, gets a sign warrant, and signs the public guestbook', as
   // 5. The HTML page renders the message + display name, and no emails.
   await page.goto(`${baseUrl}/guestbook`);
   await expect(page.locator('body')).toContainText(message);
-  await expect(page.locator('body')).toContainText(handle);
+  await expect(page.locator('body')).toContainText(`${local}+${handle}`);
   await expect(page.locator('body')).not.toContainText(email);
 });
 

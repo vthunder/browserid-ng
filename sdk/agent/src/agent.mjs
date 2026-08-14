@@ -4,6 +4,7 @@
 import { readFile, writeFile, chmod } from "node:fs/promises";
 import { KeyPair, b64u, fromB64u, publicKeyField, fingerprint } from "./crypto.mjs";
 import { Credential } from "./credential.mjs";
+import { DeviceAgent } from "./device.mjs";
 import {
   mintRequest, revokeRequest, warrantRequest, bundle, assertion as makeAssertion,
   backedPresentation, parseCert, parseWarrant, generatedName, nowS,
@@ -118,7 +119,28 @@ export class Agent {
           if (j.status === "denied") throw new WarrantDeniedError();
           if (j.status === "failed") throw new RequestError("provisioning", 0, j.reason || "provisioning failed");
           if (j.status === "completed") {
-            const c = j.credential;
+            const c = j.credential || {};
+            if (c.device_cert) {
+              // Device-cert model (the broker's current delivery): the
+              // locally generated pairing key IS the device key the cert
+              // certifies, and any bundled grants arrive as
+              // `warrant~config_cert` pairs.
+              const agent = new DeviceAgent(
+                {
+                  device_key: b64u(key.seed),
+                  agent_device_cert: c.device_cert,
+                  idp: c.idp,
+                  identity: c.identity,
+                  ...(c.access_mint ? { access_mint: c.access_mint } : {}),
+                },
+                { http }
+              );
+              for (const g of j.grants || []) {
+                if (g?.warrant) agent.addGrant(g.warrant);
+              }
+              return agent;
+            }
+            // Legacy delegation delivery (pre-device-model brokers).
             const credential = new Credential({ secret_key: b64u(key.seed), delegation: c.delegation, broker: c.broker, idp: c.idp });
             // Mint under `name` if given; else the first reserved name (so a
             // multi-name credential doesn't dead-end — act as the first).

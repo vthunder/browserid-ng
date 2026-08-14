@@ -163,7 +163,7 @@ test.describe('Origin split — marketing site', () => {
     // The demos page serves at its clean URL with the wallet setup panel.
     await page.goto(`${mkt.origin()}/demos`);
     await expect(page.locator('.setup-panel')).toContainText('Give your agent the browserid wallet');
-    await expect(page.locator('.demorow')).toHaveCount(6);
+    await expect(page.locator('.demorow')).toHaveCount(7);
   });
 });
 
