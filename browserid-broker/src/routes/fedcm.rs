@@ -317,6 +317,7 @@ where
             status_idx: None,
             holder: Some(format!("{ns_prefix}.*")),
             config_cert: Some(config_cert.encoded().to_string()),
+            binding_id: None,
             signed_at: now,
             expires_at: now + Duration::seconds(validity.num_seconds()),
         };

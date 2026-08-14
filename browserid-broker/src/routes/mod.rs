@@ -89,6 +89,13 @@ where
                 max_agent_identities: state.max_agent_identities_per_user,
             }),
             issuer_resolver,
+            // Audience-proof fetching for record requests (spec §7.5): the
+            // SSRF guard is enforced in production; relaxed only on
+            // localhost dev/tests, mirroring the status-fetch rule.
+            proof_fetcher: Some(Arc::new(crate::proof_fetch::BrokerProofFetcher {
+                allow_private: !session::cookie_secure(&state.domain),
+            })),
+            record_request_limiter: Default::default(),
         },
     ));
 
@@ -300,9 +307,9 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-f2+Jfj05KGetVDE/2h1vliDQ+usQGxLOfVvSEgXAytE='", // account.html
+    "'sha256-ssXXmnnMSNJE9ep3A2oZsY0N58j73hRh5HFtWcl98qM='", // account.html
     "'sha256-XRWE73ZH1qCk6vmO+hv85g2743sS42s8Y64PjFX8z98='", // authorize.html
-    "'sha256-Dnwq3LA8AmBuJyUJV6Se225W6r/7V0TtTtOVjGoVcWU='", // consent.html
+    "'sha256-HCblZd0SzGLcnguw/khW9RWJnnRGjkR7WMy9NvTuPUs='", // consent.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)
 ];
 

@@ -589,7 +589,11 @@ function allPerms() {
       site: (w.audience || '—').replace(/^https?:\/\//, '').replace(/\/+$/, ''),
       scopes: (w.scopes || []).filter(s => s !== 'login'),
       as: w.agent_email, by: w.delegator_email,
-      holder: w.holder || '*',
+      // Connection records (spec §5) are custody-channel grants, not
+      // device grants: the sentinel holder keeps them off every actor row
+      // (they render as host↔service connections instead).
+      holder: w.binding_id ? '~connection~' : (w.holder || '*'),
+      connection: w.binding_id ? { host: w.client_host || '', name: (w.client_name || '').trim() } : null,
       revoked: !!w.revoked, expired: !!exp && exp < Date.now(),
       expiresAt: w.expires_at, statusIdx: w.status_idx,
     });
@@ -681,7 +685,9 @@ function permLineHtml(p, actor, opts) {
   const chips = (p.scopes.length ? p.scopes.slice(0, 2) : ['sign in'])
     .map(s => `<span class="chip">${escapeHtml(s)}</span>`).join('');
   const more = p.scopes.length > 2 ? `<span class="as">+${p.scopes.length - 2}</span>` : '';
-  const asLabel = p.as
+  const asLabel = p.connection
+    ? `<span class="as">via ${escapeHtml(p.connection.name || p.connection.host)} (${escapeHtml(p.connection.host)})</span>`
+    : p.as
     ? `<span class="as">as ${actor && actor.addr === p.as ? 'itself' : escapeHtml(p.as)}</span>` : '';
   const meta = p.revoked ? 'revoked'
     : p.expired ? `expired ${fmtDate(p.expiresAt)}`
@@ -915,6 +921,7 @@ function renderMain() {
 
 // -------- sites view --------
 function whoOf(p, actors, bp) {
+  if (p.connection) return `Connected via ${p.connection.name || p.connection.host}`;
   if (p.holder === '*') return 'You, from any device';
   if (bp && p.holder === bp + '.*') return 'You, from any browser';
   if (p.holder.endsWith('.*')) return 'You, from a group of devices';

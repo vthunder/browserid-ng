@@ -445,6 +445,17 @@ impl UserStore for InMemoryUserStore {
         }
     }
 
+    fn update_warrant_request(&self, rec: &WarrantRequestRecord) -> StoreResult<()> {
+        let mut reqs = self.warrant_requests.write().unwrap();
+        match reqs.get_mut(&rec.code) {
+            Some(r) if r.status == WarrantRequestStatus::Pending => {
+                *r = rec.clone();
+                Ok(())
+            }
+            _ => Err(BrokerError::WarrantRequestNotFound),
+        }
+    }
+
     fn delete_warrant_request(&self, code: &str) -> StoreResult<()> {
         self.warrant_requests.write().unwrap().remove(code);
         Ok(())
@@ -462,12 +473,18 @@ impl UserStore for InMemoryUserStore {
         // Replace any existing row for the same grant identity —
         // (user, agent, audience, scopes): same-audience grants that differ
         // only in scopes coexist (e85i).
-        let fp = browserid_registrar::scope_fingerprint(&record.scopes);
+        // Connection records fold their binding.id into the grant identity so
+        // two connections to the same audience stay distinct rows.
+        let key = |scopes: &[String], binding: &Option<String>| match binding {
+            Some(id) => format!("{}:{id}", browserid_registrar::scope_fingerprint(scopes)),
+            None => browserid_registrar::scope_fingerprint(scopes),
+        };
+        let fp = key(&record.scopes, &record.binding_id);
         records.retain(|_, r| {
             !(r.user_id == record.user_id
                 && r.agent_email == record.agent_email
                 && r.audience == record.audience
-                && browserid_registrar::scope_fingerprint(&r.scopes) == fp)
+                && key(&r.scopes, &r.binding_id) == fp)
         });
         record.id = self.next_warrant_id.fetch_add(1, Ordering::SeqCst);
         records.insert(record.id, record);

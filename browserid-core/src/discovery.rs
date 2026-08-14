@@ -74,6 +74,13 @@ pub struct SupportDocument {
     /// offers no remote-initiated revocation (its certs run to expiry).
     #[serde(rename = "device-revoke", skip_serializing_if = "Option::is_none")]
     pub device_revocation: Option<String>,
+
+    /// Path to the admission-record request API (spec §7.5): connection
+    /// grant requests + grant-authoring ceremonies. Its presence is the
+    /// support advertisement resources capability-detect before attempting
+    /// the credential-less connection lane; absent = unsupported here.
+    #[serde(rename = "record-grants", skip_serializing_if = "Option::is_none")]
+    pub record_grants: Option<String>,
 }
 
 impl SupportDocument {
@@ -89,6 +96,7 @@ impl SupportDocument {
             device_authorization: None,
             agent_device_authorization: None,
             device_revocation: None,
+            record_grants: None,
         }
     }
 
@@ -133,6 +141,13 @@ impl SupportDocument {
         self
     }
 
+    /// Set the admission-record request API path (spec §7.5) — the support
+    /// advertisement for connection grant requests / authoring ceremonies.
+    pub fn with_record_grants(mut self, path: impl Into<String>) -> Self {
+        self.record_grants = Some(path.into());
+        self
+    }
+
     /// Create a delegation document
     pub fn delegate(authority: impl Into<String>) -> Self {
         Self {
@@ -145,6 +160,7 @@ impl SupportDocument {
             device_authorization: None,
             agent_device_authorization: None,
             device_revocation: None,
+            record_grants: None,
         }
     }
 

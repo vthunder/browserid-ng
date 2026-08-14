@@ -162,6 +162,13 @@ pub struct PendingVerification {
 pub struct WarrantRequestRecord {
     /// High-entropy opaque code — the poll credential (single delivery)
     pub code: String,
+    /// Which consent flow this row belongs to (spec §7.5): "agent" |
+    /// "connection" | "authoring". The registrar owns the semantics; the
+    /// store carries it opaquely.
+    pub kind: String,
+    /// Record-request extras (challenge/proof state, client descriptor,
+    /// binding.id) as one opaque JSON blob. `None` on agent rows.
+    pub meta: Option<String>,
     /// The delegator's account
     pub user_id: UserId,
     pub delegator_email: String,
@@ -209,6 +216,9 @@ pub struct WarrantGrantItem {
     /// embeds it in the warrant it signs
     #[serde(default)]
     pub status_idx: Option<u64>,
+    /// Authoring ceremony rows (spec §7.5): the row's grantee.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grantee: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,6 +276,10 @@ pub struct WarrantRecord {
     /// The config (authorization) device cert JWS that signed this warrant, in
     /// the device-cert model (DC Phase 4). `None` for legacy warrants.
     pub config_cert: Option<String>,
+    /// Connection records (spec §5): the record's broker-minted `binding.id`.
+    /// Folded into the upsert key so two connections to the same audience
+    /// stay distinct rows (§6.6 invariant 5).
+    pub binding_id: Option<String>,
     pub signed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }

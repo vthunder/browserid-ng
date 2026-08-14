@@ -177,6 +177,29 @@ async function signWarrant(config, grantor, grantee, audience, scopes, status, h
   return `${header}.${payload}.${sig}`;
 }
 
+/// Sign a v2 admission record (spec §5): the binding slot replaces the
+/// top-level holder matcher and `status` is REQUIRED. Used by the connection
+/// and authoring cards; presentation warrants stay v1 above.
+async function signWarrantV2(config, grantor, grantee, audience, scopes, status, binding) {
+  if (!status) throw new Error('v2 records require an allocated status ref');
+  const now = Math.floor(Date.now() / 1000);
+  const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
+  const claims = {
+    typ: 'browserid-warrant-v2',
+    iat: now,
+    exp: now + 90 * 24 * 3600,
+    grantor: grantor,
+    grantee: grantee,
+    binding: binding,
+    audience: audience,
+  };
+  if (scopes && scopes.length) claims.scopes = scopes;
+  claims.status = status;
+  const payload = b64urlJson(claims);
+  const sig = await window.Keystore.sign(config.privateKey, `${header}.${payload}`);
+  return `${header}.${payload}.${sig}`;
+}
+
 // ---- classification ------------------------------------------------------
 // The identity question was settled when the agent was authorized (Flow I);
 // here it is only restated. Server facts pick the card:
@@ -416,6 +439,85 @@ function cardB3(r) {
   };
 }
 
+// The signing-identity cell for record cards: a dropdown over the account's
+// root identities when there is a choice, else plain text.
+function asIdentityCell(r, defaultId) {
+  if (rootIds.length > 1) {
+    const opts = rootIds.map(e =>
+      `<option value="${escapeHtml(e)}"${e === defaultId ? ' selected' : ''}>${escapeHtml(e)}</option>`);
+    return `<select class="pv-obsel as-choice" data-code="${escapeHtml(r.code)}">${opts.join('')}</select>`;
+  }
+  return `<span class="mono" style="color:#17171a">${escapeHtml(defaultId)}</span>`;
+}
+
+// CONNECTION (spec §7.5) — the card names the CONNECTION, not a requester:
+// the durable capability a host will hold. Login covers identity; this is
+// the revocable record of the connection. `client_name` is the site's own
+// report and is marked as such — the broker cannot verify the host's
+// involvement (the client binding is enforced by the audience's
+// redirect-URI + PKCE mechanics).
+function cardConnection(r) {
+  const host = r.client_host || '';
+  const name = (r.client_name || '').trim();
+  const shown = name || host;
+  const grantor = rootIds[0] || '';
+  const g = (r.grants || [])[0] || { audience: '', scopes: [] };
+  return {
+    grantor,
+    html: pvHead(grantor) +
+      `<div class="pv-title" style="margin-bottom:12px">Connect ${escapeHtml(shown)} to this site?</div>
+      <p class="pv-note" style="margin-bottom:14px">You're connecting
+        <b>${escapeHtml(shown)}</b> (<span class="mono">${escapeHtml(host)}</span>) to the site below.
+        It can use the listed permissions — attributed to you. You can disconnect it any time from
+        <a href="/account">your account</a>.</p>` +
+      grantBlocks(r.grants) +
+      `<div class="pv-panel" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+        <span class="pv-footnote">attributed to</span> ${asIdentityCell(r, grantor)}</div>
+      <div class="pv-actions" style="margin-top:0">
+        <button class="pv-btn approve" data-code="${escapeHtml(r.code)}" disabled>Connect for 90 days</button>
+        <button class="pv-ghost deny" data-code="${escapeHtml(r.code)}">Deny</button></div>` +
+      expiryLine(r) +
+      `<p class="status" id="status-${escapeHtml(r.code)}"></p>` +
+      (name ? unverifiedFoot(`Calls itself “${escapeHtml(name)}” — as reported by the site (<span class="mono">${escapeHtml(g.audience)}</span>). Not checked by browserid.`) : ''),
+  };
+}
+
+// AUTHORING (spec §7.5) — a resource compiled its access policy into flat
+// per-(grantee, audience) grants for the signed-in GRANTOR to sign. Rows
+// name other people, so each row's grantee renders with the same prominence
+// as its audience and scopes.
+function cardAuthoring(r) {
+  const grantor = rootIds[0] || '';
+  const n = (r.grants || []).length;
+  const rows = (r.grants || []).map(g => {
+    const warn = audienceWarn(g.audience);
+    const chips = (g.scopes || []).map(s => `<span class="pv-chip">${escapeHtml(s)}</span>`).join('')
+      || '<span class="pv-chip">site-level access</span>';
+    const who = g.grantee === '*' ? 'anyone (signed in)'
+      : (g.grantee || '').startsWith('*@') ? `anyone at ${g.grantee.slice(2)}` : g.grantee;
+    return `<div class="pv-panel">
+      <div style="font:600 13px/1.4 system-ui,sans-serif;color:#17171a;overflow-wrap:anywhere">${escapeHtml(who)}</div>
+      <div class="pv-aud">${escapeHtml(g.audience)}</div>
+      <div class="pv-chips">${chips}${warn ? `<span class="pv-chip warn">${escapeHtml(warn)}</span>` : ''}</div></div>`;
+  }).join('');
+  return {
+    grantor,
+    html: pvHead(grantor) +
+      `<div class="pv-title" style="margin-bottom:12px">Sign ${n === 1 ? 'this access grant' : `these ${n} access grants`}?</div>
+      <p class="pv-note" style="margin-bottom:14px">A site compiled its access policy into the
+        grants below for you to sign. Each person listed gets the shown permissions at the shown
+        location, under your authority. Revocable any time from <a href="/account">your account</a>.</p>` +
+      rows +
+      `<div class="pv-panel" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:14px 0">
+        <span class="pv-footnote">signed by</span> ${asIdentityCell(r, grantor)}</div>
+      <div class="pv-actions" style="margin-top:0">
+        <button class="pv-btn approve" data-code="${escapeHtml(r.code)}" disabled>${approveLabel(r, 'Sign')}</button>
+        <button class="pv-ghost deny" data-code="${escapeHtml(r.code)}">Deny</button></div>` +
+      expiryLine(r) +
+      `<p class="status" id="status-${escapeHtml(r.code)}"></p>`,
+  };
+}
+
 // B4 — nothing waiting: the state people hit most often, from a stale link.
 function cardB4() {
   return `<div class="pvcard">` + pvHead('') +
@@ -436,7 +538,9 @@ function render(requests) {
   }
   const byCode = {};
   list.innerHTML = requests.map(r => {
-    const card = r.external ? cardB3(r)
+    const card = r.kind === 'connection' ? cardConnection(r)
+      : r.kind === 'authoring' ? cardAuthoring(r)
+      : r.external ? cardB3(r)
       : r.agent_email.toLowerCase() === r.delegator_email.toLowerCase() ? cardB2(r)
       : r.known === false ? cardP4(r)
       : cardP(r);
@@ -451,6 +555,11 @@ function render(requests) {
     sel.onchange = () => {
       e.grantor = sel.value === 'self' ? e.r.agent_email : sel.value;
     };
+  }
+  // The signing-identity dropdown (record cards).
+  for (const sel of list.querySelectorAll('select.as-choice')) {
+    const e = byCode[sel.dataset.code];
+    sel.onchange = () => { e.grantor = sel.value; };
   }
   for (const b of list.querySelectorAll('button.approve')) {
     const e = byCode[b.dataset.code];
@@ -489,7 +598,9 @@ async function resolve(r, approve, grantor, deniedNote) {
         // right here — the same endpoint the account page and the login
         // dialog use. Primary-rooted identities still need a dialog sign-in.
         try {
-          const base = r.delegator_email;
+          // Record cards have no delegator on the row — issue for the
+          // signing identity instead.
+          const base = r.delegator_email || grantor;
           const keys = { device: await window.Keystore.generate(), config: await window.Keystore.generate() };
           const body = { csrf, email: base, device_pubkey: keys.device.publicKeyX, config_pubkey: keys.config.publicKeyX };
           try {
@@ -523,13 +634,33 @@ async function resolve(r, approve, grantor, deniedNote) {
         `no signing key for ${grantor} in this browser — ` +
         `sign in to an app with that identity here first, then retry`);
       configCert = config.cert;
-      // Holder matcher: isolated to the agent's own holder id, always —
-      // group-widening is deliberately not offered here.
       warrants = [];
-      for (const g of (r.grants || [])) {
-        const st = (g.status_idx != null && statusUri)
-          ? { uri: statusUri, idx: g.status_idx } : null;
-        warrants.push(await signWarrant(config, grantor, r.agent_email, g.audience, g.scopes, st, r.holder));
+      if (r.kind === 'connection') {
+        // One v2 self-grant record, pinned to the broker-minted binding.id
+        // and the request's client descriptor (spec §7.5 step 3).
+        const g = (r.grants || [])[0];
+        const st = (g.status_idx != null && statusUri) ? { uri: statusUri, idx: g.status_idx } : null;
+        const binding = {
+          kind: 'connection', protocol: 'oauth', id: r.binding_id,
+          client_host: r.client_host, client_name: r.client_name || '',
+        };
+        warrants.push(await signWarrantV2(config, grantor, grantor, g.audience, g.scopes, st, binding));
+      } else if (r.kind === 'authoring') {
+        // One v2 policy record per row: grantee from the row, holder-`*`
+        // binding (any device / login of the grantee — §6.5).
+        for (const g of (r.grants || [])) {
+          const st = (g.status_idx != null && statusUri) ? { uri: statusUri, idx: g.status_idx } : null;
+          warrants.push(await signWarrantV2(
+            config, grantor, g.grantee, g.audience, g.scopes, st, { kind: 'holder', matcher: '*' }));
+        }
+      } else {
+        // Holder matcher: isolated to the agent's own holder id, always —
+        // group-widening is deliberately not offered here.
+        for (const g of (r.grants || [])) {
+          const st = (g.status_idx != null && statusUri)
+            ? { uri: statusUri, idx: g.status_idx } : null;
+          warrants.push(await signWarrant(config, grantor, r.agent_email, g.audience, g.scopes, st, r.holder));
+        }
       }
     }
     const resolved = await api('/wsapi/warrant_respond', {
@@ -543,9 +674,10 @@ async function resolve(r, approve, grantor, deniedNote) {
       }),
     });
     status.className = approve ? 'status ok' : 'status muted';
+    const who = r.kind === 'connection' || r.kind === 'authoring' ? 'the site' : 'the agent';
     status.textContent = approve
-      ? `Approved${(r.grants || []).length > 1 ? ' (' + r.grants.length + ' grants)' : ''} — the agent picks this up within a few seconds.`
-      : (deniedNote || 'Denied — the agent is told immediately, so it isn’t waiting.');
+      ? `Approved${(r.grants || []).length > 1 ? ' (' + r.grants.length + ' grants)' : ''} — ${who} picks this up within a few seconds.`
+      : (deniedNote || `Denied — ${who} is told immediately, so it isn’t waiting.`);
     // Done here — hand the user back. A request may carry a return_url the
     // registrar ORIGIN-VALIDATED against the requesting service (the OAuth
     // authorization-code lane) — never navigate to anything else. Otherwise,

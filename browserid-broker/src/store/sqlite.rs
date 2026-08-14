@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 27;
+const SCHEMA_VERSION: i32 = 28;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -143,6 +143,9 @@ impl SqliteStore {
             }
             if current_version < 27 {
                 Self::migrate_v27(conn)?;
+            }
+            if current_version < 28 {
+                Self::migrate_v28(conn)?;
             }
 
             // Update schema version
@@ -741,6 +744,21 @@ impl SqliteStore {
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v28(conn: &Connection) -> Result<(), BrokerError> {
+        // Admission-record flows (spec §7.5, bean qmvw): a pending request
+        // now carries its flow kind ("agent" | "connection" | "authoring")
+        // and, for the record kinds, a JSON meta blob (audience-proof
+        // challenge state, client descriptor, binding.id).
+        conn.execute_batch(
+            r#"
+            ALTER TABLE warrant_requests ADD COLUMN kind TEXT NOT NULL DEFAULT 'agent';
+            ALTER TABLE warrant_requests ADD COLUMN record_meta TEXT;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → DeviceCertRecord mapping (DC Phase 3/4)
@@ -791,6 +809,16 @@ fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantR
     let user_id: i64 = row.get(1)?;
     let scopes_json: String = row.get(5)?;
     let status_idx: Option<i64> = row.get(9)?;
+    // Connection rows: the binding.id lives inside the stored record JWS
+    // (no separate column) — recovered here so registry consumers can key
+    // the pairing without re-parsing.
+    let warrant_jws: String = row.get(6)?;
+    let binding_id = browserid_core::device::Warrant::parse(&warrant_jws)
+        .ok()
+        .and_then(|w| match w.claims().binding() {
+            browserid_core::device::Binding::Connection { id, .. } => Some(id),
+            _ => None,
+        });
     Ok(WarrantRecord {
         id: id as u64,
         user_id: UserId(user_id as u64),
@@ -802,6 +830,7 @@ fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantR
         status_idx: status_idx.map(|i| i as u64),
         holder: row.get(10)?,
         config_cert: row.get(11)?,
+        binding_id,
         signed_at: parse_ts(row.get(7)?),
         expires_at: parse_ts(row.get(8)?),
     })
@@ -843,13 +872,15 @@ fn warrant_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Warrant
         grantor: row.get(13)?,
         message: row.get(14)?,
         return_url: row.get(15)?,
+        kind: row.get::<_, Option<String>>(16)?.unwrap_or_else(|| "agent".into()),
+        meta: row.get(17)?,
         created_at: parse_ts(row.get(8)?),
         expires_at: parse_ts(row.get(9)?),
         last_polled_at: parse_ts_opt(row.get(10)?),
     })
 }
 
-const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, last_polled_at, external, holder, grantor, message, return_url";
+const WARRANT_REQ_COLUMNS: &str = "code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, last_polled_at, external, holder, grantor, message, return_url, kind, record_meta";
 
 // Helper to convert VerificationType to/from string
 impl VerificationType {
@@ -1392,8 +1423,8 @@ impl UserStore for SqliteStore {
     fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO warrant_requests (code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, external, holder, grantor, message, return_url)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT INTO warrant_requests (code, user_id, delegator_email, agent_email, label, grants, status, warrants, created_at, expires_at, external, holder, grantor, message, return_url, kind, record_meta)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 req.code,
                 req.user_id.0 as i64,
@@ -1410,6 +1441,8 @@ impl UserStore for SqliteStore {
                 req.grantor,
                 req.message,
                 req.return_url,
+                req.kind,
+                req.meta,
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -1502,6 +1535,27 @@ impl UserStore for SqliteStore {
         }))
     }
 
+    fn update_warrant_request(&self, rec: &WarrantRequestRecord) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE warrant_requests SET user_id = ?1, delegator_email = ?2, grants = ?3, record_meta = ?4
+                 WHERE code = ?5 AND status = 'pending'",
+                params![
+                    rec.user_id.0 as i64,
+                    rec.delegator_email,
+                    serde_json::to_string(&rec.grants).unwrap_or_else(|_| "[]".into()),
+                    rec.meta,
+                    rec.code,
+                ],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::WarrantRequestNotFound);
+        }
+        Ok(())
+    }
+
     fn delete_warrant_request(&self, code: &str) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM warrant_requests WHERE code = ?1", params![code])
@@ -1540,7 +1594,14 @@ impl UserStore for SqliteStore {
                 record.agent_email,
                 record.audience,
                 serde_json::to_string(&record.scopes).unwrap_or_else(|_| "[]".into()),
-                browserid_registrar::scope_fingerprint(&record.scopes),
+                // The upsert key is (user, agent, audience, scope_hash); a
+                // connection record folds its binding.id into the hash so two
+                // connections to the same audience stay distinct rows and a
+                // re-consent of the SAME connection replaces its row.
+                match &record.binding_id {
+                    Some(id) => format!("{}:{id}", browserid_registrar::scope_fingerprint(&record.scopes)),
+                    None => browserid_registrar::scope_fingerprint(&record.scopes),
+                },
                 record.warrant,
                 record.signed_at.to_rfc3339(),
                 record.expires_at.to_rfc3339(),
@@ -2691,6 +2752,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn touch_warrant_poll(&self, code: &str) -> StoreResult<Option<DateTime<Utc>>> {
         (**self).touch_warrant_poll(code)
+    }
+
+    fn update_warrant_request(&self, rec: &WarrantRequestRecord) -> StoreResult<()> {
+        (**self).update_warrant_request(rec)
     }
 
     fn delete_warrant_request(&self, code: &str) -> StoreResult<()> {

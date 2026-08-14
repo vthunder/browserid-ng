@@ -163,7 +163,7 @@ pub struct StatusCtx<'a> {
     pub allow_private_hosts: bool,
 }
 
-fn status_http() -> &'static reqwest::Client {
+pub(crate) fn status_http() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -206,7 +206,7 @@ const MAX_STATUS_BODY: usize = 4 * 1024 * 1024;
 /// lookups (a TOCTOU rebinding window). The no-redirect policy and the
 /// authenticated-issuer binding downstream bound the impact; pinning the checked
 /// IP into the connection would close it fully and is a future hardening.
-async fn validate_status_url(uri: &str, allow_private: bool) -> Result<(), String> {
+pub(crate) async fn validate_status_url(uri: &str, allow_private: bool) -> Result<(), String> {
     if allow_private {
         // Localhost dev / tests: status authorities run on 127.0.0.1 over http.
         return Ok(());
@@ -287,7 +287,7 @@ fn uri_matches_issuer(uri: &str, iss: &str, serving_host: Option<&str>) -> bool 
 
 /// Read a response body into a String, rejecting once more than `max` bytes
 /// have arrived (streaming-safe — does not trust `Content-Length`).
-async fn read_capped(mut resp: reqwest::Response, max: usize) -> Result<String, String> {
+pub(crate) async fn read_capped(mut resp: reqwest::Response, max: usize) -> Result<String, String> {
     let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
         if buf.len() + chunk.len() > max {

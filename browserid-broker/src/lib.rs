@@ -11,6 +11,7 @@ pub mod dns_fetcher;
 pub mod email;
 pub mod error;
 pub mod fallback_fetcher;
+pub mod proof_fetch;
 pub mod registrar_glue;
 pub mod routes;
 pub mod oidc;

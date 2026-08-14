@@ -38,6 +38,12 @@ pub trait RegistrarStore: Send + Sync {
     /// last_polled_at
     fn touch_warrant_poll(&self, code: &str) -> StoreResult<Option<chrono::DateTime<chrono::Utc>>>;
 
+    /// Replace a pending request in place (record-request claim: the proof
+    /// verified, the approving account bound, status indexes allocated —
+    /// spec §7.5). Keyed by `rec.code`; a missing row is
+    /// `WarrantRequestNotFound`.
+    fn update_warrant_request(&self, rec: &WarrantRequestRecord) -> StoreResult<()>;
+
     /// Delete a warrant request (single delivery / cleanup) — removes the
     /// audience and scope data entirely
     fn delete_warrant_request(&self, code: &str) -> StoreResult<()>;

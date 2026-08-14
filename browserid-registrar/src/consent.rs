@@ -29,7 +29,10 @@ use tower_cookies::Cookies;
 
 use crate::error::RegistrarError;
 use crate::host::require_csrf;
-use crate::models::{WarrantGrantItem, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus};
+use crate::models::{
+    RecordRequestMeta, RequestKind, WarrantGrantItem, WarrantRecord, WarrantRequestRecord,
+    WarrantRequestStatus,
+};
 use crate::registry::{require_enabled, require_session};
 use crate::RegistrarState;
 
@@ -137,6 +140,18 @@ pub struct PendingRequestInfo {
     /// External request (§6.6) — raised by a foreign-IdP service, not one
     /// of the account's own agents; the page words the ask accordingly
     pub external: bool,
+    /// "agent" | "connection" | "authoring" — the consent card variant.
+    pub kind: String,
+    /// Connection requests: the client descriptor. `client_name` is the
+    /// site's own report — the page MUST mark it unverified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
+    /// Connection requests: the broker-minted `binding.id` the signed record
+    /// must carry (§6.6 invariant 5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -171,39 +186,128 @@ pub async fn list_requests(
 ) -> Result<Json<ListRequestsResponse>, RegistrarError> {
     require_enabled(&state)?;
     let user = require_session(&state, &cookies)?;
-    let requests = state
+    let mut requests: Vec<PendingRequestInfo> = state
         .store
         .list_pending_warrant_requests(user.user_id)?
         .into_iter()
         .filter(|r| !r.external || query.code.as_deref() == Some(r.code.as_str()))
-        .map(|r| {
-            // The trustworthy "who" (eywc): the user-chosen name and first-
-            // authorized date from the host's registry — or nothing, which the
-            // page renders as the deny-only unknown-agent card (P4).
-            let met = state.host.known_agent(user.user_id, &r.agent_email).unwrap_or(None);
-            PendingRequestInfo {
-                code: r.code,
-                delegator_email: r.delegator_email,
-                agent_email: r.agent_email,
-                holder: r.holder,
-                label: r.label,
-                grantor: r.grantor,
-                message: r.message,
-                display_name: met.as_ref().and_then(|k| k.display_name.clone()),
-                agent_created_at: met.as_ref().and_then(|k| k.created_at),
-                known: met.is_some(),
-                grants: r.grants,
-                external: r.external,
-                created_at: r.created_at,
-                expires_at: r.expires_at,
-            }
-        })
+        .map(|r| pending_info(&state, &user, r))
         .collect();
+    // Record requests (§7.5) are unclaimed at creation (user_id 0) so they
+    // never appear in an inbox listing — they are surfaced only through
+    // their deep-linked consent_uri, after the audience proof verifies, and
+    // are claimed for the viewing account (status indexes allocated) so the
+    // page can embed the refs in the records it signs.
+    if let Some(code) = query.code.as_deref() {
+        if !requests.iter().any(|r| r.code == code) {
+            if let Some(rec) = state.store.get_warrant_request(code)? {
+                if rec.kind != RequestKind::Agent
+                    && rec.status == WarrantRequestStatus::Pending
+                    && !rec.is_expired()
+                {
+                    if let Some(rec) = surface_record_request(&state, &user, rec).await? {
+                        requests.push(pending_info(&state, &user, rec));
+                    }
+                }
+            }
+        }
+    }
     Ok(Json(ListRequestsResponse {
         success: true,
         status_uri: status_list_uri(&state.domain),
         requests,
     }))
+}
+
+fn pending_info(
+    state: &RegistrarState,
+    user: &crate::host::AuthedUser,
+    r: WarrantRequestRecord,
+) -> PendingRequestInfo {
+    // The trustworthy "who" (eywc) — agent flow only: the user-chosen name and
+    // first-authorized date from the host's registry, or nothing, which the
+    // page renders as the deny-only unknown-agent card (P4). Record requests
+    // have no requesting agent; their gate is the audience proof, so the card
+    // is always offered ("known").
+    let met = if r.kind == RequestKind::Agent {
+        state.host.known_agent(user.user_id, &r.agent_email).unwrap_or(None)
+    } else {
+        None
+    };
+    let meta = r.meta.as_ref();
+    PendingRequestInfo {
+        code: r.code,
+        delegator_email: r.delegator_email,
+        agent_email: r.agent_email,
+        holder: r.holder,
+        label: r.label,
+        grantor: r.grantor,
+        message: r.message,
+        display_name: met.as_ref().and_then(|k| k.display_name.clone()),
+        agent_created_at: met.as_ref().and_then(|k| k.created_at),
+        known: r.kind != RequestKind::Agent || met.is_some(),
+        grants: r.grants,
+        external: r.external,
+        kind: r.kind.as_str().to_string(),
+        client_host: meta.and_then(|m| m.client_host.clone()),
+        client_name: meta.and_then(|m| m.client_name.clone()),
+        binding_id: meta.and_then(|m| m.binding_id.clone()),
+        created_at: r.created_at,
+        expires_at: r.expires_at,
+    }
+}
+
+/// Gate + claim a record request for the viewing account (§7.5): verify the
+/// audience proof (fetch the published nonce, byte-compare after stripping
+/// trailing ASCII whitespace — fail-closed, the card never renders without
+/// it), then bind the row to this account and allocate each grant's status
+/// index so the page can embed the refs in the records it signs.
+async fn surface_record_request(
+    state: &RegistrarState,
+    user: &crate::host::AuthedUser,
+    mut rec: WarrantRequestRecord,
+) -> Result<Option<WarrantRequestRecord>, RegistrarError> {
+    let Some(mut meta) = rec.meta.clone() else { return Ok(None) };
+    if !meta.proof_ok {
+        let Some(fetcher) = state.proof_fetcher.as_ref() else { return Ok(None) };
+        let origin = audience_origin(&rec.grants[0].audience)?;
+        let body = fetcher.fetch_proof(&origin, &rec.code).await?;
+        if body.trim_end_matches(|c: char| c.is_ascii_whitespace()) != meta.challenge {
+            return Err(bad("audience proof mismatch"));
+        }
+        meta.proof_ok = true;
+        rec.meta = Some(meta.clone());
+    }
+    let needs_claim = rec.user_id != user.user_id
+        || rec.grants.iter().any(|g| g.status_idx.is_none());
+    if needs_claim {
+        rec.user_id = user.user_id;
+        let grants = std::mem::take(&mut rec.grants);
+        rec.grants = grants
+            .into_iter()
+            .map(|mut g| {
+                let subject = match rec.kind {
+                    // Per-connection revocation axis: stable per binding.id.
+                    RequestKind::Connection => format!(
+                        "cn|{}|{}",
+                        user.user_id,
+                        meta.binding_id.as_deref().unwrap_or_default()
+                    ),
+                    // Policy rows: stable per (grantee, audience, scopes).
+                    _ => warrant_status_subject(
+                        user.user_id,
+                        g.grantee.as_deref().unwrap_or_default(),
+                        &g.audience,
+                        &g.scopes,
+                    ),
+                };
+                g.status_idx = Some(state.store.get_or_allocate_status("warrant", &subject)?);
+                Ok(g)
+            })
+            .collect::<Result<_, RegistrarError>>()?;
+        state.store.update_warrant_request(&rec)?;
+    }
+    Ok(Some(rec))
 }
 
 #[derive(Deserialize)]
@@ -258,6 +362,13 @@ pub async fn respond(
         .ok_or(RegistrarError::WarrantRequestNotFound)?;
     if rec.user_id != user.user_id {
         return Err(RegistrarError::WarrantRequestNotFound);
+    }
+
+    // Record requests (§7.5) resolve through their own approval path: the
+    // page signed v2 admission records (a connection self-grant, or policy
+    // rows), not agent presentation warrants.
+    if rec.kind != RequestKind::Agent {
+        return respond_record(&state, &user, &req, rec);
     }
 
     if !req.approve {
@@ -347,6 +458,149 @@ pub async fn respond(
     }
     tracing::info!(delegator = %rec.delegator_email, grants = rec.grants.len(),
         "warrant consent approved");
+    Ok(Json(RespondResponse { success: true, return_url: rec.return_url }))
+}
+
+/// Resolve a record request (§7.5): the connection variant's single
+/// self-grant record, or the authoring ceremony's per-grantee policy rows.
+/// The approver (the signed-in account) is the GRANTOR of every record; the
+/// page signed each with the config (authorization) key in this origin's
+/// keystore, and validation pins every claim to the pending request — the
+/// broker-minted binding.id, the client descriptor, audiences, scopes, and
+/// the allocated status refs. All-or-nothing, grant order.
+fn respond_record(
+    state: &Arc<RegistrarState>,
+    user: &crate::host::AuthedUser,
+    req: &RespondBody,
+    rec: WarrantRequestRecord,
+) -> Result<Json<RespondResponse>, RegistrarError> {
+    let meta = rec.meta.clone().unwrap_or_default();
+
+    if !req.approve {
+        state.store.respond_warrant_request(user.user_id, &req.code, None)?;
+        return Ok(Json(RespondResponse { success: true, return_url: rec.return_url }));
+    }
+    if !meta.proof_ok {
+        return Err(bad("audience proof not verified"));
+    }
+    let warrant_jwss = req.warrants.as_deref().ok_or_else(|| {
+        RegistrarError::ValidationError("approve requires the signed records".into())
+    })?;
+    let config_jws = req.config_cert.as_deref().ok_or_else(|| {
+        RegistrarError::ValidationError("approve requires the signing config cert".into())
+    })?;
+    // The grantor is the approver — a verified identity on this account.
+    let grantor = req
+        .grantor
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| bad("approve requires the signing identity (grantor)"))?
+        .to_lowercase();
+    if !state.host.owns_verified_email(user.user_id, &delegator_of(&grantor))? {
+        return Err(bad("the grantor must be an identity on this account"));
+    }
+
+    let config_cert = DeviceCert::parse(config_jws).map_err(|e| bad(format!("bad config cert: {e}")))?;
+    if config_cert.purpose() != Purpose::Authorization {
+        return Err(bad("config cert is not an authorization cert"));
+    }
+    if config_cert.is_expired() {
+        return Err(bad("config cert expired"));
+    }
+    if !config_cert.authorizes_identity(&grantor) {
+        return Err(bad("config cert does not authorize the grantor"));
+    }
+    if warrant_jwss.len() != rec.grants.len() {
+        return Err(bad(format!(
+            "expected {} records (one per grant), got {}",
+            rec.grants.len(),
+            warrant_jwss.len()
+        )));
+    }
+
+    let status_uri = status_list_uri(&state.domain);
+    let mut warrants = Vec::with_capacity(warrant_jwss.len());
+    for (jws, grant) in warrant_jwss.iter().zip(&rec.grants) {
+        let warrant = Warrant::parse(jws).map_err(|e| bad(format!("bad record: {e}")))?;
+        warrant
+            .verify(config_cert.public_key())
+            .map_err(|_| bad("record is not signed by the presented config cert"))?;
+        let claims = warrant.claims();
+        if claims.typ != browserid_core::device::TYP_WARRANT_V2 {
+            return Err(bad("admission records must be browserid-warrant-v2"));
+        }
+        if claims.grantor != grantor {
+            return Err(bad("record grantor does not match the approving identity"));
+        }
+        if claims.audience != grant.audience {
+            return Err(bad("record audience does not match its grant"));
+        }
+        let mut want = grant.scopes.clone();
+        let mut got = claims.scopes.clone();
+        want.sort_unstable();
+        got.sort_unstable();
+        if want != got {
+            return Err(bad("record scopes do not match the requested grant"));
+        }
+        // The revocation ref must be EXACTLY the allocated one (same rule as
+        // the agent flow): a record carrying someone else's index would arm
+        // our revoke lever at a grant the signer doesn't own.
+        let idx = grant.status_idx.ok_or_else(|| bad("grant has no allocated status index"))?;
+        match &claims.status {
+            Some(st) if st.uri == status_uri && st.idx == idx => {}
+            _ => return Err(bad("record status ref does not match the allocated one")),
+        }
+        match (rec.kind, claims.binding()) {
+            (
+                RequestKind::Connection,
+                browserid_core::device::Binding::Connection { protocol: _, id, client_host, client_name },
+            ) => {
+                // Warrant::parse already enforced the self-grant rule and an
+                // implemented protocol; pin the descriptor to the request.
+                if Some(id.as_str()) != meta.binding_id.as_deref() {
+                    return Err(bad("record binding.id does not match this request"));
+                }
+                if Some(client_host.as_str()) != meta.client_host.as_deref() {
+                    return Err(bad("record client_host does not match this request"));
+                }
+                if client_name != meta.client_name.clone().unwrap_or_default() {
+                    return Err(bad("record client_name does not match this request"));
+                }
+            }
+            (RequestKind::Authoring, browserid_core::device::Binding::Holder { .. }) => {
+                let want = grant.grantee.as_deref().unwrap_or_default();
+                if claims.grantee != want {
+                    return Err(bad("record grantee does not match its grant row"));
+                }
+            }
+            _ => return Err(bad("record binding kind does not match this request")),
+        }
+        warrants.push(warrant);
+    }
+
+    // Re-activate each allocated bit (same status-bleed rule as the agent
+    // flow): a fresh approval of a previously revoked subject must not be
+    // born revoked.
+    for g in &rec.grants {
+        if let Some(idx) = g.status_idx {
+            let _ = state.store.set_status_active_idx(idx);
+        }
+    }
+    let delegator = delegator_of(&grantor);
+    let records: Vec<WarrantRecord> = warrants
+        .iter()
+        .zip(warrant_jwss)
+        .map(|(warrant, jws)| warrant_to_record(user.user_id, &delegator, warrant, jws, config_jws))
+        .collect();
+    let delivery: Vec<String> =
+        warrant_jwss.iter().map(|w| format!("{w}~{config_jws}")).collect();
+    state.store.respond_warrant_request(user.user_id, &req.code, Some(&delivery))?;
+    for record in records {
+        state.store.upsert_warrant(record)?;
+    }
+    tracing::info!(kind = %rec.kind.as_str(), grants = rec.grants.len(),
+        "record request approved");
     Ok(Json(RespondResponse { success: true, return_url: rec.return_url }))
 }
 
@@ -572,6 +826,10 @@ pub(crate) fn warrant_to_record(
         status_idx: claims.status.as_ref().map(|s| s.idx),
         holder: claims.holder_matcher().map(|m| m.as_str().to_string()),
         config_cert: Some(config_cert.to_string()),
+        binding_id: match claims.binding() {
+            browserid_core::device::Binding::Connection { id, .. } => Some(id),
+            _ => None,
+        },
         signed_at: ts(claims.iat),
         expires_at: ts(claims.exp),
     }
@@ -596,6 +854,15 @@ pub struct WarrantInfo {
     /// The config cert that signed this warrant (4th object of a presentation)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_cert: Option<String>,
+    /// Connection records (spec §5): the binding.id + client descriptor, so
+    /// the account page renders these as host↔service connections.
+    /// `client_name` is the site's own report — rendered marked unverified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
     pub signed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -622,6 +889,15 @@ pub async fn list_warrants(
                 .status_idx
                 .map(|i| state.store.is_status_revoked_idx(i).unwrap_or(false))
                 .unwrap_or(false);
+            let (client_host, client_name) = match Warrant::parse(&r.warrant)
+                .ok()
+                .map(|w| w.claims().binding())
+            {
+                Some(browserid_core::device::Binding::Connection {
+                    client_host, client_name, ..
+                }) => (Some(client_host), Some(client_name)),
+                _ => (None, None),
+            };
             WarrantInfo {
                 id: r.id,
                 delegator_email: r.delegator_email,
@@ -633,6 +909,9 @@ pub async fn list_warrants(
                 revoked,
                 holder: r.holder,
                 config_cert: r.config_cert,
+                binding_id: r.binding_id,
+                client_host,
+                client_name,
                 signed_at: r.signed_at,
                 expires_at: r.expires_at,
             }
@@ -1035,6 +1314,7 @@ pub async fn warrant_request(
                 audience: g.audience.clone(),
                 scopes: g.scopes.clone(),
                 status_idx: Some(idx),
+                grantee: None,
             })
         })
         .collect::<Result<_, RegistrarError>>()?;
@@ -1043,6 +1323,8 @@ pub async fn warrant_request(
     let now = Utc::now();
     state.store.create_warrant_request(WarrantRequestRecord {
         code: code.clone(),
+        kind: RequestKind::Agent,
+        meta: None,
         user_id,
         delegator_email: delegator.clone(),
         agent_email: identity.clone(),
@@ -1073,8 +1355,302 @@ pub async fn warrant_request(
     }))
 }
 
+// ===========================================================================
+// Admission-record flows (spec §7.5): connection grant requests (audience-
+// initiated) + the grant-authoring ceremony (grantor-initiated). Both are
+// raised by the RESOURCE — anonymous, no device key — and authenticated by
+// proof of audience control: a challenge nonce the resource publishes at
+// `/.well-known/browserid-audience-proof/<request_id>`, fetched fail-closed
+// before the consent page renders. Approval signs v2 records client-side
+// (connection: a self-grant with the broker-minted binding.id; authoring:
+// per-grantee policy records) and the resource polls the same RFC-8628
+// machinery for the `warrant~config_cert` pairs it will hold (§6.4).
+// ===========================================================================
+
+/// Per-origin sliding-window limiter for record requests (§7.5 SHOULD:
+/// rate-limit connection requests per audience origin).
+#[derive(Default)]
+pub struct RecordRequestLimiter {
+    inner: std::sync::Mutex<std::collections::HashMap<String, Vec<DateTime<Utc>>>>,
+}
+
+impl RecordRequestLimiter {
+    const WINDOW_MINUTES: i64 = 10;
+    const MAX_PER_WINDOW: usize = 10;
+
+    /// Record an attempt for `origin`; `false` = over the limit, refuse.
+    pub fn allow(&self, origin: &str) -> bool {
+        let now = Utc::now();
+        let cutoff = now - Duration::minutes(Self::WINDOW_MINUTES);
+        let mut map = self.inner.lock().unwrap();
+        map.retain(|_, v| {
+            v.retain(|t| *t > cutoff);
+            !v.is_empty()
+        });
+        let v = map.entry(origin.to_string()).or_default();
+        if v.len() >= Self::MAX_PER_WINDOW {
+            return false;
+        }
+        v.push(now);
+        true
+    }
+}
+
+#[derive(Deserialize)]
+pub struct RecordClientInfo {
+    /// The enforceable client datum: the registered redirect-URI host.
+    pub client_host: String,
+    /// Display-only, marked unverified everywhere it appears.
+    #[serde(default)]
+    pub client_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct AuthoringGrantItem {
+    /// Exact email, or an admission grantee matcher (`*` / `*@<domain>`).
+    pub grantee: String,
+    pub audience: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct RecordRequestBody {
+    /// "connection" | "authoring"
+    pub r#type: String,
+    // --- connection ---
+    pub audience: Option<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    pub client: Option<RecordClientInfo>,
+    pub message: Option<String>,
+    /// Where the consent page sends the browser after approval (the OAuth
+    /// authorize hop back to the resource). Origin-validated against the
+    /// audience origin.
+    pub return_url: Option<String>,
+    // --- authoring ---
+    pub grants: Option<Vec<AuthoringGrantItem>>,
+}
+
+#[derive(Serialize)]
+pub struct RecordRequestResponse {
+    pub success: bool,
+    /// The poll credential AND the audience-proof path component.
+    pub request_id: String,
+    /// The nonce to publish at
+    /// `/.well-known/browserid-audience-proof/<request_id>`.
+    pub challenge: String,
+    /// The page the connecting user (or the grantor) must visit.
+    pub consent_uri: String,
+    pub expires_in: i64,
+    pub interval: i64,
+}
+
+/// POST /warrant/record-request — a resource raises a connection grant
+/// request or a grant-authoring ceremony (spec §7.5). No caller
+/// authentication: the request is authenticated by audience control (the
+/// proof fetch, at consent render), and the stakes of a forged request are
+/// bounded — an attacker-raised record is redeemable only by the genuine
+/// audience inside its own custody dance.
+pub async fn record_request(
+    State(state): State<Arc<RegistrarState>>,
+    Json(req): Json<RecordRequestBody>,
+) -> Result<Json<RecordRequestResponse>, RegistrarError> {
+    require_enabled(&state)?;
+    if state.proof_fetcher.is_none() {
+        return Err(bad("record requests are not supported here"));
+    }
+
+    let (kind, grants, meta, return_url) = match req.r#type.as_str() {
+        "connection" => {
+            let audience = req
+                .audience
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| bad("connection request requires an audience"))?;
+            validate_grant_shape(audience, &req.scopes)?;
+            // The proof is origin-scoped (§7.5): the audience must be a plain
+            // http(s) URL whose origin we can fetch from.
+            audience_origin(audience)?;
+            let client = req
+                .client
+                .as_ref()
+                .ok_or_else(|| bad("connection request requires client { client_host }"))?;
+            let client_host = client.client_host.trim().to_ascii_lowercase();
+            if client_host.is_empty()
+                || client_host.len() > 253
+                || client_host.contains(['/', ':', '@', '*'])
+                || client_host.chars().any(|c| c.is_whitespace() || c.is_control())
+            {
+                return Err(bad("bad client_host"));
+            }
+            let client_name = client
+                .client_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.chars().take(100).collect::<String>());
+            let grants = vec![WarrantGrantItem {
+                audience: audience.to_string(),
+                scopes: req.scopes.clone(),
+                status_idx: None, // allocated when the approver claims the row
+                grantee: None,
+            }];
+            let meta = RecordRequestMeta {
+                challenge: new_poll_code(),
+                proof_ok: false,
+                client_host: Some(client_host),
+                client_name,
+                binding_id: Some(format!(
+                    "cn_{}",
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .encode(rand::random::<[u8; 16]>())
+                )),
+            };
+            // Origin-validate the optional return_url against the audience
+            // origin (there is no requester identity domain here).
+            let return_url = req
+                .return_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            if let Some(u) = return_url.as_deref() {
+                validate_return_url(u, "", &[audience])?;
+            }
+            (RequestKind::Connection, grants, meta, return_url)
+        }
+        "authoring" => {
+            let items = req
+                .grants
+                .as_deref()
+                .filter(|g| !g.is_empty())
+                .ok_or_else(|| bad("authoring request requires grants"))?;
+            if items.len() > 32 {
+                return Err(bad("at most 32 grants per authoring request"));
+            }
+            // All audiences share one origin (the proof is origin-scoped) and
+            // (grantee, audience) pairs are unique.
+            let first_origin = audience_origin(&items[0].audience)?;
+            let mut seen = std::collections::HashSet::new();
+            for g in items {
+                validate_grant_shape(&g.audience, &g.scopes)?;
+                if audience_origin(&g.audience)? != first_origin {
+                    return Err(bad("all grant audiences must share one origin"));
+                }
+                let grantee = g.grantee.trim();
+                if !(grantee == "*"
+                    || grantee.strip_prefix("*@").is_some_and(|d| !d.is_empty())
+                    || grantee.contains('@'))
+                    || grantee.len() > 254
+                {
+                    return Err(bad(format!("bad grantee '{grantee}'")));
+                }
+                if !seen.insert((grantee.to_string(), g.audience.clone())) {
+                    return Err(bad("duplicate (grantee, audience) pair"));
+                }
+            }
+            let grants = items
+                .iter()
+                .map(|g| WarrantGrantItem {
+                    audience: g.audience.clone(),
+                    scopes: g.scopes.clone(),
+                    status_idx: None,
+                    grantee: Some(g.grantee.trim().to_string()),
+                })
+                .collect();
+            let meta = RecordRequestMeta { challenge: new_poll_code(), ..Default::default() };
+            let audiences: Vec<&str> = items.iter().map(|g| g.audience.as_str()).collect();
+            let return_url = req
+                .return_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            if let Some(u) = return_url.as_deref() {
+                validate_return_url(u, "", &audiences)?;
+            }
+            (RequestKind::Authoring, grants, meta, return_url)
+        }
+        other => return Err(bad(format!("unknown request type '{other}'"))),
+    };
+
+    let message = req
+        .message
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if message.as_deref().is_some_and(|m| m.len() > 500) {
+        return Err(bad("message too long (500 chars max)"));
+    }
+
+    // Per-origin rate limit (§7.5 SHOULD).
+    let origin = audience_origin(&grants[0].audience)?;
+    if !state.record_request_limiter.allow(&origin) {
+        return Err(RegistrarError::PollTooFast);
+    }
+
+    let request_id = new_poll_code();
+    let now = Utc::now();
+    state.store.create_warrant_request(WarrantRequestRecord {
+        code: request_id.clone(),
+        kind,
+        meta: Some(meta.clone()),
+        // Unclaimed: the approving account binds at consent render (the row
+        // is deep-linked via consent_uri, never listed in anyone's inbox).
+        user_id: 0,
+        delegator_email: String::new(),
+        agent_email: String::new(),
+        holder: String::new(),
+        label: meta.client_name.clone().unwrap_or_else(|| origin.clone()),
+        grantor: "*".to_string(),
+        message,
+        grants,
+        status: WarrantRequestStatus::Pending,
+        warrants: None,
+        external: true,
+        return_url,
+        created_at: now,
+        expires_at: now + Duration::minutes(REQUEST_TTL_MINUTES),
+        last_polled_at: None,
+    })?;
+    state.store.cleanup_expired_warrant_requests().ok();
+
+    let origin = public_origin(&state.domain);
+    tracing::info!(kind = %kind.as_str(), "record request raised");
+    Ok(Json(RecordRequestResponse {
+        success: true,
+        request_id: request_id.clone(),
+        challenge: meta.challenge,
+        consent_uri: format!("{origin}/consent/{request_id}"),
+        expires_in: REQUEST_TTL_MINUTES * 60,
+        interval: POLL_INTERVAL_SECONDS,
+    }))
+}
+
+/// The origin of an audience URL — the scope at which the audience proof is
+/// published and WebPKI names the audience (§7.5). Path audiences prove at
+/// origin scope.
+fn audience_origin(audience: &str) -> Result<String, RegistrarError> {
+    let (scheme, host, port) = url_origin(audience)
+        .ok_or_else(|| bad("audience must be a plain http(s) URL"))?;
+    if scheme == "http" && !(host == "localhost" || host.starts_with("127.")) {
+        return Err(bad("audience must be https (http is allowed only for localhost)"));
+    }
+    Ok(if (scheme == "https" && port == 443) || (scheme == "http" && port == 80) {
+        format!("{scheme}://{host}")
+    } else {
+        format!("{scheme}://{host}:{port}")
+    })
+}
+
 #[derive(Deserialize)]
 pub struct WarrantPollBody {
+    /// The JIT flow's `code`; record flows poll with `request_id` (§7.5) —
+    /// same credential, either name.
+    #[serde(alias = "request_id")]
     pub code: String,
 }
 
@@ -1135,13 +1711,17 @@ pub async fn warrant_poll(
             state.store.delete_warrant_request(&req.code).ok();
             // Tell an unknown agent WHY (eywc): its request rendered the
             // deny-only card because this account has never met it — the fix
-            // is to run the identity flow first, not to ask again.
-            let reason = match state.host.known_agent(rec.user_id, &rec.agent_email) {
-                Ok(None) => Some(
-                    "unknown_agent: this account has not met this agent; \
-                     request an identity (agent provisioning) first"
-                        .to_string(),
-                ),
+            // is to run the identity flow first, not to ask again. (Agent
+            // flow only: record requests have no requesting agent.)
+            let reason = match rec.kind {
+                RequestKind::Agent => match state.host.known_agent(rec.user_id, &rec.agent_email) {
+                    Ok(None) => Some(
+                        "unknown_agent: this account has not met this agent; \
+                         request an identity (agent provisioning) first"
+                            .to_string(),
+                    ),
+                    _ => None,
+                },
                 _ => None,
             };
             Ok(Json(WarrantPollResponse {

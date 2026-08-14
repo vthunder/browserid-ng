@@ -235,6 +235,7 @@ fn test_warrant_upsert_keys_on_audience_and_scopes() {
         status_idx: None,
         holder: None,
         config_cert: None,
+        binding_id: None,
         signed_at: Utc::now(),
         expires_at: Utc::now(),
     };

@@ -33,6 +33,7 @@ fn to_reg_grant(g: crate::store::WarrantGrantItem) -> reg::WarrantGrantItem {
         audience: g.audience,
         scopes: g.scopes,
         status_idx: g.status_idx,
+        grantee: g.grantee,
     }
 }
 
@@ -41,6 +42,7 @@ fn from_reg_grant(g: reg::WarrantGrantItem) -> crate::store::WarrantGrantItem {
         audience: g.audience,
         scopes: g.scopes,
         status_idx: g.status_idx,
+        grantee: g.grantee,
     }
 }
 
@@ -63,6 +65,8 @@ fn from_reg_status(s: reg::WarrantRequestStatus) -> crate::store::WarrantRequest
 fn to_reg_request(r: crate::store::WarrantRequestRecord) -> reg::WarrantRequestRecord {
     reg::WarrantRequestRecord {
         code: r.code,
+        kind: reg::RequestKind::from_str(&r.kind).unwrap_or(reg::RequestKind::Agent),
+        meta: r.meta.as_deref().and_then(|m| serde_json::from_str(m).ok()),
         user_id: r.user_id.0,
         delegator_email: r.delegator_email,
         agent_email: r.agent_email,
@@ -84,6 +88,8 @@ fn to_reg_request(r: crate::store::WarrantRequestRecord) -> reg::WarrantRequestR
 fn from_reg_request(r: reg::WarrantRequestRecord) -> crate::store::WarrantRequestRecord {
     crate::store::WarrantRequestRecord {
         code: r.code,
+        kind: r.kind.as_str().to_string(),
+        meta: r.meta.as_ref().and_then(|m| serde_json::to_string(m).ok()),
         user_id: UserId(r.user_id),
         delegator_email: r.delegator_email,
         agent_email: r.agent_email,
@@ -114,6 +120,7 @@ fn to_reg_warrant(w: crate::store::WarrantRecord) -> reg::WarrantRecord {
         status_idx: w.status_idx,
         holder: w.holder,
         config_cert: w.config_cert,
+        binding_id: w.binding_id,
         signed_at: w.signed_at,
         expires_at: w.expires_at,
     }
@@ -131,6 +138,7 @@ fn from_reg_warrant(w: reg::WarrantRecord) -> crate::store::WarrantRecord {
         status_idx: w.status_idx,
         holder: w.holder,
         config_cert: w.config_cert,
+        binding_id: w.binding_id,
         signed_at: w.signed_at,
         expires_at: w.expires_at,
     }
@@ -214,6 +222,11 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
         code: &str,
     ) -> Result<Option<chrono::DateTime<chrono::Utc>>, RegistrarError> {
         UserStore::touch_warrant_poll(self.user_store.as_ref(), code).map_err(to_reg_err)
+    }
+
+    fn update_warrant_request(&self, rec: &reg::WarrantRequestRecord) -> Result<(), RegistrarError> {
+        UserStore::update_warrant_request(self.user_store.as_ref(), &from_reg_request(rec.clone()))
+            .map_err(to_reg_err)
     }
 
     fn delete_warrant_request(&self, code: &str) -> Result<(), RegistrarError> {

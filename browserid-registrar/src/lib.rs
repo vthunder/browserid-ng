@@ -140,6 +140,24 @@ pub struct ResolvedIssuer {
     pub serving_host: Option<String>,
 }
 
+/// Fetches an audience-proof document (spec §7.5): the body published at
+/// `https://<audience-origin>/.well-known/browserid-audience-proof/<request_id>`.
+/// The host wires in its HTTP stack, which MUST enforce the fetch rules —
+/// TLS, redirects refused, connections only to public unicast addresses,
+/// short timeout, small body cap — fail-closed. The registrar compares the
+/// returned body against the challenge (byte-for-byte after stripping
+/// trailing ASCII whitespace). A `None` fetcher on [`RegistrarState`] means
+/// connection/authoring record requests are refused.
+pub trait AudienceProofFetcher: Send + Sync {
+    fn fetch_proof<'a>(
+        &'a self,
+        origin: &'a str,
+        request_id: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, RegistrarError>> + Send + 'a>,
+    >;
+}
+
 /// Everything the registrar needs from its deployment.
 pub struct RegistrarState {
     /// The registrar's own domain (endorsement issuer, status-list subject,
@@ -155,6 +173,12 @@ pub struct RegistrarState {
     /// Foreign-IdP key discovery for external warrant requests (§6.6);
     /// `None` refuses them.
     pub issuer_resolver: Option<Arc<dyn IssuerKeyResolver>>,
+    /// Audience-proof fetching for connection/authoring record requests
+    /// (spec §7.5); `None` refuses them (and the host should not advertise
+    /// record-grant support).
+    pub proof_fetcher: Option<Arc<dyn AudienceProofFetcher>>,
+    /// Per-origin rate limiter for record requests (spec §7.5 SHOULD).
+    pub record_request_limiter: consent::RecordRequestLimiter,
 }
 
 /// The registrar's routes, ready to merge into a host router.
@@ -170,6 +194,10 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         // Agent-facing consent flow (device-cert model): raise + poll.
         .route("/warrant/request", post(consent::warrant_request))
         .route("/warrant/poll", post(consent::warrant_poll))
+        // Admission-record flows (spec §7.5): audience-raised connection
+        // grant requests + grantor-initiated authoring ceremonies. Poll is
+        // shared with /warrant/poll ({request_id} is accepted as the code).
+        .route("/warrant/record-request", post(consent::record_request))
         .route("/wsapi/warrant_requests", get(consent::list_requests))
         .route("/wsapi/warrant_respond", post(consent::respond))
         // Warrant registry (jipx):

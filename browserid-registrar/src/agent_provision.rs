@@ -313,7 +313,7 @@ pub async fn request(
     let grants: Vec<WarrantGrantItem> = req
         .grants
         .into_iter()
-        .map(|g| WarrantGrantItem { audience: g.audience, scopes: g.scopes, status_idx: None })
+        .map(|g| WarrantGrantItem { audience: g.audience, scopes: g.scopes, status_idx: None, grantee: None })
         .collect();
     let message = req
         .message

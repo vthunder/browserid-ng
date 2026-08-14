@@ -13,6 +13,14 @@ use chrono::{DateTime, Utc};
 pub struct WarrantRequestRecord {
     /// High-entropy opaque code — the poll credential (single delivery)
     pub code: String,
+    /// Which consent flow this row belongs to (spec §7.5): the agent JIT flow,
+    /// an audience-raised connection grant request, or a grantor-initiated
+    /// authoring ceremony. The two record kinds carry [`RecordRequestMeta`].
+    pub kind: RequestKind,
+    /// Connection/authoring extras — the audience-proof challenge state and,
+    /// for connections, the client descriptor + broker-minted `binding.id`.
+    /// `None` on agent rows.
+    pub meta: Option<RecordRequestMeta>,
     /// The delegator's account
     pub user_id: u64,
     pub delegator_email: String,
@@ -65,6 +73,65 @@ pub struct WarrantGrantItem {
     /// embeds it in the warrant it signs
     #[serde(default)]
     pub status_idx: Option<u64>,
+    /// Authoring ceremony only (spec §7.5): the row's GRANTEE — an exact
+    /// email or an admission grantee matcher (`*` / `*@<domain>`). `None` on
+    /// agent/connection rows (the grantee is the agent / the approver).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grantee: Option<String>,
+}
+
+/// Which consent flow a pending request belongs to (spec §7.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestKind {
+    /// The agent JIT flow: a device-key-signed request, presentation records.
+    Agent,
+    /// Audience-raised connection grant request → one v2 `connection` record.
+    Connection,
+    /// Grantor-initiated authoring ceremony → v2 policy records.
+    Authoring,
+}
+
+impl RequestKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RequestKind::Agent => "agent",
+            RequestKind::Connection => "connection",
+            RequestKind::Authoring => "authoring",
+        }
+    }
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "agent" => Some(RequestKind::Agent),
+            "connection" => Some(RequestKind::Connection),
+            "authoring" => Some(RequestKind::Authoring),
+            _ => None,
+        }
+    }
+}
+
+/// Extras carried by connection / authoring requests (spec §7.5): the
+/// audience-proof challenge state, and the connection's client descriptor +
+/// broker-minted `binding.id`. Persisted as one JSON column.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct RecordRequestMeta {
+    /// The audience-proof challenge nonce the resource must publish.
+    pub challenge: String,
+    /// Set once the broker has fetched and byte-compared the proof document;
+    /// the consent page will not render the request before this is true.
+    #[serde(default)]
+    pub proof_ok: bool,
+    /// Connection only: the enforceable client datum (registered redirect-URI
+    /// host, verbatim from the request).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_host: Option<String>,
+    /// Connection only: display-only client name — unverified everywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
+    /// Connection only: the broker-minted `binding.id` (§6.6 invariant 5),
+    /// minted with the request and bound to the record signed at consent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +220,10 @@ pub struct WarrantRecord {
     /// The config (authorization) device cert JWS that signed this warrant —
     /// presented alongside it in the 4-object bundle
     pub config_cert: Option<String>,
+    /// Connection records only (spec §5): the record's broker-minted
+    /// `binding.id`. Keys the registry pairing (§6.6 invariant 5) and keeps
+    /// two connections to the same audience as distinct rows.
+    pub binding_id: Option<String>,
     pub signed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
