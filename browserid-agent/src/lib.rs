@@ -466,7 +466,14 @@ impl DeviceAgent {
                 wc.grantee, self.email
             )));
         }
-        if !wc.holder.matches(&self.holder) {
+        // An agent PRESENTS its grants (operation P), so only a holder-bound
+        // record is usable here — a connection-bound record is admission-only.
+        let Some(matcher) = wc.holder_matcher() else {
+            return Err(AgentError::InvalidWarrant(
+                "warrant is not holder-bound (admission-only records cannot be presented)".into(),
+            ));
+        };
+        if !matcher.matches(&self.holder) {
             return Err(AgentError::InvalidWarrant(
                 "warrant holder matcher does not cover this agent's holder".into(),
             ));

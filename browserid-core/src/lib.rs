@@ -8,6 +8,7 @@
 //! - Verifiers join the bundle by (identity, holder∈matcher, audience), rooted
 //!   at the identity's own IdP key
 
+pub mod admission;
 pub mod keys;
 pub mod assertion;
 pub mod attestation;
@@ -15,6 +16,7 @@ pub mod device;
 pub mod discovery;
 pub mod dns;
 pub mod error;
+pub mod identity;
 pub mod jws;
 pub mod rp_auth;
 pub mod status;
@@ -23,9 +25,10 @@ pub use keys::{KeyPair, PublicKey};
 pub use assertion::Assertion;
 // `device::Warrant` is not re-exported at the crate root: call it
 // `device::Warrant` at use sites, mirroring the wire object's home.
+pub use admission::{RecordBundle, ValidatedRecord};
 pub use device::{
-    AccessCert, AccessPresentation, AccessRequest, DeviceCert, Holder, HolderMatcher, Purpose,
-    VerifiedAccess,
+    AccessCert, AccessPresentation, AccessRequest, Binding, ConnectionProtocol, DeviceCert, Holder,
+    HolderMatcher, Purpose, VerifiedAccess,
 };
 pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;

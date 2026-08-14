@@ -5,7 +5,7 @@
 
 use browserid_core::{
     discovery::{SupportDocument, SupportDocumentFetcher},
-    Error as CoreError, Result as CoreResult, StatusListToken, StatusRef,
+    Binding, Error as CoreError, RecordBundle, Result as CoreResult, StatusListToken, StatusRef,
 };
 use reqwest::blocking::Client;
 use std::collections::HashMap;
@@ -396,6 +396,149 @@ pub(crate) async fn fetch_foreign_status_list(
         }
     }
     Ok(token)
+}
+
+/// Result of validating a held record (`warrant ~ config_cert`, spec §6.4
+/// steps 1b–1e). Record validation authenticates no one: an `okay` here means
+/// the record is authentic and unrevoked — redemption authority is custody
+/// plus subject matching, both at the resource.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RecordValidationResult {
+    pub status: String, // "okay" | "failure"
+    /// The attributed identity (the record's grantor).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grantor: Option<String>,
+    /// The acting identity: an exact email, or (admission-only) a grantee
+    /// matcher (`*` / `*@<domain>`) — permission, never attribution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grantee: Option<String>,
+    /// The record's binding, normalized (a v1 record reads as a holder
+    /// binding). For `connection` bindings, `client_name` is display-only and
+    /// unverified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding: Option<Binding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    /// The grantor's IdP (the config cert's issuer).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    /// The record's status refs (config cert / warrant), for the resource's
+    /// per-use fail-closed re-checks (`POST /status/check`) — §6.4's split
+    /// rule: status and expiry are live bounds, not acquisition-time facts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_refs: Option<Vec<StatusRef>>,
+    /// The warrant's `exp` (unix seconds) — the other live bound the resource
+    /// must re-check per use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl RecordValidationResult {
+    pub(crate) fn fail(reason: impl Into<String>) -> Self {
+        Self {
+            status: "failure".into(),
+            grantor: None,
+            grantee: None,
+            binding: None,
+            scopes: None,
+            issuer: None,
+            status_refs: None,
+            expires_at: None,
+            reason: Some(reason.into()),
+        }
+    }
+}
+
+/// Validate a held `warrant ~ config_cert` record (operation A, spec §6.4
+/// steps 1b–1e) — the hosted two-object record-validation call beside
+/// `/verify-access`. No caller authentication: anyone holding the record holds
+/// attributed paper, readable and spendable nowhere (§6.4).
+///
+/// Step 1a (parse, per-version shape matrix) is `RecordBundle::parse`; 1b
+/// resolves the config cert's issuer with the same DNSSEC-rooted conformance
+/// rule as `/verify-access` (authoritative for the grantor's domain, §8.1
+/// fallbacks); 1c–1d run in core; 1e checks the status refs fail-closed.
+pub async fn validate_record_with_dns(
+    record: &str,
+    audience: &str,
+    discoverer: &impl crate::fallback_fetcher::Discoverer,
+    accepted_fallbacks: &[String],
+    status: StatusCtx<'_>,
+) -> RecordValidationResult {
+    let bundle = match RecordBundle::parse(record) {
+        Ok(b) => b,
+        Err(e) => return RecordValidationResult::fail(format!("parse: {e}")),
+    };
+
+    let grantor = bundle.warrant.claims().grantor.clone();
+    let grantor_domain = match grantor.rsplit_once('@') {
+        Some((_, d)) => d.to_string(),
+        None => return RecordValidationResult::fail("warrant grantor is not an email"),
+    };
+    let cc_iss = bundle.config_cert.claims().iss.clone();
+
+    // §6.4 step 1b: the config cert's issuer, DNSSEC-resolved and required
+    // authoritative for the grantor's domain.
+    let config_key = match resolve_conformant_key(
+        discoverer,
+        accepted_fallbacks,
+        &grantor_domain,
+        &cc_iss,
+    )
+    .await
+    {
+        Ok(k) => k,
+        Err(e) => return RecordValidationResult::fail(e),
+    };
+
+    let v = match bundle.validate(audience, |req_iss| {
+        if req_iss == cc_iss {
+            Ok(config_key.clone())
+        } else {
+            Err(browserid_core::Error::InvalidProvisioning(format!(
+                "issuer '{req_iss}' not authoritative"
+            )))
+        }
+    }) {
+        Ok(v) => v,
+        Err(e) => return RecordValidationResult::fail(e.to_string()),
+    };
+
+    // §6.4 step 1e: fail-closed status on each chain object that carries a
+    // ref — config cert → its IdP; warrant → the hosted registry (always
+    // present on v2, optional on v1).
+    for (label, r) in [("config cert", &v.config_status), ("warrant", &v.warrant_status)] {
+        let Some(r) = r else { continue };
+        let revoked = if r.uri == status.own_uri {
+            (status.is_own_revoked)(r.idx)
+        } else {
+            check_foreign_status(r, discoverer, status.cache, status.allow_private_hosts).await
+        };
+        match revoked {
+            Ok(false) => {}
+            Ok(true) => return RecordValidationResult::fail(format!("{label} revoked")),
+            Err(e) => {
+                return RecordValidationResult::fail(format!(
+                    "{label} status unavailable (fail-closed): {e}"
+                ))
+            }
+        }
+    }
+
+    let status_refs = v.status_refs();
+    RecordValidationResult {
+        status: "okay".into(),
+        grantor: Some(v.grantor),
+        grantee: Some(v.grantee),
+        binding: Some(v.binding),
+        scopes: Some(v.scopes),
+        issuer: Some(v.grantor_issuer),
+        status_refs: if status_refs.is_empty() { None } else { Some(status_refs) },
+        expires_at: Some(bundle.warrant.claims().exp),
+        reason: None,
+    }
 }
 
 /// Resolve the published IdP key for `iss`, enforcing that `iss` is

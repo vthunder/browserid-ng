@@ -17,6 +17,8 @@ chrono.workspace = true
 thiserror.workspace = true
 # Status list compression (core §6.4, IETF token-status-list shape)
 flate2 = "1"
+# A-label (punycode) domain normalization for identity comparison (spec §5)
+idna = "1"
 
 [dev-dependencies]
 anyhow.workspace = true

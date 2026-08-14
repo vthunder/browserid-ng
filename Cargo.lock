@@ -318,6 +318,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "flate2",
+ "idna",
  "jsonwebtoken",
  "rand",
  "serde",

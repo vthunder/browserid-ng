@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-13T18:10:47Z
-updated_at: 2026-08-14T15:34:12Z
+updated_at: 2026-08-14T16:42:41Z
 ---
 
 From the Lane B design review with Dan (2026-08-13, after the mcp-demo connector E2E):
@@ -67,3 +67,7 @@ Spec text for warrant v2 is done and reviewed: §5 (v2 format, bindings, matcher
 3. mcp-auth lane: credential-less mode w/ capability detection + fallback; bearer/refresh bound to (binding.id, record); short bearers (≤1h ref) + freshness-backed mint/refresh.
 
 Gotchas from memory: cargo runs via `ssh localtest`; new crates need Dockerfile edits before dokku deploy; broker inline-script CSP hashes if consent card touches static pages; e2e wants a warm broker on :3000.
+
+## Phase 1 item 1 DONE (2026-08-14, bean 1g9j)
+
+Verifier v2 support landed: core §5 identity comparison (identity.rs), Binding enum + dual-version WarrantClaims + parse shape matrix + create_v2 (device.rs, v1 wire byte-frozen), operation P step-1/step-6 updates, operation A record validation (admission.rs: RecordBundle validate/recheck_live/matches_login), broker validate_record_with_dns + POST /validate-record (no caller auth; /verify-access untouched). Full workspace green. Next: item 3 (broker consent-card connection variant, binding.id mint + registry pairing, request endpoint + audience-proof fetch, /account rendering, behind support advertisement), then mcp-auth credential-less lane.

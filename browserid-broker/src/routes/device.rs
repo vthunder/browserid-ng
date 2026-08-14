@@ -384,6 +384,56 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// POST /validate-record  (two-object record validation, operation A — §6.4)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct ValidateRecordRequest {
+    /// The held record: `warrant~config_cert`.
+    pub record: String,
+    /// The caller's own audience — validation checks `warrant.audience`
+    /// against it exactly.
+    pub audience: String,
+    #[serde(default)]
+    pub accepted_fallbacks: Option<Vec<String>>,
+}
+
+/// The record-validation call beside `/verify-access` (§6.4 steps 1b–1e). No
+/// caller authentication: record validation authenticates no one, and a
+/// record is attributed paper — readable, spendable nowhere — so serving the
+/// check openly leaks nothing (§6.4).
+pub async fn validate_record<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    Json(req): Json<ValidateRecordRequest>,
+) -> Json<crate::verifier::RecordValidationResult>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    use crate::verifier::RecordValidationResult;
+    let fetcher = match state.fallback_fetcher().await {
+        Ok(f) => f,
+        Err(e) => return Json(RecordValidationResult::fail(format!("fetcher: {e}"))),
+    };
+    let accepted = req.accepted_fallbacks.unwrap_or_else(|| vec![state.domain.clone()]);
+    let is_own_revoked =
+        |idx: u64| state.user_store.is_status_revoked_idx(idx).map_err(|e| e.to_string());
+    let status = crate::verifier::StatusCtx {
+        own_uri: browserid_registrar::consent::status_list_uri(&state.domain),
+        is_own_revoked: &is_own_revoked,
+        cache: &state.foreign_status_lists,
+        allow_private_hosts: !crate::routes::session::cookie_secure(&state.domain),
+    };
+    Json(
+        crate::verifier::validate_record_with_dns(
+            &req.record, &req.audience, fetcher.as_ref(), &accepted, status,
+        )
+        .await,
+    )
+}
+
+// ---------------------------------------------------------------------------
 // GET /wsapi/device_certs  (session) → this account's device + config certs
 // ---------------------------------------------------------------------------
 

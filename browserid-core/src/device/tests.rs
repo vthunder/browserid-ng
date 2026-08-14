@@ -93,7 +93,8 @@ impl Fixture {
                 exp: IAT + 90 * DAY,
                 grantor: self.email().into(),
                 grantee: self.email().into(),
-                holder: HolderMatcher::new("br.*").unwrap(),
+                holder: Some(HolderMatcher::new("br.*").unwrap()),
+                binding: None,
                 audience: self.audience().into(),
                 scopes: vec!["login".into()],
                 status: status("https://browserid.me/.well-known/browserid-status", 42),
@@ -255,7 +256,7 @@ fn holder_passthrough_copy_and_isolation() {
             typ: TYP_WARRANT.into(), iat: IAT, exp: IAT + 90 * DAY,
             grantor: f.email().into(),
             grantee: f.email().into(),
-            holder: HolderMatcher::new("svc.some-other-service").unwrap(),
+            holder: Some(HolderMatcher::new("svc.some-other-service").unwrap()), binding: None,
             audience: f.audience().into(), scopes: vec!["login".into()], status: None,
         },
         &f.config_key,
@@ -524,4 +525,223 @@ fn access_request_audience_roundtrips() {
     )
     .unwrap();
     assert!(plain.claims().audience.is_none());
+}
+
+// --- warrant v2 (spec §5, §6.1 steps 1+6, §6.6) ----------------------------
+
+impl Fixture {
+    /// A well-formed v2 holder-binding warrant (the v2 twin of `warrant()`).
+    fn warrant_v2(&self) -> Warrant {
+        self.warrant_v2_with(self.email(), Binding::Holder { matcher: HolderMatcher::new("br.*").unwrap() })
+    }
+    fn warrant_v2_with(&self, grantee: &str, binding: Binding) -> Warrant {
+        Warrant::from_claims(
+            WarrantClaims {
+                typ: TYP_WARRANT_V2.into(),
+                iat: IAT,
+                exp: IAT + 90 * DAY,
+                grantor: self.email().into(),
+                grantee: grantee.into(),
+                holder: None,
+                binding: Some(binding),
+                audience: self.audience().into(),
+                scopes: vec!["login".into()],
+                status: status("https://browserid.me/.well-known/browserid-status", 43),
+            },
+            &self.config_key,
+        )
+        .unwrap()
+    }
+    fn connection_binding(&self) -> Binding {
+        Binding::Connection {
+            protocol: ConnectionProtocol::Oauth,
+            id: "cn_8f3a".into(),
+            client_host: "claude.ai".into(),
+            client_name: "Claude".into(),
+        }
+    }
+}
+
+#[test]
+fn v2_holder_binding_presentation_verifies() {
+    let f = Fixture::new();
+    let pres = AccessPresentation {
+        access_cert: f.access_cert(),
+        assertion: f.assertion(),
+        warrant: Warrant::parse(f.warrant_v2().encoded()).unwrap(),
+        config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
+    };
+    let idp_pub = f.idp.public_key();
+    let v = pres.verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap();
+    assert_eq!(v.email, f.email());
+    assert!(v.warrant_status.is_some());
+}
+
+#[test]
+fn v2_parse_shape_matrix() {
+    let f = Fixture::new();
+    // Well-formed v2 (holder + connection) parse.
+    assert!(Warrant::parse(f.warrant_v2().encoded()).is_ok());
+    let conn = f.warrant_v2_with(f.email(), f.connection_binding());
+    assert!(Warrant::parse(conn.encoded()).is_ok());
+
+    let base = f.warrant_v2().claims().clone();
+    let sign = |c: &WarrantClaims| Warrant::from_claims(c.clone(), &f.config_key).unwrap().encoded().to_string();
+
+    // v2 without status rejects (REQUIRED, §5).
+    let mut c = base.clone();
+    c.status = None;
+    assert!(Warrant::parse(&sign(&c)).is_err());
+    // v2 without binding rejects.
+    let mut c = base.clone();
+    c.binding = None;
+    assert!(Warrant::parse(&sign(&c)).is_err());
+    // v2 with a top-level holder matcher rejects (v1 claim in a v2 record).
+    let mut c = base.clone();
+    c.holder = Some(HolderMatcher::new("br.*").unwrap());
+    assert!(Warrant::parse(&sign(&c)).is_err());
+    // v1 with a binding rejects (ambiguous hybrid).
+    let mut c = base.clone();
+    c.typ = TYP_WARRANT.into();
+    c.holder = Some(HolderMatcher::new("br.*").unwrap());
+    assert!(Warrant::parse(&sign(&c)).is_err());
+    // Unknown typ rejects.
+    let mut c = base.clone();
+    c.typ = "browserid-warrant-v3".into();
+    assert!(Warrant::parse(&sign(&c)).is_err());
+    // Grantor is never a matcher (§6.6 invariant 6).
+    for bad_grantor in ["*", "*@sandmill.org", "not-an-email"] {
+        let mut c = base.clone();
+        c.grantor = bad_grantor.into();
+        assert!(Warrant::parse(&sign(&c)).is_err(), "grantor '{bad_grantor}' must reject");
+    }
+    // Connection must be a self-grant (§5).
+    let mut c = base.clone();
+    c.binding = Some(f.connection_binding());
+    c.grantee = "other@sandmill.org".into();
+    assert!(Warrant::parse(&sign(&c)).is_err());
+    // Connection with empty id / client_host rejects.
+    let mut c = base.clone();
+    c.binding = Some(Binding::Connection { protocol: ConnectionProtocol::Oauth, id: "".into(), client_host: "claude.ai".into(), client_name: "Claude".into() });
+    assert!(Warrant::parse(&sign(&c)).is_err());
+    let mut c = base.clone();
+    c.binding = Some(Binding::Connection { protocol: ConnectionProtocol::Oauth, id: "cn_1".into(), client_host: "".into(), client_name: "Claude".into() });
+    assert!(Warrant::parse(&sign(&c)).is_err());
+}
+
+#[test]
+fn unknown_binding_kind_and_protocol_fail_closed() {
+    let f = Fixture::new();
+    // Sign raw claims carrying an unimplemented kind / protocol: serde rejects
+    // the unknown variant at decode, so the record rejects at parse (§5).
+    let mut raw = serde_json::to_value(f.warrant_v2().claims()).unwrap();
+    raw["binding"] = json!({"kind": "biometric", "template": "x"});
+    let jws = crate::jws::jws_sign(&raw, &f.config_key).unwrap();
+    assert!(Warrant::parse(&jws).is_err());
+
+    let mut raw = serde_json::to_value(f.warrant_v2().claims()).unwrap();
+    raw["binding"] = json!({"kind": "connection", "protocol": "saml", "id": "cn_1", "client_host": "h.example", "client_name": "H"});
+    let jws = crate::jws::jws_sign(&raw, &f.config_key).unwrap();
+    assert!(Warrant::parse(&jws).is_err());
+}
+
+#[test]
+fn connection_bound_record_cannot_present() {
+    // §6.6 invariant 1: admission-only records never verify in a bundle.
+    let f = Fixture::new();
+    let pres = AccessPresentation {
+        access_cert: f.access_cert(),
+        assertion: f.assertion(),
+        warrant: f.warrant_v2_with(f.email(), f.connection_binding()),
+        config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
+    };
+    let idp_pub = f.idp.public_key();
+    let err = pres.verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+    assert!(err.to_string().contains("admission-only"), "{err}");
+}
+
+#[test]
+fn matcher_grantee_record_cannot_present() {
+    // §6.6 invariant 1: a glob in P would transfer attribution to unknown actors.
+    let f = Fixture::new();
+    for grantee in ["*", "*@sandmill.org"] {
+        let pres = AccessPresentation {
+            access_cert: f.access_cert(),
+            assertion: f.assertion(),
+            warrant: f.warrant_v2_with(grantee, Binding::Holder { matcher: HolderMatcher::new("*").unwrap() }),
+            config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
+        };
+        let idp_pub = f.idp.public_key();
+        let err = pres.verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+        assert!(err.to_string().contains("matcher-grantee"), "{err}");
+    }
+}
+
+#[test]
+fn presentation_join_uses_spec_identity_comparison() {
+    // §6.1 step 6 compares grantee == access identity per §5: domain
+    // case-insensitive (A-label), local part byte-exact.
+    let f = Fixture::new();
+    let idp_pub = f.idp.public_key();
+    let ok = AccessPresentation {
+        access_cert: f.access_cert(),
+        assertion: f.assertion(),
+        warrant: f.warrant_v2_with("danmills@SANDMILL.ORG", Binding::Holder { matcher: HolderMatcher::new("br.*").unwrap() }),
+        config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
+    };
+    ok.verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap();
+
+    let bad = AccessPresentation {
+        access_cert: f.access_cert(),
+        assertion: f.assertion(),
+        warrant: f.warrant_v2_with("DANMILLS@sandmill.org", Binding::Holder { matcher: HolderMatcher::new("br.*").unwrap() }),
+        config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
+    };
+    assert!(bad.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
+}
+
+#[test]
+fn v1_normalizes_to_holder_binding() {
+    let f = Fixture::new();
+    let w = Warrant::parse(f.warrant().encoded()).unwrap();
+    match w.claims().binding() {
+        Binding::Holder { matcher } => assert_eq!(matcher.as_str(), "br.*"),
+        other => panic!("v1 must read as a holder binding, got {other:?}"),
+    }
+    assert_eq!(w.claims().holder_matcher().unwrap().as_str(), "br.*");
+}
+
+#[test]
+fn create_v2_signing_surface_refuses_malformed() {
+    // §6.6 invariants 3+4 at the signing surface.
+    let f = Fixture::new();
+    let st = || StatusRef { uri: "https://browserid.me/.well-known/browserid-status".into(), idx: 9 };
+    // Non-self-grant connection refused.
+    assert!(Warrant::create_v2(
+        f.email(), "other@sandmill.org", f.connection_binding(), f.audience(),
+        vec![], chrono::Duration::days(90), &f.config_key, st(),
+    ).is_err());
+    // Well-formed v2 mints and round-trips through parse.
+    let w = Warrant::create_v2(
+        f.email(), f.email(), f.connection_binding(), f.audience(),
+        vec!["tool:read_file".into()], chrono::Duration::days(90), &f.config_key, st(),
+    ).unwrap();
+    let parsed = Warrant::parse(w.encoded()).unwrap();
+    assert_eq!(parsed.claims().typ, TYP_WARRANT_V2);
+    assert!(parsed.claims().status.is_some());
+}
+
+#[test]
+fn binding_wire_shape_matches_spec() {
+    // Pin the §5 wire example: {"kind":"connection","protocol":"oauth",...} /
+    // {"kind":"holder","matcher":...}.
+    let f = Fixture::new();
+    let conn = serde_json::to_value(f.connection_binding()).unwrap();
+    assert_eq!(
+        conn,
+        json!({"kind": "connection", "protocol": "oauth", "id": "cn_8f3a",
+               "client_host": "claude.ai", "client_name": "Claude"})
+    );
+    let holder = serde_json::to_value(Binding::Holder { matcher: HolderMatcher::new("br.*").unwrap() }).unwrap();
+    assert_eq!(holder, json!({"kind": "holder", "matcher": "br.*"}));
 }

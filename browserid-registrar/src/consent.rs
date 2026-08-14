@@ -425,12 +425,20 @@ pub(crate) fn validate_grant_warrants(
                 "warrant grantee does not match the requested actor".into(),
             ));
         }
-        if claims.holder.as_str() == "*" {
+        // This flow signs PRESENTATION grants for an agent, so the record must
+        // be holder-bound (a connection-bound record is admission-only and is
+        // minted by the broker's own consent surface, never supplied here).
+        let Some(matcher) = claims.holder_matcher() else {
+            return Err(RegistrarError::ValidationError(
+                "warrant is not holder-bound".into(),
+            ));
+        };
+        if matcher.as_str() == "*" {
             return Err(RegistrarError::ValidationError(
                 "over-broad holder matcher (bare `*`) not allowed".into(),
             ));
         }
-        if !claims.holder.matches(&agent_holder) {
+        if !matcher.matches(&agent_holder) {
             return Err(RegistrarError::ValidationError(
                 "warrant holder matcher does not cover the agent's holder".into(),
             ));
@@ -562,7 +570,7 @@ pub(crate) fn warrant_to_record(
         scopes: claims.scopes.clone(),
         warrant: jws.to_string(),
         status_idx: claims.status.as_ref().map(|s| s.idx),
-        holder: Some(claims.holder.as_str().to_string()),
+        holder: claims.holder_matcher().map(|m| m.as_str().to_string()),
         config_cert: Some(config_cert.to_string()),
         signed_at: ts(claims.iat),
         expires_at: ts(claims.exp),

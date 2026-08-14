@@ -44,6 +44,7 @@ pub const TYP_DEVICE_CERT: &str = "browserid-device-cert-v1";
 pub const TYP_ACCESS_REQUEST: &str = "browserid-access-request-v1";
 pub const TYP_ACCESS_CERT: &str = "browserid-access-cert-v1";
 pub const TYP_WARRANT: &str = "browserid-warrant-v1";
+pub const TYP_WARRANT_V2: &str = "browserid-warrant-v2";
 
 pub const DEVICE_CERT_VALIDITY_DAYS: i64 = 90;
 pub const ACCESS_CERT_VALIDITY_HOURS: i64 = 24;
@@ -597,29 +598,110 @@ impl AccessCert {
 // Warrant (config-cert-signed): grantor delegates to grantee → audience[+scopes].
 // ===========================================================================
 
+/// A warrant's **binding** (spec §5, v2): the instance qualifier pinning *which
+/// instance of the grantee* may exercise the grant. Exactly one per record,
+/// mandatory `kind`, kind-specific fields. Both extension doors are fail-closed
+/// by construction: an unknown `kind` (or, within `connection`, an unknown
+/// `protocol`) fails deserialization, so the record rejects at parse.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum Binding {
+    /// Pins which **device holders** of the grantee (v1 semantics verbatim):
+    /// `*`, `<ns>.*`, or `<id>`, checked against the grantee's access-cert
+    /// holder (operation P) or login holder (operation A). Serves P and A.
+    #[serde(rename = "holder")]
+    Holder { matcher: HolderMatcher },
+    /// Pins which **custody channel** of the grantee. Admission-only (operation
+    /// A); a connection-bound record never verifies in a bundle.
+    #[serde(rename = "connection")]
+    Connection {
+        protocol: ConnectionProtocol,
+        /// Broker-minted at consent (§7.5), opaque and exact — no wildcard —
+        /// and 1:1 with its record (§6.6 invariant 5).
+        id: String,
+        /// The enforceable client datum: the registered redirect-URI host.
+        client_host: String,
+        /// Display-only; MUST be marked unverified everywhere it appears.
+        client_name: String,
+    },
+}
+
+/// Custody protocols a `connection` binding can name. An unimplemented
+/// protocol fails deserialization — fail-closed (§5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConnectionProtocol {
+    /// OAuth custody mechanics (§5): exactly one exact-match registered
+    /// redirect URI per connection, PKCE S256, and redirect-URI host ==
+    /// `client_host` checked at every code release and token exchange.
+    #[serde(rename = "oauth")]
+    Oauth,
+}
+
+/// Warrant claims, serving both wire versions (spec §5):
+/// - `browserid-warrant-v1` — top-level `holder` matcher, `status` OPTIONAL;
+/// - `browserid-warrant-v2` — a mandatory `binding` slot in place of `holder`,
+///   `status` REQUIRED.
+///
+/// `Warrant::parse` enforces the per-version shape; use [`WarrantClaims::binding`]
+/// for the normalized view (v1 reads as a v2 record with a holder binding).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WarrantClaims {
     pub typ: String,
     pub iat: i64,
     pub exp: i64,
     /// Who authorizes the grant AND who the write is attributed to (the effective
-    /// author). The signing config cert must be authoritative for this identity.
+    /// author). Always an exact email — never a matcher. The signing config cert
+    /// must be authoritative for this identity.
     pub grantor: String,
-    /// Who wields the grant — the identity that mints the access cert and signs
-    /// on-chain (must equal the presented access cert's identity). When it equals
-    /// `grantor` this is an "as-you" grant (the service acts as the user); when it
-    /// differs it is delegated on-behalf (e.g. `mingo-poster@…` acting for a user),
-    /// and the write attributes to `grantor` while `grantee` is the actor of record.
+    /// Who wields the grant. An exact email — or, on admission-consumed records
+    /// only, a grantee matcher (`*` / `*@<domain>`): permission, never
+    /// attribution (§5). When it equals `grantor` this is an "as-you" grant;
+    /// when it differs it is delegated on-behalf, and the write attributes to
+    /// `grantor` while `grantee` is the actor of record.
     pub grantee: String,
-    /// Which holder(s) this warrant grants to: `*`, `<ns>.*`, or `<id>` — checked
-    /// against the GRANTEE's access cert holder (anti-fungibility).
-    pub holder: HolderMatcher,
+    /// v1 only: which holder(s) this warrant grants to (`*`, `<ns>.*`, `<id>`),
+    /// checked against the GRANTEE's access cert holder (anti-fungibility).
+    /// v2 carries this inside `binding` instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holder: Option<HolderMatcher>,
+    /// v2 only: exactly one binding (§5). A missing binding, or an
+    /// unimplemented kind/protocol, rejects at parse — fail-closed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding: Option<Binding>,
     pub audience: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scopes: Vec<String>,
     /// Revocation ref rooted at the hosted broker's warrant registry.
+    /// REQUIRED on v2 (enforced at parse); optional on v1.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<StatusRef>,
+}
+
+impl WarrantClaims {
+    /// The normalized binding: v2's own, or v1 interpreted as its
+    /// holder-binding sugar (§5). Only call on claims that passed
+    /// `Warrant::parse` (or are otherwise known well-formed).
+    pub fn binding(&self) -> Binding {
+        match (&self.binding, &self.holder) {
+            (Some(b), _) => b.clone(),
+            (None, Some(m)) => Binding::Holder { matcher: m.clone() },
+            // Unreachable for parsed warrants; fail-closed for hand-built
+            // claims: an impossible matcher that covers no holder.
+            (None, None) => Binding::Holder {
+                matcher: HolderMatcher::new("\u{0}invalid").expect("static matcher"),
+            },
+        }
+    }
+
+    /// The holder matcher, when this record has a holder binding (v1 always;
+    /// v2 when `binding.kind == holder`). `None` for connection-bound records.
+    pub fn holder_matcher(&self) -> Option<&HolderMatcher> {
+        match (&self.binding, &self.holder) {
+            (Some(Binding::Holder { matcher }), _) => Some(matcher),
+            (Some(_), _) => None,
+            (None, m) => m.as_ref(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -647,11 +729,43 @@ impl Warrant {
             exp: (now + validity).timestamp(),
             grantor: grantor.to_string(),
             grantee: grantee.to_string(),
-            holder,
+            holder: Some(holder),
+            binding: None,
             audience: audience.to_string(),
             scopes,
             status,
         }, config_key)
+    }
+
+    /// Sign a v2 record. `status` is non-optional (REQUIRED on v2, §5), and the
+    /// signing-surface rules of §6.6 invariant 3/4 are enforced here: a surface
+    /// MUST refuse to mint a malformed record or a non-self-grant connection.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_v2(
+        grantor: &str,
+        grantee: &str,
+        binding: Binding,
+        audience: &str,
+        scopes: Vec<String>,
+        validity: Duration,
+        config_key: &KeyPair,
+        status: StatusRef,
+    ) -> Result<Self> {
+        let now = Utc::now();
+        let claims = WarrantClaims {
+            typ: TYP_WARRANT_V2.to_string(),
+            iat: now.timestamp(),
+            exp: (now + validity).timestamp(),
+            grantor: grantor.to_string(),
+            grantee: grantee.to_string(),
+            holder: None,
+            binding: Some(binding),
+            audience: audience.to_string(),
+            scopes,
+            status: Some(status),
+        };
+        Self::validate_claims(&claims)?;
+        Self::from_claims(claims, config_key)
     }
 
     pub fn from_claims(claims: WarrantClaims, config_key: &KeyPair) -> Result<Self> {
@@ -660,10 +774,62 @@ impl Warrant {
 
     pub fn parse(encoded: &str) -> Result<Self> {
         let claims: WarrantClaims = jws_decode(encoded, "warrant")?;
-        if claims.typ != TYP_WARRANT {
-            return Err(invalid("warrant", format!("typ '{}'", claims.typ)));
-        }
+        Self::validate_claims(&claims)?;
         Ok(Self { encoded: encoded.to_string(), claims })
+    }
+
+    /// The per-version shape rules of spec §5, fail-closed. (An unknown binding
+    /// `kind` or connection `protocol` already failed in `jws_decode` — serde
+    /// rejects unknown variants.)
+    fn validate_claims(claims: &WarrantClaims) -> Result<()> {
+        match claims.typ.as_str() {
+            TYP_WARRANT => {
+                if claims.holder.is_none() {
+                    return Err(invalid("warrant", "v1 requires a holder matcher"));
+                }
+                if claims.binding.is_some() {
+                    return Err(invalid("warrant", "v1 must not carry a binding"));
+                }
+            }
+            TYP_WARRANT_V2 => {
+                if claims.holder.is_some() {
+                    return Err(invalid("warrant", "v2 carries its holder matcher inside binding"));
+                }
+                if claims.status.is_none() {
+                    return Err(invalid("warrant", "v2 requires status"));
+                }
+                match &claims.binding {
+                    None => return Err(invalid("warrant", "v2 requires a binding")),
+                    Some(Binding::Connection { id, client_host, .. }) => {
+                        if id.is_empty() {
+                            return Err(invalid("warrant", "connection binding requires an id"));
+                        }
+                        if client_host.is_empty() {
+                            return Err(invalid("warrant", "connection binding requires a client_host"));
+                        }
+                        // §5: `connection` implies a self-grant — the actor of a
+                        // custody channel is its establisher.
+                        if !crate::identity::identity_eq(&claims.grantor, &claims.grantee) {
+                            return Err(invalid(
+                                "warrant",
+                                "connection-bound record must be a self-grant (grantor == grantee)",
+                            ));
+                        }
+                    }
+                    Some(Binding::Holder { .. }) => {}
+                }
+            }
+            other => return Err(invalid("warrant", format!("typ '{other}'"))),
+        }
+        // Identities are always email strings; the grantor is attribution —
+        // exact and signed-for, never a matcher (§6.6 invariant 6).
+        if crate::identity::is_grantee_matcher(&claims.grantor) || !claims.grantor.contains('@') {
+            return Err(invalid("warrant", "grantor must be an exact email"));
+        }
+        if !crate::identity::is_grantee_matcher(&claims.grantee) && !claims.grantee.contains('@') {
+            return Err(invalid("warrant", "grantee must be an email or a grantee matcher"));
+        }
+        Ok(())
     }
 
     pub fn verify(&self, config_pub: &PublicKey) -> Result<()> {
@@ -758,6 +924,18 @@ impl AccessPresentation {
         let cc = self.config_cert.claims();
         let wc = self.warrant.claims();
 
+        // §6.1 step 1: presentation requires a `holder` binding and an exact
+        // grantee. A connection-bound record is admission-only (it carries no
+        // holder matcher for the step-6 join), and a matcher grantee would
+        // transfer attribution to unknown actors — both reject explicitly here
+        // (§6.6 invariant 1), before any crypto.
+        let Some(holder_matcher) = wc.holder_matcher().cloned() else {
+            return Err(invalid("warrant", "connection-bound record cannot verify in a bundle (admission-only)"));
+        };
+        if crate::identity::is_grantee_matcher(&wc.grantee) {
+            return Err(invalid("warrant", "a matcher-grantee record cannot verify in a bundle"));
+        }
+
         // Two independent issuer roots, each DNSSEC-proven via the caller's
         // resolver: the ACCESS cert (the actor/grantee) under its own issuer, the
         // CONFIG cert (which authorizes the grantor and signs the warrant) under
@@ -807,14 +985,16 @@ impl AccessPresentation {
             return Err(invalid("warrant", "expired"));
         }
         // The grantee is the actor: it must be the identity the access cert
-        // certifies (and whose fresh key signed the assertion above).
-        if wc.grantee != ac.identity {
+        // certifies (and whose fresh key signed the assertion above). Exact,
+        // per §5's identity comparison — matcher grantees were rejected above.
+        if !crate::identity::identity_eq(&wc.grantee, &ac.identity) {
             return Err(invalid("warrant", "grantee != access identity"));
         }
-        // The warrant's holder matcher (`*` / `<ns>.*` / `<id>`) must cover the
-        // access cert's holder — anti-fungibility: the grant binds to the
-        // grantee's specific credential, not merely its identity.
-        if !wc.holder.matches(&ac.holder) {
+        // The warrant's holder matcher (`*` / `<ns>.*` / `<id>`; v2
+        // `binding.matcher`, v1 `holder`) must cover the access cert's holder —
+        // anti-fungibility: the grant binds to the grantee's specific
+        // credential, not merely its identity.
+        if !holder_matcher.matches(&ac.holder) {
             return Err(invalid("warrant", "holder does not match warrant matcher"));
         }
         if wc.audience != expected_audience {

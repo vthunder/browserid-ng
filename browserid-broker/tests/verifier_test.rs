@@ -388,3 +388,127 @@ async fn verify_access_rejects_foreign_list_from_non_authoritative_signer() {
     assert_eq!(r.status, "failure", "non-authoritative signer must reject: {:?}", r);
     assert!(r.reason.as_deref().unwrap_or("").contains("non-authoritative"), "{:?}", r);
 }
+
+// ---------------------------------------------------------------------------
+// Two-object record validation (operation A, spec §6.4): validate_record_with_dns.
+// ---------------------------------------------------------------------------
+
+use browserid_broker::verifier::validate_record_with_dns;
+use browserid_core::{Binding, ConnectionProtocol};
+
+/// A held v2 connection record (`warrant~config_cert`): the grantor's config
+/// cert signed by `idp` under `config_iss`, the warrant self-granted and bound
+/// to an OAuth connection, with a broker-registry status ref at `idx`.
+fn connection_record(config_iss: &str, email: &str, audience: &str, idp: &KeyPair, idx: u64) -> String {
+    let config_key = KeyPair::generate();
+    let config_cert = DeviceCert::create(
+        config_iss, &config_key.public_key(), Purpose::Authorization,
+        Holder::new("br1a2b3c.main").unwrap(), vec![email.to_string()],
+        Duration::days(90), idp, None,
+    ).unwrap();
+    let warrant = DWarrant::create_v2(
+        email, email,
+        Binding::Connection {
+            protocol: ConnectionProtocol::Oauth,
+            id: "cn_8f3a".into(),
+            client_host: "claude.ai".into(),
+            client_name: "Claude".into(),
+        },
+        audience, vec!["tool:read_file".into()],
+        Duration::days(90), &config_key,
+        StatusRef { uri: OWN_STATUS_URI.into(), idx },
+    ).unwrap();
+    format!("{}~{}", warrant.encoded(), config_cert.encoded())
+}
+
+#[tokio::test]
+async fn validate_record_conformance_okay() {
+    let idp = KeyPair::generate();
+    let disc = MockDiscoverer::new(idp.public_key()).with_primary("sandmill.org", idp.public_key());
+    let rec = connection_record("sandmill.org", "danmills@sandmill.org", "https://gate.dan.dev/notes", &idp, 168);
+    let cache = RwLock::new(HashMap::new());
+    let r = validate_record_with_dns(&rec, "https://gate.dan.dev/notes", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
+    assert_eq!(r.status, "okay", "{:?}", r);
+    assert_eq!(r.grantor.as_deref(), Some("danmills@sandmill.org"));
+    assert_eq!(r.grantee.as_deref(), Some("danmills@sandmill.org"));
+    assert!(matches!(r.binding, Some(Binding::Connection { .. })), "{:?}", r.binding);
+    assert_eq!(r.scopes.as_deref(), Some(&["tool:read_file".to_string()][..]));
+    // The warrant's registry ref rides back for the resource's per-use re-checks.
+    assert_eq!(r.status_refs.as_ref().map(|s| s.len()), Some(1));
+    assert!(r.expires_at.is_some());
+}
+
+#[tokio::test]
+async fn validate_record_rejects_wrong_audience() {
+    let idp = KeyPair::generate();
+    let disc = MockDiscoverer::new(idp.public_key()).with_primary("sandmill.org", idp.public_key());
+    let rec = connection_record("sandmill.org", "danmills@sandmill.org", "https://gate.dan.dev/notes", &idp, 168);
+    let cache = RwLock::new(HashMap::new());
+    let r = validate_record_with_dns(&rec, "https://other.example", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
+    assert_eq!(r.status, "failure");
+}
+
+#[tokio::test]
+async fn validate_record_rejects_nonauthoritative_issuer() {
+    // Config cert claims an issuer that is not the grantor domain's primary.
+    let idp = KeyPair::generate();
+    let disc = MockDiscoverer::new(idp.public_key()).with_primary("sandmill.org", idp.public_key());
+    let rec = connection_record("evil.example", "danmills@sandmill.org", "https://gate.dan.dev/notes", &idp, 168);
+    let cache = RwLock::new(HashMap::new());
+    let r = validate_record_with_dns(&rec, "https://gate.dan.dev/notes", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
+    assert_eq!(r.status, "failure", "{:?}", r);
+}
+
+#[tokio::test]
+async fn validate_record_status_is_fail_closed() {
+    let idp = KeyPair::generate();
+    let disc = MockDiscoverer::new(idp.public_key()).with_primary("sandmill.org", idp.public_key());
+    let rec = connection_record("sandmill.org", "danmills@sandmill.org", "https://gate.dan.dev/notes", &idp, 168);
+
+    // Revoked bit set → reject.
+    fn revoked_168(idx: u64) -> Result<bool, String> { Ok(idx == 168) }
+    let cache = RwLock::new(HashMap::new());
+    let r = validate_record_with_dns(&rec, "https://gate.dan.dev/notes", &disc, &[BROKER.to_string()], status_ctx!(&cache, &revoked_168)).await;
+    assert_eq!(r.status, "failure");
+    assert!(r.reason.as_deref().unwrap_or("").contains("revoked"), "{:?}", r.reason);
+
+    // Uncheckable status → reject (cannot prove unrevoked).
+    fn broken(_idx: u64) -> Result<bool, String> { Err("store down".into()) }
+    let cache = RwLock::new(HashMap::new());
+    let r = validate_record_with_dns(&rec, "https://gate.dan.dev/notes", &disc, &[BROKER.to_string()], status_ctx!(&cache, &broken)).await;
+    assert_eq!(r.status, "failure");
+    assert!(r.reason.as_deref().unwrap_or("").contains("fail-closed"), "{:?}", r.reason);
+}
+
+#[tokio::test]
+async fn validate_record_accepts_v1_as_holder_binding() {
+    // A v1 warrant (status optional) admits as a holder-binding record.
+    let idp = KeyPair::generate();
+    let disc = MockDiscoverer::new(idp.public_key()).with_primary("sandmill.org", idp.public_key());
+    let config_key = KeyPair::generate();
+    let config_cert = DeviceCert::create(
+        "sandmill.org", &config_key.public_key(), Purpose::Authorization,
+        Holder::new("br1a2b3c.main").unwrap(), vec!["danmills@sandmill.org".to_string()],
+        Duration::days(90), &idp, None,
+    ).unwrap();
+    let warrant = DWarrant::create(
+        "danmills@sandmill.org", "danmills@sandmill.org", HolderMatcher::new("*").unwrap(),
+        "https://gate.dan.dev/notes", vec!["login".into()], Duration::days(90), &config_key, None,
+    ).unwrap();
+    let rec = format!("{}~{}", warrant.encoded(), config_cert.encoded());
+    let cache = RwLock::new(HashMap::new());
+    let r = validate_record_with_dns(&rec, "https://gate.dan.dev/notes", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
+    assert_eq!(r.status, "okay", "{:?}", r);
+    assert!(matches!(r.binding, Some(Binding::Holder { .. })), "{:?}", r.binding);
+}
+
+#[tokio::test]
+async fn validate_record_rejects_garbage_shapes() {
+    let idp = KeyPair::generate();
+    let disc = MockDiscoverer::new(idp.public_key()).with_primary("sandmill.org", idp.public_key());
+    let cache = RwLock::new(HashMap::new());
+    for bad in ["", "one-object", "a~b~c"] {
+        let r = validate_record_with_dns(bad, "https://gate.dan.dev/notes", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
+        assert_eq!(r.status, "failure", "shape '{bad}' must reject");
+    }
+}

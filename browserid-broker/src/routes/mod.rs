@@ -138,6 +138,9 @@ where
         .route("/device/issue", post(device::device_issue))
         .route("/access/mint", post(device::access_mint))
         .route("/verify-access", post(device::verify_access))
+        // Two-object record validation (operation A, spec §6.4) — the hosted
+        // admission-side check beside /verify-access; no caller auth.
+        .route("/validate-record", post(device::validate_record))
         // Status-list distribution (watch() v2, bean 6u70): the page-side
         // revocation poll and the RP-backend re-check.
         .route("/status/proxy", get(status::status_proxy))
