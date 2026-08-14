@@ -39,13 +39,18 @@ A cert acts for an **(identity, holder)** pair, not an identity alone. A **holde
 is an opaque handle for one credential-bearing party — a browser, an agent, a
 service. Authorization attaches to the pair: the same identity, held by two
 holders, can carry different permissions. A holder is opaque to verifiers; only a
-warrant's holder-matcher reads it (§4.5). A warrant names two roles:
+warrant's holder-matcher reads it (§4.5) — one kind of warrant **binding**
+(§5), the instance qualifier. A warrant names two roles:
 
-- **Grantor** — the (identity, holder) that **authorizes**, signing a warrant with
-  a config cert; the write is attributed to the grantor's identity.
-- **Grantee** — the (identity, holder) that **acts**, holding the access cert and
-  signing the assertion. In a self-login grantor and grantee coincide; in a
-  delegation they differ, and may belong to different IdPs (§5, §6).
+- **Grantor** — the identity that **authorizes**, signing a warrant with a
+  config cert; the action is attributed to the grantor.
+- **Grantee** — the identity that **acts**. The warrant's binding (§5) pins
+  *which instance* of the grantee and how it is authenticated: a
+  holder-bound record by key possession — the grantee's device holding the
+  access cert and signing the assertion — and a connection-bound record
+  (§5) by the custody channel's own dance, with no grantee key in the
+  picture. In a self-login grantor and grantee coincide; in a delegation
+  they differ, and may belong to different IdPs (§5, §6).
 
 ### 1.3 Infrastructure: the broker
 
@@ -296,11 +301,23 @@ cert's constraints iff the RP audience (== assertion `aud` == `warrant.audience`
 Constraints are evaluated at verification time against the certificate copies
 **in the bundle** — so policy freshness is set by the TTL of the presented
 certs, which is the issuing IdP's knob. The reference TTLs (§4.1–4.2) are
-consumer defaults; a managing domain is expected to deviate. The natural policy
-point is the **access-cert mint** (§7.2): every presentation — human login or
+consumer defaults; a managing domain is expected to deviate. The natural
+policy point is a **mint**, and both operations have one. For presentation,
+the **access-cert mint** (§7.2): every presented bundle — human login or
 delegated agent, each minting through the identity's IdP — embeds a fresh
-(reference ~24 h) access cert, so constraints stamped there govern humans and
-agents uniformly on a short policy loop, with no new endpoint or object.
+(reference ~24 h) access cert, so constraints stamped there govern the whole
+presentation path on a short policy loop, with no new endpoint or object.
+Connection-bound admission (§6.4) never mints an access cert: there the
+**config cert is the sole constraint carrier**, checked at record validation
+(§6.4 step 1d), so a managing domain that wants its policy to reach members'
+connections MUST stamp constraints on config certs, not only at the
+access-cert mint. Admission's short loop is the **freshness-backed bearer
+mint** (§6.4): to change what a member's standing connections may do, the org
+rotates the member's config cert — revoke the old, reissue under the new
+constraints — and the flipped status bit fails every affected record's next
+bearer mint within one bearer TTL; reconnecting re-runs consent under the new
+cert. Blunter than per-mint stamping (rotation is per member, not per
+connection), but the loop is the same short one.
 
 **Fail closed on unknown keys.** A verifier that encounters a `constraints` key
 it does not implement MUST reject the presentation. Constraints are
@@ -343,34 +360,145 @@ constraints until the verifiers it cares about conform.
   | `aud` | The RP origin the assertion is for. |
   | `exp` | Expiry (short). |
 
-- **Warrant (`browserid-warrant-v1`)** — the authorization object, signed by a
-  **config cert** (§4.3). It authorizes a **`grantor` → `grantee`** delegation
-  over a **`holder`-matcher → `audience` [+ `scopes`]** — e.g. "`user@sandmill.org`
-  (grantor) authorizes `poster@mingo.place` (grantee), holder matching `*`, to act
-  at `https://api.mingo.place/` with scopes `post read`". A warrant is **always**
+- **Warrant (`browserid-warrant-v2`)** — the **authorization record**, signed by
+  a **config cert** (§4.3). It records that a **`grantor`** authorizes a
+  **`grantee`** at one **`audience`** [+ `scopes`], and carries exactly one
+  **`binding`** — the instance qualifier that pins *which instance of the
+  grantee* may exercise the grant. Identities (`grantor`, `grantee`) are
+  **always email strings**; bindings are warrant-local qualifiers, are **not
+  identities**, and never appear where identities live. A warrant is **always**
   present at the RP (self-logins carry one too, where grantor == grantee).
+
+  One record format serves **two operations** (§6): **presentation**
+  (operation P, §6.1), in which the grantee proves possession of its key in
+  the four-object bundle below — the word "presentation" is reserved in this
+  spec for that operation — and **admission** (operation A, §6.4), in which a
+  resource *holds* the record and matches an independently authenticated
+  subject against it, like a signed row in `/etc/passwd`. Which operations a
+  record can serve is governed by its binding.
 
   | Claim | Meaning |
   |---|---|
-  | `typ` | `browserid-warrant-v1`. |
+  | `typ` | `browserid-warrant-v2`. |
   | `iat`, `exp` | Validity window (reference: 90 days). |
-  | `grantor` | The identity the write is **attributed** to (the effective author). The signing config cert MUST be authoritative for it (§4.3). |
-  | `grantee` | The identity that **acts** — mints the access cert and signs. MUST equal the presented access cert's identity. Equals `grantor` for an "as-you" grant; differs for delegated on-behalf grants. |
-  | `holder` | A **matcher** — `*` (any holder), `<ns>.*` (a namespace), or `<id>` (one holder) — checked against the **grantee's** access-cert holder (anti-fungibility). |
+  | `grantor` | The identity the action is **attributed** to (the effective author). Always an **exact** email — never a matcher. The signing config cert MUST be authoritative for it (§4.3). |
+  | `grantee` | The identity that **acts**. An exact email — or, on admission-consumed records only, a **grantee matcher** (below). Equals `grantor` for an "as-you" grant; differs for delegated on-behalf grants. |
+  | `binding` | **Exactly one object**, mandatory `kind`, kind-specific fields (table below). A missing `binding`, or an unimplemented `kind`, ⇒ reject — fail-closed. |
   | `audience` | **Exactly one** RP audience (exact string match, same normalization as assertion `aud`). |
   | `scopes` | OPTIONAL array of opaque strings, interpreted only by the RP. |
-  | `status` | Optional revocation ref, rooted at the **hosted broker's warrant registry** (§6.3). |
+  | `status` | **REQUIRED** revocation ref, rooted at the **hosted broker's warrant registry** (§6.3). |
 
-  A warrant is **over the grantor/grantee + holder-matcher, not bound to any
-  device/access key**, so it is signed **once** by a config cert, **stored** in
-  the hosted broker registry, and **reused device-agnostically**: any device whose
-  holder the matcher covers, that can mint an access cert for the grantee, presents
-  the stored warrant alongside it. A warrant is long-lived and **not a secret** — a
-  leaked warrant is useless without a matching IdP-minted access cert, so a user
-  may publish an individual warrant (the on-chain attribution module publishes it
-  as part of the verification bundle). The only concern is **bulk**
-  publication/enumeration, which in aggregate discloses which sites and services a
-  user uses.
+  ```json
+  { "typ": "browserid-warrant-v2",
+    "iat": 1755100000, "exp": 1762876000,
+    "grantor": "friend@example.com",
+    "grantee": "friend@example.com",
+    "binding": { "kind": "connection", "protocol": "oauth", "id": "cn_8f3a…",
+                 "client_host": "claude.ai", "client_name": "Claude" },
+    "audience": "https://gate.dan.dev/notes",
+    "scopes": ["tool:read_file", "tool:search_files"],
+    "status": { "uri": "https://browserid.me/.well-known/browserid-status", "idx": 168 } }
+  ```
+
+  **Bindings.** The binding slot is singular by construction — "exactly one
+  binding" is structural — and future kinds never add new *top-level* claims:
+  an unknown claim tends to be ignored by verifiers, while an unknown `kind`
+  inside a mandatory slot is fail-closed by rule.
+
+  | `kind` | Fields | Pins | Subject authenticated by | Operations |
+  |---|---|---|---|---|
+  | `holder` | `matcher` — `*` (any holder), `<ns>.*` (a namespace), or `<id>` (one holder) | which **device holders** of the grantee (v1 semantics verbatim), checked against the grantee's access-cert holder (anti-fungibility) or login holder | key possession — access cert + assertion (§6.1) — or a browserid login carrying a holder (§6.4) | P and A |
+  | `connection` | `protocol`, `id`, `client_host`, `client_name` | which **custody channel** of the grantee | per `protocol` — for `"oauth"`: authorization codes released only to the registered redirect URI, PKCE binding the exchange to the authorize initiator | A only |
+
+  Within `connection`, an unimplemented `protocol` ⇒ reject. Both extension
+  doors are explicit and fail-closed: a future custody channel with different
+  mechanics is a new `protocol`; a different qualifier axis entirely is a new
+  `kind`.
+
+  A `holder` matcher and a connection `id` are the same concept at different
+  layers: not just *who*, but *which instance of who* — which device of the
+  identity, or which custody channel of the identity. The instance MUST be
+  pinned in the signed record: a record naming only `client_host` would be
+  satisfiable by **any** connection from that host to this audience —
+  including someone else's, whose agent would then act attributed to the
+  grantor, within the grantor's scopes. Resource-internal state must never be
+  the only thing standing between "my connection" and "any connection" (a
+  buggy rebind or a restore-from-backup is not an attack, and must still be
+  unable to cross grants). `id` is broker-minted at consent (§7.5), opaque and
+  exact — no wildcard — and is **1:1 with its record** (§6.6). `client_host`
+  is the enforceable client datum (the registered redirect-URI host);
+  `client_name` is display-only and MUST be marked unverified everywhere it
+  appears. For `protocol: "oauth"` the enforcement is normative at the
+  resource: it MUST register exactly one exact-match redirect URI per
+  connection (no wildcard or pattern URIs; a post-consent registration
+  change to a different host invalidates the connection), MUST require PKCE
+  (S256), and MUST verify at each authorization-code release and token
+  exchange that the registered redirect URI's host equals
+  `binding.client_host` — fail-closed. Without these checks the consented
+  custody host would be display-only.
+
+  **`connection` implies a self-grant:** a `connection`-bound record MUST have
+  `grantor == grantee`. This is derived, not stipulated: the grantee names the
+  identity that *acts*; a connection's actor is its *establisher* — the only
+  identity the custody mechanics tie to the channel; the establisher is the
+  consent ceremony's signer, because consent is the only moment `binding.id`
+  can be minted and bound; and the signer is the grantor (§6.1 step 5). A
+  connection record is the grantor's own grant to themselves, narrowed to one
+  custody channel — the exact shape self-logins already have, plus the
+  qualifier.
+
+  **Grantee matchers (admission only).** An admission-consumed record MAY
+  carry a grantee matcher: `*@<domain>` (anyone at the domain) or `*` (any
+  authenticated email) — policy rows such as "everyone at my company gets the
+  read tools", or a public-but-attributed mount. Three guardrails: **(1)**
+  matchers are **admission-only** — operation P requires an exact grantee (a
+  glob in P would let any matching agent act *attributed to the grantor*:
+  attribution transfer to unknown actors); **(2)** a matcher grants
+  **permission, never attribution** — the acting identity always comes from
+  the subject's own credential (login or self-signed connection record), never
+  from the glob row; **(3)** `*` means any *authenticated* email, never
+  anonymous — subjects still log in or connect as themselves; the glob only
+  widens who matches. `grantor` is never a matcher — it is attribution, exact
+  and signed-for.
+
+  **Identity comparison.** Wherever this spec matches identities "exactly"
+  (§6.1 step 6, §6.4 step 3), the comparison is: domain part lowercased and
+  in A-label (punycode) form, local part byte-exact, no other normalization.
+  Issuers and signing surfaces MUST emit identity strings already in this
+  form. A `*@<domain>` matcher compares `<domain>` under the same rule
+  against the subject's entire domain part — subdomains do not match — and
+  covers any local part, subaddressed (§4.6) ones included.
+
+  **`status` is REQUIRED** on v2 records. In v1 it is optional because a
+  leaked warrant is inert without the grantee's key; a connection-bound record
+  authorizes with no grantee key in the picture, so the registrar bit is the
+  kill switch and a record without one is malformed. (Requiring it on all v2
+  records also makes the broker's revocation ledger complete by
+  construction.)
+
+  A holder-bound warrant is **over the grantor/grantee + holder-matcher, not
+  bound to any device/access key**, so it is signed **once** by a config cert,
+  **stored** in the hosted broker registry, and **reused device-agnostically**:
+  any device whose holder the matcher covers, that can mint an access cert for
+  the grantee, presents the stored warrant alongside it. A warrant is
+  long-lived and **not a secret** — a leaked holder-bound record is useless
+  without a matching IdP-minted access cert, and a leaked connection-bound
+  record is attributed paper, redeemable only by the genuine audience inside
+  the custody dance bound to its `id` — so a user may publish an individual
+  warrant (the on-chain attribution module publishes it as part of the
+  verification bundle). The only concern is **bulk** publication/enumeration,
+  which in aggregate discloses which sites and services a user uses — and,
+  via the v2 client descriptor, which hosts a user connects through: the same
+  class of metadata.
+
+  **v1 compatibility.** `browserid-warrant-v1` — the same claims with a
+  top-level `holder` matcher in place of `binding`, and `status` OPTIONAL —
+  remains valid indefinitely and is interpreted as a v2 record with
+  `binding: { "kind": "holder", "matcher": <holder claim> }`. New signing
+  surfaces SHOULD emit v2; verifiers accept both. Conforming v1 verifiers
+  already reject v2 objects (unknown `typ` ⇒ reject, §6.1 step 1), so
+  downgrade protection at every deployed verifier holds by existing rule
+  (§6.6).
 
   **Grantor and grantee are independent identities.** In a self-login they
   coincide. In a delegation they differ — and may belong to **different IdPs**: an
@@ -391,17 +519,30 @@ constraints until the verifiers it cares about conform.
 
   The auth cert is **never** presented. A verifier MUST reject
   a bundle that is not exactly these four objects, in this order — the parse is
-  fail-closed.
+  fail-closed. Only a warrant with a `holder` binding **and** an exact
+  (non-matcher) grantee can ever verify in a bundle (§6.1, §6.6 invariant 1);
+  a `connection`-bound record is admission-only and never presents.
 
 ## 6. Verification
 
-A verifier is given a presentation bundle and an expected **audience**, and either
-rejects it or returns the identity it establishes. Verification joins **two
-independent DNSSEC-rooted paths** — one through the access cert (the grantee's
-actor credential) and one through the config cert (the grantor's authorization) —
-and attributes the result to the grantor. (The `browserid.me` broker offers a
-hosted HTTP verifier for RP convenience; that endpoint is a service, not part of
-this protocol.)
+A warrant is consumed by one of **two operations**, per its binding (§5):
+
+- **Operation P — presentation verification** (§6.1): the verifier is given a
+  four-object bundle and an expected **audience**, and either rejects it or
+  returns the identity it establishes. The grantee proves possession of its
+  key; authority travels with the actor.
+- **Operation A — record validation + subject matching** ("admission", §6.4):
+  the resource **holds** the record; nothing presents it. An independently
+  authenticated subject is matched against the record; authority sits at the
+  resource.
+
+Presentation verification joins **two independent DNSSEC-rooted paths** — one
+through the access cert (the grantee's actor credential) and one through the
+config cert (the grantor's authorization) — and attributes the result to the
+grantor. (The `browserid.me` broker offers a hosted HTTP verifier for RP
+convenience — `/verify-access` for bundles and a two-object record-validation
+call for admission (§6.4); those endpoints are a service, not part of this
+protocol.)
 
 ### 6.1 Verification algorithm
 
@@ -414,7 +555,13 @@ config-cert / grantor) may differ.
 
 1. Parse the bundle into exactly `access_cert ~ assertion ~ warrant ~
    config_cert` (§5). Reject any other shape, and any object bearing an
-   unrecognized `typ` or `purpose`, or a missing/malformed `holder` — fail-closed.
+   unrecognized `typ` or `purpose` — fail-closed. The warrant is
+   `browserid-warrant-v2`, or v1 interpreted as its holder-binding sugar (§5).
+   A v2 warrant missing `binding` or `status`, or whose binding `kind` is
+   unimplemented, ⇒ reject. **Presentation requires a `holder` binding and an
+   exact grantee:** a `connection`-bound or matcher-grantee record MUST NOT
+   verify in a bundle — mechanically it carries no holder matcher or no exact
+   join for step 6, and the verifier MUST also reject it explicitly here.
 2. **Per-identity issuer authority.** Resolve `access_cert.iss` and
    `config_cert.iss` **via the authenticated DNSSEC record** (§3) — one resolution
    if they are equal, otherwise two. The verifier MUST require each issuer to be
@@ -431,9 +578,11 @@ config-cert / grantor) may differ.
 5. Verify the **config cert authorizes the grantor**: `purpose == authorization`
    and its `identities` match `warrant.grantor`.
 6. Verify the **warrant** under the config cert's `public-key`; check it is
-   unexpired and that the join holds: `warrant.grantee == access_cert.identity`,
-   `warrant.holder` (matcher) covers `access_cert.holder`, and `warrant.audience`
-   == the RP audience.
+   unexpired and that the join holds: `warrant.grantee == access_cert.identity`
+   (exact, per §5's identity comparison — a grantee matcher never satisfies
+   this join), the holder matcher
+   (v2 `binding.matcher`; v1 `holder`) covers `access_cert.holder`, and
+   `warrant.audience` == the RP audience.
 7. **Enforce constraints** (§4.7). For each presented cert carrying a
    `constraints` claim (access cert, config cert), check the presentation
    satisfies it: the RP audience against `aud` (by salted hash), the warrant
@@ -529,6 +678,195 @@ RPs can consume status without implementing list verification:
   fetches. Because every proxied response must parse and verify as an
   issuer-signed status list, the endpoint cannot be used as a general fetch
   proxy.
+
+### 6.4 Admission: record validation + subject matching (operation A)
+
+In operation A the resource **holds** the record (obtained per §7.5); nothing
+presents the warrant — it is the row an independently authenticated subject is
+matched against. Three steps, each fail-closed:
+
+1. **Validate the record** (on acquisition; status re-checked per use, below):
+   a. parse; `typ` is `browserid-warrant-v2` (or v1, as a holder-binding
+      record, §5); a single `binding` of an implemented kind (and, for
+      `connection`, an implemented `protocol`); `status` present (v2);
+   b. resolve `config_cert.iss` **via the authenticated DNSSEC record** (§3);
+      require it authoritative for the grantor's domain (§8.1 fallbacks apply
+      as in §6.1 step 2); verify the config cert (unexpired, `purpose ==
+      authorization`, `identities` cover `warrant.grantor`);
+   c. verify the warrant under the config cert's `public-key`; unexpired;
+      `audience` == this resource (exact); if the binding is a `connection`,
+      `grantor == grantee` (§5);
+   d. enforce config-cert constraints (§4.7) in full, exactly as §6.1
+      step 7: this resource's audience (== `warrant.audience`, step 1c)
+      against `aud` (by salted hash), and the warrant against `scopes` and
+      `max-ttl`; a constraint key the verifier does not implement ⇒ reject;
+   e. check the revocation ref on each chain object that carries one, each
+      check **fail-closed** (§6.3): the config cert (→ its IdP) and the
+      warrant (→ hosted broker registry; the warrant's ref is always present
+      on v2, optional on v1).
+2. **Authenticate the subject** by the binding's method: the custody
+   protocol's dance (`connection` — e.g. the OAuth redirect-URI + PKCE
+   mechanics, §5), or a browserid login (`holder`). The authenticated
+   artifact is the subject's **own** credential — it may itself be a
+   presentation (a §7.3 login bundle) — never the held record.
+3. **Match** the subject against grantee + binding:
+   - `connection`: the authenticated dance is the one bound to `binding.id`
+     (the 1:1 rule, §6.6 invariant 5) and satisfies the `protocol`'s
+     normative checks (§5 — for `"oauth"`: exact-match registered redirect
+     URI whose host equals `binding.client_host`, PKCE S256);
+   - `holder`: the login's identity matches `grantee` (exact per §5's
+     identity comparison, or per a grantee matcher — permission only, never
+     attribution, §5) AND the holder matcher covers the login's holder.
+
+   A matching step that cannot be evaluated (an unknown binding; a non-`*`
+   matcher against a holder-less authentication) MUST fail closed; `*`
+   imposes nothing.
+
+**Record validation authenticates no one** — it establishes only that the
+record is authentic and unrevoked. Redemption authority is custody plus
+subject matching, both of which happen at the resource; anyone else holding
+the record holds attributed paper (a warrant is not a secret, §5) — readable,
+spendable nowhere. The hosted verifier therefore exposes record validation as
+a two-object call (`warrant ~ config_cert`, steps 1b–1e) beside
+`/verify-access`, requiring no caller authentication.
+
+Validation MAY be split: the signature, resolution, and constraint checks of
+steps 1a–1d — **excluding their validity-window clauses** — are immutable and
+MAY be checked once at acquisition. Per use, the verifier MUST re-check
+fail-closed both the status refs (1e, within the §6.3 cache window) and that
+the warrant and config cert are unexpired (the validity clauses of 1b–1c): a
+held record authorizes until its `exp` or its revocation, whichever comes
+first — expiry is a live bound, not an acquisition-time fact.
+
+**Freshness-backed minting.** Presentation fails closed by construction — the
+actor must return to an online, IdP-gated mint every access-cert TTL — while
+a held record's live checks are things the resource must remember to run.
+Where a resource mints derived credentials (bearers) from a held record (the
+OAuth lane's embedded AS), admission MUST get the same forced online loop, at
+the one periodic transaction its topology already has — the bearer mint:
+
+- Bearers minted from a held record MUST be short-lived (reference: ≤ 1 h,
+  always ≪ the record's remaining life).
+- A mint or refresh MUST be backed by evidence **no older than the bearer it
+  produces**: status-list tokens (§6.3) covering the record's and the config
+  cert's refs, plus the validity-window checks of 1b–1c. No fresh evidence ⇒
+  no mint — refresh fails, and the connection goes dark within one bearer
+  TTL.
+- The AS SHOULD retain, per mint, the snapshot it relied on: a disputed
+  admission then audits as record + config cert + the signed status snapshot
+  backing the bearer — §6.2's "valid as of T" pairing, applied to admission.
+
+This converts the failure mode of an honest-but-lazy resource from "honors
+silently until `exp`" into "connections die within one bearer TTL", bounds
+worst-case revocation latency at bearer TTL rather than record life, and
+shrinks the diligence surface from every per-call path to the one mint
+chokepoint the reference lane ships. It cannot make a willfully non-checking
+resource check — nothing can; the resource fronts the tools — but
+non-compliance becomes auditable rather than invisible.
+
+The same record may serve **both** operations when its binding allows: "G
+authorizes `alice@gmail.com` (holder `*`) at `/notes`" can be held by the
+resource and satisfied by Alice's login (A), or presented by Alice's agent
+with her access cert (P). The authority is identical and P is the stronger
+proof; nothing is gained by forbidding either.
+
+*Design note — why both operations exist.* The two operations are the
+capabilities/ACL duality: P is authority that **travels with the actor** —
+self-contained, verifiable by anyone, anywhere, later; A is authority that
+**sits at the resource** — a signed row, right for anonymous-client rails
+where the resource is the enforcement point anyway. Neither subsumes the
+other: admitting an email subject means authenticating a browserid login,
+which *is* a presentation — the regress bottoms out at P, and A is a
+composition pattern over it for subjects that cannot present. Conversely,
+dropping delegated P would lose stateless first contact (a presenting agent
+verified cold, no registry), third-party/offline verifiability (§6.2 — an
+admission decision is only a local yes in the resource's logs), the actor as
+an independently accountable principal (its own certs and revocation axis:
+two kill switches on orthogonal authorities, where an admission has exactly
+one), and non-interactive actorhood (§7.4 → §7.2).
+
+### 6.5 Composition: policy records × connection records
+
+The shared-resource scenario — admin G grants member E access to resource R;
+E later connects via an anonymous host — is a **two-record chain**, each
+record signed by the party who knows its contents at signing time; no signed
+object is ever amended or late-bound:
+
+1. **Policy record** (G-signed, at grant-authoring time, §7.5):
+   `{grantor: G, grantee: E, binding: {kind: "holder", matcher: "*"},
+   audience: R, scopes: S}`. G knows E, R, S — and nothing about future
+   connections.
+2. **Connection record** (E-signed, at connection time, §7.5):
+   `{grantor: E, grantee: E, binding: {kind: "connection", id: C, …},
+   audience: R, scopes: S′}`. Born when the connection C is born, at E's own
+   consent card.
+
+Admission at R conjoins them: authenticate the dance bound to C (§6.4 step
+2); C's record is signed by E; E matches a policy record's grantee (exact or
+matcher); **effective scopes = S ∩ S′**. Rules:
+
+- **Attribution vs. permission.** The connection record's signer (E) is the
+  *attributed* identity — E acted. The policy record's grantor (G) is the
+  *permitter* — the reason it was allowed, never the author. Audit rendering:
+  "E, via <client> (<host>), under G's grant." The self-serve case G = E is
+  the degenerate one where the distinction is invisible.
+- **Two-sided revocation.** E revokes the connection record at E's account
+  (kills E's own connection, touches nothing else); G revokes the policy
+  record (kills E's access through every connection). Each side holds its own
+  registrar bit (§6.3).
+- **Joined on the email, deliberately NOT by cryptographic cross-reference.**
+  Both records are independently signature-verified, so the join is as strong
+  as its parts — the email is the protocol's join key. Embedding a
+  policy-record hash in the connection record would freeze policy at
+  connection time; policy must evolve independently (G edits E's scopes;
+  every existing connection of E's picks up the change at its next check, no
+  re-consent; either side revokes without touching the other).
+- **The chain is exactly two layers, fail-closed.** Policy records (who may
+  enter) and connection records (which custody channel, attributed to whom)
+  conjoin at admission; records MUST NOT confer the authority to mint further
+  records. (General delegation chains are deliberately out of scope.)
+- **The resource is the custodian and conjunction point.** It holds both row
+  sets, binds any bearer/refresh state to the (binding.id, connection record)
+  pair, and evaluates the conjunction per call — status and validity-window
+  re-checks fail-closed on both records (§6.4), then S ∩ S′. The connecting user NEVER holds the policy
+  record — it is not a ticket they carry; it travels G → broker → resource
+  and stays there. Admission records are never "presented later"; for audit,
+  both records are independently verifiable artifacts the resource can hand
+  over.
+
+A resource MAY keep its policy layer as unsigned local configuration (a roles
+table) instead of policy records; the conjunction semantics are the same —
+config-row policy and record policy answer the same admission question.
+
+### 6.6 Warrant-v2 invariants
+
+A conforming implementation MUST uphold all of these:
+
+1. Operation P requires a `holder` binding AND an exact (non-matcher)
+   grantee; a `connection`-bound or matcher-grantee record MUST NOT verify in
+   a four-object bundle. (Mechanically guaranteed — no holder matcher ⇒ §6.1
+   step 6 cannot pass — and stated explicitly at §6.1 step 1.)
+2. Conforming v1 verifiers already reject v2 objects (unknown `typ` ⇒ reject,
+   §6.1 step 1): downgrade protection at every deployed verifier is by
+   explicit rule.
+3. A v2 record without `status`, without a `binding` object, or with an
+   unimplemented binding `kind` (or connection `protocol`) MUST be rejected.
+   Signing surfaces MUST refuse to mint such records.
+4. A `connection`-bound record MUST be a self-grant (`grantor == grantee`).
+5. **`binding.id` is 1:1 with its record:** the id is minted by the broker in
+   one consent flow and bound to the record signed in that same flow; the
+   resource MUST bind bearers/refresh to that (id, record) pair, and any
+   other record naming the same id is invalid. The registry stores the
+   pairing, making conflicts detectable.
+6. Grantee matchers (`*`, `*@<domain>`) are permission, never attribution: a
+   matcher-grantee record MUST NOT be the source of the attributed identity,
+   and its subjects MUST still be authenticated (no anonymous admission).
+   `grantor` MUST always be exact.
+7. In operation A, a subject-matching step that cannot be evaluated MUST fail
+   closed.
+8. Record validation authenticates no one. Only presentation (P) or the
+   binding's subject authentication (A step 2) establishes an acting party.
+   Bindings are never identities and appear nowhere identities live.
 
 ## 7. Issuance & obtaining credentials
 
@@ -657,6 +995,12 @@ create one. The IdP never sees an audience or scopes; the signed warrant is stor
 in the hosted-broker registry for device-agnostic reuse (§5) and per-grant
 revocation (§6.3).
 
+Presentation-consumed warrants reach their grantee's holders as below;
+admission-consumed records (§6.4) instead reach the **resource** that will
+hold them, through two further flows at the end of this section —
+**connection grant requests** (audience-initiated) and the **grant-authoring
+ceremony** (grantor-initiated).
+
 How a holder comes to present a warrant depends on what it was issued:
 
 - **A holder with a config cert** signs its own warrants — at an interactive login
@@ -706,6 +1050,92 @@ stage** (verify the pairing, mint the device cert — no "permission" language) 
 a **grants stage** (the consent question above, identity fixed). Declining the
 grants stage is honest, not fatal: the identity exists, and the pickup delivers the
 credential with no warrants and a `grants_denied` reason.
+
+**Connection grant requests.** The signed-request gate above assumes a
+requester holding a device key. A `connection`-bound record (§5) has no such
+requester — the host is anonymous — so the request is raised by the
+**audience** (the resource) itself and authenticated by **proof of audience
+control**:
+
+1. **Request.** The resource POSTs `{ type: "connection", audience, scopes,
+   client: { client_host, client_name }, message? }`. Exactly **one** audience
+   per request (this flow is per-connection; the 1–8 batching above does not
+   apply). The broker replies with `request_id`, a `challenge` nonce,
+   `consent_uri` (the page the connecting user must visit), `expires_in`, and
+   `interval` — the same pending-request machinery as the JIT flow, keyed by
+   `request_id` in place of `code`.
+2. **Audience proof.** The resource publishes the nonce at
+   `https://<audience-origin>/.well-known/browserid-audience-proof/<request_id>`;
+   the broker fetches it over TLS — redirects refused, connections only to
+   public unicast addresses (loopback, private, and link-local ranges
+   refused at resolution time), short timeout, fail-closed — before the
+   consent page will render. The document body is the challenge nonce
+   verbatim (`Content-Type` SHOULD be `text/plain` and is otherwise
+   ignored); the broker compares it byte-for-byte after stripping trailing
+   ASCII whitespace, and the resource MUST keep it published until the
+   request resolves or expires. The proof establishes origin control, rooted
+   in WebPKI — the same root the audience string itself relies on. For
+   **path audiences** the proof is at origin scope — the same scope at
+   which WebPKI names the audience; a path tenant that does not control its
+   origin has no independent identity in this model. The card always
+   renders the **full audience**, path included.
+3. **Consent (connection variant).** The card names the **connection**, not a
+   requester: "Connect <client_name> (<client_host>) to <audience>. It will
+   be able to use: <scopes> — attributed to you. Revocable here." The
+   verified audience is rendered with the same anti-phishing prominence as
+   above; `client_name` MUST be marked as reported by the site — the broker
+   cannot verify the host's involvement and the card MUST NOT imply it did
+   (the client binding is enforced by the audience's redirect-URI + PKCE
+   mechanics, §5). Approval mints `binding.id`, signs the **self-grant**
+   record with the approver's config cert, and stores the registry row — the
+   `id ↔ record` pairing (§6.6 invariant 5) plus the status index.
+4. **Delivery.** The resource sends the connecting user's browser to
+   `consent_uri` (in the OAuth lane, as a step of its own authorize
+   redirect) and polls with `{ request_id }` under the JIT flow's state
+   machine: `pending` → retry after `interval`; `approved`; `denied`
+   (optionally with a machine reason); `expired` (after `expires_in`); `429`
+   if polling faster than `interval`. `approved` delivers the signed record
+   **together with the grantor's signing config cert** — exactly the
+   two-object `warrant ~ config_cert` input §6.4 validates — to the
+   resource, which is the record's custodian (§6.5).
+
+The stakes of a forged request are bounded: an attacker-raised record is
+redeemable only by the genuine audience, inside a custody dance that audience
+initiates — the attack is annoyance-phishing, not authority theft. The proof
+keeps the consent surface clean; it is not guarding a vault. The broker
+SHOULD rate-limit connection requests per audience origin.
+
+**Grant-authoring ceremony (grantor-initiated).** Policy records (§6.5) are
+authored the other way around: the grantor initiates, and the resource —
+which holds no config cert and MUST never sign — compiles its access policy
+(e.g. a role edit in its console) into flat per-(grantee, audience) grants.
+The wire shape mirrors the connection flow:
+
+1. **Request.** The resource POSTs `{ type: "authoring", grants:
+   [{ grantee, audience, scopes }, …] }`. All grant audiences MUST share one
+   origin (the proof below is origin-scoped); duplicate (grantee, audience)
+   pairs MUST be rejected. The broker replies with `request_id`, a
+   `challenge` nonce, `consent_uri`, `expires_in`, and `interval`.
+2. **Audience proof.** As the connection flow's step 2 — same URL scheme,
+   fetch rules, and document format, keyed by this `request_id`, at the
+   grants' shared origin. Same bounded stakes; the proof keeps the consent
+   surface clean.
+3. **Consent.** The resource sends the grantor to `consent_uri`. The broker
+   renders the compiled set under the **just-in-time flow's** consent rules
+   above (verified audience per grant with equal prominence, prefilled and
+   never user-typed, deliberate all-or-nothing approval) — and, because rows
+   here name other people, the card MUST render each row's **grantee** with
+   the same prominence as its audience and scopes. Approval signs each
+   record with the grantor's config cert; each gets its registrar status
+   index and lands in the registry (the grantor's account ledger).
+4. **Delivery.** The resource polls with `{ request_id }` under the same
+   state machine as the connection flow; `approved` delivers each record
+   with the grantor's signing config cert — the `warrant ~ config_cert`
+   pairs §6.4 validates — and the resource stores the set as its policy
+   backing store (§6.5).
+
+A policy edit is revoke-old + sign-new in one ceremony; roles remain a
+resource-side abstraction — the protocol sees only flat records.
 
 The consent page is the trust boundary against consent-phishing: it MUST render the
 verified target origin (not only a friendly name), and approval MUST be deliberate.

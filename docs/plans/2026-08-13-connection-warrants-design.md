@@ -204,7 +204,8 @@ steps, each fail-closed:
    c. verify the warrant under the config cert's key; unexpired; `audience`
       == this resource (exact); if `connection` is present, `grantor ==
       grantee`;
-   d. enforce config-cert constraints (§4.7) against scopes/ttl; unknown
+   d. enforce config-cert constraints (§4.7) in full, as §6.1 step 7: the
+      audience against `aud`, the warrant against scopes/ttl; unknown
       constraint key ⇒ reject;
    e. check the two status authorities fail-closed: config cert (→ its IdP)
       and warrant (→ broker registry).
@@ -451,7 +452,33 @@ surface clean; it is not guarding a vault.
 - The resource holds the record; mints bearers from it (same embedded AS,
   same scope-ceiling rule), **bound to the (binding.id, record) pair**;
   refresh re-mints with no re-consent and no assertion, until record `exp`
-  or revocation.
+  or revocation — but never without fresh evidence: see freshness-backed
+  minting below (added 2026-08-14).
+- **Freshness-backed minting (decided 2026-08-14, post-review).** The
+  review surfaced the operations' freshness asymmetry: P fails closed by
+  construction (the actor must return to an IdP-gated mint every ~24 h),
+  while A's live checks were only diligence — a lazy resource silently
+  honors a record until `exp` (90 days). The record's own signer can't close
+  this (the user's config key is device-resident; no periodic re-signing),
+  so the loop attaches to the topology's one periodic transaction, the
+  bearer mint: bearers MUST be short-lived (≤ 1 h reference) and a
+  mint/refresh MUST be backed by status-list snapshots (§6.3) no older than
+  the bearer, plus the validity-window checks; the AS SHOULD retain the
+  snapshot per mint (auditable "valid as of T"). Lazy-resource failure mode
+  becomes "connections die within one bearer TTL", and the diligence surface
+  shrinks to the mint chokepoint the lane ships. Also resolves the §4.7
+  uniformity gap: the org's short loop over connections is config-cert
+  rotation — revoke + reissue under new constraints fails every affected
+  record's next mint within one bearer TTL, and reconnecting re-consents
+  under the new cert (blunt: per member, not per connection). *Rejected:*
+  broker-minted bearers (centralizes per-call traffic + metadata; AS stops
+  being commodity plumbing), per-record voucher endpoint (OCSP-shaped
+  "connection C is active now" signal to the broker; the whole-list
+  snapshot carries the same assurance without it), push revocation
+  (unreliable delivery, still diligence), short-`exp` records (re-consent
+  UX defeats durable connections). Residual, stated plainly in the spec: a
+  willfully non-checking resource can't be forced — it fronts the tools —
+  but non-compliance is now auditable rather than invisible.
 - Per-call enforcement unchanged: bearer validation re-checks the record's
   status ref fail-closed (`/status/check`), same cache window — revocation
   latency identical to today.
@@ -518,10 +545,10 @@ remains available and preferred wherever the subject can present.
 
 | Component | Change |
 |---|---|
-| Core spec | §5: v2 record format, bindings table (holder/connection), instance-binding concept, status REQUIRED, self-grant rule, privacy sentence. §6: operation A ("record validation + subject matching") beside §6.1, invariants §3.3, composition §3.4. §7.5: connection grant request + audience proof (§3.5). Vocabulary: "presentation" reserved for operation P; identities are always emails. |
+| Core spec | §5: v2 record format, bindings table (holder/connection), instance-binding concept, status REQUIRED, self-grant rule, privacy sentence. §6: operation A ("record validation + subject matching") beside §6.1, invariants §3.3, composition §3.4. §7.5: connection grant request + audience proof (§3.5). §4.7: mint-policy paragraph scoped per operation; config cert as sole constraint carrier for connections; rotation loop. Vocabulary: "presentation" reserved for operation P; identities are always emails. |
 | Broker | Request endpoint + challenge fetch; consent-card connection variant; grant-authoring ceremony (owner-initiated batch signing, §3.4); `binding.id` mint + id↔record registry pairing; /account connection rendering. |
 | Verifier (crate + hosted) | v2 parsing (both operations); record-validation call (`warrant ~ config_cert`); v1 accepted as holder-binding sugar. |
-| mcp-auth | Lane gains a credential-less mode: when the broker advertises connection requests, raise them with the audience proof; else fall back to the credential path (capability detection keeps old brokers working). Bearer/refresh binding to (binding.id, record). `ctx.client` (0.2.1, shipped) gains the id. |
+| mcp-auth | Lane gains a credential-less mode: when the broker advertises connection requests, raise them with the audience proof; else fall back to the credential path (capability detection keeps old brokers working). Bearer/refresh binding to (binding.id, record); short bearers (≤ 1 h reference) with freshness-backed mint/refresh (§3.6). `ctx.client` (0.2.1, shipped) gains the id. |
 | gate | Once broker + mcp-auth land: delete first-run provisioning; mounts raise connection requests directly. Existing installs with credentials keep working indefinitely (v1 path untouched). Later: roles as email policy records (§4). |
 | wallet / Lane A / python SDK | Untouched — keyed presentation is the agent path, unchanged. |
 
@@ -556,7 +583,11 @@ remains available and preferred wherever the subject can present.
 
 1. Audience-proof granularity for path audiences: is origin-scope proof
    acceptable long-term, or should multi-tenant origins (not gate's shape
-   today) require path-scope proof?
+   today) require path-scope proof? *(2026-08-14: spec states origin scope
+   with the WebPKI rationale — origin control is the scope at which WebPKI
+   names the audience (ACME HTTP-01 validates there too), so a path tenant
+   without origin control has no independent identity in this model. Open
+   only if a future shape demands path-scope identity.)*
 2. `binding.id` shape (connections): opaque broker UUID (proposed) vs something
    derivable — opaque is safer (no cross-audience correlation), but consider
    whether the resource should be able to recognize a re-consent as "the
@@ -571,7 +602,10 @@ remains available and preferred wherever the subject can present.
    (`dan+tag@…` — presumably yes, §4.6 caution noted) and subdomains
    (presumably no)? Exact two-form grammar (`*`, `*@<domain>`) or a fuller
    pattern language? (Lean: exactly the two forms; wildcards never in
-   grantor.)
+   grantor.) **Decided 2026-08-14 (spec §5, identity comparison):** exactly
+   the two forms; comparison is domain lowercased + A-label, local part
+   byte-exact, no other normalization; `*@<domain>` covers subaddresses,
+   not subdomains; wildcards never in grantor.
 7. Should operation-A validation results be cacheable at the resource
    (record validated once at acquisition, status re-checked per use — the
    proposed split), or must the full chain re-verify per mint? (Proposed:
