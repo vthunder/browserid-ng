@@ -32,6 +32,10 @@ import { dirname, join } from "node:path";
 import { verifyPresentation } from "@browserid-ng/verify";
 import { createMount, json, applyCors, readBody } from "./mount.mjs";
 import { createSessionManager, parseCookies } from "./session.mjs";
+import { createFilePolicyStore } from "./policystore.mjs";
+import { createConnectAuth } from "./connectauth.mjs";
+import { gateHome } from "./credential.mjs";
+import { identityEq, granteeCovers } from "@browserid-ng/mcp-auth";
 import { loadConfig, saveConfig, normalizeConfig, normalizeMountDef, normalizePersonDef, normalizeGrants } from "./config.mjs";
 import { ensureFunnel } from "./tunnel.mjs";
 
@@ -68,6 +72,31 @@ export function createGateway(opts) {
   const adminSecure = () => (consoleLocal ? false : String(publicOrigin || "").startsWith("https"));
   let sessions = createSessionManager({ secret: opts.sessionSecret, ttlS: opts.sessionTtlS, secure: adminSecure() });
 
+  // --- §6.5 policy layer: signed records are the enforcement source ---------
+  // The roles/people UI is the EDITOR; "Sign grants" compiles it into flat
+  // per-(email, mount) records the admin signs at the broker's authoring
+  // card. Shared across mounts (one origin, one ceremony) and persisted —
+  // records survive restarts.
+  const policyStore = opts.policyStore
+    || createFilePolicyStore(join(gateHome(), "policy.json"));
+  // Member sessions for the identity-first connect flow (origin-wide, so a
+  // second mount connects without another login).
+  let userSessions = createSessionManager({
+    secret: opts.sessionSecret, ttlS: opts.sessionTtlS, secure: adminSecure(), cookieName: "gate_user",
+  });
+  let connectAuth = createConnectAuth({
+    broker, origin: () => publicOrigin || "", sessions: userSessions, fetch: doFetch,
+  });
+
+  /** What the signed records entitle `email` to at `mount` ("all" for the
+   *  admin, a scope list, or null = no access). */
+  async function entitlementAt(mount, email) {
+    if (identityEq(email, adminEmail) || email === adminEmail) return "all";
+    const rows = (await policyStore.list(mount.resource)).filter((r) => granteeCovers(r.grantee, email));
+    if (!rows.length) return null;
+    return [...new Set(rows.flatMap((r) => r.scopes || []))];
+  }
+
   // --- access resolution (roles are the single source of truth) -------------
   // Enforcement uses the STARTUP snapshot of roles, matching the staged model:
   // role edits saved in the console take effect on the next restart. The admin
@@ -94,6 +123,99 @@ export function createGateway(opts) {
     return set.size ? set : null;
   }
 
+  // --- grants: roles compiled to flat signed records (spec §6.5) ------------
+
+  /** Compile the CURRENT config (people × roles) into the flat
+   *  per-(email, mount audience) grants the admin signs. */
+  function compileGrants() {
+    const per = new Map(); // email -> Map(mountId -> "all" | Set(tool))
+    for (const role of config.roles) {
+      for (const member of role.members) {
+        const acc = per.get(member) || new Map();
+        per.set(member, acc);
+        if (role.builtin) {
+          for (const def of config.mounts) acc.set(def.id, "all");
+          continue;
+        }
+        for (const g of role.grants) {
+          const cur = acc.get(g.mountId);
+          if (cur === "all") continue;
+          if (g.on.includes("*")) acc.set(g.mountId, "all");
+          else {
+            const set = cur instanceof Set ? cur : new Set();
+            for (const t of g.on) set.add(t);
+            acc.set(g.mountId, set);
+          }
+        }
+      }
+    }
+    const rows = [];
+    for (const [email, perMount] of per) {
+      for (const [mountId, toolset] of perMount) {
+        const mount = byId.get(mountId);
+        if (!mount) continue; // not running (staged) — sign after restart
+        const names = toolset === "all"
+          ? mount.toolNames
+          : [...toolset].filter((t) => mount.toolNames.includes(t));
+        if (!names.length) continue;
+        rows.push({
+          grantee: email,
+          audience: mount.resource,
+          scopes: names.map((t) => `tool:${t}`).sort(),
+        });
+      }
+    }
+    return rows.sort((a, b) => (a.grantee + a.audience).localeCompare(b.grantee + b.audience));
+  }
+
+  /** desired vs signed (admin-signed rows only): what needs a signature, and
+   *  which signed rows are stale (no longer desired → custodial delete). */
+  async function grantsDiff() {
+    const desired = compileGrants();
+    const signed = (await policyStore.list()).filter((r) => r.grantor === adminEmail);
+    const skey = (r) => `${r.grantee}|${r.audience}`;
+    const sameScopes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+    const signedBy = new Map(signed.map((r) => [skey(r), r]));
+    const pending = desired.filter((d) => {
+      const have = signedBy.get(skey(d));
+      return !have || !sameScopes([...(have.scopes || [])].sort(), d.scopes);
+    });
+    const desiredKeys = new Set(desired.map(skey));
+    const stale = signed.filter((r) => !desiredKeys.has(skey(r)));
+    return { desired, signed, pending, stale };
+  }
+
+  // One signing ceremony at a time; the console polls its status.
+  let signState = null; // { requestId, consentUri, status: "pending"|"done"|"error", error?, signedCount? }
+
+  async function startGrantSigning() {
+    const { pending, stale } = await grantsDiff();
+    // Custodial removals need no ceremony: deleting the held row ends access
+    // at this resource (the admin can additionally revoke at the broker).
+    for (const r of stale) await policyStore.del(r.grantor, r.grantee, r.audience);
+    if (!pending.length) {
+      signState = { status: "done", signedCount: 0, removed: stale.length };
+      return signState;
+    }
+    const anyMount = mounts.values().next().value;
+    if (!anyMount) throw badRequest("no running mounts to sign for");
+    // The broker caps an authoring ceremony at 32 rows: sign in chunks — the
+    // console shows the remainder and offers another signing pass.
+    const batch = pending.slice(0, 32);
+    const ceremony = await anyMount.lane.requestAuthoring({ grants: batch });
+    signState = {
+      status: "pending",
+      requestId: ceremony.requestId,
+      consentUri: ceremony.consentUri,
+      removed: stale.length,
+    };
+    ceremony.wait().then(
+      (rows) => { signState = { ...signState, status: "done", signedCount: rows.length, remaining: pending.length - batch.length }; },
+      (e) => { signState = { ...signState, status: "error", error: String(e.message || e) }; }
+    );
+    return signState;
+  }
+
   // --- startup spawning (the ONLY place a child is ever spawned) ------------
 
   async function spawnMount(def) {
@@ -101,8 +223,11 @@ export function createGateway(opts) {
     log(`[gate] starting mount /${def.mount} → ${def.command.join(" ")}`);
     const mount = await createMount({
       resource,
-      credential,
-      access: (email) => accessFor(email, def.id),
+      ...(credential ? { credential } : {}),
+      owners: [adminEmail],
+      policyStore,
+      userFor: (rq) => connectAuth.userFor(rq),
+      entitlementFor: async (email) => entitlementAt(mount, email),
       name: def.name,
       child: { command: def.command[0], args: def.command.slice(1) },
       broker,
@@ -359,6 +484,11 @@ export function createGateway(opts) {
       // (suffixed — what mcp-auth's URLs use). For a root single-server the two
       // coincide; for a mount they differ. Serve the inserted form by rewriting
       // to the suffixed subpath the mount already handles.
+      // Identity-first connect: the member login (origin-wide session).
+      if (path === "/connect/login" || path === "/connect/logout") {
+        if (await connectAuth.handle(rq, res, { path, url })) return;
+      }
+
       // Connection mode (spec §7.5): the audience proof is ORIGIN-scoped —
       // the broker fetches it at the host root, not under a mount path — so
       // fan out across mounts to whichever lane has the pending request.
@@ -455,6 +585,26 @@ export function createGateway(opts) {
 
     if (rq.method === "GET" && path === "/admin/whoami") {
       return json(res, 200, { admin: session.email, host: publicOrigin, csrf: sessions.csrfForNonce(session.nonce) });
+    }
+    // Grants (spec §6.5): the compiled desired set vs the signed records, and
+    // the signing ceremony (the admin signs at the broker's authoring card).
+    if (rq.method === "GET" && path === "/admin/grants") {
+      const diff = await grantsDiff();
+      return json(res, 200, { ...diff, signState });
+    }
+    if (rq.method === "POST" && path === "/admin/grants/sign") {
+      if (!requireCsrf(rq, res, session)) return;
+      if (signState?.status === "pending") {
+        return json(res, 409, { error: "conflict", error_description: "a signing ceremony is already pending", signState });
+      }
+      try {
+        return json(res, 200, await startGrantSigning());
+      } catch (e) {
+        return json(res, e.status || 500, { error: "sign_failed", error_description: String(e.message || e) });
+      }
+    }
+    if (rq.method === "GET" && path === "/admin/grants/status") {
+      return json(res, 200, { signState });
     }
     if (rq.method === "POST" && path === "/admin/logout") {
       if (!requireCsrf(rq, res, session)) return;

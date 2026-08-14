@@ -500,6 +500,11 @@ fn respond_record(
     if !state.host.owns_verified_email(user.user_id, &delegator_of(&grantor))? {
         return Err(bad("the grantor must be an identity on this account"));
     }
+    // Identity-first pin (§7.5 rule shared with the JIT flow): a pinned
+    // request is approve/deny only — never a different identity.
+    if rec.grantor != "*" && grantor != rec.grantor {
+        return Err(bad(format!("this request pins the identity to '{}'", rec.grantor)));
+    }
 
     let config_cert = DeviceCert::parse(config_jws).map_err(|e| bad(format!("bad config cert: {e}")))?;
     if config_cert.purpose() != Purpose::Authorization {
@@ -1423,6 +1428,12 @@ pub struct RecordRequestBody {
     #[serde(default)]
     pub scopes: Vec<String>,
     pub client: Option<RecordClientInfo>,
+    /// Connection only, OPTIONAL: pin the identity the record must be
+    /// signed by/for (the resource authenticated the connecting user first —
+    /// the identity-first flow). Pinned cards render the identity fixed
+    /// (approve/deny only, no selector), mirroring the JIT flow's grantor
+    /// pin: a pin is never silently substituted.
+    pub grantor: Option<String>,
     pub message: Option<String>,
     /// Where the consent page sends the browser after approval (the OAuth
     /// authorize hop back to the resource). Origin-validated against the
@@ -1461,7 +1472,7 @@ pub async fn record_request(
         return Err(bad("record requests are not supported here"));
     }
 
-    let (kind, grants, meta, return_url) = match req.r#type.as_str() {
+    let (kind, grants, meta, return_url, grantor_pin) = match req.r#type.as_str() {
         "connection" => {
             let audience = req
                 .audience
@@ -1491,6 +1502,19 @@ pub async fn record_request(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(|s| s.chars().take(100).collect::<String>());
+            // Optional identity pin (identity-first flow): must be an exact
+            // email — a pin is an identity, never a matcher.
+            let pin = req
+                .grantor
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_lowercase);
+            if let Some(g) = pin.as_deref() {
+                if !g.contains('@') || g.starts_with("*") || g.len() > 254 {
+                    return Err(bad("bad grantor pin (must be an exact email)"));
+                }
+            }
             let grants = vec![WarrantGrantItem {
                 audience: audience.to_string(),
                 scopes: req.scopes.clone(),
@@ -1519,7 +1543,7 @@ pub async fn record_request(
             if let Some(u) = return_url.as_deref() {
                 validate_return_url(u, "", &[audience])?;
             }
-            (RequestKind::Connection, grants, meta, return_url)
+            (RequestKind::Connection, grants, meta, return_url, pin)
         }
         "authoring" => {
             let items = req
@@ -1571,7 +1595,7 @@ pub async fn record_request(
             if let Some(u) = return_url.as_deref() {
                 validate_return_url(u, "", &audiences)?;
             }
-            (RequestKind::Authoring, grants, meta, return_url)
+            (RequestKind::Authoring, grants, meta, return_url, None)
         }
         other => return Err(bad(format!("unknown request type '{other}'"))),
     };
@@ -1605,7 +1629,7 @@ pub async fn record_request(
         agent_email: String::new(),
         holder: String::new(),
         label: meta.client_name.clone().unwrap_or_else(|| origin.clone()),
-        grantor: "*".to_string(),
+        grantor: grantor_pin.unwrap_or_else(|| "*".to_string()),
         message,
         grants,
         status: WarrantRequestStatus::Pending,

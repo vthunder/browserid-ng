@@ -1,6 +1,6 @@
 {
   "name": "@browserid-ng/gate",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Publish stdio MCP servers as remote, BrowserID-gated HTTP endpoints. One command runs the gateway + web console (npx @browserid-ng/gate --admin you@example.com): add servers by name + mount + command, grant access with roles — per person, per server, per tool. Every call is scoped, attributed, and revocable. Works without a tunnel (localhost); claims a tailscale funnel automatically when available.",
   "type": "module",
   "main": "./src/gate.mjs",
@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@browserid-ng/agent": "^0.4.1",
-    "@browserid-ng/mcp-auth": "^0.4.0",
+    "@browserid-ng/mcp-auth": "^0.5.0",
     "@browserid-ng/verify": "^0.2.0",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },

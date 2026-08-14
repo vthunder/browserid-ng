@@ -54,8 +54,10 @@ const nowS = () => Math.floor(Date.now() / 1000);
  * @param {boolean} [opts.secure] set the Secure cookie flag (default true; pass
  *                                false only for http loopback / --console-local).
  */
-export function createSessionManager({ secret, ttlS = 12 * 3600, secure = true } = {}) {
+export function createSessionManager({ secret, ttlS = 12 * 3600, secure = true, cookieName } = {}) {
   const key = secret || sessionSecret();
+  const COOKIE = cookieName || "gate_session";
+  const CSRF_COOKIE = cookieName ? `${cookieName}_csrf` : "gate_csrf";
 
   const sign = (payload) => b64u(createHmac("sha256", key).update(payload).digest());
 

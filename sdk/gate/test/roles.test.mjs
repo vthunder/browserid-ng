@@ -20,6 +20,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { KeyPair } from "@browserid-ng/agent";
 import { createGateway } from "../src/gateway.mjs";
+import { createRecordBroker } from "./fixtures/record-broker.mjs";
 import { normalizeConfig } from "../src/config.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -48,10 +49,12 @@ const credential = {
 // Mock verifier: presentation → email; every grantor's warrant carries BOTH
 // tool scopes, so what differentiates access below is the ROLE, not the scope.
 const EMAILS = { "pres-admin": ADMIN, "pres-alice": ALICE, "pres-sam": SAM, "pres-bob": BOB };
+const records = createRecordBroker({ brokerOrigin: BROKER, adminEmail: ADMIN });
 const broker = createServer(async (req, res) => {
   const reply = (c, o) => { res.writeHead(c, { "content-type": "application/json" }); res.end(JSON.stringify(o)); };
   let raw = ""; for await (const c of req) raw += c;
   const body = raw ? JSON.parse(raw) : {};
+  if (records.handle(new URL(req.url, BROKER).pathname, body, reply)) return;
   if (req.url === "/verify-access") {
     const email = EMAILS[body.presentation];
     if (!email) return reply(200, { status: "failure", reason: "verification failed" });
@@ -71,6 +74,7 @@ before(async () => {
   await new Promise((r) => broker.listen(BROKER_PORT, r));
   gw = createGateway({
     credential, adminEmail: ADMIN, broker: BROKER, origin: ORIGIN, statusCacheS: 0, persist: false,
+    policyStore: memoryPolicyStore(),
     log: () => {},
     config: {
       mounts: [{ id: "n1", name: "Notes", mount: "notes", command: [process.execPath, join(HERE, "fixtures", "fs-child.mjs"), notesDir], enabled: true }],
@@ -82,6 +86,17 @@ before(async () => {
     },
   });
   await gw.start({ port: PORT });
+  // Records are the enforcement source (§6.5): compile the configured roles
+  // and sign them (the record broker auto-approves the authoring card).
+  const s = await adminLogin();
+  const sign = await fetch(`${ORIGIN}/admin/grants/sign`, { method: "POST", headers: H(s) });
+  assert.equal(sign.status, 200, `sign HTTP ${sign.status}`);
+  for (let i = 0; i < 50; i++) {
+    const st = await (await fetch(`${ORIGIN}/admin/grants/status`, { headers: { cookie: s.cookie } })).json();
+    if (st.signState?.status === "done") break;
+    if (st.signState?.status === "error") assert.fail(`signing failed: ${st.signState.error}`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
 });
 after(async () => { await gw.close(); broker.close(); });
 
@@ -164,7 +179,16 @@ async function adminLogin() {
   const { csrf } = await res.json();
   return { cookie, csrf };
 }
-const H = (s, extra = {}) => ({ cookie: s.cookie, "content-type": "application/json", "x-csrf-token": s.csrf, ...extra });
+function H(s, extra = {}) { return { cookie: s.cookie, "content-type": "application/json", "x-csrf-token": s.csrf, ...extra }; }
+function memoryPolicyStore() {
+  let rows = [];
+  const key = (r) => `${r.grantor}|${r.grantee}|${r.audience}`;
+  return {
+    async put(row) { rows = rows.filter((r) => key(r) !== key(row)); rows.push(row); },
+    async list(aud = null) { return aud == null ? [...rows] : rows.filter((r) => r.audience === aud); },
+    async del(g, e, a) { rows = rows.filter((r) => key(r) !== `${g}|${e}|${a}`); },
+  };
+}
 
 test("a refused login reports the ATTEMPTED identity (never the admin's)", async () => {
   const res = await fetch(`${ORIGIN}/admin/login`, {

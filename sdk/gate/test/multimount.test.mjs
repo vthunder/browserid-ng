@@ -43,7 +43,7 @@ const broker = createServer(async (req, res) => {
   let raw = ""; for await (const c of req) raw += c;
   const body = raw ? JSON.parse(raw) : {};
   if (req.url === "/verify-access") {
-    const grantor = { "pres-allowed": ALLOWED }[body.presentation];
+    const grantor = { "pres-allowed": ADMIN }[body.presentation];
     if (!grantor) return reply(200, { status: "failure", reason: "verification failed" });
     // Two mounts ⇒ two audiences; assert it's one of ours (path-prefixed).
     assert.ok([`${ORIGIN}/notes`, `${ORIGIN}/docs`].includes(body.audience), `audience ${body.audience}`);

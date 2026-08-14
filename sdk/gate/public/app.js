@@ -655,7 +655,8 @@ function renderRoles(root) {
   head.appendChild(el("h1", null, "Roles"));
   head.appendChild(el("span", "page-sum", `${STATE.roles.length} roles`));
   root.appendChild(head);
-  root.appendChild(el("p", "page-sub wide", "Roles are the only way in: a role grants tools — per server, per tool — and people in the role get exactly those. Every server appears in every role; nothing is granted until you check it."));
+  root.appendChild(el("p", "page-sub wide", "Roles are the editor: a role grants tools — per server, per tool. What people can actually use comes from the access grants YOU SIGN below — each person's grant is a record signed with your browserid, revocable any time from your account page."));
+  renderGrantsPanel(root);
 
   const list = el("div", "roles-list");
   for (const r of STATE.roles) list.appendChild(roleCard(r));
@@ -678,6 +679,67 @@ function renderRoles(root) {
   list.appendChild(create);
   root.appendChild(list);
 }
+
+// --- signed grants (spec §6.5): the enforcement source -----------------------
+// Roles compile to flat per-(person, server) grants; the admin signs them at
+// the broker's consent card. Until signed, an edit grants nothing.
+
+async function refreshGrants() {
+  try { STATE.grants = await api("GET", "/admin/grants"); } catch { STATE.grants = null; }
+}
+
+function renderGrantsPanel(root) {
+  const g = STATE.grants;
+  const panel = el("div", "new-role-panel");
+  panel.style.marginBottom = "16px";
+  if (!g) {
+    panel.appendChild(el("span", "page-sum", "Loading grant status…"));
+    refreshGrants().then(render);
+    root.appendChild(panel);
+    return;
+  }
+  const pending = g.pending?.length || 0;
+  const stale = g.stale?.length || 0;
+  const signedN = g.signed?.length || 0;
+  const st = g.signState;
+
+  if (st?.status === "pending") {
+    panel.appendChild(el("span", "page-sum", "Waiting for your signature at the broker… "));
+    const a = document.createElement("a");
+    a.href = st.consentUri;
+    a.target = "_blank";
+    a.textContent = "open the consent card";
+    panel.appendChild(a);
+    if (!grantsPollTimer) {
+      grantsPollTimer = setInterval(async () => {
+        await refreshGrants();
+        const now = STATE.grants?.signState;
+        if (now?.status !== "pending") { clearInterval(grantsPollTimer); grantsPollTimer = null; }
+        render();
+      }, 2000);
+    }
+  } else if (pending || stale) {
+    panel.appendChild(el("span", "page-sum",
+      `${pending} grant${pending === 1 ? "" : "s"} awaiting your signature` +
+      (stale ? ` · ${stale} to remove` : "") + " — "));
+    panel.appendChild(button("Sign at browserid", "btn-cyan", () => {
+      mutate(async () => {
+        const out = await api("POST", "/admin/grants/sign");
+        await refreshGrants();
+        if (out?.consentUri || STATE.grants?.signState?.consentUri) {
+          window.open(out?.consentUri || STATE.grants.signState.consentUri, "_blank");
+        }
+      });
+    }));
+  } else {
+    panel.appendChild(el("span", "page-sum",
+      `${signedN} signed grant${signedN === 1 ? "" : "s"} in force — everything you configured is signed.`));
+    if (st?.status === "error") panel.appendChild(el("span", "err", ` Last signing failed: ${st.error}`));
+  }
+  root.appendChild(panel);
+}
+
+let grantsPollTimer = null;
 
 function roleCard(r) {
   const expanded = STATE.roleExpanded === r.id;

@@ -48,7 +48,7 @@ const broker = createServer(async (req, res) => {
   const body = raw ? JSON.parse(raw) : {};
   if (req.url === "/verify-access") {
     if (body.presentation !== "pres-allowed") return reply(200, { status: "failure", reason: "no" });
-    return reply(200, { status: "okay", email: ALLOWED, grantee: GRANTEE, holder: "a.1", issuer: "example.com", scopes: ["tool:read_text_file", "tool:list_directory"], status_refs: [] });
+    return reply(200, { status: "okay", email: ADMIN, grantee: GRANTEE, holder: "a.1", issuer: "example.com", scopes: ["tool:read_text_file", "tool:list_directory"], status_refs: [] });
   }
   if (req.url === "/status/check") return reply(200, { ok: true, revoked: false });
   reply(404, {});

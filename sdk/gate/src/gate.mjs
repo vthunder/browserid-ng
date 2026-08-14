@@ -21,6 +21,8 @@
 
 import { createServer } from "node:http";
 import { createMount, argsDigest, json, applyCors } from "./mount.mjs";
+import { createSessionManager } from "./session.mjs";
+import { createConnectAuth } from "./connectauth.mjs";
 
 /**
  * Build (and connect) a single-server gate around a stdio MCP child.
@@ -32,12 +34,30 @@ export async function createGateService(opts) {
   const name = opts.name || "mcp gateway";
   const log = opts.log || ((line) => console.log(line));
 
+  // Identity-first connect (policy mode): the member login lives at this
+  // origin's /connect/*; sessions are HMAC cookies like the console's.
+  let connectAuth = null;
+  if (opts.owners?.length) {
+    const secure = String(opts.resource || "").startsWith("https");
+    const sessions = createSessionManager({
+      secret: opts.sessionSecret, ttlS: opts.sessionTtlS, secure, cookieName: "gate_user",
+    });
+    connectAuth = createConnectAuth({
+      broker: (opts.broker || "https://browserid.me").replace(/\/+$/, ""),
+      origin: () => String(opts.resource).replace(/\/+$/, ""),
+      sessions,
+      fetch: opts.fetch || globalThis.fetch,
+    });
+  }
+
   // The single mount serves at the resource root (no path prefix).
   const mount = await createMount({
     resource: opts.resource,
     credential: opts.credential,
     owners: opts.owners,
     policyStore: opts.policyStore,
+    userFor: connectAuth ? (rq) => connectAuth.userFor(rq) : undefined,
+    entitlementFor: opts.entitlementFor,
     allow: opts.allow,
     name,
     child: opts.child,
@@ -58,6 +78,10 @@ export async function createGateService(opts) {
       if (rq.method === "GET" && path === "/") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         return res.end(landingHtml({ name, broker: mount.broker, tools: mount.tools, allow: mount.allow }));
+      }
+      // Identity-first connect: the member login at the origin.
+      if (connectAuth && (path === "/connect/login" || path === "/connect/logout")) {
+        if (await connectAuth.handle(rq, res, { path, url })) return;
       }
       // Everything else is a mount subpath at the root.
       const handled = await mount.handle(rq, res, { subpath: path, url });

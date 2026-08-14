@@ -11,6 +11,7 @@
  * self-heal + client-side browserid-warrant-v2 signing included.
  */
 import { test, expect } from '@playwright/test';
+import { DialogPage } from '../pages/dialog';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
@@ -87,9 +88,12 @@ test.afterAll(async () => {
   await new Promise((r) => catcher.close(r));
 });
 
-/** One full member connect: DCR + PKCE authorize → the member approves the
- *  connection card in their browser → code lands on the catcher → tokens. */
-async function connectMember(memberPage: any, request: any) {
+/** One full member connect (identity-first, spec §7.5 pin): the GATE
+ *  authenticates the member first (browserid dialog popup on the first
+ *  connect; the origin-wide session auto-bounces afterwards), raises the
+ *  request pinned to them with their ACTUAL entitlement, and the member
+ *  approves the pinned connection card → code lands on the catcher. */
+async function connectMember(memberPage: any, request: any, member: any, opts: { expectLogin: boolean }) {
   const reg = await (
     await request.post(`${GATE}/register`, { data: { redirect_uris: [REDIRECT], client_name: 'Claude' } })
   ).json();
@@ -100,11 +104,26 @@ async function connectMember(memberPage: any, request: any) {
       `&response_type=code&code_challenge=${p.challenge}&code_challenge_method=S256&state=h1` +
       `&scope=${encodeURIComponent('tool:read_text_file tool:list_directory')}`
   );
-  // The broker's CONNECTION consent card: names the connection, marks the
-  // client name as the site's own report, and shows the full audience.
-  await expect(memberPage.locator('#list .pvcard')).toContainText('Connect Claude to this site?');
+  if (opts.expectLogin) {
+    // First connect: the gate demands ITS login before any broker request.
+    await expect(memberPage.locator('#go')).toBeVisible({ timeout: 10000 });
+    const popupPromise = memberPage.context().waitForEvent('page');
+    await memberPage.click('#go');
+    const popup = await popupPromise;
+    await new DialogPage(popup).signInExistingUser(member.email, member.pass);
+  } else {
+    // Origin-wide gate session: straight to the broker consent card.
+    await expect(memberPage.locator('#go')).toHaveCount(0);
+  }
+  // The broker's PINNED connection card: names the connection AND the
+  // signed-in identity (no selector), and lists only the member's actual
+  // entitlement — not the host's requested ceiling.
+  await expect(memberPage.locator('#list .pvcard')).toContainText('Connect Claude to this site?', { timeout: 15000 });
   await expect(memberPage.locator('#list .pvcard')).toContainText('127.0.0.1');
   await expect(memberPage.locator('#list .pvcard')).toContainText('as reported by the site');
+  await expect(memberPage.locator('#list .pvcard')).toContainText(member.email);
+  await expect(memberPage.locator('#list .pvcard')).toContainText('tool:read_text_file');
+  await expect(memberPage.locator('#list .pvcard')).not.toContainText('tool:list_directory');
   await memberPage.click('button.approve:enabled', { timeout: 5000 });
   // The page signs the v2 record, then auto-bounces through the gate's
   // return leg to the host redirect (the catcher).
@@ -148,7 +167,9 @@ test('owner shares to a member email; member connects, works under S ∩ S′, b
   const ownerPage = await ownerCtx.newPage();
   const memberPage = await memberCtx.newPage();
   await signIn(ownerPage, owner.email, owner.pass);
-  await signIn(memberPage, member.email, member.pass);
+  // The member's broker session comes from the DIALOG during the first
+  // connect (which also deposits their keystore certs) — the realistic
+  // cold-start: a person with an account but no live session on this browser.
 
   // 1. OWNER SHARES: the gate raises the authoring ceremony; the owner signs
   //    the policy record at the broker's consent card.
@@ -164,14 +185,14 @@ test('owner shares to a member email; member connects, works under S ∩ S′, b
   await expect.poll(async () => JSON.stringify(await (await request.get(`${ADMIN}/share/${share.request_id}`)).json()), { timeout: 15000 }).toContain('"done"');
 
   // 2. MEMBER CONNECTS and works — scoped to S ∩ S′ (read yes, list no).
-  const tokens = await connectMember(memberPage, request);
+  const tokens = await connectMember(memberPage, request, member, { expectLogin: true });
   expect(tokens.access_token, JSON.stringify(tokens)).toBeTruthy();
   expect(tokens.scope).toBe('tool:read_text_file');
   expect(tokens.refresh_token).toMatch(/^mrt_/);
   const ok = await callTool(request, tokens.access_token, 'read_text_file', { path: 'hello.txt' });
   expect(await ok.text()).toContain('shared notes from the vault');
   const denied = await callTool(request, tokens.access_token, 'list_directory', { path: '.' });
-  expect(await denied.text()).toContain('INSUFFICIENT_SCOPE');
+  expect(await denied.text()).toContain('ACCESS_DENIED');
 
   // 3. MEMBER-SIDE REVOCATION: the member kills their own connection at
   //    their account; the live bearer dies fail-closed and refresh mints
@@ -182,7 +203,7 @@ test('owner shares to a member email; member connects, works under S ∩ S′, b
     await request.post(`${GATE}/token`, { data: { grant_type: 'refresh_token', refresh_token: tokens.refresh_token } })
   ).json();
   expect(deadRefresh.error).toBe('invalid_grant');
-  const tokens2 = await connectMember(memberPage, request);
+  const tokens2 = await connectMember(memberPage, request, member, { expectLogin: false });
   expect(tokens2.access_token, JSON.stringify(tokens2)).toBeTruthy();
   const okAgain = await callTool(request, tokens2.access_token, 'read_text_file', { path: 'hello.txt' });
   expect(await okAgain.text()).toContain('shared notes from the vault');

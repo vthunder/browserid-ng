@@ -309,7 +309,7 @@ where
 const INLINE_SCRIPT_HASHES: &[&str] = &[
     "'sha256-ssXXmnnMSNJE9ep3A2oZsY0N58j73hRh5HFtWcl98qM='", // account.html
     "'sha256-XRWE73ZH1qCk6vmO+hv85g2743sS42s8Y64PjFX8z98='", // authorize.html
-    "'sha256-HCblZd0SzGLcnguw/khW9RWJnnRGjkR7WMy9NvTuPUs='", // consent.html
+    "'sha256-WH+F+DreUr4oZ9A/EPS+8cJFLU7VQdTMaxWRPDwPGYo='", // consent.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)
 ];
 

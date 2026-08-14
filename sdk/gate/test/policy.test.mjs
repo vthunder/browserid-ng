@@ -69,7 +69,7 @@ const broker = createServer(async (req, res) => {
   if (path === "/warrant/record-request") {
     const id = `req_${nextId++}`;
     const challenge = randomBytes(24).toString("base64url");
-    pending.set(id, { challenge, type: body.type, returnUrl: body.return_url, grants: body.grants, deliver: null });
+    pending.set(id, { challenge, type: body.type, grantor: body.grantor || null, scopes: body.scopes, returnUrl: body.return_url, grants: body.grants, deliver: null });
     return reply(200, { success: true, request_id: id, challenge, consent_uri: `${BROKER}/consent/${id}`, expires_in: 900, interval: 0 });
   }
   if (path === "/warrant/poll") {
@@ -108,6 +108,14 @@ const broker = createServer(async (req, res) => {
     });
   }
   if (path === "/status/check") return reply(200, { ok: true, revoked: false });
+  if (path === "/verify-access") {
+    const email = { "pres-member": MEMBER, "pres-stranger": STRANGER }[body.presentation];
+    if (!email) return reply(200, { status: "failure", reason: "verification failed" });
+    return reply(200, {
+      status: "okay", email, grantee: email, holder: "br.x", issuer: "example.com",
+      scopes: [], status_refs: [],
+    });
+  }
   reply(404, {});
 });
 
@@ -122,6 +130,7 @@ before(async () => {
   // NO credential, NO allowlist: owners + policy records are the gate.
   svc = await createGateService({
     owners: [OWNER],
+    sessionSecret: randomBytes(32),
     name: "Shared Notes",
     child: { command: process.execPath, args: [join(HERE, "fixtures", "fs-child.mjs"), dataDir] },
     resource: RESOURCE,
@@ -142,23 +151,44 @@ const pkce = () => {
   return { verifier, challenge: createHash("sha256").update(verifier, "ascii").digest("base64url") };
 };
 
-/** Drive the connection dance for `who` and return the token response (or
- *  the token-endpoint error body). */
+/** Establish the gate member session (the identity-first login). */
+async function login(who) {
+  const r = await fetch(`${RESOURCE}/connect/login`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ presentation: `pres-${who}`, next: "/" }),
+  });
+  const j = await r.json();
+  assert.ok(j.ok, `login: ${JSON.stringify(j)}`);
+  return r.headers.getSetCookie().map((c) => c.split(";")[0]).find((c) => c.startsWith("gate_user="));
+}
+
+/** Drive the identity-first connection dance for `who` and return the token
+ *  response (or {denied} when refused before consent). */
 async function connect(who, record) {
   const reg = await (await fetch(`${RESOURCE}/register`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ redirect_uris: [REDIRECT], client_name: "Claude" }),
   })).json();
   const p = pkce();
-  const authz = await fetch(
+  const authorizeUrl =
     `${RESOURCE}/authorize?client_id=${reg.client_id}&redirect_uri=${encodeURIComponent(REDIRECT)}` +
-    `&response_type=code&code_challenge=${p.challenge}&code_challenge_method=S256`,
-    { redirect: "manual" }
-  );
+    `&response_type=code&code_challenge=${p.challenge}&code_challenge_method=S256`;
+
+  // Signed out → the gate demands ITS login first (never a broker request).
+  const anon = await fetch(authorizeUrl, { redirect: "manual" });
+  assert.equal(anon.status, 302);
+  assert.ok(anon.headers.get("location").startsWith("/connect/login?next="), anon.headers.get("location"));
+
+  const cookie = await login(who);
+  const authz = await fetch(authorizeUrl, { redirect: "manual", headers: { cookie } });
+  if (authz.status === 403) return { denied: true, body: await authz.text() };
   const consent = new URL(authz.headers.get("location"));
   assert.equal(consent.origin, BROKER, `authorize should 302 to the broker consent page (got ${consent})`);
   const requestId = consent.pathname.split("/").pop();
   const r = pending.get(requestId);
+  // Identity-first: the request is PINNED to the signed-in user, and its
+  // scopes are the user's actual entitlement (not the host's ceiling).
+  assert.equal(r.grantor, who === "member" ? MEMBER : STRANGER);
   // The audience proof is live at the GATE origin while pending.
   const proof = await fetch(`${RESOURCE}/.well-known/browserid-audience-proof/${requestId}`);
   assert.equal(await proof.text(), r.challenge);
@@ -186,9 +216,10 @@ const callTool = (token, name, args) =>
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
   });
 
-test("an unshared stranger's valid connection never mints a token", async () => {
-  const out = await connect(STRANGER, STRANGER_CONNECTION);
-  assert.equal(out.error, "invalid_grant", JSON.stringify(out));
+test("an unshared stranger is refused BEFORE any consent ceremony", async () => {
+  const out = await connect("stranger", STRANGER_CONNECTION);
+  assert.ok(out.denied, JSON.stringify(out));
+  assert.match(out.body, /don't have access/);
 });
 
 test("owner shares to the member's email; the member connects and works under S ∩ S′", async () => {
@@ -207,7 +238,7 @@ test("owner shares to the member's email; the member connects and works under S 
   assert.equal(rows[0].grantee, MEMBER);
 
   // 2. The member connects (their own consent) and gets S ∩ S′.
-  const tokens = await connect(MEMBER, MEMBER_CONNECTION);
+  const tokens = await connect("member", MEMBER_CONNECTION);
   assert.ok(tokens.access_token, JSON.stringify(tokens));
   assert.equal(tokens.scope, "tool:read_text_file", "S′(read+list) ∩ S(read) = read");
   assert.ok(tokens.refresh_token);
@@ -225,7 +256,7 @@ test("owner shares to the member's email; the member connects and works under S 
   // 4. The intersection bites: list_directory is in the member's connection
   //    scopes but NOT the owner's grant — the bearer simply lacks it.
   const denied = await callTool(tokens.access_token, "list_directory", { path: "." });
-  assert.match(await denied.text(), /INSUFFICIENT_SCOPE/);
+  assert.match(await denied.text(), /ACCESS_DENIED/);
 
   // 5. Two-sided revocation: the owner revokes the policy record → the
   //    member's refresh (freshness-backed, fail-closed) mints nothing.

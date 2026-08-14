@@ -460,7 +460,11 @@ function cardConnection(r) {
   const host = r.client_host || '';
   const name = (r.client_name || '').trim();
   const shown = name || host;
-  const grantor = rootIds[0] || '';
+  // Identity-first pin: the resource authenticated the connecting user and
+  // pinned the identity — render it fixed, approve/deny only. Unpinned: the
+  // approver picks, and the scope list is only the host's requested ceiling.
+  const pinned = r.grantor && r.grantor !== '*';
+  const grantor = pinned ? r.grantor : (rootIds[0] || '');
   const g = (r.grants || [])[0] || { audience: '', scopes: [] };
   return {
     grantor,
@@ -472,7 +476,10 @@ function cardConnection(r) {
         <a href="/account">your account</a>.</p>` +
       grantBlocks(r.grants) +
       `<div class="pv-panel" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:14px">
-        <span class="pv-footnote">attributed to</span> ${asIdentityCell(r, grantor)}</div>
+        <span class="pv-footnote">attributed to</span> ${pinned
+          ? `<span class="mono" style="color:#17171a">${escapeHtml(grantor)}</span> <span class="pv-footnote">· requested</span>`
+          : asIdentityCell(r, grantor)}</div>
+      ${pinned ? '' : `<p class="pv-footnote" style="margin:-6px 0 12px">The permissions above are what the app asked for — the site may grant you less.</p>`}
       <div class="pv-actions" style="margin-top:0">
         <button class="pv-btn approve" data-code="${escapeHtml(r.code)}" disabled>Connect for 90 days</button>
         <button class="pv-ghost deny" data-code="${escapeHtml(r.code)}">Deny</button></div>` +
@@ -718,9 +725,38 @@ async function boot() {
   let ctx;
   try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
   if (!ctx.authenticated) {
-    $('auth-gate').innerHTML = `<p class="pv-note" style="margin:0">You are not signed in.
-      Consent requests are approved from your browserid session — sign in through any app's
-      login dialog or <a href="/account">your account page</a> first, then reload.</p>`;
+    // A real sign-in, not a dead end: connection requests routinely land
+    // signed-out users here (the identity-first connect flow). Same wsapi as
+    // the account page's form; the reload restores the deep-linked request.
+    $('auth-gate').innerHTML = `<div class="pv-title" style="margin-bottom:10px">Sign in to continue</div>
+      <p class="pv-note" style="margin-bottom:12px">Approving happens from your browserid session.</p>
+      <form id="gate-si" style="display:flex;flex-direction:column;gap:8px">
+        <input id="gate-email" type="email" required placeholder="you@example.com" autocomplete="username"
+          style="font:14px system-ui;padding:9px 10px;border:1px solid rgba(0,0,0,.18);border-radius:8px">
+        <input id="gate-pass" type="password" required placeholder="password" autocomplete="current-password"
+          style="font:14px system-ui;padding:9px 10px;border:1px solid rgba(0,0,0,.18);border-radius:8px">
+        <button type="submit" class="pv-btn">Sign in</button>
+        <p class="status err" id="gate-err" style="margin:0"></p>
+      </form>
+      <p class="pv-footnote" style="margin-top:8px">No account or forgot your password? Use <a href="/account">your account page</a>.</p>`;
+    document.getElementById('gate-si').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const errEl = document.getElementById('gate-err');
+      errEl.textContent = '';
+      try {
+        await api('/wsapi/authenticate_user', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            email: document.getElementById('gate-email').value.trim(),
+            pass: document.getElementById('gate-pass').value,
+            ephemeral: false,
+          }),
+        });
+        location.reload();
+      } catch (e) {
+        errEl.textContent = 'Sign-in failed: ' + e.message;
+      }
+    };
     return;
   }
   if (!window.Keystore || !window.crypto?.subtle) {

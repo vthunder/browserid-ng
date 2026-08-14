@@ -741,7 +741,14 @@ export function createAuthCodeLane(opts) {
    * redirect (unknown client / unregistered redirect_uri — the open-redirect
    * guard: render those, never bounce).
    */
-  async function handleAuthorize(query) {
+  /**
+   * `ctx` (optional — the identity-first flow, spec §7.5 grantor pin): the
+   * RESOURCE authenticated the connecting user before authorize. `grantor`
+   * pins the broker consent card to that identity (approve/deny only), and
+   * `scopes` overrides the requested scope set with the user's actual
+   * entitlement — the card then shows the truth, not the host's ceiling.
+   */
+  async function handleAuthorize(query, ctx = null) {
     sweep(pendingAuthz);
     sweep(codes);
     const q = query || {};
@@ -768,7 +775,7 @@ export function createAuthCodeLane(opts) {
       return errorRedirect(redirectUri, hostState, "invalid_request", "code_challenge_method must be S256");
     }
 
-    const scopes = parseScope(q.scope);
+    const scopes = ctx?.scopes ?? parseScope(q.scope);
     const authState = randomBytes(32).toString("base64url");
     const returnUrl = `${resource}/authorize/return?st=${authState}`;
 
@@ -796,6 +803,7 @@ export function createAuthCodeLane(opts) {
               client_host: clientHost,
               client_name: client.clientName || opts.clientName || undefined,
             },
+            ...(ctx?.grantor ? { grantor: ctx.grantor } : {}),
             return_url: returnUrl,
           }),
         });
@@ -817,7 +825,8 @@ export function createAuthCodeLane(opts) {
         redirectUri,
         hostState,
         codeChallenge: q.code_challenge,
-        scope: q.scope,
+        scope: ctx?.scopes ? ctx.scopes.join(" ") : q.scope,
+        grantorPin: ctx?.grantor || null,
         requestId: pending.request_id,
         exp,
       });
@@ -947,9 +956,13 @@ export function createAuthCodeLane(opts) {
           if (body.status === "approved") {
             const delivered = body.grants || [];
             const rows = [];
-            for (const g of grants) {
-              const d = delivered.find((x) => x?.audience === g.audience && x?.warrant);
-              if (!d) {
+            // Delivery is positional (one record per grant, in grant order —
+            // the broker's contract): audience alone is NOT a key, since two
+            // grantees at one audience are common (a shared mount).
+            for (let i = 0; i < grants.length; i++) {
+              const g = grants[i];
+              const d = delivered[i];
+              if (!d?.warrant || d.audience !== g.audience) {
                 throw new McpAuthError("invalid_grant", `no record delivered for ${g.grantee} @ ${g.audience}`);
               }
               const v = await mcpAuth.validateRecord(d.warrant, g.audience);
@@ -1106,6 +1119,11 @@ export function createAuthCodeLane(opts) {
       try { redirectHost = new URL(rec.redirectUri).hostname; } catch { /* validated at register */ }
       if (binding.kind !== "connection" || !binding.id || binding.client_host !== redirectHost) {
         return errorRedirect(rec.redirectUri, rec.hostState, "access_denied", "record does not match this connection");
+      }
+      // Identity-first pin: the delivered record must be the pinned user's
+      // (a pin is never silently substituted — spec §7.5).
+      if (rec.grantorPin && !identityEq(v.grantor, rec.grantorPin)) {
+        return errorRedirect(rec.redirectUri, rec.hostState, "access_denied", "record identity does not match the signed-in user");
       }
       const code = `oac_${randomBytes(32).toString("base64url")}`;
       codes.set(code, {

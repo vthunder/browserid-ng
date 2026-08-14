@@ -17,7 +17,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createMcpAuth, createAuthCodeLane, McpAuthError } from "@browserid-ng/mcp-auth";
+import { createMcpAuth, createAuthCodeLane, McpAuthError, identityEq, granteeCovers } from "@browserid-ng/mcp-auth";
 
 /**
  * Build (and connect) a mount around a stdio MCP child.
@@ -61,6 +61,23 @@ export async function createMount(opts) {
   const allow = new Set((opts.allow || []).map((e) => String(e).trim().toLowerCase()).filter(Boolean));
   const access = typeof opts.access === "function" ? opts.access : null;
   const owners = (opts.owners || []).map((e) => String(e).trim()).filter(Boolean);
+  // Identity-first connect (policy mode): who is signed in at the gate, and
+  // what do the held records entitle them to HERE. The gateway passes both;
+  // the single-server gate gets a default that reads the policy store.
+  const userFor = typeof opts.userFor === "function" ? opts.userFor : () => null;
+  const entitlementFor =
+    typeof opts.entitlementFor === "function"
+      ? opts.entitlementFor
+      : async (email) => {
+          if (owners.some((o) => identityEq(o, email))) return "all";
+          // The lane's store when none was injected (single-server default) —
+          // rows landed by lane.requestAuthoring must be the ones read here.
+          const store = opts.policyStore || lane.policyStore;
+          if (!store) return null;
+          const rows = (await store.list(resource)).filter((r) => granteeCovers(r.grantee, email));
+          if (!rows.length) return null;
+          return [...new Set(rows.flatMap((r) => r.scopes || []))];
+        };
 
   // --- 1. connect to the wrapped stdio child --------------------------------
   let child = opts.client || null;
@@ -123,8 +140,8 @@ export async function createMount(opts) {
           content: [{
             type: "text",
             text:
-              `ACCESS_DENIED — your role doesn't grant '${toolName}' on this server. ` +
-              `Ask the gateway's admin to grant it in the console.`,
+              `ACCESS_DENIED — your access here doesn't include '${toolName}'. ` +
+              `Ask the person who runs this gateway to share it with you.`,
           }],
         };
       }
@@ -192,7 +209,32 @@ export async function createMount(opts) {
     }
     if (method === "GET" && p === "/authorize") {
       try {
-        const { redirect } = await lane.handleAuthorize(Object.fromEntries(url.searchParams));
+        // Identity-first (policy mode): authenticate the connecting user at
+        // THIS gate before raising any broker request — then the request is
+        // pinned to their identity and scoped to their actual entitlement,
+        // and strangers are refused before any consent ceremony.
+        let authCtx = null;
+        if (owners.length) {
+          const user = userFor(rq);
+          if (!user) {
+            const next = `${resource}/authorize?${url.searchParams.toString()}`;
+            redirect302(res, `/connect/login?next=${encodeURIComponent(next)}`);
+            return true;
+          }
+          const ent = await entitlementFor(user);
+          if (ent == null) {
+            res.writeHead(403, { "content-type": "text/html; charset=utf-8" });
+            res.end(noAccessPage(user, name));
+            return true;
+          }
+          const entScopes = ent === "all"
+            ? [...new Set(Object.values(scopesForTool).flat())]
+            : ent;
+          const requested = String(url.searchParams.get("scope") || "").split(/\s+/).filter(Boolean);
+          const scopes = requested.length ? requested.filter((sc) => entScopes.includes(sc)) : entScopes;
+          authCtx = { grantor: user, scopes };
+        }
+        const { redirect } = await lane.handleAuthorize(Object.fromEntries(url.searchParams), authCtx);
         redirect302(res, redirect);
       } catch (e) {
         tokenError(res, e);
@@ -250,7 +292,36 @@ export async function createMount(opts) {
       // exact email match.
       const grantor = String(vctx.grantor || "").toLowerCase();
       let granted = "all";
-      if (access) {
+      if (owners.length) {
+        // Policy mode (§6.5): the grantor must be an owner or covered by a
+        // held policy record — enforced for EVERY bearer (the jwt-bearer
+        // lane's self-signed warrant scopes are not an entitlement); tool
+        // visibility then derives from the bearer's effective scopes (the
+        // record ∩ connection intersection for connection bearers).
+        const ent = await entitlementFor(grantor);
+        if (ent == null) {
+          log(`[gate] REFUSED grantor=${vctx.grantor} (no grant covers them here)`);
+          json(res, 403, {
+            error: "access_denied",
+            error_description: `no grant covers '${vctx.grantor}' on this server`,
+          });
+          return true;
+        }
+        // Effective tools = bearer scopes ∩ the record entitlement (S ∩ S′).
+        // Connection bearers already carry the intersection; jwt-bearer
+        // scopes are warrant-asserted, so the entitlement must cut here too.
+        granted = new Set(
+          tools
+            .filter((t) => {
+              const need = scopesForTool[t.name] || [];
+              return (
+                need.every((sc) => vctx.scopes.includes(sc)) &&
+                (ent === "all" || need.every((sc) => ent.includes(sc)))
+              );
+            })
+            .map((t) => t.name)
+        );
+      } else if (access) {
         granted = access(grantor);
         if (granted !== "all" && !(granted instanceof Set && granted.size)) {
           log(`[gate] REFUSED grantor=${vctx.grantor} (no role grants tools here)`);
@@ -328,6 +399,18 @@ export const json = (res, code, obj, headers = {}) => {
   res.writeHead(code, { "content-type": "application/json", ...headers });
   res.end(JSON.stringify(obj));
 };
+
+/** Refusal page for a signed-in user with no grants here (identity-first
+ *  connect: refused BEFORE any consent ceremony). */
+export function noAccessPage(email, serverName) {
+  const esc = (x) => String(x).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  return `<!doctype html><meta charset=utf-8><title>No access</title>
+<style>body{font:15px/1.6 -apple-system,system-ui,sans-serif;max-width:440px;margin:16vh auto;padding:0 24px;color:#1a1a1a;text-align:center}p{color:#6b6b74}</style>
+<h1 style="font-size:20px">You don't have access to ${esc(serverName)}</h1>
+<p>You're signed in as <b>${esc(email)}</b>, but nothing has been shared with
+that address here. Ask the person who runs this gateway to share it with you,
+then connect again.</p>`;
+}
 
 /** A friendly page for the already-consumed authorization return (a benign
  *  double-submit from the consent page's auto-nav + manual link). */
