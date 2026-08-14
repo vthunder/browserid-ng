@@ -332,3 +332,56 @@ fn test_reissued_cert_clears_stale_revocation_on_upsert() {
         "a freshly recorded (verified) cert must clear the stale revoked_at"
     );
 }
+
+/// Record requests (spec §7.5) are unclaimed at creation (user_id 0 — no
+/// account bound yet). The sqlite store must accept that row: the users(id)
+/// foreign key was dropped in v29 after it rejected exactly this insert in
+/// production (the in-memory test store has no FK, so only a sqlite-backed
+/// test catches it).
+#[test]
+fn test_unclaimed_record_request_insertable() {
+    use browserid_broker::store::{UserId, WarrantGrantItem, WarrantRequestRecord, WarrantRequestStatus};
+    use chrono::{Duration, Utc};
+
+    let (store, _dir) = create_test_store();
+    let now = Utc::now();
+    store
+        .create_warrant_request(WarrantRequestRecord {
+            code: "req_unclaimed".into(),
+            kind: "connection".into(),
+            meta: Some(r#"{"challenge":"c","proof_ok":false,"client_host":"claude.ai","binding_id":"cn_1"}"#.into()),
+            user_id: UserId(0),
+            delegator_email: String::new(),
+            agent_email: String::new(),
+            holder: String::new(),
+            label: "https://gate.example".into(),
+            grantor: "*".into(),
+            message: None,
+            grants: vec![WarrantGrantItem {
+                audience: "https://gate.example/mcp".into(),
+                scopes: vec!["tool:read".into()],
+                status_idx: None,
+                grantee: None,
+            }],
+            status: WarrantRequestStatus::Pending,
+            warrants: None,
+            external: true,
+            return_url: None,
+            created_at: now,
+            expires_at: now + Duration::minutes(15),
+            last_polled_at: None,
+        })
+        .expect("unclaimed record request (user_id 0) must insert");
+    let rec = store.get_warrant_request("req_unclaimed").unwrap().expect("row exists");
+    assert_eq!(rec.kind, "connection");
+    assert!(rec.meta.is_some());
+
+    // The claim rebinding (update_warrant_request) works on the sqlite path.
+    let mut claimed = rec;
+    claimed.user_id = UserId(1);
+    claimed.grants[0].status_idx = Some(7);
+    store.update_warrant_request(&claimed).expect("claim update");
+    let rec = store.get_warrant_request("req_unclaimed").unwrap().unwrap();
+    assert_eq!(rec.user_id, UserId(1));
+    assert_eq!(rec.grants[0].status_idx, Some(7));
+}

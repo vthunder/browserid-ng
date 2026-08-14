@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 28;
+const SCHEMA_VERSION: i32 = 29;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -146,6 +146,9 @@ impl SqliteStore {
             }
             if current_version < 28 {
                 Self::migrate_v28(conn)?;
+            }
+            if current_version < 29 {
+                Self::migrate_v29(conn)?;
             }
 
             // Update schema version
@@ -754,6 +757,43 @@ impl SqliteStore {
             r#"
             ALTER TABLE warrant_requests ADD COLUMN kind TEXT NOT NULL DEFAULT 'agent';
             ALTER TABLE warrant_requests ADD COLUMN record_meta TEXT;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v29(conn: &Connection) -> Result<(), BrokerError> {
+        // Record requests (spec §7.5) are UNCLAIMED at creation — user_id 0
+        // until the approving account binds at consent render — which the
+        // users(id) foreign key rejects under PRAGMA foreign_keys=ON (bit
+        // prod on the first live connection request; the in-memory test
+        // store had no FK). Rows are 15-minute ephemera (v7 precedent), so
+        // drop-and-recreate without the FK; expiry sweep is the cleanup.
+        conn.execute_batch(
+            r#"
+            DROP TABLE IF EXISTS warrant_requests;
+            CREATE TABLE warrant_requests (
+                code TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                delegator_email TEXT NOT NULL,
+                agent_email TEXT NOT NULL,
+                label TEXT NOT NULL,
+                grants TEXT NOT NULL,
+                status TEXT NOT NULL,
+                warrants TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                last_polled_at TEXT,
+                external INTEGER NOT NULL DEFAULT 0,
+                holder TEXT NOT NULL DEFAULT '',
+                grantor TEXT NOT NULL DEFAULT '*',
+                message TEXT,
+                return_url TEXT,
+                kind TEXT NOT NULL DEFAULT 'agent',
+                record_meta TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_warrant_requests_user ON warrant_requests(user_id);
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
