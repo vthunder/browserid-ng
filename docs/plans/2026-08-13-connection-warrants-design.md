@@ -227,6 +227,10 @@ The spec text MUST state all of these:
    `connection_id` binding) MUST fail closed.
 5. Record validation authenticates no one. Only presentation (P) or the
    kind's subject authentication (A step 2) establishes an acting party.
+6. **Containment:** email is the protocol's only principal identity type.
+   Grantee-kind descriptors are warrant-local subject matchers; they MUST NOT
+   appear in any other slot (grantor, certs, registries of principals) and
+   MUST NOT be treated as authenticatable identities anywhere.
 
 ### 3.4 Raising the consent request without a requester identity (§7.5 change)
 
@@ -395,7 +399,26 @@ remains available and preferred wherever the subject can present.
    (record validated once at acquisition, status re-checked per use — the
    proposed split), or must the full chain re-verify per mint? (Proposed:
    the split above; the chain is immutable, status is the live part.)
-7. Canonical **string rendering** for non-email grantees (logs, audit lines,
+7. **DIDs — considered, disfavored (review round 4).** Could grantee (or
+   grantor) be a DID, making the warrant a generic "A grants B" object?
+   Findings: (a) emails have no standard DID method — a `did:browserid:` would
+   be our namespace in a `did:` costume, same DNSSEC root, plus a translation
+   layer on every user-facing surface; (b) a connection is not a DID-shaped
+   subject — no keys, no document, and the load-bearing field is the
+   *instance binding*, which DID semantics don't model (`did:web:claude.ai`
+   names the client, not the connection); (c) a DID grantor breaks §6.1
+   step 5 while certs stay email-bound — it needs either a second trust root
+   (DID-document key control beside DNSSEC) or an email adapter that makes
+   the email canonical anyway; (d) the generic DID-capability product exists
+   (UCAN/ZCAP) — the warrant's differentiator is precisely what they lack:
+   human-legible email attribution + registrar revocation on DNSSEC roots.
+   Resolution: **email stays the protocol's only principal identity type;
+   grantee-kind descriptors are warrant-local subject matchers, valid
+   nowhere else** (containment invariant — add to §3.3). Foreign identity
+   systems integrate via the existing adapter direction: mapped *into* email
+   space at a bridge domain (the bsky pattern, `did:plc` →
+   `<handle>@bsky.browserid.me`), never the core reaching outward.
+8. Canonical **string rendering** for non-email grantees (logs, audit lines,
    attribution): the structured object is normative, but a printable form is
    wanted. An email-shaped synthetic namespace
    (`<connection-id>@connections.<broker-domain>`) was considered and is
