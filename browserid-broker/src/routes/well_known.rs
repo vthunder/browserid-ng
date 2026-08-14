@@ -59,7 +59,16 @@ where
     // verifier that reads it instead of DNS — exactly what bean 0p5f closed
     // across our verifiers. The struct field stays (the DNSSEC resolver fills
     // it in from the record); we simply do not advertise one.
-    doc.public_key = None;
+    //
+    // DEV exception (localhost only): the fallback fetcher's dev_local_broker
+    // path has no DNSSEC to consult and, by design, trusts the key a
+    // localhost broker serves here — the zexp hardening silently emptied that
+    // path ("issuer has no key" on every dev fallback resolution). A
+    // localhost domain can never be a production broker, so the downgrade
+    // vector doesn't apply.
+    if super::session::cookie_secure(&state.domain) {
+        doc.public_key = None;
+    }
 
     Json(doc)
 }

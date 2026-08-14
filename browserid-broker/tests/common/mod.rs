@@ -73,6 +73,23 @@ pub fn create_test_server() -> (TestServer, MockEmailSender) {
     (ctx.server, ctx.email_sender)
 }
 
+/// A test server whose broker domain is not localhost (production-shaped
+/// behavior, e.g. the no-key support document).
+#[allow(dead_code)]
+pub fn create_test_server_with_domain(domain: &str) -> (TestServer, MockEmailSender) {
+    let keypair = KeyPair::generate();
+    let email_sender = Arc::new(MockEmailSender::new());
+    let state = Arc::new(AppState::new_with_arcs(
+        keypair,
+        domain.to_string(),
+        Arc::new(InMemoryUserStore::new()),
+        Arc::new(InMemorySessionStore::new()),
+        email_sender.clone(),
+    ));
+    let server = TestServer::new(routes::create_router(state)).expect("Failed to create test server");
+    (server, MockEmailSender { sent: email_sender.sent.clone() })
+}
+
 /// Create a test context with access to underlying stores
 pub fn create_test_context() -> TestContext {
     let keypair = KeyPair::generate();
