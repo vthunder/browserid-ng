@@ -289,14 +289,14 @@ The spec text MUST state all of these:
    fail closed.
 8. Record validation authenticates no one. Only presentation (P) or the
    binding's subject authentication (A step 2) establishes an acting party.
-9. **Containment:** email is the protocol's only identity type. Bindings are
-   warrant-local instance qualifiers, not identities; they MUST NOT appear
-   in identity slots (grantor, grantee, certs, principal registries) or be
-   treated as authenticatable identities anywhere. Grants to unattributable
-   subjects ("anyone with this link") are out of scope by design — every
-   grant roots in a signing email; bearer-style anonymous access is
-   antithetical to an attribution protocol. (Invite-link UX, if wanted, is a
-   broker flow converting acceptance into an email policy record.)
+*(A former containment invariant — bindings never appear in identity
+slots — is demoted to the §3.1 bindings paragraph now that grantor and
+grantee are plain emails; there is no identity-shaped object left to
+contain. One piece survives as design scope: grants to unattributable
+subjects — "anyone with this link" — remain out of scope; every grant roots
+in a signing email, and `*` matchers still require authenticated subjects.
+Invite-link UX, if wanted, is a broker flow converting acceptance into an
+email policy record.)*
 
 ### 3.4 Composition: policy records × connection records
 
@@ -352,6 +352,57 @@ Deployment note: gate's roles table is the policy layer already, unsigned;
 §4's roles-as-signed-grants migrates it to email policy records
 incrementally. The conjunction semantics above hold either way — config-row
 policy and record policy answer the same admission question.
+
+**Record lifecycle and custody** (who obtains, holds, and joins what):
+
+- **Policy records** are created in a **grant-authoring ceremony**: G edits
+  a role in the resource's console; the resource — which holds no config
+  cert and must never sign — compiles the role into per-(member, mount)
+  grants and sends G to the broker, where G's config cert signs them
+  (batch, one approval; a G-*initiated* variant of §7.5's
+  requester-initiated flow — a new broker surface). Each record gets its
+  registrar status idx, lands in the registry (G's /account), and is
+  delivered back to the resource, which stores it as the roles backing
+  store. RBAC stays a resource-side abstraction: the protocol sees only
+  flat records; a role edit is revoke-old + sign-new in one ceremony.
+- **Connection records** are created by §3.5: requested by the resource
+  (audience proof), signed by the connecting user at the consent card,
+  delivered to the resource via the return/poll, registered at the broker.
+- **The two records are joined on the email, deliberately NOT by
+  cryptographic cross-reference.** The conjunction happens at admission:
+  the connection record's signer must match a policy record's grantee
+  (exact or matcher). Both records are independently signature-verified, so
+  the join is as strong as its parts — the email is the protocol's join
+  key. Embedding a policy-record hash in the connection record would freeze
+  policy at connection time; policy must evolve independently (G edits E's
+  tools; every existing connection of E's picks up new scopes at its next
+  check, no re-consent; either side revokes without touching the other).
+  Nor would a tie obviate the §3.5 request challenge: at request time the
+  resource does not yet know which user will approve (the subject appears
+  at the consent card, after the request exists), and possessing a policy
+  record proves nothing about being the audience — records are not secrets;
+  only origin control proves audienceship. The challenge authenticates the
+  requester; the records authorize the subject.
+- **The resource is the custodian and conjunction point.** It holds both
+  row sets, binds bearers/refresh to (binding.id, connection record), and
+  evaluates the conjunction per call. The connecting user NEVER holds the
+  policy record — it is not a ticket they carry (that is operation-P
+  thinking); it travels G → broker → resource and stays there. Admission
+  records are never "presented later"; for audit, both records are
+  independently verifiable artifacts the resource can hand over. The
+  bearer is a handle into resource state; the records are the signed
+  ground truth behind it.
+- **Per-call verification** (the gate translation, end to end): bearer →
+  resolve (binding.id, connection record) → fail-closed status re-check on
+  the connection record → policy lookup for the signer's email on this
+  audience (status re-check on the policy record too, once signed) →
+  effective scopes = S ∩ S′ → tool gate → audit line "E, via Claude
+  (claude.ai), under G's grant."
+- **Consent-time visibility (future):** once policy records live in the
+  registry, the consent card can — after the user logs in — look up the
+  grants naming them at this audience and render "G has granted you: …",
+  making effective scopes visible at consent rather than discovered at
+  first call.
 
 ### 3.5 Raising the consent request without a requester identity (§7.5 change)
 
@@ -468,7 +519,7 @@ remains available and preferred wherever the subject can present.
 | Component | Change |
 |---|---|
 | Core spec | §5: v2 record format, bindings table (holder/connection), instance-binding concept, status REQUIRED, self-grant rule, privacy sentence. §6: operation A ("record validation + subject matching") beside §6.1, invariants §3.3, composition §3.4. §7.5: connection grant request + audience proof (§3.5). Vocabulary: "presentation" reserved for operation P; identities are always emails. |
-| Broker | Request endpoint + challenge fetch; consent-card connection variant; `binding.id` mint + id↔record registry pairing; /account connection rendering. |
+| Broker | Request endpoint + challenge fetch; consent-card connection variant; grant-authoring ceremony (owner-initiated batch signing, §3.4); `binding.id` mint + id↔record registry pairing; /account connection rendering. |
 | Verifier (crate + hosted) | v2 parsing (both operations); record-validation call (`warrant ~ config_cert`); v1 accepted as holder-binding sugar. |
 | mcp-auth | Lane gains a credential-less mode: when the broker advertises connection requests, raise them with the audience proof; else fall back to the credential path (capability detection keeps old brokers working). Bearer/refresh binding to (binding.id, record). `ctx.client` (0.2.1, shipped) gains the id. |
 | gate | Once broker + mcp-auth land: delete first-run provisioning; mounts raise connection requests directly. Existing installs with credentials keep working indefinitely (v1 path untouched). Later: roles as email policy records (§4). |
@@ -479,7 +530,7 @@ remains available and preferred wherever the subject can present.
 0. **Done (mcp-auth 0.2.1):** bearers carry `ctx.client`; demo/gate
    attribution says "via claude.ai" — display honesty independent of the
    spec change.
-1. Spec PR: §5/§6/§7.5 text per above, including the nine invariants.
+1. Spec PR: §5/§6/§7.5 text per above, including the eight invariants.
    Verifier + broker land behind support advertisement (broker discovery
    flag).
 2. mcp-auth lane: opportunistic credential-less mode with fallback;
