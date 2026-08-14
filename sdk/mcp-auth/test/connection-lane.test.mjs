@@ -57,9 +57,13 @@ const broker = createServer(async (req, res) => {
     return reply(200, advertiseSupport ? { "record-grants": "/warrant/record-request" } : {});
   }
   if (url.pathname === "/warrant/record-request") {
-    assert.equal(body.type, "connection");
-    assert.equal(body.audience, RESOURCE);
-    assert.equal(body.client?.client_host, "claude.ai");
+    if (body.type === "connection") {
+      assert.equal(body.audience, RESOURCE);
+      assert.equal(body.client?.client_host, "claude.ai");
+    } else {
+      assert.equal(body.type, "authoring");
+      assert.ok(Array.isArray(body.grants) && body.grants.length > 0);
+    }
     const requestId = `req_${nextId++}`;
     const challenge = randomBytes(24).toString("base64url");
     recordRequests.set(requestId, { challenge, state: "pending", returnUrl: body.return_url });
@@ -80,11 +84,12 @@ const broker = createServer(async (req, res) => {
     return reply(200, {
       success: true,
       status: "approved",
-      grants: [{ audience: RESOURCE, warrant: RECORD }],
+      grants: r.deliver || [{ audience: RESOURCE, warrant: memberConnection ? MEMBER_RECORD : RECORD }],
     });
   }
   if (url.pathname === "/validate-record") {
     validateCalls++;
+    if (validateExtra(body, reply)) return;
     if (validateMode === "down") return reply(503, { status: "failure", reason: "down" });
     if (validateMode === "revoked") return reply(200, { status: "failure", reason: "warrant revoked" });
     assert.equal(body.record, RECORD);
@@ -284,4 +289,185 @@ test("no support advertised and no credential: authorize fails cleanly", async (
   const back = new URL(authz.redirect);
   assert.equal(back.searchParams.get("error"), "temporarily_unavailable");
   advertiseSupport = true;
+});
+
+// ---------------------------------------------------------------------------
+// §6.5 composition: policy records × connection records
+// ---------------------------------------------------------------------------
+
+const OWNER = "gwen@example.com";
+const MEMBER = "erin@example.com";
+
+// A connection record self-granted by MEMBER (not the owner).
+const MEMBER_RECORD = `${fakeJws({
+  typ: "browserid-warrant-v2",
+  grantor: MEMBER,
+  grantee: MEMBER,
+  binding: { kind: "connection", protocol: "oauth", id: "cn_member1", client_host: "claude.ai", client_name: "Claude" },
+  audience: RESOURCE,
+  scopes: ["notes:read", "notes:write"],
+  status: { uri: `${BROKER}/.well-known/browserid-status`, idx: 200 },
+  iat: nowS(),
+  exp: nowS() + 90 * 24 * 3600,
+})}~${fakeJws({ typ: "browserid-device-cert-v1", purpose: "authorization" })}`;
+
+// The OWNER's policy record granting MEMBER notes:read only.
+const POLICY_RECORD = `${fakeJws({
+  typ: "browserid-warrant-v2",
+  grantor: OWNER,
+  grantee: MEMBER,
+  binding: { kind: "holder", matcher: "*" },
+  audience: RESOURCE,
+  scopes: ["notes:read"],
+  status: { uri: `${BROKER}/.well-known/browserid-status`, idx: 300 },
+  iat: nowS(),
+  exp: nowS() + 90 * 24 * 3600,
+})}~${fakeJws({ typ: "browserid-device-cert-v1", purpose: "authorization" })}`;
+
+// Teach the mock validator about the extra records (it keys off the body).
+// Modes: policyMode "ok" | "revoked" gates POLICY_RECORD only.
+let policyMode = "ok";
+let memberConnection = false; // poll delivers MEMBER_RECORD instead of RECORD
+const validateExtra = (body, reply) => {
+  if (body.record === MEMBER_RECORD) {
+    reply(200, {
+      status: "okay", grantor: MEMBER, grantee: MEMBER,
+      binding: { kind: "connection", protocol: "oauth", id: "cn_member1", client_host: "claude.ai", client_name: "Claude" },
+      scopes: ["notes:read", "notes:write"], issuer: "example.com",
+      status_refs: [{ uri: `${BROKER}/.well-known/browserid-status`, idx: 200 }],
+      expires_at: nowS() + 90 * 24 * 3600,
+    });
+    return true;
+  }
+  if (body.record === POLICY_RECORD) {
+    if (policyMode === "revoked") {
+      reply(200, { status: "failure", reason: "warrant revoked" });
+      return true;
+    }
+    reply(200, {
+      status: "okay", grantor: OWNER, grantee: MEMBER,
+      binding: { kind: "holder", matcher: "*" },
+      scopes: ["notes:read"], issuer: "example.com",
+      status_refs: [{ uri: `${BROKER}/.well-known/browserid-status`, idx: 300 }],
+      expires_at: nowS() + 90 * 24 * 3600,
+    });
+    return true;
+  }
+  return false;
+};
+
+test("authoring ceremony: raise → proof → owner signs → validated rows land in the store", async () => {
+  validateMode = "ok";
+  const { lane } = makeLane({ policy: { owners: [OWNER] } });
+  const ceremony = await lane.requestAuthoring({
+    grants: [{ grantee: MEMBER, scopes: ["notes:read"] }],
+    pollDelayMs: 10,
+  });
+  assert.ok(ceremony.consentUri.startsWith(`${BROKER}/consent/`));
+  // The proof is published while pending.
+  const r = recordRequests.get(ceremony.requestId);
+  assert.equal(lane.handleAudienceProof(ceremony.requestId), r.challenge);
+  // The owner approves at the broker; delivery carries the policy record.
+  r.state = "approved";
+  r.deliver = [{ audience: RESOURCE, warrant: POLICY_RECORD }];
+  const rows = await ceremony.wait();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].grantor, OWNER);
+  assert.equal(rows[0].grantee, MEMBER);
+  assert.deepEqual(rows[0].scopes, ["notes:read"]);
+  // Proof came down after resolution.
+  assert.equal(lane.handleAudienceProof(ceremony.requestId), null);
+});
+
+test("composition: a member admits under the owner's grant with S ∩ S′", async () => {
+  validateMode = "ok";
+  policyMode = "ok";
+  memberConnection = true;
+  const { mcpAuth, lane } = makeLane({ policy: { owners: [OWNER] } });
+  await lane.policyStore.put({
+    record: POLICY_RECORD, grantor: OWNER, grantee: MEMBER,
+    audience: RESOURCE, scopes: ["notes:read"], exp: nowS() + 1000,
+  });
+  const p = pkce();
+  const { reg, code } = await authorizeToCode(lane, p);
+  const tokens = await lane.handleToken({
+    grant_type: "authorization_code", code,
+    client_id: reg.client_id, redirect_uri: REDIRECT, code_verifier: p.verifier,
+  });
+  // S′ = read+write (the member's connection), S = read (the owner's policy
+  // row) → effective read only.
+  assert.equal(tokens.scope, "notes:read");
+  const ctx = await mcpAuth.authenticate(`Bearer ${tokens.access_token}`);
+  assert.equal(ctx.grantor, MEMBER, "attributed to the member — the connection signer");
+  assert.equal(ctx.permittedBy, OWNER, "permitted by the owner — never the author");
+  assert.deepEqual(ctx.scopes, ["notes:read"]);
+  memberConnection = false;
+});
+
+test("composition: no covering policy row refuses the member", async () => {
+  validateMode = "ok";
+  memberConnection = true;
+  const { lane } = makeLane({ policy: { owners: [OWNER] } });
+  // Empty policy store: the member's own valid connection record is not enough.
+  const p = pkce();
+  const { reg, code } = await authorizeToCode(lane, p);
+  await assert.rejects(
+    lane.handleToken({
+      grant_type: "authorization_code", code,
+      client_id: reg.client_id, redirect_uri: REDIRECT, code_verifier: p.verifier,
+    }),
+    (e) => e instanceof McpAuthError && e.oauthError === "invalid_grant"
+  );
+  memberConnection = false;
+});
+
+test("composition: revoking the policy record kills the member's refresh (two-sided revocation)", async () => {
+  validateMode = "ok";
+  policyMode = "ok";
+  memberConnection = true;
+  const { lane } = makeLane({ policy: { owners: [OWNER] } });
+  await lane.policyStore.put({
+    record: POLICY_RECORD, grantor: OWNER, grantee: MEMBER,
+    audience: RESOURCE, scopes: ["notes:read"], exp: nowS() + 1000,
+  });
+  const p = pkce();
+  const { reg, code } = await authorizeToCode(lane, p);
+  const t1 = await lane.handleToken({
+    grant_type: "authorization_code", code,
+    client_id: reg.client_id, redirect_uri: REDIRECT, code_verifier: p.verifier,
+  });
+  // G revokes the policy record → the member's next refresh finds no valid
+  // covering row, even though the member's own connection record is fine.
+  policyMode = "revoked";
+  await assert.rejects(
+    lane.handleToken({ grant_type: "refresh_token", refresh_token: t1.refresh_token }),
+    (e) => e instanceof McpAuthError && e.oauthError === "invalid_grant"
+  );
+  policyMode = "ok";
+  memberConnection = false;
+});
+
+test("composition: the owner needs no policy row (degenerate G = E)", async () => {
+  validateMode = "ok";
+  const { lane } = makeLane({ policy: { owners: [HUMAN] } }); // RECORD's grantor
+  const p = pkce();
+  const { reg, code } = await authorizeToCode(lane, p);
+  const tokens = await lane.handleToken({
+    grant_type: "authorization_code", code,
+    client_id: reg.client_id, redirect_uri: REDIRECT, code_verifier: p.verifier,
+  });
+  assert.deepEqual(tokens.scope.split(" ").sort(), ["notes:read", "notes:write"]);
+});
+
+test("authoring: a record from a non-owner grantor is refused", async () => {
+  validateMode = "ok";
+  const { lane } = makeLane({ policy: { owners: ["someone-else@example.com"] } });
+  const ceremony = await lane.requestAuthoring({
+    grants: [{ grantee: MEMBER, scopes: ["notes:read"] }],
+    pollDelayMs: 10,
+  });
+  const r = recordRequests.get(ceremony.requestId);
+  r.state = "approved";
+  r.deliver = [{ audience: RESOURCE, warrant: POLICY_RECORD }]; // grantor = OWNER, not configured
+  await assert.rejects(ceremony.wait(), (e) => e instanceof McpAuthError && e.oauthError === "invalid_grant");
 });

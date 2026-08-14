@@ -42,7 +42,10 @@ const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "public")
  */
 export function createGateway(opts) {
   const adminEmail = String(reqOpt(opts, "adminEmail")).trim().toLowerCase();
-  const credential = reqOpt(opts, "credential");
+  // Optional since 0.6: with a broker that supports connection grants the
+  // mounts run credential-less (spec §7.5); the credential is only the
+  // agent-mode fallback for brokers without support.
+  const credential = opts.credential || null;
   const broker = (opts.broker || "https://browserid.me").replace(/\/+$/, "");
   const doFetch = opts.fetch || globalThis.fetch;
   const log = opts.log || ((l) => console.log(l));
@@ -356,6 +359,22 @@ export function createGateway(opts) {
       // (suffixed — what mcp-auth's URLs use). For a root single-server the two
       // coincide; for a mount they differ. Serve the inserted form by rewriting
       // to the suffixed subpath the mount already handles.
+      // Connection mode (spec §7.5): the audience proof is ORIGIN-scoped —
+      // the broker fetches it at the host root, not under a mount path — so
+      // fan out across mounts to whichever lane has the pending request.
+      const ap = /^\/\.well-known\/browserid-audience-proof\/([^/]+)$/.exec(path);
+      if (rq.method === "GET" && ap) {
+        for (const m of mounts.values()) {
+          const body = m.lane.handleAudienceProof(ap[1]);
+          if (body != null) {
+            res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+            return res.end(body);
+          }
+        }
+        res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+        return res.end("no such pending request");
+      }
+
       const wk = /^\/\.well-known\/(oauth-authorization-server|oauth-protected-resource)\/([^/]+)$/.exec(path);
       if (rq.method === "GET" && wk) {
         const m = mounts.get(wk[2]);

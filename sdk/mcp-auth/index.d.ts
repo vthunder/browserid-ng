@@ -47,6 +47,33 @@ export interface BearerStore {
 
 export function createMemoryStore(): BearerStore;
 
+/** Exact identity comparison (spec §5): local byte-exact, domain lowercased. */
+export function identityEq(a: unknown, b: unknown): boolean;
+/** Does a grantee (exact email or `*` / `*@<domain>` matcher) cover an
+ *  authenticated subject? (spec §6.4 step 3) */
+export function granteeCovers(grantee: unknown, subject: unknown): boolean;
+
+/** A resource-held policy row (spec §6.5): an owner-signed record granting
+ *  `grantee` at `audience`. */
+export interface PolicyRow {
+  /** The raw warrant~config_cert record (revalidated at every mint). */
+  record: string;
+  grantor: string;
+  grantee: string;
+  audience: string;
+  scopes: string[];
+  exp: number | null;
+}
+
+export interface PolicyStore {
+  put(row: PolicyRow): Promise<void>;
+  list(audience?: string | null): Promise<PolicyRow[]>;
+  del(grantor: string, grantee: string, audience: string): Promise<void>;
+}
+
+/** In-memory policy store (single process). */
+export function createPolicyStore(): PolicyStore;
+
 export class McpAuthError extends Error {
   oauthError: string;
   httpStatus: number;
@@ -62,6 +89,10 @@ export interface WarrantContext {
   issuer: string | null;
   /** The connection custodying this bearer (auth-code lane), or null. */
   client: ClientInfo | null;
+  /** §6.5: the policy-record grantor whose grant admitted this subject
+   *  (null for owners / open resources / Lane A). The permitter, never the
+   *  author. */
+  permittedBy: string | null;
   scopes: string[];
 }
 
@@ -127,7 +158,7 @@ export interface McpAuth {
   /** Validate a held warrant~config_cert record at the broker's
    *  /validate-record — the freshness evidence for a record-backed mint
    *  (spec §6.4): call at EVERY mint/refresh, fail-closed. */
-  validateRecord(record: string): Promise<ValidatedRecord>;
+  validateRecord(record: string, audience?: string): Promise<ValidatedRecord>;
   /** Mint a short-lived bearer from a just-validated record. Never outlives
    *  the record; status refs ride along for the per-call re-check. */
   mintFromValidatedRecord(
@@ -185,6 +216,10 @@ export interface AuthCodeLaneOptions {
   refreshTtlS?: number;
   /** Broker capability probe cache seconds. Default 300. */
   capabilityCacheS?: number;
+  /** Policy layer (spec §6.5): when set, admission is the two-record
+   *  conjunction — owners (or their policy-record grantees) only, effective
+   *  scopes S ∩ S′. Absent ⇒ open, public-but-attributed. */
+  policy?: { owners: string[]; store?: PolicyStore };
   /** OAuth code lifetime in seconds (single-use regardless). Default 60. */
   codeTtlS?: number;
   /** /authorize → /authorize/return window in seconds. Default 900. */
@@ -216,6 +251,16 @@ export interface AuthCodeLane {
    *  Resolves to a redirect to the host's redirect_uri with ?code= or
    *  ?error=. Throws McpAuthError when the pending record is gone. */
   handleAuthorizeReturn(query: Record<string, unknown>): Promise<Redirect>;
+  /** Raise a grant-authoring ceremony (spec §7.5): returns the consent URL
+   *  for an OWNER plus a `wait()` that resolves with the validated policy
+   *  rows once signed (each stored in the policy store). */
+  requestAuthoring(args: {
+    grants: Array<{ grantee: string; audience?: string; scopes?: string[] }>;
+    pollDelayMs?: number;
+    maxWaitS?: number;
+  }): Promise<{ requestId: string; consentUri: string; expiresIn: number; interval: number; wait(): Promise<PolicyRow[]> }>;
+  /** The policy store (null when no policy is configured). */
+  policyStore: PolicyStore | null;
   /** Serve /.well-known/browserid-audience-proof/:id — the challenge nonce
    *  verbatim (connection mode, spec §7.5), or null (render 404). The host
    *  app MUST route this path for the connection mode to work. */

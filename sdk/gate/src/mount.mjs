@@ -24,7 +24,15 @@ import { createMcpAuth, createAuthCodeLane, McpAuthError } from "@browserid-ng/m
  *
  * @param {object} opts
  * @param {string} opts.resource      Canonical URL of THIS mount (OAuth resource + audience).
- * @param {object} opts.credential    The gateway's device credential (Lane B).
+ * @param {object} [opts.credential]  The gateway's device credential — the
+ *                                    agent-mode FALLBACK only. With a broker
+ *                                    that supports connection grants the
+ *                                    mount is fully credential-less.
+ * @param {string[]} [opts.owners]    Policy owners (spec §6.5): admission then
+ *                                    requires the connecting identity to be an
+ *                                    owner or covered by an owner-signed policy
+ *                                    record (share via lane.requestAuthoring);
+ *                                    supersedes `allow` at the grantor gate.
  * @param {string[]} [opts.allow]     Allowlisted grantor emails (whose humans may connect).
  * @param {(email:string)=>'all'|Set<string>|null} [opts.access]
  *                                    Role-based resolver (gateway mode): maps a
@@ -52,6 +60,7 @@ export async function createMount(opts) {
   const log = opts.log || (() => {});
   const allow = new Set((opts.allow || []).map((e) => String(e).trim().toLowerCase()).filter(Boolean));
   const access = typeof opts.access === "function" ? opts.access : null;
+  const owners = (opts.owners || []).map((e) => String(e).trim()).filter(Boolean);
 
   // --- 1. connect to the wrapped stdio child --------------------------------
   let child = opts.client || null;
@@ -82,10 +91,20 @@ export async function createMount(opts) {
 
   // --- 3. auth: both lanes over the same bearer store -----------------------
   const mcpAuth = createMcpAuth({ resource, broker, scopesForTool, statusCacheS, store: opts.store, fetch: doFetch });
-  const lane = createAuthCodeLane({ mcpAuth, credential: req(opts, "credential"), broker, fetch: doFetch, label: name });
+  const lane = createAuthCodeLane({
+    mcpAuth,
+    ...(opts.credential ? { credential: opts.credential } : {}),
+    ...(owners.length ? { policy: { owners, store: opts.policyStore } } : {}),
+    broker,
+    fetch: doFetch,
+    label: name,
+  });
 
   function attribute(ctx, tool, args) {
-    log(`[gate] grantor=${ctx.grantor} grantee=${ctx.grantee} tool=${tool} args=${argsDigest(args)}`);
+    // §6.5 audit shape: the actor, via their connection, under the
+    // permitter's grant — the permitter is the reason, never the author.
+    const under = ctx.permittedBy ? ` under=${ctx.permittedBy}` : "";
+    log(`[gate] grantor=${ctx.grantor} grantee=${ctx.grantee}${under} tool=${tool} args=${argsDigest(args)}`);
   }
 
   // --- 4. a proxy MCP server bound to one request's verified context --------
@@ -139,6 +158,21 @@ export async function createMount(opts) {
     const method = rq.method;
     const p = subpath || "/";
 
+    // Connection mode (spec §7.5): the audience-proof document. Reaches a
+    // mount directly only in the single-server case (resource == origin);
+    // the gateway serves it at origin scope via its own fan-out route.
+    if (method === "GET" && p.startsWith("/.well-known/browserid-audience-proof/")) {
+      const id = p.slice("/.well-known/browserid-audience-proof/".length);
+      const body = lane.handleAudienceProof(id);
+      if (body == null) {
+        res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+        res.end("no such pending request");
+      } else {
+        res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+        res.end(body);
+      }
+      return true;
+    }
     if (method === "GET" && p === "/.well-known/oauth-protected-resource") {
       json(res, 200, mcpAuth.protectedResourceMetadata());
       return true;
@@ -226,7 +260,7 @@ export async function createMount(opts) {
           });
           return true;
         }
-      } else if (!allow.has(grantor)) {
+      } else if (!owners.length && !allow.has(grantor)) {
         log(`[gate] REFUSED grantor=${vctx.grantor} (not on the allowlist)`);
         json(res, 403, {
           error: "access_denied",

@@ -36,6 +36,8 @@ export async function createGateService(opts) {
   const mount = await createMount({
     resource: opts.resource,
     credential: opts.credential,
+    owners: opts.owners,
+    policyStore: opts.policyStore,
     allow: opts.allow,
     name,
     child: opts.child,

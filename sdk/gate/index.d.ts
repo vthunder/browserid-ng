@@ -18,8 +18,13 @@ export interface GateOptions {
   child?: GateChildSpec;
   /** A pre-connected MCP Client (tests) — used instead of spawning a child. */
   client?: unknown;
-  /** The gateway's device credential (Lane B). */
-  credential: {
+  /** Policy owners (spec §6.5): admission then requires the connecting
+   *  identity to be an owner or covered by an owner-signed policy record
+   *  (share via lane.requestAuthoring). Supersedes `allow`. */
+  owners?: string[];
+  /** The gateway's device credential — the agent-mode FALLBACK only;
+   *  omit for a fully credential-less gate (connection mode, spec §7.5). */
+  credential?: {
     device_key: string;
     agent_device_cert: string;
     idp: string;
@@ -145,7 +150,7 @@ export interface GatewayState {
 
 export interface GatewayOptions {
   /** Shared gateway DeviceCredential (Lane B). */
-  credential: GateOptions["credential"];
+  credential?: GateOptions["credential"] | null;
   /** The ONE identity allowed into the console (exact match). */
   adminEmail: string;
   broker?: string;

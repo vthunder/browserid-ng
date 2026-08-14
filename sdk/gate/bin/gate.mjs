@@ -97,20 +97,34 @@ async function main() {
   }
   const broker = (args.broker || process.env.BROWSERID_BROKER || "https://browserid.me").replace(/\/+$/, "");
 
-  const handle = slugifyHandle(args.handle || "mcp-gateway");
-  const credential = await ensureCredential({
-    broker,
-    handle,
-    label: "MCP gateway console",
-    onApproveUrl: (url, info) => {
-      console.error("");
-      console.error("This gateway needs its OWN BrowserID identity (approve once). Open this link and approve:");
-      if (info?.userCode) console.error(`  (or open ${info.verificationUri} and enter code ${info.userCode})`);
-      if (info?.fingerprint) console.error(`  key fingerprint: ${info.fingerprint}`);
-      console.error("Waiting for approval…");
-      console.log(url); // LAST LINE
-    },
-  });
+  // Credential-less by default (spec §7.5): when the broker supports
+  // connection grants, the gateway needs NO identity of its own — mounts
+  // raise connection requests as the audience and hold the records. The
+  // provisioned gateway identity is only the fallback for brokers without
+  // support.
+  let credential = null;
+  let recordGrants = false;
+  try {
+    const res = await fetch(`${broker}/.well-known/browserid`, { headers: { accept: "application/json" } });
+    const doc = await res.json().catch(() => ({}));
+    recordGrants = res.ok && typeof doc["record-grants"] === "string" && !!doc["record-grants"];
+  } catch { /* unreachable broker: fall through to the credential path */ }
+  if (!recordGrants) {
+    const handle = slugifyHandle(args.handle || "mcp-gateway");
+    credential = await ensureCredential({
+      broker,
+      handle,
+      label: "MCP gateway console",
+      onApproveUrl: (url, info) => {
+        console.error("");
+        console.error("This gateway needs its OWN BrowserID identity (approve once). Open this link and approve:");
+        if (info?.userCode) console.error(`  (or open ${info.verificationUri} and enter code ${info.userCode})`);
+        if (info?.fingerprint) console.error(`  key fingerprint: ${info.fingerprint}`);
+        console.error("Waiting for approval…");
+        console.log(url); // LAST LINE
+      },
+    });
+  }
 
   const gateway = createGateway({
     credential,

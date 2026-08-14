@@ -61,6 +61,65 @@ const nowS = () => Math.floor(Date.now() / 1000);
 const bearerToken = () => `bat_${randomBytes(32).toString("base64url")}`;
 
 // ---------------------------------------------------------------------------
+// Identity comparison (spec §5): local part byte-exact, domain lowercased
+// (records emit A-label domains already — the broker enforces emission form).
+// Grantee matchers are admission-only widenings: `*@<domain>` covers any
+// local part at exactly that domain (no subdomains); `*` covers any
+// authenticated email. Permission, never attribution.
+// ---------------------------------------------------------------------------
+
+function splitEmail(s) {
+  const at = typeof s === "string" ? s.lastIndexOf("@") : -1;
+  if (at < 0) return null;
+  return [s.slice(0, at), s.slice(at + 1).toLowerCase()];
+}
+
+/** Exact identity comparison under the §5 rule. */
+export function identityEq(a, b) {
+  const pa = splitEmail(a);
+  const pb = splitEmail(b);
+  return !!pa && !!pb && pa[0] === pb[0] && pa[1] !== "" && pa[1] === pb[1];
+}
+
+/** Does a grantee (exact email or `*` / `*@<domain>` matcher) cover an
+ *  authenticated subject identity? (spec §6.4 step 3) */
+export function granteeCovers(grantee, subject) {
+  if (grantee === "*") return typeof subject === "string" && subject.includes("@");
+  if (typeof grantee === "string" && grantee.startsWith("*@")) {
+    const domain = grantee.slice(2).toLowerCase();
+    const ps = splitEmail(subject);
+    return !!ps && domain !== "" && ps[1] === domain;
+  }
+  return identityEq(grantee, subject);
+}
+
+// ---------------------------------------------------------------------------
+// Policy store (spec §6.5) — the resource-held rows of G-signed policy
+// records ("who may enter"), conjoined with connection records at admission.
+// A row is { record, grantor, grantee, audience, scopes, exp }; keyed on
+// (grantor, grantee, audience) so a re-authored grant replaces its
+// predecessor (policy edit = revoke-old + sign-new).
+// ---------------------------------------------------------------------------
+
+/** In-memory policy store (single process). Swap for a db in production. */
+export function createPolicyStore() {
+  const rows = new Map();
+  const key = (r) => `${r.grantor}|${r.grantee}|${r.audience}`;
+  return {
+    async put(row) {
+      rows.set(key(row), row);
+    },
+    async list(audience = null) {
+      const all = [...rows.values()];
+      return audience == null ? all : all.filter((r) => r.audience === audience);
+    },
+    async del(grantor, grantee, audience) {
+      rows.delete(`${grantor}|${grantee}|${audience}`);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Errors — carry an OAuth error code + HTTP status so callers can render
 // RFC 6749 §5.2 token errors and RFC 6750 bearer challenges uniformly.
 // ---------------------------------------------------------------------------
@@ -242,7 +301,7 @@ export function createMcpAuth(opts) {
    * mint/refresh, never cache it across mints (spec §6.4 freshness-backed
    * minting — no fresh evidence ⇒ no mint).
    */
-  async function validateRecord(record) {
+  async function validateRecord(record, audience = resource) {
     let v;
     try {
       const res = await doFetch(validateUrl, {
@@ -250,7 +309,7 @@ export function createMcpAuth(opts) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           record,
-          audience: resource,
+          audience,
           accepted_fallbacks: acceptedFallbacks,
         }),
       });
@@ -338,6 +397,10 @@ export function createMcpAuth(opts) {
       holder: grant.holder,
       issuer: grant.issuer,
       client: grant.client || null,
+      // §6.5: the PERMITTER — the policy-record grantor whose grant admitted
+      // this subject (null for owners / open resources / Lane A). Audit as
+      // "grantor, via client, under permittedBy's grant"; never the author.
+      permittedBy: grant.permittedBy || null,
       scopes: grant.scopes.slice(),
     };
   }
@@ -503,6 +566,21 @@ export function createAuthCodeLane(opts) {
   const capabilityCacheS = opts.capabilityCacheS ?? 300;
   const returnPollTries = opts.returnPollTries ?? 5;
   const returnPollDelayMs = opts.returnPollDelayMs ?? 500;
+  // Policy layer (spec §6.5): when configured, admission is the two-record
+  // conjunction — a connecting subject must be an OWNER (the degenerate
+  // G = E case) or be covered by a held policy record, and effective scopes
+  // are S ∩ S′. Absent ⇒ the open, public-but-attributed posture (any valid
+  // connection record, its own scopes).
+  const policy = opts.policy
+    ? {
+        owners: (opts.policy.owners || []).map((e) => String(e).trim()).filter(Boolean),
+        store: opts.policy.store || createPolicyStore(),
+      }
+    : null;
+  if (opts.policy && !policy.owners.length) {
+    throw new Error("mcp-auth: policy.owners must name at least one owner");
+  }
+  const isOwner = (subject) => policy.owners.some((o) => identityEq(o, subject));
 
   // In-memory v1 stores (the design's locked default). A client row is
   // { redirectUris, clientName }; pending is keyed by our internal
@@ -792,6 +870,170 @@ export function createAuthCodeLane(opts) {
     return p ? p.body : null;
   }
 
+  // --- The grant-authoring ceremony (spec §7.5, grantor-initiated) -----------
+
+  /**
+   * Raise an authoring ceremony: this resource compiles its access policy
+   * into flat per-(grantee, audience) grants for an OWNER to sign at the
+   * broker's consent page. Returns `{ requestId, consentUri, expiresIn,
+   * interval, wait }` — surface `consentUri` to the owner, then `await
+   * wait()` for the signed records: each is validated (`/validate-record`,
+   * fail-closed), its grantor checked against `policy.owners` (the resource
+   * accepts policy rows only from its configured authorities), and stored in
+   * the policy store — replacing any prior row for the same
+   * (grantor, grantee, audience): a policy edit is revoke-old + sign-new.
+   *
+   * @param {object} args
+   * @param {Array<{grantee:string, audience?:string, scopes?:string[]}>} args.grants
+   * @param {number} [args.pollDelayMs]  Delay between delivery polls (default: the broker's interval).
+   * @param {number} [args.maxWaitS]     Give up after this long (default: the request's expiry).
+   */
+  async function requestAuthoring(args) {
+    if (!policy) {
+      throw new McpAuthError("invalid_request", "no policy configured (policy.owners) — authoring needs an owner anchor");
+    }
+    const grants = (args?.grants || []).map((g) => ({
+      grantee: req(g, "grantee"),
+      audience: (g.audience || resource).replace(/\/+$/, ""),
+      scopes: g.scopes || [],
+    }));
+    if (!grants.length) throw new McpAuthError("invalid_request", "authoring needs at least one grant");
+
+    let pending;
+    const res = await doFetch(`${broker}/warrant/record-request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "authoring", grants }),
+    });
+    pending = await res.json().catch(() => ({}));
+    if (!res.ok || !pending.request_id || !pending.challenge || !pending.consent_uri) {
+      throw new McpAuthError(
+        "temporarily_unavailable",
+        `authoring request failed: ${pending.reason || pending.error || `HTTP ${res.status}`}`,
+        503
+      );
+    }
+    const requestId = pending.request_id;
+    const expiresIn = pending.expires_in ?? pendingTtlS;
+    proofs.set(requestId, { body: pending.challenge, exp: nowS() + expiresIn });
+
+    const pollDelayMs = args?.pollDelayMs ?? Math.max(1, pending.interval ?? 5) * 1000;
+    const deadline = nowS() + (args?.maxWaitS ?? expiresIn);
+
+    async function wait() {
+      try {
+        for (;;) {
+          if (nowS() >= deadline) {
+            throw new McpAuthError("access_denied", "authoring approval timed out");
+          }
+          let body;
+          try {
+            const r = await doFetch(`${broker}/warrant/poll`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ request_id: requestId }),
+            });
+            body = await r.json().catch(() => ({}));
+            if (body.status === "denied") {
+              throw new McpAuthError("access_denied", body.reason || "the owner denied the grants");
+            }
+            if (r.status === 404 || r.status === 410) {
+              throw new McpAuthError("access_denied", "the authoring request expired");
+            }
+          } catch (e) {
+            if (e instanceof McpAuthError) throw e;
+            body = {}; // transient: retry
+          }
+          if (body.status === "approved") {
+            const delivered = body.grants || [];
+            const rows = [];
+            for (const g of grants) {
+              const d = delivered.find((x) => x?.audience === g.audience && x?.warrant);
+              if (!d) {
+                throw new McpAuthError("invalid_grant", `no record delivered for ${g.grantee} @ ${g.audience}`);
+              }
+              const v = await mcpAuth.validateRecord(d.warrant, g.audience);
+              if (!policy.owners.some((o) => identityEq(o, v.grantor))) {
+                throw new McpAuthError("invalid_grant", `record grantor '${v.grantor}' is not a configured owner`);
+              }
+              if (v.grantee !== g.grantee) {
+                throw new McpAuthError("invalid_grant", "record grantee does not match the requested grant");
+              }
+              const row = {
+                record: d.warrant,
+                grantor: v.grantor,
+                grantee: v.grantee,
+                audience: g.audience,
+                scopes: v.scopes || [],
+                exp: v.expires_at ?? null,
+              };
+              await policy.store.put(row);
+              rows.push(row);
+            }
+            return rows;
+          }
+          await sleep(pollDelayMs);
+        }
+      } finally {
+        proofs.delete(requestId);
+      }
+    }
+
+    return {
+      requestId,
+      consentUri: pending.consent_uri,
+      expiresIn,
+      interval: pending.interval ?? 5,
+      wait,
+    };
+  }
+
+  /**
+   * The §6.5 conjunction, evaluated with FRESH evidence at every connection
+   * mint/refresh: the connection record's subject (its self-granting
+   * grantor) must be an owner, or a held policy record must cover them at
+   * this audience — revalidated fail-closed — and the effective grant is
+   * S ∩ S′. Returns `{ scopes, statusRefs, expiresAt, permittedBy }`.
+   */
+  async function conjoinPolicy(v) {
+    const subject = v.grantor;
+    const base = {
+      scopes: v.scopes || [],
+      statusRefs: v.status_refs || [],
+      expiresAt: v.expires_at ?? null,
+      permittedBy: null,
+    };
+    if (!policy || isOwner(subject)) return base;
+
+    // Covering rows, exact grantee first (never let a matcher shadow a
+    // precise row), unexpired first.
+    const rows = (await policy.store.list(resource))
+      .filter((r) => granteeCovers(r.grantee, subject))
+      .sort((a, b) => (a.grantee === subject ? -1 : 0) - (b.grantee === subject ? -1 : 0));
+    let lastErr = null;
+    for (const row of rows) {
+      let pv;
+      try {
+        pv = await mcpAuth.validateRecord(row.record, row.audience);
+      } catch (e) {
+        lastErr = e; // revoked/expired/unreachable — try the next covering row
+        continue;
+      }
+      if (!granteeCovers(pv.grantee, subject)) continue;
+      return {
+        scopes: base.scopes.filter((s) => (pv.scopes || []).includes(s)),
+        statusRefs: [...base.statusRefs, ...(pv.status_refs || [])],
+        expiresAt:
+          pv.expires_at != null && (base.expiresAt == null || pv.expires_at < base.expiresAt)
+            ? pv.expires_at
+            : base.expiresAt,
+        permittedBy: pv.grantor,
+      };
+    }
+    if (lastErr instanceof McpAuthError && lastErr.httpStatus === 503) throw lastErr;
+    throw new McpAuthError("invalid_grant", `no grant covers '${subject}' at this resource`);
+  }
+
   // --- GET /authorize/return ---------------------------------------------------
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -993,11 +1235,21 @@ export function createAuthCodeLane(opts) {
     if (binding.kind !== "connection" || !binding.id || binding.client_host !== redirectHost) {
       throw new McpAuthError("invalid_grant", "record does not match this connection");
     }
-    const tokens = await mcpAuth.mintFromValidatedRecord(v, scope, client, {
-      // Bearer + refresh state bound to the (binding.id, record) pair —
-      // §6.6 invariant 5's resource-side obligation.
-      record: rec.record,
-    });
+    // §6.5: conjoin with the policy layer (owner, or a covering policy
+    // record revalidated fresh) — effective scopes S ∩ S′, both records'
+    // status refs on the bearer, expiry the earlier of the two.
+    const c = await conjoinPolicy(v);
+    const tokens = await mcpAuth.mintFromValidatedRecord(
+      { ...v, scopes: c.scopes, status_refs: c.statusRefs, expires_at: c.expiresAt },
+      scope,
+      client,
+      {
+        // Bearer + refresh state bound to the (binding.id, record) pair —
+        // §6.6 invariant 5's resource-side obligation.
+        record: rec.record,
+        permittedBy: c.permittedBy,
+      }
+    );
     // Rotate-on-use refresh token, capped by the record's remaining life.
     const refreshExp = Math.min(nowS() + refreshTtlS, v.expires_at ?? Infinity);
     const familyId = rotateFrom?.familyId || `rf_${randomBytes(16).toString("base64url")}`;
@@ -1060,6 +1312,8 @@ export function createAuthCodeLane(opts) {
     handleAuthorizeReturn,
     handleAudienceProof,
     handleToken,
+    requestAuthoring,
+    policyStore: policy ? policy.store : null,
   };
 }
 
