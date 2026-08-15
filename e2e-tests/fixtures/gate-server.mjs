@@ -49,6 +49,7 @@ const admin = createServer(async (rq, res) => {
       const body = JSON.parse(raw);
       const ceremony = await svc.lane.requestAuthoring({
         grants: [{ grantee: body.grantee, scopes: body.scopes || [] }],
+        grantor: OWNER,
         pollDelayMs: 500,
       });
       shares.set(ceremony.requestId, { status: "pending" });

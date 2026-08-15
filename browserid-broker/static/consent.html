@@ -494,7 +494,10 @@ function cardConnection(r) {
 // name other people, so each row's grantee renders with the same prominence
 // as its audience and scopes.
 function cardAuthoring(r) {
-  const grantor = rootIds[0] || '';
+  // Identity-first pin (same rule as connections): the resource named the
+  // owner who must sign — render it fixed, approve/deny only.
+  const pinned = r.grantor && r.grantor !== '*';
+  const grantor = pinned ? r.grantor : (rootIds[0] || '');
   const n = (r.grants || []).length;
   const rows = (r.grants || []).map(g => {
     const warn = audienceWarn(g.audience);
@@ -516,7 +519,9 @@ function cardAuthoring(r) {
         location, under your authority. Revocable any time from <a href="/account">your account</a>.</p>` +
       rows +
       `<div class="pv-panel" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:14px 0">
-        <span class="pv-footnote">signed by</span> ${asIdentityCell(r, grantor)}</div>
+        <span class="pv-footnote">signed by</span> ${pinned
+          ? `<span class="mono" style="color:#17171a">${escapeHtml(grantor)}</span> <span class="pv-footnote">· requested</span>`
+          : asIdentityCell(r, grantor)}</div>
       <div class="pv-actions" style="margin-top:0">
         <button class="pv-btn approve" data-code="${escapeHtml(r.code)}" disabled>${approveLabel(r, 'Sign')}</button>
         <button class="pv-ghost deny" data-code="${escapeHtml(r.code)}">Deny</button></div>` +

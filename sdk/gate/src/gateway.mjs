@@ -253,7 +253,7 @@ export function createGateway(opts) {
     // The broker caps an authoring ceremony at 32 rows: sign in chunks — the
     // console shows the remainder and offers another signing pass.
     const batch = pending.slice(0, 32);
-    const ceremony = await anyMount.lane.requestAuthoring({ grants: batch });
+    const ceremony = await anyMount.lane.requestAuthoring({ grants: batch, grantor: adminEmail });
     signState = {
       status: "pending",
       requestId: ceremony.requestId,

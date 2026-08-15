@@ -912,7 +912,9 @@ export function createAuthCodeLane(opts) {
     const res = await doFetch(`${broker}/warrant/record-request`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "authoring", grants }),
+      // Pin the signer to the owner identity (the JIT pin rule): the card
+      // renders it fixed, and a different identity cannot approve.
+      body: JSON.stringify({ type: "authoring", grants, ...(args?.grantor ? { grantor: args.grantor } : {}) }),
     });
     pending = await res.json().catch(() => ({}));
     if (!res.ok || !pending.request_id || !pending.challenge || !pending.consent_uri) {

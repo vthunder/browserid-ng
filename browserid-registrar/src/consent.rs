@@ -1584,6 +1584,17 @@ pub async fn record_request(
                     grantee: Some(g.grantee.trim().to_string()),
                 })
                 .collect();
+            let pin = req
+                .grantor
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_lowercase);
+            if let Some(g) = pin.as_deref() {
+                if !g.contains('@') || g.starts_with('*') || g.len() > 254 {
+                    return Err(bad("bad grantor pin (must be an exact email)"));
+                }
+            }
             let meta = RecordRequestMeta { challenge: new_poll_code(), ..Default::default() };
             let audiences: Vec<&str> = items.iter().map(|g| g.audience.as_str()).collect();
             let return_url = req
@@ -1595,7 +1606,7 @@ pub async fn record_request(
             if let Some(u) = return_url.as_deref() {
                 validate_return_url(u, "", &audiences)?;
             }
-            (RequestKind::Authoring, grants, meta, return_url, None)
+            (RequestKind::Authoring, grants, meta, return_url, pin)
         }
         other => return Err(bad(format!("unknown request type '{other}'"))),
     };
