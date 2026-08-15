@@ -22,6 +22,11 @@ export interface GateOptions {
    *  identity to be an owner or covered by an owner-signed policy record
    *  (share via lane.requestAuthoring). Supersedes `allow`. */
   owners?: string[];
+  /** Enforcement source. Library default: owners ⇒ signed records; pass
+   *  false for identity-first connect over a caller-supplied entitlement
+   *  without the record layer. The GATEWAY defaults to false (local roles)
+   *  and persists a --signed-grants opt-in in its config. */
+  signedGrants?: boolean;
   /** The gateway's device credential — the agent-mode FALLBACK only;
    *  omit for a fully credential-less gate (connection mode, spec §7.5). */
   credential?: {

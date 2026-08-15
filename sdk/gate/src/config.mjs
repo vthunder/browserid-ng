@@ -55,7 +55,7 @@ export function saveConfig(config) {
  * "Full access" role exists.
  */
 export function normalizeConfig(doc) {
-  const cfg = { mounts: [], people: [], roles: [] };
+  const cfg = { mounts: [], people: [], roles: [], signedGrants: doc?.signedGrants === true };
   const legacy = []; // [{id, name, allow}] from pre-roles configs
 
   for (const m of Array.isArray(doc?.mounts) ? doc.mounts : []) {

@@ -40,6 +40,8 @@ function parseArgs(argv) {
     } else if (a === "--admin") out.admin = argv[++i];
     else if (a.startsWith("--admin=")) out.admin = a.slice(8);
     else if (a === "--console-local") out.consoleLocal = true;
+    else if (a === "--signed-grants") out.signedGrants = true;
+    else if (a === "--signed-grants=off" || a === "--signed-grants=false") out.signedGrants = false;
     else if (a === "--handle") out.handle = argv[++i];
     else if (a.startsWith("--handle=")) out.handle = a.slice(9);
     else if (a === "--port") out.port = Number(argv[++i]);
@@ -129,6 +131,7 @@ async function main() {
   const gateway = createGateway({
     credential,
     adminEmail: args.admin,
+    signedGrants: args.signedGrants,
     broker,
     consoleLocal: args.consoleLocal,
     // If --resource is given, skip the funnel and use it as the public origin.
@@ -147,6 +150,7 @@ async function main() {
   const bar = "─".repeat(64);
   console.error(bar);
   console.error(`  MCP Gateway is live (admin: ${args.admin}).`);
+  console.error(`  grants: ${gateway.signedGrants ? "SIGNED records (share → sign at the broker; revocable at /account)" : "local roles (unsigned; --signed-grants to switch)"}`);
   console.error(`  local port:  ${port}`);
   console.error(`  public host: ${origin}`);
   if (args.consoleLocal) {

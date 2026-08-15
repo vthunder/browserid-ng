@@ -61,6 +61,11 @@ export async function createMount(opts) {
   const allow = new Set((opts.allow || []).map((e) => String(e).trim().toLowerCase()).filter(Boolean));
   const access = typeof opts.access === "function" ? opts.access : null;
   const owners = (opts.owners || []).map((e) => String(e).trim()).filter(Boolean);
+  // Record-policy admission at the lane (§6.5). Library default: owners ⇒
+  // signed; the gateway passes an explicit false in local-roles mode (the
+  // identity-first flow is identical either way — only the entitlement
+  // source changes).
+  const signedGrants = opts.signedGrants ?? owners.length > 0;
   // Identity-first connect (policy mode): who is signed in at the gate, and
   // what do the held records entitle them to HERE. The gateway passes both;
   // the single-server gate gets a default that reads the policy store.
@@ -111,7 +116,7 @@ export async function createMount(opts) {
   const lane = createAuthCodeLane({
     mcpAuth,
     ...(opts.credential ? { credential: opts.credential } : {}),
-    ...(owners.length ? { policy: { owners, store: opts.policyStore } } : {}),
+    ...(owners.length && signedGrants ? { policy: { owners, store: opts.policyStore } } : {}),
     broker,
     fetch: doFetch,
     label: name,

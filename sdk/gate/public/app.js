@@ -673,7 +673,7 @@ function renderPeople(root) {
         const chip = el("button", "chip " + (on ? (r.builtin ? "on-gold" : "on-cyan") : "off"));
         chip.appendChild(el("span", "check", on ? "✓" : ""));
         chip.appendChild(document.createTextNode(r.name));
-        chip.title = `${on ? "Remove from" : "Add to"} ${r.name} — takes effect when you sign the updated grants`;
+        chip.title = `${on ? "Remove from" : "Add to"} ${r.name} — ${STATE.grants?.disabled ? "staged, applies on restart" : "takes effect when you sign the updated grants"}`;
         chip.addEventListener("click", () => {
           const members = on ? r.members.filter((e) => e !== p.email) : [...r.members, p.email];
           mutate(() => api("PATCH", `/admin/roles/${encodeURIComponent(r.id)}`, { members }));
@@ -722,7 +722,9 @@ function renderRoles(root) {
   head.appendChild(el("h1", null, "Roles"));
   head.appendChild(el("span", "page-sum", `${STATE.roles.length} roles`));
   root.appendChild(head);
-  root.appendChild(el("p", "page-sub wide", "Roles are the editor: a role grants tools — per server, per tool. What people can actually use comes from the access grants you SIGN (the header shows when signatures are needed) — each grant is a record signed with your browserid, revocable any time from your account page."));
+  root.appendChild(el("p", "page-sub wide", STATE.grants?.disabled
+    ? "Roles are the only way in: a role grants tools — per server, per tool — and people in the role get exactly those. Edits are staged and apply on restart."
+    : "Roles are the editor: a role grants tools — per server, per tool. What people can actually use comes from the access grants you SIGN (the header shows when signatures are needed) — each grant is a record signed with your browserid, revocable any time from your account page."));
 
   const list = el("div", "roles-list");
   for (const r of STATE.roles) list.appendChild(roleCard(r));

@@ -56,6 +56,13 @@ export function createGateway(opts) {
   const statusCacheS = opts.statusCacheS ?? 5;
   const consoleLocal = !!opts.consoleLocal;
   const persist = opts.persist ?? !opts.config;
+  // Enforcement source (Dan's call, 2026-08-15): LOCAL roles by default
+  // (self-hosted: operator == owner, unsigned rows enforce directly, the
+  // pre-0.7 staged model). SIGNED records opt-in (--signed-grants): the
+  // §6.5 path — required when the operator isn't the policy owner (managed
+  // gateways), and what lets verification later travel down the stack.
+  // Sticky: persisted in config so a forgotten flag never silently
+  // downgrades enforcement; resolved after config load below.
   const funnelFn = opts.ensureFunnel || ensureFunnel;
 
   const mounts = new Map(); // slug -> live mount (spawned at startup, fixed)
@@ -63,6 +70,11 @@ export function createGateway(opts) {
   let startupDefs = []; // snapshot of config.mounts at startup (for the pending diff)
   let startupRoles = []; // snapshot of config.roles at startup — the ENFORCED set
   let config = opts.config ? normalizeConfig(opts.config) : loadConfig();
+  const signedGrants = opts.signedGrants ?? config.signedGrants ?? false;
+  if (typeof opts.signedGrants === "boolean" && config.signedGrants !== opts.signedGrants) {
+    config.signedGrants = opts.signedGrants;
+    if (opts.persist ?? !opts.config) saveConfig(config);
+  }
 
   let publicOrigin = opts.origin ? String(opts.origin).replace(/\/+$/, "") : null;
   let port = null;
@@ -225,9 +237,19 @@ export function createGateway(opts) {
       resource,
       ...(credential ? { credential } : {}),
       owners: [adminEmail],
+      signedGrants,
       policyStore,
       userFor: (rq) => connectAuth.userFor(rq),
-      entitlementFor: async (email) => entitlementAt(mount, email),
+      entitlementFor: signedGrants
+        ? async (email) => entitlementAt(mount, email)
+        : async (email) => {
+            // Local mode: the startup roles snapshot (the staged model),
+            // mapped to tool scopes.
+            const acc = accessFor(email, def.id);
+            if (acc === "all") return "all";
+            if (!acc) return null;
+            return [...acc].map((t) => `tool:${t}`);
+          },
       name: def.name,
       child: { command: def.command[0], args: def.command.slice(1) },
       broker,
@@ -589,11 +611,13 @@ export function createGateway(opts) {
     // Grants (spec §6.5): the compiled desired set vs the signed records, and
     // the signing ceremony (the admin signs at the broker's authoring card).
     if (rq.method === "GET" && path === "/admin/grants") {
+      if (!signedGrants) return json(res, 200, { disabled: true, desired: [], signed: [], pending: [], stale: [], signState: null });
       const diff = await grantsDiff();
       return json(res, 200, { ...diff, signState });
     }
     if (rq.method === "POST" && path === "/admin/grants/sign") {
       if (!requireCsrf(rq, res, session)) return;
+      if (!signedGrants) return json(res, 400, { error: "invalid_request", error_description: "signed grants are not enabled (--signed-grants)" });
       if (signState?.status === "pending") {
         return json(res, 409, { error: "conflict", error_description: "a signing ceremony is already pending", signState });
       }
@@ -782,7 +806,7 @@ export function createGateway(opts) {
     get localServer() { return localServer; },
     get sessions() { return sessions; },
     get mounts() { return mounts; },
-    adminEmail, broker,
+    adminEmail, broker, signedGrants,
   };
 }
 

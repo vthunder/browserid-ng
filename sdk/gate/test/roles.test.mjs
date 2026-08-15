@@ -74,6 +74,7 @@ before(async () => {
   await new Promise((r) => broker.listen(BROKER_PORT, r));
   gw = createGateway({
     credential, adminEmail: ADMIN, broker: BROKER, origin: ORIGIN, statusCacheS: 0, persist: false,
+    signedGrants: true,
     policyStore: memoryPolicyStore(),
     log: () => {},
     config: {
