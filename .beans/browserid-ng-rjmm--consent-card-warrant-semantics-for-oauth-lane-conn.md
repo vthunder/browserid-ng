@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-13T18:10:47Z
-updated_at: 2026-08-14T17:37:40Z
+updated_at: 2026-08-15T07:22:09Z
 ---
 
 From the Lane B design review with Dan (2026-08-13, after the mcp-demo connector E2E):
@@ -79,3 +79,7 @@ Item 2 (commit ea6475e): broker record-request surface per §7.5 — /warrant/re
 Item 3 (commit cb935aa): mcp-auth 0.3.0 — credential-less connection mode with capability detection + agent fallback; validateRecord/mintFromValidatedRecord; bearers ≤1h capped by record exp, bound to (binding.id, record); freshness-backed mint/refresh (every mint backed by fresh /validate-record, fail-closed); rotate-on-use refresh tokens with family burn; client_host binding enforced at return + every exchange; mcp-demo credential-less + proof route.
 
 Deferred follow-ups: per-mint status-snapshot retention (§6.4 SHOULD, needs /validate-record to return snapshot tokens); service-class identities (from the original design directions); npm publish of mcp-auth still not done. Note: guestbook + paired-provisioning e2e specs fail on main pre-existing (stale spec vs authorize-page flow) — unrelated, worth its own bean.
+
+## Post-test design round (2026-08-15, gate 0.7.1→0.9.0)
+
+From Dan's live testing: signing banner bugs fixed (stale cache; banner only on Roles tab while sharing happens on People tab → moved into the header sync pill/popover); connect flow made identity-visible (interstitial 'Continue as X / switch' — a live gate session never silently bounces; switch clears the member session). Trust discussion outcome: signed policy records do NOT constrain a hostile enforcement point (irreducible for hosted resources) — their value is provenance integrity, honest-but-sloppy containment, unilateral owner revocation, and the door to verification moving down the stack. Decision: enforcement source is a deployment property — LOCAL roles default for self-hosted, --signed-grants sticky opt-in (gate 0.9.0). Two-tier future direction captured in its own draft bean. npm: mcp-auth 0.5.0 published; gate 0.9.0 awaiting Dan's OTP publish.
