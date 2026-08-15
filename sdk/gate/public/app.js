@@ -567,6 +567,7 @@ function openDialog(m) {
 // --- people tab -------------------------------------------------------------
 
 function renderPeople(root) {
+  renderGrantsPanel(root);
   const head = el("div", "page-head");
   head.appendChild(el("h1", null, "People"));
   head.appendChild(el("span", "page-sum", `${STATE.people.length} people`));
@@ -611,7 +612,7 @@ function renderPeople(root) {
         const chip = el("button", "chip " + (on ? (r.builtin ? "on-gold" : "on-cyan") : "off"));
         chip.appendChild(el("span", "check", on ? "✓" : ""));
         chip.appendChild(document.createTextNode(r.name));
-        chip.title = `${on ? "Remove from" : "Add to"} ${r.name} — staged, applies on restart`;
+        chip.title = `${on ? "Remove from" : "Add to"} ${r.name} — takes effect when you sign the updated grants`;
         chip.addEventListener("click", () => {
           const members = on ? r.members.filter((e) => e !== p.email) : [...r.members, p.email];
           mutate(() => api("PATCH", `/admin/roles/${encodeURIComponent(r.id)}`, { members }));

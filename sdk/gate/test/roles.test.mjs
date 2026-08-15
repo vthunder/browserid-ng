@@ -190,6 +190,28 @@ function memoryPolicyStore() {
   };
 }
 
+test("adding a member surfaces a PENDING grant to sign (the People-tab flow)", async () => {
+  const s = await adminLogin();
+  // Add carol to the Readers role — the exact flow of toggling a role chip
+  // on the People tab.
+  await fetch(`${ORIGIN}/admin/roles/readers`, {
+    method: "PATCH", headers: H(s),
+    body: JSON.stringify({ members: [ALICE, "carol@example.com"] }),
+  });
+  const g = await (await fetch(`${ORIGIN}/admin/grants`, { headers: { cookie: s.cookie } })).json();
+  assert.ok(
+    g.pending.some((r) => r.grantee === "carol@example.com"),
+    `carol's grant must be pending: ${JSON.stringify(g.pending)}`
+  );
+  // Restore (membership AND the address-book row the safety net auto-added).
+  await fetch(`${ORIGIN}/admin/roles/readers`, {
+    method: "PATCH", headers: H(s), body: JSON.stringify({ members: [ALICE] }),
+  });
+  await fetch(`${ORIGIN}/admin/people/${encodeURIComponent("carol@example.com")}`, {
+    method: "DELETE", headers: H(s),
+  });
+});
+
 test("a refused login reports the ATTEMPTED identity (never the admin's)", async () => {
   const res = await fetch(`${ORIGIN}/admin/login`, {
     method: "POST", headers: { "content-type": "application/json" },
