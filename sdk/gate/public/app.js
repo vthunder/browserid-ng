@@ -92,6 +92,10 @@ async function refresh() {
 async function mutate(fn) {
   try {
     await fn();
+    // Any edit can change the compiled grants — drop the cache so the
+    // signing banner recomputes (the bug: adding a person/role showed no
+    // signing step because the pre-edit "all signed" answer was cached).
+    STATE.grants = null;
     await refresh();
   } catch (e) {
     if (e.status === 401) {
@@ -241,6 +245,7 @@ function renderHeader() {
   tabs.textContent = "";
   for (const t of [["Servers", "servers"], ["People", "people"], ["Roles", "roles"]]) {
     tabs.appendChild(button(t[0], "tab" + (STATE.view === t[1] ? " active" : ""), () => {
+      if (t[1] === "roles") STATE.grants = null; // fresh signing status on entry
       STATE.view = t[1];
       STATE.stagedOpen = false;
       render();
