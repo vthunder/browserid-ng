@@ -111,10 +111,13 @@ async function connectMember(memberPage: any, request: any, member: any, opts: {
     await memberPage.click('#go');
     const popup = await popupPromise;
     await new DialogPage(popup).signInExistingUser(member.email, member.pass);
-  } else {
-    // Origin-wide gate session: straight to the broker consent card.
-    await expect(memberPage.locator('#go')).toHaveCount(0);
   }
+  // A live gate session is never silent: the interstitial names the signed-in
+  // identity and offers the switch; one click continues.
+  await expect(memberPage.locator('#continue')).toBeVisible({ timeout: 15000 });
+  await expect(memberPage.locator('body')).toContainText(member.email);
+  await expect(memberPage.locator('#switch')).toBeVisible();
+  await memberPage.click('#continue');
   // The broker's PINNED connection card: names the connection AND the
   // signed-in identity (no selector), and lists only the member's actual
   // entitlement — not the host's requested ceiling.

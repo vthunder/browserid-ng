@@ -221,6 +221,18 @@ export async function createMount(opts) {
             redirect302(res, `/connect/login?next=${encodeURIComponent(next)}`);
             return true;
           }
+          // A live gate session never bounces SILENTLY: say who is
+          // connecting and offer the switch — one click to continue, so a
+          // second mount stays nearly free, but never invisible identity.
+          if (!url.searchParams.get("gate_continue")) {
+            const params = new URLSearchParams(url.searchParams);
+            params.set("gate_continue", "1");
+            const continueUrl = `${resource}/authorize?${params.toString()}`;
+            const switchUrl = `/connect/login?next=${encodeURIComponent(continueUrl)}&switch=1`;
+            res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+            res.end(continueAsPage(user, name, continueUrl, switchUrl));
+            return true;
+          }
           const ent = await entitlementFor(user);
           if (ent == null) {
             res.writeHead(403, { "content-type": "text/html; charset=utf-8" });
@@ -399,6 +411,22 @@ export const json = (res, code, obj, headers = {}) => {
   res.writeHead(code, { "content-type": "application/json", ...headers });
   res.end(JSON.stringify(obj));
 };
+
+/** The identity interstitial: a live gate session is visible, never silent —
+ *  confirm who's connecting or switch accounts before anything is asked on
+ *  their behalf. */
+export function continueAsPage(email, serverName, continueUrl, switchUrl) {
+  const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Connect — ${esc(serverName)}</title>
+<style>body{font:15px/1.6 -apple-system,system-ui,sans-serif;max-width:420px;margin:16vh auto;padding:0 24px;color:#1a1a1a;text-align:center}
+.btn{display:inline-block;font:600 15px system-ui;padding:11px 22px;border-radius:10px;border:0;background:#17171a;color:#fff;cursor:pointer;text-decoration:none}
+.alt{display:block;margin-top:14px;font-size:13.5px;color:#6b6b74}</style>
+<h1 style="font-size:20px">Connect to ${esc(serverName)}</h1>
+<p>You're signed in here as <b>${esc(email)}</b>. The next screen shows exactly
+what this connection may do as that identity.</p>
+<a class="btn" id="continue" href="${esc(continueUrl)}">Continue as ${esc(email)}</a>
+<a class="alt" id="switch" href="${esc(switchUrl)}">Use a different account</a>`;
+}
 
 /** Refusal page for a signed-in user with no grants here (identity-first
  *  connect: refused BEFORE any consent ceremony). */

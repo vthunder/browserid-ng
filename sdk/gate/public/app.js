@@ -83,6 +83,7 @@ async function refresh() {
   STATE.roles = s.roles;
   STATE.pending = s.pending;
   if (STATE.prevPending === 0 && s.pending.length > 0) STATE.stagedOpen = true;
+  if (STATE.grants?.pending?.length || STATE.grants?.stale?.length) STATE.stagedOpen = true;
   STATE.prevPending = s.pending.length;
   if (STATE.expanded && !s.mounts.some((m) => m.id === STATE.expanded)) STATE.expanded = null;
   if (STATE.roleExpanded && !s.roles.some((r) => r.id === STATE.roleExpanded)) STATE.roleExpanded = null;
@@ -245,7 +246,6 @@ function renderHeader() {
   tabs.textContent = "";
   for (const t of [["Servers", "servers"], ["People", "people"], ["Roles", "roles"]]) {
     tabs.appendChild(button(t[0], "tab" + (STATE.view === t[1] ? " active" : ""), () => {
-      if (t[1] === "roles") STATE.grants = null; // fresh signing status on entry
       STATE.view = t[1];
       STATE.stagedOpen = false;
       render();
@@ -256,10 +256,21 @@ function renderHeader() {
 
   anchor.textContent = "";
   const n = STATE.pending.length;
-  const pill = el("button", "staged-pill " + (n ? "has" : "clean"));
+  // Grants state rides the same pill/popover (no in-page banners shifting
+  // content): staged config edits + grants awaiting the admin's signature.
+  if (STATE.grants == null && STATE.signedIn) refreshGrants().then(render);
+  const g = STATE.grants;
+  const toSign = (g?.pending?.length || 0) + (g?.stale?.length || 0);
+  const signing = g?.signState?.status === "pending";
+  const parts = [];
+  if (n) parts.push(`${n} staged`);
+  if (signing) parts.push("signing…");
+  else if (toSign) parts.push(`${toSign} to sign`);
+  const busy = n > 0 || toSign > 0 || signing;
+  const pill = el("button", "staged-pill " + (busy ? "has" : "clean"));
   pill.appendChild(el("i", "dot"));
-  pill.appendChild(document.createTextNode(n ? `${n} staged` : "in sync"));
-  if (n) {
+  pill.appendChild(document.createTextNode(busy ? parts.join(" · ") : "in sync"));
+  if (busy) {
     pill.appendChild(el("span", "staged-caret", STATE.stagedOpen ? "▲" : "▼"));
     pill.addEventListener("click", () => { STATE.stagedOpen = !STATE.stagedOpen; render(); });
   } else {
@@ -267,20 +278,71 @@ function renderHeader() {
   }
   anchor.appendChild(pill);
 
-  if (n && STATE.stagedOpen) {
+  if (busy && STATE.stagedOpen) {
     const pop = el("div", "staged-pop");
-    pop.appendChild(el("div", "staged-pop-title", "Staged — restart to apply"));
-    pop.appendChild(el("p", "staged-pop-sub", "saved to config · the running gateway hasn't changed"));
-    const list = el("div", "staged-list");
-    for (const ch of STATE.pending) {
-      const item = el("div", "staged-item");
-      item.appendChild(el("span", "staged-sign " + (ch.sign === "+" ? "add" : ch.sign === "−" ? "del" : "edit"), ch.sign));
-      item.appendChild(el("span", null, ch.label));
-      item.appendChild(el("span", "staged-desc", ch.desc));
-      list.appendChild(item);
+    if (n) {
+      pop.appendChild(el("div", "staged-pop-title", "Staged — restart to apply"));
+      pop.appendChild(el("p", "staged-pop-sub", "saved to config · the running gateway hasn't changed"));
+      const list = el("div", "staged-list");
+      for (const ch of STATE.pending) {
+        const item = el("div", "staged-item");
+        item.appendChild(el("span", "staged-sign " + (ch.sign === "+" ? "add" : ch.sign === "−" ? "del" : "edit"), ch.sign));
+        item.appendChild(el("span", null, ch.label));
+        item.appendChild(el("span", "staged-desc", ch.desc));
+        list.appendChild(item);
+      }
+      pop.appendChild(list);
+      pop.appendChild(el("div", "staged-apply", "To apply, restart the gateway."));
     }
-    pop.appendChild(list);
-    pop.appendChild(el("div", "staged-apply", "To apply, restart the gateway."));
+    if (signing || toSign) {
+      pop.appendChild(el("div", "staged-pop-title", "Access grants — sign to apply"));
+      if (signing) {
+        const p2 = el("p", "staged-pop-sub", "waiting for your signature at the broker — ");
+        const a = document.createElement("a");
+        a.href = g.signState.consentUri;
+        a.target = "_blank";
+        a.textContent = "open the consent card";
+        p2.appendChild(a);
+        pop.appendChild(p2);
+        if (!grantsPollTimer) {
+          grantsPollTimer = setInterval(async () => {
+            await refreshGrants();
+            if (STATE.grants?.signState?.status !== "pending") { clearInterval(grantsPollTimer); grantsPollTimer = null; }
+            render();
+          }, 2000);
+        }
+      } else {
+        const list = el("div", "staged-list");
+        for (const r of g.pending || []) {
+          const item = el("div", "staged-item");
+          item.appendChild(el("span", "staged-sign add", "+"));
+          item.appendChild(el("span", null, r.grantee));
+          item.appendChild(el("span", "staged-desc", `${r.audience.replace(/^https?:\/\/[^/]+\/?/, "/")} · ${r.scopes.length} tool${r.scopes.length === 1 ? "" : "s"}`));
+          list.appendChild(item);
+        }
+        for (const r of g.stale || []) {
+          const item = el("div", "staged-item");
+          item.appendChild(el("span", "staged-sign del", "−"));
+          item.appendChild(el("span", null, r.grantee));
+          item.appendChild(el("span", "staged-desc", "access removed"));
+          list.appendChild(item);
+        }
+        pop.appendChild(list);
+        const apply = el("div", "staged-apply");
+        apply.appendChild(button("Sign at browserid", "btn-cyan", () => {
+          mutate(async () => {
+            const out = await api("POST", "/admin/grants/sign");
+            await refreshGrants();
+            const uri = out?.consentUri || STATE.grants?.signState?.consentUri;
+            if (uri) window.open(uri, "_blank");
+          });
+        }));
+        pop.appendChild(apply);
+      }
+      if (g?.signState?.status === "error") {
+        pop.appendChild(el("p", "staged-pop-sub", `last signing failed: ${g.signState.error}`));
+      }
+    }
     anchor.appendChild(pop);
   }
 }
@@ -567,7 +629,6 @@ function openDialog(m) {
 // --- people tab -------------------------------------------------------------
 
 function renderPeople(root) {
-  renderGrantsPanel(root);
   const head = el("div", "page-head");
   head.appendChild(el("h1", null, "People"));
   head.appendChild(el("span", "page-sum", `${STATE.people.length} people`));
@@ -661,8 +722,7 @@ function renderRoles(root) {
   head.appendChild(el("h1", null, "Roles"));
   head.appendChild(el("span", "page-sum", `${STATE.roles.length} roles`));
   root.appendChild(head);
-  root.appendChild(el("p", "page-sub wide", "Roles are the editor: a role grants tools — per server, per tool. What people can actually use comes from the access grants YOU SIGN below — each person's grant is a record signed with your browserid, revocable any time from your account page."));
-  renderGrantsPanel(root);
+  root.appendChild(el("p", "page-sub wide", "Roles are the editor: a role grants tools — per server, per tool. What people can actually use comes from the access grants you SIGN (the header shows when signatures are needed) — each grant is a record signed with your browserid, revocable any time from your account page."));
 
   const list = el("div", "roles-list");
   for (const r of STATE.roles) list.appendChild(roleCard(r));
@@ -692,57 +752,6 @@ function renderRoles(root) {
 
 async function refreshGrants() {
   try { STATE.grants = await api("GET", "/admin/grants"); } catch { STATE.grants = null; }
-}
-
-function renderGrantsPanel(root) {
-  const g = STATE.grants;
-  const panel = el("div", "new-role-panel");
-  panel.style.marginBottom = "16px";
-  if (!g) {
-    panel.appendChild(el("span", "page-sum", "Loading grant status…"));
-    refreshGrants().then(render);
-    root.appendChild(panel);
-    return;
-  }
-  const pending = g.pending?.length || 0;
-  const stale = g.stale?.length || 0;
-  const signedN = g.signed?.length || 0;
-  const st = g.signState;
-
-  if (st?.status === "pending") {
-    panel.appendChild(el("span", "page-sum", "Waiting for your signature at the broker… "));
-    const a = document.createElement("a");
-    a.href = st.consentUri;
-    a.target = "_blank";
-    a.textContent = "open the consent card";
-    panel.appendChild(a);
-    if (!grantsPollTimer) {
-      grantsPollTimer = setInterval(async () => {
-        await refreshGrants();
-        const now = STATE.grants?.signState;
-        if (now?.status !== "pending") { clearInterval(grantsPollTimer); grantsPollTimer = null; }
-        render();
-      }, 2000);
-    }
-  } else if (pending || stale) {
-    panel.appendChild(el("span", "page-sum",
-      `${pending} grant${pending === 1 ? "" : "s"} awaiting your signature` +
-      (stale ? ` · ${stale} to remove` : "") + " — "));
-    panel.appendChild(button("Sign at browserid", "btn-cyan", () => {
-      mutate(async () => {
-        const out = await api("POST", "/admin/grants/sign");
-        await refreshGrants();
-        if (out?.consentUri || STATE.grants?.signState?.consentUri) {
-          window.open(out?.consentUri || STATE.grants.signState.consentUri, "_blank");
-        }
-      });
-    }));
-  } else {
-    panel.appendChild(el("span", "page-sum",
-      `${signedN} signed grant${signedN === 1 ? "" : "s"} in force — everything you configured is signed.`));
-    if (st?.status === "error") panel.appendChild(el("span", "err", ` Last signing failed: ${st.error}`));
-  }
-  root.appendChild(panel);
 }
 
 let grantsPollTimer = null;

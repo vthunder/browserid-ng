@@ -180,7 +180,13 @@ async function connect(who, record) {
   assert.ok(anon.headers.get("location").startsWith("/connect/login?next="), anon.headers.get("location"));
 
   const cookie = await login(who);
-  const authz = await fetch(authorizeUrl, { redirect: "manual", headers: { cookie } });
+  // A live session is visible, never silent: the interstitial names the
+  // identity and requires one click to continue.
+  const inter = await fetch(authorizeUrl, { redirect: "manual", headers: { cookie } });
+  assert.equal(inter.status, 200);
+  const interBody = await inter.text();
+  assert.ok(interBody.includes('id="continue"'), interBody.slice(0, 200));
+  const authz = await fetch(`${authorizeUrl}&gate_continue=1`, { redirect: "manual", headers: { cookie } });
   if (authz.status === 403) return { denied: true, body: await authz.text() };
   const consent = new URL(authz.headers.get("location"));
   assert.equal(consent.origin, BROKER, `authorize should 302 to the broker consent page (got ${consent})`);

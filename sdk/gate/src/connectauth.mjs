@@ -33,7 +33,11 @@ export function createConnectAuth({ broker, origin, sessions, fetch: doFetch = f
   async function handle(rq, res, { path, url }) {
     if (rq.method === "GET" && path === "/connect/login") {
       // `next` is re-validated server-side on POST; here it only round-trips.
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      // `switch=1` (the interstitial's "use a different account") drops the
+      // current member session before showing the login.
+      const headers = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" };
+      if (url.searchParams.get("switch")) headers["set-cookie"] = sessions.clearCookies();
+      res.writeHead(200, headers);
       res.end(loginPage(broker));
       return true;
     }
