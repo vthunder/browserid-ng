@@ -104,6 +104,49 @@ test("local mode: unsigned roles enforce directly — no ceremony anywhere", asy
   assert.match(read.result.content[0].text, /a private note/);
 });
 
+test("the /shared landing lists exactly what the signed-in member may use", async () => {
+  // Unauthenticated: the page bounces to the member login; the API 401s.
+  const page = await fetch(`${ORIGIN}/shared`, { redirect: "manual" });
+  assert.equal(page.status, 302);
+  assert.ok(page.headers.get("location").startsWith("/connect/login"));
+  assert.equal((await fetch(`${ORIGIN}/shared/servers`)).status, 401);
+
+  const login = async (pres) => {
+    const r = await fetch(`${ORIGIN}/connect/login`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ presentation: pres, next: "/shared" }),
+    });
+    assert.equal(r.status, 200);
+    return r.headers.getSetCookie().map((c) => c.split(";")[0]).find((c) => c.startsWith("gate_user="));
+  };
+
+  // Alice sees notes with exactly her granted tool.
+  const aliceCookie = await login("pres-alice");
+  const a = await (await fetch(`${ORIGIN}/shared/servers`, { headers: { cookie: aliceCookie } })).json();
+  assert.equal(a.email, ALICE);
+  assert.equal(a.servers.length, 1);
+  assert.equal(a.servers[0].url, `${ORIGIN}/notes/mcp`);
+  assert.deepEqual(a.servers[0].tools, ["list_directory"]);
+
+  // Bob (no role) sees an empty landing, not an error.
+  const bobCookie = await login("pres-bob");
+  const b = await (await fetch(`${ORIGIN}/shared/servers`, { headers: { cookie: bobCookie } })).json();
+  assert.deepEqual(b.servers, []);
+
+  // The signed-in page itself serves.
+  const html = await fetch(`${ORIGIN}/shared`, { headers: { cookie: aliceCookie } });
+  assert.equal(html.status, 200);
+  assert.match(await html.text(), /Servers shared with you/);
+});
+
+test("the gallery serves curated servers with name, description and repo", async () => {
+  const g = await (await fetch(`${ORIGIN}/admin/gallery`)).json();
+  assert.ok(Array.isArray(g.servers) && g.servers.length >= 6);
+  for (const it of g.servers) {
+    assert.ok(it.name && it.description && it.repo && it.command, JSON.stringify(it));
+  }
+});
+
 test("local mode: the grants API reports disabled (console shows the staged model)", async () => {
   const login = await fetch(`${ORIGIN}/admin/login`, {
     method: "POST", headers: { "content-type": "application/json" },

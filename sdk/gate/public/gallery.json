@@ -1,0 +1,62 @@
+{
+  "note": "Curated MCP servers worth self-hosting behind the gate. Commands run ON YOUR MACHINE as you — review them (they print at startup). Edit <placeholders> before starting.",
+  "servers": [
+    {
+      "id": "filesystem",
+      "name": "Filesystem",
+      "description": "Read, write and search files in folders you choose. The canonical 'give my agent my notes/projects' server — the data never leaves your machine.",
+      "repo": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+      "command": "npx -y @modelcontextprotocol/server-filesystem <path-to-folder>"
+    },
+    {
+      "id": "memory",
+      "name": "Memory (knowledge graph)",
+      "description": "Persistent memory your agents share across chats, stored as a local knowledge graph file you own.",
+      "repo": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
+      "command": "npx -y @modelcontextprotocol/server-memory"
+    },
+    {
+      "id": "git",
+      "name": "Git",
+      "description": "Read, search and analyze a local git repository — history, diffs, blame — without pushing anything anywhere.",
+      "repo": "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
+      "command": "uvx mcp-server-git --repository <path-to-repo>"
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "description": "Issues, PRs, and repos via your personal access token — the token stays on your box instead of being pasted into every agent.",
+      "repo": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/github",
+      "command": "npx -y @modelcontextprotocol/server-github",
+      "env": [{ "name": "GITHUB_PERSONAL_ACCESS_TOKEN", "hint": "a fine-grained PAT" }]
+    },
+    {
+      "id": "playwright",
+      "name": "Playwright (browser)",
+      "description": "Drive a real browser on your machine — navigate, click, screenshot. Sessions and logins stay local.",
+      "repo": "https://github.com/microsoft/playwright-mcp",
+      "command": "npx -y @playwright/mcp"
+    },
+    {
+      "id": "fetch",
+      "name": "Fetch (web)",
+      "description": "Fetch and convert web pages for your agents, from your own IP — no third-party proxy seeing your browsing.",
+      "repo": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
+      "command": "uvx mcp-server-fetch"
+    },
+    {
+      "id": "sqlite",
+      "name": "SQLite",
+      "description": "Query and update a local SQLite database — analytics on your own data files without exporting them.",
+      "repo": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/sqlite",
+      "command": "uvx mcp-server-sqlite --db-path <path-to.db>"
+    },
+    {
+      "id": "postgres",
+      "name": "Postgres",
+      "description": "Read-only SQL over a Postgres database you run — schema inspection and queries against the real thing.",
+      "repo": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/postgres",
+      "command": "npx -y @modelcontextprotocol/server-postgres <postgresql://connection-string>"
+    }
+  ]
+}

@@ -31,6 +31,7 @@ export function createRecordBroker({ brokerOrigin, adminEmail }) {
     if (url === "/warrant/record-request") {
       const id = `req_${randomBytes(6).toString("hex")}`;
       const challenge = randomBytes(24).toString("base64url");
+      api.lastRequest = { type: body.type, grantor: body.grantor || null, return_url: body.return_url || null };
       pending.set(id, { type: body.type, grants: body.grants || [], challenge });
       reply(200, {
         success: true, request_id: id, challenge,
@@ -74,5 +75,6 @@ export function createRecordBroker({ brokerOrigin, adminEmail }) {
     return false;
   }
 
-  return { handle, revokedGrantees };
+  const api = { handle, revokedGrantees, lastRequest: null };
+  return api;
 }

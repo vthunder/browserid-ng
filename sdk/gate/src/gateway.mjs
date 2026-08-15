@@ -34,6 +34,7 @@ import { createMount, json, applyCors, readBody } from "./mount.mjs";
 import { createSessionManager, parseCookies } from "./session.mjs";
 import { createFilePolicyStore } from "./policystore.mjs";
 import { createConnectAuth } from "./connectauth.mjs";
+import { sharedPage } from "./sharedpage.mjs";
 import { gateHome } from "./credential.mjs";
 import { identityEq, granteeCovers } from "@browserid-ng/mcp-auth";
 import { loadConfig, saveConfig, normalizeConfig, normalizeMountDef, normalizePersonDef, normalizeGrants } from "./config.mjs";
@@ -99,6 +100,19 @@ export function createGateway(opts) {
   let connectAuth = createConnectAuth({
     broker, origin: () => publicOrigin || "", sessions: userSessions, fetch: doFetch,
   });
+
+  /** Mode-unified entitlement: what `email` may use at `mount` ("all", a
+   *  scope list, or null). Signed mode reads live records; local mode reads
+   *  the startup roles snapshot (the staged model). Shared by admission,
+   *  the identity-first authorize, and the /shared landing page. */
+  async function entitlementForEmail(mount, email) {
+    if (signedGrants) return entitlementAt(mount, email);
+    if (identityEq(email, adminEmail) || email === adminEmail) return "all";
+    const acc = accessFor(email, mount.id);
+    if (acc === "all") return "all";
+    if (!acc) return null;
+    return [...acc].map((t) => `tool:${t}`);
+  }
 
   /** What the signed records entitle `email` to at `mount` ("all" for the
    *  admin, a scope list, or null = no access). */
@@ -253,7 +267,13 @@ export function createGateway(opts) {
     // The broker caps an authoring ceremony at 32 rows: sign in chunks — the
     // console shows the remainder and offers another signing pass.
     const batch = pending.slice(0, 32);
-    const ceremony = await anyMount.lane.requestAuthoring({ grants: batch, grantor: adminEmail });
+    const ceremony = await anyMount.lane.requestAuthoring({
+      grants: batch,
+      grantor: adminEmail,
+      // After signing, land back in the console (origin-validated: the
+      // console shares the mounts' origin).
+      returnUrl: publicOrigin ? `${publicOrigin}/admin/` : undefined,
+    });
     signState = {
       status: "pending",
       requestId: ceremony.requestId,
@@ -282,16 +302,7 @@ export function createGateway(opts) {
       signedGrants,
       policyStore,
       userFor: (rq) => connectAuth.userFor(rq),
-      entitlementFor: signedGrants
-        ? async (email) => entitlementAt(mount, email)
-        : async (email) => {
-            // Local mode: the startup roles snapshot (the staged model),
-            // mapped to tool scopes.
-            const acc = accessFor(email, def.id);
-            if (acc === "all") return "all";
-            if (!acc) return null;
-            return [...acc].map((t) => `tool:${t}`);
-          },
+      entitlementFor: async (email) => entitlementForEmail(mount, email),
       name: def.name,
       child: { command: def.command[0], args: def.command.slice(1) },
       broker,
@@ -553,6 +564,30 @@ export function createGateway(opts) {
         if (await connectAuth.handle(rq, res, { path, url })) return;
       }
 
+      // The member landing: everything shared with the signed-in identity,
+      // with per-agent connect instructions. The admin shares ONE url.
+      if (rq.method === "GET" && path === "/shared") {
+        if (!connectAuth.userFor(rq)) {
+          res.writeHead(302, { location: "/connect/login?next=%2Fshared" });
+          return res.end();
+        }
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        return res.end(sharedPage());
+      }
+      if (rq.method === "GET" && path === "/shared/servers") {
+        const email = connectAuth.userFor(rq);
+        if (!email) return json(res, 401, { error: "not_signed_in" });
+        const servers = [];
+        for (const m of mounts.values()) {
+          const ent = await entitlementForEmail(m, email);
+          if (ent == null) continue;
+          const toolNames = ent === "all" ? m.toolNames : m.toolNames.filter((t) => ent.includes(`tool:${t}`));
+          if (!toolNames.length) continue;
+          servers.push({ slug: m.slug, name: m.name, url: `${m.resource}/mcp`, tools: toolNames });
+        }
+        return json(res, 200, { email, servers });
+      }
+
       // Connection mode (spec §7.5): the audience proof is ORIGIN-scoped —
       // the broker fetches it at the host root, not under a mount path — so
       // fan out across mounts to whichever lane has the pending request.
@@ -610,6 +645,7 @@ export function createGateway(opts) {
     }
     if (rq.method === "GET" && path === "/admin/app.js") return serveStatic(res, "app.js", "text/javascript; charset=utf-8");
     if (rq.method === "GET" && path === "/admin/style.css") return serveStatic(res, "style.css", "text/css; charset=utf-8");
+    if (rq.method === "GET" && path === "/admin/gallery") return serveStatic(res, "gallery.json", "application/json");
 
     if (rq.method === "GET" && path === "/admin/bootstrap") {
       const s = sessions.verify(parseCookies(rq.headers.cookie));

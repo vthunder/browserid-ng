@@ -914,7 +914,14 @@ export function createAuthCodeLane(opts) {
       headers: { "content-type": "application/json" },
       // Pin the signer to the owner identity (the JIT pin rule): the card
       // renders it fixed, and a different identity cannot approve.
-      body: JSON.stringify({ type: "authoring", grants, ...(args?.grantor ? { grantor: args.grantor } : {}) }),
+      body: JSON.stringify({
+        type: "authoring",
+        grants,
+        ...(args?.grantor ? { grantor: args.grantor } : {}),
+        // Origin-validated by the broker; the consent page bounces the
+        // signer back here after approval (e.g. the gate console).
+        ...(args?.returnUrl ? { return_url: args.returnUrl } : {}),
+      }),
     });
     pending = await res.json().catch(() => ({}));
     if (!res.ok || !pending.request_id || !pending.challenge || !pending.consent_uri) {

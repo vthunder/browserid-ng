@@ -111,7 +111,7 @@ const normEmail = (e) => String(e || "").trim().toLowerCase();
 
 const SLUG_RE = /^[a-z0-9][a-z0-9._-]*$/i;
 // Reserved top-level path segments the router owns — a mount can't shadow them.
-export const RESERVED_SLUGS = new Set(["admin", "healthz", "assets", "well-known"]);
+export const RESERVED_SLUGS = new Set(["admin", "healthz", "assets", "well-known", "connect", "shared"]);
 
 /**
  * Validate + normalize a mount definition from the admin UI. Throws Error with

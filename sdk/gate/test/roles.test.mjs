@@ -192,6 +192,12 @@ function memoryPolicyStore() {
   };
 }
 
+test("the signing ceremony pins the admin and returns to the console", () => {
+  assert.equal(records.lastRequest?.type, "authoring");
+  assert.equal(records.lastRequest?.grantor, ADMIN, "the signer is pinned");
+  assert.equal(records.lastRequest?.return_url, `${ORIGIN}/admin/`, "the signer lands back in the console");
+});
+
 test("a broker-revoked grant resurfaces as PENDING (never a false 'in sync')", async () => {
   const s = await adminLogin();
   // Alice's grant was signed in before(). Revoke it at the "broker".

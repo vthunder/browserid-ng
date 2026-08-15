@@ -358,6 +358,11 @@ function renderSignedOut(root) {
   card.appendChild(el("h1", null, "Manage your gateway"));
   card.appendChild(el("p", "signin-body", "This gateway publishes local MCP servers at URLs your agents can reach — you decide who connects, by email."));
   card.appendChild(button("Sign in with BrowserID", "btn-signin", signIn));
+  const sharedLink = document.createElement("a");
+  sharedLink.href = "/shared";
+  sharedLink.textContent = "Not the admin? See servers shared with you →";
+  sharedLink.style.cssText = "display:block;margin-top:14px;font-size:13px;color:inherit";
+  card.appendChild(sharedLink);
   if (STATE.signinError) {
     const box = el("div", "signin-err");
     if (STATE.signinError.attempted) {
@@ -386,6 +391,7 @@ function renderServers(root) {
   const running = STATE.mounts.filter((m) => m.running).length;
   head.appendChild(el("span", "page-sum", STATE.mounts.length ? `${running} running · ${STATE.mounts.length} configured` : ""));
   head.appendChild(el("span", "spacer"));
+  head.appendChild(button("Browse gallery", "btn-cyan", openGallery));
   head.appendChild(button("+ Add an MCP", "btn-gold", () => openDialog(null)));
   root.appendChild(head);
   root.appendChild(el("p", "page-sub", "Each server below is published at a URL. Copy it into your agent — or hand it to someone whose role grants them tools here."));
@@ -394,6 +400,7 @@ function renderServers(root) {
     const empty = el("div", "empty-panel");
     empty.appendChild(el("div", "empty-title", "No MCP servers yet"));
     empty.appendChild(el("p", "empty-body", "Adding one takes a name, a URL path, and the command that runs it. The gateway publishes it at a shareable URL — reachable only by people whose role grants access."));
+    empty.appendChild(button("Browse the gallery", "btn-cyan big", openGallery));
     empty.appendChild(button("+ Add an MCP", "btn-gold big", () => openDialog(null)));
     root.appendChild(empty);
     return;
@@ -522,7 +529,62 @@ function serverBody(m, staged, removing) {
 
 // --- add/edit dialog --------------------------------------------------------
 
-function openDialog(m) {
+// The curated gallery: popular MCP servers worth self-hosting, one click to
+// prefill the add-server form. Static curation shipped with the gate; the
+// command still prints at startup — the gallery never bypasses review.
+async function openGallery() {
+  if (!STATE.gallery) {
+    try { STATE.gallery = await api("GET", "/admin/gallery"); } catch (e) { showToast(e.message); return; }
+  }
+  const root = $("modal-root");
+  root.textContent = "";
+  const backdrop = el("div", "modal-backdrop");
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+  const card = el("div", "modal-card");
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.style.maxHeight = "80vh";
+  card.style.overflowY = "auto";
+  card.appendChild(el("h2", null, "Server gallery"));
+  card.appendChild(el("p", "modal-sub", STATE.gallery.note || "Curated MCP servers worth self-hosting."));
+  for (const g of STATE.gallery.servers || []) {
+    const row = el("div", "fields");
+    row.style.cssText = "border:1px solid rgba(0,0,0,.08);border-radius:10px;padding:12px 14px;margin-bottom:10px";
+    const top = el("div");
+    top.style.cssText = "display:flex;align-items:baseline;gap:8px";
+    top.appendChild(el("b", null, g.name));
+    const repo = document.createElement("a");
+    repo.href = g.repo;
+    repo.target = "_blank";
+    repo.rel = "noreferrer";
+    repo.textContent = "repo ↗";
+    repo.style.cssText = "font-size:12px;margin-left:auto";
+    top.appendChild(repo);
+    row.appendChild(top);
+    const desc = el("p", null, g.description);
+    desc.style.cssText = "font-size:13px;margin:4px 0 8px;color:#555";
+    row.appendChild(desc);
+    const cmd = el("code", null, g.command);
+    cmd.style.cssText = "display:block;font:12px ui-monospace,monospace;background:#f7f7f8;border-radius:6px;padding:6px 8px;margin-bottom:8px;overflow-wrap:anywhere";
+    row.appendChild(cmd);
+    if (g.env?.length) {
+      row.appendChild(el("p", "f-hint", "Needs env: " + g.env.map((e2) => `${e2.name} (${e2.hint})`).join(", ") + " — set it in the environment you launch the gateway from."));
+    }
+    row.appendChild(button("Use this", "btn-gold", () => {
+      close();
+      openDialog(null, { name: g.name, mount: g.id, command: g.command });
+    }));
+    card.appendChild(row);
+  }
+  const foot = el("p", "modal-sub", "Commands run on your machine as you — edit any <placeholders> and review before starting.");
+  card.appendChild(foot);
+  card.appendChild(button("Close", "btn-ghost", () => close()));
+  function close() { root.textContent = ""; }
+  backdrop.appendChild(card);
+  root.appendChild(backdrop);
+}
+
+function openDialog(m, prefill) {
   const root = $("modal-root");
   root.textContent = "";
   const editId = m ? m.id : null;
@@ -544,17 +606,17 @@ function openDialog(m) {
   };
   const fName = el("input", "f-input");
   fName.placeholder = "Dan's Notes";
-  fName.value = m ? m.name : "";
+  fName.value = m ? m.name : (prefill?.name || "");
   fields.appendChild(mkField("Name", fName));
 
   const fPath = el("input", "f-input mono");
   fPath.placeholder = "notes";
-  fPath.value = m ? m.mount : "";
+  fPath.value = m ? m.mount : (prefill?.mount || "");
   const pathLab = mkField("Mount path", fPath);
   const preview = el("span", "path-preview");
   const base = (STATE.origin || "").replace(/\/+$/, "");
   preview.appendChild(el("span", null, `will publish at  ${base}/`));
-  const previewPath = el("span", "url-path", m ? m.mount : "path");
+  const previewPath = el("span", "url-path", m ? m.mount : (prefill?.mount || "path"));
   preview.appendChild(previewPath);
   preview.appendChild(el("span", null, "/mcp"));
   pathLab.appendChild(preview);
@@ -565,7 +627,7 @@ function openDialog(m) {
 
   const fCmd = el("input", "f-input mono-sm");
   fCmd.placeholder = "npx -y @modelcontextprotocol/server-filesystem ~/notes";
-  fCmd.value = m ? m.command.join(" ") : "";
+  fCmd.value = m ? m.command.join(" ") : (prefill?.command || "");
   fields.appendChild(mkField("Command", fCmd));
   card.appendChild(fields);
 
