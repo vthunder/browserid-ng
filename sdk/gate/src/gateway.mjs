@@ -105,8 +105,13 @@ export function createGateway(opts) {
   async function entitlementAt(mount, email) {
     if (identityEq(email, adminEmail) || email === adminEmail) return "all";
     const rows = (await policyStore.list(mount.resource)).filter((r) => granteeCovers(r.grantee, email));
-    if (!rows.length) return null;
-    return [...new Set(rows.flatMap((r) => r.scopes || []))];
+    // Liveness (cached ≤60s): a broker-revoked grant must stop admitting
+    // here too — connection bearers revalidate at every mint, but the
+    // jwt-bearer lane's entitlement read would otherwise trust a dead row.
+    const live = [];
+    for (const r of rows) if (await isRowLive(r)) live.push(r);
+    if (!live.length) return null;
+    return [...new Set(live.flatMap((r) => r.scopes || []))];
   }
 
   // --- access resolution (roles are the single source of truth) -------------
@@ -180,11 +185,45 @@ export function createGateway(opts) {
     return rows.sort((a, b) => (a.grantee + a.audience).localeCompare(b.grantee + b.audience));
   }
 
+  // A stored row only counts as SIGNED while its record is still alive —
+  // revocation at the broker (or expiry) must resurface it as pending, or
+  // the console reads "in sync" over a dead grant (Dan's repro,
+  // 2026-08-15). Enforcement is already fail-closed per mint; this is the
+  // DIFF's view: definitive invalidity (revoked/expired) drops the row so
+  // it needs a fresh signature; an unreachable validator keeps last-known
+  // rather than churning the console.
+  const recordLiveness = new Map(); // record -> { at, ok }
+  const LIVENESS_TTL_MS = (opts.grantsLivenessS ?? 60) * 1000;
+  async function isRowLive(row) {
+    if (row.exp != null && row.exp <= Math.floor(Date.now() / 1000)) return false;
+    const cached = recordLiveness.get(row.record);
+    if (cached && Date.now() - cached.at < LIVENESS_TTL_MS) return cached.ok;
+    const anyMount = mounts.values().next().value;
+    if (!anyMount) return true; // nothing to validate with; leave the row be
+    let ok = true;
+    try {
+      await anyMount.mcpAuth.validateRecord(row.record, row.audience);
+    } catch (e) {
+      if (e?.httpStatus === 503) return cached?.ok ?? true; // unreachable
+      ok = false; // revoked / expired / invalid — definitive
+    }
+    recordLiveness.set(row.record, { at: Date.now(), ok });
+    return ok;
+  }
+
   /** desired vs signed (admin-signed rows only): what needs a signature, and
    *  which signed rows are stale (no longer desired → custodial delete). */
   async function grantsDiff() {
     const desired = compileGrants();
-    const signed = (await policyStore.list()).filter((r) => r.grantor === adminEmail);
+    let signed = (await policyStore.list()).filter((r) => r.grantor === adminEmail);
+    const dead = [];
+    for (const r of signed) {
+      if (!(await isRowLive(r))) dead.push(r);
+    }
+    for (const r of dead) {
+      await policyStore.del(r.grantor, r.grantee, r.audience);
+    }
+    if (dead.length) signed = signed.filter((r) => !dead.includes(r));
     const skey = (r) => `${r.grantee}|${r.audience}`;
     const sameScopes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
     const signedBy = new Map(signed.map((r) => [skey(r), r]));
@@ -222,7 +261,10 @@ export function createGateway(opts) {
       removed: stale.length,
     };
     ceremony.wait().then(
-      (rows) => { signState = { ...signState, status: "done", signedCount: rows.length, remaining: pending.length - batch.length }; },
+      (rows) => {
+        for (const r of rows) recordLiveness.delete(r.record);
+        signState = { ...signState, status: "done", signedCount: rows.length, remaining: pending.length - batch.length };
+      },
       (e) => { signState = { ...signState, status: "error", error: String(e.message || e) }; }
     );
     return signState;

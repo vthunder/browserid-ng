@@ -10,6 +10,9 @@ const nowS = () => Math.floor(Date.now() / 1000);
 
 export function createRecordBroker({ brokerOrigin, adminEmail }) {
   const pending = new Map(); // request_id -> { type, grants, challenge }
+  // Grantees whose records the "broker" reports revoked (tests flip this to
+  // simulate an /account revocation of a signed grant).
+  const revokedGrantees = new Set();
   let idx = 100;
 
   const recordFor = (g) => `${fakeJws({
@@ -54,6 +57,10 @@ export function createRecordBroker({ brokerOrigin, adminEmail }) {
           reply(200, { status: "failure", reason: "audience mismatch" });
           return true;
         }
+        if (revokedGrantees.has(claims.grantee)) {
+          reply(200, { status: "failure", reason: "warrant revoked" });
+          return true;
+        }
         reply(200, {
           status: "okay", grantor: claims.grantor, grantee: claims.grantee,
           binding: claims.binding, scopes: claims.scopes || [], issuer: "example.com",
@@ -67,5 +74,5 @@ export function createRecordBroker({ brokerOrigin, adminEmail }) {
     return false;
   }
 
-  return { handle };
+  return { handle, revokedGrantees };
 }

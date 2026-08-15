@@ -156,6 +156,12 @@ export interface GatewayState {
 export interface GatewayOptions {
   /** Shared gateway DeviceCredential (Lane B). */
   credential?: GateOptions["credential"] | null;
+  /** Enforcement source: false/absent = local roles (default); true = signed
+   *  §6.5 records (--signed-grants). Persisted sticky in config. */
+  signedGrants?: boolean;
+  /** Seconds to cache signed-record liveness checks in the grants diff and
+   *  the jwt-bearer entitlement path (default 60). */
+  grantsLivenessS?: number;
   /** The ONE identity allowed into the console (exact match). */
   adminEmail: string;
   broker?: string;

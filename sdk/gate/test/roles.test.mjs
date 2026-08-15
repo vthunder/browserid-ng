@@ -75,6 +75,7 @@ before(async () => {
   gw = createGateway({
     credential, adminEmail: ADMIN, broker: BROKER, origin: ORIGIN, statusCacheS: 0, persist: false,
     signedGrants: true,
+    grantsLivenessS: 0, // deterministic revocation tests
     policyStore: memoryPolicyStore(),
     log: () => {},
     config: {
@@ -190,6 +191,34 @@ function memoryPolicyStore() {
     async del(g, e, a) { rows = rows.filter((r) => key(r) !== `${g}|${e}|${a}`); },
   };
 }
+
+test("a broker-revoked grant resurfaces as PENDING (never a false 'in sync')", async () => {
+  const s = await adminLogin();
+  // Alice's grant was signed in before(). Revoke it at the "broker".
+  records.revokedGrantees.add(ALICE);
+  try {
+    const g = await (await fetch(`${ORIGIN}/admin/grants`, { headers: { cookie: s.cookie } })).json();
+    assert.ok(
+      g.pending.some((r) => r.grantee === ALICE),
+      `alice's dead grant must be pending again: ${JSON.stringify(g.pending)}`
+    );
+    assert.ok(!g.signed.some((r) => r.grantee === ALICE), "the dead row is dropped from the store");
+    // …and enforcement agrees while unsigned: alice is refused.
+    const bearer = await getBearer("pres-alice");
+    const res = await mcp(bearer, "tools/call", { name: "list_directory", arguments: {} });
+    assert.equal(res.status, 403);
+  } finally {
+    records.revokedGrantees.delete(ALICE);
+    // Re-sign so later tests see the original state.
+    const sign = await fetch(`${ORIGIN}/admin/grants/sign`, { method: "POST", headers: H(s) });
+    assert.equal(sign.status, 200);
+    for (let i = 0; i < 50; i++) {
+      const st = await (await fetch(`${ORIGIN}/admin/grants/status`, { headers: { cookie: s.cookie } })).json();
+      if (st.signState?.status !== "pending") break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+});
 
 test("adding a member surfaces a PENDING grant to sign (the People-tab flow)", async () => {
   const s = await adminLogin();
