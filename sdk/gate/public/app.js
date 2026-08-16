@@ -141,7 +141,20 @@ async function signIn() {
           await api("POST", "/admin/login", { presentation });
           await refresh();
         } catch (e) {
-          STATE.signinError = e.data?.attempted ? { attempted: e.data.attempted } : { message: e.message };
+          if (e.status === 403 && e.data?.attempted) {
+            // Not the admin — same sign-in, member entry: establish the
+            // member session with the same presentation and land on the
+            // servers shared with them.
+            try {
+              await api("POST", "/connect/login", { presentation, next: "/shared" });
+              location.assign("/shared");
+              return;
+            } catch (e2) {
+              STATE.signinError = { message: e2.message };
+            }
+          } else {
+            STATE.signinError = { message: e.message };
+          }
         }
         render();
       },
@@ -356,13 +369,8 @@ function renderSignedOut(root) {
   card.appendChild(el("div", "signin-accent"));
   card.appendChild(el("div", "kicker", "Admin console"));
   card.appendChild(el("h1", null, "Manage your gateway"));
-  card.appendChild(el("p", "signin-body", "This gateway publishes local MCP servers at URLs your agents can reach — you decide who connects, by email."));
+  card.appendChild(el("p", "signin-body", "This gateway publishes local MCP servers at URLs your agents can reach. Sign in — the admin lands in this console; everyone else sees the servers shared with them."));
   card.appendChild(button("Sign in with BrowserID", "btn-signin", signIn));
-  const sharedLink = document.createElement("a");
-  sharedLink.href = "/shared";
-  sharedLink.textContent = "Not the admin? See servers shared with you →";
-  sharedLink.style.cssText = "display:block;margin-top:14px;font-size:13px;color:inherit";
-  card.appendChild(sharedLink);
   if (STATE.signinError) {
     const box = el("div", "signin-err");
     if (STATE.signinError.attempted) {
@@ -762,15 +770,19 @@ function renderPeople(root) {
   emailIn.placeholder = "email@example.com";
   emailIn.value = STATE.drafts.personEmail;
   emailIn.addEventListener("input", () => { STATE.drafts.personEmail = emailIn.value; });
-  addRow.appendChild(nameIn);
-  addRow.appendChild(emailIn);
-  addRow.appendChild(button("Add person", "btn-cyan", () => {
+  const addPerson = () => {
     const email = emailIn.value.trim();
     if (!email || !email.includes("@")) return;
     STATE.drafts.personName = "";
     STATE.drafts.personEmail = "";
     mutate(() => api("POST", "/admin/people", { name: nameIn.value.trim(), email }));
-  }));
+  };
+  for (const input of [nameIn, emailIn]) {
+    input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") addPerson(); });
+  }
+  addRow.appendChild(nameIn);
+  addRow.appendChild(emailIn);
+  addRow.appendChild(button("Add person", "btn-cyan", addPerson));
   panel.appendChild(addRow);
   root.appendChild(panel);
 

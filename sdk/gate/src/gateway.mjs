@@ -549,6 +549,23 @@ export function createGateway(opts) {
       if (rq.method === "GET" && path === "/healthz") return json(res, 200, { ok: true, mounts: mounts.size });
 
       if (path === "/" || path === "/admin" || path.startsWith("/admin/")) {
+        // The root is the ONE entry point (Dan, 2026-08-16): admins land in
+        // the console, everyone else on their /shared page. A member session
+        // (that isn't the admin) routes straight there; console-local public
+        // listeners route members there too instead of a bare 404.
+        if (path === "/") {
+          const adminSession = sessions.verify(parseCookies(rq.headers.cookie));
+          const isAdmin = !!adminSession && adminSession.email.toLowerCase() === adminEmail;
+          const member = connectAuth.userFor(rq);
+          if (!isAdmin && member && member !== adminEmail) {
+            res.writeHead(302, { location: "/shared" });
+            return res.end();
+          }
+          if (!adminAllowed) {
+            res.writeHead(302, { location: "/shared" });
+            return res.end();
+          }
+        }
         if (!adminAllowed) return json(res, 404, { error: "not_found" });
         return admin(rq, res, { url, path, adminOrigin: adminOriginFor(rq) });
       }

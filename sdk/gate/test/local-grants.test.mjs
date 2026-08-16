@@ -139,6 +139,29 @@ test("the /shared landing lists exactly what the signed-in member may use", asyn
   assert.match(await html.text(), /Servers shared with you/);
 });
 
+test("the root is the one entry point: members route to /shared, admin to the console", async () => {
+  // Anonymous: the console's sign-in card (which routes by identity).
+  const anon = await fetch(`${ORIGIN}/`, { redirect: "manual" });
+  assert.equal(anon.status, 200);
+  // A signed-in member landing on the root goes straight to their page.
+  const r = await fetch(`${ORIGIN}/connect/login`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ presentation: "pres-alice", next: "/shared" }),
+  });
+  const memberCookie = r.headers.getSetCookie().map((c) => c.split(";")[0]).find((c) => c.startsWith("gate_user="));
+  const routed = await fetch(`${ORIGIN}/`, { redirect: "manual", headers: { cookie: memberCookie } });
+  assert.equal(routed.status, 302);
+  assert.equal(routed.headers.get("location"), "/shared");
+  // An admin session keeps the console.
+  const login = await fetch(`${ORIGIN}/admin/login`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ presentation: "pres-admin" }),
+  });
+  const adminCookie = login.headers.getSetCookie().map((c) => c.split(";")[0]).find((c) => c.startsWith("gate_session="));
+  const console_ = await fetch(`${ORIGIN}/`, { redirect: "manual", headers: { cookie: adminCookie } });
+  assert.equal(console_.status, 200);
+});
+
 test("the gallery serves curated servers with name, description and repo", async () => {
   const g = await (await fetch(`${ORIGIN}/admin/gallery`)).json();
   assert.ok(Array.isArray(g.servers) && g.servers.length >= 6);
