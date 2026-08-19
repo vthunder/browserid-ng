@@ -127,6 +127,12 @@ where
     let accounts: Vec<serde_json::Value> = emails
         .iter()
         .filter(|e| e.verified && e.email_type == EmailType::Secondary)
+        // Only accounts /fedcm/assertion would actually mint for (u4xz) — a
+        // chooser entry that dead-ends at the assertion gate is worse than
+        // its absence.
+        .filter(|e| {
+            crate::mint::authorize_mint(e, session.level) == crate::mint::MintDecision::Allow
+        })
         .map(|e| {
             json!({
                 "id": e.email,
@@ -221,6 +227,16 @@ where
     }) else {
         return err(StatusCode::FORBIDDEN, "account not eligible");
     };
+
+    // Provenance chokepoint (browserid-ng-u4xz): FedCM mints entirely off the
+    // broker session, so only decisions the session can carry pass — an E3
+    // under a Full session. Delegated (E2) provenance and lightweight
+    // sessions must use the interactive dialog, which can run the voucher or
+    // the password step-up; FedCM has no surface for either.
+    if crate::mint::authorize_mint(email_record, session.level) != crate::mint::MintDecision::Allow
+    {
+        return err(StatusCode::FORBIDDEN, "account not eligible");
+    }
 
     // SERVER-SIDE auto-login enforcement (browserid-ng-mhyp). FedCM reports
     // whether the token was AUTO-selected (silent auto-reauthn) vs the user

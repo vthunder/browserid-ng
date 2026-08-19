@@ -57,7 +57,12 @@ fn parse_pub(s: &str) -> Result<PublicKey, BrokerError> {
     PublicKey::from_base64(s).map_err(|e| BrokerError::ValidationError(format!("bad pubkey: {e}")))
 }
 
-fn owned_verified_email<U: UserStore, S: SessionStore, E: EmailSender>(
+/// Ownership + provenance gate for session-authed broker mints: the session's
+/// account must own the verified email, AND the chokepoint (browserid-ng-u4xz)
+/// must authorize a broker-session mint for its provenance. `Delegate` is a
+/// refusal here — the client must use the primary/bridge path instead;
+/// `NeedPassword` maps to a 401 step-up.
+fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
     state: &AppState<U, S, E>,
     cookies: &Cookies,
     csrf: &str,
@@ -72,7 +77,13 @@ fn owned_verified_email<U: UserStore, S: SessionStore, E: EmailSender>(
         .iter()
         .find(|e| e.email.to_lowercase() == normalized && e.verified)
         .ok_or(BrokerError::EmailNotFound)?;
-    Ok(rec.email.clone())
+    match crate::mint::authorize_mint(rec, session.level) {
+        crate::mint::MintDecision::Allow => Ok(rec.email.clone()),
+        crate::mint::MintDecision::NeedPassword => Err(BrokerError::PasswordRequired),
+        crate::mint::MintDecision::Delegate(voucher) => Err(BrokerError::PolicyRefused(format!(
+            "issuance for this address is delegated to its voucher ({voucher:?}); the broker session cannot mint it"
+        ))),
+    }
 }
 
 fn device_status<U: UserStore, S: SessionStore, E: EmailSender>(
@@ -148,12 +159,12 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    // owned_verified_email re-derives the session; grab it too so we can
+    // owned_mintable_email re-derives the session; grab it too so we can
     // persist the issued certs under this account (DC Phase 8 — listable +
     // revocable in the account UI).
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
-    let email = owned_verified_email(&state, &cookies, &req.csrf, &req.email)?;
+    let email = owned_mintable_email(&state, &cookies, &req.csrf, &req.email)?;
     let device_pub = parse_pub(&req.device_pubkey)?;
     let config_pub = parse_pub(&req.config_pubkey)?;
     let device_ref = device_status(&state, &device_pub)?;

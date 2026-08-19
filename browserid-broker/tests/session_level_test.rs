@@ -52,13 +52,27 @@ async fn password_login_yields_full_session() {
 #[tokio::test]
 async fn user_creation_session_is_lightweight() {
     let ctx = create_test_context();
-    let session = create_user(
-        &ctx.server,
-        &ctx.email_sender,
-        "created@example.com",
-        "password123",
-    )
-    .await;
+    // Inline stage → complete (the create_user helper re-authenticates and
+    // would hand back a Full session — here the COMPLETION session matters).
+    let email = "created@example.com";
+    let response = ctx
+        .server
+        .post("/wsapi/stage_user")
+        .json(&json!({ "email": email, "pass": "password123" }))
+        .await;
+    assert_eq!(response.status_code(), 200);
+    let code = ctx.email_sender.get_code(email).unwrap();
+    let response = ctx
+        .server
+        .post("/wsapi/complete_user_creation")
+        .json(&json!({ "email": email, "token": code }))
+        .await;
+    assert_eq!(response.status_code(), 200);
+    let session = response
+        .maybe_cookie("browserid_session")
+        .expect("completion sets a session cookie")
+        .value()
+        .to_string();
 
     let body = session_context(&ctx, &session).await;
     assert_eq!(body["authenticated"], true);

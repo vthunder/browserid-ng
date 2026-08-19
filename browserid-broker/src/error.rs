@@ -31,6 +31,13 @@ pub enum BrokerError {
     #[error("Not authenticated")]
     NotAuthenticated,
 
+    /// Step-up required by the mint chokepoint (browserid-ng-u4xz): the
+    /// session is only Lightweight and this mint needs the account password.
+    /// 401 with a stable reason so the dialog can branch into the password
+    /// screen instead of a generic error.
+    #[error("password required")]
+    PasswordRequired,
+
     #[error("Invalid CSRF token")]
     InvalidCsrf,
 
@@ -170,6 +177,7 @@ impl IntoResponse for BrokerError {
                 (StatusCode::BAD_REQUEST, "Verification code expired")
             }
             BrokerError::NotAuthenticated => (StatusCode::UNAUTHORIZED, "Not authenticated"),
+            BrokerError::PasswordRequired => (StatusCode::UNAUTHORIZED, "password required"),
             BrokerError::InvalidCsrf => (StatusCode::FORBIDDEN, "Invalid CSRF token"),
             BrokerError::EmailNotVerified => (StatusCode::FORBIDDEN, "Email not verified"),
             BrokerError::EmailVerificationExpired => {

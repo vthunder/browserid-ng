@@ -165,7 +165,11 @@ pub fn create_test_context_customized(
     }
 }
 
-/// Helper to create a user and return the session cookie
+/// Helper to create a user and return a FULL (password-authed) session
+/// cookie. Completion's own session is only Lightweight since ca29 — the
+/// emailed code proves the mailbox, not the staged password — so the helper
+/// signs in with the password afterwards, matching how a real account is
+/// used. Tests that need the completion session itself inline the flow.
 pub async fn create_user(
     server: &TestServer,
     email_sender: &MockEmailSender,
@@ -189,6 +193,13 @@ pub async fn create_user(
     let response = server
         .post("/wsapi/complete_user_creation")
         .json(&json!({ "email": email, "token": code }))
+        .await;
+    assert_eq!(response.status_code(), 200);
+
+    // Sign in with the password → Full session.
+    let response = server
+        .post("/wsapi/authenticate_user")
+        .json(&json!({ "email": email, "pass": password }))
         .await;
     assert_eq!(response.status_code(), 200);
 

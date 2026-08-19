@@ -1217,7 +1217,7 @@ mod tests {
     fn test_session_lifecycle() {
         let store = InMemorySessionStore::new();
 
-        let session = store.create(UserId(1)).unwrap();
+        let session = store.create(UserId(1), SessionLevel::Full).unwrap();
         assert!(store.get(&session.id).unwrap().is_some());
 
         store.delete(&session.id).unwrap();

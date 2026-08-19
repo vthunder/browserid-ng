@@ -3204,7 +3204,7 @@ mod tests {
         let (store, _dir) = create_test_store();
 
         let user_id = store.create_user("hashed_password").unwrap();
-        let session = store.create(user_id).unwrap();
+        let session = store.create(user_id, SessionLevel::Full).unwrap();
 
         assert!(store.get(&session.id).unwrap().is_some());
 
@@ -3218,7 +3218,7 @@ mod tests {
 
         let user_id = store.create_user("hashed_password").unwrap();
         store.add_email(user_id, "test@example.com", true).unwrap();
-        let session = store.create(user_id).unwrap();
+        let session = store.create(user_id, SessionLevel::Full).unwrap();
 
         // Delete user
         store.delete_user(user_id).unwrap();

@@ -1927,6 +1927,15 @@
       pair = await maybeCompleteHolderMove(email, issuer, pair, API.accessMint, null);
       await finishSignIn(email, pair, issuer, API.accessMint);
     } catch (e) {
+      // Step-up from the mint chokepoint (u4xz): an SMTP-proven (E3) address
+      // under a lightweight session needs the account password to mint. The
+      // password form re-authenticates (full session) and re-enters here.
+      if (/password required/i.test(e.message)) {
+        state.email = email;
+        document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+        showScreen('password');
+        return;
+      }
       showError('Failed to sign in: ' + e.message);
     }
   }
