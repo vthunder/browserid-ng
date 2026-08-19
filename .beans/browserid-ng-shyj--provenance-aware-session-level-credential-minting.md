@@ -1,11 +1,11 @@
 ---
 # browserid-ng-shyj
 title: Provenance-aware, session-level credential minting
-status: todo
+status: completed
 type: epic
 priority: high
 created_at: 2026-08-19T13:33:35Z
-updated_at: 2026-08-19T14:13:26Z
+updated_at: 2026-08-19T16:02:45Z
 ---
 
 Redesign broker credential issuance so sessions carry a level (lightweight vs full) and every mint decision consults how an email was verified (proof method / email type). Motivated by audit finding M1 (browserid-ng-7ww7), related to audit epic browserid-ng-wre6, but broader.
@@ -47,3 +47,17 @@ Session levels; mint chokepoint; bridge-verified E1/E2 minting + voucher-decided
 
 ## Also under this epic
 - browserid-ng-iudv (bug): passwordless set-password regression — costs a second SMTP code because in-session /wsapi/set_password was removed. Blocks kgb9 (set-on-add, single roundtrip).
+
+## Summary of Changes (2026-08-19) — epic complete
+
+All six children landed, in order: iudv (in-session set_password, one-SMTP-code set-on-add) → ca29 (session levels + rollout wipe) → u4xz (authorize_mint chokepoint on /device/issue + /fedcm/*, no-bypass source-scan guard) → pr3a (single-use bridge mint grants, voucher-decided TTL: E2 ~1wk vs 90d) → kgb9 (reset unverifies sibling E3s + working re-verification path) → 7ww7 (/auth/device_cert onto the chokepoint; cookie-only + no-account mints removed).
+
+Every invariant holds and is test-pinned:
+1. E1/E2 proof → lightweight session, no password (ca29 creation sites).
+2. Lightweight + E3 selection → password step-up (401 'password required' → dialog password screen).
+3. E1/E2 never mint off the broker session — Delegate + live bridge grant; TTL is the voucher's.
+4. Reset re-verifies every OTHER E3; one inbox + reset cannot pivot.
+5. Rollout forces re-auth (v30 session-table wipe).
+Regression design: exhaustive (EmailType × ProofMethod) match (new variants fail compilation), table-driven matrix test, and a source-scan test that fails on any unregistered cert-creation call site or a session-authed minting file not calling authorize_mint.
+
+Commits: 8bf4bf0 (ca29), plus the iudv/u4xz/pr3a/kgb9/7ww7 commits on main, 2026-08-19.
