@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 30;
+const SCHEMA_VERSION: i32 = 31;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -152,6 +152,9 @@ impl SqliteStore {
             }
             if current_version < 30 {
                 Self::migrate_v30(conn)?;
+            }
+            if current_version < 31 {
+                Self::migrate_v31(conn)?;
             }
 
             // Update schema version
@@ -820,6 +823,18 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v31(conn: &Connection) -> Result<(), BrokerError> {
+        // Bridge ceremony visibility (browserid-ng-lrhe): when a VISIBLE
+        // Google/bridge ceremony last proved each address. NULL (all existing
+        // rows) = never — the policy forces one visible confirm at the next
+        // re-proof, then routine renewals stay silent until the stamp ages.
+        conn.execute_batch(
+            "ALTER TABLE emails ADD COLUMN last_interactive_proof_at TEXT;",
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → DeviceCertRecord mapping (DC Phase 3/4)
@@ -1479,6 +1494,43 @@ impl UserStore for SqliteStore {
             return Err(BrokerError::EmailNotFound);
         }
         Ok(())
+    }
+
+    fn set_email_interactive_proof_now(&self, email: &str) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE emails SET last_interactive_proof_at = ?1 WHERE email = ?2",
+                params![Utc::now().to_rfc3339(), normalized],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::EmailNotFound);
+        }
+        Ok(())
+    }
+
+    fn email_interactive_proof_at(
+        &self,
+        email: &str,
+    ) -> StoreResult<Option<DateTime<Utc>>> {
+        let normalized = email.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT last_interactive_proof_at FROM emails WHERE email = ?1",
+            params![normalized],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+        .map(|opt| {
+            opt.flatten().and_then(|s| {
+                DateTime::parse_from_rfc3339(&s)
+                    .ok()
+                    .map(|dt| dt.with_timezone(&Utc))
+            })
+        })
     }
 
     fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {
@@ -2838,6 +2890,17 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn unverify_email(&self, email: &str) -> StoreResult<()> {
         (**self).unverify_email(email)
+    }
+
+    fn set_email_interactive_proof_now(&self, email: &str) -> StoreResult<()> {
+        (**self).set_email_interactive_proof_now(email)
+    }
+
+    fn email_interactive_proof_at(
+        &self,
+        email: &str,
+    ) -> StoreResult<Option<DateTime<Utc>>> {
+        (**self).email_interactive_proof_at(email)
     }
 
     fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {

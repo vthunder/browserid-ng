@@ -42,6 +42,8 @@ pub struct InMemoryUserStore {
     tenant_roster: RwLock<HashMap<(u64, String), RosterEntry>>,
     /// (tenant_id, subject) -> (idx, revoked); per-tenant idx allocation
     tenant_status: RwLock<HashMap<(u64, String), (u64, bool)>>,
+    /// email -> when a VISIBLE bridge ceremony last proved it (lrhe)
+    interactive_proofs: RwLock<HashMap<String, chrono::DateTime<Utc>>>,
 }
 
 impl InMemoryUserStore {
@@ -66,6 +68,7 @@ impl InMemoryUserStore {
             tenant_admins: RwLock::new(HashMap::new()),
             tenant_roster: RwLock::new(HashMap::new()),
             tenant_status: RwLock::new(HashMap::new()),
+            interactive_proofs: RwLock::new(HashMap::new()),
         }
     }
 
@@ -372,6 +375,30 @@ impl UserStore for InMemoryUserStore {
             }
             None => Err(BrokerError::EmailNotFound),
         }
+    }
+
+    fn set_email_interactive_proof_now(&self, email: &str) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        if !self.emails.read().unwrap().contains_key(&normalized) {
+            return Err(BrokerError::EmailNotFound);
+        }
+        self.interactive_proofs
+            .write()
+            .unwrap()
+            .insert(normalized, Utc::now());
+        Ok(())
+    }
+
+    fn email_interactive_proof_at(
+        &self,
+        email: &str,
+    ) -> StoreResult<Option<chrono::DateTime<Utc>>> {
+        Ok(self
+            .interactive_proofs
+            .read()
+            .unwrap()
+            .get(&email.to_lowercase())
+            .cloned())
     }
 
     fn create_warrant_request(&self, req: WarrantRequestRecord) -> StoreResult<()> {

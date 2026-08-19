@@ -124,6 +124,12 @@ pub fn random_token() -> String {
 /// Build the provider authorization URL (auth-code + PKCE S256 + nonce +
 /// state + `login_hint` = the claimed address). Scope is the minimum
 /// `openid email`.
+///
+/// `prompt`: broker-enforced ceremony visibility (browserid-ng-lrhe). Google
+/// auto-approves these basic scopes with a live session and no prompt — no
+/// consent screen even on FIRST authorization — so visibility is OUR policy:
+/// `Some("consent")` for a first link / class change, `Some("select_account")`
+/// for periodic re-verification, `None` for silent routine renewals.
 pub fn build_auth_url(
     provider: &OidcProvider,
     redirect_uri: &str,
@@ -131,8 +137,9 @@ pub fn build_auth_url(
     state: &str,
     nonce: &str,
     code_challenge: &str,
+    prompt: Option<&str>,
 ) -> String {
-    let params = [
+    let mut params = vec![
         ("client_id", provider.client_id.as_str()),
         ("redirect_uri", redirect_uri),
         ("response_type", "code"),
@@ -144,6 +151,9 @@ pub fn build_auth_url(
         ("login_hint", login_hint),
         ("access_type", "online"),
     ];
+    if let Some(p) = prompt {
+        params.push(("prompt", p));
+    }
     // reqwest re-exports url; parse_with_params percent-encodes correctly.
     reqwest::Url::parse_with_params(&provider.auth_endpoint, params)
         .map(|u| u.to_string())
@@ -158,6 +168,9 @@ struct FlowState {
     claimed_email: String,
     /// The broker session id to attach to (cold claim = None until callback).
     session_id: Option<String>,
+    /// Whether this flow forced a VISIBLE Google ceremony (lrhe): the
+    /// callback stamps the address's last_interactive_proof_at on success.
+    forced_visible: bool,
     created: Instant,
 }
 
@@ -190,13 +203,14 @@ impl OidcFlows {
         code_verifier: String,
         claimed_email: String,
         session_id: Option<String>,
+        forced_visible: bool,
     ) {
         let mut flows = self.flows.write().unwrap();
         let now = Instant::now();
         flows.retain(|_, f| now.duration_since(f.created) < self.ttl);
         flows.insert(
             state,
-            FlowState { nonce, code_verifier, claimed_email, session_id, created: now },
+            FlowState { nonce, code_verifier, claimed_email, session_id, forced_visible, created: now },
         );
     }
 
@@ -212,6 +226,7 @@ impl OidcFlows {
             code_verifier: f.code_verifier,
             claimed_email: f.claimed_email,
             session_id: f.session_id,
+            forced_visible: f.forced_visible,
         })
     }
 }
@@ -221,6 +236,7 @@ pub struct ConsumedFlow {
     pub code_verifier: String,
     pub claimed_email: String,
     pub session_id: Option<String>,
+    pub forced_visible: bool,
 }
 
 // --- Runtime bundle -----------------------------------------------------------

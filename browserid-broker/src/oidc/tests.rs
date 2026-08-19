@@ -102,7 +102,7 @@ fn gmail_normalization() {
 #[test]
 fn auth_url_has_pkce_and_hint() {
     let pkce = Pkce::generate();
-    let url = build_auth_url(&provider(), "https://b.me/oidc/callback", "foo@gmail.com", "st8", "nc9", &pkce.challenge);
+    let url = build_auth_url(&provider(), "https://b.me/oidc/callback", "foo@gmail.com", "st8", "nc9", &pkce.challenge, Some("consent"));
     assert!(url.starts_with(GOOGLE_AUTH_ENDPOINT));
     for needle in [
         "response_type=code",
@@ -203,7 +203,7 @@ fn workspace_requires_matching_hd() {
 #[test]
 fn flow_store_is_single_use() {
     let flows = OidcFlows::new();
-    flows.begin("st".into(), "nc".into(), "cv".into(), "a@gmail.com".into(), None);
+    flows.begin("st".into(), "nc".into(), "cv".into(), "a@gmail.com".into(), None, false);
     let taken = flows.take("st").unwrap();
     assert_eq!(taken.nonce, "nc");
     assert_eq!(taken.claimed_email, "a@gmail.com");

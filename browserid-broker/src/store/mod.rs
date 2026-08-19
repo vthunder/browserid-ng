@@ -124,6 +124,18 @@ pub trait UserStore: Send + Sync {
     /// (re-mints then fail the ordinary verified check; certs age out)
     fn unverify_email(&self, email: &str) -> StoreResult<()>;
 
+    /// Stamp the moment a VISIBLE bridge ceremony proved this address (lrhe):
+    /// the visibility policy shows the ceremony on first link and then again
+    /// whenever this stamp goes stale, letting routine renewals stay silent.
+    fn set_email_interactive_proof_now(&self, email: &str) -> StoreResult<()>;
+
+    /// When this address last passed a VISIBLE bridge ceremony; `None` =
+    /// never (legacy rows), which the policy treats as due.
+    fn email_interactive_proof_at(
+        &self,
+        email: &str,
+    ) -> StoreResult<Option<chrono::DateTime<chrono::Utc>>>;
+
     // --- Warrant consent requests (agent spec §6, v0.4) ---
 
     /// Store a new pending warrant consent request

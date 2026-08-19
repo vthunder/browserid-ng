@@ -634,3 +634,73 @@ async fn cold_reclaim_with_new_subject_is_refused_for_password_backed_accounts()
         "subject unchanged"
     );
 }
+
+// --- lrhe: broker-enforced ceremony visibility -------------------------------
+
+/// First link → full consent; linked + freshly stamped → silent; linked but
+/// never stamped (legacy rows) → visible confirm. Google auto-approves these
+/// scopes without a prompt param, so this policy is the ONLY visibility.
+#[tokio::test]
+async fn claim_prompt_follows_the_visibility_policy() {
+    let (ctx, mock) = oidc_context().await;
+
+    // Unknown address: first connection → the full authorize framing.
+    let resp = ctx.server.get("/oidc/claim?email=fresh@gmail.com").await;
+    assert!(location_of(&resp).contains("prompt=consent"), "{}", location_of(&resp));
+
+    // Existing SMTP-proven record (class change pending) → also consent.
+    let uid = ctx.user_store.create_user_no_password().unwrap();
+    ctx.user_store.add_email(uid, "linkme@gmail.com", true).unwrap();
+    let resp = ctx.server.get("/oidc/claim?email=linkme@gmail.com").await;
+    assert!(location_of(&resp).contains("prompt=consent"), "{}", location_of(&resp));
+
+    // Completing a VISIBLE claim stamps the interactive proof.
+    let (st, nonce, flow) = begin_claim(&ctx, "linkme@gmail.com").await;
+    mock.respond_with(base_claims("linkme@gmail.com", &nonce, "sub-1"));
+    let resp = ctx
+        .server
+        .get(&format!("/oidc/callback?code=c&state={st}"))
+        .add_cookie(flow)
+        .await;
+    assert!(location_of(&resp).contains("status=ok"), "{}", location_of(&resp));
+    assert!(
+        ctx.user_store
+            .email_interactive_proof_at("linkme@gmail.com")
+            .unwrap()
+            .is_some(),
+        "visible ceremony must stamp the interactive proof"
+    );
+
+    // Linked + fresh stamp → routine renewal, fully silent (no prompt).
+    let resp = ctx.server.get("/oidc/claim?email=linkme@gmail.com").await;
+    assert!(!location_of(&resp).contains("prompt="), "{}", location_of(&resp));
+
+    // Linked but never stamped (every pre-lrhe row) → one visible confirm.
+    let uid2 = ctx.user_store.create_user_no_password().unwrap();
+    ctx.user_store.add_email(uid2, "legacy@gmail.com", true).unwrap();
+    ctx.user_store
+        .set_email_proof("legacy@gmail.com", ProofMethod::Oidc, Some("sub-legacy"))
+        .unwrap();
+    let resp = ctx.server.get("/oidc/claim?email=legacy@gmail.com").await;
+    assert!(
+        location_of(&resp).contains("prompt=select_account"),
+        "{}",
+        location_of(&resp)
+    );
+}
+
+/// The interactive-proof stamp round-trips on the real SQLite store
+/// (migration v31 column).
+#[test]
+fn sqlite_interactive_proof_round_trip() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = browserid_broker::store::SqliteStore::open(
+        dir.path().join("t.db").to_str().unwrap(),
+    )
+    .unwrap();
+    let uid = store.create_user("hash").unwrap();
+    store.add_email(uid, "x@gmail.com", true).unwrap();
+    assert!(store.email_interactive_proof_at("x@gmail.com").unwrap().is_none());
+    store.set_email_interactive_proof_now("x@gmail.com").unwrap();
+    assert!(store.email_interactive_proof_at("x@gmail.com").unwrap().is_some());
+}

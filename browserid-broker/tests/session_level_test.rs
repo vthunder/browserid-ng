@@ -211,6 +211,21 @@ fn migration_v30_wipes_pre_level_sessions() {
                 created_at TEXT NOT NULL
             );
             INSERT INTO sessions VALUES ('stale-session', 1, 'tok', '2026-08-01T00:00:00Z');
+            -- Later migrations touch other tables (v31 alters emails); give
+            -- the hand-built old DB the minimal shape they expect.
+            CREATE TABLE emails (
+                email TEXT PRIMARY KEY,
+                user_id INTEGER,
+                verified INTEGER,
+                verified_at TEXT,
+                email_type TEXT,
+                last_used_as TEXT,
+                parent_email TEXT,
+                display_name TEXT,
+                public_name TEXT,
+                proof TEXT,
+                proof_subject TEXT
+            );
             "#,
         )
         .unwrap();

@@ -41,6 +41,10 @@ use crate::store::{EmailType, ProofMethod, SessionStore, UserStore};
 const FLOW_COOKIE: &str = "browserid_oidc_flow";
 /// Where every callback outcome lands: the dialog's resume entry point.
 const RESUME_PATH: &str = "/dialog/dialog.html?resume=oidc_claim";
+
+/// How long a visible bridge ceremony vouches before the next re-proof is
+/// forced visible again (lrhe). Renewals inside the window stay silent.
+const INTERACTIVE_REVERIFY_DAYS: i64 = 90;
 /// Flow cookie lifetime — matches the server-side flow store TTL.
 const FLOW_COOKIE_MAX_AGE_SECONDS: i64 = 600;
 
@@ -178,6 +182,32 @@ where
         )));
     }
 
+    // Ceremony visibility (browserid-ng-lrhe, owner policy): the FIRST link
+    // of Google to an address gets the full authorize framing; a linked
+    // address re-verifies VISIBLY once its interactive stamp goes stale (or
+    // was never set — legacy rows); routine renewals in between stay silent.
+    // Google auto-approves openid+email with no prompt, so this is the only
+    // place visibility exists.
+    let (prompt, forced_visible) = match state.user_store.get_email(&normalized)? {
+        Some(rec) if rec.proof == crate::store::ProofMethod::Oidc => {
+            let stale = match state.user_store.email_interactive_proof_at(&normalized)? {
+                Some(at) => {
+                    chrono::Utc::now() - at
+                        > chrono::Duration::days(INTERACTIVE_REVERIFY_DAYS)
+                }
+                None => true,
+            };
+            if stale {
+                (Some("select_account"), true)
+            } else {
+                (None, false)
+            }
+        }
+        // New identity, or an existing SMTP/atproto record about to change
+        // class: the first connection is always visible.
+        _ => (Some("consent"), true),
+    };
+
     let pkce = engine::Pkce::generate();
     let state_token = engine::random_token();
     let nonce = engine::random_token();
@@ -188,6 +218,7 @@ where
         pkce.verifier,
         normalized,
         session.map(|s| s.id.0),
+        forced_visible,
     );
     set_flow_cookie(&cookies, &state_token, super::session::cookie_secure(&state.domain));
 
@@ -198,6 +229,7 @@ where
         &state_token,
         &nonce,
         &pkce.challenge,
+        prompt,
     );
     Ok(Redirect::to(&url))
 }
@@ -316,6 +348,10 @@ where
         }
         tracing::error!("oidc attach failed for a verified claim: {e}");
         return resume_err(&email, "sign-in could not be completed — try again");
+    }
+    // The ceremony the user just SAW starts the silent-renewal window (lrhe).
+    if flow.forced_visible {
+        let _ = state.user_store.set_email_interactive_proof_now(&verified.email);
     }
     resume_ok(&verified.email)
 }
