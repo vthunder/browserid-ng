@@ -1,11 +1,11 @@
 ---
 # browserid-ng-v2nb
 title: Dialog chooser is empty without a broker session even when this browser holds cached identities
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-08-19T17:26:21Z
-updated_at: 2026-08-19T18:34:23Z
+updated_at: 2026-08-19T19:00:14Z
 ---
 
 Owner's confusing test (2026-08-19, right after the shyj rollout):
@@ -34,3 +34,19 @@ Implementation notes:
 - /access/mint stays sessionless SERVER-side — headless agents depend on it; this is interactive-dialog client policy. (The cert remains valid credential material at RPs; the dialog just refuses to wield it without a session.)
 - Side benefit: closes the gap where a stolen browser profile could sign into RPs with zero session-level checks, which quietly bypassed the shyj session-level machinery.
 - Effect: interactive users re-auth at most every 30d (session TTL), via their provenance-appropriate ceremony (E2 = possibly silent bridge hop).
+
+## Summary of Changes (2026-08-19)
+
+Implemented per the owner design decision above, plus the sign-out-revokes addendum.
+
+**Dialog (session-first)**
+- completeSignIn now begins with a session check: no live broker session → the provenance-appropriate re-auth runs first (bridge claim for oidc/atproto — possibly silent on a live Google/Bluesky session — password screen otherwise) and re-enters with the session established. Cached device pairs short-circuit ISSUANCE only, never the session. This also closes the copied-browser-profile hole (certs signed into RPs with zero session-level checks).
+- Remembered-account chooser: authenticated boots cache the account's email list (localStorage 'browserid:remembered', 30d expiry, addresses only — never credential material). An expired-session boot shows the chooser from that cache; picking an address runs its re-auth. 'Use a different email' in cold-chooser mode routes to the type-an-email screen (the add-email flow is session-gated).
+- Signup double-password regression fixed (found by e2e): the completion session is Lightweight (ca29), so a fresh signup hit the chokepoint's password step-up right after entering the code. The dialog now signs in with the password the user chose seconds earlier (mirrors /account's signup flow); on any failure the step-up still covers it.
+
+**/account (sign-out revokes, owner addendum)**
+- Explicit sign-out: revokes this browser's BROKER-issued device certs server-side (matched to registry rows by public key, best-effort), then for PRIMARY-issued keys shows an in-content panel (no window.confirm) offering each issuer's own revoke page (existing openIssuerRevoke machinery) with a 'Just sign out here' skip; then logout + keystore clear + remembered-cache and siteInfo clear.
+- 'Sign out everywhere' shares the same finishSignout tail (clears the new caches too).
+- INLINE_SCRIPT_HASHES updated.
+
+**Verification**: broker cargo suite green; full Playwright e2e suite 105 passed / 0 failed (incl. returning-user, sign-in, silent-assertion, reset flows against the new session-first guard; the one flaky primary-idp network test passes alone and in the final run).

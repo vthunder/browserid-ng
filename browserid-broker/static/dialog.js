@@ -1979,6 +1979,23 @@
   async function completeSignIn(email, _afterBridge) {
     try {
       showScreen('loading');
+      // Session-first (v2nb, owner decision): cached certs are an ISSUANCE
+      // shortcut, never a sign-in credential. Without a live broker session,
+      // run the provenance-appropriate re-auth — bridge claim for E2 (which
+      // may be silent on a live Google/Bluesky session), password otherwise —
+      // and that path re-enters here with the session established.
+      const sess = await apiCall(API.sessionContext);
+      if (!sess.authenticated) {
+        if (!_afterBridge) {
+          const info = await checkEmail(email);
+          if (info.proof === 'oidc') return await handleOidcClaim(email, info);
+          if (info.proof === 'atproto') return await handleAtprotoClaim(email, info);
+        }
+        state.email = email;
+        document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+        showScreen('password');
+        return;
+      }
       const issuer = state.brokerDomain || location.hostname;
       let pair = await storedDevicePair(issuer, email);
       if (!pair) {
@@ -2346,6 +2363,10 @@
           pass: password
         });
 
+        // Completion only proves the mailbox (its session is Lightweight,
+        // ca29) — keep the just-chosen password so verify can sign in FULL
+        // and mint without asking for it a second time.
+        state.pendingCreatePass = password;
         showScreen('verify');
       } catch (e) {
         // The account already exists (e.g. we reached 'create' from a transient
@@ -2376,6 +2397,17 @@
 
       try {
         await apiCall(API.completeUserCreation, 'POST', { email: state.email, token: code });
+        // The completion session is Lightweight (mailbox proof, ca29); the
+        // password the user chose seconds ago upgrades it to Full so the E3
+        // mint proceeds — same as the /account signup flow. Fall through on
+        // failure: completeSignIn's step-up will ask.
+        if (state.pendingCreatePass) {
+          const pass = state.pendingCreatePass;
+          state.pendingCreatePass = null;
+          try {
+            await apiCall(API.authenticate, 'POST', { email: state.email, pass, ephemeral: false });
+          } catch (e2) { /* step-up covers it */ }
+        }
         await completeSignIn(state.email);
       } catch (e) {
         showScreen('verify');
@@ -2497,6 +2529,12 @@
     // Add email link - go to add email screen (not login screen)
     document.getElementById('add-email-link').addEventListener('click', (e) => {
       e.preventDefault();
+      // Cold remembered chooser (v2nb): there is no session, so the add-email
+      // flow (session-gated stage_email) can't run — type an address instead.
+      if (state.coldChooser) {
+        showScreen('email');
+        return;
+      }
       document.getElementById('new-email').value = '';
       document.getElementById('add-email-error').textContent = '';
       showScreen('addEmail');
@@ -2727,6 +2765,37 @@
     return map;
   }
 
+  // Remembered-account cache (v2nb): the email list shown when the broker
+  // session has EXPIRED (never after an explicit sign-out — /account signout
+  // clears it). Only addresses — never a credential; selecting one still runs
+  // its full provenance re-auth. Expires with the session horizon.
+  const REMEMBERED_KEY = 'browserid:remembered';
+  const REMEMBERED_TTL_MS = 30 * 24 * 3600 * 1000;
+  function rememberAccountEmails(resp) {
+    try {
+      localStorage.setItem(REMEMBERED_KEY, JSON.stringify({
+        ts: Date.now(),
+        emails: resp.emails || [],
+        agents: resp.agents || [],
+        derived: resp.derived || []
+      }));
+    } catch (e) { /* private mode */ }
+  }
+  function recallAccountEmails() {
+    try {
+      const raw = localStorage.getItem(REMEMBERED_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data.ts || (Date.now() - data.ts) > REMEMBERED_TTL_MS) {
+        localStorage.removeItem(REMEMBERED_KEY);
+        return null;
+      }
+      return data;
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Escape a value for safe interpolation into innerHTML.
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => (
@@ -2826,6 +2895,7 @@
         state.agents = emailsResponse.agents || [];
         state.publicNames = {};
         (emailsResponse.public_names || []).forEach(p => { state.publicNames[p.email] = p.public_name; });
+        rememberAccountEmails(emailsResponse);
 
         if (state.emails.length >= 1) {
           // Show email picker - even with one email, let user confirm or add another
@@ -2836,8 +2906,23 @@
           showScreen('email');
         }
       } else {
-        // Not authenticated, show email entry
-        showScreen('email');
+        // Expired session (v2nb): offer the remembered chooser from the local
+        // cache — selecting an address runs its provenance re-auth (primary
+        // hop / bridge claim / password) before anything signs in. An
+        // EXPLICIT sign-out cleared this cache, so this is the
+        // expired-not-signed-out case only.
+        const remembered = recallAccountEmails();
+        if (remembered && (remembered.emails || []).length) {
+          state.coldChooser = true;
+          state.emails = remembered.emails;
+          state.derived = derivedMapFromResponse(remembered);
+          state.agents = remembered.agents || [];
+          populateEmailList(state.emails);
+          showScreen('pickEmail');
+        } else {
+          // Not authenticated, show email entry
+          showScreen('email');
+        }
       }
     } catch (e) {
       showScreen('email');

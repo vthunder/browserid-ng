@@ -1464,9 +1464,7 @@ $('set-signout-all').onclick = async () => {
         await post('/wsapi/revoke_device_cert', { id: c.id });
       }
     }
-    try { await post('/wsapi/logout', {}); } catch (e) { /* session may be gone */ }
-    await clearLocal();
-    location.reload();
+    await finishSignout();
   } catch (e) { status.className = 'status err'; status.textContent = e.message; }
 };
 $('set-advanced').onclick = () => {
@@ -1678,10 +1676,67 @@ async function clearLocal() {
   }
   deviceCache = [];
 }
-$('signout').onclick = async () => {
-  try { await post('/wsapi/logout', {}); } catch {}
+// Explicit sign-out (v2nb, owner decision): local keys are cleared AND — where
+// we hold the power — revoked, so a signed-out browser's cached certs are not
+// usable sign-in material. Broker-issued certs are revoked here (matched to
+// registry rows by public key, best-effort). Primary-issued certs can only be
+// revoked AT their issuer, interactively — offer that in-content
+// (window.confirm is unreliable in background tabs), never force it.
+async function finishSignout() {
+  try { await post('/wsapi/logout', {}); } catch (e) { /* session may be gone */ }
   await clearLocal();
+  try { localStorage.removeItem('browserid:remembered'); } catch (e) { /* private mode */ }
+  try { localStorage.removeItem('siteInfo'); } catch (e) { /* private mode */ }
   location.reload();
+}
+$('signout').onclick = async () => {
+  $('signout').disabled = true;
+  await refreshKeystore();
+  const seen = new Set();
+  for (const r of deviceCache) {
+    const c = certPayload(r.cert);
+    if (!c || c.iss !== location.host) continue;
+    const row = (account.deviceCerts || []).find(d => d.pubkey === r.publicKeyX && !d.revoked);
+    if (row && !seen.has(row.id)) {
+      seen.add(row.id);
+      try { await post('/wsapi/revoke_device_cert', { id: row.id }); } catch (e) { /* best-effort */ }
+    }
+  }
+  // Primary-issued keys on this browser: only their issuer can revoke them.
+  const foreign = deviceCache
+    .map(r => ({ iss: (certPayload(r.cert) || {}).iss, email: r.email }))
+    .filter(x => x.iss && x.iss !== location.host);
+  if (!foreign.length) return finishSignout();
+  const issuers = [...new Set(foreign.map(f => f.iss))];
+  const gate = $('gate');
+  $('app').hidden = true;
+  gate.innerHTML = '<div class="signcard"><h2 style="margin-top:0">Also revoke this browser’s keys at ' +
+    issuers.map(escapeHtml).join(', ') + '?</h2>' +
+    '<p class="lead">This browser holds sign-in keys issued by the identity provider' +
+    (issuers.length > 1 ? 's' : '') + ' above. Signing out clears them from this browser, ' +
+    'but only the issuer can revoke them — it will ask you to confirm.</p>' +
+    '<div style="display:flex;flex-direction:column;gap:9px">' +
+    issuers.map((iss, i) => '<button class="pv-btn" id="so-revoke-' + i + '">Revoke at ' + escapeHtml(iss) + '</button>').join('') +
+    '<button class="pv-ghost" id="so-finish">Just sign out here</button></div>' +
+    '<p class="status" id="so-status"></p></div>';
+  gate.hidden = false;
+  issuers.forEach((iss, i) => {
+    $('so-revoke-' + i).onclick = async () => {
+      const st = $('so-status'); st.className = 'status muted'; st.textContent = 'Waiting for ' + iss + '…';
+      let r = {};
+      try { r = await api('/wsapi/issuer_revoke_url?iss=' + encodeURIComponent(iss)); } catch (e) { /* fall through */ }
+      if (!r.revoke_url) {
+        st.className = 'status err';
+        st.textContent = iss + ' offers no revocation endpoint — its keys will be cleared here and expire on their own.';
+        return;
+      }
+      const sample = foreign.find(f => f.iss === iss);
+      const ok = await openIssuerRevoke(r.revoke_url, sample.email, iss);
+      st.className = ok ? 'status ok' : 'status err';
+      st.textContent = ok ? '✓ Revoked at ' + iss : 'Not confirmed at ' + iss + ' — you can try again.';
+    };
+  });
+  $('so-finish').onclick = finishSignout;
 };
 
 // -------- post-authorize landing: banner + roster highlight --------
