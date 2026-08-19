@@ -1,10 +1,11 @@
 ---
 # browserid-ng-kts0
 title: Google (OIDC) claim is never offered outside the dialog's new-address path
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-08-19T16:20:30Z
-updated_at: 2026-08-19T16:20:30Z
+updated_at: 2026-08-19T16:43:51Z
 ---
 
 Report (owner, 2026-08-19): Google addresses are not triggering the OIDC flow. Preexisting — predates the shyj epic.
@@ -33,3 +34,28 @@ The OIDC callback's resume leg is dialog-only (oidc.rs RESUME_PATH = /dialog/dia
 
 ## Tests to add with the fix
 - No OIDC e2e spec exists at all (needs mocked Google); at minimum, unit-test the /account routing decisions and an integration test that attach_verified upgrades proof Smtp→Oidc on re-proof (already implicitly covered) plus the account-side listener wiring.
+
+## Summary of Changes (2026-08-19)
+
+All three surfaces fixed, plus a server-side reclaim-table rework the investigation surfaced.
+
+**Server — attach_verified cold-claim arm (oidc.rs), the load-bearing piece**
+- Same Google subject as before → sign in (unchanged; the E2 no-password experience).
+- PASSWORD-BACKED account → refuse with PasswordRequired (callback maps it to the stable resume reason 'password required'). Previously this arm TRANSFERRED the address to a fresh account — which, combined with pr3a's bridge-first dialog routing, would have orphaned a grandfathered Smtp-proven gmail on the owner's own sign-in attempt. Mailbox proof alone neither signs in nor re-binds; a genuinely new mailbox holder's channel stays the reset flow (kgb9).
+- PASSWORDLESS + Smtp-proven record → sign into the owning account and upgrade the proof (mailbox continuity — same authority, stronger ceremony) instead of orphaning the account.
+- Oidc record under a different subject (passwordless) → transfer to fresh account (unchanged: identifier changed hands).
+- Deliberately NOT mirrored to handle_claim: for handle domains the DID binding outranks the broker password (tsqk/xcy6 — mailed resets are refused there, the bridge is the only re-proof channel), so a new DID holder must take the identity even from a password-backed account. Documented in the cold arm; the existing a_new_holder_gets_the_identity test pins it.
+
+**Dialog (case 3 + step-up)**
+- email-form 'known' branch now mirrors the chooser: proof oidc/atproto → bridge-first (cached device pair short-circuits).
+- passwordStepUpForClaim: a claim refused with 'password required' (popup AND redirect lanes) shows the password screen with an explanatory hint ('confirm your password once to link Google…'); after auth, state.pendingClaimAfterAuth re-runs the claim under the session → attach arm links the record (Smtp→Oidc, E3→E2), records the bridge grant, and completeSignIn mints with the bridge's 7d TTL. Stale step-up state cleared on every fresh email flow.
+
+**/account (cases 1 + 2)**
+- siDiscover: proof oidc/atproto routes through the dialog (the existing primary-address rp_redirect hop) — the dialog owns claim/step-up/link for every state and returns with the broker session.
+- ae-send: new openOidcClaim popup (mirror of openHandleClaim) — /oidc/claim with the session cookie riding along attaches to THIS account as proof=oidc (E2), instead of an SMTP code that would freeze the address as E3; completion via the dialog resume page's BroadcastChannel with gmail-normalized email matching. INLINE_SCRIPT_HASHES updated.
+
+**Tests** (oidc_claim_test.rs +4; full suite green)
+- Cold claim of a password-backed Smtp record → 'password required', record untouched (pre-fix: transferred).
+- Password-confirmed claim → record upgrades to Oidc on the same account, and /device/issue mints with the 7-day bridge TTL end-to-end (the owner's requested upgrade path).
+- Cold claim of a passwordless Smtp record → signs into the owning account, proof upgraded (pre-fix: transferred/orphaned).
+- Cold reclaim, password-backed + new Google subject → refused, record + subject untouched.

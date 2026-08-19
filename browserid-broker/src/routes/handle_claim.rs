@@ -165,7 +165,13 @@ where
         // if the same DID proved it before. Anything else — a DID mismatch,
         // or an identity that used to be SMTP-proven — is the identifier
         // changing hands: the identity moves to a fresh account instead of
-        // granting the new holder the old account.
+        // granting the new holder the old account. NOTE this deliberately
+        // does NOT get the OIDC table's password gate (kts0): for a handle
+        // domain the DID binding IS the identifier's root authority — it
+        // outranks the broker password (tsqk: mailed resets are refused for
+        // these domains; xcy6: the bridge is the only re-proof channel), so
+        // a new DID holder must be able to take the identity even from a
+        // password-backed account.
         (None, Some(rec)) => {
             if rec.proof == ProofMethod::Atproto
                 && rec.proof_subject.as_deref() == Some(claims.did.as_str())

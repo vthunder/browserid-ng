@@ -1246,6 +1246,13 @@ $('ae-send').onclick = async () => {
       openHandleClaim(email, info, status);
       return;
     }
+    if (info.proof === 'oidc' && info.claim) {
+      // Google-hosted mailbox (kts0): prove it by signing in with Google, so
+      // the record lands proof=oidc (E2 — bridge-delegated) instead of an
+      // SMTP-proven E3 that would be password-gated forever after.
+      openOidcClaim(email, info, status);
+      return;
+    }
     status.textContent = 'Sending code…';
     await post('/wsapi/stage_email', { email });
     aePending = email;
@@ -1306,6 +1313,58 @@ function openHandleClaim(email, info, status) {
       finish(m.attestation, m.reason);
     };
   } catch (e) { /* unsupported: postMessage lane only */ }
+}
+
+// Google-mailbox claim hop (kts0): open the broker's /oidc/claim in a popup —
+// with this page's session cookie riding along, the callback attaches the
+// proven address to THIS account (proof=oidc, E2). The popup's return leg is
+// the dialog's resume page, which broadcasts the result on the same-origin
+// OIDC resume channel; ack it so the popup closes itself.
+function openOidcClaim(email, info, status) {
+  const url = info.claim + '?email=' + encodeURIComponent(email);
+  const popup = window.open(url, 'browserid_oidc_claim', 'width=600,height=700');
+  if (!popup) {
+    status.className = 'status err';
+    status.textContent = 'Popup blocked — allow popups for this site and try again.';
+    return;
+  }
+  status.className = 'status muted';
+  status.textContent = 'Verify ' + email + ' in the Google window…';
+  // Gmail-normalized comparison: the broker may return d.a.n+x@gmail.com as
+  // dan@gmail.com (dots/+tag are the same consumer mailbox).
+  const gmailNorm = (addr) => {
+    const [local, domain] = String(addr).toLowerCase().split('@');
+    if (domain === 'gmail.com' || domain === 'googlemail.com') {
+      return local.split('+')[0].replace(/\./g, '') + '@' + domain;
+    }
+    return local + '@' + domain;
+  };
+  let chan = null;
+  let done = false;
+  const finish = async (ok, reason) => {
+    if (done) return; done = true;
+    if (chan) { try { chan.close(); } catch (e) {} chan = null; }
+    if (!ok) {
+      status.className = 'status err';
+      status.textContent = reason || 'Google verification failed.';
+      return;
+    }
+    $('ae-email').value = ''; aeShow('closed');
+    await reloadAccount(); renderMain();
+  };
+  try {
+    chan = new BroadcastChannel('browserid:oidc_claim_resume');
+    chan.onmessage = (ev) => {
+      const m = ev.data || {};
+      if (m.type !== 'browserid:oidc_claim_result') return;
+      if (m.email && gmailNorm(m.email) !== gmailNorm(email)) return;
+      try { chan.postMessage({ type: 'browserid:oidc_claim_ack', nonce: m.nonce }); } catch (e) {}
+      finish(m.ok, m.reason);
+    };
+  } catch (e) {
+    status.className = 'status err';
+    status.textContent = 'This browser cannot receive the Google result — use the sign-in dialog instead.';
+  }
 }
 
 $('ae-verify').onclick = async () => {
@@ -1538,6 +1597,20 @@ async function siDiscover(email) {
     // page's strict CSP (connect 'self') blocks. Route it through the dialog:
     // it establishes the broker session and redirects back here.
     siMuted(`Redirecting to ${info.issuer} to sign in…`);
+    const origin = location.origin;
+    location.assign('/dialog/dialog.html?rp_redirect=1'
+      + '&rp_origin=' + encodeURIComponent(origin)
+      + '&return_to=' + encodeURIComponent(origin + '/account')
+      + '&login_hint=' + encodeURIComponent(email)
+      + '&state=acct');
+    return;
+  }
+  if (info.proof === 'oidc' || info.proof === 'atproto') {
+    // Bridge-vouched domain (kts0): the ceremony (Google / Bluesky) runs in
+    // the dialog — this page's strict CSP can't host it, and the dialog owns
+    // the claim/step-up/link choreography for every state. Same hop as
+    // primaries: the dialog establishes the broker session and returns here.
+    siMuted(`Redirecting to ${info.proof === 'oidc' ? 'Google' : 'Bluesky'} sign-in…`);
     const origin = location.origin;
     location.assign('/dialog/dialog.html?rp_redirect=1'
       + '&rp_origin=' + encodeURIComponent(origin)

@@ -453,3 +453,143 @@ async fn signed_in_claim_attaches_to_the_session_account() {
     assert_eq!(rec.user_id, me, "attaches to the signed-in account");
     assert_eq!(rec.proof, ProofMethod::Oidc);
 }
+
+// --- kts0: the reclaim table under the provenance epic ----------------------
+
+/// A password-backed address (grandfathered Smtp record — every pre-hierarchy
+/// gmail) must NOT cold-bind on a Google proof: no sign-in, no transfer. The
+/// stable "password required" reason drives the dialog's step-up.
+#[tokio::test]
+async fn cold_claim_of_a_password_backed_address_requires_the_password() {
+    let (ctx, mock) = oidc_context().await;
+    create_user(&ctx.server, &ctx.email_sender, "dan@gmail.com", "password123").await;
+    let owner = ctx.user_store.get_email("dan@gmail.com").unwrap().unwrap().user_id;
+
+    let (st, nonce, flow) = begin_claim(&ctx, "dan@gmail.com").await;
+    mock.respond_with(base_claims("dan@gmail.com", &nonce, "google-sub-1"));
+    let resp = ctx
+        .server
+        .get(&format!("/oidc/callback?code=c&state={st}"))
+        .add_cookie(flow)
+        .await;
+    let loc = location_of(&resp);
+    assert!(loc.contains("oidc_error="), "must be refused: {loc}");
+    assert!(loc.contains("password"), "stable step-up reason: {loc}");
+    assert!(
+        resp.maybe_cookie("browserid_session").is_none(),
+        "mailbox proof alone must not create a session"
+    );
+
+    // The record is untouched: same account, still Smtp-proven (the pre-fix
+    // behavior TRANSFERRED it to a fresh account — the owner's own upgrade
+    // attempt orphaned the address).
+    let rec = ctx.user_store.get_email("dan@gmail.com").unwrap().unwrap();
+    assert_eq!(rec.user_id, owner);
+    assert_eq!(rec.proof, ProofMethod::Smtp);
+}
+
+/// The upgrade ceremony (owner's case): password session + Google proof →
+/// the record links (Smtp → Oidc, E3 → E2) and the very same claim's bridge
+/// grant mints certs with the BRIDGE's ~1wk TTL.
+#[tokio::test]
+async fn password_confirmed_claim_upgrades_the_record_to_e2_and_mints() {
+    let (ctx, mock) = oidc_context().await;
+    let session =
+        create_user(&ctx.server, &ctx.email_sender, "dan@gmail.com", "password123").await;
+    let owner = ctx.user_store.get_email("dan@gmail.com").unwrap().unwrap().user_id;
+
+    // The claim runs under the account's session (the dialog's step-up path).
+    let (st, nonce, flow) = begin_claim(&ctx, "dan@gmail.com").await;
+    mock.respond_with(base_claims("dan@gmail.com", &nonce, "google-sub-1"));
+    let resp = ctx
+        .server
+        .get(&format!("/oidc/callback?code=c&state={st}"))
+        .add_cookie(flow)
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .await;
+    assert!(location_of(&resp).contains("status=ok"), "{}", location_of(&resp));
+
+    // Linked: same account, now Oidc-proven with the Google subject.
+    let rec = ctx.user_store.get_email("dan@gmail.com").unwrap().unwrap();
+    assert_eq!(rec.user_id, owner);
+    assert_eq!(rec.proof, ProofMethod::Oidc);
+    assert!(rec.proof_subject.is_some());
+
+    // The claim's bridge grant mints — and the TTL is the bridge's (~7d),
+    // not the broker's 90d (pr3a, end-to-end through the upgrade).
+    let csrf = common::get_csrf(&ctx.server, &session).await;
+    let resp = ctx
+        .server
+        .post("/device/issue")
+        .add_cookie(cookie::Cookie::new("browserid_session", session))
+        .json(&json!({
+            "csrf": csrf, "email": "dan@gmail.com",
+            "device_pubkey": browserid_core::KeyPair::generate().public_key().to_base64(),
+            "config_pubkey": browserid_core::KeyPair::generate().public_key().to_base64(),
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "{}", resp.text());
+    let body: Value = resp.json();
+    let cert =
+        browserid_core::device::DeviceCert::parse(body["device_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(cert.claims().exp - cert.claims().iat, 7 * 24 * 3600);
+}
+
+/// A PASSWORDLESS SMTP-proven record is mailbox continuity, not a change of
+/// hands: the cold Google proof signs into the owning account and upgrades
+/// the proof, instead of orphaning the account by transferring the address.
+#[tokio::test]
+async fn cold_claim_of_a_passwordless_smtp_record_signs_into_the_owning_account() {
+    let (ctx, mock) = oidc_context().await;
+    let user_id = ctx.user_store.create_user_no_password().unwrap();
+    ctx.user_store.add_email(user_id, "dan@gmail.com", true).unwrap();
+
+    let (st, nonce, flow) = begin_claim(&ctx, "dan@gmail.com").await;
+    mock.respond_with(base_claims("dan@gmail.com", &nonce, "google-sub-1"));
+    let resp = ctx
+        .server
+        .get(&format!("/oidc/callback?code=c&state={st}"))
+        .add_cookie(flow)
+        .await;
+    assert!(location_of(&resp).contains("status=ok"), "{}", location_of(&resp));
+    resp.maybe_cookie("browserid_session").expect("signs in");
+
+    let rec = ctx.user_store.get_email("dan@gmail.com").unwrap().unwrap();
+    assert_eq!(rec.user_id, user_id, "same account — no transfer");
+    assert_eq!(rec.proof, ProofMethod::Oidc, "proof upgraded");
+}
+
+/// A password-backed Oidc record under a DIFFERENT Google subject is also
+/// refused (not transferred): a recycled-mailbox holder's channel into a
+/// password-backed account is the reset flow, never a cold re-bind.
+#[tokio::test]
+async fn cold_reclaim_with_new_subject_is_refused_for_password_backed_accounts() {
+    let (ctx, mock) = oidc_context().await;
+    create_user(&ctx.server, &ctx.email_sender, "dan@gmail.com", "password123").await;
+    let owner = ctx.user_store.get_email("dan@gmail.com").unwrap().unwrap().user_id;
+    ctx.user_store
+        .set_email_proof(
+            "dan@gmail.com",
+            ProofMethod::Oidc,
+            Some(&format!("{GOOGLE_ISSUER}#google-sub-1")),
+        )
+        .unwrap();
+
+    let (st, nonce, flow) = begin_claim(&ctx, "dan@gmail.com").await;
+    mock.respond_with(base_claims("dan@gmail.com", &nonce, "google-sub-OTHER"));
+    let resp = ctx
+        .server
+        .get(&format!("/oidc/callback?code=c&state={st}"))
+        .add_cookie(flow)
+        .await;
+    let loc = location_of(&resp);
+    assert!(loc.contains("oidc_error=") && loc.contains("password"), "{loc}");
+
+    let rec = ctx.user_store.get_email("dan@gmail.com").unwrap().unwrap();
+    assert_eq!(rec.user_id, owner, "must not transfer out of a password-backed account");
+    assert_eq!(
+        rec.proof_subject.as_deref(),
+        Some(format!("{GOOGLE_ISSUER}#google-sub-1").as_str()),
+        "subject unchanged"
+    );
+}

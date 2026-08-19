@@ -308,6 +308,12 @@ where
         };
 
     if let Err(e) = attach_verified(&state, &cookies, &verified) {
+        // The one expected refusal: a password-backed account needs the
+        // password confirmed before a Google proof may bind (kts0). The
+        // stable reason string is what the dialog's step-up branches on.
+        if matches!(e, BrokerError::PasswordRequired) {
+            return resume_err(&email, "password required");
+        }
         tracing::error!("oidc attach failed for a verified claim: {e}");
         return resume_err(&email, "sign-in could not be completed — try again");
     }
@@ -350,15 +356,34 @@ where
                 .add_email_with_type(s.user_id, email, true, EmailType::Secondary)?;
             s.user_id
         }
-        // Cold claim of a known identity: sign into the owning account only
-        // if the same Google account proved it before. Anything else — a
-        // sub mismatch, or an identity that used to be SMTP-proven — is the
-        // identifier changing hands: the identity moves to a fresh account
-        // instead of granting the new holder the old account.
+        // Cold claim of a known identity (kts0 rework of the reclaim table):
+        // - the same Google account that linked it before → sign in (the E2
+        //   experience: no password, lightweight session);
+        // - a PASSWORD-BACKED account: mailbox proof alone neither signs in
+        //   nor re-binds the address (epic shyj / 7ww7 — cold-transferring it
+        //   would let an inbox compromise take the identity without the
+        //   password, and it orphaned the owner's own upgrade attempt on a
+        //   grandfathered Smtp-proven record). Refuse with PasswordRequired;
+        //   the dialog confirms the password and re-runs the claim under that
+        //   session, which lands in the attach arm above and upgrades the
+        //   record. A genuinely new mailbox holder's channel into a
+        //   password-backed account stays the reset flow (kgb9);
+        // - a passwordless SMTP-proven record: the same mailbox authority
+        //   proven by the stronger ceremony — continuity, not a change of
+        //   hands. Sign into the owning account (the proof upgrade below
+        //   makes it E2) instead of orphaning the account by transferring
+        //   its address away;
+        // - anything else (an Oidc record under a DIFFERENT Google subject)
+        //   is the identifier changing hands: the identity moves to a fresh
+        //   account instead of granting the new holder the old one.
         (None, Some(rec)) => {
-            if rec.proof == ProofMethod::Oidc
-                && rec.proof_subject.as_deref() == Some(verified.proof_subject.as_str())
-            {
+            let same_subject = rec.proof == ProofMethod::Oidc
+                && rec.proof_subject.as_deref() == Some(verified.proof_subject.as_str());
+            if same_subject {
+                rec.user_id
+            } else if state.user_store.has_password(rec.user_id)? {
+                return Err(BrokerError::PasswordRequired);
+            } else if rec.proof == ProofMethod::Smtp {
                 rec.user_id
             } else {
                 let fresh = state.user_store.create_user_no_password()?;

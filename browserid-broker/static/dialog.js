@@ -598,6 +598,10 @@
 
   async function handleEmailChosen(email, _substituted) {
     showScreen('loading');
+    // A fresh flow invalidates any parked claim step-up (kts0).
+    state.pendingClaimAfterAuth = null;
+    const pwHint = document.getElementById('password-hint');
+    if (pwHint) pwHint.hidden = true;
 
     try {
       // 0. Subordinate-identity substitution (mingo-cm8z) — see maybeSubstituteParent.
@@ -1718,6 +1722,25 @@
     return info.claim + '?email=' + encodeURIComponent(email);
   }
 
+  // A bridge claim refused with "password required" (kts0): the address
+  // belongs to a password-backed account, and mailbox/domain proof alone must
+  // not bind it (epic shyj). Confirm the password, then re-run the claim
+  // under that session — the attach leg links the bridge to the account
+  // (upgrading a grandfathered SMTP-proven record to E2) and records the
+  // mint grant, so sign-in completes without a second ceremony.
+  function passwordStepUpForClaim(kind, email, info, provider) {
+    state.email = email;
+    state.pendingClaimAfterAuth = { kind, email, info };
+    document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+    const hint = document.getElementById('password-hint');
+    if (hint) {
+      hint.textContent = 'Confirm your password once to link ' + provider +
+        ' sign-in to this address — after that, ' + provider + ' alone signs you in.';
+      hint.hidden = false;
+    }
+    showScreen('password');
+  }
+
   // Popup lane. Resolves with the attached (broker-normalized) email.
   function oidcPopupFlow(email, info) {
     return new Promise((resolve, reject) => {
@@ -1816,6 +1839,10 @@
         document.querySelectorAll('.claim-provider').forEach(el => { el.textContent = 'Google'; });
         showScreen('claimContinue');
         return;
+      }
+      // Password-backed account: link Google after a password confirm (kts0).
+      if (/password required/i.test(e && e.message || '')) {
+        return passwordStepUpForClaim('oidc', email, info, 'Google');
       }
       showError('Google sign-in failed: ' + (e.message || e));
       return;
@@ -1918,6 +1945,14 @@
     });
 
     if (!ok) {
+      // Redirect lane's password-backed refusal (kts0): same step-up as the
+      // popup lane — the claim re-runs after the password confirm.
+      if (/password required/i.test(errReason || '')) {
+        try {
+          const target = email || pending.email;
+          return passwordStepUpForClaim('oidc', target, await checkEmail(target), 'Google');
+        } catch (e) { /* fall through to the generic error */ }
+      }
       showError('Google sign-in failed: ' + (errReason || 'try again'));
       return;
     }
@@ -2140,6 +2175,10 @@
       document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
 
       showScreen('loading');
+      // A fresh flow invalidates any parked claim step-up (kts0).
+      state.pendingClaimAfterAuth = null;
+      const pwHint = document.getElementById('password-hint');
+      if (pwHint) pwHint.hidden = true;
 
       try {
         // Subordinate substitution for a TYPED identity (mingo-cm8z), same as the
@@ -2202,6 +2241,19 @@
             return;
           }
           if (addressInfo.state === 'known') {
+            // Bridge-vouched domain (kts0): Google/Bluesky-first even for a
+            // known address, same as the chooser path. A linked (E2) record
+            // signs in with no password; an unlinked (grandfathered SMTP)
+            // one gets the password step-up from the claim and links.
+            if (addressInfo.proof === 'oidc' || addressInfo.proof === 'atproto') {
+              const issuer = state.brokerDomain || location.hostname;
+              if (!(await storedDevicePair(issuer, email))) {
+                return addressInfo.proof === 'oidc'
+                  ? await handleOidcClaim(email, addressInfo)
+                  : await handleAtprotoClaim(email, addressInfo);
+              }
+              return await completeSignIn(email);
+            }
             showScreen('password');
           } else if (addressInfo.state === 'transition_to_secondary') {
             // Existing account (was primary) — authenticate with password
@@ -2246,6 +2298,17 @@
           ephemeral: false
         });
 
+        // A bridge claim that was waiting on this password confirm (kts0):
+        // re-run it under the fresh session — the attach leg links/upgrades
+        // the record and records the mint grant, then completes sign-in.
+        const claim = state.pendingClaimAfterAuth;
+        if (claim) {
+          state.pendingClaimAfterAuth = null;
+          const info = claim.info || await checkEmail(claim.email);
+          return claim.kind === 'atproto'
+            ? await handleAtprotoClaim(claim.email, info)
+            : await handleOidcClaim(claim.email, info);
+        }
         // A re-verification-pending address (kgb9) can't mint yet — re-enter
         // the chooser flow so the fresh session stages its SMTP challenge.
         if (state.reverifyAfterAuth) {

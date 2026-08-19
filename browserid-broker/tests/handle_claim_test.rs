@@ -269,3 +269,4 @@ async fn the_route_refuses_when_no_attestor_is_configured() {
         .await;
     assert_eq!(resp.status_code(), 400);
 }
+
