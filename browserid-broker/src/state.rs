@@ -117,7 +117,33 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// (no `OIDC_GOOGLE_CLIENT_ID/SECRET`) keeps the whole bridge inert —
     /// `/oidc/*` refuses and `address_info` never advertises the ceremony.
     pub oidc: Option<crate::oidc::OidcRuntime>,
+    /// Live bridge-proof mint grants (browserid-ng-pr3a): (user_id, email) →
+    /// the voucher's TTL decision, recorded when a bridge leg (OIDC callback,
+    /// handle-claim redemption) completes its proof and CONSUMED (single-use)
+    /// by `/device/issue` when the chokepoint delegates to that voucher.
+    /// Grants expire in minutes, so "live proof" means this ceremony, not a
+    /// session. In-memory like the app's other anti-replay state; std RwLock:
+    /// never held across an await.
+    pub bridge_mint_grants: std::sync::RwLock<HashMap<(u64, String), BridgeMintGrant>>,
 }
+
+/// One live bridge proof (browserid-ng-pr3a): the voucher-decided cert TTL
+/// plus the grant's own redemption deadline.
+#[derive(Debug, Clone, Copy)]
+pub struct BridgeMintGrant {
+    /// Cert TTL the voucher decided for this mint (E2 default ~1 week; a
+    /// bridge may vary it per-address or from OAuth hints).
+    pub ttl: chrono::Duration,
+    /// When the unredeemed grant lapses and the bridge must be re-run.
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// How long a completed bridge proof stays redeemable at `/device/issue`.
+pub const BRIDGE_GRANT_WINDOW_SECS: i64 = 600;
+
+/// Default E2 cert TTL when the bridge gives no finer hint (epic shyj:
+/// bridge-vouched certs default short — ~1 week, vs 90d for E3).
+pub const BRIDGE_DEFAULT_TTL_DAYS: i64 = 7;
 
 /// Default per-user agent identity quota
 pub const DEFAULT_AGENT_QUOTA: usize = 50;
@@ -159,6 +185,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             tenant_keystore: None,
             idp_host: domain_for_idp,
             oidc: None,
+            bridge_mint_grants: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
@@ -196,7 +223,42 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             tenant_keystore: None,
             idp_host: domain_for_idp,
             oidc: None,
+            bridge_mint_grants: std::sync::RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Record a completed bridge proof (pr3a): `/device/issue` may redeem it
+    /// once, within [`BRIDGE_GRANT_WINDOW_SECS`], to mint `email`'s certs
+    /// with the voucher-decided `ttl`.
+    pub fn record_bridge_grant(
+        &self,
+        user_id: crate::store::UserId,
+        email: &str,
+        ttl: chrono::Duration,
+    ) {
+        let now = chrono::Utc::now();
+        let mut grants = self.bridge_mint_grants.write().unwrap();
+        grants.retain(|_, g| g.expires_at > now);
+        grants.insert(
+            (user_id.0, email.to_lowercase()),
+            BridgeMintGrant {
+                ttl,
+                expires_at: now + chrono::Duration::seconds(BRIDGE_GRANT_WINDOW_SECS),
+            },
+        );
+    }
+
+    /// Redeem (consume) a live bridge grant for `(user_id, email)`, returning
+    /// the voucher-decided TTL. `None` = no live proof; the bridge must run.
+    pub fn take_bridge_grant(
+        &self,
+        user_id: crate::store::UserId,
+        email: &str,
+    ) -> Option<chrono::Duration> {
+        let now = chrono::Utc::now();
+        let mut grants = self.bridge_mint_grants.write().unwrap();
+        grants.retain(|_, g| g.expires_at > now);
+        grants.remove(&(user_id.0, email.to_lowercase())).map(|g| g.ttl)
     }
 
     /// Register a mock primary IdP for testing

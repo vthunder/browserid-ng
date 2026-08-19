@@ -57,17 +57,22 @@ fn parse_pub(s: &str) -> Result<PublicKey, BrokerError> {
     PublicKey::from_base64(s).map_err(|e| BrokerError::ValidationError(format!("bad pubkey: {e}")))
 }
 
+/// Broker-signed cert TTL for broker-vouched (E3/agent) identities. E2 TTLs
+/// are the BRIDGE's decision, threaded through the bridge grant (pr3a).
+const BROKER_VOUCHED_CERT_TTL_DAYS: i64 = 90;
+
 /// Ownership + provenance gate for session-authed broker mints: the session's
 /// account must own the verified email, AND the chokepoint (browserid-ng-u4xz)
-/// must authorize a broker-session mint for its provenance. `Delegate` is a
-/// refusal here — the client must use the primary/bridge path instead;
-/// `NeedPassword` maps to a 401 step-up.
+/// must authorize a broker-session mint for its provenance. Returns the email
+/// plus the cert TTL, which is the VOUCHER's decision for delegated (E2)
+/// provenance — redeemed from the live bridge grant (pr3a). No live grant, or
+/// a Primary (E1) identity → refusal; `NeedPassword` maps to a 401 step-up.
 fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
     state: &AppState<U, S, E>,
     cookies: &Cookies,
     csrf: &str,
     email: &str,
-) -> Result<String, BrokerError> {
+) -> Result<(String, Duration), BrokerError> {
     let session = super::session::get_session_from_cookies(cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
     super::session::require_csrf(&session, csrf)?;
@@ -78,11 +83,25 @@ fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
         .find(|e| e.email.to_lowercase() == normalized && e.verified)
         .ok_or(BrokerError::EmailNotFound)?;
     match crate::mint::authorize_mint(rec, session.level) {
-        crate::mint::MintDecision::Allow => Ok(rec.email.clone()),
+        crate::mint::MintDecision::Allow => Ok((
+            rec.email.clone(),
+            Duration::days(BROKER_VOUCHED_CERT_TTL_DAYS),
+        )),
         crate::mint::MintDecision::NeedPassword => Err(BrokerError::PasswordRequired),
-        crate::mint::MintDecision::Delegate(voucher) => Err(BrokerError::PolicyRefused(format!(
-            "issuance for this address is delegated to its voucher ({voucher:?}); the broker session cannot mint it"
-        ))),
+        crate::mint::MintDecision::Delegate(crate::mint::Voucher::Primary) => {
+            Err(BrokerError::PolicyRefused(
+                "issuance for a primary identity is its own IdP's; the broker cannot sign it"
+                    .into(),
+            ))
+        }
+        crate::mint::MintDecision::Delegate(_) => {
+            match state.take_bridge_grant(session.user_id, &rec.email) {
+                Some(ttl) => Ok((rec.email.clone(), ttl)),
+                None => Err(BrokerError::PolicyRefused(
+                    "a live bridge proof is required to mint this address".into(),
+                )),
+            }
+        }
     }
 }
 
@@ -164,12 +183,11 @@ where
     // revocable in the account UI).
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
-    let email = owned_mintable_email(&state, &cookies, &req.csrf, &req.email)?;
+    let (email, ttl) = owned_mintable_email(&state, &cookies, &req.csrf, &req.email)?;
     let device_pub = parse_pub(&req.device_pubkey)?;
     let config_pub = parse_pub(&req.config_pubkey)?;
     let device_ref = device_status(&state, &device_pub)?;
     let config_ref = device_status(&state, &config_pub)?;
-    let ttl = Duration::days(90);
     // One device slot → one holder in the user's `browsers` namespace, carried by
     // BOTH the authentication (device) and authorization (config) cert. The client
     // broker supplies this browser's stable holder (reused across identities); it

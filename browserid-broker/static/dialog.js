@@ -670,6 +670,18 @@
 
       // Secondary, known, verified — complete via the session (issue if needed).
       if (addressInfo.state === 'known') {
+        // Bridge-vouched (E2) with no cached device pair: issuance requires a
+        // live bridge proof (pr3a), so run the bridge up front instead of
+        // burning a refused /device/issue. The bridge may reuse a live
+        // Google/Bluesky session silently — that's its call.
+        if (addressInfo.proof === 'oidc' || addressInfo.proof === 'atproto') {
+          const issuer = state.brokerDomain || location.hostname;
+          if (!(await storedDevicePair(issuer, email))) {
+            return addressInfo.proof === 'oidc'
+              ? await handleOidcClaim(email, addressInfo)
+              : await handleAtprotoClaim(email, addressInfo);
+          }
+        }
         return await completeSignIn(email);
       }
 
@@ -1556,7 +1568,7 @@
     try {
       showScreen('loading', 'Finishing sign-in...');
       await redeemHandleAttestation(email, attestation);
-      await completeSignIn(email);
+      await completeSignIn(email, true);
     } catch (e) {
       showError('Could not complete sign-in: ' + (e.message || e));
     }
@@ -1655,7 +1667,7 @@
     }
     try {
       await redeemHandleAttestation(claimed, attestation);
-      await completeSignIn(claimed);
+      await completeSignIn(claimed, true);
     } catch (e) {
       showError(e.message || String(e));
     }
@@ -1799,7 +1811,7 @@
     }
     try {
       showScreen('loading', 'Finishing sign-in...');
-      await completeSignIn(attached);
+      await completeSignIn(attached, true);
     } catch (e) {
       showError('Could not complete sign-in: ' + (e.message || e));
     }
@@ -1908,15 +1920,17 @@
       return;
     }
     try {
-      await completeSignIn(claimed);
+      await completeSignIn(claimed, true);
     } catch (e) {
       showError(e.message || String(e));
     }
   }
 
   // Complete sign-in for a broker-rooted (secondary) email: reuse or issue the
-  // device pair under the session, then present.
-  async function completeSignIn(email) {
+  // device pair under the session, then present. `_afterBridge` marks the
+  // re-entry from a just-completed bridge proof, so a refused delegated mint
+  // can't loop back into the bridge forever.
+  async function completeSignIn(email, _afterBridge) {
     try {
       showScreen('loading');
       const issuer = state.brokerDomain || location.hostname;
@@ -1935,6 +1949,16 @@
         document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
         showScreen('password');
         return;
+      }
+      // Delegated mint (u4xz/pr3a): an E2 address only mints against a live
+      // bridge proof. Run the bridge once — it may reuse a live Google/Bluesky
+      // session silently — and it re-enters here with the grant recorded.
+      if (!_afterBridge && /live bridge proof|delegated/i.test(e.message)) {
+        try {
+          const info = await checkEmail(email);
+          if (info.proof === 'oidc') return await handleOidcClaim(email, info);
+          if (info.proof === 'atproto') return await handleAtprotoClaim(email, info);
+        } catch (e2) { /* fall through to the generic error */ }
       }
       showError('Failed to sign in: ' + e.message);
     }

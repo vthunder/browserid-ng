@@ -382,6 +382,15 @@ where
         .user_store
         .set_email_proof(email, ProofMethod::Oidc, Some(&verified.proof_subject))?;
 
+    // This ceremony IS the live bridge proof the chokepoint demands for an
+    // E2 mint (pr3a): grant a single-use redemption at /device/issue with the
+    // bridge's TTL decision (default ~1wk; OAuth hints may refine it later).
+    state.record_bridge_grant(
+        user_id,
+        email,
+        chrono::Duration::days(crate::state::BRIDGE_DEFAULT_TTL_DAYS),
+    );
+
     // A cold claim ends signed in, like completing an email verification —
     // but only Lightweight: the bridge proof shows no account password.
     if session.is_none() {
