@@ -47,6 +47,17 @@ pub struct ListEmailsResponse {
     /// info; lets the dialog/account page chain a first-password prompt after
     /// an SMTP add instead of mailing a second code (browserid-ng-iudv).
     pub has_password: bool,
+    /// How each address was proven ("smtp" / "oidc" / "atproto") — session-
+    /// gated own-account data. Lets the dialog spot a grandfathered
+    /// SMTP-proven record on a bridge-ceremony domain and run the upgrade
+    /// claim (E3 → E2) instead of silently minting/reusing E3 certs (kts0).
+    pub proofs: Vec<ProofEntry>,
+}
+
+#[derive(Serialize)]
+pub struct ProofEntry {
+    pub email: String,
+    pub proof: String,
 }
 
 #[derive(Serialize)]
@@ -136,6 +147,14 @@ where
 
     let has_password = state.user_store.has_password(session.user_id)?;
 
+    let proofs = emails
+        .iter()
+        .map(|e| ProofEntry {
+            email: e.email.clone(),
+            proof: e.proof.as_str().to_string(),
+        })
+        .collect();
+
     Ok(Json(ListEmailsResponse {
         success: true,
         emails: emails.into_iter().map(|e| e.email).collect(),
@@ -144,6 +163,7 @@ where
         public_names,
         managed,
         has_password,
+        proofs,
     }))
 }
 

@@ -1997,6 +1997,39 @@
         return;
       }
       const issuer = state.brokerDomain || location.hostname;
+      // E3→E2 upgrade nudge (kts0 follow-up): a bridge-ceremony domain whose
+      // RECORD is still SMTP-proven (grandfathered) upgrades on first dialog
+      // use even under a live session — otherwise cached pre-upgrade certs
+      // (or plain full-session E3 issuance) suppress the upgrade until they
+      // expire. Run the bridge under the session (no password prompt — the
+      // session already owns the account; the claim links the record and
+      // grants the mint) and drop the stale pair so re-entry issues the
+      // fresh E2 certs. Self-extinguishing: the record reads oidc/atproto
+      // after the first upgrade.
+      if (!_afterBridge) {
+        try {
+          const info = await checkEmail(email);
+          if (info.proof === 'oidc' || info.proof === 'atproto') {
+            const owned = await apiCall(API.listEmails);
+            const lower = email.toLowerCase();
+            // Agent (+tag) and derived identities ride their parent — the
+            // bridge proves the PARENT mailbox/handle, never these.
+            const excluded = (owned.agents || []).some(a => a.toLowerCase() === lower)
+              || (owned.derived || []).some(d => (d.email || '').toLowerCase() === lower);
+            const rec = (owned.proofs || []).find(
+              p => p.email.toLowerCase() === lower);
+            if (!excluded && rec && rec.proof === 'smtp') {
+              try {
+                await Keystore.delDevice(issuer, email, 'device');
+                await Keystore.delDevice(issuer, email, 'config');
+              } catch (e) { /* nothing cached */ }
+              return info.proof === 'oidc'
+                ? await handleOidcClaim(email, info)
+                : await handleAtprotoClaim(email, info);
+            }
+          }
+        } catch (e) { /* nudge is best-effort; normal sign-in continues */ }
+      }
       let pair = await storedDevicePair(issuer, email);
       if (!pair) {
         pair = await issueDevicePair(email);

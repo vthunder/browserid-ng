@@ -150,3 +150,38 @@ async fn test_list_emails_reports_derived() {
     assert_eq!(derived[0]["email"].as_str().unwrap(), child);
     assert_eq!(derived[0]["parent_email"].as_str().unwrap(), parent);
 }
+
+/// kts0 follow-up: list_emails exposes each address's proof method to the
+/// OWNING session, so the dialog can spot a grandfathered SMTP-proven record
+/// on a bridge-ceremony domain and run the upgrade claim.
+#[tokio::test]
+async fn list_emails_reports_per_address_proofs() {
+    use browserid_broker::store::UserStore;
+    let ctx = common::create_test_context();
+    let session = common::create_user(
+        &ctx.server, &ctx.email_sender, "plain@example.com", "password123").await;
+    let user = ctx.user_store.get_user_by_email("plain@example.com").unwrap().unwrap();
+    ctx.user_store
+        .add_email_with_type(user.id, "bridge@example.com", true,
+            browserid_broker::store::EmailType::Secondary)
+        .unwrap();
+    ctx.user_store
+        .set_email_proof("bridge@example.com",
+            browserid_broker::store::ProofMethod::Oidc, Some("s"))
+        .unwrap();
+
+    let body: serde_json::Value = ctx
+        .server
+        .get("/wsapi/list_emails")
+        .add_cookie(cookie::Cookie::new("browserid_session", session))
+        .await
+        .json();
+    let proofs: std::collections::HashMap<&str, &str> = body["proofs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (p["email"].as_str().unwrap(), p["proof"].as_str().unwrap()))
+        .collect();
+    assert_eq!(proofs["plain@example.com"], "smtp");
+    assert_eq!(proofs["bridge@example.com"], "oidc");
+}

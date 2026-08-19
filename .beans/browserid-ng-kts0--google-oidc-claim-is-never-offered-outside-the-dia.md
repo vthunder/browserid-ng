@@ -5,7 +5,7 @@ status: completed
 type: bug
 priority: normal
 created_at: 2026-08-19T16:20:30Z
-updated_at: 2026-08-19T16:43:51Z
+updated_at: 2026-08-19T19:23:11Z
 ---
 
 Report (owner, 2026-08-19): Google addresses are not triggering the OIDC flow. Preexisting — predates the shyj epic.
@@ -59,3 +59,12 @@ All three surfaces fixed, plus a server-side reclaim-table rework the investigat
 - Password-confirmed claim → record upgrades to Oidc on the same account, and /device/issue mints with the 7-day bridge TTL end-to-end (the owner's requested upgrade path).
 - Cold claim of a passwordless Smtp record → signs into the owning account, proof upgraded (pre-fix: transferred/orphaned).
 - Cold reclaim, password-backed + new Google subject → refused, record + subject untouched.
+
+## Follow-up (2026-08-19, evening): upgrade never triggered under a LIVE session
+
+Owner repro post-v2nb: typed gmail in the dialog → instant sign-in, no Google, no password. Deployed code verified byte-identical to source; every cold path would have shown Google or the password screen — so the browser holds a live broker session (from the /account password sign-in earlier; 30d TTL). Under a session the flow is: 'known' → cached pair → completeSignIn → authenticated → mint from cached cert. Correct per v2nb (session exists), but the E3→E2 upgrade only lived on the COLD path — under a session, cached pre-epic certs (or plain full-session E3 issuance) suppress the upgrade until cert expiry.
+
+Fix (the upgrade nudge):
+- list_emails now exposes per-address proof methods to the owning session (proofs: [{email, proof}]).
+- completeSignIn's authenticated path: when the DOMAIN ceremony is oidc/atproto but the RECORD proof is smtp (and the address is not an agent/derived identity — those ride their parent), drop the cached pair and run the bridge claim under the session. No password prompt — the session already owns the account; the attach leg links the record (E3→E2) and the re-entry issues fresh E2 certs redeeming the bridge grant. Self-extinguishing: record reads oidc/atproto after the first upgrade.
+- Verified: broker suite green (+ list_emails proofs test); full Playwright e2e 105/105.
