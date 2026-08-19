@@ -1975,8 +1975,9 @@
   // Complete sign-in for a broker-rooted (secondary) email: reuse or issue the
   // device pair under the session, then present. `_afterBridge` marks the
   // re-entry from a just-completed bridge proof, so a refused delegated mint
-  // can't loop back into the bridge forever.
-  async function completeSignIn(email, _afterBridge) {
+  // can't loop back into the bridge forever; `_reissued` marks the one retry
+  // after dropping a dead cached pair.
+  async function completeSignIn(email, _afterBridge, _reissued) {
     try {
       showScreen('loading');
       // Session-first (v2nb, owner decision): cached certs are an ISSUANCE
@@ -2045,6 +2046,18 @@
         document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
         showScreen('password');
         return;
+      }
+      // A cached pair refused at the mint — revoked (transfer hg2j, class
+      // upgrade or sign-out kts0/v2nb) or expired: certs must never outlive
+      // their authority, so drop the dead pair and re-enter once; issuance
+      // then runs the proper ceremony for the address's provenance.
+      if (!_reissued && /revoked|expired/i.test(e.message)) {
+        const issuer = state.brokerDomain || location.hostname;
+        try {
+          await Keystore.delDevice(issuer, email, 'device');
+          await Keystore.delDevice(issuer, email, 'config');
+        } catch (e2) { /* nothing cached */ }
+        return await completeSignIn(email, _afterBridge, true);
       }
       // Delegated mint (u4xz/pr3a): an E2 address only mints against a live
       // bridge proof. Run the bridge once — it may reuse a live Google/Bluesky

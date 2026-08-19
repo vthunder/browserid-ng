@@ -406,6 +406,17 @@ where
         }
     };
 
+    // Provenance CLASS change (kts0): when this proof upgrades an SMTP-proven
+    // (E3) record to bridge-vouched (E2), the address's existing broker certs
+    // were issued under the old class's rules (90d, password-gated) — revoke
+    // them so no cached pre-upgrade cert keeps signing in around the new
+    // ceremony. Same-class re-proofs leave certs alone.
+    if let Some(rec) = &existing {
+        if rec.user_id == user_id && rec.proof != ProofMethod::Oidc {
+            state.user_store.revoke_user_certs_for_email(user_id, email)?;
+        }
+    }
+
     // Freshly proven, whatever its history.
     state.user_store.verify_email(email)?;
     state

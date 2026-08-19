@@ -498,6 +498,28 @@ async fn password_confirmed_claim_upgrades_the_record_to_e2_and_mints() {
         create_user(&ctx.server, &ctx.email_sender, "dan@gmail.com", "password123").await;
     let owner = ctx.user_store.get_email("dan@gmail.com").unwrap().unwrap().user_id;
 
+    // A pre-upgrade (E3-class, 90d) device cert issued under the full session.
+    // The class upgrade below must kill it — cached certs never outlive the
+    // provenance rules they were issued under (kts0).
+    let old_device_kp = browserid_core::KeyPair::generate();
+    let csrf0 = common::get_csrf(&ctx.server, &session).await;
+    let resp = ctx
+        .server
+        .post("/device/issue")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({
+            "csrf": csrf0, "email": "dan@gmail.com",
+            "device_pubkey": old_device_kp.public_key().to_base64(),
+            "config_pubkey": browserid_core::KeyPair::generate().public_key().to_base64(),
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "{}", resp.text());
+    let old_cert = resp.json::<Value>()["device_cert"].as_str().unwrap().to_string();
+    let old_holder = browserid_core::device::DeviceCert::parse(&old_cert)
+        .unwrap()
+        .holder()
+        .clone();
+
     // The claim runs under the account's session (the dialog's step-up path).
     let (st, nonce, flow) = begin_claim(&ctx, "dan@gmail.com").await;
     mock.respond_with(base_claims("dan@gmail.com", &nonce, "google-sub-1"));
@@ -514,6 +536,25 @@ async fn password_confirmed_claim_upgrades_the_record_to_e2_and_mints() {
     assert_eq!(rec.user_id, owner);
     assert_eq!(rec.proof, ProofMethod::Oidc);
     assert!(rec.proof_subject.is_some());
+
+    // The pre-upgrade cert died with the class change: minting with it is
+    // refused 'revoked'.
+    let areq = browserid_core::device::AccessRequest::create(
+        "localhost:3000",
+        "dan@gmail.com",
+        old_holder,
+        &browserid_core::KeyPair::generate().public_key(),
+        "jti-upgrade-1",
+        &old_device_kp,
+    )
+    .unwrap();
+    let resp = ctx
+        .server
+        .post("/access/mint")
+        .json(&json!({ "device_cert": old_cert, "access_request": areq.encoded() }))
+        .await;
+    assert_eq!(resp.status_code(), 403, "{}", resp.text());
+    assert!(resp.text().contains("revoked"), "{}", resp.text());
 
     // The claim's bridge grant mints — and the TTL is the bridge's (~7d),
     // not the broker's 90d (pr3a, end-to-end through the upgrade).

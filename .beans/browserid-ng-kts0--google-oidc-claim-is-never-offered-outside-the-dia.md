@@ -5,7 +5,7 @@ status: completed
 type: bug
 priority: normal
 created_at: 2026-08-19T16:20:30Z
-updated_at: 2026-08-19T19:23:11Z
+updated_at: 2026-08-19T19:55:41Z
 ---
 
 Report (owner, 2026-08-19): Google addresses are not triggering the OIDC flow. Preexisting — predates the shyj epic.
@@ -68,3 +68,14 @@ Fix (the upgrade nudge):
 - list_emails now exposes per-address proof methods to the owning session (proofs: [{email, proof}]).
 - completeSignIn's authenticated path: when the DOMAIN ceremony is oidc/atproto but the RECORD proof is smtp (and the address is not an agent/derived identity — those ride their parent), drop the cached pair and run the bridge claim under the session. No password prompt — the session already owns the account; the attach leg links the record (E3→E2) and the re-entry issues fresh E2 certs redeeming the bridge grant. Self-extinguishing: record reads oidc/atproto after the first upgrade.
 - Verified: broker suite green (+ list_emails proofs test); full Playwright e2e 105/105.
+
+## Follow-up 2 (2026-08-19, night): certs must never outlive their provenance class
+
+Owner repro #3: picked gmail from the chooser → instant sign-in. Server access-log forensics (nginx:access-logs is a ~20-line tail — earlier 'no /oidc/ hits ever' reasoning was void): the nudge RAN (its address_info+list_emails calls are in the trail) and DECLINED, meaning the record already read oidc — a silent Google hop (live Google session → no visible OAuth screen) had already upgraded it in an earlier attempt. The cached pre-upgrade 90d cert then kept signing in: 'valid credential until expiry' by the letter of the model, but exactly the cached-cert-outlives-policy surprise the owner called out.
+
+Structural fix (round 4):
+- **Revoke on provenance-class upgrade**: attach_verified / complete_handle_claim revoke the address's existing broker certs (revoke_user_certs_for_email) whenever an owned record's proof class changes to the bridge class (Smtp→Oidc / non-Atproto→Atproto). Same-class re-proofs leave certs alone; transfers already revoke (hg2j). With hg2j (transfer), v2nb (sign-out), and this (upgrade), every event that changes a cert's authority now kills the cert.
+- **Dialog self-heal**: completeSignIn catches a mint refusal matching revoked/expired, drops the dead cached pair, and re-enters once — issuance then runs the correct ceremony for the address's current provenance.
+- Test: the upgrade test now issues a pre-upgrade E3 cert first and asserts it is refused 'revoked' at /access/mint after the claim. Cargo suite + e2e 105/105 green.
+
+Note for the owner's browser: the record upgrade already happened, but the stale cert on that machine predates revoke-on-upgrade — one /account sign-out (which now revokes, v2nb) or manual cert revocation clears it; after that every sign-in is the pure E2 ceremony.
