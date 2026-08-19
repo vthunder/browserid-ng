@@ -345,8 +345,10 @@ where
         // Adding to the signed-in account (possibly re-proving).
         (Some(s), Some(rec)) if rec.user_id == s.user_id => s.user_id,
         // Signed in, identity lives elsewhere: the prover holds the mailbox
-        // *now*, so the identity transfers (Persona per-email semantics).
-        (Some(s), Some(_)) => {
+        // *now*, so the identity transfers (Persona per-email semantics). The
+        // former holder's certs for the address die with the transfer (hg2j).
+        (Some(s), Some(rec)) => {
+            state.user_store.revoke_user_certs_for_email(rec.user_id, email)?;
             state.user_store.transfer_email(email, s.user_id)?;
             s.user_id
         }
@@ -387,6 +389,9 @@ where
                 rec.user_id
             } else {
                 let fresh = state.user_store.create_user_no_password()?;
+                // Change of holder: the old account's certs for the departed
+                // address must stop working (hg2j).
+                state.user_store.revoke_user_certs_for_email(rec.user_id, email)?;
                 state.user_store.transfer_email(email, fresh)?;
                 fresh
             }

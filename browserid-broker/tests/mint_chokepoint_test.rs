@@ -315,3 +315,54 @@ fn issuance_call_sites_are_registered() {
         );
     }
 }
+
+/// hg2j store scope: revoke_user_certs_for_email flips ONLY the (user, email)
+/// pair's rows + status bits — the same user's other addresses and other
+/// users' rows for the same address stay live. On the real SQLite store.
+#[test]
+fn sqlite_revoke_user_certs_for_email_is_precisely_scoped() {
+    use browserid_broker::store::DeviceCertRecord;
+    use chrono::Utc;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("test.db");
+    let store = SqliteStore::open(path.to_str().unwrap()).unwrap();
+    let alice = store.create_user("hash").unwrap();
+    let bob = store.create_user("hash").unwrap();
+
+    let mut insert = |user, email: &str, key: &str| {
+        let idx = store.get_or_allocate_status("device", key).unwrap();
+        store
+            .insert_device_cert(DeviceCertRecord {
+                id: 0,
+                user_id: user,
+                identities: vec![email.to_string()],
+                purpose: "authentication".to_string(),
+                holder: "ns.h1".to_string(),
+                pubkey: key.to_string(),
+                iss: "localhost:3000".to_string(),
+                issued_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::days(90),
+                revoked_at: None,
+                status_uri: Some("uri".to_string()),
+                status_idx: Some(idx),
+            })
+            .unwrap();
+        idx
+    };
+    let target_idx = insert(alice, "moving@example.com", "key-a1");
+    let sibling_idx = insert(alice, "staying@example.com", "key-a2");
+    let bobs_idx = insert(bob, "moving@example.com", "key-b1");
+
+    assert_eq!(
+        store.revoke_user_certs_for_email(alice, "Moving@Example.com").unwrap(),
+        1
+    );
+    assert!(store.is_status_revoked_idx(target_idx).unwrap());
+    assert!(!store.is_status_revoked_idx(sibling_idx).unwrap());
+    assert!(!store.is_status_revoked_idx(bobs_idx).unwrap());
+
+    let alices: Vec<_> = store.list_device_certs(alice).unwrap();
+    assert!(alices.iter().any(|c| c.identities == vec!["moving@example.com"] && c.revoked_at.is_some()));
+    assert!(alices.iter().any(|c| c.identities == vec!["staying@example.com"] && c.revoked_at.is_none()));
+}

@@ -116,6 +116,9 @@ where
                 // Persona semantics, mingo-z8im).
                 Some(session) if session.user_id != email_record.user_id => {
                     let former = email_record.user_id;
+                    // Change of holder: the former account's certs for the
+                    // departed address must stop working (hg2j).
+                    state.user_store.revoke_user_certs_for_email(former, &email)?;
                     state.user_store.transfer_email(&email, session.user_id)?;
                     // Clean up the former account if it has no emails left.
                     if state.user_store.list_emails(former)?.is_empty() {

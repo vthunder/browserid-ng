@@ -2329,6 +2329,54 @@ impl UserStore for SqliteStore {
         Ok(count)
     }
 
+    fn revoke_user_certs_for_email(&self, user_id: UserId, email: &str) -> StoreResult<u64> {
+        let target = email.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        // Same shape as revoke_domain_device_certs: scan the user's active
+        // certs, match the identity client-side (identities is a JSON array),
+        // flip each match's status bit and stamp revoked_at.
+        let rows: Vec<(i64, String, Option<i64>)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, identities, status_idx FROM device_certs WHERE user_id = ?1 AND revoked_at IS NULL")
+                .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            let mapped = stmt
+                .query_map(params![user_id.0 as i64], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                })
+                .map_err(|e| BrokerError::Internal(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            mapped
+        };
+        let now = Utc::now().to_rfc3339();
+        let mut count = 0u64;
+        for (id, identities_json, status_idx) in rows {
+            let identities: Vec<String> =
+                serde_json::from_str(&identities_json).unwrap_or_default();
+            if !identities.iter().any(|i| i.to_lowercase() == target) {
+                continue;
+            }
+            if let Some(idx) = status_idx {
+                conn.execute(
+                    "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1) WHERE idx = ?2",
+                    params![now, idx],
+                )
+                .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            }
+            conn.execute(
+                "UPDATE device_certs SET revoked_at = COALESCE(revoked_at, ?1) WHERE id = ?2",
+                params![now, id],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
     fn is_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
@@ -2882,6 +2930,10 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn revoke_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
         (**self).revoke_device_cert(user_id, cert_id)
+    }
+
+    fn revoke_user_certs_for_email(&self, user_id: UserId, email: &str) -> StoreResult<u64> {
+        (**self).revoke_user_certs_for_email(user_id, email)
     }
 
     fn forget_holder(&self, user_id: UserId, holder: &str) -> StoreResult<u64> {

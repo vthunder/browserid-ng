@@ -916,6 +916,31 @@ impl UserStore for InMemoryUserStore {
         Ok(count)
     }
 
+    fn revoke_user_certs_for_email(&self, user_id: UserId, email: &str) -> StoreResult<u64> {
+        let target = email.to_lowercase();
+        let mut certs = self.device_certs.write().unwrap();
+        let mut status = self.status_entries.write().unwrap();
+        let mut count = 0u64;
+        for cert in certs.values_mut() {
+            if cert.user_id != user_id || cert.revoked_at.is_some() {
+                continue;
+            }
+            if !cert.identities.iter().any(|i| i.to_lowercase() == target) {
+                continue;
+            }
+            cert.revoked_at = Some(Utc::now());
+            if let Some(idx) = cert.status_idx {
+                for (_, (i, revoked)) in status.iter_mut() {
+                    if *i == idx {
+                        *revoked = true;
+                    }
+                }
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
     fn is_tenant_admin(&self, domain: &str, identity: &str) -> StoreResult<bool> {
         let Some(tenant) = self.tenants.read().unwrap().get(domain).cloned() else {
             return Ok(false);

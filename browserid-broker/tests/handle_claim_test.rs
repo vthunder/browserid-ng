@@ -270,3 +270,95 @@ async fn the_route_refuses_when_no_attestor_is_configured() {
     assert_eq!(resp.status_code(), 400);
 }
 
+
+/// hg2j: a transfer is a change of HOLDER — the former account's device certs
+/// for the departed address are revoked at transfer time, so cached certs
+/// cannot keep minting access certs (i.e. signing into RPs) as an address
+/// that moved to someone else.
+#[tokio::test]
+async fn transfer_revokes_the_former_holders_certs() {
+    use browserid_core::device::{AccessRequest, DeviceCert};
+
+    let key = KeyPair::generate();
+    let ctx = context(&key);
+    let email = "me@dan.bsky.social";
+
+    // Old holder claims the handle onto a password-backed account…
+    let session = create_user(&ctx.server, &ctx.email_sender, "old@mail.test", "password123").await;
+    let csrf = get_csrf(&ctx.server, &session).await;
+    let resp = ctx
+        .server
+        .post("/wsapi/complete_handle_claim")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({
+            "email": email,
+            "attestation": attest(&key, "dan.bsky.social", "did:plc:old"),
+            "csrf": csrf,
+        }))
+        .await;
+    resp.assert_status_ok();
+
+    // …and issues device certs for it (the claim's live bridge grant, pr3a).
+    let device_kp = KeyPair::generate();
+    let resp = ctx
+        .server
+        .post("/device/issue")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({
+            "csrf": csrf, "email": email,
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": KeyPair::generate().public_key().to_base64(),
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "{}", resp.text());
+    let body: Value = resp.json();
+    let device_cert_str = body["device_cert"].as_str().unwrap().to_string();
+    let holder = DeviceCert::parse(&device_cert_str).unwrap().holder().clone();
+
+    // The cert mints access certs while the address is still theirs.
+    let areq = AccessRequest::create(
+        "localhost:3000", email, holder.clone(),
+        &KeyPair::generate().public_key(), "jti-hg2j-1", &device_kp,
+    )
+    .unwrap();
+    let resp = ctx
+        .server
+        .post("/access/mint")
+        .json(&json!({ "device_cert": device_cert_str, "access_request": areq.encoded() }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "{}", resp.text());
+
+    // The handle moves to a new DID: cold claim → per-email transfer (the DID
+    // outranks the broker password for handle domains).
+    let resp = ctx
+        .server
+        .post("/wsapi/complete_handle_claim")
+        .json(&json!({
+            "email": email,
+            "attestation": attest(&key, "dan.bsky.social", "did:plc:new"),
+        }))
+        .await;
+    resp.assert_status_ok();
+
+    // The former holder's cert is dead at the mint: its status bit flipped
+    // with the transfer, and /access/mint checks it fail-closed.
+    let areq = AccessRequest::create(
+        "localhost:3000", email, holder,
+        &KeyPair::generate().public_key(), "jti-hg2j-2", &device_kp,
+    )
+    .unwrap();
+    let resp = ctx
+        .server
+        .post("/access/mint")
+        .json(&json!({ "device_cert": device_cert_str, "access_request": areq.encoded() }))
+        .await;
+    assert_eq!(resp.status_code(), 403, "{}", resp.text());
+    assert!(resp.text().contains("revoked"), "{}", resp.text());
+
+    // The old account itself is intact minus the departed address.
+    let old = ctx.user_store.get_user_by_email("old@mail.test").unwrap().unwrap();
+    assert_ne!(
+        ctx.user_store.get_email(email).unwrap().unwrap().user_id,
+        old.id
+    );
+}

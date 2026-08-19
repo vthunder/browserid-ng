@@ -216,6 +216,14 @@ pub trait UserStore: Send + Sync {
     /// `DeviceCertNotFound` if it doesn't exist or belongs to someone else.
     fn revoke_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()>;
 
+    /// Revoke every active device cert `user_id` holds naming `email` — flips
+    /// each cert's status bit (killing the access certs derived from it) and
+    /// stamps `revoked_at`. Called when the address TRANSFERS to another
+    /// account (hg2j): a transfer is a change of holder, so the previous
+    /// holder's cached certs must stop minting and signing in as the departed
+    /// address. Returns the number of rows revoked.
+    fn revoke_user_certs_for_email(&self, user_id: UserId, email: &str) -> StoreResult<u64>;
+
     /// Forget a holder: delete the user's device-cert rows carrying this
     /// holder id (revocation bits are the CALLER's job first — deletion alone
     /// does not invalidate live certs) plus its label. Returns the number of
