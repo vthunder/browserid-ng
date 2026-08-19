@@ -117,6 +117,9 @@ where
         .route("/wsapi/auth_with_presentation", post(primary::auth_with_presentation))
         .route("/wsapi/logout", post(auth::logout))
         .route("/wsapi/update_password", post(auth::update_password))
+        // First-password set for a signed-in passwordless account — the
+        // in-session shortcut that avoids a second mailed code (iudv).
+        .route("/wsapi/set_password", post(auth::set_password))
         .route("/wsapi/list_emails", get(email::list_emails))
         .route("/wsapi/stage_email", post(email::stage_email))
         // OIDC claim ceremony (browserid-ng-qer8): both legs are top-level
@@ -307,7 +310,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-ssXXmnnMSNJE9ep3A2oZsY0N58j73hRh5HFtWcl98qM='", // account.html
+    "'sha256-6vNW9BYQYWh82C2thzE0rdir1Pjot3xrAJMDJwlpX14='", // account.html
     "'sha256-XRWE73ZH1qCk6vmO+hv85g2743sS42s8Y64PjFX8z98='", // authorize.html
     "'sha256-cgwfxDK4GCoGP+8bnCnRcDqyXuKYsNlxqR3e5aj4DKY='", // consent.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)

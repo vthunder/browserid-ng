@@ -391,6 +391,15 @@
             </div>
             <p class="status" id="ae-status2"></p>
           </div>
+          <div id="addr-pass" class="inform" hidden>
+            <div class="hint"><span class="mono" id="ae-added" style="color:#17171a"></span> is verified.
+              Your account has no password yet — choose one to finish; you'll use it to sign in with this address.</div>
+            <input class="inp txt" id="ae-pass" type="password" autocomplete="new-password" minlength="8" maxlength="80" placeholder="Password (8+ characters)" style="margin-bottom:0">
+            <div class="btnrow" style="margin-top:8px">
+              <button class="btn-dark" id="ae-setpass">Set password</button>
+            </div>
+            <p class="status" id="ae-status3"></p>
+          </div>
         </div>
         <div class="rcard">
           <div class="rtitle">Connected sites</div>
@@ -1211,7 +1220,8 @@ function aeShow(step) {
   $('addr-closed').hidden = step !== 'closed';
   $('addr-email').hidden = step !== 'email';
   $('addr-code').hidden = step !== 'code';
-  $('ae-status').textContent = ''; $('ae-status2').textContent = '';
+  $('addr-pass').hidden = step !== 'pass';
+  $('ae-status').textContent = ''; $('ae-status2').textContent = ''; $('ae-status3').textContent = '';
 }
 $('addr-start').onclick = () => { aeShow('email'); $('ae-email').focus(); };
 $('ae-cancel').onclick = () => { $('ae-email').value = ''; aeShow('closed'); };
@@ -1302,8 +1312,31 @@ $('ae-verify').onclick = async () => {
   const status = $('ae-status2'); status.className = 'status muted';
   try {
     status.textContent = 'Verifying…';
+    const added = aePending;
     await post('/wsapi/complete_email_addition', { email: aePending, token: $('ae-code').value.trim() });
     $('ae-email').value = ''; $('ae-code').value = ''; aePending = '';
+    await reloadAccount();
+    if (account.hasPassword === false) {
+      // First SMTP address on a passwordless account: chain straight into
+      // choosing a password — the session proves control, so the code just
+      // entered stays the only mailed one (browserid-ng-iudv).
+      $('ae-added').textContent = added;
+      aeShow('pass');
+      $('ae-pass').focus();
+    } else {
+      aeShow('closed');
+    }
+    renderMain();
+  } catch (e) { status.className = 'status err'; status.textContent = e.message; }
+};
+$('ae-setpass').onclick = async () => {
+  const status = $('ae-status3'); status.className = 'status muted';
+  const pass = $('ae-pass').value;
+  if (pass.length < 8) { status.className = 'status err'; status.textContent = 'Password must be at least 8 characters.'; return; }
+  try {
+    status.textContent = 'Setting…';
+    await post('/wsapi/set_password', { pass });
+    $('ae-pass').value = '';
     aeShow('closed');
     await reloadAccount(); renderMain();
   } catch (e) { status.className = 'status err'; status.textContent = e.message; }
@@ -1613,6 +1646,8 @@ async function reloadAccount() {
   account.publicNames = Object.fromEntries((resp.public_names || []).map(p => [p.email, p.public_name]));
   // Managed addresses (domains-integration handoff): email → managing domain.
   account.managedOf = Object.fromEntries((resp.managed || []).map(m => [m.email, m.domain]));
+  // Drives the first-password prompt after an SMTP add (browserid-ng-iudv).
+  account.hasPassword = resp.has_password !== false;
   account.warrants = warrants;
   account.deviceCerts = deviceCerts;
   account.holders = holders;

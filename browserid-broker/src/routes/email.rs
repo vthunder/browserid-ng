@@ -43,6 +43,10 @@ pub struct ListEmailsResponse {
     /// managed identities enabled, each with its managing domain — the
     /// account page's "managed" indicators. Absence = unmanaged.
     pub managed: Vec<ManagedAddress>,
+    /// Whether this account has a password set. Session-gated own-account
+    /// info; lets the dialog/account page chain a first-password prompt after
+    /// an SMTP add instead of mailing a second code (browserid-ng-iudv).
+    pub has_password: bool,
 }
 
 #[derive(Serialize)]
@@ -130,6 +134,8 @@ where
         }
     }
 
+    let has_password = state.user_store.has_password(session.user_id)?;
+
     Ok(Json(ListEmailsResponse {
         success: true,
         emails: emails.into_iter().map(|e| e.email).collect(),
@@ -137,6 +143,7 @@ where
         agents,
         public_names,
         managed,
+        has_password,
     }))
 }
 

@@ -17,6 +17,9 @@ pub struct TestContext {
     pub server: TestServer,
     pub email_sender: MockEmailSender,
     pub user_store: Arc<InMemoryUserStore>,
+    /// Direct session-store access — lets tests mint a session for accounts
+    /// that have no password (E1/E2-established sessions in production).
+    pub session_store: Arc<InMemorySessionStore>,
     /// The broker's public key — in production an RP resolves this from the
     /// `_browserid` DNSSEC record (the served `.well-known` carries no key,
     /// bean zexp); tests that verify broker-issued certs use it directly.
@@ -102,7 +105,7 @@ pub fn create_test_context() -> TestContext {
         keypair,
         "localhost:3000".to_string(),
         user_store.clone(),
-        session_store,
+        session_store.clone(),
         email_sender.clone(),
     ));
 
@@ -115,6 +118,7 @@ pub fn create_test_context() -> TestContext {
             sent: email_sender.sent.clone(),
         },
         user_store,
+        session_store,
         broker_key,
     }
 }
@@ -142,7 +146,7 @@ pub fn create_test_context_customized(
         keypair,
         "localhost:3000".to_string(),
         user_store.clone(),
-        session_store,
+        session_store.clone(),
         email_sender.clone(),
     );
     customize(&mut state);
@@ -156,6 +160,7 @@ pub fn create_test_context_customized(
             sent: email_sender.sent.clone(),
         },
         user_store,
+        session_store,
         broker_key,
     }
 }

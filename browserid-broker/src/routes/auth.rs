@@ -242,3 +242,60 @@ where
         reason: None,
     }))
 }
+
+#[derive(Deserialize)]
+pub struct SetPasswordRequest {
+    pub pass: String,
+    #[serde(default)]
+    pub csrf: String,
+}
+
+#[derive(Serialize)]
+pub struct SetPasswordResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// POST /wsapi/set_password
+/// First password for a signed-in passwordless account (browserid-ng-iudv).
+/// The session already proves control of the account (it was established by a
+/// primary presentation, bridge claim, or SMTP verification), so no mailed
+/// code is needed — unlike the reset flow, which is the cold/no-session path.
+/// Refused once a password exists: changing it requires the old password
+/// (update_password) or the reset ceremony.
+pub async fn set_password<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    Json(req): Json<SetPasswordRequest>,
+) -> Result<Json<SetPasswordResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    super::session::require_csrf(&session, &req.csrf)?;
+
+    if req.pass.len() < MIN_PASSWORD_LENGTH {
+        return Err(BrokerError::PasswordTooShort);
+    }
+    if req.pass.len() > MAX_PASSWORD_LENGTH {
+        return Err(BrokerError::PasswordTooLong);
+    }
+
+    if state.user_store.has_password(session.user_id)? {
+        return Err(BrokerError::ValidationError(
+            "account already has a password".to_string(),
+        ));
+    }
+
+    let hash = hash_password(&req.pass).map_err(|e| BrokerError::Internal(e.to_string()))?;
+    state.user_store.set_password(session.user_id, &hash)?;
+
+    Ok(Json(SetPasswordResponse {
+        success: true,
+        reason: None,
+    }))
+}

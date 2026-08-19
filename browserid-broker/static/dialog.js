@@ -58,6 +58,7 @@
     accessMint: '/access/mint',
     stageReset: '/wsapi/stage_reset',
     completeReset: '/wsapi/complete_reset',
+    setPassword: '/wsapi/set_password',
     addressInfo: '/wsapi/address_info',
     stageEmail: '/wsapi/stage_email',
     completeEmailAddition: '/wsapi/complete_email_addition',
@@ -73,6 +74,7 @@
     verify: document.getElementById('verify-screen'),
     resetEmail: document.getElementById('reset-email-screen'),
     resetPassword: document.getElementById('reset-password-screen'),
+    setPassword: document.getElementById('set-password-screen'),
     pickEmail: document.getElementById('pick-email-screen'),
     addEmail: document.getElementById('add-email-screen'),
     addEmailVerify: document.getElementById('add-email-verify-screen'),
@@ -564,13 +566,32 @@
     }
   }
 
-  /// A password-less account signing in with a broker-verified email. Proving
-  /// control = the emailed reset code, then choose a password. (The classic
-  /// signed-in /wsapi/set_password shortcut left with the old protocol — the
-  /// reset flow covers both cases.)
+  // Signed-in check for the set-password shortcut: the current session must
+  // own the selected address, else /wsapi/set_password would set a password on
+  // the WRONG account (it acts on the session's account, not the email's).
+  async function sessionOwnsEmail(email) {
+    try {
+      const ctx = await apiCall(API.sessionContext);
+      if (!ctx.authenticated) return false;
+      const resp = await apiCall(API.listEmails);
+      const want = email.toLowerCase();
+      return (resp.emails || []).some(e => e.toLowerCase() === want);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// A password-less account signing in with a broker-verified email. When a
+  /// session already owns the address it proves control by itself — set the
+  /// password in-session, no mailed code (browserid-ng-iudv). Cold (no
+  /// session): the emailed reset code, then choose a password.
   async function handleNoPasswordTransition(email) {
     state.email = email;
     document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+    if (await sessionOwnsEmail(email)) {
+      showScreen('setPassword');
+      return;
+    }
     await apiCall(API.stageReset, 'POST', { email });
     showScreen('resetPassword');
   }
@@ -2249,6 +2270,28 @@
       }
     });
 
+    // Set password form: signed-in passwordless account choosing its first
+    // password — the session proves control, so no mailed code (iudv).
+    document.getElementById('set-password-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const password = document.getElementById('set-password-input').value;
+
+      if (password.length < 8) {
+        document.getElementById('set-password-error').textContent = 'Password must be at least 8 characters';
+        return;
+      }
+
+      showScreen('loading');
+
+      try {
+        await apiCall(API.setPassword, 'POST', { pass: password });
+        await completeSignIn(state.email);
+      } catch (e) {
+        showScreen('setPassword');
+        document.getElementById('set-password-error').textContent = e.message;
+      }
+    });
+
     // Forgot password link
     document.getElementById('forgot-password-link').addEventListener('click', (e) => {
       e.preventDefault();
@@ -2414,6 +2457,15 @@
         await apiCall(API.completeEmailAddition, 'POST', { email: state.newEmail, token: code });
         // Email added successfully - use it to sign in
         state.email = state.newEmail;
+        // First SMTP address on a passwordless account: the add code just
+        // verified is the ONE roundtrip — chain straight into choosing a
+        // password on the session instead of mailing a second code (iudv).
+        const emails = await apiCall(API.listEmails);
+        if (emails.has_password === false) {
+          document.querySelectorAll('.email-display').forEach(el => el.textContent = state.email);
+          showScreen('setPassword');
+          return;
+        }
         await completeSignIn(state.email);
       } catch (e) {
         showScreen('addEmailVerify');

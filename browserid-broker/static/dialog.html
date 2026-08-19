@@ -216,6 +216,35 @@
       </div>
     </section>
 
+    <!-- Set Password Screen: a signed-in passwordless account choosing its
+         first password. The session already proves control, so unlike the
+         reset screen there is no mailed code (browserid-ng-iudv). -->
+    <section id="set-password-screen" class="screen">
+      <div class="content">
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <h2>Choose a password</h2>
+        <p>Add a password to your account so you can sign in with
+           <strong class="email-display"></strong> directly.</p>
+
+        <form id="set-password-form">
+          <div class="form-group">
+            <label for="set-password-input">Password</label>
+            <input type="password" id="set-password-input" name="password"
+                   placeholder="8+ characters"
+                   autocomplete="new-password"
+                   minlength="8"
+                   maxlength="80"
+                   required>
+            <div class="error" id="set-password-error"></div>
+          </div>
+
+          <div class="button-row">
+            <button type="submit" class="primary">Set password</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
     <!-- Email Selection Screen (for signed-in users). User addresses as a
          radio card; agent identities in a collapsed section below — one radio
          group spans both lists. -->
