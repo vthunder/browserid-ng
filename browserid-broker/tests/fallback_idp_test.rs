@@ -1,18 +1,36 @@
 //! Fallback-IdP surface (apgv, device-cert model): SMTP /auth establishes an
-//! email cookie that gates /auth/device_cert, which batch-issues the user
-//! (authentication) + config (authorization) device certs (iss = this broker)
-//! for an email whose domain the broker doesn't own. Those certs then drive
-//! the standard mint → presentation path.
+//! email cookie that — together with the account's FULL broker session and
+//! the central mint chokepoint (browserid-ng-7ww7/u4xz) — gates
+//! /auth/device_cert, which batch-issues the user (authentication) + config
+//! (authorization) device certs (iss = this broker) for an email whose domain
+//! the broker doesn't own. Those certs then drive the standard mint →
+//! presentation path. Mailbox control alone (the old cookie-only mint) is the
+//! M1 password bypass and no longer issues anything.
 
 mod common;
 
+use browserid_broker::store::{SessionLevel, SessionStore, UserStore};
 use browserid_core::device::{
     AccessPresentation, AccessRequest, DeviceCert, HolderMatcher, Purpose, Warrant,
 };
 use browserid_core::{Assertion, KeyPair};
 use chrono::Duration;
-use common::create_test_server;
+use common::{create_test_server, create_user};
 use serde_json::{json, Value};
+
+/// Run the SMTP dance for `email` and return the fb_email cookie.
+async fn fb_cookie(
+    server: &axum_test::TestServer,
+    email_sender: &common::MockEmailSender,
+    email: &str,
+) -> cookie::Cookie<'static> {
+    let r = server.post("/auth/send").json(&json!({ "email": email })).await;
+    assert_eq!(r.status_code(), 200, "{:?}", r.text());
+    let code = email_sender.get_code(email).expect("code emailed");
+    let r = server.post("/auth/verify").json(&json!({ "email": email, "code": code })).await;
+    assert_eq!(r.status_code(), 200, "{:?}", r.text());
+    r.maybe_cookie("fb_email").expect("email cookie set").into_owned()
+}
 
 #[tokio::test]
 async fn smtp_auth_then_device_cert_issues_the_pair() {
@@ -28,20 +46,26 @@ async fn smtp_auth_then_device_cert_issues_the_pair() {
         "config_pubkey": config_kp.public_key().to_base64(),
     });
 
-    // 1. Issuance without the email cookie → 401 (dialog drops to SMTP).
-    let r = server.post("/auth/device_cert").json(&issue_body).await;
-    assert_eq!(r.status_code(), 401, "no cookie yet: {:?}", r.text());
+    // The address backs a password account with a FULL session (7ww7: this
+    // surface no longer mints for anything else).
+    let session = create_user(server, email_sender, email, "password123").await;
+    let session_cookie = cookie::Cookie::new("browserid_session", session);
 
-    // 2. SMTP challenge.
+    // 1. Issuance without the email cookie → 401, even with the full session
+    //    (the SMTP-freshness contract stands).
+    let r = server
+        .post("/auth/device_cert")
+        .add_cookie(session_cookie.clone())
+        .json(&issue_body)
+        .await;
+    assert_eq!(r.status_code(), 401, "no fb cookie yet: {:?}", r.text());
+
+    // 2. SMTP challenge (wrong code rejected on the way).
     let r = server.post("/auth/send").json(&json!({ "email": email })).await;
     assert_eq!(r.status_code(), 200, "{:?}", r.text());
     let code = email_sender.get_code(email).expect("code emailed");
-
-    // 3. Wrong code rejected.
     let r = server.post("/auth/verify").json(&json!({ "email": email, "code": "000000" })).await;
     assert_eq!(r.status_code(), 401);
-
-    // 4. Right code sets the email cookie.
     let r = server.post("/auth/verify").json(&json!({ "email": email, "code": code })).await;
     assert_eq!(r.status_code(), 200, "{:?}", r.text());
     let cookie = r.maybe_cookie("fb_email").expect("email cookie set");
@@ -51,8 +75,18 @@ async fn smtp_auth_then_device_cert_issues_the_pair() {
     assert_eq!(who["authenticated"], true);
     assert_eq!(who["email"], email);
 
-    // 6. Device-cert issuance now succeeds: user + config certs, iss = broker.
+    // 5b. The fb cookie ALONE no longer mints — the M1 password bypass (7ww7).
     let r = server.post("/auth/device_cert").add_cookie(cookie.clone()).json(&issue_body).await;
+    assert_eq!(r.status_code(), 401, "cookie-only mint must be gone: {:?}", r.text());
+    assert!(r.text().contains("password required"), "{:?}", r.text());
+
+    // 6. Cookie + the account's full session → user + config certs, iss = broker.
+    let r = server
+        .post("/auth/device_cert")
+        .add_cookie(cookie.clone())
+        .add_cookie(session_cookie.clone())
+        .json(&issue_body)
+        .await;
     assert_eq!(r.status_code(), 200, "{:?}", r.text());
     let body: Value = r.json();
     let device_cert = DeviceCert::parse(body["device_cert"].as_str().unwrap()).unwrap();
@@ -67,15 +101,23 @@ async fn smtp_auth_then_device_cert_issues_the_pair() {
     assert_eq!(device_cert.holder(), config_cert.holder());
     assert!(device_cert.authorizes_identity(email));
     assert!(config_cert.authorizes_identity(email));
+    // Blast-radius narrowing (7ww7): the explicit `local+*@domain` wildcard
+    // is gone from the cert DATA — both certs name the exact address only.
+    // (Protocol-level subaddressing still implies the base covers +tags, but
+    // that rule pins the presentable identity to the warrant's exact grantee,
+    // so a base cert without a matching warrant authorizes nothing.)
+    assert_eq!(config_cert.claims().identities, vec![email.to_string()]);
+    assert_eq!(device_cert.claims().identities, vec![email.to_string()]);
     // Per-device status refs, distinct per key.
     assert!(device_cert.claims().status.is_some());
     assert!(config_cert.claims().status.is_some());
     assert_ne!(device_cert.claims().status, config_cert.claims().status);
 
-    // 7. The cookie only authorizes its own email.
+    // 7. The cookie only authorizes its own email (session or not).
     let r = server
         .post("/auth/device_cert")
         .add_cookie(cookie.clone())
+        .add_cookie(session_cookie.clone())
         .json(&json!({
             "email": "other@gmail.com",
             "device_pubkey": device_kp.public_key().to_base64(),
@@ -154,6 +196,59 @@ async fn smtp_auth_then_device_cert_issues_the_pair() {
         "unexpected refusal reason: {}",
         r.text()
     );
+}
+
+/// The removed no-account path (7ww7/kgb9): a mailbox with no broker account
+/// gets NOTHING from this surface — no cookie-only cert issuance.
+#[tokio::test]
+async fn no_account_cookie_only_issuance_is_gone() {
+    let ctx = common::create_test_context();
+    let email = "drifter@gmail.com"; // valid SMTP dance, but no account
+    let cookie = fb_cookie(&ctx.server, &ctx.email_sender, email).await;
+
+    let r = ctx
+        .server
+        .post("/auth/device_cert")
+        .add_cookie(cookie)
+        .json(&json!({
+            "email": email,
+            "device_pubkey": KeyPair::generate().public_key().to_base64(),
+            "config_pubkey": KeyPair::generate().public_key().to_base64(),
+        }))
+        .await;
+    assert_eq!(r.status_code(), 403, "{:?}", r.text());
+    assert!(r.text().contains("no account"), "{:?}", r.text());
+}
+
+/// A lightweight (E1/E2-established) session + the fb cookie still isn't
+/// enough for an E3 mint here — the chokepoint demands the password (Full).
+#[tokio::test]
+async fn lightweight_session_still_needs_the_password() {
+    let ctx = common::create_test_context();
+    let email = "someone-light@gmail.com";
+    create_user(&ctx.server, &ctx.email_sender, email, "password123").await;
+    let user = ctx.user_store.get_user_by_email(email).unwrap().unwrap();
+    let light = ctx
+        .session_store
+        .create(user.id, SessionLevel::Lightweight)
+        .unwrap()
+        .id
+        .0;
+    let cookie = fb_cookie(&ctx.server, &ctx.email_sender, email).await;
+
+    let r = ctx
+        .server
+        .post("/auth/device_cert")
+        .add_cookie(cookie)
+        .add_cookie(cookie::Cookie::new("browserid_session", light))
+        .json(&json!({
+            "email": email,
+            "device_pubkey": KeyPair::generate().public_key().to_base64(),
+            "config_pubkey": KeyPair::generate().public_key().to_base64(),
+        }))
+        .await;
+    assert_eq!(r.status_code(), 401, "{:?}", r.text());
+    assert!(r.text().contains("password required"), "{:?}", r.text());
 }
 
 #[tokio::test]

@@ -7,11 +7,14 @@
 //!   {email, code}` sets a **medium-lived email cookie** (30 days) proving
 //!   control of `email`.
 //! - `POST /auth/device_cert {email, device_pubkey, config_pubkey}` — gated on
-//!   that cookie — batch-issues the two **device certs** for this browser:
-//!   a **user** cert (`authentication`, mints access certs at `/access/mint`)
-//!   and a **config** cert (`authorization`, signs warrants). iss = this
-//!   broker's domain. Until the cookie expires the dialog can silently
-//!   re-issue; then the SMTP dance runs again.
+//!   that cookie AND (since browserid-ng-7ww7) on the central mint chokepoint:
+//!   the address must belong to a broker account and the caller must hold that
+//!   account's FULL (password) broker session. Mailbox control alone is
+//!   recovery-channel material, never mint authority. Batch-issues the two
+//!   **device certs** for this browser: a **user** cert (`authentication`,
+//!   mints access certs at `/access/mint`) and a **config** cert
+//!   (`authorization`, signs warrants — exact address only, no `+*`
+//!   wildcard). iss = this broker's domain.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -294,13 +297,76 @@ where
         Some(e) => e,
         None => return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "reason": "invalid email"}))),
     };
-    // Gate: the cookie must authorize exactly this email.
+    // Gate 1: the fb_email cookie must authorize exactly this email — the
+    // surface's SMTP-freshness contract.
     match email_from_cookie(state.as_ref(), &cookies) {
         Some(cookie_email) if cookie_email == email => {}
         _ => {
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"success": false, "reason": "no verified session for this email"})),
+            )
+        }
+    }
+    // Gate 2 (browserid-ng-7ww7, epic shyj): the cookie proves MAILBOX
+    // control, and for an account-backed address that is recovery-channel
+    // material, not mint authority — the old cookie-only mint was the M1
+    // password bypass. Issuance is the central chokepoint's decision
+    // (browserid-ng-u4xz) under the caller's real broker session:
+    // - the address must belong to a broker account (no account → no
+    //   issuance; the first E3 forces a password, kgb9),
+    // - the caller must hold THAT account's FULL (password) session for an
+    //   E3, and
+    // - delegated (E1/E2) provenance never mints here at all.
+    // No CSRF token on this surface: both cookies are SameSite=Lax and the
+    // endpoint's external (support-document) clients have no csrf channel.
+    let user = match state.user_store.get_user_by_email(&email) {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"success": false, "reason": "no account holds this address — create one (and set a password) first"})),
+            )
+        }
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"success": false, "reason": format!("store: {e}")})))
+        }
+    };
+    let session = match super::session::get_session_from_cookies(&cookies, state.session_store.as_ref()) {
+        Some(s) if s.user_id == user.id => s,
+        _ => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"success": false, "reason": "password required"})),
+            )
+        }
+    };
+    let email_rec = match state.user_store.list_emails(user.id) {
+        Ok(emails) => match emails.into_iter().find(|e| e.email == email && e.verified) {
+            Some(rec) => rec,
+            None => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({"success": false, "reason": "address requires re-verification"})),
+                )
+            }
+        },
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"success": false, "reason": format!("store: {e}")})))
+        }
+    };
+    match crate::mint::authorize_mint(&email_rec, session.level) {
+        crate::mint::MintDecision::Allow => {}
+        crate::mint::MintDecision::NeedPassword => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"success": false, "reason": "password required"})),
+            )
+        }
+        crate::mint::MintDecision::Delegate(_) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"success": false, "reason": "issuance for this address is delegated to its voucher"})),
             )
         }
     }
@@ -331,30 +397,23 @@ where
     };
     let ttl = Duration::days(DEVICE_CERT_VALIDITY_DAYS);
     // One broker-assigned holder in the user's `browsers` namespace, shared by
-    // both certs (holder-authorization model). If a broker account owns this
-    // email, the namespace prefix is the stored per-user one (so `<prefix>.*`
-    // login warrants reuse across the user's browsers); a cookie-only fallback
-    // identity with no account gets a fresh standalone prefix.
-    let account = state.user_store.get_user_by_email(&email).ok().flatten();
-    let ns_prefix = match &account {
-        Some(user) => match state.user_store.get_or_create_namespace(user.id, "browsers") {
-            Ok(p) => p,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"success": false, "reason": format!("namespace: {e}")}))),
-        },
-        None => crate::crypto::generate_namespace_prefix(),
+    // both certs (holder-authorization model). The account always exists here
+    // (gate 2), so the prefix is the stored per-user one and `<prefix>.*`
+    // login warrants reuse across the user's browsers.
+    let ns_prefix = match state.user_store.get_or_create_namespace(user.id, "browsers") {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"success": false, "reason": format!("namespace: {e}")}))),
     };
     let holder = match browserid_core::device::Holder::new(crate::crypto::assign_holder_id(&ns_prefix)) {
         Ok(h) => h,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"success": false, "reason": format!("holder: {e}")}))),
     };
-    // The config (authorization) cert also covers the email's `+tag`
-    // sub-addresses, so it can sign warrants for the user's plus-named agent
-    // identities (design doc Stage 3 — e.g. `dan+claude@example.com`). The
-    // authentication cert stays exact: only the user's own login.
-    let config_identities = match email.split_once('@') {
-        Some((local, domain)) => vec![email.clone(), format!("{local}+*@{domain}")],
-        None => vec![email.clone()],
-    };
+    // Both certs are EXACT-address on this surface (7ww7 blast-radius
+    // narrowing): the `local+*@domain` wildcard the config cert used to carry
+    // meant mailbox control granted authority over every +tag agent identity.
+    // Plus-named agent warrants come from the session-authed /device/issue
+    // config cert instead.
+    let config_identities = vec![email.clone()];
     let issue = |pubkey: &PublicKey, purpose: Purpose, identities: Vec<String>, status: browserid_core::StatusRef| {
         DeviceCert::create(
             &state.domain, pubkey, purpose, holder.clone(),
@@ -371,36 +430,32 @@ where
         }
     };
 
-    // If a broker account owns this (verified) email, persist registry rows so
-    // the certs are enumerable + revocable from the account UI. A cookie-only
-    // fallback identity with no account still gets working certs (the status
-    // refs above exist regardless); there is just no UI listing them yet.
-    if let Ok(Some(user)) = state.user_store.get_user_by_email(&email) {
-        let now = Utc::now();
-        for (pubkey, purpose, status_idx) in [
-            (&req.device_pubkey, "authentication", device_ref.idx),
-            (&req.config_pubkey, "authorization", config_ref.idx),
-        ] {
-            let _ = state.user_store.insert_device_cert(DeviceCertRecord {
-                id: 0,
-                user_id: user.id,
-                identities: vec![email.clone()],
-                purpose: purpose.to_string(),
-                holder: holder.as_str().to_string(),
-                pubkey: pubkey.clone(),
-                iss: state.domain.clone(),
-                issued_at: now,
-                expires_at: now + ttl,
-                revoked_at: None,
-                status_uri: Some(browserid_registrar::consent::status_list_uri(&state.domain)),
-                status_idx: Some(status_idx),
-            });
-        }
-        // First sight of this holder → UA-derived default label; best-effort.
-        super::holders::maybe_label_holder_from_ua(
-            state.user_store.as_ref(), user.id, holder.as_str(), &headers,
-        );
+    // Persist registry rows so the certs are enumerable + revocable from the
+    // account UI (the owning account always exists here — gate 2).
+    let now = Utc::now();
+    for (pubkey, purpose, status_idx) in [
+        (&req.device_pubkey, "authentication", device_ref.idx),
+        (&req.config_pubkey, "authorization", config_ref.idx),
+    ] {
+        let _ = state.user_store.insert_device_cert(DeviceCertRecord {
+            id: 0,
+            user_id: user.id,
+            identities: vec![email.clone()],
+            purpose: purpose.to_string(),
+            holder: holder.as_str().to_string(),
+            pubkey: pubkey.clone(),
+            iss: state.domain.clone(),
+            issued_at: now,
+            expires_at: now + ttl,
+            revoked_at: None,
+            status_uri: Some(browserid_registrar::consent::status_list_uri(&state.domain)),
+            status_idx: Some(status_idx),
+        });
     }
+    // First sight of this holder → UA-derived default label; best-effort.
+    super::holders::maybe_label_holder_from_ua(
+        state.user_store.as_ref(), user.id, holder.as_str(), &headers,
+    );
 
     tracing::info!(email = %email, "fallback IdP: issued device + config certs");
     (

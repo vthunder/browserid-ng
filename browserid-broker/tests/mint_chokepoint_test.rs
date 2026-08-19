@@ -307,7 +307,7 @@ fn issuance_call_sites_are_registered() {
         "unaudited issuance call site — wire it through authorize_mint (u4xz) and register it here"
     );
 
-    for file in ["routes/device.rs", "routes/fedcm.rs"] {
+    for file in ["routes/device.rs", "routes/fedcm.rs", "routes/fallback_idp.rs"] {
         let text = std::fs::read_to_string(src.join(file)).unwrap();
         assert!(
             text.contains("authorize_mint"),
