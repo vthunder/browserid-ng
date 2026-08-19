@@ -11,7 +11,7 @@ use crate::crypto::{generate_verification_code, hash_password};
 use crate::email::EmailSender;
 use crate::error::BrokerError;
 use crate::state::AppState;
-use crate::store::{PendingVerification, SessionStore, UserStore, VerificationType};
+use crate::store::{EmailType, PendingVerification, ProofMethod, SessionStore, UserStore, VerificationType};
 
 /// Minimum password length (same as original Persona)
 const MIN_PASSWORD_LENGTH: usize = 8;
@@ -138,6 +138,25 @@ where
 
     // Update user's password
     state.user_store.update_password(user_id, &password_hash)?;
+
+    // Re-verification fence (kgb9, epic shyj invariant 4): control of ONE
+    // inbox + a reset must not pivot to minting the account's OTHER SMTP
+    // addresses. The reset address was just proven by this code; every other
+    // E3 (Secondary + Smtp) email is marked for a fresh SMTP challenge before
+    // it signs in or mints again. E1/E2 addresses are untouched — their trust
+    // never rested on this password — and agent identities ride the account,
+    // not an inbox.
+    let reset_addr = pending.email.to_lowercase();
+    for e in state.user_store.list_emails(user_id)? {
+        if e.email_type == EmailType::Secondary
+            && e.proof == ProofMethod::Smtp
+            && e.email.to_lowercase() != reset_addr
+        {
+            state.user_store.unverify_email(&e.email)?;
+        }
+    }
+    // The reset address itself: freshly proven, whatever its history.
+    state.user_store.verify_email(&pending.email)?;
 
     // Evict every existing session for this user: a reset is the recovery path,
     // so it must also cut off an attacker who already holds a session (audit

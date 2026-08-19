@@ -363,9 +363,13 @@ where
         .ok_or(BrokerError::NotAuthenticated)?;
     super::session::require_csrf(&session, &req.csrf)?;
 
-    // Check if email already exists
-    if state.user_store.get_user_by_email(&req.email)?.is_some() {
-        return Err(BrokerError::EmailAlreadyExists);
+    // An email that already exists may be RE-staged by its OWNING account —
+    // the re-verification roundtrip (kgb9: a password reset unverifies the
+    // account's sibling E3 addresses). Anyone else's email stays refused.
+    if let Some(owner) = state.user_store.get_user_by_email(&req.email)? {
+        if owner.id != session.user_id {
+            return Err(BrokerError::EmailAlreadyExists);
+        }
     }
 
     // The SMTP loop only proves ownership where the mailbox is the
@@ -452,10 +456,19 @@ where
         return Err(BrokerError::InvalidVerificationCode);
     }
 
-    // Add email to user
-    state
+    // Add email to user — or, when it already sits on this account (the
+    // re-verification roundtrip, kgb9), just mark it verified again.
+    if state
         .user_store
-        .add_email(session.user_id, &pending.email, true)?;
+        .get_email(&pending.email)?
+        .is_some_and(|e| e.user_id == session.user_id)
+    {
+        state.user_store.verify_email(&pending.email)?;
+    } else {
+        state
+            .user_store
+            .add_email(session.user_id, &pending.email, true)?;
+    }
 
     // Clean up
     state.user_store.delete_pending(&pending.secret)?;
@@ -736,9 +749,17 @@ where
     let email_record = state.user_store.get_email(&normalized)?;
 
     let email_state = if let Some(ref email) = email_record {
-        // Email exists - compute state based on password and type history
-        let password_known = state.user_store.has_password(email.user_id)?;
-        compute_state(password_known, Some(email.last_used_as), current_type)
+        if !email.verified {
+            // Marked for re-verification (kgb9: a password reset unverifies
+            // the account's sibling E3 addresses): a fresh proof — SMTP code
+            // or bridge hop, per `proof` — is required before this address
+            // signs in or mints again.
+            "unverified"
+        } else {
+            // Email exists - compute state based on password and type history
+            let password_known = state.user_store.has_password(email.user_id)?;
+            compute_state(password_known, Some(email.last_used_as), current_type)
+        }
     } else {
         // Email not in database
         "unknown"

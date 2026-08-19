@@ -660,11 +660,22 @@
       }
 
       if (addressInfo.state === 'unverified') {
-        // Email not verified - re-verify
-        await apiCall(API.stageEmail, 'POST', { email });
+        // Marked for re-verification (kgb9: a password reset unverifies the
+        // account's sibling SMTP addresses): fresh SMTP challenge, completed
+        // through the add-email flow (verify → mint under the chokepoint).
         state.email = email;
         document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
-        showScreen('verify');
+        const ctx = await apiCall(API.sessionContext);
+        if (!ctx.authenticated) {
+          // Cold: the account password first; the password form re-enters
+          // here and the staging below runs on the fresh session.
+          state.reverifyAfterAuth = true;
+          showScreen('password');
+          return;
+        }
+        await apiCall(API.stageEmail, 'POST', { email });
+        state.newEmail = email;
+        showScreen('addEmailVerify');
         return;
       }
 
@@ -2235,6 +2246,12 @@
           ephemeral: false
         });
 
+        // A re-verification-pending address (kgb9) can't mint yet — re-enter
+        // the chooser flow so the fresh session stages its SMTP challenge.
+        if (state.reverifyAfterAuth) {
+          state.reverifyAfterAuth = false;
+          return await handleEmailChosen(state.email);
+        }
         await completeSignIn(state.email);
       } catch (e) {
         showScreen('password');
