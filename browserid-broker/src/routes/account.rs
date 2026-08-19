@@ -169,8 +169,11 @@ where
     // Clean up pending
     state.user_store.delete_pending(&pending.secret)?;
 
-    // Create session
-    let session = state.session_store.create(user_id)?;
+    // Create session — Lightweight: completion proved the mailbox (emailed
+    // code), not the password the user typed at staging (ca29).
+    let session = state
+        .session_store
+        .create(user_id, crate::store::SessionLevel::Lightweight)?;
     super::session::set_session_cookie(
         &cookies,
         &session.id.0,

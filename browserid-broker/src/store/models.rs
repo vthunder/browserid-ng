@@ -332,6 +332,37 @@ impl DeviceCertRecord {
     }
 }
 
+/// How a session was established (epic browserid-ng-shyj). The level gates
+/// capability — which credentials the session may mint — not lifetime: both
+/// levels share the same 30-day TTL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionLevel {
+    /// Established by an E1/E2 proof (primary presentation, OIDC/Google or
+    /// bsky bridge claim) or an emailed code — no account password shown.
+    Lightweight,
+    /// The account password was presented (login, update, first set).
+    Full,
+}
+
+impl SessionLevel {
+    /// Stable storage/wire token ("lightweight" / "full").
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SessionLevel::Lightweight => "lightweight",
+            SessionLevel::Full => "full",
+        }
+    }
+
+    /// Parse a stored token. Unknown values map to `Lightweight` — the
+    /// least-privileged level — so a bad row can never grant password powers.
+    pub fn parse(s: &str) -> SessionLevel {
+        match s {
+            "full" => SessionLevel::Full,
+            _ => SessionLevel::Lightweight,
+        }
+    }
+}
+
 /// A user session
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -339,6 +370,9 @@ pub struct Session {
     pub user_id: UserId,
     pub csrf_token: String,
     pub created_at: DateTime<Utc>,
+    /// How this session was established — Full (password) or Lightweight
+    /// (E1/E2 proof). Every creation site must decide (browserid-ng-ca29).
+    pub level: SessionLevel,
 }
 
 /// Lifecycle of a hosted-primary tenant domain (bean g5qt).

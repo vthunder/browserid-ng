@@ -30,8 +30,13 @@ pub struct SessionContext {
     pub csrf_token: Option<String>,
     pub authenticated: bool,
     /// auth_level is used by the frontend (UserContext) to determine authentication status
-    /// Values: "password", "assertion", or null for unauthenticated
+    /// Values: "password" (Full session), "assertion" (Lightweight session),
+    /// or null for unauthenticated — no longer hard-coded (browserid-ng-ca29).
     pub auth_level: Option<String>,
+    /// How the session was established: "full" (password) or "lightweight"
+    /// (E1/E2 proof). The dialog branches on this — e.g. selecting an SMTP
+    /// (E3) address under a lightweight session prompts for the password.
+    pub session_level: Option<String>,
     pub user_id: Option<u64>,
     /// userid is used by the frontend (UserContext) for user identification
     pub userid: Option<u64>,
@@ -70,7 +75,11 @@ where
         SessionContext {
             csrf_token: Some(session.csrf_token),
             authenticated: true,
-            auth_level: Some("password".to_string()),
+            auth_level: Some(match session.level {
+                crate::store::SessionLevel::Full => "password".to_string(),
+                crate::store::SessionLevel::Lightweight => "assertion".to_string(),
+            }),
+            session_level: Some(session.level.as_str().to_string()),
             user_id: Some(session.user_id.0),
             userid: Some(session.user_id.0),
             server_time,
@@ -83,6 +92,7 @@ where
             csrf_token: None,
             authenticated: false,
             auth_level: None,
+            session_level: None,
             user_id: None,
             userid: None,
             server_time,

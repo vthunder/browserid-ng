@@ -117,8 +117,10 @@ where
     // Success clears this IP's failure counter.
     state.login_attempts.write().unwrap().remove(&ip);
 
-    // Create session
-    let session = state.session_store.create(user.id)?;
+    // Create session — Full: the account password was just verified.
+    let session = state
+        .session_store
+        .create(user.id, crate::store::SessionLevel::Full)?;
     super::session::set_session_cookie(
         &cookies,
         &session.id.0,
@@ -230,7 +232,9 @@ where
     // one for the caller so the password change also logs out any other live
     // session (e.g. a co-resident attacker) without logging *this* user out.
     state.session_store.delete_by_user(session.user_id)?;
-    let fresh = state.session_store.create(session.user_id)?;
+    let fresh = state
+        .session_store
+        .create(session.user_id, crate::store::SessionLevel::Full)?;
     super::session::set_session_cookie(
         &cookies,
         &fresh.id.0,
@@ -293,6 +297,21 @@ where
 
     let hash = hash_password(&req.pass).map_err(|e| BrokerError::Internal(e.to_string()))?;
     state.user_store.set_password(session.user_id, &hash)?;
+
+    // The caller just chose — and therefore knows — the account password, so
+    // re-mint this session as Full (ca29). Without this, the set-on-add flow
+    // would demand the same password again at the very next E3 mint. Only the
+    // current session upgrades; other live sessions keep their own level
+    // (this is not a recovery event, so no delete_by_user).
+    state.session_store.delete(&session.id)?;
+    let fresh = state
+        .session_store
+        .create(session.user_id, crate::store::SessionLevel::Full)?;
+    super::session::set_session_cookie(
+        &cookies,
+        &fresh.id.0,
+        super::session::cookie_secure(&state.domain),
+    );
 
     Ok(Json(SetPasswordResponse {
         success: true,

@@ -193,9 +193,12 @@ where
         .user_store
         .set_email_proof(&email, ProofMethod::Atproto, Some(&claims.did))?;
 
-    // A cold claim ends signed in, like completing an email verification.
+    // A cold claim ends signed in, like completing an email verification —
+    // but only Lightweight: the bridge proof shows no account password.
     if session.is_none() {
-        let new_session = state.session_store.create(user_id)?;
+        let new_session = state
+            .session_store
+            .create(user_id, crate::store::SessionLevel::Lightweight)?;
         super::session::set_session_cookie(
             &cookies,
             &new_session.id.0,

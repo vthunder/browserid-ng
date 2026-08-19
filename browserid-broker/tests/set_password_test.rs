@@ -5,7 +5,7 @@
 
 mod common;
 
-use browserid_broker::store::{SessionStore, SqliteStore, UserStore};
+use browserid_broker::store::{SessionLevel, SessionStore, SqliteStore, UserStore};
 use common::{create_test_context, create_user, get_csrf, TestContext};
 use serde_json::{json, Value};
 
@@ -15,7 +15,11 @@ use serde_json::{json, Value};
 fn passwordless_session(ctx: &TestContext, email: &str) -> String {
     let user_id = ctx.user_store.create_user_no_password().unwrap();
     ctx.user_store.add_email(user_id, email, true).unwrap();
-    ctx.session_store.create(user_id).unwrap().id.0
+    ctx.session_store
+        .create(user_id, SessionLevel::Lightweight)
+        .unwrap()
+        .id
+        .0
 }
 
 async fn csrf_for(ctx: &TestContext, session: &str) -> String {
@@ -121,6 +125,12 @@ async fn set_password_success_on_passwordless_account() {
     assert_eq!(response.status_code(), 200);
     let body: Value = response.json();
     assert_eq!(body["success"], true);
+    // set_password re-mints the session (upgraded to Full, ca29).
+    let fresh = response
+        .maybe_cookie("browserid_session")
+        .expect("set_password re-mints the session")
+        .value()
+        .to_string();
 
     // No mail was ever sent — the whole point of the in-session path.
     assert!(ctx.email_sender.sent.read().unwrap().is_empty());
@@ -137,7 +147,7 @@ async fn set_password_success_on_passwordless_account() {
     let response = ctx
         .server
         .get("/wsapi/list_emails")
-        .add_cookie(cookie::Cookie::new("browserid_session", session))
+        .add_cookie(cookie::Cookie::new("browserid_session", fresh))
         .await;
     let body: Value = response.json();
     assert_eq!(body["has_password"], true);

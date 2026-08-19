@@ -408,8 +408,11 @@ pub trait UserStore: Send + Sync {
 
 /// Trait for session storage
 pub trait SessionStore: Send + Sync {
-    /// Create a new session for a user
-    fn create(&self, user_id: UserId) -> StoreResult<Session>;
+    /// Create a new session for a user. Every caller must state how the
+    /// session was established (browserid-ng-ca29): `Full` only when the
+    /// account password was presented, `Lightweight` for E1/E2 proofs
+    /// (primary presentation, bridge claim, emailed code).
+    fn create(&self, user_id: UserId, level: SessionLevel) -> StoreResult<Session>;
 
     /// Get a session by ID
     fn get(&self, session_id: &SessionId) -> StoreResult<Option<Session>>;

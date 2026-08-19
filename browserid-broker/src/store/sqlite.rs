@@ -8,14 +8,14 @@ use uuid::Uuid;
 
 use super::{
     DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
-    RosterState, Session, SessionId, SessionStore, StoreResult, Tenant, TenantStatus, User, UserId,
+    RosterState, Session, SessionId, SessionLevel, SessionStore, StoreResult, Tenant, TenantStatus, User, UserId,
     UserStore, VerificationType, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
 };
 use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 29;
+const SCHEMA_VERSION: i32 = 30;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -149,6 +149,9 @@ impl SqliteStore {
             }
             if current_version < 29 {
                 Self::migrate_v29(conn)?;
+            }
+            if current_version < 30 {
+                Self::migrate_v30(conn)?;
             }
 
             // Update schema version
@@ -794,6 +797,24 @@ impl SqliteStore {
                 record_meta TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_warrant_requests_user ON warrant_requests(user_id);
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v30(conn: &Connection) -> Result<(), BrokerError> {
+        // Session levels (browserid-ng-ca29, epic shyj): sessions now carry
+        // how they were established — 'full' (password) vs 'lightweight'
+        // (E1/E2 proof). Pre-level rows can't be trusted at either level, and
+        // the owner decided rollout must force re-auth, so wipe the table
+        // (30-day ephemera) rather than guess. The DEFAULT is only the ALTER
+        // scaffold — every insert states its level explicitly — and is the
+        // least-privileged value in case a row ever lands without one.
+        conn.execute_batch(
+            r#"
+            DELETE FROM sessions;
+            ALTER TABLE sessions ADD COLUMN level TEXT NOT NULL DEFAULT 'lightweight';
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2575,22 +2596,24 @@ fn title_case(name: &str) -> String {
 }
 
 impl SessionStore for SqliteStore {
-    fn create(&self, user_id: UserId) -> StoreResult<Session> {
+    fn create(&self, user_id: UserId, level: SessionLevel) -> StoreResult<Session> {
         let conn = self.conn.lock().unwrap();
         let session = Session {
             id: SessionId(Uuid::new_v4().to_string()),
             user_id,
             csrf_token: Uuid::new_v4().to_string(),
             created_at: Utc::now(),
+            level,
         };
 
         conn.execute(
-            "INSERT INTO sessions (id, user_id, csrf_token, created_at) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO sessions (id, user_id, csrf_token, created_at, level) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 session.id.0,
                 session.user_id.0 as i64,
                 session.csrf_token,
                 session.created_at.to_rfc3339(),
+                session.level.as_str(),
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2602,13 +2625,14 @@ impl SessionStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         conn.query_row(
-            "SELECT id, user_id, csrf_token, created_at FROM sessions WHERE id = ?1",
+            "SELECT id, user_id, csrf_token, created_at, level FROM sessions WHERE id = ?1",
             params![session_id.0],
             |row| {
                 let id: String = row.get(0)?;
                 let user_id: i64 = row.get(1)?;
                 let csrf_token: String = row.get(2)?;
                 let created_at: String = row.get(3)?;
+                let level: String = row.get(4)?;
                 Ok(Session {
                     id: SessionId(id),
                     user_id: UserId(user_id as u64),
@@ -2616,6 +2640,8 @@ impl SessionStore for SqliteStore {
                     created_at: DateTime::parse_from_rfc3339(&created_at)
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),
+                    // Unknown tokens parse to Lightweight (least privilege).
+                    level: SessionLevel::parse(&level),
                 })
             },
         )
@@ -3022,8 +3048,8 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 }
 
 impl SessionStore for std::sync::Arc<SqliteStore> {
-    fn create(&self, user_id: UserId) -> StoreResult<Session> {
-        (**self).create(user_id)
+    fn create(&self, user_id: UserId, level: SessionLevel) -> StoreResult<Session> {
+        (**self).create(user_id, level)
     }
 
     fn get(&self, session_id: &SessionId) -> StoreResult<Option<Session>> {

@@ -155,7 +155,11 @@ where
         .as_ref()
         .is_some_and(|s| s.user_id == user_id);
     if !reuse {
-        let session = state.session_store.create(user_id)?;
+        // Lightweight: a primary presentation proves the identity (E1), not
+        // the broker account password (ca29).
+        let session = state
+            .session_store
+            .create(user_id, crate::store::SessionLevel::Lightweight)?;
         if !req.ephemeral {
             super::session::set_session_cookie(
                 &cookies,

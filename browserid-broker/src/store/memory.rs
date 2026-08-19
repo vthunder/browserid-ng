@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::{
     DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
-    RosterState, Session, SessionId, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
+    RosterState, Session, SessionId, SessionLevel, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, Tenant, TenantStatus, User, UserId, UserStore, VerificationType,
 };
 use crate::error::BrokerError;
@@ -1149,12 +1149,13 @@ impl Default for InMemorySessionStore {
 }
 
 impl SessionStore for InMemorySessionStore {
-    fn create(&self, user_id: UserId) -> StoreResult<Session> {
+    fn create(&self, user_id: UserId, level: SessionLevel) -> StoreResult<Session> {
         let session = Session {
             id: SessionId(Uuid::new_v4().to_string()),
             user_id,
             csrf_token: Uuid::new_v4().to_string(),
             created_at: Utc::now(),
+            level,
         };
         self.sessions
             .write()
