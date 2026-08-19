@@ -246,6 +246,7 @@ mod tests {
                 status: sref(2),
                 managed: None,
                 constraints: None,
+                prov: None,
             };
             edit(&mut claims);
             DeviceCert::from_claims(claims, &self.idp).unwrap()

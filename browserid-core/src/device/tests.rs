@@ -80,6 +80,7 @@ impl Fixture {
                 status: status("https://sandmill.org/.well-known/browserid-status", 2),
                 managed: None,
                 constraints: self.config_constraints.clone(),
+                prov: None,
             },
             idp,
         )
@@ -177,7 +178,7 @@ fn config_not_authorized_for_identity_rejected() {
             typ: TYP_DEVICE_CERT.into(), iss: f.idp_domain().into(), iat: IAT, exp: IAT + 90 * DAY,
             purpose: Purpose::Authorization, holder: Holder::new("br.main").unwrap(),
             identities: vec!["someone-else@sandmill.org".into()],
-            public_key: f.config_key.public_key(), status: None, managed: None, constraints: None,
+            public_key: f.config_key.public_key(), status: None, managed: None, constraints: None, prov: None,
         },
         &f.idp,
     ).unwrap();
@@ -194,7 +195,7 @@ fn authentication_purpose_config_cert_rejected() {
         DeviceCertClaims {
             typ: TYP_DEVICE_CERT.into(), iss: f.idp_domain().into(), iat: IAT, exp: IAT + 90 * DAY,
             purpose: Purpose::Authentication, holder: Holder::new("br.main").unwrap(),
-            identities: vec![f.email().into()], public_key: f.config_key.public_key(), status: None, managed: None, constraints: None,
+            identities: vec![f.email().into()], public_key: f.config_key.public_key(), status: None, managed: None, constraints: None, prov: None,
         },
         &f.idp,
     ).unwrap();
@@ -352,7 +353,7 @@ impl Fixture {
             public_key: seed_key(2).public_key(),
             status: status("https://sandmill.org/.well-known/browserid-status", 1),
             managed: None,
-            constraints: None,
+            constraints: None, prov: None,
         }
     }
 }

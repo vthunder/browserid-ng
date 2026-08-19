@@ -81,6 +81,11 @@ async fn bridge_proof_grants_one_mint_with_bridge_ttl() {
     let (status, body) = device_issue(&ctx, &session, email).await;
     assert_eq!(status, 200, "{body}");
     let cert = DeviceCert::parse(body["device_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        cert.claims().prov.as_deref(),
+        Some("atproto"),
+        "E2 cert is stamped with its bridge class (kts0)"
+    );
     let ttl_secs = cert.claims().exp - cert.claims().iat;
     assert_eq!(
         ttl_secs,

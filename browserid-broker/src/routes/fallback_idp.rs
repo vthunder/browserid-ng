@@ -415,9 +415,12 @@ where
     // config cert instead.
     let config_identities = vec![email.clone()];
     let issue = |pubkey: &PublicKey, purpose: Purpose, identities: Vec<String>, status: browserid_core::StatusRef| {
-        DeviceCert::create(
+        // Stamped with the record's proof class (kts0): /access/mint refuses
+        // the cert if the address's provenance later upgrades.
+        DeviceCert::create_with_provenance(
             &state.domain, pubkey, purpose, holder.clone(),
             identities, ttl, &state.keypair, Some(status),
+            Some(email_rec.proof.as_str().to_string()),
         )
     };
     let (device_cert, config_cert) = match (

@@ -366,3 +366,75 @@ fn sqlite_revoke_user_certs_for_email_is_precisely_scoped() {
     assert!(alices.iter().any(|c| c.identities == vec!["moving@example.com"] && c.revoked_at.is_some()));
     assert!(alices.iter().any(|c| c.identities == vec!["staying@example.com"] && c.revoked_at.is_none()));
 }
+
+/// kts0, owner requirement: an E3-era cert is SWAPPED at its next use once
+/// the address upgrades to E2 — never left valid until expiry, never manually
+/// cleared. /access/mint refuses AND revokes the stale-class cert; the dialog
+/// reacts by re-issuing through the bridge ceremony.
+#[tokio::test]
+async fn stale_class_cert_is_refused_and_revoked_at_next_mint() {
+    use browserid_core::device::{AccessRequest, DeviceCert};
+
+    let ctx = create_test_context();
+    let email = "gmailish@example.com";
+    let session = create_user(&ctx.server, &ctx.email_sender, email, "password123").await;
+    let csrf = get_csrf(&ctx.server, &session).await;
+
+    // E3-era issuance under the full session: the cert is stamped with the
+    // class it was issued under.
+    let device_kp = KeyPair::generate();
+    let resp = ctx
+        .server
+        .post("/device/issue")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+        .json(&json!({
+            "csrf": csrf, "email": email,
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": KeyPair::generate().public_key().to_base64(),
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "{}", resp.text());
+    let cert_str = resp.json::<Value>()["device_cert"].as_str().unwrap().to_string();
+    let cert = DeviceCert::parse(&cert_str).unwrap();
+    assert_eq!(cert.claims().prov.as_deref(), Some("smtp"), "issuance stamps the class");
+    let holder = cert.holder().clone();
+
+    let mint = |jti: &str| {
+        let areq = AccessRequest::create(
+            "localhost:3000", email, holder.clone(),
+            &KeyPair::generate().public_key(), jti, &device_kp,
+        )
+        .unwrap();
+        let server = &ctx.server;
+        let cert_str = cert_str.clone();
+        async move {
+            server
+                .post("/access/mint")
+                .json(&json!({ "device_cert": cert_str, "access_request": areq.encoded() }))
+                .await
+        }
+    };
+
+    // Mints fine while the record is E3.
+    assert_eq!(mint("jti-swap-1").await.status_code(), 200);
+
+    // The address upgrades to E2 (store-direct, simulating an upgrade that
+    // predates revoke-on-upgrade — e.g. legacy history or a broker-side
+    // domain ceremony change with a later re-proof).
+    ctx.user_store
+        .set_email_proof(email, ProofMethod::Oidc, Some("s"))
+        .unwrap();
+
+    // The stale-class cert dies at its NEXT USE.
+    let resp = mint("jti-swap-2").await;
+    assert_eq!(resp.status_code(), 403, "{}", resp.text());
+    assert!(
+        resp.text().contains("revoked") && resp.text().contains("reissue"),
+        "{}",
+        resp.text()
+    );
+
+    // And stays dead (the status bit is flipped, sticky).
+    let resp = mint("jti-swap-3").await;
+    assert_eq!(resp.status_code(), 403, "{}", resp.text());
+}

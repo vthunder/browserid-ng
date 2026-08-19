@@ -446,6 +446,9 @@ where
                 status: Some(status),
                 managed,
                 constraints: None,
+                // Tenant-primary (E1) issuance: the broker-side provenance
+                // classes don't apply — the tenant IS the voucher (kts0).
+                prov: None,
             },
             &keypair,
         )

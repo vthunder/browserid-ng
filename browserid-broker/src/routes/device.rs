@@ -63,16 +63,18 @@ const BROKER_VOUCHED_CERT_TTL_DAYS: i64 = 90;
 
 /// Ownership + provenance gate for session-authed broker mints: the session's
 /// account must own the verified email, AND the chokepoint (browserid-ng-u4xz)
-/// must authorize a broker-session mint for its provenance. Returns the email
-/// plus the cert TTL, which is the VOUCHER's decision for delegated (E2)
-/// provenance — redeemed from the live bridge grant (pr3a). No live grant, or
-/// a Primary (E1) identity → refusal; `NeedPassword` maps to a 401 step-up.
+/// must authorize a broker-session mint for its provenance. Returns the email,
+/// the cert TTL — the VOUCHER's decision for delegated (E2) provenance,
+/// redeemed from the live bridge grant (pr3a) — and the proof class the cert
+/// is issued under (stamped into the cert so /access/mint can refuse it after
+/// a later provenance upgrade, kts0). No live grant, or a Primary (E1)
+/// identity → refusal; `NeedPassword` maps to a 401 step-up.
 fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
     state: &AppState<U, S, E>,
     cookies: &Cookies,
     csrf: &str,
     email: &str,
-) -> Result<(String, Duration), BrokerError> {
+) -> Result<(String, Duration, &'static str), BrokerError> {
     let session = super::session::get_session_from_cookies(cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
     super::session::require_csrf(&session, csrf)?;
@@ -82,10 +84,12 @@ fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
         .iter()
         .find(|e| e.email.to_lowercase() == normalized && e.verified)
         .ok_or(BrokerError::EmailNotFound)?;
+    let prov = rec.proof.as_str();
     match crate::mint::authorize_mint(rec, session.level) {
         crate::mint::MintDecision::Allow => Ok((
             rec.email.clone(),
             Duration::days(BROKER_VOUCHED_CERT_TTL_DAYS),
+            prov,
         )),
         crate::mint::MintDecision::NeedPassword => Err(BrokerError::PasswordRequired),
         crate::mint::MintDecision::Delegate(crate::mint::Voucher::Primary) => {
@@ -96,7 +100,7 @@ fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
         }
         crate::mint::MintDecision::Delegate(_) => {
             match state.take_bridge_grant(session.user_id, &rec.email) {
-                Some(ttl) => Ok((rec.email.clone(), ttl)),
+                Some(ttl) => Ok((rec.email.clone(), ttl, prov)),
                 None => Err(BrokerError::PolicyRefused(
                     "a live bridge proof is required to mint this address".into(),
                 )),
@@ -183,7 +187,7 @@ where
     // revocable in the account UI).
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
-    let (email, ttl) = owned_mintable_email(&state, &cookies, &req.csrf, &req.email)?;
+    let (email, ttl, prov) = owned_mintable_email(&state, &cookies, &req.csrf, &req.email)?;
     let device_pub = parse_pub(&req.device_pubkey)?;
     let config_pub = parse_pub(&req.config_pubkey)?;
     let device_ref = device_status(&state, &device_pub)?;
@@ -230,9 +234,13 @@ where
         _ => crate::crypto::assign_holder_id(&ns_prefix),
     };
     let holder_id = browserid_core::device::Holder::new(holder.clone()).map_err(ce)?;
-    let device_cert = DeviceCert::create(
+    // Both certs carry the proof class they were issued under (kts0):
+    // /access/mint refuses a cert whose class no longer matches the record,
+    // so a later provenance upgrade swaps certs at their next use.
+    let device_cert = DeviceCert::create_with_provenance(
         &state.domain, &device_pub, Purpose::Authentication, holder_id.clone(),
         vec![email.clone()], ttl, &state.keypair, Some(device_ref.clone()),
+        Some(prov.to_string()),
     ).map_err(ce)?;
     // The config cert also covers `+tag` sub-addresses so it can sign
     // warrants for the user's plus-named agent identities (design doc §3).
@@ -240,9 +248,10 @@ where
         Some((local, domain)) => vec![email.clone(), format!("{local}+*@{domain}")],
         None => vec![email.clone()],
     };
-    let config_cert = DeviceCert::create(
+    let config_cert = DeviceCert::create_with_provenance(
         &state.domain, &config_pub, Purpose::Authorization, holder_id.clone(),
         config_identities, ttl, &state.keypair, Some(config_ref.clone()),
+        Some(prov.to_string()),
     ).map_err(ce)?;
 
     // Durable registry rows (upsert on pubkey) so the certs are enumerable and
@@ -351,6 +360,33 @@ where
     }
     if !device_cert.authorizes_identity(&c.identity) {
         return Err(BrokerError::PolicyRefused("device cert not authorized for this identity".into()));
+    }
+    // Provenance-freshness gate (kts0): a device cert is only as good as the
+    // verification class it was issued under. If the identity has since
+    // upgraded to a bridge-vouched class (E2 — e.g. the broker gained OAuth
+    // support for the domain and the record re-proved), a cert from the old
+    // class is refused AND revoked here, at its next use — the dialog reacts
+    // by re-issuing through the bridge ceremony, so E3-era certs are swapped
+    // for E2 ones automatically. Certs without the marker predate it and read
+    // as SMTP-issued. E3/agent records skip the check (their class hasn't
+    // moved), as do identities the broker has no record for.
+    if let Ok(Some(rec)) = state.user_store.get_email(&c.identity) {
+        let is_e2 = rec.email_type == crate::store::EmailType::Secondary
+            && matches!(
+                rec.proof,
+                crate::store::ProofMethod::Oidc | crate::store::ProofMethod::Atproto
+            );
+        let issued_under = device_cert.claims().prov.as_deref().unwrap_or("smtp");
+        if is_e2 && issued_under != rec.proof.as_str() {
+            if let Some(status) = &device_cert.claims().status {
+                if status.uri == browserid_registrar::consent::status_list_uri(&state.domain) {
+                    let _ = state.user_store.set_status_revoked_idx(status.idx);
+                }
+            }
+            return Err(BrokerError::PolicyRefused(
+                "device cert predates this address's current verification method and is now revoked — sign in again to reissue".into(),
+            ));
+        }
     }
     // The mint copies the DEVICE cert's holder verbatim into the access cert —
     // the requester cannot choose a different holder (isolation guarantee). The

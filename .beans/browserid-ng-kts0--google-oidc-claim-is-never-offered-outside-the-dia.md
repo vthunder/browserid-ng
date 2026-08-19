@@ -5,7 +5,7 @@ status: completed
 type: bug
 priority: normal
 created_at: 2026-08-19T16:20:30Z
-updated_at: 2026-08-19T19:55:41Z
+updated_at: 2026-08-19T21:16:43Z
 ---
 
 Report (owner, 2026-08-19): Google addresses are not triggering the OIDC flow. Preexisting — predates the shyj epic.
@@ -79,3 +79,17 @@ Structural fix (round 4):
 - Test: the upgrade test now issues a pre-upgrade E3 cert first and asserts it is refused 'revoked' at /access/mint after the claim. Cargo suite + e2e 105/105 green.
 
 Note for the owner's browser: the record upgrade already happened, but the stale cert on that machine predates revoke-on-upgrade — one /account sign-out (which now revokes, v2nb) or manual cert revocation clears it; after that every sign-in is the pure E2 ceremony.
+
+## Follow-up 3 (2026-08-19, late): swap-at-next-use — certs checked against the record's CURRENT class
+
+Owner requirement: when an address's class upgrades E3→E2 (record upgrade, or broker gaining OAuth support for a domain followed by a re-proof), existing E3-era certs must be SWAPPED at their next use — never left valid until expiry, never manually cleared.
+
+Mechanism:
+- New optional `prov` claim on DeviceCertClaims (browserid-core): the proof class the identity was verified under at issuance. skip_serializing_if None → golden wire vectors unchanged; old certs parse fine and read as "smtp". New create_with_provenance constructor; create() delegates with None.
+- Broker issuance stamps it: /device/issue (owned_mintable_email now also returns the record's proof class) and /auth/device_cert. Tenant-primary (/idp/*) certs stay unstamped — the tenant is the voucher; broker classes don't apply.
+- **/access/mint provenance-freshness gate**: for an identity whose record is E2 (Secondary + Oidc/Atproto), a broker cert whose issued-under class doesn't match is refused with 'predates this address's current verification method and is now revoked — sign in again to reissue' AND its status bit is flipped (sticky). The dialog's existing revoked/expired self-heal drops the pair and re-issues via the bridge — the automatic swap. E3/agent records and unknown identities skip the gate.
+- This retro-covers every legacy cert (incl. the owner's) with zero manual steps: legacy = no prov = smtp-class → dies at next mint once the record reads E2.
+
+Also fixed during this round: a blind spot in my own verification — cargo's COLORED 'error[...]' lines don't match grep '^error', so a compile failure had read as a green suite. All checks now run CARGO_TERM_COLOR=never and got a positive green count (59 suites ok). hosted_idp/device tests literal fixes for the new field.
+
+Tests: stale_class_cert_is_refused_and_revoked_at_next_mint (E3 cert mints → store-direct upgrade to Oidc → next mint 403 revoked+reissue → stays dead); bridge cert stamped prov='atproto' and passes the gate (bridge_mint_test); golden vectors unchanged. Workspace 59 suites green; Playwright e2e 105/105.

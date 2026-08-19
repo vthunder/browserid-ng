@@ -319,6 +319,14 @@ pub struct DeviceCertClaims {
     /// presented certs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub constraints: Option<Constraints>,
+    /// The proof class ("smtp" / "oidc" / "atproto") the identity was
+    /// verified under WHEN THIS CERT WAS ISSUED (browserid-ng-kts0). The
+    /// broker's /access/mint refuses (and revokes) a cert whose class no
+    /// longer matches the identity's current record, so certs are swapped at
+    /// their next use after a provenance upgrade instead of outliving it.
+    /// Absent on certs that predate the claim, which read as "smtp".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prov: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -339,6 +347,25 @@ impl DeviceCert {
         idp_key: &KeyPair,
         status: Option<StatusRef>,
     ) -> Result<Self> {
+        Self::create_with_provenance(
+            idp_domain, device_pub, purpose, holder, identities, validity, idp_key, status, None,
+        )
+    }
+
+    /// Like [`Self::create`], stamping the proof class the identity was
+    /// verified under at issuance — see [`DeviceCertClaims::prov`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_with_provenance(
+        idp_domain: &str,
+        device_pub: &PublicKey,
+        purpose: Purpose,
+        holder: Holder,
+        identities: Vec<String>,
+        validity: Duration,
+        idp_key: &KeyPair,
+        status: Option<StatusRef>,
+        prov: Option<String>,
+    ) -> Result<Self> {
         if identities.is_empty() {
             return Err(invalid("device cert", "must authorize at least one identity"));
         }
@@ -355,6 +382,7 @@ impl DeviceCert {
             status,
             managed: None,
             constraints: None,
+            prov,
         }, idp_key)
     }
 
