@@ -56,8 +56,6 @@
     deviceIssue: '/device/issue',
     browserHolder: '/wsapi/browser_holder',
     accessMint: '/access/mint',
-    stageReset: '/wsapi/stage_reset',
-    completeReset: '/wsapi/complete_reset',
     setPassword: '/wsapi/set_password',
     addressInfo: '/wsapi/address_info',
     stageEmail: '/wsapi/stage_email',
@@ -72,8 +70,6 @@
     password: document.getElementById('password-screen'),
     create: document.getElementById('create-screen'),
     verify: document.getElementById('verify-screen'),
-    resetEmail: document.getElementById('reset-email-screen'),
-    resetPassword: document.getElementById('reset-password-screen'),
     setPassword: document.getElementById('set-password-screen'),
     pickEmail: document.getElementById('pick-email-screen'),
     addEmail: document.getElementById('add-email-screen'),
@@ -154,6 +150,15 @@
     const forgotRow = document.getElementById('forgot-password-row');
     if (forgotRow) forgotRow.hidden = optimistic;
     showScreen('password');
+  }
+
+  // The unified sign-in code screen (dw35/8gqm): choose a password, confirm
+  // with a mailed code. One flow for new users, password-less accounts, and
+  // forgotten passwords — the server resolves which after the mailbox proof.
+  function showSigninCodeScreen() {
+    document.getElementById('create-password').value = '';
+    document.getElementById('confirm-password').value = '';
+    showScreen('create');
   }
 
   function showError(message) {
@@ -602,8 +607,8 @@
 
   /// A password-less account signing in with a broker-verified email. When a
   /// session already owns the address it proves control by itself — set the
-  /// password in-session, no mailed code (browserid-ng-iudv). Cold (no
-  /// session): the emailed reset code, then choose a password.
+  /// password in-session, no mailed code (browserid-ng-iudv). Otherwise the
+  /// unified sign-in code screen sets it (8gqm: the one code-mailing lane).
   async function handleNoPasswordTransition(email) {
     state.email = email;
     document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
@@ -611,8 +616,7 @@
       showScreen('setPassword');
       return;
     }
-    await apiCall(API.stageReset, 'POST', { email });
-    showScreen('resetPassword');
+    showSigninCodeScreen();
   }
 
   async function handleEmailChosen(email, _substituted) {
@@ -2407,11 +2411,12 @@
       }
     });
 
-    // Forgot password link
+    // Forgot password: same unified code flow (8gqm — the classic
+    // stage_reset lane is retired; choosing a new password up front and
+    // confirming with the mailed code IS the reset).
     document.getElementById('forgot-password-link').addEventListener('click', (e) => {
       e.preventDefault();
-      document.getElementById('reset-email').value = state.email || '';
-      showScreen('resetEmail');
+      showSigninCodeScreen();
     });
 
     // "Email me a code" hatch on the optimistic password screen (audit M7):
@@ -2419,68 +2424,7 @@
     // server-side, so choosing it discloses nothing either.
     document.getElementById('email-code-link').addEventListener('click', (e) => {
       e.preventDefault();
-      document.getElementById('create-password').value = '';
-      document.getElementById('confirm-password').value = '';
-      showScreen('create');
-    });
-
-    // Reset email form
-    document.getElementById('reset-email-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const email = document.getElementById('reset-email').value.trim();
-
-      if (!email) {
-        document.getElementById('reset-email-error').textContent = 'Email is required';
-        return;
-      }
-
-      state.email = email;
-      showScreen('loading');
-
-      try {
-        await apiCall(API.stageReset, 'POST', { email });
-        showScreen('resetPassword');
-      } catch (e) {
-        showScreen('resetEmail');
-        document.getElementById('reset-email-error').textContent = e.message;
-      }
-    });
-
-    // Reset password form
-    document.getElementById('reset-password-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const code = document.getElementById('reset-code').value.trim();
-      const password = document.getElementById('new-password').value;
-
-      if (!code || code.length !== 6) {
-        document.getElementById('reset-code-error').textContent = 'Please enter the 6-digit code';
-        return;
-      }
-
-      if (password.length < 8) {
-        document.getElementById('new-password-error').textContent = 'Password must be at least 8 characters';
-        return;
-      }
-
-      showScreen('loading');
-
-      try {
-        await apiCall(API.completeReset, 'POST', { email: state.email, token: code, pass: password });
-        // Now sign in with the new password
-        await apiCall(API.authenticate, 'POST', {
-          email: state.email,
-          pass: password,
-          ephemeral: false
-        });
-        await completeSignIn(state.email);
-      } catch (e) {
-        showScreen('resetPassword');
-        if (e.message.includes('code')) {
-          document.getElementById('reset-code-error').textContent = e.message;
-        } else {
-          document.getElementById('new-password-error').textContent = e.message;
-        }
-      }
+      showSigninCodeScreen();
     });
 
     // Pick email form

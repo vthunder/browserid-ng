@@ -166,19 +166,18 @@ pub fn create_test_context_customized(
 }
 
 /// Helper to create a user and return a FULL (password-authed) session
-/// cookie. Completion's own session is only Lightweight since ca29 — the
-/// emailed code proves the mailbox, not the staged password — so the helper
-/// signs in with the password afterwards, matching how a real account is
-/// used. Tests that need the completion session itself inline the flow.
+/// cookie, via the unified sign-in code lane (the only signup path since M7
+/// retired stage_user, browserid-ng-8gqm). Completion mints no session, so
+/// the helper signs in with the password afterwards, matching the dialog.
 pub async fn create_user(
     server: &TestServer,
     email_sender: &MockEmailSender,
     email: &str,
     password: &str,
 ) -> String {
-    // Stage user
+    // Stage the unified sign-in code
     let response = server
-        .post("/wsapi/stage_user")
+        .post("/wsapi/stage_signin_code")
         .json(&json!({
             "email": email,
             "pass": password,
@@ -189,9 +188,9 @@ pub async fn create_user(
     // Get verification code
     let code = email_sender.get_code(email).expect("No verification code sent");
 
-    // Complete user creation
+    // Complete — creates the account with the staged password
     let response = server
-        .post("/wsapi/complete_user_creation")
+        .post("/wsapi/complete_signin_code")
         .json(&json!({ "email": email, "token": code }))
         .await;
     assert_eq!(response.status_code(), 200);

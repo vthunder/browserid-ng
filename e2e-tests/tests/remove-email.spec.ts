@@ -17,16 +17,16 @@ test.describe('Remove Email Flow', () => {
     const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 
     // Create user with primary email
-    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_user`, {
+    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_signin_code`, {
       data: { email: primaryEmail, pass: password },
     });
     expect(stageResponse.ok()).toBeTruthy();
 
     const pendingResponse = await request.get(
-      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(primaryEmail)}&type=new_account`
+      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(primaryEmail)}&type=signin_code`
     );
     const pending = await pendingResponse.json();
-    await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
+    await request.post(`${baseUrl}/wsapi/complete_signin_code`, {
       data: { email: primaryEmail, token: pending.code },
     });
 
@@ -86,16 +86,16 @@ test.describe('Remove Email Flow', () => {
     const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 
     // Create user
-    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_user`, {
+    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_signin_code`, {
       data: { email: primaryEmail, pass: password },
     });
     expect(stageResponse.ok()).toBeTruthy();
 
     const pendingResponse = await request.get(
-      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(primaryEmail)}&type=new_account`
+      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(primaryEmail)}&type=signin_code`
     );
     const pending = await pendingResponse.json();
-    await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
+    await request.post(`${baseUrl}/wsapi/complete_signin_code`, {
       data: { email: primaryEmail, token: pending.code },
     });
 
@@ -161,16 +161,16 @@ test.describe('Remove Email Flow', () => {
     const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 
     // Create user
-    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_user`, {
+    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_signin_code`, {
       data: { email: testEmail, pass: password },
     });
     expect(stageResponse.ok()).toBeTruthy();
 
     const pendingResponse = await request.get(
-      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=new_account`
+      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=signin_code`
     );
     const pending = await pendingResponse.json();
-    await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
+    await request.post(`${baseUrl}/wsapi/complete_signin_code`, {
       data: { email: testEmail, token: pending.code },
     });
 
@@ -203,16 +203,16 @@ test.describe('Remove Email Flow', () => {
     const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 
     // Create user with two emails
-    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_user`, {
+    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_signin_code`, {
       data: { email: primaryEmail, pass: password },
     });
     expect(stageResponse.ok()).toBeTruthy();
 
     const pendingResponse = await request.get(
-      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(primaryEmail)}&type=new_account`
+      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(primaryEmail)}&type=signin_code`
     );
     const pending = await pendingResponse.json();
-    await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
+    await request.post(`${baseUrl}/wsapi/complete_signin_code`, {
       data: { email: primaryEmail, token: pending.code },
     });
 

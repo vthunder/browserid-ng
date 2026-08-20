@@ -55,39 +55,27 @@ async fn address_info_reports_the_proof_lane() {
     assert_eq!(body["proof"], "none");
 }
 
+// The code-mailing gate itself (refusal for atproto/unprovable domains, with
+// a reason naming the real lane) is tested on the ONE remaining mailed-code
+// entry point, stage_signin_code — see signin_code_test.rs. The retired
+// stage_user / stage_reset lanes (M7, browserid-ng-8gqm) carried the same
+// gate; the takeover they closed — a mailed reset for a handle-authority
+// domain — is closed at the same chokepoint.
+
+/// Refusal reasons still point at the real lane on the unified endpoint.
 #[tokio::test]
-async fn stage_user_refuses_non_smtp_domains() {
+async fn signin_code_refusal_names_the_atproto_lane() {
     let ctx = hierarchy_context();
 
-    // Atproto authority: refused, and the reason points at the real lane.
     let resp = ctx
         .server
-        .post("/wsapi/stage_user")
+        .post("/wsapi/stage_signin_code")
         .json(&json!({ "email": "me@handle.test", "pass": "password123" }))
         .await;
     assert_eq!(resp.status_code(), 403);
     let reason = resp.json::<Value>()["reason"].as_str().unwrap().to_string();
     assert!(reason.contains("handle"), "unhelpful reason: {reason}");
-
-    // No proof method: refused.
-    let resp = ctx
-        .server
-        .post("/wsapi/stage_user")
-        .json(&json!({ "email": "me@dead.test", "pass": "password123" }))
-        .await;
-    assert_eq!(resp.status_code(), 403);
-
-    // Nothing was mailed for either.
     assert!(ctx.email_sender.sent.read().unwrap().is_empty());
-
-    // The SMTP lane still works.
-    let resp = ctx
-        .server
-        .post("/wsapi/stage_user")
-        .json(&json!({ "email": "me@mail.test", "pass": "password123" }))
-        .await;
-    assert_eq!(resp.status_code(), 200);
-    assert!(ctx.email_sender.get_code("me@mail.test").is_some());
 }
 
 #[tokio::test]
@@ -107,10 +95,12 @@ async fn stage_email_refuses_non_smtp_domains() {
     assert_eq!(ctx.email_sender.sent.read().unwrap().len(), 1);
 }
 
-/// The takeover this gate closes: an identity at an atproto-authority
-/// domain must not be resettable through whoever happens to route its mail.
+/// The takeover the gate closes: an identity at an atproto-authority domain
+/// must not be password-resettable through whoever happens to route its
+/// mail. The reset path IS the signin_code lane now — refused for an
+/// EXISTING handle-domain identity too.
 #[tokio::test]
-async fn stage_reset_refuses_non_smtp_domains() {
+async fn signin_code_refuses_reset_of_handle_domain_identity() {
     let ctx = hierarchy_context();
     // An identity that exists at a handle domain (as it would after the
     // atproto claim flow attaches one).
@@ -119,8 +109,8 @@ async fn stage_reset_refuses_non_smtp_domains() {
 
     let resp = ctx
         .server
-        .post("/wsapi/stage_reset")
-        .json(&json!({ "email": "me@handle.test" }))
+        .post("/wsapi/stage_signin_code")
+        .json(&json!({ "email": "me@handle.test", "pass": "password123" }))
         .await;
     assert_eq!(resp.status_code(), 403);
     assert!(ctx.email_sender.sent.read().unwrap().is_empty());

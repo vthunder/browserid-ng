@@ -57,15 +57,17 @@ async fn start_broker() -> (String, KeyPair, Arc<MockEmailSender>) {
     (format!("http://{domain}"), idp_key, sender)
 }
 
-/// The signed-in browser: create the account, keep the session cookie.
+/// The signed-in browser: create the account via the unified sign-in code
+/// lane (stage_user retired in 8gqm), then authenticate — completion mints
+/// no session, the password login does.
 async fn create_user(base: &str, sender: &MockEmailSender, http: &reqwest::Client) -> String {
     let r = http
-        .post(format!("{base}/wsapi/stage_user"))
+        .post(format!("{base}/wsapi/stage_signin_code"))
         .json(&json!({ "email": DELEGATOR, "pass": "testpassword" }))
         .send()
         .await
         .unwrap();
-    assert!(r.status().is_success(), "stage_user: {}", r.status());
+    assert!(r.status().is_success(), "stage_signin_code: {}", r.status());
     let code = sender
         .sent
         .read()
@@ -76,12 +78,19 @@ async fn create_user(base: &str, sender: &MockEmailSender, http: &reqwest::Clien
         .map(|(_, c)| c.clone())
         .expect("verification code sent");
     let r = http
-        .post(format!("{base}/wsapi/complete_user_creation"))
+        .post(format!("{base}/wsapi/complete_signin_code"))
         .json(&json!({ "email": DELEGATOR, "token": code }))
         .send()
         .await
         .unwrap();
-    assert!(r.status().is_success(), "complete_user_creation: {}", r.status());
+    assert!(r.status().is_success(), "complete_signin_code: {}", r.status());
+    let r = http
+        .post(format!("{base}/wsapi/authenticate_user"))
+        .json(&json!({ "email": DELEGATOR, "pass": "testpassword" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "authenticate_user: {}", r.status());
     // (reqwest's cookie feature is off — read the Set-Cookie header directly)
     r.headers()
         .get_all("set-cookie")

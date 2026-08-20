@@ -95,9 +95,6 @@ pub trait UserStore: Send + Sync {
     /// Update a user's password hash
     fn update_password(&self, user_id: UserId, password_hash: &str) -> StoreResult<()>;
 
-    /// Check if there's a pending password reset for an email
-    fn has_pending_reset(&self, email: &str) -> StoreResult<bool>;
-
     /// Delete a user and all their associated data (emails, pending verifications)
     fn delete_user(&self, user_id: UserId) -> StoreResult<()>;
 

@@ -17,20 +17,20 @@ test.describe('Returning User Flow', () => {
 
     // First, create and authenticate a user via API
     // Stage user
-    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_user`, {
+    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_signin_code`, {
       data: { email: testEmail, pass: testPassword },
     });
     expect(stageResponse.ok()).toBeTruthy();
 
     // Get verification code
     const pendingResponse = await request.get(
-      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=new_account`
+      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=signin_code`
     );
     const pending = await pendingResponse.json();
     expect(pending.success).toBeTruthy();
 
     // Complete registration
-    await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
+    await request.post(`${baseUrl}/wsapi/complete_signin_code`, {
       data: { email: testEmail, token: pending.code },
     });
 
@@ -69,16 +69,16 @@ test.describe('Returning User Flow', () => {
     const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 
     // Create user
-    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_user`, {
+    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_signin_code`, {
       data: { email: testEmail, pass: testPassword },
     });
     expect(stageResponse.ok()).toBeTruthy();
 
     const pendingResponse = await request.get(
-      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=new_account`
+      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=signin_code`
     );
     const pending = await pendingResponse.json();
-    await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
+    await request.post(`${baseUrl}/wsapi/complete_signin_code`, {
       data: { email: testEmail, token: pending.code },
     });
 
@@ -87,9 +87,12 @@ test.describe('Returning User Flow', () => {
     await dialogPage.signInExistingUser(testEmail, testPassword);
     await dialogPage.waitForSuccess();
 
-    // Check session context shows authenticated
-    const sessionResponse = await request.get(`${baseUrl}/wsapi/session_context`);
-    const session = await sessionResponse.json();
+    // The BROWSER's session (set by the dialog sign-in) is authenticated.
+    // (Completion no longer mints a session for the API context — 8gqm.)
+    const session = await dialogPage.page.evaluate(async () => {
+      const r = await fetch('/wsapi/session_context', { credentials: 'include' });
+      return r.json();
+    });
     expect(session.authenticated).toBeTruthy();
   });
 
@@ -99,16 +102,16 @@ test.describe('Returning User Flow', () => {
     const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 
     // Create user
-    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_user`, {
+    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_signin_code`, {
       data: { email: testEmail, pass: testPassword },
     });
     expect(stageResponse.ok()).toBeTruthy();
 
     const pendingResponse = await request.get(
-      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=new_account`
+      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=signin_code`
     );
     const pending = await pendingResponse.json();
-    await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
+    await request.post(`${baseUrl}/wsapi/complete_signin_code`, {
       data: { email: testEmail, token: pending.code },
     });
 
@@ -133,16 +136,16 @@ test.describe('Returning User Flow', () => {
     const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 
     // Create and sign in user
-    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_user`, {
+    const stageResponse = await request.post(`${baseUrl}/wsapi/stage_signin_code`, {
       data: { email: testEmail, pass: testPassword },
     });
     expect(stageResponse.ok()).toBeTruthy();
 
     const pendingResponse = await request.get(
-      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=new_account`
+      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(testEmail)}&type=signin_code`
     );
     const pending = await pendingResponse.json();
-    await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
+    await request.post(`${baseUrl}/wsapi/complete_signin_code`, {
       data: { email: testEmail, token: pending.code },
     });
 

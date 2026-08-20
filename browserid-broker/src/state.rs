@@ -103,6 +103,12 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// account. Auto-resets each window (no permanent lockout). std RwLock:
     /// never held across an await.
     pub login_attempts: std::sync::RwLock<HashMap<String, (std::time::Instant, u32)>>,
+    /// Per-client-IP throttle on `stage_signin_code` (M7, browserid-ng-8gqm):
+    /// the one remaining unauthenticated mail-sender. The per-address cooldown
+    /// bounds bombing of ONE mailbox; this bounds one client spraying MANY
+    /// addresses. Same fixed-window shape as `login_attempts`; std RwLock:
+    /// never held across an await.
+    pub signin_code_attempts: std::sync::RwLock<HashMap<String, (std::time::Instant, u32)>>,
     /// Hosted-primary tenant key sealing (bean g5qt). `None` = the keystore
     /// secret is not configured; tenant onboarding is refused, everything
     /// else is unaffected.
@@ -182,6 +188,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             authority: crate::authority::AuthorityChecker::disabled(),
             foreign_status_lists: std::sync::RwLock::new(HashMap::new()),
             login_attempts: std::sync::RwLock::new(HashMap::new()),
+            signin_code_attempts: std::sync::RwLock::new(HashMap::new()),
             tenant_keystore: None,
             idp_host: domain_for_idp,
             oidc: None,
@@ -220,6 +227,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             authority: crate::authority::AuthorityChecker::disabled(),
             foreign_status_lists: std::sync::RwLock::new(HashMap::new()),
             login_attempts: std::sync::RwLock::new(HashMap::new()),
+            signin_code_attempts: std::sync::RwLock::new(HashMap::new()),
             tenant_keystore: None,
             idp_host: domain_for_idp,
             oidc: None,

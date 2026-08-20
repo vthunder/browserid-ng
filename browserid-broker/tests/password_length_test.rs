@@ -1,4 +1,5 @@
-//! Tests ported from browserid/tests/password-length-test.js
+//! Password length validation on the unified sign-in code lane (ported from
+//! browserid/tests/password-length-test.js; stage_user retired in 8gqm).
 
 mod common;
 
@@ -11,7 +12,7 @@ async fn test_password_too_short() {
     let (server, _) = create_test_server();
 
     let response = server
-        .post("/wsapi/stage_user")
+        .post("/wsapi/stage_signin_code")
         .json(&json!({
             "email": "short@example.com",
             "pass": "1234567"  // 7 chars, less than 8
@@ -32,7 +33,7 @@ async fn test_password_too_long() {
     let long_password = "0".repeat(81);
 
     let response = server
-        .post("/wsapi/stage_user")
+        .post("/wsapi/stage_signin_code")
         .json(&json!({
             "email": "long@example.com",
             "pass": long_password
@@ -50,7 +51,7 @@ async fn test_password_at_min_length() {
     let (server, _) = create_test_server();
 
     let response = server
-        .post("/wsapi/stage_user")
+        .post("/wsapi/stage_signin_code")
         .json(&json!({
             "email": "minlen@example.com",
             "pass": "12345678"  // exactly 8 chars
@@ -71,7 +72,7 @@ async fn test_password_at_max_length() {
     let max_password = "0".repeat(80);
 
     let response = server
-        .post("/wsapi/stage_user")
+        .post("/wsapi/stage_signin_code")
         .json(&json!({
             "email": "maxlen@example.com",
             "pass": max_password
@@ -89,7 +90,7 @@ async fn test_password_normal_length() {
     let (server, _) = create_test_server();
 
     let response = server
-        .post("/wsapi/stage_user")
+        .post("/wsapi/stage_signin_code")
         .json(&json!({
             "email": "normal@example.com",
             "pass": "ahhh. this is just right."

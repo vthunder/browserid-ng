@@ -164,69 +164,10 @@
       </div>
     </section>
 
-    <!-- Password Reset - Enter Email Screen -->
-    <section id="reset-email-screen" class="screen">
-      <div class="content">
-        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
-        <h2>Reset your password</h2>
-        <p>Enter your email address and we'll send you a reset code.</p>
-
-        <form id="reset-email-form">
-          <div class="form-group">
-            <label for="reset-email">Email address</label>
-            <input type="email" id="reset-email" name="email"
-                   placeholder="you@example.com"
-                   autocomplete="email"
-                   required>
-            <div class="error" id="reset-email-error"></div>
-          </div>
-
-          <div class="button-row">
-            <button type="submit" class="primary">Send reset code</button>
-            <button type="button" class="back">Back</button>
-          </div>
-        </form>
-      </div>
-    </section>
-
-    <!-- Password Reset - Enter Code & New Password Screen -->
-    <section id="reset-password-screen" class="screen">
-      <div class="content">
-        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
-        <h2>Set your password</h2>
-        <p>We emailed a 6-digit code to confirm it&rsquo;s you. Enter it and choose a password.</p>
-
-        <form id="reset-password-form">
-          <div class="form-group">
-            <label for="reset-code">Reset code</label>
-            <input type="text" id="reset-code" name="code"
-                   placeholder="000000"
-                   pattern="[0-9]{6}"
-                   maxlength="6"
-                   autocomplete="one-time-code"
-                   inputmode="numeric"
-                   required>
-            <div class="error" id="reset-code-error"></div>
-          </div>
-
-          <div class="form-group">
-            <label for="new-password">New password</label>
-            <input type="password" id="new-password" name="password"
-                   placeholder="8+ characters"
-                   autocomplete="new-password"
-                   minlength="8"
-                   maxlength="80"
-                   required>
-            <div class="error" id="new-password-error"></div>
-          </div>
-
-          <div class="button-row">
-            <button type="submit" class="primary">Set password</button>
-            <button type="button" class="back">Back</button>
-          </div>
-        </form>
-      </div>
-    </section>
+    <!-- The classic reset screens were retired with the stage_reset lane
+         (M7, browserid-ng-8gqm): forgot-password now runs through the
+         sign-in-code screen above — new password up front, mailed code to
+         confirm, one enumeration-safe lane. -->
 
     <!-- Set Password Screen: a signed-in passwordless account choosing its
          first password. The session already proves control, so unlike the

@@ -1,4 +1,5 @@
-//! Tests for verification code handling
+//! Tests for verification code handling (unified sign-in code lane; the
+//! stage_user path and its 409 existence oracle were retired in 8gqm).
 
 mod common;
 
@@ -10,9 +11,9 @@ use serde_json::{json, Value};
 async fn test_invalid_verification_code() {
     let (server, _) = create_test_server();
 
-    // Stage user
+    // Stage
     server
-        .post("/wsapi/stage_user")
+        .post("/wsapi/stage_signin_code")
         .json(&json!({
             "email": "verify@example.com",
             "pass": "testpassword"
@@ -21,7 +22,7 @@ async fn test_invalid_verification_code() {
 
     // Try with wrong code
     let response = server
-        .post("/wsapi/complete_user_creation")
+        .post("/wsapi/complete_signin_code")
         .json(&json!({ "email": "verify@example.com", "token": "000000" }))
         .await;
 
@@ -36,9 +37,9 @@ async fn test_verification_code_format() {
     let (server, email_sender) = create_test_server();
     let email = "codeformat@example.com";
 
-    // Stage user
+    // Stage
     server
-        .post("/wsapi/stage_user")
+        .post("/wsapi/stage_signin_code")
         .json(&json!({
             "email": email,
             "pass": "testpassword"
@@ -53,9 +54,11 @@ async fn test_verification_code_format() {
     assert!(code.chars().all(|c| c.is_ascii_digit()));
 }
 
-/// Test: email already exists
+/// Restaging an EXISTING email is not refused — the old stage_user 409 was
+/// the signup-side enumeration oracle (M7). The response is the same 200 a
+/// new address gets; completion runs the reset branch instead of create.
 #[tokio::test]
-async fn test_email_already_exists() {
+async fn test_existing_email_restages_without_conflict() {
     let (server, email_sender) = create_test_server();
     let email = "exists@example.com";
     let password = "testpassword";
@@ -63,16 +66,16 @@ async fn test_email_already_exists() {
     // Create user
     create_user(&server, &email_sender, email, password).await;
 
-    // Try to create another user with same email
+    // Staging again succeeds identically to a fresh address.
     let response = server
-        .post("/wsapi/stage_user")
+        .post("/wsapi/stage_signin_code")
         .json(&json!({
             "email": email,
-            "pass": "anotherpass"
+            "pass": "anotherpass1"
         }))
         .await;
 
-    assert_eq!(response.status_code(), 409); // Conflict
+    assert_eq!(response.status_code(), 200);
     let body: Value = response.json();
-    assert_eq!(body["success"], false);
+    assert_eq!(body["success"], true);
 }

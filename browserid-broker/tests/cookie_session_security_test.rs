@@ -58,9 +58,10 @@ async fn test_session_cookie_is_httponly() {
     let (server, email_sender) = create_test_server();
     let email = "test@example.com";
 
-    // Create user - this sets the session cookie
+    // Create user via the unified sign-in code lane (no completion session),
+    // then authenticate — THAT is what sets the session cookie.
     server
-        .post("/wsapi/stage_user")
+        .post("/wsapi/stage_signin_code")
         .json(&serde_json::json!({
             "email": email,
             "pass": "testpassword"
@@ -68,9 +69,13 @@ async fn test_session_cookie_is_httponly() {
         .await;
 
     let code = email_sender.get_code(email).expect("No code sent");
-    let response = server
-        .post("/wsapi/complete_user_creation")
+    server
+        .post("/wsapi/complete_signin_code")
         .json(&serde_json::json!({ "email": email, "token": code }))
+        .await;
+    let response = server
+        .post("/wsapi/authenticate_user")
+        .json(&serde_json::json!({ "email": email, "pass": "testpassword" }))
         .await;
 
     // Check that session cookie is set

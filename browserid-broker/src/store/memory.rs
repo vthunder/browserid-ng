@@ -293,13 +293,6 @@ impl UserStore for InMemoryUserStore {
         }
     }
 
-    fn has_pending_reset(&self, email: &str) -> StoreResult<bool> {
-        let pending = self.pending.read().unwrap();
-        Ok(pending.values().any(|p| {
-            p.email == email && p.verification_type == VerificationType::PasswordReset
-        }))
-    }
-
     fn delete_user(&self, user_id: UserId) -> StoreResult<()> {
         // Delete user
         self.users.write().unwrap().remove(&user_id);

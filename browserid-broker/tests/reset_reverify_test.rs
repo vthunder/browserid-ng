@@ -34,18 +34,21 @@ async fn seeded_account(ctx: &TestContext) {
         .unwrap();
 }
 
+/// A reset is the unified sign-in code flow since 8gqm (stage_reset retired):
+/// stage with the NEW password, complete with the mailed code — the server
+/// runs the reset branch (this file's fences) because the account exists.
 async fn run_reset(ctx: &TestContext, email: &str, new_pass: &str) {
     let response = ctx
         .server
-        .post("/wsapi/stage_reset")
-        .json(&json!({ "email": email }))
+        .post("/wsapi/stage_signin_code")
+        .json(&json!({ "email": email, "pass": new_pass }))
         .await;
     assert_eq!(response.status_code(), 200);
     let code = ctx.email_sender.get_code(email).expect("reset code sent");
     let response = ctx
         .server
-        .post("/wsapi/complete_reset")
-        .json(&json!({ "email": email, "token": code, "pass": new_pass }))
+        .post("/wsapi/complete_signin_code")
+        .json(&json!({ "email": email, "token": code }))
         .await;
     assert_eq!(response.status_code(), 200);
 }

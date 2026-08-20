@@ -1,305 +1,96 @@
-//! Tests for password reset flow (ported from forgotten-pass-test.js)
+//! Forgotten-password behavior on the unified sign-in code lane (ported from
+//! forgotten-pass-test.js). The classic stage_reset / complete_reset /
+//! password_reset_status endpoints were retired in M7 (browserid-ng-8gqm) —
+//! a reset is now: stage_signin_code with the NEW password, then confirm
+//! with the mailed code. Existence-indistinguishability of the lane itself
+//! is covered in signin_code_test.rs.
 
 mod common;
 
 use common::{create_test_server, create_user, get_csrf};
 use serde_json::{json, Value};
 
-/// Test: password_reset_status returns 'complete' before any reset is started
+/// An UNREDEEMED staging must change nothing: the old password keeps working
+/// until the mailed code proves the mailbox.
 #[tokio::test]
-async fn test_reset_status_complete_before_reset() {
-    let (server, email_sender) = create_test_server();
-    let email = "resetstatus@example.com";
-
-    // Create user first
-    create_user(&server, &email_sender, email, "testpassword").await;
-
-    // Check reset status - should be 'complete' (no pending reset)
-    let response = server
-        .get(&format!("/wsapi/password_reset_status?email={}", email))
-        .await;
-
-    assert_eq!(response.status_code(), 200);
-    let body: Value = response.json();
-    assert_eq!(body["status"], "complete");
-}
-
-/// Test: stage_reset initiates password reset flow
-#[tokio::test]
-async fn test_stage_reset_works() {
-    let (server, email_sender) = create_test_server();
-    let email = "stagereset@example.com";
-
-    // Create user
-    create_user(&server, &email_sender, email, "testpassword").await;
-
-    // Stage reset
-    let response = server
-        .post("/wsapi/stage_reset")
-        .json(&json!({ "email": email }))
-        .await;
-
-    assert_eq!(response.status_code(), 200);
-    let body: Value = response.json();
-    assert_eq!(body["success"], true);
-
-    // Verify a code was sent
-    let code = email_sender.get_code(email);
-    assert!(code.is_some());
-    assert_eq!(code.unwrap().len(), 6);
-}
-
-/// Test: password_reset_status returns 'pending' after stage_reset
-#[tokio::test]
-async fn test_reset_status_pending_after_stage() {
-    let (server, email_sender) = create_test_server();
-    let email = "pendingstatus@example.com";
-
-    // Create user
-    create_user(&server, &email_sender, email, "testpassword").await;
-
-    // Stage reset
-    server
-        .post("/wsapi/stage_reset")
-        .json(&json!({ "email": email }))
-        .await;
-
-    // Check status - should be 'pending'
-    let response = server
-        .get(&format!("/wsapi/password_reset_status?email={}", email))
-        .await;
-
-    assert_eq!(response.status_code(), 200);
-    let body: Value = response.json();
-    assert_eq!(body["status"], "pending");
-}
-
-/// Test: old password still works during pending reset
-#[tokio::test]
-async fn test_old_password_works_during_pending_reset() {
+async fn test_old_password_works_while_code_pending() {
     let (server, email_sender) = create_test_server();
     let email = "oldpassworks@example.com";
     let password = "oldpassword";
 
-    // Create user
     create_user(&server, &email_sender, email, password).await;
 
-    // Stage reset
-    server
-        .post("/wsapi/stage_reset")
-        .json(&json!({ "email": email }))
+    // Stage a reset (new password chosen up front) — but never complete it.
+    let response = server
+        .post("/wsapi/stage_signin_code")
+        .json(&json!({ "email": email, "pass": "attempted-new-pass" }))
         .await;
+    assert_eq!(response.status_code(), 200);
 
-    // Old password should still work
+    // Old password still works; the staged one does not.
     let response = server
         .post("/wsapi/authenticate_user")
-        .json(&json!({
-            "email": email,
-            "pass": password,
-            "ephemeral": false
-        }))
+        .json(&json!({ "email": email, "pass": password, "ephemeral": false }))
         .await;
-
     assert_eq!(response.status_code(), 200);
-    let body: Value = response.json();
-    assert_eq!(body["success"], true);
+
+    let response = server
+        .post("/wsapi/authenticate_user")
+        .json(&json!({ "email": email, "pass": "attempted-new-pass", "ephemeral": false }))
+        .await;
+    assert_eq!(response.status_code(), 401);
 }
 
-/// Test: complete_reset changes password
+/// Completing the code flips the password: new works, old fails.
 #[tokio::test]
-async fn test_complete_reset_changes_password() {
+async fn test_completed_reset_changes_password() {
     let (server, email_sender) = create_test_server();
     let email = "completereset@example.com";
     let old_password = "oldpassword";
     let new_password = "newpassword";
 
-    // Create user
     create_user(&server, &email_sender, email, old_password).await;
 
-    // Stage reset
     server
-        .post("/wsapi/stage_reset")
-        .json(&json!({ "email": email }))
+        .post("/wsapi/stage_signin_code")
+        .json(&json!({ "email": email, "pass": new_password }))
         .await;
-
-    // Get reset code
     let code = email_sender.get_code(email).unwrap();
-
-    // Complete reset
     let response = server
-        .post("/wsapi/complete_reset")
-        .json(&json!({
-            "email": email,
-            "token": code,
-            "pass": new_password
-        }))
+        .post("/wsapi/complete_signin_code")
+        .json(&json!({ "email": email, "token": code }))
         .await;
-
     assert_eq!(response.status_code(), 200);
-    let body: Value = response.json();
-    assert_eq!(body["success"], true);
-}
 
-/// Test: after reset, old password fails
-#[tokio::test]
-async fn test_old_password_fails_after_reset() {
-    let (server, email_sender) = create_test_server();
-    let email = "oldpassfails@example.com";
-    let old_password = "oldpassword";
-    let new_password = "newpassword";
-
-    // Create user
-    create_user(&server, &email_sender, email, old_password).await;
-
-    // Stage and complete reset
-    server
-        .post("/wsapi/stage_reset")
-        .json(&json!({ "email": email }))
-        .await;
-
-    let code = email_sender.get_code(email).unwrap();
-
-    server
-        .post("/wsapi/complete_reset")
-        .json(&json!({
-            "email": email,
-            "token": code,
-            "pass": new_password
-        }))
-        .await;
-
-    // Old password should fail
     let response = server
         .post("/wsapi/authenticate_user")
-        .json(&json!({
-            "email": email,
-            "pass": old_password,
-            "ephemeral": false
-        }))
+        .json(&json!({ "email": email, "pass": new_password, "ephemeral": false }))
         .await;
+    assert_eq!(response.status_code(), 200);
 
-    // Response is 401 or has success: false
-    let body: Value = response.json();
-    assert_eq!(body["success"], false);
-}
-
-/// Test: after reset, new password works
-#[tokio::test]
-async fn test_new_password_works_after_reset() {
-    let (server, email_sender) = create_test_server();
-    let email = "newpassworks@example.com";
-    let old_password = "oldpassword";
-    let new_password = "newpassword";
-
-    // Create user
-    create_user(&server, &email_sender, email, old_password).await;
-
-    // Stage and complete reset
-    server
-        .post("/wsapi/stage_reset")
-        .json(&json!({ "email": email }))
-        .await;
-
-    let code = email_sender.get_code(email).unwrap();
-
-    server
-        .post("/wsapi/complete_reset")
-        .json(&json!({
-            "email": email,
-            "token": code,
-            "pass": new_password
-        }))
-        .await;
-
-    // New password should work
     let response = server
         .post("/wsapi/authenticate_user")
-        .json(&json!({
-            "email": email,
-            "pass": new_password,
-            "ephemeral": false
-        }))
+        .json(&json!({ "email": email, "pass": old_password, "ephemeral": false }))
         .await;
-
-    assert_eq!(response.status_code(), 200);
-    let body: Value = response.json();
-    assert_eq!(body["success"], true);
+    assert_eq!(response.status_code(), 401);
 }
 
-/// Test: password_reset_status returns 'complete' after reset is done
+/// Wrong token is rejected (the code_guard path).
 #[tokio::test]
-async fn test_reset_status_complete_after_reset() {
-    let (server, email_sender) = create_test_server();
-    let email = "statusaftercomplete@example.com";
-
-    // Create user
-    create_user(&server, &email_sender, email, "oldpassword").await;
-
-    // Stage and complete reset
-    server
-        .post("/wsapi/stage_reset")
-        .json(&json!({ "email": email }))
-        .await;
-
-    let code = email_sender.get_code(email).unwrap();
-
-    server
-        .post("/wsapi/complete_reset")
-        .json(&json!({
-            "email": email,
-            "token": code,
-            "pass": "newpassword"
-        }))
-        .await;
-
-    // Check status - should be 'complete'
-    let response = server
-        .get(&format!("/wsapi/password_reset_status?email={}", email))
-        .await;
-
-    assert_eq!(response.status_code(), 200);
-    let body: Value = response.json();
-    assert_eq!(body["status"], "complete");
-}
-
-/// Test: stage_reset fails for non-existent email
-#[tokio::test]
-async fn test_stage_reset_nonexistent_email() {
-    let (server, _) = create_test_server();
-
-    let response = server
-        .post("/wsapi/stage_reset")
-        .json(&json!({ "email": "nonexistent@example.com" }))
-        .await;
-
-    assert_eq!(response.status_code(), 404);
-    let body: Value = response.json();
-    assert_eq!(body["success"], false);
-}
-
-/// Test: complete_reset with invalid token fails
-#[tokio::test]
-async fn test_complete_reset_invalid_token() {
+async fn test_invalid_token_rejected() {
     let (server, email_sender) = create_test_server();
     let email = "invalidtoken@example.com";
 
-    // Create user
     create_user(&server, &email_sender, email, "testpassword").await;
 
-    // Stage reset
     server
-        .post("/wsapi/stage_reset")
-        .json(&json!({ "email": email }))
+        .post("/wsapi/stage_signin_code")
+        .json(&json!({ "email": email, "pass": "newpassword" }))
         .await;
 
-    // Try with wrong token
     let response = server
-        .post("/wsapi/complete_reset")
-        .json(&json!({
-            "email": email,
-            "token": "000000",
-            "pass": "newpassword"
-        }))
+        .post("/wsapi/complete_signin_code")
+        .json(&json!({ "email": email, "token": "000000" }))
         .await;
 
     assert_eq!(response.status_code(), 400);
@@ -307,31 +98,18 @@ async fn test_complete_reset_invalid_token() {
     assert_eq!(body["success"], false);
 }
 
-/// Test: complete_reset validates password length
+/// Password length is validated at STAGING (the password is chosen up
+/// front on this lane).
 #[tokio::test]
-async fn test_complete_reset_password_too_short() {
+async fn test_reset_password_too_short() {
     let (server, email_sender) = create_test_server();
     let email = "shortpass@example.com";
 
-    // Create user
     create_user(&server, &email_sender, email, "testpassword").await;
 
-    // Stage reset
-    server
-        .post("/wsapi/stage_reset")
-        .json(&json!({ "email": email }))
-        .await;
-
-    let code = email_sender.get_code(email).unwrap();
-
-    // Try with short password
     let response = server
-        .post("/wsapi/complete_reset")
-        .json(&json!({
-            "email": email,
-            "token": code,
-            "pass": "short"
-        }))
+        .post("/wsapi/stage_signin_code")
+        .json(&json!({ "email": email, "pass": "short" }))
         .await;
 
     assert_eq!(response.status_code(), 400);
@@ -339,7 +117,8 @@ async fn test_complete_reset_password_too_short() {
     assert_eq!(body["success"], false);
 }
 
-/// Test: password reset for user with multiple emails updates password for all
+/// The password is account-level: after a reset via one address, every
+/// address on the account authenticates with the new password only.
 #[tokio::test]
 async fn test_reset_affects_all_emails() {
     let (server, email_sender) = create_test_server();
@@ -369,64 +148,29 @@ async fn test_reset_affects_all_emails() {
 
     // Reset password using first email
     server
-        .post("/wsapi/stage_reset")
-        .json(&json!({ "email": email1 }))
+        .post("/wsapi/stage_signin_code")
+        .json(&json!({ "email": email1, "pass": new_password }))
         .await;
-
     let reset_code = email_sender.get_code(email1).unwrap();
-
     server
-        .post("/wsapi/complete_reset")
-        .json(&json!({
-            "email": email1,
-            "token": reset_code,
-            "pass": new_password
-        }))
+        .post("/wsapi/complete_signin_code")
+        .json(&json!({ "email": email1, "token": reset_code }))
         .await;
 
     // Both emails should now work with new password
-    let response = server
-        .post("/wsapi/authenticate_user")
-        .json(&json!({
-            "email": email1,
-            "pass": new_password,
-            "ephemeral": false
-        }))
-        .await;
-    let body: Value = response.json();
-    assert_eq!(body["success"], true);
+    for email in [email1, email2] {
+        let response = server
+            .post("/wsapi/authenticate_user")
+            .json(&json!({ "email": email, "pass": new_password, "ephemeral": false }))
+            .await;
+        let body: Value = response.json();
+        assert_eq!(body["success"], true, "{email} should sign in with the new password");
 
-    let response = server
-        .post("/wsapi/authenticate_user")
-        .json(&json!({
-            "email": email2,
-            "pass": new_password,
-            "ephemeral": false
-        }))
-        .await;
-    let body: Value = response.json();
-    assert_eq!(body["success"], true);
-
-    // Old password should fail for both
-    let response = server
-        .post("/wsapi/authenticate_user")
-        .json(&json!({
-            "email": email1,
-            "pass": old_password,
-            "ephemeral": false
-        }))
-        .await;
-    let body: Value = response.json();
-    assert_eq!(body["success"], false);
-
-    let response = server
-        .post("/wsapi/authenticate_user")
-        .json(&json!({
-            "email": email2,
-            "pass": old_password,
-            "ephemeral": false
-        }))
-        .await;
-    let body: Value = response.json();
-    assert_eq!(body["success"], false);
+        let response = server
+            .post("/wsapi/authenticate_user")
+            .json(&json!({ "email": email, "pass": old_password, "ephemeral": false }))
+            .await;
+        let body: Value = response.json();
+        assert_eq!(body["success"], false, "{email} must not sign in with the old password");
+    }
 }

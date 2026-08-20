@@ -18,11 +18,11 @@ const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 async function createAccount(request: any) {
   const email = `paired-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
   const pass = 'Password123!';
-  await request.post(`${baseUrl}/wsapi/stage_user`, { data: { email, pass } });
+  await request.post(`${baseUrl}/wsapi/stage_signin_code`, { data: { email, pass } });
   const pending = await (
-    await request.get(`${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(email)}&type=new_account`)
+    await request.get(`${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(email)}&type=signin_code`)
   ).json();
-  await request.post(`${baseUrl}/wsapi/complete_user_creation`, { data: { email, token: pending.code } });
+  await request.post(`${baseUrl}/wsapi/complete_signin_code`, { data: { email, token: pending.code } });
   return { email, pass };
 }
 

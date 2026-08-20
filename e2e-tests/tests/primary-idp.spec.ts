@@ -1363,7 +1363,7 @@ test.describe('Primary IdP: Stored Certificate Reuse (BID-4)', () => {
     const password = 'testpass123';
 
     // Step 1: Create a secondary user and session via staging
-    await request.post(`${baseUrl}/wsapi/stage_user`, {
+    await request.post(`${baseUrl}/wsapi/stage_signin_code`, {
       data: { email: secondaryEmail, pass: password, site: 'http://example.com' }
     });
 

@@ -28,6 +28,12 @@ const MIN_PASSWORD_LENGTH: usize = 8;
 /// Maximum password length (same as original Persona)
 const MAX_PASSWORD_LENGTH: usize = 80;
 
+/// Per-client-IP cap on stagings (M7 cross-cutting): the per-address cooldown
+/// bounds bombing one mailbox; this bounds one client spraying many addresses.
+/// Fixed window, auto-resets — same shape as the login throttle (bean ytjn).
+const STAGE_MAX_PER_IP: u32 = 10;
+const STAGE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
+
 #[derive(Deserialize)]
 pub struct StageSigninCodeRequest {
     pub email: String,
@@ -46,6 +52,7 @@ pub struct SigninCodeResponse {
 /// never leaves the server.
 pub async fn stage_signin_code<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<StageSigninCodeRequest>,
 ) -> Result<Json<SigninCodeResponse>, BrokerError>
 where
@@ -58,6 +65,24 @@ where
     }
     if req.pass.len() > MAX_PASSWORD_LENGTH {
         return Err(BrokerError::PasswordTooLong);
+    }
+
+    // Per-IP window BEFORE any account-dependent work, counted on every
+    // attempt — throttling must not itself become an existence signal.
+    // Skipped in dev/test mode (the whole local test suite shares one IP);
+    // the per-address cooldown below still applies there.
+    if !state.test_endpoints_enabled {
+        let mut attempts = state.signin_code_attempts.write().unwrap();
+        let now = std::time::Instant::now();
+        attempts.retain(|_, (start, _)| now.duration_since(*start) < STAGE_WINDOW);
+        let ip = super::auth::client_ip(&headers);
+        let entry = attempts.entry(ip).or_insert((now, 0));
+        if entry.1 >= STAGE_MAX_PER_IP {
+            return Err(BrokerError::EmailRateLimited(
+                STAGE_WINDOW.as_secs() as i64 - now.duration_since(entry.0).as_secs() as i64,
+            ));
+        }
+        entry.1 += 1;
     }
 
     // The SMTP loop only proves ownership where the mailbox is the authority
@@ -153,6 +178,11 @@ where
     }
 
     state.user_store.delete_pending(&pending.secret)?;
+
+    // The code was redeemed — the anti-bombing cooldown has served its
+    // purpose, so a legitimate follow-up staging (another reset moments
+    // later) isn't blocked. Unredeemed codes keep the cooldown.
+    state.clear_email_throttle(&pending.email).await;
 
     Ok(Json(SigninCodeResponse { success: true }))
 }

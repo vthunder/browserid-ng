@@ -1353,20 +1353,6 @@ impl UserStore for SqliteStore {
         Ok(())
     }
 
-    fn has_pending_reset(&self, email: &str) -> StoreResult<bool> {
-        let conn = self.conn.lock().unwrap();
-
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM pending_verifications WHERE email = ?1 AND verification_type = ?2",
-                params![email, VerificationType::PasswordReset.as_str()],
-                |row| row.get(0),
-            )
-            .map_err(|e| BrokerError::Internal(e.to_string()))?;
-
-        Ok(count > 0)
-    }
-
     fn delete_user(&self, user_id: UserId) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
 
@@ -2920,9 +2906,6 @@ impl UserStore for std::sync::Arc<SqliteStore> {
         (**self).update_password(user_id, password_hash)
     }
 
-    fn has_pending_reset(&self, email: &str) -> StoreResult<bool> {
-        (**self).has_pending_reset(email)
-    }
 
     fn delete_user(&self, user_id: UserId) -> StoreResult<()> {
         (**self).delete_user(user_id)

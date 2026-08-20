@@ -15,15 +15,15 @@ const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 
 /** Create a verified, password-backed user via the API. */
 async function createUser(request: any, email: string, password: string) {
-  const stageResponse = await request.post(`${baseUrl}/wsapi/stage_user`, {
+  const stageResponse = await request.post(`${baseUrl}/wsapi/stage_signin_code`, {
     data: { email, pass: password },
   });
   expect(stageResponse.ok()).toBeTruthy();
   const pendingResponse = await request.get(
-    `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(email)}&type=new_account`
+    `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(email)}&type=signin_code`
   );
   const pending = await pendingResponse.json();
-  await request.post(`${baseUrl}/wsapi/complete_user_creation`, {
+  await request.post(`${baseUrl}/wsapi/complete_signin_code`, {
     data: { email, token: pending.code },
   });
 }

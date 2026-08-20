@@ -241,11 +241,39 @@ changed):
 - **M6** — login rate-limiting needs a trusted client-IP source (behind the
   proxy) or a per-account lockout (a victim-DoS vector).
 - **M7** — reducing enumeration changes the account page's "no such account" UX.
+  *(Closed 2026-08-20 — see the remediation update below.)*
 - **M9** — scoping the SBO signer to one identity/audience with per-request
   consent adds prompts.
 - **L1 / L5** — canonical single-`@` email parser and glob domain-anchoring touch
   the core verification path; safer to land deliberately with focused tests.
 - **L9 / L11** — CORS tightening on `/wsapi/*`; hickory/rustls 0.25 upgrade.
+
+## Remediation update (2026-08-20) — M7 closed
+
+M7 (unauthenticated account enumeration across five lifecycle endpoints) is
+fully closed, in two phases (beans `browserid-ng-dw35`, `browserid-ng-8gqm`):
+
+- **`address_info`** no longer discloses the account-level `state` field
+  unless the calling session owns the address; cold responses are
+  byte-identical for existing and non-existing addresses (test-proven per
+  proof lane). The dialog, `/account`, and `/authorize` sign-in flows branch
+  on domain facts (type/proof) only.
+- **`authenticate_user`** failures are uniform in body, status, and timing
+  (dummy bcrypt burn on every failure path; a password-less account no
+  longer 500s).
+- The remaining four oracles were **deleted rather than normalized** — after
+  phase 1 they had no production consumers. `stage_user` /
+  `complete_user_creation`, `stage_reset` / `complete_reset`, and the three
+  persona-era polling endpoints (`user_creation_status`,
+  `password_reset_status`, `email_addition_status`) are gone
+  (`retired_endpoints_test.rs` pins the 404s). Their one successor is the
+  unified sign-in code lane (`stage_signin_code` / `complete_signin_code`):
+  staging responds identically whether the account exists, and completion
+  resolves create-vs-reset server-side after the mailbox proof, with the
+  reset fences (kgb9 sibling re-verification, H2 session eviction) intact.
+- Cross-cutting: the surviving mail-sender carries the per-address cooldown
+  plus a per-client-IP window (10 stagings/hour, `signin_code_attempts`),
+  counted before any account-dependent work.
 
 ## Recommended remediation order
 

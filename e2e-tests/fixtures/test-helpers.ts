@@ -38,7 +38,7 @@ class BrokerApi {
    * For now, we'll use the API directly
    */
   async stageUser(email: string, password: string): Promise<{ success: boolean }> {
-    const response = await this.request.post(`${this.baseUrl}/wsapi/stage_user`, {
+    const response = await this.request.post(`${this.baseUrl}/wsapi/stage_signin_code`, {
       data: { email, pass: password },
     });
     return response.json();
@@ -48,7 +48,7 @@ class BrokerApi {
    * Complete user creation with verification code
    */
   async completeUserCreation(token: string, email: string): Promise<{ success: boolean }> {
-    const response = await this.request.post(`${this.baseUrl}/wsapi/complete_user_creation`, {
+    const response = await this.request.post(`${this.baseUrl}/wsapi/complete_signin_code`, {
       data: { email, token },
     });
     return response.json();
@@ -83,21 +83,11 @@ class BrokerApi {
   }
 
   /**
-   * Get user creation status
-   */
-  async getUserCreationStatus(email: string): Promise<{ status: string }> {
-    const response = await this.request.get(
-      `${this.baseUrl}/wsapi/user_creation_status?email=${encodeURIComponent(email)}`
-    );
-    return response.json();
-  }
-
-  /**
    * Get pending verification code (for E2E testing)
    */
   async getPendingVerification(
     email: string,
-    type: 'new_account' | 'add_email' | 'password_reset' = 'new_account'
+    type: 'signin_code' | 'add_email' = 'signin_code'
   ): Promise<{ success: boolean; code?: string }> {
     const response = await this.request.get(
       `${this.baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(email)}&type=${type}`
@@ -116,7 +106,7 @@ class BrokerApi {
     }
 
     // Get the verification code
-    const pendingResult = await this.getPendingVerification(email, 'new_account');
+    const pendingResult = await this.getPendingVerification(email, 'signin_code');
     if (!pendingResult.success || !pendingResult.code) {
       return false;
     }

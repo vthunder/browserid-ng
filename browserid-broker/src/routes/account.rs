@@ -1,18 +1,22 @@
-//! Account creation endpoints
+//! Account management endpoints (cancel + admin seed provisioning).
+//!
+//! The persona-era signup lane (stage_user / complete_user_creation /
+//! user_creation_status) was retired in M7 Phase 2 (browserid-ng-8gqm): its
+//! exists-vs-new branching was an unauthenticated enumeration oracle, and the
+//! unified sign-in code flow (routes/signin_code.rs) subsumes it.
 
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::crypto::{generate_verification_code, hash_password};
+use crate::crypto::hash_password;
 use crate::email::EmailSender;
 use crate::error::BrokerError;
 use crate::state::AppState;
-use crate::store::{PendingVerification, SessionStore, UserStore, VerificationType};
+use crate::store::{SessionStore, UserStore, VerificationType};
 
 /// Constant-time byte-string equality for the admin token (audit L8), so a
 /// short-circuiting `==` can't leak the token prefix via response timing. The
@@ -30,169 +34,10 @@ fn ct_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-#[derive(Deserialize)]
-pub struct StageUserRequest {
-    pub email: String,
-    pub pass: String,
-}
-
-#[derive(Serialize)]
-pub struct StageUserResponse {
-    pub success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
-
 /// Minimum password length (same as original Persona)
 const MIN_PASSWORD_LENGTH: usize = 8;
 /// Maximum password length (same as original Persona)
 const MAX_PASSWORD_LENGTH: usize = 80;
-
-/// POST /wsapi/stage_user
-/// Start account creation by sending verification code
-pub async fn stage_user<U, S, E>(
-    State(state): State<Arc<AppState<U, S, E>>>,
-    Json(req): Json<StageUserRequest>,
-) -> Result<Json<StageUserResponse>, BrokerError>
-where
-    U: UserStore,
-    S: SessionStore,
-    E: EmailSender,
-{
-    // Validate password length
-    if req.pass.len() < MIN_PASSWORD_LENGTH {
-        return Err(BrokerError::PasswordTooShort);
-    }
-    if req.pass.len() > MAX_PASSWORD_LENGTH {
-        return Err(BrokerError::PasswordTooLong);
-    }
-
-    // Check if email already exists
-    if state.user_store.get_user_by_email(&req.email)?.is_some() {
-        return Err(BrokerError::EmailAlreadyExists);
-    }
-
-    // The SMTP loop only proves ownership where the mailbox is the
-    // authority (browserid-ng-tsqk).
-    super::email::require_smtp_authority(&state, &req.email).await?;
-
-    // One account-verification email per address per cooldown.
-    if let Err(secs) = state.throttle_email(&req.email, "new_account").await {
-        return Err(BrokerError::EmailRateLimited(secs));
-    }
-
-    // Hash password
-    let password_hash = hash_password(&req.pass)
-        .map_err(|e| BrokerError::Internal(e.to_string()))?;
-
-    // Generate verification code (this is both the user-facing code and the lookup key)
-    let code = generate_verification_code();
-
-    // Store pending verification with code as the lookup key
-    let pending = PendingVerification {
-        secret: code.clone(), // Use code as the lookup key
-        email: req.email.clone(),
-        user_id: None, // New account
-        password_hash: Some(password_hash),
-        verification_type: VerificationType::NewAccount,
-        created_at: Utc::now(),
-    };
-    state.user_store.create_pending(pending)?;
-
-    // Send verification email
-    state
-        .email_sender
-        .send_verification(&req.email, &code)
-        .map_err(|e| BrokerError::Internal(e))?;
-
-    // Funnel: account signup started (verification email sent).
-    state.analytics.capture(
-        "signup_started",
-        crate::analytics::distinct_id_for_email(&req.email),
-        serde_json::json!({ "email_domain": crate::analytics::email_domain(&req.email) }),
-    );
-
-    Ok(Json(StageUserResponse {
-        success: true,
-        reason: None,
-    }))
-}
-
-#[derive(Deserialize)]
-pub struct CompleteUserCreationRequest {
-    /// Target email the code was issued to — binds the guess to one pending
-    /// record so the code space can't be walked globally (audit C1).
-    pub email: String,
-    pub token: String, // The 6-digit code
-}
-
-#[derive(Serialize)]
-pub struct CompleteUserCreationResponse {
-    pub success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
-
-/// POST /wsapi/complete_user_creation
-/// Complete account creation with verification code
-pub async fn complete_user_creation<U, S, E>(
-    State(state): State<Arc<AppState<U, S, E>>>,
-    cookies: tower_cookies::Cookies,
-    Json(req): Json<CompleteUserCreationRequest>,
-) -> Result<Json<CompleteUserCreationResponse>, BrokerError>
-where
-    U: UserStore,
-    S: SessionStore,
-    E: EmailSender,
-{
-    // Look up the pending record by its target email and verify the code with
-    // the brute-force guard (binds the guess to one record, burns after N wrong
-    // tries). Expiry is enforced inside the guard.
-    let pending = super::code_guard::verify_pending_code(
-        state.user_store.as_ref(),
-        &req.email,
-        VerificationType::NewAccount,
-        &req.token,
-    )?;
-
-    // Get password hash from pending record
-    let password_hash = pending
-        .password_hash
-        .ok_or(BrokerError::InvalidVerificationCode)?;
-
-    // Create user
-    let user_id = state.user_store.create_user(&password_hash)?;
-
-    // Add verified email
-    state.user_store.add_email(user_id, &pending.email, true)?;
-
-    // Clean up pending
-    state.user_store.delete_pending(&pending.secret)?;
-
-    // Create session — Lightweight: completion proved the mailbox (emailed
-    // code), not the password the user typed at staging (ca29).
-    let session = state
-        .session_store
-        .create(user_id, crate::store::SessionLevel::Lightweight)?;
-    super::session::set_session_cookie(
-        &cookies,
-        &session.id.0,
-        super::session::cookie_secure(&state.domain),
-    );
-
-    // Funnel: account created (email verified + user provisioned). This is the
-    // conversion completion for the signup funnel.
-    state.analytics.capture(
-        "signup_completed",
-        crate::analytics::distinct_id_for_email(&pending.email),
-        serde_json::json!({ "email_domain": crate::analytics::email_domain(&pending.email) }),
-    );
-
-    Ok(Json(CompleteUserCreationResponse {
-        success: true,
-        reason: None,
-    }))
-}
 
 #[derive(Deserialize)]
 pub struct AccountCancelRequest {
@@ -263,65 +108,6 @@ where
     Ok(Json(AccountCancelResponse { success: true }))
 }
 
-#[derive(Deserialize)]
-pub struct UserCreationStatusQuery {
-    pub email: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct UserCreationStatusResponse {
-    pub success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
-}
-
-/// GET /wsapi/user_creation_status
-/// Check the status of a pending user registration
-pub async fn user_creation_status<U, S, E>(
-    State(state): State<Arc<AppState<U, S, E>>>,
-    Query(query): Query<UserCreationStatusQuery>,
-) -> Result<Json<UserCreationStatusResponse>, BrokerError>
-where
-    U: UserStore,
-    S: SessionStore,
-    E: EmailSender,
-{
-    // Email is required
-    let email = match &query.email {
-        Some(e) => e,
-        None => {
-            return Err(BrokerError::ValidationError(
-                "email parameter required".to_string(),
-            ))
-        }
-    };
-
-    // Check if user already exists (complete)
-    if state.user_store.get_user_by_email(email)?.is_some() {
-        return Ok(Json(UserCreationStatusResponse {
-            success: true,
-            status: Some("complete".to_string()),
-        }));
-    }
-
-    // Check for pending new account verification
-    if state
-        .user_store
-        .get_pending_by_email(email, VerificationType::NewAccount)?
-        .is_some()
-    {
-        return Ok(Json(UserCreationStatusResponse {
-            success: true,
-            status: Some("pending".to_string()),
-        }));
-    }
-
-    // No pending registration found - this is an error case
-    Err(BrokerError::ValidationError(
-        "no pending registration".to_string(),
-    ))
-}
-
 // ===========================================================================
 // Admin seed provisioning (SBO Mingo demo)
 //
@@ -389,7 +175,8 @@ where
 #[derive(Deserialize)]
 pub struct AdminPendingCodeQuery {
     pub email: String,
-    /// "new_account" (default), "add_email", or "password_reset".
+    /// "signin_code" (default), "add_email", or legacy "new_account" /
+    /// "password_reset" for pendings staged before the M7 consolidation.
     #[serde(rename = "type")]
     pub verification_type: Option<String>,
 }
@@ -421,7 +208,8 @@ where
     let vt = match q.verification_type.as_deref() {
         Some("add_email") => VerificationType::AddEmail,
         Some("password_reset") | Some("reset") => VerificationType::PasswordReset,
-        _ => VerificationType::NewAccount,
+        Some("new_account") => VerificationType::NewAccount,
+        _ => VerificationType::SigninCode,
     };
     match state.user_store.get_pending_by_email(&q.email, vt) {
         Ok(Some(p)) => Ok(Json(serde_json::json!({ "success": true, "code": p.secret, "email": p.email }))),

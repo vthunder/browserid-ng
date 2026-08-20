@@ -46,38 +46,47 @@ async fn password_login_yields_full_session() {
     assert_eq!(body["auth_level"], "password");
 }
 
-/// Completing user creation proves the MAILBOX (emailed code), not the
-/// password typed at staging — so that session is only Lightweight (owner
-/// decision on the ca29 bean).
+/// Completing the unified sign-in code mints NO session at all (8gqm): the
+/// dialog follows up with authenticate_user using the staged password, and
+/// THAT session is Full. (The ca29 concern — a mailbox proof must not yield
+/// a Full session — is satisfied by there being no completion session.)
 #[tokio::test]
-async fn user_creation_session_is_lightweight() {
+async fn signin_code_completion_mints_no_session() {
     let ctx = create_test_context();
-    // Inline stage → complete (the create_user helper re-authenticates and
-    // would hand back a Full session — here the COMPLETION session matters).
     let email = "created@example.com";
     let response = ctx
         .server
-        .post("/wsapi/stage_user")
+        .post("/wsapi/stage_signin_code")
         .json(&json!({ "email": email, "pass": "password123" }))
         .await;
     assert_eq!(response.status_code(), 200);
     let code = ctx.email_sender.get_code(email).unwrap();
     let response = ctx
         .server
-        .post("/wsapi/complete_user_creation")
+        .post("/wsapi/complete_signin_code")
         .json(&json!({ "email": email, "token": code }))
+        .await;
+    assert_eq!(response.status_code(), 200);
+    assert!(
+        response.maybe_cookie("browserid_session").is_none(),
+        "completion must not mint a session"
+    );
+
+    // The follow-up password auth is what signs in — and it is Full.
+    let response = ctx
+        .server
+        .post("/wsapi/authenticate_user")
+        .json(&json!({ "email": email, "pass": "password123" }))
         .await;
     assert_eq!(response.status_code(), 200);
     let session = response
         .maybe_cookie("browserid_session")
-        .expect("completion sets a session cookie")
+        .unwrap()
         .value()
         .to_string();
-
     let body = session_context(&ctx, &session).await;
-    assert_eq!(body["authenticated"], true);
-    assert_eq!(body["session_level"], "lightweight");
-    assert_eq!(body["auth_level"], "assertion");
+    assert_eq!(body["session_level"], "full");
+    assert_eq!(body["auth_level"], "password");
 }
 
 /// A store-minted Lightweight session (production analogue: primary

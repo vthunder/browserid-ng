@@ -44,7 +44,7 @@ const LOGIN_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
 /// Best-effort client IP behind nginx/dokku (X-Forwarded-For's first hop, then
 /// X-Real-IP). Falls back to a shared bucket when absent — still bounds a
 /// header-less attacker, just coarsely.
-fn client_ip(headers: &axum::http::HeaderMap) -> String {
+pub(crate) fn client_ip(headers: &axum::http::HeaderMap) -> String {
     headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())

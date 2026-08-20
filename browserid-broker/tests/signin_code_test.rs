@@ -220,6 +220,30 @@ async fn completion_rechecks_existence() {
     assert_eq!(response.status_code(), 200);
 }
 
+/// Per-IP cap (M7 cross-cutting): one client spraying MANY addresses is cut
+/// off after STAGE_MAX_PER_IP stagings per window, and the refusal does not
+/// depend on whether the addresses exist.
+#[tokio::test]
+async fn stage_is_rate_limited_per_ip() {
+    let ctx = create_test_context();
+
+    for i in 0..10 {
+        let response = ctx
+            .server
+            .post("/wsapi/stage_signin_code")
+            .json(&json!({ "email": format!("spray{i}@example.com"), "pass": "chosen-password" }))
+            .await;
+        assert_eq!(response.status_code(), 200, "staging {i} should pass");
+    }
+
+    let response = ctx
+        .server
+        .post("/wsapi/stage_signin_code")
+        .json(&json!({ "email": "spray11@example.com", "pass": "chosen-password" }))
+        .await;
+    assert_eq!(response.status_code(), 429, "11th staging must be throttled");
+}
+
 /// SigninCode pendings survive the real SQLite store (the TEXT enum mapping
 /// is sqlite-only and invisible to memory-store tests), and the status
 /// oracles never see them: has_pending_reset stays false.
@@ -246,10 +270,12 @@ fn sqlite_signin_code_pending_roundtrip() {
         .expect("signin_code pending must round-trip through sqlite");
     assert_eq!(pending.secret, "123456");
     assert_eq!(pending.verification_type, VerificationType::SigninCode);
-    // A staged sign-in code is NOT a pending password reset — the reset
-    // status endpoint must not learn of it.
-    assert!(!store.has_pending_reset("sqlite@example.com").unwrap());
-    // Nor a pending account creation / email addition.
+    // A staged sign-in code is its own type — never visible as a legacy
+    // reset or account-creation pending.
+    assert!(store
+        .get_pending_by_email("sqlite@example.com", VerificationType::PasswordReset)
+        .unwrap()
+        .is_none());
     assert!(store
         .get_pending_by_email("sqlite@example.com", VerificationType::NewAccount)
         .unwrap()

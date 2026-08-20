@@ -33,7 +33,6 @@ Tests ported from mozilla/persona (`~/src/browserid/tests/`).
 | list_emails_wsapi_test.rs | 4 | list-emails-wsapi-test.js |
 | remove_email_test.rs | 5 | remove-email-test.js |
 | stage_email_test.rs | 3 | (derived) |
-| email_addition_status_test.rs | 4 | email-addition-status-test.js |
 
 ### Password Management
 
@@ -48,7 +47,6 @@ Tests ported from mozilla/persona (`~/src/browserid/tests/`).
 | Test File | Tests | Original |
 |-----------|-------|----------|
 | account_cancel_test.rs | 8 | account-cancel-test.js |
-| registration_status_test.rs | 6 | registration-status-wsapi-test.js |
 | verification_test.rs | 3 | (derived) |
 
 ## Verifier Test Coverage

@@ -13,7 +13,6 @@ mod holders;
 mod hosted_idp;
 mod oidc;
 mod primary;
-mod reset;
 pub(crate) mod session;
 mod signin_code;
 mod status;
@@ -103,9 +102,6 @@ where
     let mut app = Router::new()
         .route("/.well-known/browserid", get(well_known::get_support_document))
         .route("/wsapi/session_context", get(session::get_session_context))
-        .route("/wsapi/stage_user", post(account::stage_user))
-        .route("/wsapi/complete_user_creation", post(account::complete_user_creation))
-        .route("/wsapi/user_creation_status", get(account::user_creation_status))
         // Admin seed provisioning (ADMIN_TOKEN-gated; for @mingo.place demo accounts)
         .route("/admin/create_account", post(account::admin_create_account))
         // Operator-only code peek (X-Admin-Token) — testing escape hatch when
@@ -137,7 +133,6 @@ where
         .route("/wsapi/set_parent", post(email::set_parent))
         .route("/wsapi/set_public_name", post(email::set_public_name))
         .route("/wsapi/parent_of", get(email::parent_of))
-        .route("/wsapi/email_addition_status", get(email::email_addition_status))
         // FedCM IdP surface (browserid-ng-mhyp, device-cert model): the silent
         // lane mints a device presentation server-side; /verify-access unchanged.
         .route("/.well-known/web-identity", get(fedcm::web_identity))
@@ -171,12 +166,11 @@ where
         .route("/wsapi/create_namespace", post(holders::create_namespace))
         .route("/wsapi/delete_namespace", post(holders::delete_namespace))
         .route("/wsapi/account_cancel", post(account::account_cancel))
-        .route("/wsapi/stage_reset", post(reset::stage_reset))
-        .route("/wsapi/complete_reset", post(reset::complete_reset))
-        .route("/wsapi/password_reset_status", get(reset::password_reset_status))
-        // Unified sign-in code (dw35): the dialog's enumeration-safe SMTP
-        // escape hatch — creates the account or resets its password, decided
-        // server-side after the mailbox proof.
+        // Unified sign-in code (dw35/8gqm): the ONLY cold code-mailing lane —
+        // creates the account or resets its password, decided server-side
+        // after the mailbox proof. The persona-era stage_user / stage_reset /
+        // *_status lanes were deleted with it (M7: each was an unauthenticated
+        // account-enumeration oracle, and all their consumers moved here).
         .route("/wsapi/stage_signin_code", post(signin_code::stage_signin_code))
         .route("/wsapi/complete_signin_code", post(signin_code::complete_signin_code))
         // The agent guestbook demo (a public RP only agents can sign).
