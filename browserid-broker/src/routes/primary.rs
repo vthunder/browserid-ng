@@ -234,6 +234,9 @@ where
             revoked_at: None,
             status_uri: cc.status.as_ref().map(|s| s.uri.clone()),
             status_idx: cc.status.as_ref().map(|s| s.idx),
+            // Primary-issued certs recorded for the account UI: the broker's
+            // provenance classes gate broker-signed secondary certs only.
+            prov: "smtp".to_string(),
         };
         if let Err(e) = state.user_store.insert_device_cert(rec) {
             tracing::warn!("failed to record primary device cert holder: {e}");
@@ -377,6 +380,9 @@ where
         revoked_at: None,
         status_uri: cc.status.as_ref().map(|s| s.uri.clone()),
         status_idx: cc.status.as_ref().map(|s| s.idx),
+        // Primary-issued certs recorded for the account UI: the broker's
+        // provenance classes gate broker-signed secondary certs only.
+        prov: "smtp".to_string(),
     };
     state.user_store.insert_device_cert(rec)?;
     Ok(Json(serde_json::json!({"success": true})))

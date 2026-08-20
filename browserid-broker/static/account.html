@@ -1776,6 +1776,11 @@ async function reloadAccount() {
   account.managedOf = Object.fromEntries((resp.managed || []).map(m => [m.email, m.domain]));
   // Drives the first-password prompt after an SMTP add (browserid-ng-iudv).
   account.hasPassword = resp.has_password !== false;
+  account.proofs = resp.proofs || [];
+  // Keystore hygiene (y9vr): both passes on every /account load — the data
+  // is already in hand, so this costs no extra requests.
+  try { await window.Keystore.healthLocal(); } catch (e) { /* hygiene only */ }
+  try { await window.Keystore.healthRemote(deviceCerts, account.proofs, location.host); } catch (e) { /* hygiene only */ }
   account.warrants = warrants;
   account.deviceCerts = deviceCerts;
   account.holders = holders;

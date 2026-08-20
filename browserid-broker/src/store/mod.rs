@@ -236,6 +236,19 @@ pub trait UserStore: Send + Sync {
     /// address. Returns the number of rows revoked.
     fn revoke_user_certs_for_email(&self, user_id: UserId, email: &str) -> StoreResult<u64>;
 
+    /// Revoke every active cert `user_id` holds naming `email` whose recorded
+    /// issuance class differs from `current_class` — the exact swap set for a
+    /// provenance change (x5c3): authentication AND config certs, across all
+    /// the user's browsers, rows stamped and status bits flipped. Certs
+    /// already issued under the current class are untouched. Returns the
+    /// number of rows revoked.
+    fn revoke_user_stale_class_certs(
+        &self,
+        user_id: UserId,
+        email: &str,
+        current_class: &str,
+    ) -> StoreResult<u64>;
+
     /// Forget a holder: delete the user's device-cert rows carrying this
     /// holder id (revocation bits are the CALLER's job first — deletion alone
     /// does not invalidate live certs) plus its label. Returns the number of

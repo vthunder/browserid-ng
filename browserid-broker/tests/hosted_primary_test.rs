@@ -562,6 +562,7 @@ async fn activation_revokes_prior_broker_certs_for_the_domain() {
             revoked_at: None,
             status_uri: None,
             status_idx: Some(idx),
+            prov: "smtp".to_string(),
         })
         .unwrap();
     assert!(!store.is_status_revoked_idx(idx).unwrap());
@@ -776,6 +777,7 @@ async fn forget_holder_revokes_at_the_tenant_authority() {
         revoked_at: None,
         status_uri: uri,
         status_idx: idx,
+        prov: "smtp".to_string(),
     };
     store
         .insert_device_cert(mk("cfg-pubkey-tenant", TENANT, Some(tenant_uri), Some(idx)))

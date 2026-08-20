@@ -211,8 +211,23 @@ fn migration_v30_wipes_pre_level_sessions() {
                 created_at TEXT NOT NULL
             );
             INSERT INTO sessions VALUES ('stale-session', 1, 'tok', '2026-08-01T00:00:00Z');
-            -- Later migrations touch other tables (v31 alters emails); give
-            -- the hand-built old DB the minimal shape they expect.
+            -- Later migrations touch other tables (v31 alters emails, v32
+            -- alters device_certs); give the hand-built old DB the minimal
+            -- shapes they expect.
+            CREATE TABLE device_certs (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER,
+                identities TEXT,
+                purpose TEXT,
+                holder TEXT,
+                pubkey TEXT UNIQUE,
+                iss TEXT,
+                issued_at TEXT,
+                expires_at TEXT,
+                revoked_at TEXT,
+                status_idx INTEGER,
+                status_uri TEXT
+            );
             CREATE TABLE emails (
                 email TEXT PRIMARY KEY,
                 user_id INTEGER,

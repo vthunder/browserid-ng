@@ -324,6 +324,12 @@ pub struct DeviceCertRecord {
     pub status_uri: Option<String>,
     /// The cert's status-list index (its revocation bit), when it has one
     pub status_idx: Option<u64>,
+    /// The proof class ("smtp"/"oidc"/"atproto") the identity was verified
+    /// under when this cert was issued — the registry mirror of the cert's
+    /// `prov` claim (x5c3). Lets a provenance change revoke the EXACT stale
+    /// set (auth + config, all browsers) instead of one presented cert at a
+    /// time. Legacy rows read "smtp" (migration default — historically true).
+    pub prov: String,
 }
 
 impl DeviceCertRecord {

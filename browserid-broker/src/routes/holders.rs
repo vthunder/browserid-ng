@@ -892,6 +892,7 @@ mod tests {
                 revoked_at: None,
                 status_uri: None,
                 status_idx: None,
+                prov: "smtp".into(),
             })
             .unwrap();
 

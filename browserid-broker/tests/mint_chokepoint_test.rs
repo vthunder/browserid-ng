@@ -346,6 +346,7 @@ fn sqlite_revoke_user_certs_for_email_is_precisely_scoped() {
                 revoked_at: None,
                 status_uri: Some("uri".to_string()),
                 status_idx: Some(idx),
+                prov: "smtp".to_string(),
             })
             .unwrap();
         idx
@@ -437,4 +438,131 @@ async fn stale_class_cert_is_refused_and_revoked_at_next_mint() {
     // And stays dead (the status bit is flipped, sticky).
     let resp = mint("jti-swap-3").await;
     assert_eq!(resp.status_code(), 403, "{}", resp.text());
+}
+
+/// x5c3: ONE stale-class presentation revokes the WHOLE stale set — the
+/// config sibling and other browsers' pairs — with registry rows stamped
+/// (honest /account list), not just the presented cert's bit.
+#[tokio::test]
+async fn stale_class_presentation_revokes_the_whole_stale_set() {
+    use browserid_core::device::{AccessRequest, DeviceCert};
+
+    let ctx = create_test_context();
+    let email = "swapall@example.com";
+    let session = create_user(&ctx.server, &ctx.email_sender, email, "password123").await;
+    let csrf = get_csrf(&ctx.server, &session).await;
+
+    // Two E3-era browser pairs (4 registry rows: 2 auth + 2 config).
+    let mut issue = |kp: &KeyPair| {
+        let server = &ctx.server;
+        let session = session.clone();
+        let csrf = csrf.clone();
+        let device_pub = kp.public_key().to_base64();
+        async move {
+            let resp = server
+                .post("/device/issue")
+                .add_cookie(cookie::Cookie::new("browserid_session", session))
+                .json(&json!({
+                    "csrf": csrf, "email": email,
+                    "device_pubkey": device_pub,
+                    "config_pubkey": KeyPair::generate().public_key().to_base64(),
+                }))
+                .await;
+            assert_eq!(resp.status_code(), 200, "{}", resp.text());
+            resp.json::<Value>()["device_cert"].as_str().unwrap().to_string()
+        }
+    };
+    let kp_a = KeyPair::generate();
+    let kp_b = KeyPair::generate();
+    let cert_a = issue(&kp_a).await;
+    let _cert_b = issue(&kp_b).await;
+
+    // The record upgrades to E2 (store-direct; the claim paths do their own
+    // revocation — this covers legacy/off-path upgrades).
+    ctx.user_store
+        .set_email_proof(email, ProofMethod::Oidc, Some("s"))
+        .unwrap();
+
+    // Present ONLY browser A's cert.
+    let holder = DeviceCert::parse(&cert_a).unwrap().holder().clone();
+    let areq = AccessRequest::create(
+        "localhost:3000", email, holder,
+        &KeyPair::generate().public_key(), "jti-swapall-1", &kp_a,
+    )
+    .unwrap();
+    let resp = ctx
+        .server
+        .post("/access/mint")
+        .json(&json!({ "device_cert": cert_a, "access_request": areq.encoded() }))
+        .await;
+    assert_eq!(resp.status_code(), 403, "{}", resp.text());
+
+    // ALL FOUR stale-class rows are revoked and stamped — including browser
+    // B's pair and both config certs, none of which were ever presented.
+    let user = ctx.user_store.get_user_by_email(email).unwrap().unwrap();
+    let rows: Vec<_> = ctx
+        .user_store
+        .list_device_certs(user.id)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.identities.iter().any(|i| i == email))
+        .collect();
+    assert_eq!(rows.len(), 4, "expected 2 browser pairs in the registry");
+    for r in &rows {
+        assert!(
+            r.revoked_at.is_some(),
+            "row {} ({}, prov {}) must be stamped revoked",
+            r.id, r.purpose, r.prov
+        );
+    }
+}
+
+/// x5c3 store precision on SQLite: the class revoker kills only rows whose
+/// recorded class differs — current-class rows and other addresses survive.
+#[test]
+fn sqlite_stale_class_revoker_spares_current_class() {
+    use browserid_broker::store::DeviceCertRecord;
+    use chrono::Utc;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = SqliteStore::open(dir.path().join("t.db").to_str().unwrap()).unwrap();
+    let user = store.create_user("hash").unwrap();
+
+    let mut insert = |email: &str, key: &str, prov: &str| {
+        let idx = store.get_or_allocate_status("device", key).unwrap();
+        store
+            .insert_device_cert(DeviceCertRecord {
+                id: 0,
+                user_id: user,
+                identities: vec![email.to_string()],
+                purpose: "authentication".to_string(),
+                holder: "ns.h1".to_string(),
+                pubkey: key.to_string(),
+                iss: "localhost:3000".to_string(),
+                issued_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::days(90),
+                revoked_at: None,
+                status_uri: Some("uri".to_string()),
+                status_idx: Some(idx),
+                prov: prov.to_string(),
+            })
+            .unwrap();
+        idx
+    };
+    let stale_idx = insert("up@example.com", "k-stale", "smtp");
+    let fresh_idx = insert("up@example.com", "k-fresh", "oidc");
+    let other_idx = insert("other@example.com", "k-other", "smtp");
+
+    assert_eq!(
+        store
+            .revoke_user_stale_class_certs(user, "Up@Example.com", "oidc")
+            .unwrap(),
+        1
+    );
+    assert!(store.is_status_revoked_idx(stale_idx).unwrap());
+    assert!(!store.is_status_revoked_idx(fresh_idx).unwrap());
+    assert!(!store.is_status_revoked_idx(other_idx).unwrap());
+    let rows = store.list_device_certs(user).unwrap();
+    assert!(rows.iter().any(|r| r.pubkey == "k-stale" && r.revoked_at.is_some()));
+    assert!(rows.iter().any(|r| r.pubkey == "k-fresh" && r.revoked_at.is_none()));
 }

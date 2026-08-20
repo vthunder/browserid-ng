@@ -15,7 +15,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 31;
+const SCHEMA_VERSION: i32 = 32;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -155,6 +155,9 @@ impl SqliteStore {
             }
             if current_version < 31 {
                 Self::migrate_v31(conn)?;
+            }
+            if current_version < 32 {
+                Self::migrate_v32(conn)?;
             }
 
             // Update schema version
@@ -835,6 +838,19 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v32(conn: &Connection) -> Result<(), BrokerError> {
+        // Registry provenance class (browserid-ng-x5c3): each cert row
+        // records the proof class it was issued under, so a provenance change
+        // can revoke the EXACT stale set (auth + config, all browsers) and
+        // the account UI stays honest. 'smtp' is historically true for every
+        // pre-column row.
+        conn.execute_batch(
+            "ALTER TABLE device_certs ADD COLUMN prov TEXT NOT NULL DEFAULT 'smtp';",
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // Row → DeviceCertRecord mapping (DC Phase 3/4)
@@ -868,11 +884,12 @@ fn device_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceCertR
         revoked_at: parse_ts_opt(row.get(9)?),
         status_uri: row.get(11)?,
         status_idx: status_idx.map(|i| i as u64),
+        prov: row.get(12)?,
     })
 }
 
 const DEVICE_CERT_COLUMNS: &str =
-    "id, user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx, status_uri";
+    "id, user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx, status_uri, prov";
 
 // Row → WarrantRecord mapping (jipx registry)
 fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantRecord> {
@@ -1850,8 +1867,8 @@ impl UserStore for SqliteStore {
         // the account view forever, since device keys are long-lived and every
         // reissued cert upserts onto the old revoked row.
         conn.execute(
-            "INSERT INTO device_certs (user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx, status_uri)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO device_certs (user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx, status_uri, prov)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(pubkey) DO UPDATE SET
                identities = excluded.identities,
                purpose = excluded.purpose,
@@ -1861,7 +1878,8 @@ impl UserStore for SqliteStore {
                expires_at = excluded.expires_at,
                revoked_at = excluded.revoked_at,
                status_idx = excluded.status_idx,
-               status_uri = excluded.status_uri",
+               status_uri = excluded.status_uri,
+               prov = excluded.prov",
             params![
                 rec.user_id.0 as i64,
                 serde_json::to_string(&rec.identities).unwrap_or_else(|_| "[]".into()),
@@ -1874,6 +1892,7 @@ impl UserStore for SqliteStore {
                 rec.revoked_at.map(|t| t.to_rfc3339()),
                 rec.status_idx.map(|i| i as i64),
                 rec.status_uri,
+                rec.prov,
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2362,6 +2381,63 @@ impl UserStore for SqliteStore {
                 .iter()
                 .any(|i| i.to_lowercase().ends_with(&suffix));
             if !hit {
+                continue;
+            }
+            if let Some(idx) = status_idx {
+                conn.execute(
+                    "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1) WHERE idx = ?2",
+                    params![now, idx],
+                )
+                .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            }
+            conn.execute(
+                "UPDATE device_certs SET revoked_at = COALESCE(revoked_at, ?1) WHERE id = ?2",
+                params![now, id],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    fn revoke_user_stale_class_certs(
+        &self,
+        user_id: UserId,
+        email: &str,
+        current_class: &str,
+    ) -> StoreResult<u64> {
+        let target = email.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        // Same scan shape as revoke_user_certs_for_email, additionally keyed
+        // on the row's recorded issuance class (x5c3): only certs issued
+        // under a DIFFERENT class than the record's current one die.
+        let rows: Vec<(i64, String, Option<i64>, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, identities, status_idx, prov FROM device_certs WHERE user_id = ?1 AND revoked_at IS NULL")
+                .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            let mapped = stmt
+                .query_map(params![user_id.0 as i64], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .map_err(|e| BrokerError::Internal(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| BrokerError::Internal(e.to_string()))?;
+            mapped
+        };
+        let now = Utc::now().to_rfc3339();
+        let mut count = 0u64;
+        for (id, identities_json, status_idx, prov) in rows {
+            if prov == current_class {
+                continue;
+            }
+            let identities: Vec<String> =
+                serde_json::from_str(&identities_json).unwrap_or_default();
+            if !identities.iter().any(|i| i.to_lowercase() == target) {
                 continue;
             }
             if let Some(idx) = status_idx {
@@ -2997,6 +3073,15 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn revoke_user_certs_for_email(&self, user_id: UserId, email: &str) -> StoreResult<u64> {
         (**self).revoke_user_certs_for_email(user_id, email)
+    }
+
+    fn revoke_user_stale_class_certs(
+        &self,
+        user_id: UserId,
+        email: &str,
+        current_class: &str,
+    ) -> StoreResult<u64> {
+        (**self).revoke_user_stale_class_certs(user_id, email, current_class)
     }
 
     fn forget_holder(&self, user_id: UserId, holder: &str) -> StoreResult<u64> {

@@ -275,6 +275,7 @@ where
             revoked_at: None,
             status_uri: Some(browserid_registrar::consent::status_list_uri(&state.domain)),
             status_idx: Some(status_idx),
+            prov: prov.to_string(),
         })?;
     }
     // First sight of this holder → a friendly UA-derived default label
@@ -378,6 +379,16 @@ where
             );
         let issued_under = device_cert.claims().prov.as_deref().unwrap_or("smtp");
         if is_e2 && issued_under != rec.proof.as_str() {
+            // Precise class-wide revocation (x5c3): kill EVERY registry cert
+            // for this (user, address) issued under a stale class — the
+            // presented one, its config sibling, and other browsers' pairs —
+            // with rows stamped so the account UI stays honest. Correctly-
+            // classed certs are untouched.
+            let _ = state
+                .user_store
+                .revoke_user_stale_class_certs(rec.user_id, &c.identity, rec.proof.as_str());
+            // Belt-and-braces for certs with no registry row (pre-7ww7
+            // cookie-only issuance): flip the presented cert's own bit too.
             if let Some(status) = &device_cert.claims().status {
                 if status.uri == browserid_registrar::consent::status_list_uri(&state.domain) {
                     let _ = state.user_store.set_status_revoked_idx(status.idx);

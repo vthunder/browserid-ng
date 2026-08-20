@@ -175,6 +175,8 @@ fn from_reg_device_cert(c: reg::DeviceCertRecord) -> crate::store::DeviceCertRec
         revoked_at: c.revoked_at,
         status_uri: c.status_uri,
         status_idx: c.status_idx,
+        // Registrar-recorded agent certs are broker-vouched (smtp class).
+        prov: "smtp".to_string(),
     }
 }
 
@@ -364,6 +366,7 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
             status_uri: status_idx
                 .map(|_| browserid_registrar::consent::status_list_uri(&self.domain)),
             status_idx,
+            prov: "smtp".to_string(),
         };
         if let Err(e) = self.user_store.insert_device_cert(rec) {
             tracing::warn!("recording agent device cert failed: {e}");

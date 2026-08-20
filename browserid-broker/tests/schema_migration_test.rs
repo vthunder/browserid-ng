@@ -279,6 +279,7 @@ fn test_primary_config_cert_holder_recorded() {
             revoked_at: None,
             status_uri: None,
             status_idx: Some(3),
+            prov: "smtp".to_string(),
         })
         .unwrap();
 
@@ -315,6 +316,7 @@ fn test_reissued_cert_clears_stale_revocation_on_upsert() {
         revoked_at,
         status_uri: None,
         status_idx: Some(7),
+        prov: "smtp".to_string(),
     };
 
     store.insert_device_cert(rec(None)).unwrap();

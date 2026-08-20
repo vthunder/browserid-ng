@@ -310,7 +310,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-62n9Mq0DISdXWYTCzRVo+eWi008x+WiUgwKcQWxmGGU='", // account.html
+    "'sha256-8O9UaTBRBHVhN04DlIDRnKp+/GKr8S0m/lfnG+0reI0='", // account.html
     "'sha256-XRWE73ZH1qCk6vmO+hv85g2743sS42s8Y64PjFX8z98='", // authorize.html
     "'sha256-cgwfxDK4GCoGP+8bnCnRcDqyXuKYsNlxqR3e5aj4DKY='", // consent.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)

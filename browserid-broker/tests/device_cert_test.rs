@@ -439,6 +439,7 @@ async fn foreign_issued_cert_revocation_never_touches_the_broker_status_list() {
         revoked_at: None,
         status_uri: None,
         status_idx: Some(idx),
+        prov: "smtp".to_string(),
     };
     ctx.user_store.insert_device_cert(mk("localhost:3000", own_idx, "br1.own")).unwrap();
     ctx.user_store.insert_device_cert(mk("mingo.place", own_idx, "br2.foreign")).unwrap();
@@ -505,6 +506,7 @@ async fn cert_revocation_status_answers_from_the_authority() {
         revoked_at: None,
         status_uri: None,
         status_idx: idx,
+        prov: "smtp".to_string(),
     };
     ctx.user_store.insert_device_cert(mk("localhost:3000", Some(own_idx), "br3.own")).unwrap();
     ctx.user_store.insert_device_cert(mk("mingo.place", None, "br4.norf")).unwrap();

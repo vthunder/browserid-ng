@@ -169,6 +169,62 @@
     });
   }
 
+  // --- Local-store health check (browserid-ng-y9vr) -------------------------
+  // Hygiene, never enforcement: the server's gates stay load-bearing; an
+  // honest client just avoids ever PRESENTING a credential it can already
+  // know is dead. Dropping a pair is always safe — the worst case is one
+  // re-issue through the proper ceremony, which is the designed path.
+  function certClaims(cert) {
+    try {
+      var p = String(cert).split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      return JSON.parse(atob(p));
+    } catch (e) { return null; }
+  }
+  // No network: drop expired (within 60s) and unparseable device records.
+  // Cheap enough to run on every page load.
+  function healthLocal() {
+    return allDevice().then(function (recs) {
+      var now = Math.floor(Date.now() / 1000);
+      var drops = [];
+      (recs || []).forEach(function (r) {
+        var c = r && r.cert ? certClaims(r.cert) : null;
+        if (!c || !c.exp || c.exp <= now + 60) {
+          drops.push(delDevice(r.issuer, r.email, r.kind).catch(function () {}));
+        }
+      });
+      return Promise.all(drops).then(function () { return drops.length; });
+    });
+  }
+  // With a broker session: `registryCerts` = /wsapi/device_certs rows,
+  // `proofs` = list_emails proofs. Drops pairs whose registry row is revoked
+  // (any issuer) or missing (broker-issued only — foreign issuers own their
+  // own lists), and pairs whose issued-under class (`prov` claim, absent =
+  // smtp) no longer matches the address's current proof class.
+  function healthRemote(registryCerts, proofs, brokerHost) {
+    var byPub = {};
+    (registryCerts || []).forEach(function (c) { if (c.pubkey) byPub[c.pubkey] = c; });
+    var proofOf = {};
+    (proofs || []).forEach(function (p) { proofOf[(p.email || "").toLowerCase()] = p.proof; });
+    return allDevice().then(function (recs) {
+      var drops = [];
+      (recs || []).forEach(function (r) {
+        var c = r && r.cert ? certClaims(r.cert) : null;
+        if (!c) return; // healthLocal's job
+        var dead = false;
+        var row = r.publicKeyX ? byPub[r.publicKeyX] : null;
+        if (row && row.revoked) dead = true;
+        if (!row && c.iss === brokerHost) dead = true;
+        var current = proofOf[(r.email || "").toLowerCase()];
+        if (current && (current === "oidc" || current === "atproto")
+            && (c.prov || "smtp") !== current) dead = true;
+        if (dead) {
+          drops.push(delDevice(r.issuer, r.email, r.kind).catch(function () {}));
+        }
+      });
+      return Promise.all(drops).then(function () { return drops.length; });
+    });
+  }
+
   // --- Same-tab provisioning staging (mingo-ytrs) --------------------------
   // A single in-flight handshake at a time. `rec` carries the non-extractable
   // privateKey (CryptoKey) plus the metadata needed to validate the returned
@@ -188,6 +244,7 @@
     generate: generate, sign: sign, put: put, get: get, del: del,
     forEmail: forEmail, all: all, purgeLegacy: purgeLegacy,
     putPending: putPending, getPending: getPending, clearPending: clearPending,
-    putDevice: putDevice, getDevice: getDevice, delDevice: delDevice, allDevice: allDevice
+    putDevice: putDevice, getDevice: getDevice, delDevice: delDevice, allDevice: allDevice,
+    healthLocal: healthLocal, healthRemote: healthRemote
   };
 })();

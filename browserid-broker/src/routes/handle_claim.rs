@@ -199,13 +199,16 @@ where
     };
 
     // Provenance CLASS change (kts0): upgrading a non-atproto record to
-    // bridge-vouched revokes the address's pre-upgrade broker certs — no
-    // cached cert may keep signing in around the new ceremony. Same-class
+    // bridge-vouched revokes the address's pre-upgrade broker certs — the
+    // stale-class set (x5c3: auth + config, all browsers, rows stamped) — so
+    // no cached cert keeps signing in around the new ceremony. Same-class
     // re-proofs (same or new DID) leave certs alone; transfers already
     // revoked above (hg2j).
     if let Some(rec) = &existing {
         if rec.user_id == user_id && rec.proof != ProofMethod::Atproto {
-            state.user_store.revoke_user_certs_for_email(user_id, &email)?;
+            state
+                .user_store
+                .revoke_user_stale_class_certs(user_id, &email, ProofMethod::Atproto.as_str())?;
         }
     }
 

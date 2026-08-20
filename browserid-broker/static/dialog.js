@@ -2910,6 +2910,9 @@
     // Drop any classic-era client state (old identity-cert store, legacy key
     // blobs) — the device store is the only keystore now.
     try { await Keystore.purgeLegacy(); } catch (e) { console.warn('keystore purge:', e); }
+    // Keystore hygiene, local pass (y9vr): drop expired/unparseable pairs
+    // before ANY flow consults the cache. No network; runs every load.
+    try { await Keystore.healthLocal(); } catch (e) { /* hygiene only */ }
     // Learn this broker's own issuer domain (its fallback-IdP identity) so the
     // acceptedFallbacks gate (spec §8.1) works on every entry path, including
     // the provisionEmail fast-path below.
@@ -2942,6 +2945,18 @@
         state.publicNames = {};
         (emailsResponse.public_names || []).forEach(p => { state.publicNames[p.email] = p.public_name; });
         rememberAccountEmails(emailsResponse);
+
+        // Keystore hygiene, remote pass (y9vr): diff the local pairs against
+        // the registry + current proof classes, at most once a day — the
+        // sign-in path must not grow a fetch on every open.
+        try {
+          const last = Number(localStorage.getItem('browserid:keystore_health_ts') || 0);
+          if (Date.now() - last > 24 * 3600 * 1000) {
+            const dc = await apiCall('/wsapi/device_certs');
+            await Keystore.healthRemote(dc.certs || [], emailsResponse.proofs || [], location.host);
+            localStorage.setItem('browserid:keystore_health_ts', String(Date.now()));
+          }
+        } catch (e) { /* hygiene only */ }
 
         if (state.emails.length >= 1) {
           // Show email picker - even with one email, let user confirm or add another

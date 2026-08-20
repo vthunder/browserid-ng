@@ -453,6 +453,7 @@ where
             revoked_at: None,
             status_uri: Some(browserid_registrar::consent::status_list_uri(&state.domain)),
             status_idx: Some(status_idx),
+            prov: email_rec.proof.as_str().to_string(),
         });
     }
     // First sight of this holder → UA-derived default label; best-effort.
