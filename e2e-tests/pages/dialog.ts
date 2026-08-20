@@ -26,6 +26,7 @@ export class DialogPage {
   readonly signInButton: Locator;
   readonly passwordError: Locator;
   readonly forgotPasswordLink: Locator;
+  readonly emailCodeLink: Locator;
 
   // Create account screen (new user)
   readonly createPasswordInput: Locator;
@@ -66,6 +67,7 @@ export class DialogPage {
     this.signInButton = page.locator('#password-form button[type="submit"]');
     this.passwordError = page.locator('#password-error');
     this.forgotPasswordLink = page.locator('#forgot-password-link');
+    this.emailCodeLink = page.locator('#email-code-link');
 
     // Create account screen
     this.createPasswordInput = page.locator('#create-password');
@@ -125,14 +127,23 @@ export class DialogPage {
   }
 
   /**
+   * From the email screen, reach the sign-in-code screen (audit M7: the
+   * dialog shows the enumeration-safe optimistic password screen first —
+   * the "email me a code" hatch is the path for new users, password-less
+   * accounts, and forgotten passwords alike).
+   */
+  async openSigninCodeScreen(email: string) {
+    await this.enterEmail(email);
+    await this.waitForScreen('password');
+    await this.emailCodeLink.click();
+    await this.waitForScreen('create');
+  }
+
+  /**
    * Sign up as new user (from email screen, without verification)
    */
   async signUpNewUser(email: string, password: string) {
-    // Enter email
-    await this.enterEmail(email);
-
-    // Wait for create screen
-    await this.waitForScreen('create');
+    await this.openSigninCodeScreen(email);
 
     // Enter passwords
     await this.createPasswordInput.fill(password);

@@ -15,6 +15,7 @@ mod oidc;
 mod primary;
 mod reset;
 pub(crate) mod session;
+mod signin_code;
 mod status;
 mod test;
 mod well_known;
@@ -173,6 +174,11 @@ where
         .route("/wsapi/stage_reset", post(reset::stage_reset))
         .route("/wsapi/complete_reset", post(reset::complete_reset))
         .route("/wsapi/password_reset_status", get(reset::password_reset_status))
+        // Unified sign-in code (dw35): the dialog's enumeration-safe SMTP
+        // escape hatch — creates the account or resets its password, decided
+        // server-side after the mailbox proof.
+        .route("/wsapi/stage_signin_code", post(signin_code::stage_signin_code))
+        .route("/wsapi/complete_signin_code", post(signin_code::complete_signin_code))
         // The agent guestbook demo (a public RP only agents can sign).
         .route("/guestbook", get(guestbook::page).post(guestbook::sign))
         .route("/guestbook/feed", get(guestbook::feed))
@@ -310,7 +316,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-8O9UaTBRBHVhN04DlIDRnKp+/GKr8S0m/lfnG+0reI0='", // account.html
+    "'sha256-PDXVpyH2CD9Bb8S8c3PMDIYOpujwPKbsn5+tQXlDy+U='", // account.html
     "'sha256-XRWE73ZH1qCk6vmO+hv85g2743sS42s8Y64PjFX8z98='", // authorize.html
     "'sha256-cgwfxDK4GCoGP+8bnCnRcDqyXuKYsNlxqR3e5aj4DKY='", // consent.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)

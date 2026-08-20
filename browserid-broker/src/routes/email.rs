@@ -556,8 +556,12 @@ pub struct AddressInfoResponse {
     /// Type of identity provider ("primary" or "secondary")
     #[serde(rename = "type")]
     pub addr_type: String,
-    /// State of the email ("known", "unknown", "transition_to_primary", etc.)
-    pub state: String,
+    /// Account state ("known", "transition_to_secondary", "unverified", …).
+    /// Only present when the calling session OWNS the address — to anyone
+    /// else this field was an unauthenticated account-existence oracle
+    /// (audit M7, browserid-ng-dw35), so cold callers get domain facts only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
     /// The issuing domain
     pub issuer: String,
     /// Whether this domain is disabled
@@ -630,9 +634,12 @@ fn compute_state(
 }
 
 /// GET /wsapi/address_info
-/// Get information about an email address
+/// Get information about an email address. Unauthenticated callers learn
+/// domain-level facts only (type/proof/URLs); the account-level `state` is
+/// computed solely for a session that owns the address (audit M7).
 pub async fn address_info<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
     Query(query): Query<AddressInfoQuery>,
 ) -> Result<Json<AddressInfoResponse>, BrokerError>
 where
@@ -765,29 +772,39 @@ where
         (None, None)
     };
 
-    // Look up email in database
-    let email_record = state.user_store.get_email(&normalized)?;
-
-    let email_state = if let Some(ref email) = email_record {
-        if !email.verified {
-            // Marked for re-verification (kgb9: a password reset unverifies
-            // the account's sibling E3 addresses): a fresh proof — SMTP code
-            // or bridge hop, per `proof` — is required before this address
-            // signs in or mints again.
-            "unverified"
-        } else {
-            // Email exists - compute state based on password and type history
-            let password_known = state.user_store.has_password(email.user_id)?;
-            compute_state(password_known, Some(email.last_used_as), current_type)
-        }
-    } else {
-        // Email not in database
-        "unknown"
+    // Account-level state is disclosed ONLY to a session that owns this
+    // address (the chooser / signed-in flows). To everyone else the lookup
+    // is skipped entirely, so an existing and a non-existing address produce
+    // byte-identical responses (audit M7, browserid-ng-dw35).
+    let email_state = match super::session::get_session_from_cookies(
+        &cookies,
+        state.session_store.as_ref(),
+    ) {
+        Some(session) => match state.user_store.get_email(&normalized)? {
+            Some(ref email) if email.user_id == session.user_id => {
+                if !email.verified {
+                    // Marked for re-verification (kgb9: a password reset
+                    // unverifies the account's sibling E3 addresses): a fresh
+                    // proof — SMTP code or bridge hop, per `proof` — is
+                    // required before this address signs in or mints again.
+                    Some("unverified")
+                } else {
+                    let password_known = state.user_store.has_password(email.user_id)?;
+                    Some(compute_state(
+                        password_known,
+                        Some(email.last_used_as),
+                        current_type,
+                    ))
+                }
+            }
+            _ => None,
+        },
+        None => None,
     };
 
     Ok(Json(AddressInfoResponse {
         addr_type: addr_type.to_string(),
-        state: email_state.to_string(),
+        state: email_state.map(str::to_string),
         issuer,
         disabled: false,
         normalized_email: normalized,

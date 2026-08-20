@@ -982,6 +982,7 @@ impl VerificationType {
             VerificationType::NewAccount => "new_account",
             VerificationType::AddEmail => "add_email",
             VerificationType::PasswordReset => "password_reset",
+            VerificationType::SigninCode => "signin_code",
         }
     }
 
@@ -990,6 +991,7 @@ impl VerificationType {
             "new_account" => Some(VerificationType::NewAccount),
             "add_email" => Some(VerificationType::AddEmail),
             "password_reset" => Some(VerificationType::PasswordReset),
+            "signin_code" => Some(VerificationType::SigninCode),
             _ => None,
         }
     }

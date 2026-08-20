@@ -96,14 +96,17 @@ test.describe('Sign In Flow', () => {
     await expect(dialogPage.rpName).toHaveText('example.com');
   });
 
-  test('unknown email shows create account screen', async ({ dialogPage }) => {
+  test('unknown email gets the same optimistic password screen (M7)', async ({ dialogPage }) => {
     await dialogPage.goto('http://example.com');
 
-    // Enter a new email
+    // Enter a new email — the dialog must not reveal there is no account:
+    // same password screen as an existing address, code hatch for the rest.
     const newEmail = generateTestEmail();
     await dialogPage.enterEmail(newEmail);
 
-    // Should show create account screen
+    await dialogPage.waitForScreen('password');
+    await expect(dialogPage.emailCodeLink).toBeVisible();
+    await dialogPage.emailCodeLink.click();
     await dialogPage.waitForScreen('create');
     await expect(dialogPage.createPasswordInput).toBeVisible();
   });

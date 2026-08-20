@@ -12,6 +12,12 @@ pub enum VerificationType {
     AddEmail,
     /// Password reset
     PasswordReset,
+    /// Unified sign-in code (dialog's SMTP escape hatch, browserid-ng-dw35):
+    /// staged for an address WITHOUT knowing whether an account exists —
+    /// completion creates the account or resets its password server-side.
+    /// Deliberately its own type so the creation/reset status oracles never
+    /// see these records.
+    SigninCode,
 }
 
 /// Type of email (how it was added to the account)

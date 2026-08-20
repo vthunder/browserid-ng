@@ -56,11 +56,14 @@
       </div>
     </section>
 
-    <!-- Password Entry Screen (for existing users) -->
+    <!-- Password Entry Screen. Two modes (showPasswordScreen): "Welcome
+         back" for flows that know the account exists, and a neutral
+         optimistic mode for cold sign-in where existence is deliberately
+         unknown (audit M7) — the code hatch covers everyone else. -->
     <section id="password-screen" class="screen">
       <div class="content">
         <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
-        <h2>Welcome back</h2>
+        <h2 id="password-heading">Welcome back</h2>
         <p class="email-display"></p>
         <!-- Set when a bridge claim needs the password confirmed first
              (kts0): explains WHY the password screen appeared mid-Google. -->
@@ -81,19 +84,25 @@
             <button type="button" class="back">Back</button>
           </div>
 
-          <p class="link-row" style="margin-bottom:0">
+          <p class="link-row" id="forgot-password-row" style="margin-bottom:0">
             <a href="#" id="forgot-password-link">Forgot your password?</a>
+          </p>
+          <p class="link-row" id="email-code-row" style="margin-bottom:0" hidden>
+            <a href="#" id="email-code-link">No password, forgot it, or new here? Email me a code</a>
           </p>
         </form>
       </div>
     </section>
 
-    <!-- Create Account Screen (for new users) -->
+    <!-- Sign-in Code Screen: the optimistic password screen's escape hatch.
+         Deliberately neutral copy — whether the address is brand new or an
+         existing account resetting its password is resolved server-side
+         after the mailed code (audit M7). -->
     <section id="create-screen" class="screen">
       <div class="content">
         <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
-        <h2>You're new here — welcome</h2>
-        <p style="margin-bottom:4px">This creates your browserid account for</p>
+        <h2>Get a sign-in code</h2>
+        <p style="margin-bottom:4px">Choose a password, and we'll email a code to</p>
         <p class="email-display"></p>
 
         <form id="create-form">
@@ -118,7 +127,7 @@
           </div>
 
           <div class="button-row">
-            <button type="submit" class="primary">Create account</button>
+            <button type="submit" class="primary">Email me a code</button>
             <button type="button" class="back">Back</button>
           </div>
         </form>

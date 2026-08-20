@@ -47,6 +47,43 @@ async fn test_auth_wrong_password() {
     assert_eq!(body["success"], false);
 }
 
+/// Audit M7 (browserid-ng-dw35): a failed login must not reveal WHY it
+/// failed — no such account, an account without a password, and a wrong
+/// password all return identical status and body (and each path burns one
+/// bcrypt verification, so timing doesn't tell them apart either).
+#[tokio::test]
+async fn test_auth_failure_is_existence_indistinguishable() {
+    let ctx = common::create_test_context();
+    use browserid_broker::UserStore;
+
+    // An account with a password…
+    common::create_user(&ctx.server, &ctx.email_sender, "haspass@example.com", "correcthorse").await;
+    // …an account WITHOUT a password (bridge/primary-established)…
+    let uid = ctx.user_store.create_user_no_password().unwrap();
+    ctx.user_store.add_email(uid, "nopass@example.com", true).unwrap();
+    // …and no account at all.
+
+    let attempt = |email: &'static str| {
+        let server = &ctx.server;
+        async move {
+            server
+                .post("/wsapi/authenticate_user")
+                .json(&json!({ "email": email, "pass": "not-the-password" }))
+                .await
+        }
+    };
+
+    let wrong_pass = attempt("haspass@example.com").await;
+    let no_pass = attempt("nopass@example.com").await;
+    let no_account = attempt("missing@example.com").await;
+
+    assert_eq!(wrong_pass.status_code(), 401);
+    assert_eq!(no_pass.status_code(), 401, "password-less account must not 500");
+    assert_eq!(no_account.status_code(), 401);
+    assert_eq!(wrong_pass.text(), no_account.text());
+    assert_eq!(no_pass.text(), no_account.text());
+}
+
 /// Test: authentication with correct credentials succeeds
 #[tokio::test]
 async fn test_auth_success() {

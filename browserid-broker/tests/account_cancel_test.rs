@@ -102,9 +102,10 @@ async fn test_email_unknown_after_cancel() {
     let session = create_user(&server, &email_sender, email, password).await;
     let csrf = get_csrf(&server, &session).await;
 
-    // Verify email is known before cancel
+    // Verify email is known before cancel (state is owner-session-gated, M7)
     let response = server
         .get(&format!("/wsapi/address_info?email={}", email))
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .await;
     let body: Value = response.json();
     assert_eq!(body["state"], "known");
@@ -121,12 +122,14 @@ async fn test_email_unknown_after_cancel() {
         .await;
     assert_eq!(response.status_code(), 200);
 
-    // Verify email is now unknown
+    // The record is gone: even the old session (now deleted with the
+    // account) gets no state — same shape as any cold lookup (M7).
     let response = server
         .get(&format!("/wsapi/address_info?email={}", email))
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .await;
     let body: Value = response.json();
-    assert_eq!(body["state"], "unknown");
+    assert!(body.get("state").is_none());
 }
 
 /// Test: after cancellation, old session is invalid

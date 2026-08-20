@@ -49,8 +49,8 @@
   // API endpoints (relative to current origin)
   const API = {
     sessionContext: '/wsapi/session_context',
-    stageUser: '/wsapi/stage_user',
-    completeUserCreation: '/wsapi/complete_user_creation',
+    stageSigninCode: '/wsapi/stage_signin_code',
+    completeSigninCode: '/wsapi/complete_signin_code',
     authenticate: '/wsapi/authenticate_user',
     listEmails: '/wsapi/list_emails',
     deviceIssue: '/device/issue',
@@ -135,6 +135,25 @@
     }
     if (screenId === 'success') setSuccessHeading();
     placeFedcmOptin(screenId);
+  }
+
+  // The password screen serves two audiences. Flows that KNOW the account
+  // exists (session-owned records, claim/mint step-ups) get "Welcome back"
+  // and the forgot-password link. The cold optimistic flow (audit M7)
+  // deliberately does not know whether an account exists, so the copy stays
+  // neutral and the "email me a code" hatch covers new users and
+  // password-less accounts. Both directions are always set — the screen is
+  // reused across flows. (Plain showScreen('password') re-shows the current
+  // mode, e.g. after a failed attempt.)
+  function showPasswordScreen(opts) {
+    const optimistic = !!(opts && opts.optimistic);
+    const heading = document.getElementById('password-heading');
+    if (heading) heading.textContent = optimistic ? 'Enter your password' : 'Welcome back';
+    const codeRow = document.getElementById('email-code-row');
+    if (codeRow) codeRow.hidden = !optimistic;
+    const forgotRow = document.getElementById('forgot-password-row');
+    if (forgotRow) forgotRow.hidden = optimistic;
+    showScreen('password');
   }
 
   function showError(message) {
@@ -610,11 +629,35 @@
         if (parent) return await handleEmailChosen(parent, true);
       }
 
-      // 1. Discovery: which IdP roots this email.
+      state.email = email;
+      document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
+
+      // 1. Discovery: which IdP roots this email. Routing below branches on
+      // DOMAIN facts (type, proof) — the account-level `state` is present
+      // only when OUR session owns the address (the server withholds it from
+      // everyone else, audit M7), so a cold flow reveals nothing about
+      // whether an account exists.
       const addressInfo = await checkEmail(email);
 
       if (addressInfo.type === 'primary') {
-        // Primary email — its own IdP issues the device certs.
+        // Primary email — its own IdP issues the device certs. A session-
+        // owned record that has drifted secondary re-routes to the broker's
+        // password/reset flows instead.
+        if (addressInfo.state === 'transition_to_secondary') {
+          showPasswordScreen();
+          return;
+        }
+        if (addressInfo.state === 'transition_no_password') {
+          return await handleNoPasswordTransition(email);
+        }
+        if (addressInfo.state === 'transition_to_primary' && addressInfo.device_auth) {
+          // Was secondary, now primary — explain the hand-off to the IdP.
+          const domain = email.split('@')[1];
+          document.querySelectorAll('.idp-name').forEach(el => el.textContent = domain);
+          state.pendingAddressInfo = addressInfo;
+          showScreen('primaryTransition');
+          return;
+        }
         return await handlePrimaryIdP(email, addressInfo);
       }
 
@@ -630,78 +673,61 @@
         return;
       }
 
-      // Handle-identity domain: re-proof runs at the bridge, never by
-      // password reset or mailed code (browserid-ng-xcy6).
-      if (addressInfo.proof === 'atproto' &&
-          (addressInfo.state === 'unknown' ||
-           addressInfo.state === 'transition_no_password' ||
-           addressInfo.state === 'unverified')) {
-        return await handleAtprotoClaim(email, addressInfo);
-      }
-
-      // Google-hosted mailbox (browserid-ng-qer8): prove it by signing in
-      // with Google instead of a mailed code. A 'known' identity with a
-      // password still gets the password screen.
-      if (addressInfo.proof === 'oidc' &&
-          (addressInfo.state === 'unknown' ||
-           addressInfo.state === 'transition_no_password' ||
-           addressInfo.state === 'unverified')) {
-        return await handleOidcClaim(email, addressInfo);
-      }
-
-      if (addressInfo.state === 'transition_to_secondary') {
-        // Was primary, now secondary - need password
-        state.email = email;
-        document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
-        showScreen('password');
+      // Unprovable domain (no mail, not a handle) — a domain fact, so
+      // refusing here leaks nothing.
+      if (addressInfo.proof === 'none') {
+        showError(email.split('@')[1] + ' can’t receive email and isn’t a ' +
+          'Bluesky handle, so this address can’t be verified.');
         return;
       }
 
+      // Bridge-provable domain (Google-hosted mailbox qer8, or an atproto
+      // handle xcy6): prove-first, unconditionally. The bridge may reuse a
+      // live Google/Bluesky session (one tap); existence, record linking and
+      // any password step-up are resolved server-side AFTER the proof
+      // (kts0), where distinguishing them leaks nothing. A stored device
+      // pair on this browser (evidence of a past sign-in here) skips
+      // straight to sign-in.
+      if (addressInfo.proof === 'oidc' || addressInfo.proof === 'atproto') {
+        const issuer = state.brokerDomain || location.hostname;
+        if (await storedDevicePair(issuer, email)) {
+          return await completeSignIn(email);
+        }
+        return addressInfo.proof === 'oidc'
+          ? await handleOidcClaim(email, addressInfo)
+          : await handleAtprotoClaim(email, addressInfo);
+      }
+
+      // Plain-mailbox domain (proof smtp). When our session owns the address
+      // the server disclosed its state — route precisely.
       if (addressInfo.state === 'transition_no_password') {
         // Account without a password — prove control via code, then set one.
-        await handleNoPasswordTransition(email);
-        return;
+        return await handleNoPasswordTransition(email);
       }
-
       if (addressInfo.state === 'unverified') {
         // Marked for re-verification (kgb9: a password reset unverifies the
         // account's sibling SMTP addresses): fresh SMTP challenge, completed
         // through the add-email flow (verify → mint under the chokepoint).
-        state.email = email;
-        document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
-        const ctx = await apiCall(API.sessionContext);
-        if (!ctx.authenticated) {
-          // Cold: the account password first; the password form re-enters
-          // here and the staging below runs on the fresh session.
-          state.reverifyAfterAuth = true;
-          showScreen('password');
-          return;
-        }
+        // `state` present ⇒ this session owns the address, so stage directly.
         await apiCall(API.stageEmail, 'POST', { email });
         state.newEmail = email;
         showScreen('addEmailVerify');
         return;
       }
-
-      // Secondary, known, verified — complete via the session (issue if needed).
+      if (addressInfo.state === 'transition_to_secondary') {
+        // Was primary, now secondary — need the account password.
+        showPasswordScreen();
+        return;
+      }
       if (addressInfo.state === 'known') {
-        // Bridge-vouched (E2) with no cached device pair: issuance requires a
-        // live bridge proof (pr3a), so run the bridge up front instead of
-        // burning a refused /device/issue. The bridge may reuse a live
-        // Google/Bluesky session silently — that's its call.
-        if (addressInfo.proof === 'oidc' || addressInfo.proof === 'atproto') {
-          const issuer = state.brokerDomain || location.hostname;
-          if (!(await storedDevicePair(issuer, email))) {
-            return addressInfo.proof === 'oidc'
-              ? await handleOidcClaim(email, addressInfo)
-              : await handleAtprotoClaim(email, addressInfo);
-          }
-        }
+        // Session-owned, verified — complete via the session (issue if needed).
         return await completeSignIn(email);
       }
 
-      // Unknown state - shouldn't happen for a selected email
-      showError('Cannot sign in with this email (unknown state: ' + addressInfo.state + ')');
+      // Cold: the server will not say whether this account exists, so ask
+      // for a password either way (enumeration-safe optimistic screen). The
+      // "email me a code" hatch covers new users and password-less accounts.
+      showPasswordScreen({ optimistic: true });
 
     } catch (e) {
       showError('Failed to sign in: ' + e.message);
@@ -1738,7 +1764,7 @@
         ' sign-in to this address — after that, ' + provider + ' alone signs you in.';
       hint.hidden = false;
     }
-    showScreen('password');
+    showPasswordScreen();
   }
 
   // Popup lane. Resolves with the attached (broker-normalized) email.
@@ -1994,7 +2020,7 @@
         }
         state.email = email;
         document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
-        showScreen('password');
+        showPasswordScreen();
         return;
       }
       const issuer = state.brokerDomain || location.hostname;
@@ -2044,7 +2070,7 @@
       if (/password required/i.test(e.message)) {
         state.email = email;
         document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
-        showScreen('password');
+        showPasswordScreen();
         return;
       }
       // A cached pair refused at the mint — revoked (transfer hg2j, class
@@ -2234,112 +2260,11 @@
         return;
       }
 
-      state.email = email;
-      document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
-
-      showScreen('loading');
-      // A fresh flow invalidates any parked claim step-up (kts0).
-      state.pendingClaimAfterAuth = null;
-      const pwHint = document.getElementById('password-hint');
-      if (pwHint) pwHint.hidden = true;
-
-      try {
-        // Subordinate substitution for a TYPED identity (mingo-cm8z), same as the
-        // chooser path: typing a subordinate to log into its own issuer
-        // authenticates the parent instead. No-ops when not applicable / signed out.
-        const parent = await maybeSubstituteParent(email);
-        if (parent) return await handleEmailChosen(parent, true);
-
-        const addressInfo = await checkEmail(email);
-
-        // Handle based on type and state
-        if (addressInfo.type === 'primary') {
-          // Primary IdP flow
-          if (addressInfo.state === 'transition_to_secondary') {
-            // Was primary, now secondary with password
-            showScreen('password');
-          } else if (addressInfo.state === 'transition_no_password') {
-            // Was primary, now secondary without password - need to set one
-            await handleNoPasswordTransition(email);
-          } else {
-            // Normal primary flow (known or unknown)
-            await handlePrimaryIdP(email, addressInfo);
-          }
-        } else {
-          // Secondary flow — also covers a primary email transiently seen as secondary
-          // (e.g. a discovery hiccup), whose existing record yields a transition_* state.
-          // Mirror handleEmailChosen so an *existing* account never falls into create.
-          //
-          // Fail fast if the RP didn't accept this broker as a fallback IdP
-          // (spec §8.1). transition_to_primary is exempt — it routes to a
-          // primary, not the broker.
-          if (addressInfo.state !== 'transition_to_primary' && !brokerFallbackAccepted()) {
-            const dom = state.brokerDomain || location.hostname;
-            const alt = (state.acceptedFallbacks || []).filter(f => f && f !== dom);
-            showError('This site doesn’t accept email sign-in via ' + dom + '.' +
-              (alt.length ? ' It accepts: ' + alt.join(', ') + '.'
-                          : ' Use an email whose domain is its own identity provider.'));
-            return;
-          }
-          // Handle-identity domain (browserid-ng-xcy6): ownership is proven
-          // at the bridge via atproto OAuth, not by password or mailed code.
-          // A 'known' identity with a password still gets the password screen.
-          if (addressInfo.proof === 'atproto' &&
-              (addressInfo.state === 'unknown' ||
-               addressInfo.state === 'transition_no_password' ||
-               addressInfo.state === 'unverified')) {
-            return await handleAtprotoClaim(email, addressInfo);
-          }
-          // Google-hosted mailbox (browserid-ng-qer8): same shape, proven by
-          // a Google sign-in at the broker.
-          if (addressInfo.proof === 'oidc' &&
-              (addressInfo.state === 'unknown' ||
-               addressInfo.state === 'transition_no_password' ||
-               addressInfo.state === 'unverified')) {
-            return await handleOidcClaim(email, addressInfo);
-          }
-          if (addressInfo.proof === 'none' && addressInfo.state === 'unknown') {
-            showError(email.split('@')[1] + ' can’t receive email and isn’t a ' +
-              'Bluesky handle, so this address can’t be verified.');
-            return;
-          }
-          if (addressInfo.state === 'known') {
-            // Bridge-vouched domain (kts0): Google/Bluesky-first even for a
-            // known address, same as the chooser path. A linked (E2) record
-            // signs in with no password; an unlinked (grandfathered SMTP)
-            // one gets the password step-up from the claim and links.
-            if (addressInfo.proof === 'oidc' || addressInfo.proof === 'atproto') {
-              const issuer = state.brokerDomain || location.hostname;
-              if (!(await storedDevicePair(issuer, email))) {
-                return addressInfo.proof === 'oidc'
-                  ? await handleOidcClaim(email, addressInfo)
-                  : await handleAtprotoClaim(email, addressInfo);
-              }
-              return await completeSignIn(email);
-            }
-            showScreen('password');
-          } else if (addressInfo.state === 'transition_to_secondary') {
-            // Existing account (was primary) — authenticate with password
-            showScreen('password');
-          } else if (addressInfo.state === 'transition_no_password') {
-            // Existing account without a password — prove control, set one
-            await handleNoPasswordTransition(email);
-          } else if (addressInfo.state === 'transition_to_primary' && addressInfo.device_auth) {
-            // Was secondary, now primary - show transition info screen
-            const domain = email.split('@')[1];
-            document.querySelectorAll('.idp-name').forEach(el => el.textContent = domain);
-            state.pendingAddressInfo = addressInfo;
-            showScreen('primaryTransition');
-          } else if (addressInfo.state === 'unknown') {
-            // Genuinely new email — create an account
-            showScreen('create');
-          } else {
-            showError('Cannot sign in with this email (unexpected state: ' + addressInfo.state + ')');
-          }
-        }
-      } catch (e) {
-        showError('Failed to check email: ' + e.message);
-      }
+      // Same state machine as the chooser — handleEmailChosen branches on
+      // domain facts (type/proof) and only sees account `state` when this
+      // session owns the address (audit M7), so typing a stranger's email
+      // reveals nothing about their account.
+      await handleEmailChosen(email);
     });
 
     // Password form (sign in)
@@ -2372,11 +2297,16 @@
             ? await handleAtprotoClaim(claim.email, info)
             : await handleOidcClaim(claim.email, info);
         }
-        // A re-verification-pending address (kgb9) can't mint yet — re-enter
-        // the chooser flow so the fresh session stages its SMTP challenge.
-        if (state.reverifyAfterAuth) {
-          state.reverifyAfterAuth = false;
-          return await handleEmailChosen(state.email);
+        // Only NOW that the session owns the address can the server say
+        // whether it is re-verification-pending (kgb9) — a cold flow can't
+        // learn that before authenticating (audit M7). If so, stage the
+        // fresh SMTP challenge instead of a mint that would be refused.
+        const info = await checkEmail(state.email).catch(() => null);
+        if (info && info.state === 'unverified') {
+          await apiCall(API.stageEmail, 'POST', { email: state.email });
+          state.newEmail = state.email;
+          showScreen('addEmailVerify');
+          return;
         }
         await completeSignIn(state.email);
       } catch (e) {
@@ -2385,7 +2315,11 @@
       }
     });
 
-    // Create account form
+    // Sign-in code form (the optimistic password screen's escape hatch,
+    // audit M7): choose a password, get a mailed code. One flow whether the
+    // address is brand new OR an existing account without/with a forgotten
+    // password — the server decides which after the code proves the mailbox
+    // (stage/complete_signin_code), so the dialog never needs to know.
     document.getElementById('create-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const password = document.getElementById('create-password').value;
@@ -2404,32 +2338,22 @@
       showScreen('loading');
 
       try {
-        await apiCall(API.stageUser, 'POST', {
+        await apiCall(API.stageSigninCode, 'POST', {
           email: state.email,
           pass: password
         });
 
-        // Completion only proves the mailbox (its session is Lightweight,
-        // ca29) — keep the just-chosen password so verify can sign in FULL
-        // and mint without asking for it a second time.
+        // Keep the just-chosen password: after the code lands, one
+        // authenticate call signs in FULL and mints without asking again.
         state.pendingCreatePass = password;
         showScreen('verify');
       } catch (e) {
-        // The account already exists (e.g. we reached 'create' from a transient
-        // mis-detection). Don't dead-end — route to sign-in for the existing account.
-        if (/already exists/i.test(e.message)) {
-          document.querySelectorAll('.email-display').forEach(el => el.textContent = state.email);
-          showScreen('password');
-          const pwErr = document.getElementById('password-error');
-          if (pwErr) pwErr.textContent = 'This email is already registered — sign in below.';
-        } else {
-          showScreen('create');
-          document.getElementById('create-password-error').textContent = e.message;
-        }
+        showScreen('create');
+        document.getElementById('create-password-error').textContent = e.message;
       }
     });
 
-    // Verification form
+    // Verification form (completes the sign-in code flow)
     document.getElementById('verify-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const code = document.getElementById('verification-code').value.trim();
@@ -2442,11 +2366,11 @@
       showScreen('loading');
 
       try {
-        await apiCall(API.completeUserCreation, 'POST', { email: state.email, token: code });
-        // The completion session is Lightweight (mailbox proof, ca29); the
-        // password the user chose seconds ago upgrades it to Full so the E3
-        // mint proceeds — same as the /account signup flow. Fall through on
-        // failure: completeSignIn's step-up will ask.
+        await apiCall(API.completeSigninCode, 'POST', { email: state.email, token: code });
+        // Completion set the staged password on the (new or existing)
+        // account but minted no session — sign in with it for a Full
+        // session so the E3 mint proceeds. Fall through on failure:
+        // completeSignIn's step-up will ask.
         if (state.pendingCreatePass) {
           const pass = state.pendingCreatePass;
           state.pendingCreatePass = null;
@@ -2488,6 +2412,16 @@
       e.preventDefault();
       document.getElementById('reset-email').value = state.email || '';
       showScreen('resetEmail');
+    });
+
+    // "Email me a code" hatch on the optimistic password screen (audit M7):
+    // for people without an account or password — one code flow, resolved
+    // server-side, so choosing it discloses nothing either.
+    document.getElementById('email-code-link').addEventListener('click', (e) => {
+      e.preventDefault();
+      document.getElementById('create-password').value = '';
+      document.getElementById('confirm-password').value = '';
+      showScreen('create');
     });
 
     // Reset email form

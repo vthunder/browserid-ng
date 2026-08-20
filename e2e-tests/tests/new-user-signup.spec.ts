@@ -11,14 +11,20 @@
 import { test, expect, generateTestEmail, generateTestPassword } from '../fixtures/test-helpers';
 
 test.describe('New User Signup Flow', () => {
-  test('new email shows create account screen', async ({ dialogPage }) => {
+  test('new email shows optimistic password screen with code hatch (M7)', async ({ dialogPage }) => {
     const newEmail = generateTestEmail();
     await dialogPage.goto('http://example.com');
 
-    // Enter a new email
+    // Enter a new email — the dialog must NOT reveal the address has no
+    // account: it asks for a password either way, with the code hatch.
     await dialogPage.enterEmail(newEmail);
+    await dialogPage.waitForScreen('password');
+    await expect(dialogPage.emailCodeLink).toBeVisible();
+    // The neutral heading, not "Welcome back".
+    await expect(dialogPage.page.locator('#password-heading')).toHaveText('Enter your password');
 
-    // Should show create account screen
+    // The hatch leads to the sign-in-code screen.
+    await dialogPage.emailCodeLink.click();
     await dialogPage.waitForScreen('create');
     await expect(dialogPage.createPasswordInput).toBeVisible();
     await expect(dialogPage.confirmPasswordInput).toBeVisible();
@@ -28,9 +34,8 @@ test.describe('New User Signup Flow', () => {
     const newEmail = generateTestEmail();
     await dialogPage.goto('http://example.com');
 
-    // Enter email
-    await dialogPage.enterEmail(newEmail);
-    await dialogPage.waitForScreen('create');
+    // Reach the sign-in-code screen via the hatch
+    await dialogPage.openSigninCodeScreen(newEmail);
 
     // Enter mismatched passwords
     await dialogPage.createPasswordInput.fill('Password123!');
@@ -47,9 +52,8 @@ test.describe('New User Signup Flow', () => {
     const newEmail = generateTestEmail();
     await dialogPage.goto('http://example.com');
 
-    // Enter email
-    await dialogPage.enterEmail(newEmail);
-    await dialogPage.waitForScreen('create');
+    // Reach the sign-in-code screen via the hatch
+    await dialogPage.openSigninCodeScreen(newEmail);
 
     // Enter short password
     await dialogPage.createPasswordInput.fill('short');
@@ -94,7 +98,7 @@ test.describe('New User Signup Flow', () => {
 
     // Get verification code from test endpoint
     const pendingResponse = await request.get(
-      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(newEmail)}&type=new_account`
+      `${baseUrl}/wsapi/test/pending_verification?email=${encodeURIComponent(newEmail)}&type=signin_code`
     );
     const pending = await pendingResponse.json();
     expect(pending.success).toBeTruthy();
@@ -129,9 +133,8 @@ test.describe('New User Signup Flow', () => {
     const newEmail = generateTestEmail();
     await dialogPage.goto('http://example.com');
 
-    // Enter email
-    await dialogPage.enterEmail(newEmail);
-    await dialogPage.waitForScreen('create');
+    // Reach the sign-in-code screen via the hatch
+    await dialogPage.openSigninCodeScreen(newEmail);
 
     // Click back
     await dialogPage.backButton.first().click();

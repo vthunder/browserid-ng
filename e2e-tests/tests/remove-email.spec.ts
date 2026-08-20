@@ -269,7 +269,9 @@ test.describe('Remove Email Flow', () => {
       });
     });
 
-    // Try to use the removed email - should show create screen (unknown email)
+    // Try to use the removed email. Since audit M7 the cold dialog shows the
+    // SAME optimistic password screen for unknown and existing addresses (no
+    // enumeration) — the code hatch is the path back in.
     const newPage = await context.newPage();
     await newPage.goto(`${baseUrl}/dialog/dialog.html?origin=http://example.com`);
     await newPage.waitForSelector('#email-screen.active');
@@ -277,7 +279,8 @@ test.describe('Remove Email Flow', () => {
     await newPage.fill('#email', secondaryEmail);
     await newPage.click('#email-form button[type="submit"]');
 
-    // Should show create screen (new user), not password screen
+    await newPage.waitForSelector('#password-screen.active');
+    await newPage.click('#email-code-link');
     await newPage.waitForSelector('#create-screen.active');
     await expect(newPage.locator('#create-password')).toBeVisible();
 

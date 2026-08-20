@@ -45,6 +45,7 @@ where
         Some("new_account") | None => VerificationType::NewAccount,
         Some("add_email") => VerificationType::AddEmail,
         Some("password_reset") => VerificationType::PasswordReset,
+        Some("signin_code") => VerificationType::SigninCode,
         Some(_) => VerificationType::NewAccount,
     };
 

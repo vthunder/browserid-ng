@@ -112,10 +112,12 @@ async fn reset_pivot_is_blocked_until_reverification() {
     let response = issue(OTHER_E3.to_string(), csrf.clone(), session.clone()).await;
     assert_ne!(response.status_code(), 200, "unverified sibling must not mint");
 
-    // The dialog sees it as needing re-verification.
+    // The dialog sees it as needing re-verification — under the owning
+    // session, the only caller state is disclosed to (M7).
     let info: Value = ctx
         .server
         .get(&format!("/wsapi/address_info?email={OTHER_E3}"))
+        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .await
         .json();
     assert_eq!(info["state"], "unverified");

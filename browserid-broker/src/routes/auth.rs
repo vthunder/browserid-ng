@@ -60,6 +60,16 @@ fn client_ip(headers: &axum::http::HeaderMap) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// A real bcrypt hash of an unguessable random value, computed once per
+/// process. Failure paths verify against it so a caller cannot tell from
+/// timing whether the account existed or had a password at all.
+fn dummy_password_hash() -> &'static str {
+    static DUMMY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DUMMY.get_or_init(|| {
+        hash_password(&uuid::Uuid::new_v4().to_string()).expect("bcrypt never fails on a uuid")
+    })
+}
+
 pub async fn authenticate_user<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
@@ -96,23 +106,35 @@ where
         entry.1 += 1;
     };
 
-    // Find user by email (same error as a bad password — no enumeration).
-    let user = match state.user_store.get_user_by_email(&req.email)? {
-        Some(u) => u,
+    // Find user by email. A missing account, a password-less account (empty
+    // or unparsable hash), and a wrong password must all be indistinguishable
+    // in body, status, AND timing (audit M7) — so every failure path still
+    // pays for one bcrypt verification. The dummy compare uses a real hash of
+    // an unguessable value, so it can never accidentally succeed.
+    let user = state.user_store.get_user_by_email(&req.email)?;
+
+    let valid = match &user {
+        Some(u) => match verify_password(&req.pass, &u.password_hash) {
+            Ok(v) => v,
+            // Empty/unparsable stored hash (a password-less account, e.g.
+            // bridge-established): burn the same bcrypt cost, then fail.
+            Err(_) => {
+                let _ = verify_password(&req.pass, dummy_password_hash());
+                false
+            }
+        },
         None => {
-            record_failure();
-            return Err(BrokerError::InvalidCredentials);
+            let _ = verify_password(&req.pass, dummy_password_hash());
+            false
         }
     };
-
-    // Verify password
-    let valid = verify_password(&req.pass, &user.password_hash)
-        .map_err(|e| BrokerError::Internal(e.to_string()))?;
 
     if !valid {
         record_failure();
         return Err(BrokerError::InvalidCredentials);
     }
+    // valid ⇒ user exists.
+    let user = user.unwrap();
 
     // Success clears this IP's failure counter.
     state.login_attempts.write().unwrap().remove(&ip);

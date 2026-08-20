@@ -1570,8 +1570,7 @@ $('si-resend').onclick = async (ev) => {
   if (Date.now() < siResendReadyAt) return;
   const email = $('si-email').value.trim();
   try {
-    if (siMode === 'create-code')      await post('/wsapi/stage_user', { email, pass: siPendingPass });
-    else if (siMode === 'reset-code')  await post('/wsapi/stage_reset', { email });
+    if (siMode === 'create-code') await post('/wsapi/stage_signin_code', { email, pass: siPendingPass });
     else return;
     siMuted('Code resent — check your email (and spam).');
     siStartResendCooldown();
@@ -1581,12 +1580,6 @@ $('si-back').onclick = () => {
   $('si-pass').value = ''; $('si-code').value = ''; $('si-newpass').value = ''; siPendingPass = '';
   siShow('email', { lead: "Enter your email — we'll sign you in or set you up.", btn: 'Continue' });
 };
-async function siSendResetCode(email, lead) {
-  siMuted('Emailing a code…');
-  await post('/wsapi/stage_reset', { email });
-  siShow('reset-code', { lead: `${lead} — we emailed a code to ${email}.`, btn: 'Sign in' });
-  siStartResendCooldown();
-}
 async function siDiscover(email) {
   siMuted('Checking…');
   const info = await api(`/wsapi/address_info?email=${encodeURIComponent(email)}`);
@@ -1617,20 +1610,18 @@ async function siDiscover(email) {
       + '&state=acct');
     return;
   }
-  const hasPassword = info.state === 'known'
-    || info.state === 'transition_to_secondary' || info.state === 'transition_to_primary';
-  if (info.state === 'unknown') {
-    siShow('create', { lead: `No account yet for ${email} — choose a password to create one.`,
-      btn: 'Create account', passLabel: 'Choose a password (8+ characters)' });
-  } else if (hasPassword) {
-    siShow('login', { lead: `Welcome back. Enter your password for ${email}.`,
-      btn: 'Sign in', passLabel: 'Password',
-      alt: `<a href="#" id="si-forgot">Forgot your password? Email me a code</a>` });
-    $('si-forgot').onclick = (ev) => { ev.preventDefault(); siSendResetCode(email, 'Reset your password').catch(e => siErr(e.message)); };
-  } else {
-    // account exists but has no password (e.g. only ever used a primary IdP)
-    await siSendResetCode(email, 'Set a password to sign in');
-  }
+  // Plain-mailbox domain. This page is only reachable signed out, so the
+  // server withholds account state (audit M7) — ask for a password without
+  // asserting the account exists; the code hatch covers everyone else (new,
+  // password-less, or forgotten — resolved server-side after the code).
+  siShow('login', { lead: `Enter your password for ${email}.`,
+    btn: 'Sign in', passLabel: 'Password',
+    alt: `<a href="#" id="si-code">No password, forgot it, or new here? Email me a code</a>` });
+  $('si-code').onclick = (ev) => {
+    ev.preventDefault();
+    siShow('create', { lead: `Choose a password — we'll email a code to ${email} to confirm it's yours.`,
+      btn: 'Email me a code', passLabel: 'Choose a password (8+ characters)' });
+  };
 }
 $('signin-form').onsubmit = async (e) => {
   e.preventDefault();
@@ -1644,9 +1635,11 @@ $('signin-form').onsubmit = async (e) => {
       location.reload(); return;
     }
     if (siMode === 'create') {
+      // Unified sign-in code (dw35): the server creates the account or
+      // resets the existing password after the code proves the mailbox.
       const pass = $('si-pass').value;
       siMuted('Emailing a code…');
-      await post('/wsapi/stage_user', { email, pass });
+      await post('/wsapi/stage_signin_code', { email, pass });
       siPendingPass = pass;
       siShow('create-code', { lead: `Almost there — enter the code we emailed to ${email}.`, btn: 'Confirm & sign in' });
       siStartResendCooldown();
@@ -1654,15 +1647,8 @@ $('signin-form').onsubmit = async (e) => {
     }
     if (siMode === 'create-code') {
       siMuted('Confirming…');
-      await post('/wsapi/complete_user_creation', { email, token: $('si-code').value.trim() });
+      await post('/wsapi/complete_signin_code', { email, token: $('si-code').value.trim() });
       await post('/wsapi/authenticate_user', { email, pass: siPendingPass, ephemeral: false });
-      location.reload(); return;
-    }
-    if (siMode === 'reset-code') {
-      const pass = $('si-newpass').value;
-      siMuted('Signing in…');
-      await post('/wsapi/complete_reset', { email, token: $('si-code').value.trim(), pass });
-      await post('/wsapi/authenticate_user', { email, pass, ephemeral: false });
       location.reload(); return;
     }
   } catch (err) { siErr(err.message); }

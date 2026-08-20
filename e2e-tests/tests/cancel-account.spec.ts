@@ -127,7 +127,10 @@ test.describe('Cancel Account Flow', () => {
       });
     }, { email: testEmail, pass: password });
 
-    // Try to use the email again - should show create screen (email is now unknown)
+    // Try to use the email again. Since audit M7 the cold dialog shows the
+    // SAME optimistic password screen for unknown and existing addresses (no
+    // enumeration) — the code hatch is how the now-unknown address re-signs
+    // up.
     const newPage = await context.newPage();
     await newPage.goto(`${baseUrl}/dialog/dialog.html?origin=http://example.com`);
     await newPage.waitForSelector('#email-screen.active');
@@ -135,7 +138,8 @@ test.describe('Cancel Account Flow', () => {
     await newPage.fill('#email', testEmail);
     await newPage.click('#email-form button[type="submit"]');
 
-    // Should show create screen (new user), not password screen (existing user)
+    await newPage.waitForSelector('#password-screen.active');
+    await newPage.click('#email-code-link');
     await newPage.waitForSelector('#create-screen.active');
     await expect(newPage.locator('#create-password')).toBeVisible();
 
