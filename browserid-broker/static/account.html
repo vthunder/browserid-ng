@@ -1616,8 +1616,8 @@ async function siDiscover(email) {
   // password-less, or forgotten — resolved server-side after the code).
   siShow('login', { lead: `Enter your password for ${email}.`,
     btn: 'Sign in', passLabel: 'Password',
-    alt: `<a href="#" id="si-code">No password, forgot it, or new here? Email me a code</a>` });
-  $('si-code').onclick = (ev) => {
+    alt: `<a href="#" id="si-code-link">No password, forgot it, or new here? Email me a code</a>` });
+  $('si-code-link').onclick = (ev) => {
     ev.preventDefault();
     siShow('create', { lead: `Choose a password — we'll email a code to ${email} to confirm it's yours.`,
       btn: 'Email me a code', passLabel: 'Choose a password (8+ characters)' });
