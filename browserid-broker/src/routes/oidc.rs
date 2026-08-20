@@ -186,8 +186,10 @@ where
     // of Google to an address gets the full authorize framing; a linked
     // address re-verifies VISIBLY once its interactive stamp goes stale (or
     // was never set — legacy rows); routine renewals in between stay silent.
-    // Google auto-approves openid+email with no prompt, so this is the only
-    // place visibility exists.
+    // Google only shows its own screen when the user "has not previously
+    // authorized access" for this client — one grant, ever, per Google
+    // account — so without a prompt param OUR linking moments are silent for
+    // anyone with any prior grant. Visibility must be broker policy.
     let (prompt, forced_visible) = match state.user_store.get_email(&normalized)? {
         Some(rec) if rec.proof == crate::store::ProofMethod::Oidc => {
             let stale = match state.user_store.email_interactive_proof_at(&normalized)? {

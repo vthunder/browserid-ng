@@ -125,9 +125,13 @@ pub fn random_token() -> String {
 /// state + `login_hint` = the claimed address). Scope is the minimum
 /// `openid email`.
 ///
-/// `prompt`: broker-enforced ceremony visibility (browserid-ng-lrhe). Google
-/// auto-approves these basic scopes with a live session and no prompt — no
-/// consent screen even on FIRST authorization — so visibility is OUR policy:
+/// `prompt`: broker-enforced ceremony visibility (browserid-ng-lrhe). Per
+/// Google's OIDC docs, with no prompt value "the user is shown a consent
+/// screen" only if they have "not previously authorized access" — one grant
+/// per (Google account × client), after which every request is silent. The
+/// broker's per-ADDRESS linking moments don't coincide with that one grant
+/// (a grant from any earlier flow — another address, an abandoned attempt —
+/// silences the exact ceremony we want seen), so visibility is OUR policy:
 /// `Some("consent")` for a first link / class change, `Some("select_account")`
 /// for periodic re-verification, `None` for silent routine renewals.
 pub fn build_auth_url(
