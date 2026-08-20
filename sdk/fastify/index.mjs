@@ -18,7 +18,6 @@ import { createVerifier } from "@browserid-ng/verify";
  * @param {string} [config.broker]  default "https://browserid.me".
  * @param {string} [config.verifierUrl]  default `${broker}/verify-access`.
  * @param {string[]} [config.acceptedFallbacks]
- * @param {boolean} [config.allowAgent]  default false (humans only).
  * @param {typeof fetch} [config.fetch]  injectable (tests).
  */
 export function verifyBrowserID(config = {}) {
@@ -26,22 +25,27 @@ export function verifyBrowserID(config = {}) {
   if (!audience || typeof audience !== "string") {
     throw new Error("@browserid-ng/fastify: 'audience' is required — pin it to your canonical origin");
   }
+  if ("allowAgent" in config) {
+    // Removed (was dead code — the protocol has no human/agent axis).
+    // Delegation policy: compare `grantee` to `email` on the verified result.
+    throw new Error(
+      "@browserid-ng/fastify: allowAgent was removed — check `grantee !== email` for delegated presentations instead"
+    );
+  }
   const broker = (config.broker || "https://browserid.me").replace(/\/+$/, "");
   const verifier = createVerifier({
     verifierUrl: config.verifierUrl || `${broker}/verify-access`,
     acceptedFallbacks: config.acceptedFallbacks,
     fetch: config.fetch,
   });
-  const allowAgent = config.allowAgent === true;
   return async function (presentation) {
     if (!presentation || typeof presentation !== "string") return null;
-    const r = await verifier.verify(presentation, audience, { allowAgent });
+    const r = await verifier.verify(presentation, audience);
     if (!r.ok) return null;
     return {
       email: r.email,
       issuer: r.issuer,
       grantee: r.grantee,
-      subject: r.subject,
       scopes: r.scopes,
       statusRefs: r.statusRefs,
     };

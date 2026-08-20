@@ -65,7 +65,7 @@
       <div class="codebox">
         <div class="bar"><i></i><i></i><i></i>&nbsp;signin.js<span class="r">server</span></div>
         <pre><span class="c">// One call — a verified identity for whoever signs in</span>
-<span class="kw">const</span> who = <span class="kw">await</span> <b>verify</b>(assertion, audience, { allowAgent: <span class="kw">true</span> })
+<span class="kw">const</span> who = <span class="kw">await</span> <b>verify</b>(assertion, audience)
 
 who.email    <span class="c">// <span class="s">"alice@gmail.com"</span> — attributed to: the human</span>
 who.grantee  <span class="c">// <span class="s">"alice+researcher@gmail.com"</span> — the agent</span>
@@ -82,7 +82,7 @@ who.issuer   <span class="c">// <span class="s">"gmail.com"</span> — checked a
   <div class="wrap" style="padding:60px 0">
     <span class="kicker">Drop-in adapters</span>
     <h2 class="sec">Or skip the call — one line for your stack.</h2>
-    <p class="sec-lede" style="max-width:36em">Each adapter wraps the same audience-pinned, fail-closed verification. Humans by default; opt in to their agents when you want them.</p>
+    <p class="sec-lede" style="max-width:36em">Each adapter wraps the same audience-pinned, fail-closed verification. Every result names who it's attributed to and who acted — your policy, your call.</p>
     <div class="cards4" style="margin-top:30px">
       <div class="democell">
         <span class="tag">next.js · live</span>

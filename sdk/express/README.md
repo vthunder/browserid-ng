@@ -51,4 +51,6 @@ if (!ok) req.session.destroy(); // fail-closed: revoked OR unverifiable
 
 `audience` (**required** — pin to your canonical origin; the confused-deputy
 guard), `broker` (default `https://browserid.me`), `verifierUrl`,
-`acceptedFallbacks`, `allowAgent` (default false — humans only). MPL-2.0.
+`acceptedFallbacks`. The identity carries `email` (attributed) and `grantee`
+(actor of record) — compare them for delegation policy; there is no
+human/agent flag (see the `@browserid-ng/verify` README). MPL-2.0.

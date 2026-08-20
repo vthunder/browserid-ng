@@ -11,7 +11,7 @@
 // Here the presentation is passed as a tool argument so the verification is
 // visible in one file. A production server would hoist auth to the transport /
 // MCP OAuth layer and verify once per session; the check itself — verify →
-// subject+scopes → enforce — is identical.
+// scopes → enforce — is identical.
 //
 // Config (env):
 //   SERVER_AUDIENCE     the audience the agent's presentation must target
@@ -41,16 +41,21 @@ const notes = [];
  * This is the whole security boundary — every tool goes through it.
  */
 async function authorize(presentation, requiredScope) {
-  const r = await verifier.verify(presentation, SERVER_AUDIENCE, { allowAgent: true });
+  const r = await verifier.verify(presentation, SERVER_AUDIENCE);
   if (!r.ok) throw new Error(`authentication failed: ${r.reason}`);
-  if (r.subject !== "agent") throw new Error("this server is for agents acting for a human; present an agent credential");
+  // `r.email` is the ATTRIBUTED identity (the human the warrant grantor
+  // vouches for); `r.grantee` is the actor of record, differing from `email`
+  // when a named agent acted on the human's behalf. Whether the caller is
+  // software is not verifiable (an "as-you" agent is indistinguishable from
+  // its owner by design) — authorization rests on the warrant's SCOPES, which
+  // the human approved for exactly this audience.
   if (!r.scopes.includes(requiredScope)) {
     throw new Error(
       `not authorized: the human did not grant "${requiredScope}" here ` +
         `(granted: ${r.scopes.join(", ") || "none"})`
     );
   }
-  return r; // { ok, email, issuer, subject, scopes }
+  return r; // { ok, email, grantee, issuer, scopes }
 }
 
 const server = new McpServer({ name: "browserid-notes", version: "0.1.0" });
@@ -73,14 +78,15 @@ server.registerTool(
     } catch (e) {
       return { isError: true, content: [{ type: "text", text: e.message }] };
     }
-    const note = { text, by: id.email, at: notes.length };
+    const note = { text, by: id.email, via: id.grantee, at: notes.length };
     notes.push(note);
+    const actor = note.via !== note.by ? ` (via agent ${note.via})` : "";
     return {
       content: [
         {
           type: "text",
           text:
-            `posted (#${note.at}) by agent ${note.by}. ` +
+            `posted (#${note.at}) by ${note.by}${actor}. ` +
             `every action here is attributable to that identity.`,
         },
       ],
@@ -106,7 +112,9 @@ server.registerTool(
       return { isError: true, content: [{ type: "text", text: e.message }] };
     }
     const body = notes.length
-      ? notes.map((n) => `#${n.at} [${n.by}] ${n.text}`).join("\n")
+      ? notes
+          .map((n) => `#${n.at} [${n.by}${n.via !== n.by ? ` via ${n.via}` : ""}] ${n.text}`)
+          .join("\n")
       : "(no notes yet)";
     return { content: [{ type: "text", text: body }] };
   }

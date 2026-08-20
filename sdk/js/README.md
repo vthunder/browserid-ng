@@ -72,20 +72,33 @@ The browser shim additionally polls revocation client-side to flip open tabs
 to `onlogout` without a reload — that signal is UX; this check is the
 enforcement.
 
-### Agents
+### Agents and delegation
 
-By default an **agent** presentation (an AI agent acting under a user-authorized
-warrant) is **rejected** — a human login endpoint should not silently accept
-one. To accept agents, opt in and read the subject + scopes:
+A successful result carries two identities:
+
+- `result.email` — the **attributed** identity: who the session/action belongs
+  to (the warrant grantor).
+- `result.grantee` — the **actor of record**: equals `email` when the identity
+  acted for itself; differs when another identity (typically a named agent
+  like `dan+agent@example.com`) acted on `email`'s behalf.
+
+A delegated presentation at your audience exists only because the user
+explicitly approved a warrant for it — attribute the session to `email`, log
+`grantee` for provenance, and gate actions on `result.scopes`. If your policy
+requires the account owner to be the actor of record, compare the two:
 
 ```js
-const result = await verifier.verify(presentation, audience, { allowAgent: true });
-if (result.ok && result.subject === "agent") {
-  // result.email  — the agent identity (e.g. dan+agent@example.com)
-  // result.scopes — what the user's warrant authorized at this audience
-  if (!result.scopes.includes("post")) throw new Error("not authorized to post");
+const result = await verifier.verify(presentation, audience);
+if (result.ok && result.grantee !== result.email) {
+  // a delegate acted for result.email — apply your delegation policy here
 }
 ```
+
+There is **no human/agent flag**, deliberately: a user can always provision an
+agent with an "as-you" credential (`grantee === email`), so no verifier can
+promise "this is a human". Anything claiming otherwise would be false
+assurance. (The old `allowAgent` option was exactly that and has been removed;
+passing it now throws.)
 
 ## API
 
@@ -98,7 +111,6 @@ if (result.ok && result.subject === "agent") {
   - `opts.fetch` — custom fetch implementation
 - `verifier.verify(presentation, audience, callOpts?)` → `Promise<VerifyResult>`
   - `callOpts.acceptedFallbacks` — override for this call
-  - `callOpts.allowAgent` — accept agent presentations (default `false`)
 - `verifyPresentation(presentation, audience, opts?)` — one-shot convenience wrapper
 
 ## Security notes

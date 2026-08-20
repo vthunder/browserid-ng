@@ -60,7 +60,8 @@ credential) / `VERIFIER_URL` to run against your own broker.
 `npm test` runs two end-to-end tests over the real MCP protocol, no network:
 
 - **notes** (`test.mjs`) — a real MCP client ↔ the notes server with a mock
-  `/verify`, asserting the auth-gating (scope enforcement, agents-only, fail-closed).
+  `/verify`, asserting the auth-gating (scope enforcement, delegation
+  attribution, fail-closed).
 - **wallet** (`wallet.test.mjs`) — a real MCP client ↔ the wallet server driving
   `authorize` → `get_assertion` against a local mock broker that auto-approves,
   proving the whole agent-native flow with no shell and no Rust.
@@ -86,13 +87,18 @@ The whole security boundary is one helper (`server.mjs`):
 
 ```js
 async function authorize(assertion, requiredScope) {
-  const r = await verifier.verify(assertion, SERVER_AUDIENCE, { allowAgent: true });
+  const r = await verifier.verify(assertion, SERVER_AUDIENCE);
   if (!r.ok) throw new Error(`authentication failed: ${r.reason}`);
-  if (!r.agent) throw new Error("agents only: no warrant present");
-  if (!r.agent.scopes.includes(requiredScope)) throw new Error("not authorized for " + requiredScope);
-  return r; // r.email, r.agent.parent, r.agent.scopes
+  if (!r.scopes.includes(requiredScope)) throw new Error("not authorized for " + requiredScope);
+  return r; // r.email (attributed identity), r.grantee (actor of record), r.scopes
 }
 ```
+
+Authorization rests on the warrant's **scopes** — the human approved them for
+exactly this audience. `r.email` is who the action is attributed to; `r.grantee`
+is who acted (a named agent differs from `email`; an "as-you" agent is
+indistinguishable from its owner by design, so there is no human/agent flag to
+check).
 
 Notes:
 - This demo passes the assertion as a **tool argument** so the check is visible

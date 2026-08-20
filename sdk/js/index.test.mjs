@@ -16,15 +16,15 @@ function stubFetch(jsonBody, { httpStatus = 200, throwErr = null } = {}) {
 
 const P = "ac~a~w~cc"; // shape of an access presentation
 
-test("okay → ok:true with email/issuer/subject/scopes", async () => {
+test("okay → ok:true with email/issuer/grantee/scopes", async () => {
   const v = createVerifier({
-    fetch: stubFetch({ status: "okay", email: "a@b.com", issuer: "b.com", subject: "user", scopes: ["login"] }),
+    fetch: stubFetch({ status: "okay", email: "a@b.com", issuer: "b.com", scopes: ["login"] }),
   });
   const r = await v.verify(P, "https://app.example");
   assert.equal(r.ok, true);
   assert.equal(r.email, "a@b.com");
   assert.equal(r.issuer, "b.com");
-  assert.equal(r.subject, "user");
+  assert.equal(r.grantee, "a@b.com"); // defaults to email (as-you)
   assert.deepEqual(r.scopes, ["login"]);
 });
 
@@ -55,25 +55,28 @@ test("network error → fail closed", async () => {
   assert.match(r.reason, /ECONNREFUSED/);
 });
 
-test("agent presentation rejected by default", async () => {
+test("delegated presentation verifies; grantee is the actor of record", async () => {
   const v = createVerifier({
-    fetch: stubFetch({ status: "okay", email: "agent@b.com", issuer: "b.com",
-      subject: "agent", scopes: ["read"] }),
+    fetch: stubFetch({ status: "okay", email: "a@b.com", grantee: "a+bot@b.com",
+      issuer: "b.com", scopes: ["read", "write"] }),
   });
   const r = await v.verify(P, "https://app.example");
-  assert.equal(r.ok, false);
-  assert.match(r.reason, /agent/);
+  assert.equal(r.ok, true);
+  assert.equal(r.email, "a@b.com");
+  assert.equal(r.grantee, "a+bot@b.com"); // RP delegation policy: grantee !== email
+  assert.deepEqual(r.scopes, ["read", "write"]);
 });
 
-test("agent presentation accepted with allowAgent → surfaces subject+scopes", async () => {
+test("removed allowAgent option throws loudly instead of being ignored", async () => {
   const v = createVerifier({
-    fetch: stubFetch({ status: "okay", email: "agent@b.com", issuer: "b.com",
-      subject: "agent", scopes: ["read", "write"] }),
+    fetch: stubFetch({ status: "okay", email: "a@b.com", issuer: "b.com" }),
   });
-  const r = await v.verify(P, "https://app.example", { allowAgent: true });
-  assert.equal(r.ok, true);
-  assert.equal(r.subject, "agent");
-  assert.deepEqual(r.scopes, ["read", "write"]);
+  for (const val of [true, false]) {
+    await assert.rejects(
+      v.verify(P, "https://app.example", { allowAgent: val }),
+      /allowAgent was removed/
+    );
+  }
 });
 
 test("empty inputs fail closed without a request", async () => {
@@ -112,7 +115,7 @@ const REFS = [{ uri: "https://idp.example/.well-known/browserid-status", idx: 7 
 test("verify surfaces status_refs as statusRefs", async () => {
   const v = createVerifier({
     fetch: stubFetch({
-      status: "okay", email: "a@b.com", issuer: "b.com", subject: "user",
+      status: "okay", email: "a@b.com", issuer: "b.com",
       scopes: ["login"], status_refs: REFS,
     }),
   });

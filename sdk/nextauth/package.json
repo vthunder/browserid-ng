@@ -1,6 +1,6 @@
 {
   "name": "@browserid-ng/nextauth",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Drop-in 'Sign in with BrowserID' for Auth.js / NextAuth: a Credentials provider that verifies a BrowserID presentation server-side, plus browser helpers to drive the login dialog.",
   "type": "module",
   "main": "./index.mjs",
@@ -29,7 +29,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@browserid-ng/verify": "^0.2.0"
+    "@browserid-ng/verify": "^0.3.0"
   },
   "peerDependencies": {
     "next-auth": ">=4"

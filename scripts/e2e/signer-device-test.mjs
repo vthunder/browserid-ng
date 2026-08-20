@@ -82,7 +82,8 @@ must('signer returned a signature', !!result.signature && /^[0-9a-f]+$/.test(res
 must('pubkey is ed25519:<hex> (the access key)', /^ed25519:[0-9a-f]{64}$/.test(result.pubkey), result.pubkey);
 must('cert is a 4-object presentation', (result.cert.match(/~/g) || []).length === 3);
 
-// 4. The presentation must verify at the SBO audience with subject user.
+// 4. The presentation must verify at the SBO audience as the user themself
+//    (as-you: grantee == email).
 const v = await page.evaluate(async ({ cert, audience }) => {
   const r = await fetch('/verify-access', {
     method: 'POST', headers: { 'content-type': 'application/json' },
@@ -90,7 +91,7 @@ const v = await page.evaluate(async ({ cert, audience }) => {
   });
   return r.json();
 }, { cert: result.cert, audience: AUDIENCE });
-must('presentation verifies at the SBO audience', v.status === 'okay' && v.email === email && v.subject === 'user', JSON.stringify(v));
+must('presentation verifies at the SBO audience', v.status === 'okay' && v.email === email && (v.grantee || v.email) === email, JSON.stringify(v));
 
 // 5. The verified access key must match the signer's returned pubkey.
 const accessKeyB64 = JSON.parse(Buffer.from(result.cert.split('~')[0].split('.')[1], 'base64url').toString())['public-key'].publicKey;

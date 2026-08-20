@@ -7,8 +7,9 @@ export interface StatusRef {
 
 export interface BrowserIDClaims {
   issuer: string;
+  /** The ACTOR of record; differs from the user's email for delegated
+   *  presentations (an agent acting on the user's behalf). */
   grantee: string;
-  subject: string;
   scopes: string[];
   statusRefs: StatusRef[];
 }
@@ -28,8 +29,6 @@ export interface BrowserIDConfig {
   /** Hosted verifier URL. Default `${broker}/verify-access`. */
   verifierUrl?: string;
   acceptedFallbacks?: string[];
-  /** Accept an agent presentation as a login. Default false (humans only). */
-  allowAgent?: boolean;
   /** Injectable fetch (tests). */
   fetch?: typeof fetch;
 }

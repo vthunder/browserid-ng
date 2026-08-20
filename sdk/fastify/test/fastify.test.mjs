@@ -17,7 +17,7 @@ function fakeBroker({ verify, status } = {}) {
   return f;
 }
 const json = (o) => ({ ok: true, status: 200, json: async () => o });
-const OK = { status: "okay", email: "dan@sandmill.org", grantee: "dan@sandmill.org", issuer: "sandmill.org", subject: "user", scopes: [], status_refs: [{ uri: "u", idx: 3 }] };
+const OK = { status: "okay", email: "dan@sandmill.org", grantee: "dan@sandmill.org", issuer: "sandmill.org", scopes: [], status_refs: [{ uri: "u", idx: 3 }] };
 
 // Minimal Fastify request/reply stubs.
 function reqReply(body) {

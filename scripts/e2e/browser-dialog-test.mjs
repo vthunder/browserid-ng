@@ -53,7 +53,7 @@ await page.waitForFunction(
   null, { timeout: 20000 }
 );
 const out1 = JSON.parse(await page.textContent('#out'));
-const ok1 = out1.status === 'okay' && out1.email === email && out1.subject === 'user';
+const ok1 = out1.status === 'okay' && out1.email === email && (out1.grantee || out1.email) === email;
 console.log(ok1 ? '✓ cold-start create-account login verified:' : '✗ FAILED:', JSON.stringify(out1));
 if (!ok1) process.exit(1);
 

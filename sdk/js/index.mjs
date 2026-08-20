@@ -46,12 +46,23 @@ export function createVerifier(opts = {}) {
    * @param {string} audience the exact origin you expect (e.g. "https://app.example")
    * @param {object} [callOpts]
    * @param {string[]} [callOpts.acceptedFallbacks] override the default set
-   * @param {boolean} [callOpts.allowAgent] if false (default), an agent
-   *   presentation is REJECTED — set true to accept agents and read `.subject`
-   *   / `.scopes`
    * @returns {Promise<VerifyResult>}
    */
   async function verify(presentation, audience, callOpts = {}) {
+    if ("allowAgent" in callOpts) {
+      // Removed, loudly: the protocol has no human/agent axis (a user can mint
+      // their agent an "as-you" credential, so no verifier can tell them
+      // apart), and the old `allowAgent: false` default never rejected
+      // anything. Silently ignoring the option would keep a security promise
+      // we cannot honor. Delegation IS detectable: `grantee !== email` means
+      // another identity acted on the user's behalf — apply policy on that,
+      // and on `scopes`, after verify() succeeds.
+      throw new Error(
+        "allowAgent was removed: the protocol cannot distinguish humans from " +
+          "agents. Check `result.grantee !== result.email` for delegated " +
+          "presentations instead."
+      );
+    }
     if (!presentation || typeof presentation !== "string") {
       return fail("no presentation provided");
     }
@@ -59,7 +70,6 @@ export function createVerifier(opts = {}) {
       return fail("no audience provided");
     }
     const acceptedFallbacks = callOpts.acceptedFallbacks ?? defaultFallbacks;
-    const allowAgent = callOpts.allowAgent === true;
 
     const body = { presentation, audience };
     if (acceptedFallbacks) body.accepted_fallbacks = acceptedFallbacks;
@@ -92,27 +102,25 @@ export function createVerifier(opts = {}) {
       return fail((json && json.reason) || "verification failed");
     }
 
-    const result = {
+    return {
       ok: true,
+      // The ATTRIBUTED identity (the warrant grantor): who this session/action
+      // belongs to.
       email: json.email,
+      // The ACTOR of record (the warrant grantee): equals `email` when the
+      // identity acted for itself; differs when another identity — typically
+      // a named agent — acted on `email`'s behalf under an audience-bound,
+      // user-approved warrant. RPs that want delegation policy compare the
+      // two; there is no human/agent flag (an "as-you" agent is
+      // indistinguishable from its owner by design).
       grantee: json.grantee || json.email,
       issuer: json.issuer,
-      subject: json.subject || "user",
       scopes: json.scopes || [],
       // Revocation pointers ({uri, idx}) for later re-checks via
       // checkStatus() — retain these with the session; the presentation
       // itself expires in minutes.
       statusRefs: json.status_refs || [],
     };
-
-    // Default posture: an agent may not stand in for a human login. The caller
-    // must opt in, at which point it is responsible for checking `.scopes`.
-    if (result.subject === "agent" && !allowAgent) {
-      return fail(
-        "presentation is an agent's; pass allowAgent:true to accept it"
-      );
-    }
-    return result;
   }
 
   /**
@@ -178,8 +186,8 @@ export function verifyPresentation(presentation, audience, opts = {}) {
 }
 
 /**
- * @typedef {{ok: true, email: string, issuer?: string,
- *   subject: "user" | "agent", scopes: string[],
+ * @typedef {{ok: true, email: string, grantee: string, issuer?: string,
+ *   scopes: string[],
  *   statusRefs: {uri: string, idx: number}[]}
  *   | {ok: false, reason: string}} VerifyResult
  */

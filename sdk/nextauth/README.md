@@ -87,8 +87,10 @@ if (!ok) await signOut(); // fail-closed: revoked OR unverifiable => out
   `requestBrowserID`, `logoutBrowserID`, `signInWithBrowserID`.
 
 `config`: `audience` (**required**), `broker` (default `https://browserid.me`),
-`verifierUrl` (default `${broker}/verify-access`), `acceptedFallbacks`,
-`allowAgent` (default `false` — humans only; agents use the MCP path).
+`verifierUrl` (default `${broker}/verify-access`), `acceptedFallbacks`. The
+user's `browserid.grantee` is the actor of record — it differs from `email`
+when a named agent acted on the user's behalf; compare them for delegation
+policy. There is no human/agent flag (see the `@browserid-ng/verify` README).
 
 Reference app: `examples/nextauth-app/`. Design:
 `docs/plans/2026-08-10-nextauth-adapter-build-spec.md`. MPL-2.0.

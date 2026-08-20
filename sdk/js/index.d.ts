@@ -3,15 +3,18 @@
 export type VerifyResult =
   | {
       ok: true;
-      /** The verified email — the ATTRIBUTED identity (the human). */
+      /** The verified email — the ATTRIBUTED identity (who the
+       *  session/action belongs to; the warrant grantor). */
       email: string;
-      /** The ACTING identity — the agent that carried the actions out.
-       *  Equals `email` when the identity acted for itself. */
+      /** The ACTOR of record (the warrant grantee). Equals `email` when the
+       *  identity acted for itself; differs when another identity acted on
+       *  `email`'s behalf under a user-approved, audience-bound warrant.
+       *  Compare with `email` for delegation policy — there is no
+       *  human/agent flag (an "as-you" agent is indistinguishable from its
+       *  owner by design). */
       grantee: string;
       /** The issuing IdP domain (the identity's IdP). */
       issuer?: string;
-      /** Which kind of identity authenticated. */
-      subject: "user" | "agent";
       /** Scopes the warrant grants at this audience. */
       scopes: string[];
       /** Revocation pointers for later re-checks via checkStatus().
@@ -48,8 +51,6 @@ export interface CreateVerifierOptions {
 export interface VerifyCallOptions {
   /** Override the accepted fallback set for this call. */
   acceptedFallbacks?: string[];
-  /** Accept agent presentations (default false → agents are rejected). */
-  allowAgent?: boolean;
 }
 
 export interface Verifier {

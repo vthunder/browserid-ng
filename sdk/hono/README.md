@@ -27,7 +27,9 @@ On failure the middleware responds `401` and never runs your handler.
 
 `audience` (**required** — pin to your canonical origin; the confused-deputy
 guard), `broker` (default `https://browserid.me`), `verifierUrl`,
-`acceptedFallbacks`, `allowAgent` (default false — humans only). On Workers,
+`acceptedFallbacks`. The identity carries `email` (attributed) and `grantee`
+(actor of record) — compare them for delegation policy; there is no
+human/agent flag (see the `@browserid-ng/verify` README). On Workers,
 pass a bound `fetch` via `fetch` if you route the verifier through a binding.
 
 ## Also exported

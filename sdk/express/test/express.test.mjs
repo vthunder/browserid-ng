@@ -19,7 +19,7 @@ function fakeBroker({ verify, status } = {}) {
 const json = (o) => ({ ok: true, status: 200, json: async () => o });
 const okVerify = {
   status: "okay", email: "dan@sandmill.org", grantee: "dan@sandmill.org",
-  issuer: "sandmill.org", subject: "user", scopes: [], status_refs: [{ uri: "u", idx: 3 }],
+  issuer: "sandmill.org", scopes: [], status_refs: [{ uri: "u", idx: 3 }],
 };
 
 test("audience is required", () => {

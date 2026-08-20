@@ -1,6 +1,6 @@
 {
   "name": "@browserid-ng/express",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Sign in with BrowserID for Express: a Passport strategy + a plain middleware that verify a BrowserID presentation server-side.",
   "type": "module",
   "main": "./index.mjs",
@@ -23,7 +23,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@browserid-ng/verify": "^0.2.0"
+    "@browserid-ng/verify": "^0.3.0"
   },
   "keywords": [
     "browserid",

@@ -41,10 +41,12 @@ broker, so it isn't in the test.)
 
 ## Notes
 
-- **Agents are rejected here** (`verify` defaults to `allowAgent: false`) — this
-  is a human-login endpoint. To also accept agents acting for a human, pass
-  `{ allowAgent: true }` and read `r.agent` (see the
-  [MCP example](../mcp-agent-auth)).
+- **Delegation is visible, not blocked.** `r.email` is who the session belongs
+  to; `r.grantee` is the actor of record and differs from `email` when a named
+  agent acted on the user's behalf (which the user explicitly approved for this
+  audience). Compare them if you want a delegation policy; there is no
+  human/agent flag (see the [MCP example](../mcp-agent-auth) for scope-gated
+  agent access).
 - **Pin `RP_ORIGIN` server-side.** Never verify a client-supplied audience.
 - The session here is a minimal HMAC-signed cookie — swap in your framework's
   session store for real use.

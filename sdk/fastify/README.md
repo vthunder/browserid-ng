@@ -23,8 +23,10 @@ On failure the preHandler replies `401` and short-circuits the route.
 ## Config
 
 `audience` (**required** — pin to your canonical origin), `broker` (default
-`https://browserid.me`), `verifierUrl`, `acceptedFallbacks`, `allowAgent`
-(default false — humans only).
+`https://browserid.me`), `verifierUrl`, `acceptedFallbacks`. The identity
+carries `email` (attributed) and `grantee` (actor of record) — compare them
+for delegation policy; there is no human/agent flag (see the
+`@browserid-ng/verify` README).
 
 ## Also exported
 

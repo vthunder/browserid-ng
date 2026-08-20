@@ -1,9 +1,10 @@
 // A stand-in for the hosted /verify-access, so the demo runs end-to-end with no
 // network and no human consent. It maps fake presentation strings to canned
-// verdicts:
-//   "good-post"       → agent with scopes [post, read]
-//   "good-read-only"  → agent with scopes [read]
-//   "human"           → a plain user login (subject user)
+// verdicts (real broker shape: `email` is the attributed identity, `grantee`
+// the actor of record — a named agent here):
+//   "good-post"       → alice's agent with scopes [post, read]
+//   "good-read-only"  → alice's agent with scopes [read]
+//   "login-only"      → a login-scoped presentation (no notes scopes granted)
 //   anything else     → failure
 // It also enforces the audience, exactly like the real endpoint.
 import { createServer } from "node:http";
@@ -26,14 +27,16 @@ export function startMockVerifier(audience) {
       }
       switch (body.presentation) {
         case "good-post":
-          return reply({ status: "okay", email: "alice+researcher@acme.com", issuer: "browserid.me",
-            subject: "agent", scopes: ["post", "read"] });
+          return reply({ status: "okay", email: "alice@acme.com",
+            grantee: "alice+researcher@acme.com", issuer: "browserid.me",
+            scopes: ["post", "read"] });
         case "good-read-only":
-          return reply({ status: "okay", email: "alice+researcher@acme.com", issuer: "browserid.me",
-            subject: "agent", scopes: ["read"] });
-        case "human":
+          return reply({ status: "okay", email: "alice@acme.com",
+            grantee: "alice+researcher@acme.com", issuer: "browserid.me",
+            scopes: ["read"] });
+        case "login-only":
           return reply({ status: "okay", email: "alice@acme.com", issuer: "browserid.me",
-            subject: "user", scopes: ["login"] });
+            scopes: ["login"] });
         default:
           return reply({ status: "failure", reason: "invalid presentation" });
       }

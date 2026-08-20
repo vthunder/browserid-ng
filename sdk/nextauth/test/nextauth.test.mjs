@@ -36,7 +36,6 @@ const okVerify = {
   email: "dan@sandmill.org",
   grantee: "dan@sandmill.org",
   issuer: "sandmill.org",
-  subject: "user",
   scopes: [],
   status_refs: [{ uri: "https://browserid.me/.well-known/browserid-status", idx: 7 }],
 };
@@ -54,7 +53,7 @@ test("audience is required", () => {
   assert.throws(() => BrowserID({}), /audience/);
 });
 
-test("authorize returns a user for a verified human presentation", async () => {
+test("authorize returns a user for a verified presentation", async () => {
   const broker = fakeBroker({ verify: okVerify });
   const authorize = browseridAuthorize({ audience: AUDIENCE, fetch: broker.fetch });
   const user = await authorize({ presentation: "AC~AS~WR~CC" });
@@ -85,14 +84,21 @@ test("authorize fails closed when the verifier is unreachable", async () => {
   assert.equal(await authorize({ presentation: "AC~AS~WR~CC" }), null);
 });
 
-test("an agent presentation is rejected by default, accepted with allowAgent", async () => {
-  const agentVerify = { ...okVerify, subject: "agent", grantee: "dan+bot@sandmill.org", scopes: ["post"] };
-  const reject = browseridAuthorize({ audience: AUDIENCE, fetch: fakeBroker({ verify: agentVerify }).fetch });
-  assert.equal(await reject({ presentation: "AC~AS~WR~CC" }), null);
-  const accept = browseridAuthorize({ audience: AUDIENCE, allowAgent: true, fetch: fakeBroker({ verify: agentVerify }).fetch });
-  const user = await accept({ presentation: "AC~AS~WR~CC" });
-  assert.equal(user.browserid.subject, "agent");
-  assert.equal(user.browserid.grantee, "dan+bot@sandmill.org");
+test("a delegated presentation surfaces the actor as browserid.grantee", async () => {
+  const delegated = { ...okVerify, grantee: "dan+bot@sandmill.org", scopes: ["post"] };
+  const authorize = browseridAuthorize({ audience: AUDIENCE, fetch: fakeBroker({ verify: delegated }).fetch });
+  const user = await authorize({ presentation: "AC~AS~WR~CC" });
+  assert.equal(user.email, "dan@sandmill.org"); // session attributes to the grantor
+  assert.equal(user.browserid.grantee, "dan+bot@sandmill.org"); // actor of record
+});
+
+test("removed allowAgent option throws at config time", () => {
+  for (const val of [true, false]) {
+    assert.throws(
+      () => browseridAuthorize({ audience: AUDIENCE, allowAgent: val, fetch: fakeBroker().fetch }),
+      /allowAgent was removed/
+    );
+  }
 });
 
 test("browseridSessionValid reflects the status check", async () => {

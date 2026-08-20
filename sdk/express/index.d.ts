@@ -3,10 +3,11 @@
 export interface StatusRef { uri: string; idx: number; }
 
 export interface BrowserIDIdentity {
+  /** The ATTRIBUTED identity (who the session belongs to). */
   email: string;
   issuer: string;
+  /** The ACTOR of record; differs from `email` for delegated presentations. */
   grantee: string;
-  subject: string;
   scopes: string[];
   statusRefs: StatusRef[];
 }
@@ -17,7 +18,6 @@ export interface BrowserIDConfig {
   broker?: string;
   verifierUrl?: string;
   acceptedFallbacks?: string[];
-  allowAgent?: boolean;
   fetch?: typeof fetch;
 }
 
