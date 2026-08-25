@@ -5,7 +5,7 @@ status: in-progress
 type: bug
 priority: normal
 created_at: 2026-07-28T23:54:23Z
-updated_at: 2026-08-25T10:36:14Z
+updated_at: 2026-08-25T11:52:32Z
 parent: browserid-ng-wre6
 ---
 
@@ -84,9 +84,9 @@ phase 2 deploys before phase 3.
 
 - [x] Code survey: broker consent machinery, spec/Rust verification path, mingo/sbo caller side (2026-08-25)
 - [x] Implementation plan written (docs/plans/2026-08-25-signing-grants-implementation-plan.md)
-- [ ] Phase 0 — spec amendment PR: binding set + kind×op table + requester kind + scope entries/mode + req_origin + invariants 9-14 in docs/specs/browserid-ng-protocol.md (this IS rjmm's pending binding-set amendment — note it there when landed). DRAFTED 2026-08-25, uncommitted, awaiting Dan's review before phases 1+
-- [ ] Phase 1 — browserid-core: BindingSet (singular shorthand, unknown-kind reject, self-grant-only multi-entry), Requester kind, ScopeEntry, assertion req_origin, full-set op P/A evaluation; compile-fix registrar/broker match sites; tests + v2 test-vectors
-- [ ] Phase 2 — SBO side (deploy FIRST): sbo-core browserid-core bump + sign:sbo:* in scopes_authorize; sbo-daemon status-ref checking fail-closed; mingo rev bump + daemon deploy
-- [ ] Phase 3 — broker: shared warrant-mint module, sboSign object param, standard consent card minting+registering+storing the record, sbo-signer.js stored-record dispatch (delete fabrication, req_origin stamp, prompt mode, grant-info, error vocab), /account rows + revoke, wipe sbo_sign_granted booleans
+- [x] Phase 0 — spec amendment in docs/specs/browserid-ng-protocol.md (commit c8e8964; Dan skimmed, has verbosity/placement quibbles + a break-compat question to revisit — decided to keep singular shorthand for now, revisit after testing). This IS rjmm's binding-set amendment — note it there
+- [x] Phase 1 — browserid-core BindingSet/Requester/ScopeEntry/req_origin + full-set evaluation, registrar/broker ripples, tests (commit 73d4625; all 59 workspace test targets green, golden v1 vectors byte-stable). Deferred: cross-language warrant-v2 golden-vector file (wire pinned by unit tests only)
+- [x] Phase 2 — SBO side deployed FIRST: sbo cf6df3f (sign:sbo:* scopes, submit-gate revocation checks in new sbo-daemon/src/status.rs — TLS-rooted list verification via the origin's support doc; deliberately submission-time-only so replay stays deterministic); mingo pin + SBO_REV bumped, daemon deployed + verified on da.sandmill.org 2026-08-25
+- [x] Phase 3 — broker consent + wallet flip. NOTE deviation from plan: no shared warrant-mint module — dialog.js already carries its own mint/register machinery (buildPresentation), so grantSigningRecords() reuses signJws/apiCall there; consent.html/authorize.html dedup left as optional cleanup. sboSign is {audiences, scopes} (dev lane: ?sbo_request=b64url); card lists per-scope verbs; approve = allocate idx → sign v2 {holder, requester} record → register → store in siteInfo[origin].signing_grants; sbo-signer.js rewritten (stored-record dispatch, fabrication deleted, req_origin stamp, prompt UI in sign.html, sbo:grant-info, typed errors, absent action classifies as post per SBO default); /account rows via registrar requester_origin; legacy booleans wiped at dialog init; CSP hash updated
 - [ ] Phase 4 — mingo web: declare audiences/scopes at consent, handle not_granted/prompt_declined/scope_not_granted, grant-info rendering
 - [ ] Phase 5 — Playwright e2e for the full consent→sign→revoke path (none exists today), smoke test, ordered deploys, M9 closure re-verification, flip use-cases doc to live

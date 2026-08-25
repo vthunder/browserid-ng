@@ -3,11 +3,11 @@
    - License, v. 2.0. If a copy of the MPL was not distributed with this
    - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
 <!--
-  SBO signer popup. A first-party broker window an RP opens (window.open) to
-  sign a typed SBO envelope with the user's cert-bound key. See
-  common/js/sbo-signer.js for the protocol. No user interaction required
-  (consent granted at login); just a brief spinner, then it posts the signature
-  back and closes.
+  SBO signer popup — the user's WALLET surface. A first-party broker window an
+  RP opens (window.open) to submit typed SBO envelopes for signing. Every
+  request must be covered by a stored signing-grant record (spec §5, §6.6
+  invariant 9); auto-mode scopes sign silently, prompt-mode scopes render the
+  envelope below and wait for approval. See common/js/sbo-signer.js.
 -->
 <html>
 <head>
@@ -16,18 +16,37 @@
   <style>
     body { font: 14px/1.5 -apple-system, system-ui, sans-serif; display: flex;
            align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-    .card { text-align: center; }
+    .card { text-align: center; max-width: 320px; }
     .spinner { width: 28px; height: 28px; border: 3px solid #e2e8f0;
                border-top-color: #2563eb; border-radius: 50%;
                animation: spin 1s linear infinite; margin: 0 auto 12px; }
     @keyframes spin { to { transform: rotate(360deg); } }
     #status { color: #64748b; }
+    #prompt { display: none; text-align: left; }
+    #prompt.active { display: block; }
+    #prompt h3 { margin: 0 0 8px; font-size: 15px; }
+    #prompt-detail { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+                     padding: 8px 10px; font-size: 12px; color: #334155;
+                     max-height: 160px; overflow: auto; white-space: pre-wrap;
+                     word-break: break-word; margin-bottom: 10px; }
+    #prompt .buttons { display: flex; gap: 8px; }
+    #prompt button { flex: 1; padding: 8px 0; border-radius: 6px; border: 1px solid #cbd5e1;
+                     background: #fff; cursor: pointer; font-size: 14px; }
+    #prompt button.approve { background: #2563eb; border-color: #2563eb; color: #fff; }
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="spinner"></div>
+    <div class="spinner" id="spinner"></div>
     <div id="status">connecting…</div>
+    <div id="prompt">
+      <h3 id="prompt-title">Approve this action?</h3>
+      <div id="prompt-detail"></div>
+      <div class="buttons">
+        <button type="button" id="prompt-decline">Decline</button>
+        <button type="button" id="prompt-approve" class="approve">Approve</button>
+      </div>
+    </div>
     <div style="margin-top:10px;color:#94a3b8;font-size:12px;">
       SBO signer — you can leave this window open; it signs in the background.
     </div>

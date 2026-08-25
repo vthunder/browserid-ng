@@ -355,10 +355,13 @@
     <section id="sbo-consent-screen" class="screen">
       <div class="content">
         <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
-        <h2 style="margin-bottom:14px">Allow posting as you?</h2>
-        <div class="consent-card"><b class="rp-name"></b> wants to create and sign posts
-          on the SBO network as <span class="email-display"></span>.</div>
-        <p class="muted-note">You can take this back anytime by signing out of the site.</p>
+        <h2 style="margin-bottom:14px">Allow signing as you?</h2>
+        <div class="consent-card"><b class="rp-name"></b> will sign content on the SBO
+          network as <span class="email-display"></span>, to
+          <code id="sbo-consent-audiences"></code>:
+          <ul id="sbo-consent-scopes" style="margin:8px 0 0 18px; padding:0"></ul>
+        </div>
+        <p class="muted-note">Revocable anytime from your account page.</p>
 
         <div class="button-row">
           <button type="button" id="sbo-consent-allow" class="primary">Allow</button>

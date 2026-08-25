@@ -910,7 +910,10 @@
           resumeUrl: window.location.href
         }));
         var params = {
-          sboSign: !!options.sboSign,
+          // Signing-grant request: { audiences: [...], scopes: [...] } (spec
+          // §7.5). Passed through verbatim — the dialog validates the shape;
+          // the legacy boolean form is retired and grants nothing.
+          sboSign: options.sboSign || false,
           provisionEmail: options.provisionEmail || null,
           acceptedFallbacks: options.acceptedFallbacks || null,
           fedcm: fedcmAvailable()

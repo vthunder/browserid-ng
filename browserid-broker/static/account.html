@@ -588,21 +588,34 @@ function isBrokerOrigin(aud) {
     return u.origin === location.origin && (u.pathname === '/' || u.pathname === '');
   } catch (e) { return false; }
 }
+// sign:sbo:<action> scopes read as verbs on the ledger row.
+function prettyScope(s) {
+  const m = /^sign:sbo:(.+)$/.exec(s);
+  if (!m) return s;
+  return 'sign ' + ({ post: 'posts', delete: 'deletions' }[m[1]] || m[1]);
+}
 function allPerms() {
   const out = [];
   for (const w of account.warrants) {
     if (isBrokerOrigin(w.audience)) continue;
     const exp = Date.parse(w.expires_at);
+    const requester = w.requester_origin
+      ? w.requester_origin.replace(/^https?:\/\//, '') : null;
     out.push({
       id: w.id, audience: w.audience,
-      site: (w.audience || '—').replace(/^https?:\/\//, '').replace(/\/+$/, ''),
-      scopes: (w.scopes || []).filter(s => s !== 'login'),
+      // Signing grants (spec §5) render as requester ↔ audience — the site
+      // that may ask, and the destination it signs to.
+      site: requester
+        ? requester + ' ↔ ' + (w.audience || '—')
+        : (w.audience || '—').replace(/^https?:\/\//, '').replace(/\/+$/, ''),
+      scopes: (w.scopes || []).filter(s => s !== 'login').map(prettyScope),
       as: w.agent_email, by: w.delegator_email,
       // Connection records (spec §5) are custody-channel grants, not
       // device grants: the sentinel holder keeps them off every actor row
       // (they render as host↔service connections instead).
       holder: w.binding_id ? '~connection~' : (w.holder || '*'),
       connection: w.binding_id ? { host: w.client_host || '', name: (w.client_name || '').trim() } : null,
+      signing: requester ? { host: requester } : null,
       revoked: !!w.revoked, expired: !!exp && exp < Date.now(),
       expiresAt: w.expires_at, statusIdx: w.status_idx,
     });
@@ -931,6 +944,7 @@ function renderMain() {
 // -------- sites view --------
 function whoOf(p, actors, bp) {
   if (p.connection) return `Connected via ${p.connection.name || p.connection.host}`;
+  if (p.signing) return `Signs as you when ${p.signing.host} asks`;
   if (p.holder === '*') return 'You, from any device';
   if (bp && p.holder === bp + '.*') return 'You, from any browser';
   if (p.holder.endsWith('.*')) return 'You, from a group of devices';

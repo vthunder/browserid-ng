@@ -34,7 +34,7 @@
     pendingAddressInfo: null,  // Stored addressInfo for transition flows
     acceptedFallbacks: null,   // RP's accepted fallback IdPs (spec §8.1); null = default {this broker}
     brokerDomain: null,        // this broker's own issuer domain (from session_context)
-    sboSign: false,  // RP requested the SBO typed-signing capability
+    sboSign: false,  // RP's signing-grant request: false | { audiences, scopes } (spec §7.5)
     pendingPresentation: null,  // presentation held while showing the SBO consent screen
     provisionEmail: null,  // RP asked to provision/sign in a SPECIFIC identity (skip the chooser)
     loginHint: null,  // caller pre-filled the email (e.g. /account) → skip the email screen
@@ -1427,7 +1427,7 @@
     }
     state.origin = pending.dialog.origin;
     state.redirect = pending.dialog.redirect;
-    state.sboSign = !!pending.dialog.sboSign;
+    state.sboSign = normalizeSboSign(pending.dialog.sboSign);
     state.provisionEmail = pending.dialog.provisionEmail || null;
     state.acceptedFallbacks = pending.dialog.acceptedFallbacks || null;
     state.emails = pending.dialog.emails || [];
@@ -1688,7 +1688,7 @@
 
     state.origin = pending.dialog.origin;
     state.redirect = pending.dialog.redirect;
-    state.sboSign = !!pending.dialog.sboSign;
+    state.sboSign = normalizeSboSign(pending.dialog.sboSign);
     state.provisionEmail = pending.dialog.provisionEmail || null;
     state.acceptedFallbacks = pending.dialog.acceptedFallbacks || null;
     state.emails = pending.dialog.emails || [];
@@ -1965,7 +1965,7 @@
 
     state.origin = pending.dialog.origin;
     state.redirect = pending.dialog.redirect;
-    state.sboSign = !!pending.dialog.sboSign;
+    state.sboSign = normalizeSboSign(pending.dialog.sboSign);
     state.provisionEmail = pending.dialog.provisionEmail || null;
     state.acceptedFallbacks = pending.dialog.acceptedFallbacks || null;
     state.emails = pending.dialog.emails || [];
@@ -2108,17 +2108,20 @@
     const presentation = await buildPresentation(pair, issuer, mintUrl, email);
     storeLoggedInState(state.origin, email);
     state.email = email;
+    // Kept for the signing-grant consent path: the record is signed with THIS
+    // device's config key and pinned to this device's holder (per-device
+    // records, spec §7.5).
+    state.signingContext = { email, pair };
     returnPresentation(presentation);
   }
 
-  // Single exit for every presentation-returning path. If the RP requested the
-  // SBO typed-signing capability and this origin is not yet granted, show the
-  // consent screen first; otherwise return immediately.
+  // Single exit for every presentation-returning path. If the RP requested
+  // signing grants and stored records don't already cover the request on this
+  // device, show the consent card first; otherwise return immediately.
   function returnPresentation(presentation) {
-    if (state.sboSign && !sboSignGranted(state.origin)) {
+    if (state.sboSign && !sboGrantsCover(state.origin, state.sboSign, state.email)) {
       state.pendingPresentation = presentation;
-      const emailEl = screens.sboConsent.querySelector('.email-display');
-      if (emailEl) emailEl.textContent = state.email || '';
+      fillSboConsentCard();
       showScreen('sboConsent');
       return;
     }
@@ -2126,6 +2129,34 @@
     setTimeout(() => {
       sendResponse(buildResponse(presentation));
     }, 1000);
+  }
+
+  // The consent-card copy must state the standing authority plainly (spec §5):
+  // auto-mode scopes are silent, repeated signing — say so in the verb;
+  // prompt-mode scopes are called out as ask-each-time.
+  function sboScopeVerb(entry) {
+    const scope = typeof entry === 'string' ? entry : entry.scope;
+    const prompt = typeof entry === 'object' && entry.mode === 'prompt';
+    const kind = scope.replace(/^sign:sbo:/, '');
+    const noun = { post: 'posts', delete: 'deletions' }[kind] || (kind + ' actions');
+    return noun + (prompt ? ' — you approve each one' : ' — signed automatically');
+  }
+
+  function fillSboConsentCard() {
+    const req = state.sboSign;
+    const emailEl = screens.sboConsent.querySelector('.email-display');
+    if (emailEl) emailEl.textContent = state.email || '';
+    const audEl = document.getElementById('sbo-consent-audiences');
+    if (audEl) audEl.textContent = req.audiences.join(', ');
+    const list = document.getElementById('sbo-consent-scopes');
+    if (list) {
+      list.textContent = '';
+      req.scopes.forEach(s => {
+        const li = document.createElement('li');
+        li.textContent = sboScopeVerb(s);
+        list.appendChild(li);
+      });
+    }
   }
 
   // Show the "automatically sign in next time" checkbox only when the RP's
@@ -2147,12 +2178,14 @@
     }
   }
 
-  // The response returned to the RP. When the RP requested SBO signing, report
-  // the grant decision explicitly so it never has to guess.
+  // The response returned to the RP. When the RP requested signing grants,
+  // report the decision explicitly so it never has to guess. The field keeps
+  // its historical name (client compat); it is now derived from stored-record
+  // coverage, never a bare boolean grant.
   function buildResponse(presentation) {
     const resp = { presentation, email: state.email };
     if (state.sboSign) {
-      resp.sbo_sign_granted = sboSignGranted(state.origin);
+      resp.sbo_sign_granted = sboGrantsCover(state.origin, state.sboSign, state.email);
     }
     // FedCM opt-in: only if the checkbox was shown (state.fedcm) AND the user
     // actively ticked it. Read at response time so it reflects the real choice
@@ -2162,25 +2195,117 @@
     return resp;
   }
 
-  // Per-origin grant for the SBO typed-signing capability, persisted in the same
-  // `siteInfo` localStorage map communication_iframe reads via storage.site.get.
-  function sboSignGranted(origin) {
+  // --- signing grants (spec §5/§7.5, audit M9) -----------------------------
+  // A signing grant is a stored browserid-warrant-v2 self-grant whose binding
+  // set is {holder: this device, requester: the RP origin}, with sign:sbo:*
+  // scopes. Records live in `siteInfo[origin].signing_grants` (audience →
+  // JWS) — the same first-party map the signer popup reads. The old
+  // `sbo_sign_granted` boolean is retired and wiped (no migration:
+  // re-consent once, decided 2026-08-24).
+
+  // Validate the RP's sboSign request shape: { audiences: [...], scopes:
+  // [...] } where each scope entry is "sign:sbo:<x>" or { scope, mode }.
+  // Anything else — including the legacy boolean — is fail-closed to false.
+  function normalizeSboSign(v) {
+    if (!v || typeof v !== 'object') {
+      if (v) console.warn('browserid: boolean sboSign is retired — pass { audiences, scopes }');
+      return false;
+    }
+    const audiences = Array.isArray(v.audiences) ? v.audiences.map(String).filter(Boolean) : [];
+    const scopes = Array.isArray(v.scopes) ? v.scopes : [];
+    const scopeOk = s => {
+      if (typeof s === 'string') return s.indexOf('sign:sbo:') === 0;
+      return !!s && typeof s === 'object' &&
+        typeof s.scope === 'string' && s.scope.indexOf('sign:sbo:') === 0 &&
+        Object.keys(s).every(k => k === 'scope' || k === 'mode') &&
+        (s.mode === undefined || s.mode === 'auto' || s.mode === 'prompt');
+    };
+    if (!audiences.length || audiences.length > 4 ||
+        !scopes.length || scopes.length > 8 || !scopes.every(scopeOk)) {
+      if (audiences.length || scopes.length) console.warn('browserid: malformed sboSign request — ignoring');
+      return false;
+    }
+    return { audiences, scopes };
+  }
+
+  function sboGrantRecords(origin) {
     try {
       const siteInfo = JSON.parse(localStorage.getItem('siteInfo') || '{}');
-      return !!(siteInfo[origin] && siteInfo[origin].sbo_sign_granted);
+      return (siteInfo[origin] && siteInfo[origin].signing_grants) || {};
     } catch (e) {
-      return false;
+      return {};
     }
   }
 
-  function grantSboSign(origin) {
+  // Does a stored, unexpired record cover every requested (audience, scope)
+  // for `origin`, granted to `email`? Decides whether the consent card shows;
+  // the popup re-checks everything again per request (spec §6.6 invariant 9).
+  function sboGrantsCover(origin, req, email) {
+    if (!req) return false;
+    const records = sboGrantRecords(origin);
+    return req.audiences.every(aud => {
+      const c = decodeJws(records[aud] || '');
+      if (!c || c.typ !== 'browserid-warrant-v2') return false;
+      if (c.grantee !== email || c.audience !== aud) return false;
+      if (!c.exp || nowS() + 60 >= c.exp) return false;
+      const have = (c.scopes || []).map(s => (typeof s === 'string' ? s : s && s.scope));
+      return req.scopes.every(s => have.indexOf(typeof s === 'string' ? s : s.scope) !== -1);
+    });
+  }
+
+  // One-time cleanup: the pre-M9 origin-keyed boolean grants nothing anymore.
+  function wipeLegacySboBooleans() {
     try {
       const siteInfo = JSON.parse(localStorage.getItem('siteInfo') || '{}');
-      siteInfo[origin] = siteInfo[origin] || {};
-      siteInfo[origin].sbo_sign_granted = true;
+      let dirty = false;
+      Object.keys(siteInfo).forEach(o => {
+        if (siteInfo[o] && ('sbo_sign_granted' in siteInfo[o])) {
+          delete siteInfo[o].sbo_sign_granted;
+          dirty = true;
+        }
+      });
+      if (dirty) localStorage.setItem('siteInfo', JSON.stringify(siteInfo));
+    } catch (e) { /* best-effort */ }
+  }
+
+  // Approve: per audience — allocate the status index (v2 requires the ref;
+  // no index ⇒ no record, fail-closed), sign the record with this device's
+  // config key, register it (→ /account row), store it for the popup. Only a
+  // consent ceremony ever authors these (spec §6.6 invariant 11).
+  async function grantSigningRecords() {
+    const req = state.sboSign;
+    const ctx = state.signingContext;
+    if (!req || !ctx || !ctx.pair) throw new Error('no signed-in device to grant from');
+    const holder = certHolder(ctx.pair.device.cert);
+    if (!holder) throw new Error('device cert carries no holder');
+    const scopeStrings = req.scopes.map(s => (typeof s === 'string' ? s : s.scope));
+    for (const aud of req.audiences) {
+      const alloc = await apiCall('/wsapi/allocate_warrant_status', 'POST', {
+        agent_email: ctx.email, audience: aud, scopes: scopeStrings
+      });
+      if (!alloc || !alloc.uri) throw new Error((alloc && alloc.reason) || 'status allocation failed');
+      const jws = await signJws(ctx.pair.config.privateKey, {
+        typ: 'browserid-warrant-v2',
+        iat: nowS(),
+        exp: nowS() + 90 * 86400,
+        grantor: ctx.email,
+        grantee: ctx.email,
+        binding: [
+          { kind: 'holder', matcher: holder },
+          { kind: 'requester', origin: state.origin }
+        ],
+        audience: aud,
+        scopes: req.scopes,
+        status: { uri: alloc.uri, idx: alloc.idx }
+      });
+      await apiCall('/wsapi/register_warrant', 'POST', {
+        warrant: jws, config_cert: ctx.pair.config.cert
+      });
+      const siteInfo = JSON.parse(localStorage.getItem('siteInfo') || '{}');
+      siteInfo[state.origin] = siteInfo[state.origin] || {};
+      siteInfo[state.origin].signing_grants = siteInfo[state.origin].signing_grants || {};
+      siteInfo[state.origin].signing_grants[aud] = jws;
       localStorage.setItem('siteInfo', JSON.stringify(siteInfo));
-    } catch (e) {
-      console.warn('Failed to store SBO signing grant:', e);
     }
   }
 
@@ -2659,8 +2784,14 @@
       sendCancel();
     });
 
-    document.getElementById('sbo-consent-allow').addEventListener('click', () => {
-      grantSboSign(state.origin);
+    document.getElementById('sbo-consent-allow').addEventListener('click', async () => {
+      showScreen('loading', 'Recording your approval…');
+      try {
+        await grantSigningRecords();
+      } catch (e) {
+        showError('Could not record the signing grant: ' + ((e && e.message) || e));
+        return;
+      }
       finishAfterConsent();
     });
     document.getElementById('sbo-consent-deny').addEventListener('click', () => {
@@ -2671,7 +2802,7 @@
     window.addEventListener('message', (e) => {
       if (e.data && e.data.type === 'browserid:request') {
         state.origin = e.origin;
-        state.sboSign = !!(e.data.params && e.data.params.sboSign);
+        state.sboSign = normalizeSboSign(e.data.params && e.data.params.sboSign);
         state.provisionEmail = (e.data.params && e.data.params.provisionEmail) || null;
         state.acceptedFallbacks = normalizeAcceptedFallbacks(e.data.params && e.data.params.acceptedFallbacks);
         document.querySelectorAll('.rp-name').forEach(el => {
@@ -2791,6 +2922,8 @@
     // Keystore hygiene, local pass (y9vr): drop expired/unparseable pairs
     // before ANY flow consults the cache. No network; runs every load.
     try { await Keystore.healthLocal(); } catch (e) { /* hygiene only */ }
+    // Retired pre-M9 SBO grant booleans grant nothing — clear them out.
+    wipeLegacySboBooleans();
     // Learn this broker's own issuer domain (its fallback-IdP identity) so the
     // acceptedFallbacks gate (spec §8.1) works on every entry path, including
     // the provisionEmail fast-path below.
@@ -2900,7 +3033,7 @@
       state.redirect = { returnTo, state: params.get('state') || '' };
       let opts = {};
       try { opts = b64urlParse(params.get('params') || '') || {}; } catch (e) { /* defaults */ }
-      state.sboSign = !!opts.sboSign;
+      state.sboSign = normalizeSboSign(opts.sboSign);
       state.provisionEmail = opts.provisionEmail || null;
       state.loginHint = params.get('login_hint') || null;
       state.acceptedFallbacks = normalizeAcceptedFallbacks(opts.acceptedFallbacks);
@@ -2914,7 +3047,19 @@
     // Direct link with ?origin= (dev / debugging).
     const origin = params.get('origin');
     state.origin = origin;
-    state.sboSign = params.get('sbo_sign') === '1';
+    // Dev lane's grant request: ?sbo_request=<b64url {audiences, scopes}>.
+    // The URL-declared origin is not browser-verified here, but a forged
+    // request buys only consent spam: the minted record's requester entry
+    // names the DISPLAYED origin, which is the only origin that can ever
+    // exercise it at the signer (spec §7.5 bounded stakes).
+    state.sboSign = false;
+    const sboReq = params.get('sbo_request');
+    if (sboReq) {
+      try {
+        state.sboSign = normalizeSboSign(JSON.parse(
+          atob(sboReq.replace(/-/g, '+').replace(/_/g, '/'))));
+      } catch (e) { /* malformed ⇒ no request */ }
+    }
     state.provisionEmail = params.get('provision_email');
     state.acceptedFallbacks = normalizeAcceptedFallbacks(
       params.get('accepted_fallbacks') ? params.get('accepted_fallbacks').split(',') : null);
@@ -2931,7 +3076,7 @@
       WinChan.onOpen(function(origin, args, cb) {
         if (args && args.params) {
           state.origin = origin;
-          state.sboSign = !!args.params.sboSign;
+          state.sboSign = normalizeSboSign(args.params.sboSign);
           state.provisionEmail = args.params.provisionEmail || null;
           state.acceptedFallbacks = normalizeAcceptedFallbacks(args.params.acceptedFallbacks);
           state.winchanCallback = cb;

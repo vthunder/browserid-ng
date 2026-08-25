@@ -869,6 +869,10 @@ pub struct WarrantInfo {
     pub client_host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_name: Option<String>,
+    /// Signing grants (spec §5): the requester entry's origin, so the account
+    /// page renders these as site↔audience signing rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester_origin: Option<String>,
     pub signed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -895,15 +899,17 @@ pub async fn list_warrants(
                 .status_idx
                 .map(|i| state.store.is_status_revoked_idx(i).unwrap_or(false))
                 .unwrap_or(false);
-            let (client_host, client_name) = match Warrant::parse(&r.warrant)
-                .ok()
-                .and_then(|w| w.claims().binding_set().connection().cloned())
-            {
+            let bset = Warrant::parse(&r.warrant).ok().map(|w| w.claims().binding_set());
+            let (client_host, client_name) = match bset.as_ref().and_then(|b| b.connection()) {
                 Some(browserid_core::device::Binding::Connection {
                     client_host, client_name, ..
-                }) => (Some(client_host), Some(client_name)),
+                }) => (Some(client_host.clone()), Some(client_name.clone())),
                 _ => (None, None),
             };
+            let requester_origin = bset
+                .as_ref()
+                .and_then(|b| b.requester_origin())
+                .map(str::to_string);
             WarrantInfo {
                 id: r.id,
                 delegator_email: r.delegator_email,
@@ -918,6 +924,7 @@ pub async fn list_warrants(
                 binding_id: r.binding_id,
                 client_host,
                 client_name,
+                requester_origin,
                 signed_at: r.signed_at,
                 expires_at: r.expires_at,
             }
