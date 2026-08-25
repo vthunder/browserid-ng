@@ -101,6 +101,39 @@
     }
   }
 
+  // Drop a dead record so the next dialog sign-in re-consents (the reissue
+  // re-activates the same status index — the designed re-approval path).
+  function dropGrant(origin, audience) {
+    try {
+      var si = JSON.parse(localStorage.getItem("siteInfo") || "{}");
+      if (si[origin] && si[origin].signing_grants) {
+        delete si[origin].signing_grants[audience];
+        localStorage.setItem("siteInfo", JSON.stringify(si));
+      }
+    } catch (e) { /* best-effort */ }
+  }
+
+  // The record's live revocation state. Same-origin and AUTHORITATIVE: a
+  // signing grant's status list is this broker's own, and /status/check
+  // consults the local store in-process — no cache window here, unlike the
+  // remote verifiers' 5-minute list TTL. Resolves "valid" | "revoked" |
+  // "unavailable" (the last fails the sign closed without dropping the
+  // record — transient outage must not eat a live grant).
+  function checkGrantStatus(claims) {
+    if (!claims.status || !claims.status.uri) {
+      return Promise.resolve("unavailable"); // v2 always carries one
+    }
+    return fetch("/status/check", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refs: [{ uri: claims.status.uri, idx: claims.status.idx }] })
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (j && j.revoked) return "revoked";
+      if (j && j.ok) return "valid";
+      return "unavailable";
+    }).catch(function () { return "unavailable"; });
+  }
+
   // `*` covers all; `<ns>.*` covers the namespace; else exact.
   function matcherCovers(matcher, holder) {
     if (!matcher || !holder) return false;
@@ -334,16 +367,29 @@
       var deviceHolder = (decodeJws(pair.device.cert) || {}).holder;
       var rec = coveringRecord(rpOrigin, d.email, d.audience, action, deviceHolder);
       if (rec.error) throw rec;
-      var gate = rec.mode === "prompt"
-        ? promptApproval(action, d.envelope).then(function (approved) {
-            if (!approved) throw { error: "prompt_declined",
-              message: "the user declined this " + action };
-          })
-        : Promise.resolve();
-      return gate.then(function () {
-        log("signing…");
-        return mintUrlFor(d.email, pair.issuer).then(function (mintUrl) {
-          return mintPresentation(d.email, d.audience, pair, mintUrl, rec.jws, rpOrigin);
+      // Spec §6.6 invariant 9: sign only under an UNREVOKED record — checked
+      // per sign against the broker's own list (see checkGrantStatus).
+      return checkGrantStatus(rec.claims).then(function (st) {
+        if (st === "revoked") {
+          dropGrant(rpOrigin, d.audience);
+          throw { error: "not_granted",
+            message: "the signing grant was revoked — sign in again to re-approve" };
+        }
+        if (st !== "valid") {
+          throw { error: "sign_failed",
+            message: "grant status check unavailable (fail-closed)" };
+        }
+        var gate = rec.mode === "prompt"
+          ? promptApproval(action, d.envelope).then(function (approved) {
+              if (!approved) throw { error: "prompt_declined",
+                message: "the user declined this " + action };
+            })
+          : Promise.resolve();
+        return gate.then(function () {
+          log("signing…");
+          return mintUrlFor(d.email, pair.issuer).then(function (mintUrl) {
+            return mintPresentation(d.email, d.audience, pair, mintUrl, rec.jws, rpOrigin);
+          });
         });
       });
     }).then(function (res) {
