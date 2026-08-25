@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-13T18:10:47Z
-updated_at: 2026-08-25T09:21:31Z
+updated_at: 2026-08-25T11:59:59Z
 ---
 
 From the Lane B design review with Dan (2026-08-13, after the mcp-demo connector E2E):
@@ -107,3 +107,7 @@ self-grant-only — the delegated combinations (requester-on-agent-grant,
 connection-on-policy-record / §3.4 host constraints) stay labeled doors.
 When the v2 spec PR lands, fold this amendment in. Source of truth:
 docs/plans/2026-08-22-signing-grants-design.md §3.
+
+## Note (2026-08-25): the binding-set amendment landed via ttn3
+
+The 'binding set amendment' this bean was carrying for the v2 spec is now IN the spec: docs/specs/browserid-ng-protocol.md §5 holds the channel-entry set (kind × operation table incl. requester), scope-entry parameters, assertion req_origin, and invariants 9-14 (commit c8e8964, implementation 73d4625/73831d8). Nothing remains to fold in from this side.

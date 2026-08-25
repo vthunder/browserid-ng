@@ -12,8 +12,7 @@ fills the remaining claims:
 The `binding` claim holds a set of authenticated-channel entries, all of
 which must check out (a singular object is shorthand for a one-entry set —
 the form all deployed records use; see the protocol spec §5 for the
-kind × operation table, normative since 2026-08-25). Five use cases exist today (four live, one
-proposed).
+kind × operation table, normative since 2026-08-25). Five use cases exist today (all five live).
 
 ---
 
@@ -92,7 +91,7 @@ comes from their own login).
   "status": { … } }
 ```
 
-## 5. Signing grant *(proposed — `2026-08-22-signing-grants-design.md`, v2)*
+## 5. Signing grant *(live 2026-08-25 — spec §5, `dialog.js` consent card / `sbo-signer.js` wallet, v2)*
 
 Stored at the user's wallet; the wallet refuses any signing request not
 covered by a stored record. Presented per use with a fresh access cert. Its
@@ -141,8 +140,9 @@ Two observations. The empty cell is a documented decision, not an oversight.
 And login shares a cell with the signing grant because **a login is a
 one-shot signing grant** — self-grant, holder-bound, presented to an
 audience, with the consent ceremony (the dialog) performed per use instead
-of once. When signing grants reach the spec, login should be defined as the
-degenerate case rather than a parallel form.
+of once. Signing grants are in the spec (§5, since 2026-08-25); defining
+login as their degenerate case rather than a parallel form remains an open
+editorial item.
 
 Compared with other authorization languages, four things the format cannot
 say — each with a disposition:

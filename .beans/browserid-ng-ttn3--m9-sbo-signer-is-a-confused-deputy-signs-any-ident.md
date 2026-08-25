@@ -5,7 +5,7 @@ status: in-progress
 type: bug
 priority: normal
 created_at: 2026-07-28T23:54:23Z
-updated_at: 2026-08-25T11:52:32Z
+updated_at: 2026-08-25T12:00:23Z
 parent: browserid-ng-wre6
 ---
 
@@ -88,5 +88,10 @@ phase 2 deploys before phase 3.
 - [x] Phase 1 — browserid-core BindingSet/Requester/ScopeEntry/req_origin + full-set evaluation, registrar/broker ripples, tests (commit 73d4625; all 59 workspace test targets green, golden v1 vectors byte-stable). Deferred: cross-language warrant-v2 golden-vector file (wire pinned by unit tests only)
 - [x] Phase 2 — SBO side deployed FIRST: sbo cf6df3f (sign:sbo:* scopes, submit-gate revocation checks in new sbo-daemon/src/status.rs — TLS-rooted list verification via the origin's support doc; deliberately submission-time-only so replay stays deterministic); mingo pin + SBO_REV bumped, daemon deployed + verified on da.sandmill.org 2026-08-25
 - [x] Phase 3 — broker consent + wallet flip. NOTE deviation from plan: no shared warrant-mint module — dialog.js already carries its own mint/register machinery (buildPresentation), so grantSigningRecords() reuses signJws/apiCall there; consent.html/authorize.html dedup left as optional cleanup. sboSign is {audiences, scopes} (dev lane: ?sbo_request=b64url); card lists per-scope verbs; approve = allocate idx → sign v2 {holder, requester} record → register → store in siteInfo[origin].signing_grants; sbo-signer.js rewritten (stored-record dispatch, fabrication deleted, req_origin stamp, prompt UI in sign.html, sbo:grant-info, typed errors, absent action classifies as post per SBO default); /account rows via registrar requester_origin; legacy booleans wiped at dialog init; CSP hash updated
-- [ ] Phase 4 — mingo web: declare audiences/scopes at consent, handle not_granted/prompt_declined/scope_not_granted, grant-info rendering
-- [ ] Phase 5 — Playwright e2e for the full consent→sign→revoke path (none exists today), smoke test, ordered deploys, M9 closure re-verification, flip use-cases doc to live
+- [x] Phase 4 — mingo web (mingo b3f0ece): SBO_SIGN_REQUEST declared at consent (post auto, delete prompt); typed-error handling incl. not_granted clearing the ready flag; 120s sign timeout for prompted deletions. grant-info rendering left as a nice-to-have (not wired into UI)
+- [x] Phase 5 — e2e-tests/tests/sbo-signing-grants.spec.ts (consent card → stored+registered record → silent post w/ req_origin stamp + stored-warrant-in-presentation assertion → not_granted/scope_not_granted → delete prompt decline+approve → grant-info → revoke bit); full suite green on warm broker (105 pass; connection-sharing flake passes in isolation). Deploys in order: daemon (da.sandmill.org, verified) → broker 73831d8 (browserid.me serves new dialog/signer, verified) → mingo web. Use-cases doc flipped to live. sbo-smoke-test.html updated to the new contract (manual pass pending)
+- [ ] Dan: interactive testing (mingo post + delete-prompt + revoke on real devices; wipe = old grants silently gone, expect one re-consent) and the deferred spec editing pass (verbosity/placement quibbles + break-the-format question from the 2026-08-25 review)
+
+## Summary of Changes (2026-08-25, phases 0-5 shipped)
+
+M9 is closed structurally: the popup can no longer author warrants — the fabrication block is gone and every request must match a stored, consent-minted signing-grant record on (origin, email, audience, action, device holder), with req_origin stamped into each assertion and re-verified in browserid-core. Revocation is now real end to end: /account Revoke flips the registrar bit AND the sbo-daemon checks all three status refs fail-closed at its submit gate (new status.rs; deliberately submission-time-only so replay stays deterministic — previously NO SBO caller checked them at all). Commits: browserid-ng c8e8964 (spec) + 73d4625 (core) + 73831d8 (broker/e2e); sbo cf6df3f; mingo 3d0561a-ish pin bump + b3f0ece (web). Known deferrals recorded in the phase checklist (cross-language v2 vectors, consent.html mint-module dedup, grant-info UI).
