@@ -65,6 +65,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Gate the release on the agent-surface contract (markdown 404s,
+      # Accept: text/markdown negotiation + Vary, openapi.json, JSON /api
+      # errors, llms.txt/robots/sitemap). The script builds the same
+      # Dockerfile locally — cheap, tiny context.
+      - name: Smoke-test the image
+        run: marketing/test.sh
+
       - name: Deploy to dokku
         if: ${{ vars.DOKKU_HOST != '' }}
         env:

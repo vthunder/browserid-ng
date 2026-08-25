@@ -101,13 +101,19 @@ pub struct StatusCheckResult {
 // POST /status/check
 pub async fn status_check<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
-    Json(req): Json<StatusCheckRequest>,
-) -> Result<Json<StatusCheckResponse>, BrokerError>
+    req: Result<Json<StatusCheckRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<Response, BrokerError>
 where
     U: UserStore,
     S: SessionStore,
     E: EmailSender,
 {
+    // Malformed bodies get the structured-JSON rejection contract shared by
+    // the public API endpoints (/verify-access, /validate-record).
+    let Json(req) = match req {
+        Ok(json) => json,
+        Err(rej) => return Ok(crate::error::bad_request_json(rej.body_text())),
+    };
     if req.refs.is_empty() || req.refs.len() > MAX_CHECK_REFS {
         return Err(BrokerError::ValidationError(format!(
             "refs must contain 1..={MAX_CHECK_REFS} entries"
@@ -150,5 +156,5 @@ where
         results.push(StatusCheckResult { uri: r.uri.clone(), idx: r.idx, state: state_str.into() });
     }
 
-    Ok(Json(StatusCheckResponse { ok: all_ok, revoked: any_revoked, results }))
+    Ok(Json(StatusCheckResponse { ok: all_ok, revoked: any_revoked, results }).into_response())
 }

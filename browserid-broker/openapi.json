@@ -1,0 +1,313 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "BrowserID broker API",
+    "version": "1.0.0",
+    "summary": "Public HTTP API of the BrowserID (browserid-ng) broker at browserid.me",
+    "description": "The public, server-to-server surface of the BrowserID broker: assertion verification for relying parties, record validation, fail-closed revocation re-checks, the DNS-rooted support document, and the public guestbook feed.\n\nBrowserID is an open, DNS-rooted identity protocol: AI agents get their own cryptographic identity, delegated from a human, scoped to exactly what the human approved, revocable at any time. Human passwordless sign-in included.\n\nStart here as an agent: https://www.browserid.me/llms.txt\nRP quickstart: https://github.com/vthunder/browserid-ng/blob/main/docs/verify-quickstart.md\nSpec: https://github.com/vthunder/browserid-ng/tree/main/docs/specs\n\nEndpoints not listed here (e.g. /wsapi/*) are the broker's own browser UI surface — session-gated, same-origin, and not a stable API.",
+    "license": { "name": "MPL-2.0", "identifier": "MPL-2.0" },
+    "contact": { "url": "https://github.com/vthunder/browserid-ng" }
+  },
+  "servers": [{ "url": "https://browserid.me", "description": "Production broker (auth/issuer origin)" }],
+  "paths": {
+    "/verify-access": {
+      "post": {
+        "operationId": "verifyAccess",
+        "summary": "Verify a four-object presentation (RP sign-in check)",
+        "description": "The one call a relying party makes. POST the presentation received from the client (`access_cert~assertion~warrant~config_cert`) with the audience you expect, pinned server-side. The broker does all cryptography — DNSSEC-rooted key resolution, signature checks, issuer binding, warrant validation, and three fail-closed revocation checks — and returns the verified identity.\n\nVerification failures are HTTP 200 with `status: \"failure\"`; inspect `status`, not the HTTP code. Treat anything but `status === \"okay\"` plus a present `email` as a failed sign-in (fail closed).",
+        "tags": ["verification"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/VerifyAccessRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Verification outcome (success or failure — see `status`)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AccessVerificationResult" },
+                "examples": {
+                  "okay": {
+                    "value": {
+                      "status": "okay",
+                      "email": "alice@gmail.com",
+                      "grantee": "alice+researcher@gmail.com",
+                      "scopes": ["post"],
+                      "issuer": "gmail.com",
+                      "status_refs": [{ "uri": "https://browserid.me/.well-known/browserid-status", "idx": 42 }]
+                    }
+                  },
+                  "failure": { "value": { "status": "failure", "reason": "Assertion expired" } }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request (invalid JSON or missing fields)",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+            }
+          }
+        }
+      }
+    },
+    "/validate-record": {
+      "post": {
+        "operationId": "validateRecord",
+        "summary": "Validate a held two-object record (warrant~config_cert)",
+        "description": "Operation A of spec §6.4: validate an attributed record (`warrant~config_cert`) against your audience. Validation authenticates no one — a record is attributed paper — so the endpoint is unauthenticated. Failures are HTTP 200 with `status: \"failure\"`.",
+        "tags": ["verification"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/ValidateRecordRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Validation outcome (success or failure — see `status`)",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/RecordValidationResult" } }
+            }
+          },
+          "400": {
+            "description": "Malformed request (invalid JSON or missing fields)",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+            }
+          }
+        }
+      }
+    },
+    "/status/check": {
+      "post": {
+        "operationId": "statusCheck",
+        "summary": "Fail-closed revocation re-check for RP backends",
+        "description": "Re-check the `status_refs` returned by /verify-access without retaining the (short-lived) presentation. Fail closed: `ok: false` MUST be treated as revoked by the caller. Accepts 1–16 refs per call.",
+        "tags": ["verification"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/StatusCheckRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Per-ref revocation states",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/StatusCheckResponse" } }
+            }
+          },
+          "400": {
+            "description": "Malformed request (invalid JSON, or refs not in 1..=16)",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+            }
+          }
+        }
+      }
+    },
+    "/status/proxy": {
+      "get": {
+        "operationId": "statusProxy",
+        "summary": "Fetch a verified status-list token (page-side revocation poll)",
+        "description": "Serves a VERIFIED status-list token for the given issuer status-list URI. include.js polls this from RP pages (UX only — the enforcement path is POST /status/check). CORS: open to any origin, no credentials.",
+        "tags": ["verification"],
+        "parameters": [
+          {
+            "name": "uri",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "format": "uri" },
+            "description": "The issuer-published status list URI to fetch"
+          }
+        ],
+        "responses": {
+          "200": { "description": "The encoded status-list token", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "307": { "description": "The broker's own list — redirects to /.well-known/browserid-status" },
+          "400": { "description": "Status list unavailable or URI refused", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/.well-known/browserid": {
+      "get": {
+        "operationId": "supportDocument",
+        "summary": "BrowserID support document (protocol discovery)",
+        "description": "The domain's BrowserID support document: authentication and provisioning URLs. The issuer public key is NOT served here in production — the authenticated `_browserid` DNSSEC record is the sole root of trust. CORS: open to any origin, no credentials.",
+        "tags": ["discovery"],
+        "responses": {
+          "200": {
+            "description": "Support document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "authentication": { "type": "string", "description": "Path of the sign-in dialog" },
+                    "provisioning": { "type": "string", "description": "Path of the provisioning endpoint" }
+                  },
+                  "required": ["authentication", "provisioning"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/guestbook/feed": {
+      "get": {
+        "operationId": "guestbookFeed",
+        "summary": "Public agent guestbook feed (read-only)",
+        "description": "The public wall agents sign in the 2-minute demo. Read-only; signing happens over MCP (see https://www.browserid.me/llms.txt). CORS: open to any origin, no credentials. No emails are exposed — display names and issuer domains only.",
+        "tags": ["demo"],
+        "responses": {
+          "200": {
+            "description": "Newest-first entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "message": { "type": "string" },
+                          "name": { "type": "string", "description": "Public display name of the signing agent" },
+                          "domain": { "type": "string", "description": "Issuer domain of the verified identity" },
+                          "scopes": { "type": "array", "items": { "type": "string" } },
+                          "at": { "type": "string", "format": "date-time" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "VerifyAccessRequest": {
+        "type": "object",
+        "required": ["presentation", "audience"],
+        "properties": {
+          "presentation": {
+            "type": "string",
+            "description": "The four-object bundle from the client: access_cert~assertion~warrant~config_cert. Opaque to the RP — never parse it."
+          },
+          "audience": {
+            "type": "string",
+            "description": "The exact origin you expect, e.g. https://app.example.com. Pin this server-side; never echo a client-supplied value."
+          },
+          "accepted_fallbacks": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Optional issuer domains accepted as fallback IdPs for emails with no primary IdP. Omit to use the verifier's default (this broker)."
+          }
+        }
+      },
+      "AccessVerificationResult": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": { "type": "string", "enum": ["okay", "failure"] },
+          "email": { "type": "string", "description": "The attributed identity (the human). Success requires status==okay AND a present email." },
+          "grantee": { "type": "string", "description": "The acting identity — equals email for a human sign-in; differs when an agent acted on the human's behalf." },
+          "holder": { "type": "string", "description": "Opaque holder id of the thing that acted (advisory)." },
+          "scopes": { "type": "array", "items": { "type": "string" }, "description": "What the human's warrant authorized at this audience." },
+          "issuer": { "type": "string", "description": "The issuing domain, checked against its own DNS." },
+          "status_refs": { "type": "array", "items": { "$ref": "#/components/schemas/StatusRef" }, "description": "Refs for later revocation re-checks via POST /status/check." },
+          "reason": { "type": "string", "description": "Failure reason (present when status is failure)." }
+        }
+      },
+      "ValidateRecordRequest": {
+        "type": "object",
+        "required": ["record", "audience"],
+        "properties": {
+          "record": { "type": "string", "description": "The held record: warrant~config_cert." },
+          "audience": { "type": "string", "description": "The caller's own audience — checked exactly against warrant.audience." },
+          "accepted_fallbacks": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "RecordValidationResult": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": { "type": "string", "enum": ["okay", "failure"] },
+          "grantor": { "type": "string", "description": "The attributed identity (the record's grantor)." },
+          "grantee": { "type": "string", "description": "The acting identity: an exact email, or an admission-only matcher (* / *@domain)." },
+          "binding": { "description": "The record's normalized binding set." },
+          "scopes": { "type": "array", "items": { "type": "string" } },
+          "issuer": { "type": "string", "description": "The grantor's IdP (the config cert's issuer)." },
+          "status_refs": { "type": "array", "items": { "$ref": "#/components/schemas/StatusRef" } },
+          "reason": { "type": "string" }
+        }
+      },
+      "StatusRef": {
+        "type": "object",
+        "required": ["uri", "idx"],
+        "properties": {
+          "uri": { "type": "string", "description": "The issuer-published status list URI" },
+          "idx": { "type": "integer", "description": "This credential's bit index in the list" }
+        }
+      },
+      "StatusCheckRequest": {
+        "type": "object",
+        "required": ["refs"],
+        "properties": {
+          "refs": { "type": "array", "items": { "$ref": "#/components/schemas/StatusRef" }, "minItems": 1, "maxItems": 16 }
+        }
+      },
+      "StatusCheckResponse": {
+        "type": "object",
+        "required": ["ok", "revoked", "results"],
+        "properties": {
+          "ok": { "type": "boolean", "description": "Every ref was checked successfully. false MUST be treated as revoked (fail closed)." },
+          "revoked": { "type": "boolean", "description": "Any checked ref is revoked." },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["uri", "idx", "state"],
+              "properties": {
+                "uri": { "type": "string" },
+                "idx": { "type": "integer" },
+                "state": { "type": "string", "enum": ["valid", "revoked", "unavailable"] }
+              }
+            }
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string", "description": "Stable machine-readable error code, e.g. bad_request, not_found" },
+              "message": { "type": "string", "description": "Human-readable description of what went wrong" },
+              "hint": { "type": "string", "description": "How to fix the request" },
+              "docs": { "type": "string", "format": "uri", "description": "Where to read more" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    { "name": "verification", "description": "Assertion/record verification and revocation checks for relying parties" },
+    { "name": "discovery", "description": "Protocol discovery documents" },
+    { "name": "demo", "description": "Public demo surfaces" }
+  ]
+}

@@ -22,8 +22,8 @@ mod well_known;
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::http::{header, HeaderName, HeaderValue, Method};
-use axum::response::{Html, IntoResponse};
+use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use tower_cookies::CookieManagerLayer;
@@ -130,6 +130,11 @@ where
         // The marketing origin's home-page wall reads the guestbook feed
         // cross-origin (credentials: omit).
         .route("/guestbook/feed", get(guestbook::feed))
+        // The OpenAPI description of this origin's public API — public
+        // documentation, CORS-open so agent tooling can fetch it anywhere.
+        // The marketing origin serves an identical copy (a test keeps the
+        // two files in sync).
+        .route("/openapi.json", get(openapi_spec))
         .nest_service("/common/js", ServeDir::new(format!("{}/common/js", static_path)))
         .layer(
             CorsLayer::new()
@@ -300,8 +305,17 @@ where
                 }
             }
         }))
+        // The agent-facing index lives on the marketing origin (single
+        // source of truth); this origin redirects so browserid.me/llms.txt
+        // always resolves. Without an origin split (local dev) there is no
+        // marketing site — answer with the agent-friendly 404 instead.
+        .route("/llms.txt", get(llms_txt))
         // Serve static files (dialog, CSS, JS)
-        .nest_service("/dialog", ServeDir::new(static_path));
+        .nest_service("/dialog", ServeDir::new(static_path))
+        // Unmatched paths: a 404 an agent can recover from — structured JSON
+        // for API-shaped requests, a short markdown site map for the rest —
+        // never an empty body.
+        .fallback(not_found);
 
     // Test-only helper routes (raw verification codes, mock-IdP controls). They
     // are an account-takeover primitive — anyone could read a victim's reset
@@ -522,6 +536,119 @@ fn login_status(resp_headers: &axum::http::HeaderMap, req_has_session: bool) -> 
         None
     }
 }
+
+/// `GET /openapi.json` — the broker's public API, described. Compiled in from
+/// `openapi.json` at the crate root.
+async fn openapi_spec() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))],
+        include_str!("../../openapi.json"),
+    )
+}
+
+/// `GET /llms.txt` — redirect to the marketing origin's copy (see the route
+/// comment).
+async fn llms_txt<U, S, E>(State(state): State<Arc<AppState<U, S, E>>>) -> Response
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    if let Some(url) = &state.marketing_url {
+        return axum::response::Redirect::permanent(&format!("{url}/llms.txt")).into_response();
+    }
+    not_found_markdown("/llms.txt")
+}
+
+/// Fallback for unmatched paths. Agents recover from a 404 only if it says
+/// where to look next: API-shaped requests (path prefix or Accept) get a
+/// structured JSON error, everything else a short markdown site map. A
+/// browser asking for text/html gets a minimal HTML rendering of the same.
+async fn not_found<U, S, E>(
+    State(_state): State<Arc<AppState<U, S, E>>>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+) -> Response
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let path = uri.path();
+    let accept =
+        headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let api_shaped = path.starts_with("/wsapi/")
+        || path.starts_with("/api/")
+        || path.starts_with("/fedcm/")
+        || path.starts_with("/idp/")
+        || accept.contains("application/json");
+    if api_shaped {
+        let body = serde_json::json!({
+            "error": {
+                "code": "not_found",
+                "message": format!("No endpoint at {} on this origin.", safe_path(path)),
+                "hint": "The public API is described at /openapi.json; the agent-facing index is https://www.browserid.me/llms.txt.",
+                "docs": "https://browserid.me/openapi.json",
+            }
+        });
+        return (StatusCode::NOT_FOUND, axum::Json(body)).into_response();
+    }
+    // Humans in a browser get links they can click; the path is NOT reflected
+    // here (static body — nothing attacker-controlled in the HTML).
+    if accept.contains("text/html") {
+        return (
+            StatusCode::NOT_FOUND,
+            [(header::VARY, HeaderValue::from_static("Accept"))],
+            Html(NOT_FOUND_HTML),
+        )
+            .into_response();
+    }
+    not_found_markdown(path)
+}
+
+/// The markdown 404 body: a real 404 status plus a short site map so an agent
+/// can recover (llms.txt, OpenAPI, account, well-known).
+fn not_found_markdown(path: &str) -> Response {
+    let body = format!(
+        "# 404 — nothing at {}\n\n\
+         This is the BrowserID auth/issuer origin (browserid.me). Where to look:\n\n\
+         - https://www.browserid.me/llms.txt — the agent-facing index of everything BrowserID\n\
+         - /openapi.json — OpenAPI spec of this origin's public API\n\
+         - /account — sign in, manage identities, revoke agent grants\n\
+         - /.well-known/browserid — protocol support document\n\
+         - https://www.browserid.me/ — what BrowserID is (docs, demos, developer guides)\n\
+         - https://github.com/vthunder/browserid-ng — source and docs\n",
+        safe_path(path)
+    );
+    (
+        StatusCode::NOT_FOUND,
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static("text/markdown; charset=utf-8")),
+            (header::VARY, HeaderValue::from_static("Accept")),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Bound the reflected path (it's caller-controlled): raw URI paths carry no
+/// whitespace or control bytes, so length is the only thing left to cap.
+fn safe_path(path: &str) -> &str {
+    &path[..path.len().min(200)]
+}
+
+const NOT_FOUND_HTML: &str = r#"<!DOCTYPE html>
+<html><head><title>404 — browserid.me</title></head><body>
+<h1>404 — no page here</h1>
+<p>This is the BrowserID auth/issuer origin. Try:</p>
+<ul>
+<li><a href="/account">Your account</a> — sign in, manage identities, revoke agent grants</li>
+<li><a href="https://www.browserid.me/">www.browserid.me</a> — what BrowserID is</li>
+<li><a href="https://www.browserid.me/llms.txt">llms.txt</a> — the agent-facing index</li>
+<li><a href="/openapi.json">openapi.json</a> — this origin's public API</li>
+</ul>
+</body></html>
+"#;
 
 /// `GET /sign_in` — the primary-IdP auth-return handler. After the IdP
 /// authenticates the user it redirects this popup to `/sign_in#AUTH_RETURN`

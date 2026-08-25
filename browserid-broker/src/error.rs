@@ -133,6 +133,22 @@ pub enum BrokerError {
     DomainUnprovable(String),
 }
 
+/// Structured JSON 400 for malformed API requests (a rejected JSON body,
+/// missing fields, wrong content type). Agents can't parse axum's plain-text
+/// rejections; this gives them a machine-readable code + a pointer at the
+/// OpenAPI spec instead.
+pub fn bad_request_json(message: impl Into<String>) -> Response {
+    let body = json!({
+        "error": {
+            "code": "bad_request",
+            "message": message.into(),
+            "hint": "Send a JSON body matching this endpoint's schema in the OpenAPI spec.",
+            "docs": "https://browserid.me/openapi.json",
+        }
+    });
+    (StatusCode::BAD_REQUEST, axum::Json(body)).into_response()
+}
+
 impl IntoResponse for BrokerError {
     fn into_response(self) -> Response {
         // Reservation collisions carry the specific unavailable names.

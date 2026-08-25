@@ -31,6 +31,8 @@ COPY browserid-registrar/src browserid-registrar/src
 COPY browserid-agent/src browserid-agent/src
 COPY browserid-rp/src browserid-rp/src
 COPY browserid-broker/src browserid-broker/src
+# The broker include_str!'s its OpenAPI spec from the crate root.
+COPY browserid-broker/openapi.json browserid-broker/
 
 # Touch files to invalidate cache and rebuild
 RUN touch browserid-core/src/lib.rs browserid-dnssec/src/lib.rs browserid-registrar/src/lib.rs browserid-agent/src/lib.rs browserid-rp/src/lib.rs browserid-broker/src/main.rs && \

@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://www.browserid.me/sitemap.xml
+
+# Agents: start at https://www.browserid.me/llms.txt
+# API description: https://www.browserid.me/openapi.json

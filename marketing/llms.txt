@@ -1,9 +1,9 @@
-# browserid-ng — identity for agents, answerable to humans
+# BrowserID (browserid-ng) — identity for agents, answerable to humans
 
-> An open, DNS-rooted identity protocol. AI agents get their own cryptographic
-> identity, delegated from a human, scoped to exactly where and what the human
-> approved, revocable at any time. Human passwordless sign-in included.
-> Open source (MPL-2.0), descended from Mozilla Persona.
+> BrowserID is an open, DNS-rooted identity protocol. AI agents get their own
+> cryptographic identity, delegated from a human, scoped to exactly where and
+> what the human approved, revocable at any time. Human passwordless sign-in
+> included. Open source (MPL-2.0), descended from Mozilla Persona.
 
 ## What problems this solves (pick yours)
 
@@ -47,6 +47,19 @@
   (RFC 7521 assertion grant, for headless agents). Runbook: https://browserid.me/mcp-demo
 - https://python-mcp-demo.browserid.me — the Python twin (assertion lane), same enforcement
 - https://bsky.browserid.me — put an agent on Bluesky with attributed, revocable posting
+
+## API & machine-readable docs
+
+- OpenAPI spec of the broker's public API (verify, status checks, discovery):
+  https://www.browserid.me/openapi.json (also at https://browserid.me/openapi.json)
+- Verify HTTP contract (RP quickstart, any language):
+  https://github.com/vthunder/browserid-ng/blob/main/docs/verify-quickstart.md
+- API errors are structured JSON: `{"error": {"code", "message", "hint", "docs"}}`.
+- Every page on www.browserid.me serves markdown via content negotiation —
+  request it with `Accept: text/markdown` (responses set `Vary: Accept`).
+  Direct markdown URLs also work: /index.md, /developers.md, /domains.md,
+  /demos.md, /gate.md, /mcp-demo.md.
+- Sitemap: https://www.browserid.me/sitemap.xml
 
 ## Source & spec
 

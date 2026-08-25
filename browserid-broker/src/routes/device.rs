@@ -15,7 +15,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Query, State};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use browserid_core::device::{AccessCert, AccessRequest, DeviceCert, Purpose};
 use browserid_core::{PublicKey, StatusRef};
@@ -432,16 +434,24 @@ pub struct VerifyAccessRequest {
 
 pub async fn verify_access<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
-    Json(req): Json<VerifyAccessRequest>,
-) -> Json<AccessVerificationResult>
+    req: Result<Json<VerifyAccessRequest>, JsonRejection>,
+) -> Response
 where
     U: UserStore,
     S: SessionStore,
     E: EmailSender,
 {
+    // A malformed body gets a structured JSON error, not axum's plain-text
+    // rejection — this is the public API's front door.
+    let Json(req) = match req {
+        Ok(json) => json,
+        Err(rej) => return crate::error::bad_request_json(rej.body_text()),
+    };
     let fetcher = match state.fallback_fetcher().await {
         Ok(f) => f,
-        Err(e) => return Json(AccessVerificationResult::fail(format!("fetcher: {e}"))),
+        Err(e) => {
+            return Json(AccessVerificationResult::fail(format!("fetcher: {e}"))).into_response()
+        }
     };
     let accepted = req.accepted_fallbacks.unwrap_or_else(|| vec![state.domain.clone()]);
     let is_own_revoked =
@@ -457,6 +467,7 @@ where
         verify_access_with_dns(&req.presentation, &req.audience, fetcher.as_ref(), &accepted, status)
             .await,
     )
+    .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -480,17 +491,24 @@ pub struct ValidateRecordRequest {
 /// check openly leaks nothing (§6.4).
 pub async fn validate_record<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
-    Json(req): Json<ValidateRecordRequest>,
-) -> Json<crate::verifier::RecordValidationResult>
+    req: Result<Json<ValidateRecordRequest>, JsonRejection>,
+) -> Response
 where
     U: UserStore,
     S: SessionStore,
     E: EmailSender,
 {
     use crate::verifier::RecordValidationResult;
+    // Same structured-JSON rejection contract as /verify-access.
+    let Json(req) = match req {
+        Ok(json) => json,
+        Err(rej) => return crate::error::bad_request_json(rej.body_text()),
+    };
     let fetcher = match state.fallback_fetcher().await {
         Ok(f) => f,
-        Err(e) => return Json(RecordValidationResult::fail(format!("fetcher: {e}"))),
+        Err(e) => {
+            return Json(RecordValidationResult::fail(format!("fetcher: {e}"))).into_response()
+        }
     };
     let accepted = req.accepted_fallbacks.unwrap_or_else(|| vec![state.domain.clone()]);
     let is_own_revoked =
@@ -507,6 +525,7 @@ where
         )
         .await,
     )
+    .into_response()
 }
 
 // ---------------------------------------------------------------------------
