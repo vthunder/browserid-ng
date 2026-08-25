@@ -63,7 +63,7 @@ npm test
 | `PORT` | `3100` | HTTP port |
 | `WALLET_ORIGIN` | `http://localhost:PORT` | Public origin (OAuth issuer + resource; set in production) |
 | `BROWSERID_BROKER` | `https://browserid.me` | Broker for provisioning, warrants, sign-in |
-| `VERIFIER_URL` | `<broker>/verify-access` | Hosted verifier for the sign-in step |
+| `VERIFIER_URL` | `<broker>/verify` | Hosted verifier for the sign-in step |
 | `WALLET_DATABASE_PATH` | `wallet.db` | SQLite file |
 | `WALLET_KEK` | dev: generated file | **Required in production.** base64url, 32 bytes — wraps tenant keys |
 | `WALLET_SESSION_SECRET` | dev: generated file | **Required in production.** base64url, 32 bytes — signs authorize-page sessions |

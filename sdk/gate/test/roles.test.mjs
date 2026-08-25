@@ -55,7 +55,7 @@ const broker = createServer(async (req, res) => {
   let raw = ""; for await (const c of req) raw += c;
   const body = raw ? JSON.parse(raw) : {};
   if (records.handle(new URL(req.url, BROKER).pathname, body, reply)) return;
-  if (req.url === "/verify-access") {
+  if (req.url === "/verify") {
     const email = EMAILS[body.presentation];
     if (!email) return reply(200, { status: "failure", reason: "verification failed" });
     return reply(200, {

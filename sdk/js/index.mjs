@@ -2,7 +2,7 @@
 // (device-cert model).
 //
 // This is the zero-dependency path: it POSTs the presentation to a hosted
-// /verify-access service (default https://browserid.me/verify-access) which
+// /verify service (default https://browserid.me/verify) which
 // performs the DNSSEC-rooted key resolution, the full cryptographic join
 // (access cert + assertion + warrant + config cert), primary/fallback
 // conformance, and revocation checks. You get back a small, typed result.
@@ -15,15 +15,15 @@
 // Trust note: using a hosted verifier means you trust that service to perform
 // verification honestly. That is the right tradeoff for many RPs (it is the same
 // party you already discover keys through), but if you need to verify without
-// trusting a third party, run your own /verify-access (the broker is open
+// trusting a third party, run your own /verify (the broker is open
 // source) and point `verifierUrl` at it, or use the native verifier libraries.
 
-const DEFAULT_VERIFIER = "https://browserid.me/verify-access";
+const DEFAULT_VERIFIER = "https://browserid.me/verify";
 
 /**
- * Create a verifier bound to a hosted /verify-access endpoint.
+ * Create a verifier bound to a hosted /verify endpoint.
  * @param {object} [opts]
- * @param {string} [opts.verifierUrl] hosted /verify-access URL (default browserid.me)
+ * @param {string} [opts.verifierUrl] hosted /verify URL (default browserid.me)
  * @param {string[]} [opts.acceptedFallbacks] default fallback-IdP issuer domains
  *   accepted for emails with no primary IdP (spec §8.1). Primaries are always
  *   accepted. Omit for the verifier's default ({that broker}).

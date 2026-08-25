@@ -16,7 +16,7 @@
 // Config (env):
 //   SERVER_AUDIENCE     the audience the agent's presentation must target
 //                       (default "https://notes.mcp.example")
-//   VERIFIER_URL        hosted /verify-access URL (default https://browserid.me/verify-access)
+//   VERIFIER_URL        hosted /verify URL (default https://browserid.me/verify)
 //   ACCEPTED_FALLBACKS  optional comma-separated fallback-IdP issuer domains
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

@@ -7,7 +7,7 @@ const AUDIENCE = "https://app.example.com";
 function fakeBroker({ verify, status } = {}) {
   const f = async (url, init) => {
     const body = init && init.body ? JSON.parse(init.body) : {};
-    if (String(url).endsWith("/verify-access")) {
+    if (String(url).endsWith("/verify")) {
       f.lastAudience = body.audience;
       return json(verify ?? { status: "failure" });
     }

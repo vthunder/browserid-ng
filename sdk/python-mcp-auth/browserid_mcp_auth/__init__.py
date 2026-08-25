@@ -7,7 +7,7 @@ that re-checks the warrant's revocation status **fail-closed** on every tool
 call. Hosts run their stock MCP OAuth client unmodified.
 
 No crypto in Python: verification is delegated to the broker's DNSSEC-rooted
-hosted verifier (``POST /verify-access``) and revocation to ``POST
+hosted verifier (``POST /verify``) and revocation to ``POST
 /status/check``. Framework-agnostic; wire into FastMCP / any server. See
 docs/plans/2026-08-02-mcp-distribution-design.md.
 """
@@ -142,7 +142,7 @@ class McpAuth:
         self.accepted_fallbacks = accepted_fallbacks or [urlparse(self.broker).netloc]
         self.store = store or MemoryStore()
         self._http_post = http_post or default_http_post
-        self._verify_url = f"{self.broker}/verify-access"
+        self._verify_url = f"{self.broker}/verify"
         self._status_url = f"{self.broker}/status/check"
 
     # -- discovery -----------------------------------------------------------

@@ -26,7 +26,7 @@ OK_VERIFY = {
 
 
 class FakeBroker:
-    """Configurable (status_code, json) responses for /verify-access + /status/check."""
+    """Configurable (status_code, json) responses for /verify + /status/check."""
 
     def __init__(self, verify=None, status=None):
         self.verify = verify
@@ -34,7 +34,7 @@ class FakeBroker:
         self.calls = {"verify": 0, "status": 0}
 
     def post(self, url, body):
-        if url.endswith("/verify-access"):
+        if url.endswith("/verify"):
             self.calls["verify"] += 1
             if self.verify == "throw":
                 raise ConnectionError("refused")

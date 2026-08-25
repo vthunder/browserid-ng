@@ -9,7 +9,7 @@ Machine-readable API description: [/openapi.json](/openapi.json)
 ## Thread 1 · sign-in
 
 One call tells you who signed in — and who's answerable. POST the assertion to
-`https://browserid.me/verify-access`, pinned to your audience:
+`https://browserid.me/verify`, pinned to your audience:
 
 ```js
 // One call — a verified identity for whoever signs in

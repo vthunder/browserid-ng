@@ -38,7 +38,7 @@ export type CheckStatusResult =
   | { ok: false; reason: string };
 
 export interface CreateVerifierOptions {
-  /** Hosted /verify-access URL. Default: https://browserid.me/verify-access */
+  /** Hosted /verify URL. Default: https://browserid.me/verify */
   verifierUrl?: string;
   /** Default accepted fallback-IdP issuer domains (spec §8.1). */
   acceptedFallbacks?: string[];

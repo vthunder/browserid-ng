@@ -678,7 +678,7 @@ export function createGateway(opts) {
         return json(res, 400, { error: "invalid_request", error_description: "missing presentation" });
       }
       const result = await verifyPresentation(presentation, adminOrigin, {
-        verifierUrl: `${broker}/verify-access`,
+        verifierUrl: `${broker}/verify`,
         fetch: doFetch,
       });
       if (!result.ok) {

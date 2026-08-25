@@ -4,7 +4,7 @@
 //
 // Test A (fallback path): broker-demo → same-tab dialog → create-account
 //   (password + emailed code) → redirect back with #browserid= → include
-//   delivers via watch() → /verify-access okay.
+//   delivers via watch() → /verify okay.
 // Test B (primary same-tab hop): mock primary IdP (registered via the test
 //   endpoint) → dialog hops THIS TAB to the mock device-authorize page →
 //   returns to /dialog/dialog.html?resume=device_auth with certs → dialog

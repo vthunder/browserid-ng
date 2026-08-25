@@ -2,7 +2,7 @@
 
 Drop-in **"Sign in with BrowserID"** for [Auth.js / NextAuth](https://authjs.dev).
 A Credentials provider whose `authorize()` verifies a BrowserID presentation
-server-side at the hosted verifier (`/verify-access`, via
+server-side at the hosted verifier (`/verify`, via
 [`@browserid-ng/verify`](../js)) — **no crypto in JS, fail-closed** — plus tiny
 browser helpers that drive the login dialog. Works with Auth.js **v5** (primary)
 and **v4** (the provider is a plain options object, version-agnostic).
@@ -87,7 +87,7 @@ if (!ok) await signOut(); // fail-closed: revoked OR unverifiable => out
   `requestBrowserID`, `logoutBrowserID`, `signInWithBrowserID`.
 
 `config`: `audience` (**required**), `broker` (default `https://browserid.me`),
-`verifierUrl` (default `${broker}/verify-access`), `acceptedFallbacks`. The
+`verifierUrl` (default `${broker}/verify`), `acceptedFallbacks`. The
 user's `browserid.grantee` is the actor of record — it differs from `email`
 when a named agent acted on the user's behalf; compare them for delegation
 policy. There is no human/agent flag (see the `@browserid-ng/verify` README).

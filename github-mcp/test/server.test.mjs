@@ -30,7 +30,7 @@ const { createGithubMcpService } = await import("../src/server.mjs");
 const GRANTOR = "dan@example.com";
 const GRANTEE = "claude@agents.example.com";
 
-// --- mock broker: /verify-access keyed on the presentation string -----------
+// --- mock broker: /verify keyed on the presentation string -----------
 
 // presentation "warrant-full" → both scopes; "warrant-read" → repo:read only.
 let statusMode = "ok"; // "ok" | "revoked" | "down"
@@ -42,7 +42,7 @@ const broker = createServer(async (req, res) => {
   let body = "";
   for await (const c of req) body += c;
   const parsed = JSON.parse(body || "{}");
-  if (req.url === "/verify-access") {
+  if (req.url === "/verify") {
     const scopes = { "warrant-full": ["repo:read", "issues:create"], "warrant-read": ["repo:read"] }[
       parsed.presentation
     ];

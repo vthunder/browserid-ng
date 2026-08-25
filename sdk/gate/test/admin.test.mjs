@@ -34,7 +34,7 @@ const broker = createServer(async (req, res) => {
   const reply = (c, o) => { res.writeHead(c, { "content-type": "application/json" }); res.end(JSON.stringify(o)); };
   let raw = ""; for await (const c of req) raw += c;
   const body = raw ? JSON.parse(raw) : {};
-  if (req.url === "/verify-access") {
+  if (req.url === "/verify") {
     const email = { "pres-admin": ADMIN, "pres-other": OTHER }[body.presentation];
     if (!email) return reply(200, { status: "failure", reason: "verification failed" });
     assert.equal(body.audience, ORIGIN, "login audience is the exact console origin");

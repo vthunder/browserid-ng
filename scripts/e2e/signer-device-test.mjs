@@ -1,6 +1,6 @@
 // e2e for the DEVICE-MODEL SBO signer (/sign popup): log in (deposits device
 // certs), grant the origin, drive /sign with a real SBO envelope + audience,
-// and verify the returned PRESENTATION via /verify-access (proves the browserid
+// and verify the returned PRESENTATION via /verify (proves the browserid
 // half — access-cert mint, warrant, join, access-key binding). The envelope
 // signature itself is sbo-wasm/daemon territory; here we prove the presentation.
 import { chromium } from 'playwright';
@@ -85,7 +85,7 @@ must('cert is a 4-object presentation', (result.cert.match(/~/g) || []).length =
 // 4. The presentation must verify at the SBO audience as the user themself
 //    (as-you: grantee == email).
 const v = await page.evaluate(async ({ cert, audience }) => {
-  const r = await fetch('/verify-access', {
+  const r = await fetch('/verify', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ presentation: cert, audience })
   });

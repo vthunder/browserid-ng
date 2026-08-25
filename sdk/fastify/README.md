@@ -2,7 +2,7 @@
 
 **Sign in with BrowserID** for [Fastify](https://fastify.dev) — a `preHandler`
 hook that verifies a BrowserID presentation server-side at the hosted verifier
-(`/verify-access`, via [`@browserid-ng/verify`](../js)) — no crypto in JS,
+(`/verify`, via [`@browserid-ng/verify`](../js)) — no crypto in JS,
 fail-closed.
 
 ```js

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createVerifier, verifyPresentation } from "./index.mjs";
 
-// A fetch stub that returns a canned /verify-access JSON body.
+// A fetch stub that returns a canned /verify JSON body.
 function stubFetch(jsonBody, { httpStatus = 200, throwErr = null } = {}) {
   return async () => {
     if (throwErr) throw throwErr;
@@ -158,7 +158,7 @@ test("checkStatus: no refs → nothing to check, not revoked", async () => {
 test("checkStatus posts to /status/check on the verifier origin", async () => {
   let calledUrl = null;
   const v = createVerifier({
-    verifierUrl: "https://broker.example/verify-access",
+    verifierUrl: "https://broker.example/verify",
     fetch: async (url) => {
       calledUrl = url;
       return { ok: true, status: 200, json: async () => ({ ok: true, revoked: false, results: [] }) };

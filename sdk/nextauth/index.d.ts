@@ -26,7 +26,7 @@ export interface BrowserIDConfig {
   audience: string;
   /** BrowserID broker origin. Default "https://browserid.me". */
   broker?: string;
-  /** Hosted verifier URL. Default `${broker}/verify-access`. */
+  /** Hosted verifier URL. Default `${broker}/verify`. */
   verifierUrl?: string;
   acceptedFallbacks?: string[];
   /** Injectable fetch (tests). */

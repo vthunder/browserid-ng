@@ -15,7 +15,7 @@
 // (docs/plans/2026-08-12-M1-authcode-build-spec.md).
 //
 // No crypto in JS: verification is delegated to the broker's DNSSEC-rooted
-// hosted verifier (`POST /verify-access`), and revocation to `POST
+// hosted verifier (`POST /verify`), and revocation to `POST
 // /status/check` — the single Rust implementation of both. See
 // docs/plans/2026-08-10-mcp-auth-flight-build-spec.md.
 
@@ -165,7 +165,7 @@ export function createMcpAuth(opts) {
   const doFetch = opts.fetch || globalThis.fetch;
   const acceptedFallbacks =
     opts.acceptedFallbacks || [new URL(broker).host];
-  const verifyUrl = `${broker}/verify-access`;
+  const verifyUrl = `${broker}/verify`;
   const statusUrl = `${broker}/status/check`;
   const validateUrl = `${broker}/validate-record`;
 
@@ -223,7 +223,7 @@ export function createMcpAuth(opts) {
    * scoped bearer. Both token-endpoint grants terminate here — Lane A
    * (jwt-bearer, `handleToken`) and the optional authorization-code lane
    * (`createAuthCodeLane`) — so every bearer flows through the SAME
-   * `/verify-access` check and the same per-call status re-check.
+   * `/verify` check and the same per-call status re-check.
    */
   async function redeemPresentation(presentation, scope, client = null) {
     let verified;
@@ -278,7 +278,7 @@ export function createMcpAuth(opts) {
       scopes,
       statusRefs: verified.status_refs || [],
       exp,
-      statusCheckedAt: nowS(), // verify-access already checked status fail-closed
+      statusCheckedAt: nowS(), // /verify already checked status fail-closed
       statusOk: true,
     });
 
@@ -839,7 +839,7 @@ export function createAuthCodeLane(opts) {
       const { requestWarrants } = await loadAgentModule();
       const agent = await getAgent();
       // The audience is pinned to THIS resource — the same audience
-      // /verify-access binds the bearer to. grantor "*": the approver picks
+      // /verify binds the bearer to. grantor "*": the approver picks
       // which of their identities delegates.
       pending = await requestWarrants(broker, {
         deviceCert: agent.deviceCert,
@@ -1232,7 +1232,7 @@ export function createAuthCodeLane(opts) {
 
     // Agent mode: mint the presentation under the agent lock, re-holding
     // THIS code's warrant so the presentation is provably the approving
-    // user's; then the same verify+mint path as Lane A — /verify-access
+    // user's; then the same verify+mint path as Lane A — /verify
     // binds the audience, fail-closed, and the bearer lands in the same
     // store, tagged with the CONNECTION (the OAuth client) custodying it.
     let presentation;

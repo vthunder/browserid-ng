@@ -11,7 +11,7 @@ class _Broker(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.rfile.read(int(self.headers.get("content-length", 0)))
-        if self.path.endswith("/verify-access"):
+        if self.path.endswith("/verify"):
             body = {"status": "okay", "email": "dan@sandmill.org", "grantee": "dan+claude@sandmill.org",
                     "holder": "agents.abc", "issuer": "sandmill.org", "scopes": ["demo:write"],
                     "status_refs": [{"uri": "https://browserid.me/.well-known/browserid-status", "idx": 7}]}

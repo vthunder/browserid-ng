@@ -12,7 +12,7 @@ presentation in, a bearer out), plus a **resource-server** guard that
 re-checks the warrant's revocation status **fail-closed on every call**.
 
 Verification is delegated to the broker's DNSSEC-rooted hosted verifier
-(`POST /verify-access`) and `POST /status/check` — no crypto in JS.
+(`POST /verify`) and `POST /status/check` — no crypto in JS.
 
 ## Warrant-gated tools in ten lines
 
@@ -90,7 +90,7 @@ identities delegates); the browser bounces back; the lane picks up the
 approved `warrant~config_cert` and mints a **single-use, ~60s** OAuth code
 bound to `client_id` + `redirect_uri` + the PKCE challenge. `/token` verifies
 all of that, mints a presentation with the gateway's DeviceAgent, and feeds it
-through the SAME `/verify-access` + bearer mint as Lane A — so revocation and
+through the SAME `/verify` + bearer mint as Lane A — so revocation and
 per-call fail-closed status checks are identical across both lanes.
 
 `@browserid-ng/agent` is loaded lazily — Lane-A-only users never pull it in.

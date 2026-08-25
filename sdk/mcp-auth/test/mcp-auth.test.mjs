@@ -9,14 +9,14 @@ import {
 
 const RESOURCE = "https://mcp.example.com";
 
-// A configurable fake broker. `verify` is the /verify-access JSON; `status`
+// A configurable fake broker. `verify` is the /verify JSON; `status`
 // is the /status/check JSON. Either can be a function (of the request body)
 // or a value; set to "throw" to simulate an unreachable broker.
 function fakeBroker({ verify, status } = {}) {
   const calls = { verify: 0, status: 0 };
   const fetch = async (url, init) => {
     const body = init && init.body ? JSON.parse(init.body) : {};
-    if (url.endsWith("/verify-access")) {
+    if (url.endsWith("/verify")) {
       calls.verify++;
       if (verify === "throw") throw new Error("ECONNREFUSED");
       const v = typeof verify === "function" ? verify(body) : verify;
@@ -168,7 +168,7 @@ test("a fresh status result is cached within statusCacheS", async () => {
   const before = broker.calls.status;
   await mcp.authenticate(`Bearer ${access_token}`);
   await mcp.authenticate(`Bearer ${access_token}`);
-  // verify-access already established freshness; both authenticates hit cache.
+  // /verify already established freshness; both authenticates hit cache.
   assert.equal(broker.calls.status, before);
 });
 

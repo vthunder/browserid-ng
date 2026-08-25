@@ -46,7 +46,7 @@ const broker = createServer(async (req, res) => {
   const reply = (c, o) => { res.writeHead(c, { "content-type": "application/json" }); res.end(JSON.stringify(o)); };
   let raw = ""; for await (const c of req) raw += c;
   const body = raw ? JSON.parse(raw) : {};
-  if (req.url === "/verify-access") {
+  if (req.url === "/verify") {
     if (body.presentation !== "pres-allowed") return reply(200, { status: "failure", reason: "no" });
     return reply(200, { status: "okay", email: ADMIN, grantee: GRANTEE, holder: "a.1", issuer: "example.com", scopes: ["tool:read_text_file", "tool:list_directory"], status_refs: [] });
   }

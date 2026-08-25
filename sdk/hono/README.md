@@ -2,7 +2,7 @@
 
 **Sign in with BrowserID** for [Hono](https://hono.dev) — edge and serverless
 (Cloudflare Workers, Bun, Deno, Node). A middleware that verifies a BrowserID
-presentation server-side at the hosted verifier (`/verify-access`, via
+presentation server-side at the hosted verifier (`/verify`, via
 [`@browserid-ng/verify`](../js)) — no crypto in JS, fail-closed.
 
 ```js

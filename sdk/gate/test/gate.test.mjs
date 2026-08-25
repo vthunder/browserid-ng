@@ -1,6 +1,6 @@
 // The gate end to end over real HTTP: a real stdio child (the fs-child
 // fixture, reading a real temp dir) wrapped by the gate; a MOCK broker
-// (github-mcp idiom) for /verify-access + /status/check; a Lane-A bearer
+// (github-mcp idiom) for /verify + /status/check; a Lane-A bearer
 // minted at /token reaching tools/call on the child and getting a genuine
 // filesystem result; the grantor allowlist refusing a non-allowlisted human
 // BEFORE the tool runs; the attribution line; and proof BOTH auth lanes are
@@ -52,10 +52,10 @@ const broker = createServer(async (req, res) => {
   const reply = (code, obj) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(obj)); };
   let raw = ""; for await (const c of req) raw += c;
   const body = raw ? JSON.parse(raw) : {};
-  if (req.url === "/verify-access") {
+  if (req.url === "/verify") {
     const grantor = { "pres-allowed": ALLOWED, "pres-blocked": BLOCKED }[body.presentation];
     if (!grantor) return reply(200, { status: "failure", reason: "verification failed" });
-    assert.equal(body.audience, RESOURCE, "verify-access binds this resource as audience");
+    assert.equal(body.audience, RESOURCE, "/verify binds this resource as audience");
     return reply(200, {
       status: "okay",
       email: grantor,

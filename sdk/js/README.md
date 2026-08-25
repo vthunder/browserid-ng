@@ -4,14 +4,14 @@ Verify [BrowserID-NG](https://browserid.me) access presentations (device-cert
 model) from your relying party (RP) backend. Zero dependencies, **fail-closed**.
 
 This is the *hosted-verifier* path: your server POSTs the presentation to a
-running `/verify-access` service (default `https://browserid.me/verify-access`)
+running `/verify` service (default `https://browserid.me/verify`)
 which does the DNSSEC-rooted key resolution, the full cryptographic join
 (access cert + assertion + warrant + config cert), primary/fallback
 conformance, and revocation checks. You get back a small typed result.
 
 > **Trust:** a hosted verifier is a party you trust to verify honestly — the same
 > party you already discover keys through. If you need to verify *without*
-> trusting a third party, run your own `/verify-access` (the broker is open
+> trusting a third party, run your own `/verify` (the broker is open
 > source) and set `verifierUrl` to it.
 
 ## Install
@@ -28,7 +28,7 @@ Requires Node 18+ (uses global `fetch`).
 import { createVerifier } from "@browserid-ng/verify";
 
 const verifier = createVerifier({
-  // verifierUrl: "https://browserid.me/verify-access",  // default
+  // verifierUrl: "https://browserid.me/verify",  // default
   // acceptedFallbacks: ["browserid.me"],                 // optional (spec §8.1)
 });
 
@@ -103,8 +103,8 @@ passing it now throws.)
 ## API
 
 - `createVerifier(opts?)` → `{ verify, verifierUrl }`
-  - `opts.verifierUrl` — hosted `/verify-access` URL (default
-    `https://browserid.me/verify-access`)
+  - `opts.verifierUrl` — hosted `/verify` URL (default
+    `https://browserid.me/verify`)
   - `opts.acceptedFallbacks` — default fallback-IdP issuer domains for
     no-primary emails (primaries are always accepted)
   - `opts.timeoutMs` — request timeout (default `10000`)

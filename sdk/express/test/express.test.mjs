@@ -7,7 +7,7 @@ const AUDIENCE = "https://api.example.com";
 function fakeBroker({ verify, status } = {}) {
   const fetch = async (url, init) => {
     const body = init && init.body ? JSON.parse(init.body) : {};
-    if (String(url).endsWith("/verify-access")) {
+    if (String(url).endsWith("/verify")) {
       fetch.lastAudience = body.audience;
       return json(verify ?? { status: "failure", reason: "none" });
     }

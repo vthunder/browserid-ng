@@ -1,6 +1,6 @@
 // PROD smoke against browserid.me: session-path device-cert flow.
 // admin-create @example.com account -> authenticate -> /device/issue ->
-// /access/mint -> warrant (config key) + assertion -> /verify-access.
+// /access/mint -> warrant (config key) + assertion -> /verify.
 import { webcrypto as crypto } from 'node:crypto';
 const BASE = 'https://browserid.me';
 const ADMIN = process.env.ADMIN_TOKEN;
@@ -58,8 +58,8 @@ const loginMatcher = holder.includes('.') ? holder.slice(0, holder.indexOf('.'))
 const warrant = await jws(config.priv, { typ:'browserid-warrant-v1', iat:nowS(), exp:nowS()+90*86400, identifier: email, holder: loginMatcher, audience, scopes:['login'] });
 const assertion = await jws(access.priv, { exp:nowS()+300, aud:audience });
 const pres = `${mint.data.access_cert}~${assertion}~${warrant}~${r.data.config_cert}`;
-const v = await req('POST','/verify-access',{ presentation: pres, audience });
-must('/verify-access okay', v.data.status==='okay' && v.data.email===email, JSON.stringify(v.data));
+const v = await req('POST','/verify',{ presentation: pres, audience });
+must('/verify okay', v.data.status==='okay' && v.data.email===email, JSON.stringify(v.data));
 
 console.log(failed ? '\nPROD SMOKE FAILED' : '\nPROD SMOKE OK');
 process.exit(failed?1:0);

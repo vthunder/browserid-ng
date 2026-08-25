@@ -670,9 +670,9 @@ Presentation verification joins **two independent DNSSEC-rooted paths** — one
 through the access cert (the grantee's actor credential) and one through the
 config cert (the grantor's authorization) — and attributes the result to the
 grantor. (The `browserid.me` broker offers a hosted HTTP verifier for RP
-convenience — `/verify-access` for bundles and a two-object record-validation
-call for admission (§6.4); those endpoints are a service, not part of this
-protocol.)
+convenience — `/verify` for bundles (with `/verify-access` as its permanent
+alias) and a two-object record-validation call for admission (§6.4); those
+endpoints are a service, not part of this protocol.)
 
 ### 6.1 Verification algorithm
 
@@ -801,7 +801,7 @@ RPs can consume status without implementing list verification:
 
 - `POST /status/check` (`{refs: [{uri, idx}, …]}`) — the fail-closed re-check
   an RP backend runs on session activity, using the `status_refs` returned by
-  `/verify-access`. An `ok: false` (any ref uncheckable) MUST be treated as
+  `/verify`. An `ok: false` (any ref uncheckable) MUST be treated as
   revoked.
 - `GET /status/proxy?uri=…` — serves the **verified** list token at `uri`
   from the broker's cache (its own list by redirect). This exists for the RP
@@ -868,7 +868,7 @@ subject matching, both of which happen at the resource; anyone else holding
 the record holds attributed paper (a warrant is not a secret, §5) — readable,
 spendable nowhere. The hosted verifier therefore exposes record validation as
 a two-object call (`warrant ~ config_cert`, steps 1b–1e) beside
-`/verify-access`, requiring no caller authentication.
+`/verify`, requiring no caller authentication.
 
 Validation MAY be split: the signature, resolution, and constraint checks of
 steps 1a–1d — **excluding their validity-window clauses** — are immutable and

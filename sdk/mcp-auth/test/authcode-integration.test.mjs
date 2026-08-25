@@ -4,7 +4,7 @@
 // the lane touches — /warrant/request (records the return_url), /consent/<w>
 // (auto-approves and 302s to the recorded return_url, exactly like the real
 // consent page after the human clicks Allow), /warrant/poll (single
-// delivery), /verify-access + /status/check — and the test drives
+// delivery), /verify + /status/check — and the test drives
 // discover → register → authorize → [browser bounce] → return → token →
 // authenticate, asserting a working attributed bearer and the fail-closed
 // revoke on the lane-minted bearer.
@@ -144,9 +144,9 @@ const broker = createServer(async (req, res) => {
     });
   }
 
-  if (req.method === "POST" && url.pathname === "/verify-access") {
+  if (req.method === "POST" && url.pathname === "/verify") {
     // The verifier binds the audience — the same check Lane A rides.
-    assert.equal(body.audience, RESOURCE, "verify-access binds the bearer to THIS resource");
+    assert.equal(body.audience, RESOURCE, "/verify binds the bearer to THIS resource");
     const parts = String(body.presentation).split("~");
     if (parts.length !== 4 || parts[2] !== WARRANT || parts[3] !== CONFIG_CERT) {
       return reply(200, { status: "failure", reason: "not the issued warrant" });

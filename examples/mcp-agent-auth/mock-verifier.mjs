@@ -1,4 +1,4 @@
-// A stand-in for the hosted /verify-access, so the demo runs end-to-end with no
+// A stand-in for the hosted /verify, so the demo runs end-to-end with no
 // network and no human consent. It maps fake presentation strings to canned
 // verdicts (real broker shape: `email` is the attributed identity, `grantee`
 // the actor of record — a named agent here):
@@ -45,7 +45,7 @@ export function startMockVerifier(audience) {
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address();
-      resolve({ url: `http://127.0.0.1:${port}/verify-access`, close: () => server.close() });
+      resolve({ url: `http://127.0.0.1:${port}/verify`, close: () => server.close() });
     });
   });
 }

@@ -42,7 +42,7 @@ const broker = createServer(async (req, res) => {
   const reply = (c, o) => { res.writeHead(c, { "content-type": "application/json" }); res.end(JSON.stringify(o)); };
   let raw = ""; for await (const c of req) raw += c;
   const body = raw ? JSON.parse(raw) : {};
-  if (req.url === "/verify-access") {
+  if (req.url === "/verify") {
     const grantor = { "pres-allowed": ADMIN }[body.presentation];
     if (!grantor) return reply(200, { status: "failure", reason: "verification failed" });
     // Two mounts ⇒ two audiences; assert it's one of ours (path-prefixed).

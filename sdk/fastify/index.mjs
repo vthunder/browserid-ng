@@ -1,6 +1,6 @@
 // @browserid-ng/fastify — "Sign in with BrowserID" for Fastify. A preHandler
 // hook that verifies a BrowserID presentation server-side at the hosted
-// /verify-access (via @browserid-ng/verify — no crypto in JS, fail-closed) and
+// /verify (via @browserid-ng/verify — no crypto in JS, fail-closed) and
 // attaches `request.browserid`. The client gets the presentation from the login
 // dialog (@browserid-ng/nextauth/client's signInWithBrowserID works standalone)
 // and POSTs it; you verify it and set your own session.
@@ -16,7 +16,7 @@ import { createVerifier } from "@browserid-ng/verify";
  * @param {object} config
  * @param {string} config.audience  REQUIRED — your canonical origin (pin it).
  * @param {string} [config.broker]  default "https://browserid.me".
- * @param {string} [config.verifierUrl]  default `${broker}/verify-access`.
+ * @param {string} [config.verifierUrl]  default `${broker}/verify`.
  * @param {string[]} [config.acceptedFallbacks]
  * @param {typeof fetch} [config.fetch]  injectable (tests).
  */
@@ -34,7 +34,7 @@ export function verifyBrowserID(config = {}) {
   }
   const broker = (config.broker || "https://browserid.me").replace(/\/+$/, "");
   const verifier = createVerifier({
-    verifierUrl: config.verifierUrl || `${broker}/verify-access`,
+    verifierUrl: config.verifierUrl || `${broker}/verify`,
     acceptedFallbacks: config.acceptedFallbacks,
     fetch: config.fetch,
   });
@@ -80,7 +80,7 @@ export function browseridLogin(config = {}) {
 export async function browseridSessionValid(statusRefs, opts = {}) {
   const broker = (opts.broker || "https://browserid.me").replace(/\/+$/, "");
   const verifier = createVerifier({
-    verifierUrl: opts.verifierUrl || `${broker}/verify-access`,
+    verifierUrl: opts.verifierUrl || `${broker}/verify`,
     fetch: opts.fetch,
   });
   const r = await verifier.checkStatus(statusRefs || []);

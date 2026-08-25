@@ -2,7 +2,7 @@
 
 **Sign in with BrowserID** for Express — a Passport strategy and a plain
 middleware. Verifies a BrowserID presentation server-side at the hosted
-verifier (`/verify-access`, via [`@browserid-ng/verify`](../js)) — no crypto in
+verifier (`/verify`, via [`@browserid-ng/verify`](../js)) — no crypto in
 JS, fail-closed. The client gets the presentation from the login dialog (use
 `@browserid-ng/nextauth/client`'s `signInWithBrowserID`, which works
 standalone) and POSTs it; you verify it and set your own session.

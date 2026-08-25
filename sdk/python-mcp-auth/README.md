@@ -9,7 +9,7 @@ tool call is attributable to "agent X on behalf of human Y". Revoke at
 An embedded authorization server (the RFC 7521 `jwt-bearer` assertion grant) +
 a resource-server guard that re-checks the warrant's revocation status
 **fail-closed on every call**. Verification is delegated to the broker's
-DNSSEC-rooted hosted verifier (`POST /verify-access`) and `POST /status/check`
+DNSSEC-rooted hosted verifier (`POST /verify`) and `POST /status/check`
 — no crypto in Python. Stdlib-only (no runtime deps).
 
 ## Use

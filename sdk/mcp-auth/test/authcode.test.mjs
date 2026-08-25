@@ -115,7 +115,7 @@ function fakeBroker({ poll = "approved", scopes = ["tool:read", "tool:write"] } 
         access_cert: fakeJws({ typ: "browserid-access-cert-v1", exp: nowS() + 3600 }),
       });
     }
-    if (url === `${BROKER}/verify-access`) {
+    if (url === `${BROKER}/verify`) {
       seen.verifies.push(body);
       return json(200, {
         status: "okay",
@@ -371,7 +371,7 @@ test("the full code exchange mints a working bearer with attribution", async () 
   });
   assert.equal(tok.token_type, "Bearer");
   assert.ok(tok.access_token.startsWith("bat_"), "same bearer shape as Lane A");
-  // The presentation went through the SAME /verify-access, audience-bound.
+  // The presentation went through the SAME /verify, audience-bound.
   assert.equal(l.broker.seen.verifies.length, 1);
   assert.equal(l.broker.seen.verifies[0].audience, RESOURCE);
   // …and the bearer lives in the same store with the warrant's attribution,

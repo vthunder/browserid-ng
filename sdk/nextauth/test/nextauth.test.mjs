@@ -8,14 +8,14 @@ import {
 
 const AUDIENCE = "https://app.example.com";
 
-// Fake broker: /verify-access -> configurable verify JSON; /status/check ->
+// Fake broker: /verify -> configurable verify JSON; /status/check ->
 // configurable status JSON. Records the last verify body so we can assert the
 // audience binding.
 function fakeBroker({ verify, status } = {}) {
   const seen = {};
   const fetch = async (url, init) => {
     const body = init && init.body ? JSON.parse(init.body) : {};
-    if (String(url).endsWith("/verify-access")) {
+    if (String(url).endsWith("/verify")) {
       seen.verify = body;
       if (verify === "throw") throw new Error("ECONNREFUSED");
       return json(verify ?? { status: "failure", reason: "no verify configured" });

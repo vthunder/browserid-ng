@@ -108,7 +108,7 @@ const broker = createServer(async (req, res) => {
     });
   }
   if (path === "/status/check") return reply(200, { ok: true, revoked: false });
-  if (path === "/verify-access") {
+  if (path === "/verify") {
     const email = { "pres-member": MEMBER, "pres-stranger": STRANGER }[body.presentation];
     if (!email) return reply(200, { status: "failure", reason: "verification failed" });
     return reply(200, {

@@ -9,7 +9,7 @@ const trim = (u) => String(u).replace(/\/$/, "");
 export const PORT = Number(process.env.PORT || 3100);
 export const WALLET_ORIGIN = trim(process.env.WALLET_ORIGIN || `http://localhost:${PORT}`);
 export const BROKER = trim(process.env.BROWSERID_BROKER || "https://browserid.me");
-export const VERIFIER_URL = process.env.VERIFIER_URL || `${BROKER}/verify-access`;
+export const VERIFIER_URL = process.env.VERIFIER_URL || `${BROKER}/verify`;
 export const GUESTBOOK_URL = process.env.GUESTBOOK_URL || `${BROKER}/guestbook`;
 export const DATABASE_PATH = process.env.WALLET_DATABASE_PATH || "wallet.db";
 export const PRODUCTION = process.env.WALLET_ENV === "production";

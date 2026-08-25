@@ -10,7 +10,7 @@
 //   PORT         listen port (default 8080)
 //   RP_ORIGIN    your public origin, the audience you pin (default http://localhost:PORT)
 //   BROKER       broker origin serving include.js + the dialog (default https://browserid.me)
-//   VERIFIER_URL /verify-access URL (default the broker's). Point at your own to self-verify.
+//   VERIFIER_URL /verify URL (default the broker's). Point at your own to self-verify.
 //   SESSION_SECRET  HMAC key for the session cookie (default: dev-only constant)
 
 import { createServer } from "node:http";
@@ -21,7 +21,7 @@ const PORT = Number(process.env.PORT || 8080);
 const RP_ORIGIN = process.env.RP_ORIGIN || `http://localhost:${PORT}`;
 const BROKER = process.env.BROKER || "https://browserid.me";
 const SECRET = process.env.SESSION_SECRET || "dev-only-not-secret";
-const verifier = createVerifier({ verifierUrl: process.env.VERIFIER_URL || `${BROKER}/verify-access` });
+const verifier = createVerifier({ verifierUrl: process.env.VERIFIER_URL || `${BROKER}/verify` });
 
 // --- tiny signed-cookie session (HMAC; no dependency) ----------------------
 const b64 = (s) => Buffer.from(s).toString("base64url");

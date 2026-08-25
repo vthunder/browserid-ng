@@ -145,7 +145,7 @@ export interface McpAuth {
   /** Redeem a presentation (token-request body) for a bearer. */
   handleToken(params: { grant_type?: string; assertion?: string; scope?: string }): Promise<TokenResponse>;
   /** The shared bearer mint: verify a presentation via the broker's
-   *  /verify-access (audience = this resource, fail-closed) and store a
+   *  /verify (audience = this resource, fail-closed) and store a
    *  scoped bearer. Both grants (jwt-bearer + authorization_code) end here. */
   redeemPresentation(presentation: string, scope?: string): Promise<TokenResponse>;
   /** Validate a Bearer header, re-check status fail-closed, return context. */

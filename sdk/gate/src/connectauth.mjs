@@ -50,7 +50,7 @@ export function createConnectAuth({ broker, origin, sessions, fetch: doFetch = f
       }
       const aud = origin();
       const result = await verifyPresentation(presentation, aud, {
-        verifierUrl: `${broker}/verify-access`,
+        verifierUrl: `${broker}/verify`,
         fetch: doFetch,
       });
       if (!result.ok) {

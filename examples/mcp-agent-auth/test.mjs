@@ -1,5 +1,5 @@
 // End-to-end test: real MCP client ↔ real MCP server (stdio), with a mock
-// /verify-access so no network or human consent is needed. Proves the
+// /verify so no network or human consent is needed. Proves the
 // auth-gating — scope enforcement, delegation attribution, fail-closed — over
 // the actual protocol.
 import { test } from "node:test";

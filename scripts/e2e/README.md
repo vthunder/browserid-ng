@@ -24,7 +24,7 @@ edit the `LOG` const.
 
 ## The scripts
 - `browser-dialog-test.mjs` — account-based login: cold-start create-account +
-  the signed-in chooser, both verified via `/verify-access`.
+  the signed-in chooser, both verified via `/verify`.
 - `dialog-redirect-test.mjs` — the full-page redirect fallback (`window.open`
   stubbed to null): create-account round trip + the primary same-tab hop
   against a mock primary IdP.

@@ -20,7 +20,7 @@ BROWSERID_AUDIENCE=http://localhost:3000 AUTH_SECRET=$(openssl rand -hex 32) npm
 
 Open http://localhost:3000, click **Sign in with BrowserID**: the dialog opens
 (served from `browserid.me`), you authenticate, and the returned presentation is
-verified server-side by the provider (`/verify-access`, bound to
+verified server-side by the provider (`/verify`, bound to
 `BROWSERID_AUDIENCE`). On success you're signed in as your verified email.
 
 ## Notes

@@ -130,6 +130,9 @@ stale.
   reason} (verifier.rs:104-119) — `holder` not `subject`, and drops
   grantee/grantee_issuer that core computes (device.rs:542-548).
   `browserid-rp::VerifiedIdentity` also drops grantee (lib.rs:96-108).
+  *Resolved 2026-08-25 (beans 44jm + i9rr): `/verify` is the canonical route
+  with `/verify-access` as a permanent alias, and the response surfaces
+  `grantee` and `grantee_issuer`.*
 - **D3** Grant-exchange token body (§7.3, api.md:477-481): `TokenResponse`
   has `holder` not `subject` (rp_auth.rs:156-174).
 - **D4** `login` scope sentinel: undocumented. exchange filters "login"

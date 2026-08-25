@@ -1,6 +1,6 @@
 // @browserid-ng/nextauth — drop-in "Sign in with BrowserID" for Auth.js
 // (NextAuth). A Credentials provider whose authorize() verifies a BrowserID
-// presentation server-side at the hosted /verify-access (via
+// presentation server-side at the hosted /verify (via
 // @browserid-ng/verify — no crypto in JS, fail-closed), plus small browser
 // helpers that drive the login dialog. See
 // docs/plans/2026-08-10-nextauth-adapter-build-spec.md (bean bla3).
@@ -25,7 +25,7 @@ import { createVerifier } from "@browserid-ng/verify";
  *   `<origin>/<path>` for scoped access). The presentation MUST be bound to
  *   it; never accept a client-supplied audience.
  * @param {string} [config.broker]  BrowserID broker origin (default browserid.me).
- * @param {string} [config.verifierUrl]  hosted verifier (default `${broker}/verify-access`).
+ * @param {string} [config.verifierUrl]  hosted verifier (default `${broker}/verify`).
  * @param {string[]} [config.acceptedFallbacks]
  * @param {typeof fetch} [config.fetch]  injectable (tests).
  */
@@ -45,7 +45,7 @@ export function browseridAuthorize(config = {}) {
   }
   const broker = (config.broker || "https://browserid.me").replace(/\/+$/, "");
   const verifier = createVerifier({
-    verifierUrl: config.verifierUrl || `${broker}/verify-access`,
+    verifierUrl: config.verifierUrl || `${broker}/verify`,
     acceptedFallbacks: config.acceptedFallbacks,
     fetch: config.fetch,
   });
@@ -97,7 +97,7 @@ export function BrowserID(config = {}) {
 export async function browseridSessionValid(statusRefs, opts = {}) {
   const broker = (opts.broker || "https://browserid.me").replace(/\/+$/, "");
   const verifier = createVerifier({
-    verifierUrl: opts.verifierUrl || `${broker}/verify-access`,
+    verifierUrl: opts.verifierUrl || `${broker}/verify`,
     fetch: opts.fetch,
   });
   const r = await verifier.checkStatus(statusRefs || []);

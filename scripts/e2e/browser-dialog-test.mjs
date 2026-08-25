@@ -1,7 +1,7 @@
 // REAL-BROWSER e2e of the ACCOUNT-BASED dialog on the device-cert model:
 // 1. Cold start: /broker-demo → dialog → email → CREATE-ACCOUNT screen
 //    (password + emailed code) → device issuance via the session → mint →
-//    presentation → /verify-access okay.
+//    presentation → /verify okay.
 // 2. Second login: dialog shows the EMAIL CHOOSER (all account identities,
 //    radio list) → Sign In → verifies again (stored pair, no re-issue).
 import { chromium } from 'playwright';
