@@ -1,11 +1,11 @@
 ---
 # browserid-ng-ttn3
 title: '[M9] SBO signer is a confused deputy (signs any identity/audience, unlimited)'
-status: in-progress
+status: completed
 type: bug
 priority: normal
 created_at: 2026-07-28T23:54:23Z
-updated_at: 2026-08-25T19:08:22Z
+updated_at: 2026-08-25T19:16:55Z
 parent: browserid-ng-wre6
 ---
 
@@ -91,7 +91,7 @@ phase 2 deploys before phase 3.
 - [x] Phase 4 — mingo web (mingo b3f0ece): SBO_SIGN_REQUEST declared at consent (post auto, delete prompt); typed-error handling incl. not_granted clearing the ready flag; 120s sign timeout for prompted deletions. grant-info rendering left as a nice-to-have (not wired into UI)
 - [x] Phase 5 — e2e-tests/tests/sbo-signing-grants.spec.ts (consent card → stored+registered record → silent post w/ req_origin stamp + stored-warrant-in-presentation assertion → not_granted/scope_not_granted → delete prompt decline+approve → grant-info → revoke bit); full suite green on warm broker (105 pass; connection-sharing flake passes in isolation). Deploys in order: daemon (da.sandmill.org, verified) → broker 73831d8 (browserid.me serves new dialog/signer, verified) → mingo web. Use-cases doc flipped to live. sbo-smoke-test.html updated to the new contract (manual pass pending)
 - [x] Dan: interactive testing COMPLETE (2026-08-25) — silent post, prompted delete, and the full revoke→instant-refusal→re-consent→resume loop all verified on prod (wallet now checks revocation per sign, authoritatively)
-- [ ] Spec editing pass (Dan): verbosity/placement quibbles + the break-the-format-vs-singular-shorthand question from the 2026-08-25 review
+- [x] Spec editing pass → moved to browserid-ng-lf78 (2026-08-25, Dan's call): a whole-spec editorial pass makes more sense than a ttn3-scoped one; the verbosity/placement quibbles and the break-format decision are carried there
 
 ## Summary of Changes (2026-08-25, phases 0-5 shipped)
 
@@ -100,3 +100,7 @@ M9 is closed structurally: the popup can no longer author warrants — the fabri
 ## M9 interactive testing fallout (2026-08-25, Dan) — all fixed same-day
 
 Testing surfaced four real issues, none in the signing-grant mechanism itself: (1) hosted-IdP mint CORS regression from the L9 rescope (fixed, cors_surface_test pins it — in v1ia); (2) daemon status gate keyed on support-doc keys → reworked to DNSSEC (sbo 594c2ac), which then led to the full keyless-support-doc sweep across 5 origins; (3) on-chain DNSSEC evidence for browserid.me had lapsed → daemon now live-captures a proof when the chain copy is stale (sbo 4a2b056); (4) Dan's delete routed via the mingo POSTER whose stored bundle carried a long-revoked config cert — the new revocation gate caught genuinely revoked paper in active use; poster now self-disables on revocation + client falls back to the signing grant + the off-switch is honored per-browser (mingo b3f0ece..latest). End state verified by Dan: silent post works, prompted delete works. Remaining: revoke-path test + spec editing pass.
+
+## Closed (2026-08-25)
+
+M9 fully resolved: the signing-grants primitive is designed, specced, built, deployed, and interactively verified end to end (silent post, prompted delete, instant wallet-side revocation, re-consent, resume). The audit finding closed with parent wre6; the remaining editorial work moved to lf78; deferred technical follow-ups (v2 golden vectors, mint-module dedup, grant-info UI, hosted-tenant e2e) are recorded in this bean's phase notes and v1ia.

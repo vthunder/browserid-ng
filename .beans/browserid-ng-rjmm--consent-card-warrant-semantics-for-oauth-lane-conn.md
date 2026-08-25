@@ -1,11 +1,11 @@
 ---
 # browserid-ng-rjmm
 title: 'Consent-card + warrant semantics for OAuth-lane connections: name the CONNECTION (host/client), not the gateway'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-08-13T18:10:47Z
-updated_at: 2026-08-25T11:59:59Z
+updated_at: 2026-08-25T19:17:11Z
 ---
 
 From the Lane B design review with Dan (2026-08-13, after the mcp-demo connector E2E):
@@ -111,3 +111,7 @@ docs/plans/2026-08-22-signing-grants-design.md §3.
 ## Note (2026-08-25): the binding-set amendment landed via ttn3
 
 The 'binding set amendment' this bean was carrying for the v2 spec is now IN the spec: docs/specs/browserid-ng-protocol.md §5 holds the channel-entry set (kind × operation table incl. requester), scope-entry parameters, assertion req_origin, and invariants 9-14 (commit c8e8964, implementation 73d4625/73831d8). Nothing remains to fold in from this side.
+
+## Closed (2026-08-25) — verification pass + Dan's sign-off
+
+Everything substantive shipped and verified: warrant-v2 spec text (adversarially reviewed, later amended to binding channel sets via ttn3); verifier v2 + /validate-record (re-exercised by the 2026-08-25 binding-set refactor, all green); broker record-request surface, audience proof, connection + authoring consent cards, binding.id↔record pairing, /account host↔service rendering (connection-sharing e2e passing); mcp-auth credential-less lane with freshness-backed minting — mcp-auth 0.5.1 and gate 0.10.1 live on npm (the 'awaiting OTP publish' note was stale). The 'pre-existing failing guestbook/paired-provisioning e2e' note is also stale — both pass on current main. The two deferred items (per-mint snapshot retention §6.4 SHOULD; service-class identities, whose motivating UX connection records eliminated) moved to browserid-ng-vwju.
