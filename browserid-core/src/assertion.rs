@@ -85,9 +85,13 @@ impl Assertion {
 
     /// Check if the assertion has expired
     pub fn is_expired(&self) -> bool {
-        let exp = chrono::DateTime::from_timestamp(self.claims.exp, 0)
-            .unwrap_or(chrono::DateTime::UNIX_EPOCH);
-        Utc::now() > exp
+        self.is_expired_at(Utc::now().timestamp())
+    }
+
+    /// Expiry at an explicit instant — for deterministic verifiers that must
+    /// not consult the wall clock (`AccessPresentation::verify_at`).
+    pub fn is_expired_at(&self, at: i64) -> bool {
+        at > self.claims.exp
     }
 
     /// Get the assertion claims

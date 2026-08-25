@@ -968,3 +968,39 @@ fn signing_grant_presentation_requires_matching_req_origin() {
     };
     assert!(p.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
 }
+
+// --- deterministic verification instant (verify_at) --------------------------
+
+#[test]
+fn verify_at_judges_expiry_at_the_given_instant_not_the_wall_clock() {
+    // A ledger validator replaying a block must judge the presentation as of
+    // the write's authoring/inclusion time: a 5-minute assertion that was
+    // valid when the write was authored must still verify on replay years
+    // later, and must NOT verify at an instant before it existed... well,
+    // expiry-wise: at an instant after its exp.
+    let f = Fixture::new();
+    // Assertion that expired 10 minutes ago (wall clock).
+    let stale = Assertion::create(f.audience(), chrono::Duration::minutes(-10), &f.access_key).unwrap();
+    let authored = stale.claims().exp - 60; // a valid instant during its life
+    let pres = AccessPresentation {
+        access_cert: f.access_cert(),
+        assertion: stale,
+        warrant: f.warrant(),
+        config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
+    };
+    let idp_pub = f.idp.public_key();
+    // Wall-clock verify rejects (assertion expired now)…
+    assert!(pres.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
+    // …but at the authoring instant it verifies —
+    // NOTE: the fixture's certs/warrant have exp in 2027; `authored` (recent
+    // wall time) is inside every long-lived window, so only the assertion's
+    // clock is at issue.
+    let v = pres.verify_at(f.audience(), authored, |_| Ok(idp_pub.clone())).unwrap();
+    assert_eq!(v.email, f.email());
+    // And an instant after the assertion's exp rejects again.
+    let after = pres.assertion.claims().exp + 61;
+    assert!(pres.verify_at(f.audience(), after, |_| Ok(idp_pub.clone())).is_err());
+    // A long-expired WARRANT also fails at an instant beyond its exp.
+    let far_future = 4_000_000_000; // ~2096, past the 2027 fixture windows
+    assert!(pres.verify_at(f.audience(), far_future, |_| Ok(idp_pub.clone())).is_err());
+}

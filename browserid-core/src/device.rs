@@ -52,7 +52,14 @@ pub const ACCESS_REQUEST_VALIDITY_MINUTES: i64 = 10;
 pub const WARRANT_VALIDITY_DAYS: i64 = 90;
 
 fn expired(exp: i64) -> bool {
-    Utc::now().timestamp() > exp
+    expired_at(exp, Utc::now().timestamp())
+}
+
+/// Expiry at an explicit instant — for deterministic verifiers (a ledger
+/// replaying at a block's inclusion/authoring time) that must not consult the
+/// wall clock ([`AccessPresentation::verify_at`]).
+fn expired_at(exp: i64, at: i64) -> bool {
+    at > exp
 }
 
 /// Match an identity `email` against a device-cert `identities` entry: an exact
@@ -411,6 +418,9 @@ impl DeviceCert {
     pub fn is_expired(&self) -> bool {
         expired(self.claims.exp)
     }
+    pub fn is_expired_at(&self, at: i64) -> bool {
+        expired_at(self.claims.exp, at)
+    }
     pub fn authorizes_identity(&self, email: &str) -> bool {
         self.claims.identities.iter().any(|p| identity_matches(p, email))
     }
@@ -619,6 +629,9 @@ impl AccessCert {
     }
     pub fn is_expired(&self) -> bool {
         expired(self.claims.exp)
+    }
+    pub fn is_expired_at(&self, at: i64) -> bool {
+        expired_at(self.claims.exp, at)
     }
     pub fn claims(&self) -> &AccessCertClaims {
         &self.claims
@@ -1147,6 +1160,9 @@ impl Warrant {
     pub fn is_expired(&self) -> bool {
         expired(self.claims.exp)
     }
+    pub fn is_expired_at(&self, at: i64) -> bool {
+        expired_at(self.claims.exp, at)
+    }
     pub fn claims(&self) -> &WarrantClaims {
         &self.claims
     }
@@ -1246,7 +1262,29 @@ impl AccessPresentation {
     /// keys via `get_idp_key(issuer_domain)`. Returns the three status refs for
     /// the caller to check fail-closed. The caller's resolver decides which
     /// issuers it trusts (DNSSEC primary, or accepted fallback for no-primary).
+    /// Expiries are evaluated at wall-clock now — the live-RP posture; a
+    /// deterministic replayer uses [`AccessPresentation::verify_at`].
     pub fn verify<F>(&self, expected_audience: &str, get_idp_key: F) -> Result<VerifiedAccess>
+    where
+        F: Fn(&str) -> Result<PublicKey>,
+    {
+        self.verify_at(expected_audience, Utc::now().timestamp(), get_idp_key)
+    }
+
+    /// [`AccessPresentation::verify`], with every expiry evaluated at the
+    /// explicit instant `at` instead of the wall clock — for deterministic
+    /// verifiers (a ledger validator replaying a block must judge the
+    /// presentation as of the write's authoring/inclusion time, or nodes
+    /// replaying at different wall-clock times would disagree about
+    /// short-lived objects like the 5-minute assertion). Signatures, joins,
+    /// constraints, and status-ref surfacing are identical; only the clock
+    /// differs.
+    pub fn verify_at<F>(
+        &self,
+        expected_audience: &str,
+        at: i64,
+        get_idp_key: F,
+    ) -> Result<VerifiedAccess>
     where
         F: Fn(&str) -> Result<PublicKey>,
     {
@@ -1287,16 +1325,16 @@ impl AccessPresentation {
             get_idp_key(&cc.iss)?
         };
         self.config_cert.verify(&config_idp_key)?;
-        if self.access_cert.is_expired() {
+        if self.access_cert.is_expired_at(at) {
             return Err(invalid("access cert", "expired"));
         }
-        if self.config_cert.is_expired() {
+        if self.config_cert.is_expired_at(at) {
             return Err(invalid("config cert", "expired"));
         }
 
         // Assertion signed by the access cert's fresh key, for this audience.
         self.assertion.verify(&ac.access_key)?;
-        if self.assertion.is_expired() {
+        if self.assertion.is_expired_at(at) {
             return Err(invalid("assertion", "expired"));
         }
         if self.assertion.audience() != expected_audience {
@@ -1315,7 +1353,7 @@ impl AccessPresentation {
 
         // Warrant signed by the config cert (so the grantor authorized it).
         self.warrant.verify(&cc.public_key)?;
-        if self.warrant.is_expired() {
+        if self.warrant.is_expired_at(at) {
             return Err(invalid("warrant", "expired"));
         }
         // The grantee is the actor: it must be the identity the access cert
