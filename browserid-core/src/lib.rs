@@ -27,8 +27,9 @@ pub use assertion::Assertion;
 // `device::Warrant` at use sites, mirroring the wire object's home.
 pub use admission::{RecordBundle, ValidatedRecord};
 pub use device::{
-    AccessCert, AccessPresentation, AccessRequest, Binding, ConnectionProtocol, DeviceCert, Holder,
-    HolderMatcher, Purpose, VerifiedAccess,
+    AccessCert, AccessPresentation, AccessRequest, Binding, BindingSet, ConnectionProtocol,
+    DeviceCert, Holder, HolderMatcher, Purpose, ScopeEntry, ScopeMode, ScopeParams,
+    VerifiedAccess,
 };
 pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;

@@ -99,6 +99,7 @@ impl Fixture {
                 audience: self.audience().into(),
                 scopes: vec!["login".into()],
                 status: status("https://browserid.me/.well-known/browserid-status", 42),
+                unknown: Default::default(),
             },
             &self.config_key,
         )
@@ -113,7 +114,7 @@ impl Fixture {
         // validity from a fixed "now" is also not possible. Instead, the assertion
         // is the one non-deterministic-time object; vectors pin the OTHER three and
         // the assertion is regenerated live (its exp is checked, not byte-frozen).
-        let _ = AssertionClaims { exp: 0, aud: String::new() }; // keep import honest
+        let _ = AssertionClaims { exp: 0, aud: String::new(), req_origin: None }; // keep import honest
         Assertion::create(self.audience(), chrono::Duration::days(3650), &self.access_key).unwrap()
     }
     fn presentation(&self) -> AccessPresentation {
@@ -259,6 +260,7 @@ fn holder_passthrough_copy_and_isolation() {
             grantee: f.email().into(),
             holder: Some(HolderMatcher::new("svc.some-other-service").unwrap()), binding: None,
             audience: f.audience().into(), scopes: vec!["login".into()], status: None,
+            unknown: Default::default(),
         },
         &f.config_key,
     ).unwrap();
@@ -544,10 +546,11 @@ impl Fixture {
                 grantor: self.email().into(),
                 grantee: grantee.into(),
                 holder: None,
-                binding: Some(binding),
+                binding: Some(binding.into()),
                 audience: self.audience().into(),
                 scopes: vec!["login".into()],
                 status: status("https://browserid.me/.well-known/browserid-status", 43),
+                unknown: Default::default(),
             },
             &self.config_key,
         )
@@ -618,15 +621,15 @@ fn v2_parse_shape_matrix() {
     }
     // Connection must be a self-grant (§5).
     let mut c = base.clone();
-    c.binding = Some(f.connection_binding());
+    c.binding = Some(f.connection_binding().into());
     c.grantee = "other@sandmill.org".into();
     assert!(Warrant::parse(&sign(&c)).is_err());
     // Connection with empty id / client_host rejects.
     let mut c = base.clone();
-    c.binding = Some(Binding::Connection { protocol: ConnectionProtocol::Oauth, id: "".into(), client_host: "claude.ai".into(), client_name: "Claude".into() });
+    c.binding = Some(Binding::Connection { protocol: ConnectionProtocol::Oauth, id: "".into(), client_host: "claude.ai".into(), client_name: "Claude".into() }.into());
     assert!(Warrant::parse(&sign(&c)).is_err());
     let mut c = base.clone();
-    c.binding = Some(Binding::Connection { protocol: ConnectionProtocol::Oauth, id: "cn_1".into(), client_host: "".into(), client_name: "Claude".into() });
+    c.binding = Some(Binding::Connection { protocol: ConnectionProtocol::Oauth, id: "cn_1".into(), client_host: "".into(), client_name: "Claude".into() }.into());
     assert!(Warrant::parse(&sign(&c)).is_err());
 }
 
@@ -705,9 +708,9 @@ fn presentation_join_uses_spec_identity_comparison() {
 fn v1_normalizes_to_holder_binding() {
     let f = Fixture::new();
     let w = Warrant::parse(f.warrant().encoded()).unwrap();
-    match w.claims().binding() {
-        Binding::Holder { matcher } => assert_eq!(matcher.as_str(), "br.*"),
-        other => panic!("v1 must read as a holder binding, got {other:?}"),
+    match w.claims().binding_set().entries() {
+        [Binding::Holder { matcher }] => assert_eq!(matcher.as_str(), "br.*"),
+        other => panic!("v1 must read as a one-entry holder set, got {other:?}"),
     }
     assert_eq!(w.claims().holder_matcher().unwrap().as_str(), "br.*");
 }
@@ -745,4 +748,223 @@ fn binding_wire_shape_matches_spec() {
     );
     let holder = serde_json::to_value(Binding::Holder { matcher: HolderMatcher::new("br.*").unwrap() }).unwrap();
     assert_eq!(holder, json!({"kind": "holder", "matcher": "br.*"}));
+}
+
+// --- binding sets, requester channel, scope entries (spec §5 amendment,
+// --- 2026-08-25: signing grants) ---------------------------------------------
+
+impl Fixture {
+    /// A signing-grant-shaped v2 record: self-grant, {holder, requester} set,
+    /// parameterized scopes.
+    fn signing_grant(&self) -> Warrant {
+        self.signing_grant_with(|_| {})
+    }
+    fn signing_grant_with(&self, edit: impl FnOnce(&mut WarrantClaims)) -> Warrant {
+        let mut claims = WarrantClaims {
+            typ: TYP_WARRANT_V2.into(),
+            iat: IAT,
+            exp: IAT + 90 * DAY,
+            grantor: self.email().into(),
+            grantee: self.email().into(),
+            holder: None,
+            binding: Some(BindingSet::Many(vec![
+                Binding::Holder { matcher: HolderMatcher::new("br.*").unwrap() },
+                Binding::Requester { origin: "https://mingo.example".into() },
+            ])),
+            audience: self.audience().into(),
+            scopes: vec![
+                "sign:sbo:post".into(),
+                ScopeEntry::Parameterized(ScopeParams {
+                    scope: "sign:sbo:delete".into(),
+                    mode: Some(ScopeMode::Prompt),
+                }),
+            ],
+            status: status("https://browserid.me/.well-known/browserid-status", 171),
+            unknown: Default::default(),
+        };
+        edit(&mut claims);
+        Warrant::from_claims(claims, &self.config_key).unwrap()
+    }
+    fn stamped_assertion(&self, req_origin: Option<&str>) -> Assertion {
+        Assertion::create_with_req_origin(
+            self.audience(),
+            req_origin,
+            chrono::Duration::days(3650),
+            &self.access_key,
+        )
+        .unwrap()
+    }
+}
+
+#[test]
+fn binding_set_wire_shapes() {
+    let f = Fixture::new();
+    // Singular shorthand round-trips byte-identical (deployed records).
+    let single = f.warrant_v2();
+    let reparsed = Warrant::parse(single.encoded()).unwrap();
+    assert_eq!(reparsed.encoded(), single.encoded());
+    assert!(!reparsed.claims().binding.as_ref().unwrap().is_set_form());
+    // Array form parses, and serializes as an array.
+    let set = f.signing_grant();
+    let reparsed = Warrant::parse(set.encoded()).unwrap();
+    assert!(reparsed.claims().binding.as_ref().unwrap().is_set_form());
+    assert_eq!(reparsed.claims().binding_set().entries().len(), 2);
+    let raw = serde_json::to_value(reparsed.claims()).unwrap();
+    assert!(raw["binding"].is_array());
+    // The requester entry's wire shape matches the spec example.
+    assert_eq!(
+        raw["binding"][1],
+        json!({"kind": "requester", "origin": "https://mingo.example"})
+    );
+    // Scope entries: bare string + parameterized object.
+    assert_eq!(raw["scopes"][0], json!("sign:sbo:post"));
+    assert_eq!(raw["scopes"][1], json!({"scope": "sign:sbo:delete", "mode": "prompt"}));
+}
+
+#[test]
+fn binding_set_shape_matrix() {
+    let f = Fixture::new();
+    let sign = |c: &WarrantClaims| {
+        Warrant::from_claims(c.clone(), &f.config_key).unwrap().encoded().to_string()
+    };
+    let base = f.signing_grant().claims().clone();
+
+    // Empty set rejects.
+    let mut c = base.clone();
+    c.binding = Some(BindingSet::Many(vec![]));
+    assert!(Warrant::parse(&sign(&c)).is_err());
+    // Multi-entry on a delegated record rejects (§6.6 invariant 10).
+    let mut c = base.clone();
+    c.grantee = "other@sandmill.org".into();
+    assert!(Warrant::parse(&sign(&c)).is_err());
+    // A singular requester entry on a delegated record rejects too (delegated
+    // records carry exactly one HOLDER entry).
+    let mut c = base.clone();
+    c.grantee = "other@sandmill.org".into();
+    c.binding = Some(Binding::Requester { origin: "https://mingo.example".into() }.into());
+    assert!(Warrant::parse(&sign(&c)).is_err());
+    // Dead paper rejects: {requester} alone (no op), {requester, connection}.
+    let mut c = base.clone();
+    c.binding = Some(Binding::Requester { origin: "https://mingo.example".into() }.into());
+    assert!(Warrant::parse(&sign(&c)).is_err());
+    let mut c = base.clone();
+    c.binding = Some(BindingSet::Many(vec![
+        Binding::Requester { origin: "https://mingo.example".into() },
+        Binding::Connection {
+            protocol: ConnectionProtocol::Oauth,
+            id: "cn_1".into(),
+            client_host: "claude.ai".into(),
+            client_name: "Claude".into(),
+        },
+    ]));
+    assert!(Warrant::parse(&sign(&c)).is_err());
+    // {holder, connection} is admissible paper (op A) — parses.
+    let mut c = base.clone();
+    c.binding = Some(BindingSet::Many(vec![
+        Binding::Holder { matcher: HolderMatcher::new("*").unwrap() },
+        Binding::Connection {
+            protocol: ConnectionProtocol::Oauth,
+            id: "cn_1".into(),
+            client_host: "claude.ai".into(),
+            client_name: "Claude".into(),
+        },
+    ]));
+    assert!(Warrant::parse(&sign(&c)).is_ok());
+    // Malformed requester origins reject.
+    for bad in ["", "mingo.example", "https://", "https://mingo.example/path", "ftp://x"] {
+        let mut c = base.clone();
+        c.binding = Some(BindingSet::Many(vec![
+            Binding::Holder { matcher: HolderMatcher::new("*").unwrap() },
+            Binding::Requester { origin: bad.into() },
+        ]));
+        assert!(Warrant::parse(&sign(&c)).is_err(), "origin '{bad}' must reject");
+    }
+}
+
+#[test]
+fn unknown_entry_fields_and_scope_params_fail_closed() {
+    let f = Fixture::new();
+    let mut raw = serde_json::to_value(f.signing_grant().claims()).unwrap();
+    // Unknown field inside a known binding kind rejects (invariant 14).
+    raw["binding"][1]["extra"] = json!("x");
+    assert!(serde_json::from_value::<WarrantClaims>(raw.clone()).is_err());
+    // Unknown scope parameter rejects.
+    let mut raw = serde_json::to_value(f.signing_grant().claims()).unwrap();
+    raw["scopes"][1] = json!({"scope": "sign:sbo:delete", "count": 5});
+    assert!(serde_json::from_value::<WarrantClaims>(raw).is_err());
+    // Unknown mode value rejects.
+    let mut raw = serde_json::to_value(f.signing_grant().claims()).unwrap();
+    raw["scopes"][1] = json!({"scope": "sign:sbo:delete", "mode": "sometimes"});
+    assert!(serde_json::from_value::<WarrantClaims>(raw).is_err());
+}
+
+#[test]
+fn unknown_claims_reject_on_set_form_only() {
+    let f = Fixture::new();
+    let sign_raw = |raw: &serde_json::Value| {
+        let claims: WarrantClaims = serde_json::from_value(raw.clone()).unwrap();
+        Warrant::from_claims(claims, &f.config_key).unwrap().encoded().to_string()
+    };
+    // A set-form record carrying an unknown claim rejects (invariant 14).
+    let mut raw = serde_json::to_value(f.signing_grant().claims()).unwrap();
+    raw["future_claim"] = json!(true);
+    assert!(Warrant::parse(&sign_raw(&raw)).is_err());
+    // A pre-amendment (singular) record keeps the ignore-unknown behavior.
+    let mut raw = serde_json::to_value(f.warrant_v2().claims()).unwrap();
+    raw["future_claim"] = json!(true);
+    assert!(Warrant::parse(&sign_raw(&raw)).is_ok());
+}
+
+#[test]
+fn signing_grant_presentation_requires_matching_req_origin() {
+    let f = Fixture::new();
+    let idp_pub = f.idp.public_key();
+    let pres = |assertion: Assertion| AccessPresentation {
+        access_cert: f.access_cert(),
+        assertion,
+        warrant: Warrant::parse(f.signing_grant().encoded()).unwrap(),
+        config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
+    };
+    // Stamped with the record's requester origin: verifies, and the stamp +
+    // scope entries ride back on the verified result.
+    let v = pres(f.stamped_assertion(Some("https://mingo.example")))
+        .verify(f.audience(), |_| Ok(idp_pub.clone()))
+        .unwrap();
+    assert_eq!(v.req_origin.as_deref(), Some("https://mingo.example"));
+    assert_eq!(v.scopes, vec!["sign:sbo:post".to_string(), "sign:sbo:delete".to_string()]);
+    assert_eq!(v.scope_entries[1].scope(), "sign:sbo:delete");
+    assert!(matches!(v.scope_entries[1].mode(), ScopeMode::Prompt));
+    assert!(matches!(v.scope_entries[0].mode(), ScopeMode::Auto));
+    // No stamp → reject (invariant 13).
+    assert!(pres(f.stamped_assertion(None))
+        .verify(f.audience(), |_| Ok(idp_pub.clone()))
+        .is_err());
+    // Wrong stamp → reject.
+    assert!(pres(f.stamped_assertion(Some("https://evil.example")))
+        .verify(f.audience(), |_| Ok(idp_pub.clone()))
+        .is_err());
+    // A stamp on a requester-less record → reject (present iff, §5).
+    let plain = AccessPresentation {
+        access_cert: f.access_cert(),
+        assertion: f.stamped_assertion(Some("https://mingo.example")),
+        warrant: Warrant::parse(f.warrant_v2().encoded()).unwrap(),
+        config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
+    };
+    assert!(plain.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
+    // Every holder entry is evaluated: a second, non-covering holder entry
+    // fails the presentation even though the first covers.
+    let strict = f.signing_grant_with(|c| {
+        c.binding = Some(BindingSet::Many(vec![
+            Binding::Holder { matcher: HolderMatcher::new("br.*").unwrap() },
+            Binding::Holder { matcher: HolderMatcher::new("svc.other").unwrap() },
+            Binding::Requester { origin: "https://mingo.example".into() },
+        ]));
+    });
+    let p = AccessPresentation {
+        access_cert: f.access_cert(),
+        assertion: f.stamped_assertion(Some("https://mingo.example")),
+        warrant: Warrant::parse(strict.encoded()).unwrap(),
+        config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
+    };
+    assert!(p.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
 }

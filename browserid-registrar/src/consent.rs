@@ -542,7 +542,7 @@ fn respond_record(
             return Err(bad("record audience does not match its grant"));
         }
         let mut want = grant.scopes.clone();
-        let mut got = claims.scopes.clone();
+        let mut got = claims.scope_strings();
         want.sort_unstable();
         got.sort_unstable();
         if want != got {
@@ -556,10 +556,11 @@ fn respond_record(
             Some(st) if st.uri == status_uri && st.idx == idx => {}
             _ => return Err(bad("record status ref does not match the allocated one")),
         }
-        match (rec.kind, claims.binding()) {
+        let bset = claims.binding_set();
+        match (rec.kind, bset.entries()) {
             (
                 RequestKind::Connection,
-                browserid_core::device::Binding::Connection { protocol: _, id, client_host, client_name },
+                [browserid_core::device::Binding::Connection { protocol: _, id, client_host, client_name }],
             ) => {
                 // Warrant::parse already enforced the self-grant rule and an
                 // implemented protocol; pin the descriptor to the request.
@@ -569,11 +570,11 @@ fn respond_record(
                 if Some(client_host.as_str()) != meta.client_host.as_deref() {
                     return Err(bad("record client_host does not match this request"));
                 }
-                if client_name != meta.client_name.clone().unwrap_or_default() {
+                if *client_name != meta.client_name.clone().unwrap_or_default() {
                     return Err(bad("record client_name does not match this request"));
                 }
             }
-            (RequestKind::Authoring, browserid_core::device::Binding::Holder { .. }) => {
+            (RequestKind::Authoring, [browserid_core::device::Binding::Holder { .. }]) => {
                 let want = grant.grantee.as_deref().unwrap_or_default();
                 if claims.grantee != want {
                     return Err(bad("record grantee does not match its grant row"));
@@ -826,13 +827,13 @@ pub(crate) fn warrant_to_record(
         delegator_email: delegator_email.to_string(),
         agent_email: claims.grantee.clone(),
         audience: claims.audience.clone(),
-        scopes: claims.scopes.clone(),
+        scopes: claims.scope_strings(),
         warrant: jws.to_string(),
         status_idx: claims.status.as_ref().map(|s| s.idx),
         holder: claims.holder_matcher().map(|m| m.as_str().to_string()),
         config_cert: Some(config_cert.to_string()),
-        binding_id: match claims.binding() {
-            browserid_core::device::Binding::Connection { id, .. } => Some(id),
+        binding_id: match claims.binding_set().connection() {
+            Some(browserid_core::device::Binding::Connection { id, .. }) => Some(id.clone()),
             _ => None,
         },
         signed_at: ts(claims.iat),
@@ -896,7 +897,7 @@ pub async fn list_warrants(
                 .unwrap_or(false);
             let (client_host, client_name) = match Warrant::parse(&r.warrant)
                 .ok()
-                .map(|w| w.claims().binding())
+                .and_then(|w| w.claims().binding_set().connection().cloned())
             {
                 Some(browserid_core::device::Binding::Connection {
                     client_host, client_name, ..
@@ -996,7 +997,7 @@ pub async fn register_warrant(
                     user.user_id,
                     &claims.grantee,
                     &claims.audience,
-                    &claims.scopes,
+                    &claims.scope_strings(),
                 ),
             )?;
             if st.idx == own_idx {

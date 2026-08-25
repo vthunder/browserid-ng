@@ -5,7 +5,8 @@
 
 use browserid_core::{
     discovery::{SupportDocument, SupportDocumentFetcher},
-    Binding, Error as CoreError, RecordBundle, Result as CoreResult, StatusListToken, StatusRef,
+    Binding, BindingSet, Error as CoreError, RecordBundle, Result as CoreResult, StatusListToken,
+    StatusRef,
 };
 use reqwest::blocking::Client;
 use std::collections::HashMap;
@@ -412,11 +413,11 @@ pub struct RecordValidationResult {
     /// matcher (`*` / `*@<domain>`) — permission, never attribution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grantee: Option<String>,
-    /// The record's binding, normalized (a v1 record reads as a holder
-    /// binding). For `connection` bindings, `client_name` is display-only and
-    /// unverified.
+    /// The record's binding set, normalized (a v1 record reads as a one-entry
+    /// holder set; a singular set serializes as the bare-object shorthand).
+    /// For `connection` entries, `client_name` is display-only and unverified.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub binding: Option<Binding>,
+    pub binding: Option<BindingSet>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
     /// The grantor's IdP (the config cert's issuer).

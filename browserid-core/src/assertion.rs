@@ -17,6 +17,13 @@ pub struct AssertionClaims {
 
     /// Audience (the relying party origin this assertion is for)
     pub aud: String,
+
+    /// The requesting channel: the authenticated origin the signing request
+    /// arrived from, stamped by the wallet at dispatch (spec §5). Present iff
+    /// the presented warrant carries a `requester` binding entry — matched by
+    /// verifiers fail-closed (§6.6 invariant 13).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub req_origin: Option<String>,
 }
 
 /// An identity assertion claiming an email for a specific audience
@@ -36,12 +43,25 @@ impl Assertion {
     /// * `validity` - How long the assertion should be valid (typically 2-5 minutes)
     /// * `user_key` - The user's signing key
     pub fn create(audience: &str, validity: Duration, user_key: &KeyPair) -> Result<Self> {
+        Self::create_with_req_origin(audience, None, validity, user_key)
+    }
+
+    /// Create and sign an assertion carrying the wallet's `req_origin` stamp
+    /// (spec §5): the authenticated origin the signing request arrived from.
+    /// Only for presentations under a record with a `requester` entry.
+    pub fn create_with_req_origin(
+        audience: &str,
+        req_origin: Option<&str>,
+        validity: Duration,
+        user_key: &KeyPair,
+    ) -> Result<Self> {
         let now = Utc::now();
         let exp = now + validity;
 
         let claims = AssertionClaims {
             exp: exp.timestamp(),
             aud: audience.to_string(),
+            req_origin: req_origin.map(str::to_string),
         };
 
         let encoded = Self::encode_and_sign(&claims, user_key)?;

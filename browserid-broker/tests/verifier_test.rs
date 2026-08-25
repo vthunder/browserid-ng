@@ -431,7 +431,7 @@ async fn validate_record_conformance_okay() {
     assert_eq!(r.status, "okay", "{:?}", r);
     assert_eq!(r.grantor.as_deref(), Some("danmills@sandmill.org"));
     assert_eq!(r.grantee.as_deref(), Some("danmills@sandmill.org"));
-    assert!(matches!(r.binding, Some(Binding::Connection { .. })), "{:?}", r.binding);
+    assert!(matches!(r.binding.as_ref().map(|b| b.entries()), Some([Binding::Connection { .. }])), "{:?}", r.binding);
     assert_eq!(r.scopes.as_deref(), Some(&["tool:read_file".to_string()][..]));
     // The warrant's registry ref rides back for the resource's per-use re-checks.
     assert_eq!(r.status_refs.as_ref().map(|s| s.len()), Some(1));
@@ -499,7 +499,7 @@ async fn validate_record_accepts_v1_as_holder_binding() {
     let cache = RwLock::new(HashMap::new());
     let r = validate_record_with_dns(&rec, "https://gate.dan.dev/notes", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
     assert_eq!(r.status, "okay", "{:?}", r);
-    assert!(matches!(r.binding, Some(Binding::Holder { .. })), "{:?}", r.binding);
+    assert!(matches!(r.binding.as_ref().map(|b| b.entries()), Some([Binding::Holder { .. }])), "{:?}", r.binding);
 }
 
 #[tokio::test]

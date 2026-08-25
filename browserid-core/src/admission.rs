@@ -18,7 +18,7 @@
 //! ([`RecordBundle::recheck_live`]) — expiry is a live bound, not an
 //! acquisition-time fact.
 
-use crate::device::{Binding, DeviceCert, Holder, Purpose, Warrant};
+use crate::device::{Binding, BindingSet, DeviceCert, Holder, Purpose, ScopeEntry, Warrant};
 use crate::identity;
 use crate::jws::invalid;
 use crate::status::StatusRef;
@@ -42,9 +42,13 @@ pub struct ValidatedRecord {
     /// records, a grantee matcher (`*` / `*@<domain>`) — permission, never
     /// attribution.
     pub grantee: String,
-    /// The record's binding, normalized (v1 reads as a holder binding).
-    pub binding: Binding,
+    /// The record's binding set, normalized (v1 reads as a one-entry holder
+    /// set).
+    pub binding: BindingSet,
+    /// The warrant scopes projected to identity strings (§5); parameterized
+    /// entries in `scope_entries`.
     pub scopes: Vec<String>,
+    pub scope_entries: Vec<ScopeEntry>,
     /// The grantor's IdP (the config cert's `iss`).
     pub grantor_issuer: String,
     /// Status refs for the caller's fail-closed step 1e: config cert → its
@@ -124,8 +128,9 @@ impl RecordBundle {
         Ok(ValidatedRecord {
             grantor: wc.grantor.clone(),
             grantee: wc.grantee.clone(),
-            binding: wc.binding(),
-            scopes: wc.scopes.clone(),
+            binding: wc.binding_set(),
+            scopes: wc.scope_strings(),
+            scope_entries: wc.scopes.clone(),
             grantor_issuer: cc.iss.clone(),
             config_status: cc.status.clone(),
             warrant_status: wc.status.clone(),
@@ -164,31 +169,50 @@ impl ValidatedRecord {
     /// grants permission, never attribution); `holder` is the login's holder,
     /// when the authentication carried one.
     ///
-    /// Fail-closed: a connection-bound record does not match logins (its
-    /// subject authentication is the custody protocol's mechanics, at the
-    /// resource), and a non-`*` matcher cannot be evaluated against a
-    /// holder-less authentication; `*` imposes nothing.
+    /// Fail-closed, per §5's kind × operation table: a connection-bound
+    /// record does not match logins (its subject authentication is the
+    /// custody protocol's mechanics, at the resource), a `requester` entry is
+    /// unsatisfiable in admission, and a non-`*` matcher cannot be evaluated
+    /// against a holder-less authentication; `*` imposes nothing. Every
+    /// entry in the set must be satisfied (entries are conjunctive).
     pub fn matches_login(&self, identity: &str, holder: Option<&Holder>) -> Result<()> {
-        let Binding::Holder { matcher } = &self.binding else {
+        if !identity::grantee_covers(&self.grantee, identity) {
+            return Err(invalid("record", "login identity does not match grantee"));
+        }
+        let entries = self.binding.entries();
+        if !entries.iter().any(|e| matches!(e, Binding::Holder { .. })) {
             return Err(invalid(
                 "record",
                 "connection-bound record: subjects authenticate via the custody protocol, not a login",
             ));
-        };
-        if !identity::grantee_covers(&self.grantee, identity) {
-            return Err(invalid("record", "login identity does not match grantee"));
         }
-        match holder {
-            Some(h) => {
-                if !matcher.matches(h) {
-                    return Err(invalid("record", "login holder not covered by matcher"));
-                }
-            }
-            None => {
-                if matcher.as_str() != "*" {
+        for entry in entries {
+            match entry {
+                Binding::Holder { matcher } => match holder {
+                    Some(h) => {
+                        if !matcher.matches(h) {
+                            return Err(invalid("record", "login holder not covered by matcher"));
+                        }
+                    }
+                    None => {
+                        if matcher.as_str() != "*" {
+                            return Err(invalid(
+                                "record",
+                                "holder matcher cannot be evaluated against a holder-less login",
+                            ));
+                        }
+                    }
+                },
+                Binding::Requester { .. } => {
                     return Err(invalid(
                         "record",
-                        "holder matcher cannot be evaluated against a holder-less login",
+                        "requester entry is unsatisfiable in admission (§5)",
+                    ));
+                }
+                Binding::Connection { .. } => {
+                    return Err(invalid(
+                        "record",
+                        "connection entry: subjects authenticate via the custody protocol, not a login",
                     ));
                 }
             }
@@ -262,15 +286,19 @@ mod tests {
                 grantor: self.email().into(),
                 grantee: self.email().into(),
                 holder: None,
-                binding: Some(Binding::Connection {
-                    protocol: ConnectionProtocol::Oauth,
-                    id: "cn_8f3a".into(),
-                    client_host: "claude.ai".into(),
-                    client_name: "Claude".into(),
-                }),
+                binding: Some(
+                    Binding::Connection {
+                        protocol: ConnectionProtocol::Oauth,
+                        id: "cn_8f3a".into(),
+                        client_host: "claude.ai".into(),
+                        client_name: "Claude".into(),
+                    }
+                    .into(),
+                ),
                 audience: self.audience().into(),
                 scopes: vec!["tool:read_file".into(), "tool:search_files".into()],
                 status: sref(168),
+                unknown: Default::default(),
             };
             edit(&mut claims);
             Warrant::from_claims(claims, &self.config_key).unwrap()
@@ -308,8 +336,8 @@ mod tests {
         assert_eq!(v.grantee, f.email());
         assert_eq!(v.grantor_issuer, "example.com");
         assert_eq!(v.scopes.len(), 2);
-        match &v.binding {
-            Binding::Connection { id, client_host, .. } => {
+        match v.binding.entries() {
+            [Binding::Connection { id, client_host, .. }] => {
                 assert_eq!(id, "cn_8f3a");
                 assert_eq!(client_host, "claude.ai");
             }
@@ -435,7 +463,7 @@ mod tests {
             config_cert: f.config_cert(None),
         };
         let v = b.validate(f.audience(), |_| Ok(f.idp_pub())).unwrap();
-        assert!(matches!(v.binding, Binding::Holder { .. }));
+        assert!(matches!(v.binding.entries(), [Binding::Holder { .. }]));
         assert_eq!(v.status_refs().len(), 1); // config cert's only
     }
 
@@ -445,8 +473,9 @@ mod tests {
         let record = |grantee: &str, matcher: &str| ValidatedRecord {
             grantor: f.email().into(),
             grantee: grantee.into(),
-            binding: Binding::Holder { matcher: HolderMatcher::new(matcher).unwrap() },
+            binding: Binding::Holder { matcher: HolderMatcher::new(matcher).unwrap() }.into(),
             scopes: vec![],
+            scope_entries: vec![],
             grantor_issuer: "example.com".into(),
             config_status: None,
             warrant_status: None,

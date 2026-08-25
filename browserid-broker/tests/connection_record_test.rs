@@ -185,9 +185,9 @@ async fn connection_grant_request_end_to_end() {
     assert_eq!(poll["status"], "approved", "{poll}");
     let delivered = poll["grants"][0]["warrant"].as_str().unwrap();
     let bundle = RecordBundle::parse(delivered).unwrap();
-    match bundle.warrant.claims().binding() {
-        Binding::Connection { id, client_host, .. } => {
-            assert_eq!(id, binding_id);
+    match bundle.warrant.claims().binding_set().entries() {
+        [Binding::Connection { id, client_host, .. }] => {
+            assert_eq!(id.as_str(), binding_id);
             assert_eq!(client_host, "claude.ai");
         }
         other => panic!("expected connection binding, got {other:?}"),
@@ -340,7 +340,7 @@ async fn authoring_ceremony_end_to_end() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|s| s.as_str().unwrap().to_string())
+                .map(|s| browserid_core::ScopeEntry::from(s.as_str().unwrap()))
                 .collect(),
             Duration::days(90),
             &config_key,

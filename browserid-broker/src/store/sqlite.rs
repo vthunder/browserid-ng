@@ -908,8 +908,8 @@ fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantR
     let warrant_jws: String = row.get(6)?;
     let binding_id = browserid_core::device::Warrant::parse(&warrant_jws)
         .ok()
-        .and_then(|w| match w.claims().binding() {
-            browserid_core::device::Binding::Connection { id, .. } => Some(id),
+        .and_then(|w| match w.claims().binding_set().connection().cloned() {
+            Some(browserid_core::device::Binding::Connection { id, .. }) => Some(id),
             _ => None,
         });
     Ok(WarrantRecord {
