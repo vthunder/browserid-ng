@@ -328,7 +328,11 @@ mod utilities {
         );
         assert_eq!(domain_from_email("invalid"), None);
         assert_eq!(domain_from_email(""), None);
-        assert_eq!(domain_from_email("@nodomain"), Some("nodomain"));
+        // Strict exactly-one-@ parse (audit L1): empty local, empty domain,
+        // and multi-@ are malformed — fail-closed.
+        assert_eq!(domain_from_email("@nodomain"), None);
+        assert_eq!(domain_from_email("nolocal@"), None);
+        assert_eq!(domain_from_email("a@b@c.com"), None);
     }
 
     /// Test: well-known URL construction

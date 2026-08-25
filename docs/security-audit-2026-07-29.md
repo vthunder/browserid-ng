@@ -275,6 +275,22 @@ fully closed, in two phases (beans `browserid-ng-dw35`, `browserid-ng-8gqm`):
   plus a per-client-IP window (10 stagings/hour, `signin_code_attempts`),
   counted before any account-dependent work.
 
+## Remediation update (2026-08-25) — all findings closed
+
+M9 closed structurally via signing grants (bean `ttn3`: the signer popup can
+no longer author warrants; every request must match a consent-minted,
+revocable record — see `docs/plans/2026-08-22-signing-grants-design.md`).
+M4's last item (negative caching of failed status fetches) landed, as did the
+full low batch: L1 canonical strict email parsing (`identity::email_parts`)
+across every hand-split site, L3 `typ`-tagged `fb_email` token, L5
+domain-anchored identity globs (bare `*` dead), L6 confirmed (live-discovery
+verify path), L9 per-surface CORS (no global Origin mirror; /wsapi and the
+registrar — bar the public status list — emit no CORS), L10 wallet
+at-rest-custody docs, L11 hickory 0.25 / rustls 0.23 (EOL rustls 0.21 gone),
+and the ed25519-dalek zeroize feature. Earlier: M1 (2026-08-19, mint
+chokepoint), M2 (allowAgent removed), M6 (ytjn). Nothing from this audit
+remains open.
+
 ## Recommended remediation order
 
 1. **C1** — burn codes + throttle the completion endpoints (unauthenticated

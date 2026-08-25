@@ -230,7 +230,7 @@ impl Verifier {
     /// A primary vouches only for its own domain; a domain with a declared
     /// primary accepts nothing else; otherwise any trusted fallback vouches.
     fn issuer_conformant(&self, identity: &str, iss: &str) -> bool {
-        let Some(domain) = identity.split('@').nth(1) else {
+        let Some(domain) = browserid_core::identity::email_domain(identity) else {
             return false;
         };
         if self.primaries.contains(domain) || self.primaries.contains(iss) {
@@ -332,7 +332,7 @@ impl Verifier {
         let grantee = pres.access_cert.claims().identity.clone();
         let mut primary_domains: std::collections::HashSet<String> = std::collections::HashSet::new();
         for id in [&grantor, &grantee] {
-            if let Some(domain) = id.split('@').nth(1) {
+            if let Some(domain) = browserid_core::identity::email_domain(id) {
                 if !primary_domains.contains(domain)
                     && browserid_dnssec::resolve_idp_key(fetcher, domain).await.is_ok()
                 {
@@ -353,7 +353,7 @@ impl Verifier {
             .map_err(|e| ExchangeError::InvalidAssertion(e.to_string()))?;
 
         self.finish_verify(verified, |identity, iss| {
-            let Some(domain) = identity.split('@').nth(1) else {
+            let Some(domain) = browserid_core::identity::email_domain(identity) else {
                 return false;
             };
             if primary_domains.contains(domain) {

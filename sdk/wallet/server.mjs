@@ -15,8 +15,10 @@
 //   read_guestbook()               read recent guestbook entries
 //
 // The identity (a non-transmittable provisioning key + delegation + cert) lives
-// in ~/.browserid. Config: BROWSERID_BROKER (default https://browserid.me),
-// BROWSERID_HOME, GUESTBOOK_URL.
+// in ~/.browserid as PLAINTEXT JSON, owner-only (0700/0600) — no passphrase or
+// keychain layer; the machine account is the custody boundary (audit L10).
+// Config: BROWSERID_BROKER (default https://browserid.me), BROWSERID_HOME,
+// GUESTBOOK_URL.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";

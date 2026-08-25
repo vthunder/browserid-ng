@@ -17,8 +17,8 @@
 
 use browserid_core::{DnsLookupResult, DnsRecord, DnssecStatus};
 use futures_util::StreamExt;
-use hickory_client::client::AsyncClient;
-use hickory_client::proto::iocompat::AsyncIoTokioAsStd;
+use hickory_client::client::Client;
+use hickory_client::proto::runtime::TokioRuntimeProvider;
 use hickory_client::proto::op::{Edns, Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_client::proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_client::proto::rustls::tls_client_connect;
@@ -27,7 +27,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tokio::net::TcpStream as TokioTcpStream;
 
 /// Default DNS-over-TLS resolver address (Google Public DNS)
 const DEFAULT_RESOLVER: &str = "8.8.8.8:853";
@@ -43,18 +42,11 @@ fn tls_client_config() -> Arc<rustls::ClientConfig> {
     static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
-            let mut root_store = rustls::RootCertStore::empty();
-            root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-                rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
-                    ta.subject,
-                    ta.spki,
-                    ta.name_constraints,
-                )
-            }));
-
+            let root_store = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            };
             Arc::new(
                 rustls::ClientConfig::builder()
-                    .with_safe_defaults()
                     .with_root_certificates(root_store)
                     .with_no_client_auth(),
             )
@@ -103,15 +95,16 @@ impl DnsFetcher {
     }
 
     /// Create a fresh client connection for a single query
-    async fn connect(&self) -> Result<AsyncClient, String> {
-        let (stream, sender) = tls_client_connect::<AsyncIoTokioAsStd<TokioTcpStream>>(
+    async fn connect(&self) -> Result<Client, String> {
+        let (stream, sender) = tls_client_connect(
             self.resolver_addr,
             self.tls_name.clone(),
             tls_client_config(),
+            TokioRuntimeProvider::new(),
         );
 
         let (client, bg) =
-            AsyncClient::with_timeout(stream, sender, Duration::from_secs(5), None)
+            Client::with_timeout(stream, sender, Duration::from_secs(5), None)
                 .await
                 .map_err(|e| format!("Failed to connect to DNS-over-TLS resolver: {}", e))?;
 
@@ -247,7 +240,7 @@ fn classify_mx_response(response: &Message) -> Result<Option<String>, String> {
         .answers()
         .iter()
         .filter_map(|record| match record.data() {
-            Some(RData::MX(mx)) if !mx.exchange().is_root() => Some(mx),
+            RData::MX(mx) if !mx.exchange().is_root() => Some(mx),
             _ => None,
         })
         .min_by_key(|mx| mx.preference())
@@ -303,7 +296,7 @@ fn classify_response(response: &Message, domain: &str) -> DnsLookupResult {
         .answers()
         .iter()
         .filter_map(|record| match record.data() {
-            Some(RData::TXT(txt)) => {
+            RData::TXT(txt) => {
                 let combined: String = txt
                     .txt_data()
                     .iter()
@@ -605,5 +598,24 @@ mod tests {
     fn test_refused_is_insecure_not_bogus() {
         let result = classify_response(&response(ResponseCode::Refused, true, None), "example.com");
         assert_eq!(result.dnssec_status, DnssecStatus::Insecure);
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    /// Live DoT lookup against the default resolver — run with
+    /// `cargo test -p browserid-dnssec -- --ignored` to validate the
+    /// transport stack after dependency upgrades (audit L11: hickory 0.25 /
+    /// rustls 0.23). sandmill.org publishes a signed _browserid record, so a
+    /// working stack returns Secure with a record.
+    #[tokio::test]
+    #[ignore]
+    async fn live_dot_lookup_secure_primary() {
+        let fetcher = DnsFetcher::new().unwrap();
+        let result = fetcher.lookup("sandmill.org").await;
+        assert_eq!(result.dnssec_status, DnssecStatus::Secure, "{result:?}");
+        assert!(result.record.is_some(), "{result:?}");
     }
 }

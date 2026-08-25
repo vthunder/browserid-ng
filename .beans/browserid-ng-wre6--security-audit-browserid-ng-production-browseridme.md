@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-07-28T23:40:19Z
-updated_at: 2026-07-29T01:42:03Z
+updated_at: 2026-08-25T15:14:32Z
 ---
 
 Full adversarial security audit of the browserid-ng identity protocol and hosted broker, treating browserid.me as live production. Six workstreams: (1) verification-core proofs, (2) credential issuance & minting, (3) account lifecycle & auth, (4) network-facing input & DoS, (5) client key custody (SDKs), (6) dependency & secrets hygiene. Each candidate finding is confirmed or refuted by an independent adversarial reviewer (no PoCs required). Deliverables: a written security-audit report (docs/) and one child bean per confirmed finding.
@@ -41,3 +41,7 @@ FIXED + tested: C1(0ypr), H1(c5n5), H2(axee), M3(nlj8), M5(dbmy), M8(l7oq) → c
 DEFERRED for product decision (UX/behavior/infra): M1(7ww7 fallback cert password-gate), M2(6q3u SDK allowAgent semantics), M6(ytjn login rate-limit needs proxy IP), M7(dw35 enumeration vs UX signal), M9(ttn3 SBO signer consent prompts), L1/L5/L9/L11.
 
 Report updated: docs/security-audit-2026-07-29.md (Remediation status section).
+
+## Remediation complete except ttn3 sign-off (2026-08-25)
+
+Every audit finding is now closed: C1/H1/H2/M3/M5/M8 + lows batch part 1 (2026-07-29), M7 two-phase (2026-08-20), M1 (2026-08-19), M2, M6, M9 structurally (ttn3, signing grants — open only for Dan's interactive testing + spec editing pass), M4 fully (qtl7 incl. negative caching, 2026-08-25), and v1ia's remaining lows L1/L3/L5/L6/L9/L10/L11/zeroize (2026-08-25). This bean can complete when ttn3 does.

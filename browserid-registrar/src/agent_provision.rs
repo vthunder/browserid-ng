@@ -655,7 +655,7 @@ fn approver_owns_identity(state: &Arc<RegistrarState>, user: &AuthedUser, id: &s
     if state.host.owns_verified_email(user.user_id, id).unwrap_or(false) {
         return true;
     }
-    if let Some((local, domain)) = id.split_once('@') {
+    if let Some((local, domain)) = browserid_core::identity::email_parts(id) {
         if let Some((base_local, tag)) = local.split_once('+') {
             let base = format!("{base_local}@{domain}");
             return state.host.owns_verified_email(user.user_id, &base).unwrap_or(false)
@@ -1156,7 +1156,9 @@ async fn complete_delegated_warrant(
     // services" (labeled + revocable — removing the holder revokes its warrants
     // by holder match). It holds its own cert at its issuer, so there is no local
     // key: an empty pubkey marks it external.
-    let grantee_iss = grantee.rsplit('@').next().unwrap_or_default().to_string();
+    let grantee_iss = browserid_core::identity::email_domain(&grantee)
+        .unwrap_or_default()
+        .to_string();
     let (iat, exp) = warrants
         .first()
         .map(|w| (w.claims().iat, w.claims().exp))
@@ -1332,7 +1334,8 @@ async fn complete_device_cert(
                     "supplied device cert does not carry the prepared holder".into(),
                 ));
             }
-            let agent_domain = agent_email.rsplit('@').next().unwrap_or_default();
+            let agent_domain =
+                browserid_core::identity::email_domain(&agent_email).unwrap_or_default();
             if claims.iss != agent_domain {
                 return Err(RegistrarError::ValidationError(
                     "supplied device cert issuer is not the identity's own domain".into(),

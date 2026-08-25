@@ -12,6 +12,24 @@
 //! subject's entire domain part — subdomains do not match — and covers any
 //! local part, subaddressed (§4.6) ones included.
 
+/// The `(local, domain)` parts of a WELL-FORMED identity email: exactly one
+/// `@`, non-empty on both sides (audit L1). This is THE canonical split —
+/// identity call sites must not hand-roll `split('@')`/`rsplit_once`, whose
+/// differing multi-`@` behaviors were the L1 parser differential. A malformed
+/// address yields `None`, which every consumer treats fail-closed.
+pub fn email_parts(email: &str) -> Option<(&str, &str)> {
+    let (local, domain) = email.split_once('@')?;
+    if local.is_empty() || domain.is_empty() || domain.contains('@') {
+        return None;
+    }
+    Some((local, domain))
+}
+
+/// The domain part of a well-formed identity email (audit L1).
+pub fn email_domain(email: &str) -> Option<&str> {
+    email_parts(email).map(|(_, d)| d)
+}
+
 /// Lowercase + A-label (punycode) form of a domain, or `None` if the domain is
 /// empty or not convertible. A `None` never compares equal to anything —
 /// fail-closed.
@@ -31,9 +49,10 @@ pub fn domain_eq(a: &str, b: &str) -> bool {
 }
 
 /// Exact identity comparison under the §5 rule. Identities are always email
-/// strings; a non-email operand never compares equal.
+/// strings; a non-email (or malformed, e.g. multi-`@`) operand never compares
+/// equal — fail-closed (audit L1).
 pub fn identity_eq(a: &str, b: &str) -> bool {
-    match (a.rsplit_once('@'), b.rsplit_once('@')) {
+    match (email_parts(a), email_parts(b)) {
         (Some((a_local, a_domain)), Some((b_local, b_domain))) => {
             a_local == b_local && domain_eq(a_domain, b_domain)
         }
@@ -54,11 +73,10 @@ pub fn is_grantee_matcher(s: &str) -> bool {
 /// authenticated; the matcher never admits anonymous access.
 pub fn grantee_covers(grantee: &str, subject: &str) -> bool {
     if grantee == "*" {
-        return subject.contains('@');
+        return email_parts(subject).is_some();
     }
     if let Some(domain) = grantee.strip_prefix("*@") {
-        return subject
-            .rsplit_once('@')
+        return email_parts(subject)
             .is_some_and(|(_, subject_domain)| domain_eq(domain, subject_domain));
     }
     identity_eq(grantee, subject)
@@ -67,6 +85,23 @@ pub fn grantee_covers(grantee: &str, subject: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn email_parts_is_strict() {
+        // The canonical exactly-one-@ parse (audit L1).
+        assert_eq!(email_parts("dan@sandmill.org"), Some(("dan", "sandmill.org")));
+        assert_eq!(email_parts("dan+tag@sandmill.org"), Some(("dan+tag", "sandmill.org")));
+        for bad in ["", "dan", "@sandmill.org", "dan@", "a@b@c.com", "@", "dan@@x.com"] {
+            assert_eq!(email_parts(bad), None, "'{bad}' must be malformed");
+        }
+    }
+
+    #[test]
+    fn malformed_emails_never_compare_or_cover() {
+        assert!(!identity_eq("a@b@c.com", "a@b@c.com"));
+        assert!(!grantee_covers("*", "a@b@c.com"));
+        assert!(!grantee_covers("*@c.com", "a@b@c.com"));
+    }
 
     #[test]
     fn exact_comparison_is_local_byte_exact_domain_case_insensitive() {

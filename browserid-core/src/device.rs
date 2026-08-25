@@ -62,16 +62,36 @@ fn expired_at(exp: i64, at: i64) -> bool {
     at > exp
 }
 
-/// Match an identity `email` against a device-cert `identities` entry: an exact
-/// email or a single-`*` glob (e.g. `danmills+*@sandmill.org`, `*`).
+/// Match an identity `email` against a device-cert `identities` entry: an
+/// exact email, or a single-`*` glob whose star is confined to the LOCAL part
+/// with an exactly-matching domain (e.g. `danmills+*@sandmill.org`).
+///
+/// Domain-anchored (audit L5): a glob without an `@` (`admin*`), a bare `*`,
+/// or a star in the domain matches NOTHING — no issuer mints such patterns,
+/// and the unanchored form let `admin*` cover `admin@any-other-domain`.
+/// Malformed (multi-`@`) emails never match — fail-closed (audit L1).
 fn identity_matches(pattern: &str, email: &str) -> bool {
-    if pattern == email || pattern == "*" {
+    if pattern == email {
         return true;
     }
-    if let Some((pre, post)) = pattern.split_once('*') {
-        return email.len() >= pre.len() + post.len()
-            && email.starts_with(pre)
-            && email.ends_with(post);
+    if pattern.contains('*') {
+        let (Some((p_local, p_domain)), Some((e_local, e_domain))) =
+            (crate::identity::email_parts(pattern), crate::identity::email_parts(email))
+        else {
+            return false;
+        };
+        if p_domain.contains('*') || !crate::identity::domain_eq(p_domain, e_domain) {
+            return false;
+        }
+        let Some((pre, post)) = p_local.split_once('*') else {
+            return false;
+        };
+        if post.contains('*') {
+            return false; // single glob only
+        }
+        return e_local.len() >= pre.len() + post.len()
+            && e_local.starts_with(pre)
+            && e_local.ends_with(post);
     }
     // RFC-style subaddressing is a PROTOCOL rule, not per-cert data: owning
     // `user@domain` implies owning `user+anything@domain` (agent identities
@@ -81,13 +101,13 @@ fn identity_matches(pattern: &str, email: &str) -> bool {
     // stays pinned elsewhere: the warrant's grantee must exactly equal the
     // access-cert identity, so a base-identity cert without a matching warrant
     // authorizes nothing at any verifier.
-    if let Some((p_local, p_domain)) = pattern.split_once('@') {
-        if let Some((e_local, e_domain)) = email.split_once('@') {
-            return p_domain == e_domain
-                && e_local.len() > p_local.len()
-                && e_local.starts_with(p_local)
-                && e_local.as_bytes()[p_local.len()] == b'+';
-        }
+    if let (Some((p_local, p_domain)), Some((e_local, e_domain))) =
+        (crate::identity::email_parts(pattern), crate::identity::email_parts(email))
+    {
+        return p_domain == e_domain
+            && e_local.len() > p_local.len()
+            && e_local.starts_with(p_local)
+            && e_local.as_bytes()[p_local.len()] == b'+';
     }
     false
 }
@@ -1143,13 +1163,18 @@ impl Warrant {
                 format!("unrecognized claim(s) on a set-form record: {}", keys.join(", ")),
             ));
         }
-        // Identities are always email strings; the grantor is attribution —
-        // exact and signed-for, never a matcher (§6.6 invariant 6).
-        if crate::identity::is_grantee_matcher(&claims.grantor) || !claims.grantor.contains('@') {
-            return Err(invalid("warrant", "grantor must be an exact email"));
+        // Identities are always email strings — WELL-FORMED ones (exactly one
+        // `@`, audit L1); the grantor is attribution — exact and signed-for,
+        // never a matcher (§6.6 invariant 6).
+        if crate::identity::is_grantee_matcher(&claims.grantor)
+            || crate::identity::email_parts(&claims.grantor).is_none()
+        {
+            return Err(invalid("warrant", "grantor must be an exact well-formed email"));
         }
-        if !crate::identity::is_grantee_matcher(&claims.grantee) && !claims.grantee.contains('@') {
-            return Err(invalid("warrant", "grantee must be an email or a grantee matcher"));
+        if !crate::identity::is_grantee_matcher(&claims.grantee)
+            && crate::identity::email_parts(&claims.grantee).is_none()
+        {
+            return Err(invalid("warrant", "grantee must be a well-formed email or a grantee matcher"));
         }
         Ok(())
     }

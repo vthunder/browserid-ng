@@ -122,7 +122,7 @@ where
         std::collections::HashMap::new();
     let mut managed = Vec::new();
     for e in &emails {
-        let Some((_, domain)) = e.email.rsplit_once('@') else {
+        let Some(domain) = browserid_core::identity::email_domain(&e.email) else {
             continue;
         };
         let domain = domain.to_lowercase();
@@ -337,10 +337,7 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    let domain = email
-        .rsplit('@')
-        .next()
-        .filter(|d| !d.is_empty() && *d != email)
+    let domain = browserid_core::identity::email_domain(email)
         .ok_or(BrokerError::InvalidEmail)?
         .to_ascii_lowercase();
     match state.authority.no_primary_authority(&domain).await {
@@ -651,9 +648,7 @@ where
     let normalized = query.email.to_lowercase();
 
     // Extract domain from email
-    let domain = normalized
-        .split('@')
-        .nth(1)
+    let domain = browserid_core::identity::email_domain(&normalized)
         .ok_or(BrokerError::InvalidEmail)?;
 
     // Check mock primary IdP registry first (for testing)

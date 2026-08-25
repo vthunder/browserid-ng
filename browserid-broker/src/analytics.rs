@@ -125,7 +125,7 @@ pub fn distinct_id_for_email(email: &str) -> String {
 /// The email's domain (lowercased) — safe, useful funnel segmentation
 /// ("gmail.com" vs "acme.com") without being personally identifying.
 pub fn email_domain(email: &str) -> Option<String> {
-    email.rsplit_once('@').map(|(_, d)| d.trim().to_lowercase())
+    browserid_core::identity::email_domain(email).map(|d| d.to_lowercase())
 }
 
 #[cfg(test)]

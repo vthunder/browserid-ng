@@ -17,7 +17,8 @@ repository = "https://github.com/nicksandmill/browserid-ng"
 
 [workspace.dependencies]
 # Crypto
-ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "serde", "zeroize"] }
+zeroize = "1"
 rand = "0.8"
 sha2 = "0.10"
 
@@ -40,11 +41,10 @@ axum = "0.7"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 
 # DNS / DNSSEC
-hickory-resolver = { version = "0.24", features = ["dnssec-ring"] }
-hickory-client = { version = "0.24", features = ["dnssec-ring", "dns-over-rustls"] }
-# TLS for DNS-over-TLS (versions must match hickory-proto 0.24's rustls dependency)
-rustls = "0.21"
-webpki-roots = "0.25"
+hickory-client = { version = "0.25", features = ["tls-ring"] }
+# TLS for DNS-over-TLS (versions must match hickory-proto 0.25's rustls dependency)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "0.26"
 
 # Error handling
 thiserror = "1"

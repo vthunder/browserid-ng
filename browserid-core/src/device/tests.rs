@@ -1004,3 +1004,21 @@ fn verify_at_judges_expiry_at_the_given_instant_not_the_wall_clock() {
     let far_future = 4_000_000_000; // ~2096, past the 2027 fixture windows
     assert!(pres.verify_at(f.audience(), far_future, |_| Ok(idp_pub.clone())).is_err());
 }
+
+#[test]
+fn identity_glob_is_domain_anchored() {
+    // Audit L5: the single-* glob is confined to the LOCAL part with an
+    // exactly matching domain; bare '*' and cross-@ globs match nothing.
+    assert!(super::identity_matches("danmills+*@sandmill.org", "danmills+claude@sandmill.org"));
+    assert!(super::identity_matches("*@sandmill.org", "anyone@sandmill.org"));
+    // Bare '*' is dead — no issuer mints it.
+    assert!(!super::identity_matches("*", "anyone@anywhere.example"));
+    // A glob with no '@' must not cover other domains (the L5 finding).
+    assert!(!super::identity_matches("admin*", "admin@evil.example"));
+    // Star in the domain matches nothing.
+    assert!(!super::identity_matches("dan@*.org", "dan@sandmill.org"));
+    // Domain must match exactly.
+    assert!(!super::identity_matches("danmills+*@sandmill.org", "danmills+x@evil.example"));
+    // Malformed emails never match (audit L1).
+    assert!(!super::identity_matches("*@sandmill.org", "a@b@sandmill.org"));
+}

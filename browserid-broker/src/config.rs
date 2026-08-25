@@ -99,14 +99,18 @@ fn load_keypair(path: &str) -> Result<KeyPair> {
     let stored: StoredKeypair = serde_json::from_str(&contents)
         .with_context(|| "Failed to parse keypair JSON")?;
 
-    let secret_bytes = base64::Engine::decode(
+    let mut secret_bytes = base64::Engine::decode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         &stored.secret_key,
     )
     .with_context(|| "Failed to decode secret key")?;
 
-    KeyPair::from_seed(&secret_bytes)
-        .map_err(|e| anyhow::anyhow!("Failed to create keypair: {}", e))
+    let keypair = KeyPair::from_seed(&secret_bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to create keypair: {}", e));
+    // Wipe the transient seed copy (audit zeroize item; the file itself is
+    // the at-rest form, 0600 per M8).
+    zeroize::Zeroize::zeroize(&mut secret_bytes);
+    keypair
 }
 
 fn save_keypair(path: &str, keypair: &KeyPair) -> Result<()> {
@@ -115,13 +119,17 @@ fn save_keypair(path: &str, keypair: &KeyPair) -> Result<()> {
         keypair.secret_bytes(),
     );
 
-    let stored = StoredKeypair {
+    let mut stored = StoredKeypair {
         secret_key: secret_b64,
     };
 
-    let json = serde_json::to_string_pretty(&stored)?;
-    fs::write(path, json)
-        .with_context(|| format!("Failed to write keypair to {}", path))?;
+    let mut json = serde_json::to_string_pretty(&stored)?;
+    let write_result = fs::write(path, &json)
+        .with_context(|| format!("Failed to write keypair to {}", path));
+    // Wipe the transient encodings of the seed (audit zeroize item).
+    zeroize::Zeroize::zeroize(&mut json);
+    zeroize::Zeroize::zeroize(&mut stored.secret_key);
+    write_result?;
 
     // The file holds the broker's root signing seed — restrict it to the owner
     // (audit M8). `fs::write` above creates it 0644 by default, so tighten after.

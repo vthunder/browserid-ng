@@ -37,7 +37,11 @@ appears attributed to the agent **and to you**.
   **device cert** for it (a device-grant — nothing is delegated by chaining your
   key). Returns an approval URL for you; the agent picks up its device cert
   automatically once you approve. The private key is generated locally and never
-  transmitted.
+  transmitted. **At rest it is stored as plaintext JSON** in `~/.browserid`
+  (owner-only, `0700`/`0600`) — there is no passphrase or OS-keychain layer, so
+  anything running as your user can read it. Treat the machine account as the
+  custody boundary; revoke the agent's cert from your /account page if the
+  machine is compromised.
 - **`identity`** — who the agent acts as.
 - **`authorize(audience, scopes, message?)`** — request a warrant for an audience (signed by
   your config cert at the consent screen).

@@ -69,10 +69,7 @@ pub fn tenant_dns_record(public_key: &str, idp_host: &str) -> String {
 }
 
 fn split_email(email: &str) -> Option<(String, String)> {
-    let (local, domain) = email.split_once('@')?;
-    if local.is_empty() || domain.is_empty() {
-        return None;
-    }
+    let (local, domain) = browserid_core::identity::email_parts(email)?;
     Some((local.to_lowercase(), domain.to_lowercase()))
 }
 

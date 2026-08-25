@@ -244,7 +244,7 @@ where
     ).map_err(ce)?;
     // The config cert also covers `+tag` sub-addresses so it can sign
     // warrants for the user's plus-named agent identities (design doc §3).
-    let config_identities = match email.split_once('@') {
+    let config_identities = match browserid_core::identity::email_parts(&email) {
         Some((local, domain)) => vec![email.clone(), format!("{local}+*@{domain}")],
         None => vec![email.clone()],
     };

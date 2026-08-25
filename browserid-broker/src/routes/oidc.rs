@@ -144,12 +144,9 @@ where
     };
 
     let email = q.email.trim().to_lowercase();
-    let (local, domain) = email.split_once('@').ok_or(BrokerError::InvalidEmail)?;
-    if local.is_empty()
-        || domain.is_empty()
-        || !local.chars().all(|c| c.is_ascii_graphic())
-        || local.contains('@')
-    {
+    let (local, domain) =
+        browserid_core::identity::email_parts(&email).ok_or(BrokerError::InvalidEmail)?;
+    if !local.chars().all(|c| c.is_ascii_graphic()) {
         return Err(BrokerError::InvalidEmail);
     }
     // The exact-equality check runs against the normalized form, so the flow
@@ -159,7 +156,11 @@ where
     // `+` stays out of attachable local parts (Gmail's normalization already
     // stripped any tag): `<label>+<tag>` is the agent sub-identity form, and
     // a Workspace mailbox literally named with `+` could impersonate one.
-    if normalized.split('@').next().unwrap_or("").contains('+') {
+    if browserid_core::identity::email_parts(&normalized)
+        .map(|(l, _)| l)
+        .unwrap_or("")
+        .contains('+')
+    {
         return Err(BrokerError::InvalidEmail);
     }
 

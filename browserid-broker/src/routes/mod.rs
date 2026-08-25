@@ -99,8 +99,48 @@ where
         },
     ));
 
-    let mut app = Router::new()
+    // Cross-origin surfaces (audit L9): CORS is granted per surface, never
+    // globally — /wsapi/* and the registrar answer same-origin (and
+    // server-to-server) callers only, so an attacker page can no longer read
+    // enumeration-adjacent endpoints cross-origin.
+    //
+    // FedCM keeps the Origin MIRROR: `Access-Control-Allow-Origin: *` is
+    // rejected by the browser for its credentialed fetches, so the mirrored
+    // exact origin is what makes /fedcm/assertion readable. /fedcm/reset is
+    // include.js's fire-and-forget logout ping from RP origins.
+    let fedcm_routes = Router::new()
+        .route("/.well-known/web-identity", get(fedcm::web_identity))
+        .route("/fedcm/config.json", get(fedcm::config))
+        .route("/fedcm/accounts", get(fedcm::accounts))
+        .route("/fedcm/assertion", post(fedcm::assertion))
+        .route("/fedcm/reset", post(fedcm::reset))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(tower_http::cors::AllowOrigin::mirror_request())
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_headers([header::CONTENT_TYPE, header::ACCEPT]),
+        );
+    // Public, non-credentialed cross-origin reads: the support document, the
+    // page-side status poll (include.js on RP origins), and /common/js —
+    // sbo-wasm is imported as an ES module from RP pages (mingo), which
+    // requires CORS on the module + .wasm fetches.
+    let public_cors_routes = Router::new()
         .route("/.well-known/browserid", get(well_known::get_support_document))
+        .route("/status/proxy", get(status::status_proxy))
+        // The marketing origin's home-page wall reads the guestbook feed
+        // cross-origin (credentials: omit).
+        .route("/guestbook/feed", get(guestbook::feed))
+        .nest_service("/common/js", ServeDir::new(format!("{}/common/js", static_path)))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(tower_http::cors::Any)
+                .allow_methods([Method::GET, Method::OPTIONS])
+                .allow_headers([header::CONTENT_TYPE, header::ACCEPT]),
+        );
+
+    let mut app = Router::new()
+        .merge(fedcm_routes)
+        .merge(public_cors_routes)
         .route("/wsapi/session_context", get(session::get_session_context))
         // Admin seed provisioning (ADMIN_TOKEN-gated; for @mingo.place demo accounts)
         .route("/admin/create_account", post(account::admin_create_account))
@@ -133,13 +173,6 @@ where
         .route("/wsapi/set_parent", post(email::set_parent))
         .route("/wsapi/set_public_name", post(email::set_public_name))
         .route("/wsapi/parent_of", get(email::parent_of))
-        // FedCM IdP surface (browserid-ng-mhyp, device-cert model): the silent
-        // lane mints a device presentation server-side; /verify-access unchanged.
-        .route("/.well-known/web-identity", get(fedcm::web_identity))
-        .route("/fedcm/config.json", get(fedcm::config))
-        .route("/fedcm/accounts", get(fedcm::accounts))
-        .route("/fedcm/assertion", post(fedcm::assertion))
-        .route("/fedcm/reset", post(fedcm::reset))
         // Device-cert model (DC Phases 2/6) — additive alongside the legacy routes.
         .route("/device/issue", post(device::device_issue))
         .route("/access/mint", post(device::access_mint))
@@ -147,9 +180,9 @@ where
         // Two-object record validation (operation A, spec §6.4) — the hosted
         // admission-side check beside /verify-access; no caller auth.
         .route("/validate-record", post(device::validate_record))
-        // Status-list distribution (watch() v2, bean 6u70): the page-side
-        // revocation poll and the RP-backend re-check.
-        .route("/status/proxy", get(status::status_proxy))
+        // Status-list distribution (watch() v2, bean 6u70): the RP-backend
+        // re-check. (Its page-side sibling /status/proxy lives on the
+        // cross-origin router below.)
         .route("/status/check", post(status::status_check))
         .route("/wsapi/device_certs", get(device::device_certs))
         .route("/wsapi/issuer_revoke_url", get(device::issuer_revoke_url))
@@ -175,7 +208,6 @@ where
         .route("/wsapi/complete_signin_code", post(signin_code::complete_signin_code))
         // The agent guestbook demo (a public RP only agents can sign).
         .route("/guestbook", get(guestbook::page).post(guestbook::sign))
-        .route("/guestbook/feed", get(guestbook::feed))
         .route("/public-name", get(guestbook::public_name))
         // Fallback-IdP surface (apgv, device-cert model): SMTP-verified email
         // control gates batch device-cert issuance, so the broker can vouch
@@ -218,8 +250,6 @@ where
         .route("/sign_in", get(sign_in_return))
         .nest_service("/relay", ServeDir::new(format!("{}/relay", static_path)))
         .route_service("/include.js", ServeFile::new(format!("{}/include.js", static_path)))
-        // Serve common JS (keystore + the SBO typed-signing surface).
-        .nest_service("/common/js", ServeDir::new(format!("{}/common/js", static_path)))
         // SBO signer popup (first-party broker window for cross-site typed signing)
         .route_service("/sign", ServeFile::new(format!("{}/sign.html", static_path)))
         // Old agent-key management URL — the UI moved to /account long ago;
@@ -273,18 +303,6 @@ where
         // below — frame denial, cookies, CORS, cache-control — cover both.
         .merge(registrar)
         .layer(CookieManagerLayer::new())
-        .layer(
-            // Mirror the request Origin rather than emitting `*`. For the
-            // non-credentialed endpoints this is equivalent to `*` (any origin
-            // may read the response), but it lets `/fedcm/assertion` return a
-            // VALID credentialed CORS response — `Access-Control-Allow-Origin: *`
-            // combined with `Allow-Credentials: true` is rejected by browsers,
-            // which is the "did not send the correct CORS headers" error.
-            CorsLayer::new()
-                .allow_origin(tower_http::cors::AllowOrigin::mirror_request())
-                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-                .allow_headers([header::CONTENT_TYPE, header::ACCEPT]),
-        )
         // Always revalidate served assets (HTML/JS/wasm). The broker ships
         // security-critical agent code (login + typed signing); stale cached
         // JS must never silently run. `no-cache` still permits 304s via

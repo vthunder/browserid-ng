@@ -314,7 +314,8 @@ where
     else {
         return refuse("no account holds this identity");
     };
-    let Some(domain) = identity.split('@').nth(1).map(str::to_string) else {
+    let Some(domain) = browserid_core::identity::email_domain(&identity).map(str::to_string)
+    else {
         return refuse("malformed identity");
     };
 

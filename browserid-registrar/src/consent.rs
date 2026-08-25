@@ -45,7 +45,7 @@ const POLL_INTERVAL_SECONDS: i64 = 5;
 /// with any `+tag` sub-address stripped. `danmills+claude@sandmill.org` →
 /// `danmills@sandmill.org`; a bare identity maps to itself.
 pub fn delegator_of(identity: &str) -> String {
-    match identity.split_once('@') {
+    match browserid_core::identity::email_parts(identity) {
         Some((local, domain)) => {
             let base = local.split('+').next().unwrap_or(local);
             format!("{base}@{domain}")
@@ -1230,7 +1230,9 @@ pub async fn warrant_request(
             .verify(&state.keypair.public_key())
             .map_err(|_| bad("device cert not signed by this registrar's IdP"))?;
     } else {
-        let agent_domain = req.identity.trim().rsplit('@').next().unwrap_or_default().to_lowercase();
+        let agent_domain = browserid_core::identity::email_domain(req.identity.trim())
+            .unwrap_or_default()
+            .to_lowercase();
         if device_cert.iss() != agent_domain {
             return Err(bad("device cert issuer is not the identity's own domain"));
         }

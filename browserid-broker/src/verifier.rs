@@ -5,7 +5,7 @@
 
 use browserid_core::{
     discovery::{SupportDocument, SupportDocumentFetcher},
-    Binding, BindingSet, Error as CoreError, RecordBundle, Result as CoreResult, StatusListToken,
+    BindingSet, Error as CoreError, RecordBundle, Result as CoreResult, StatusListToken,
     StatusRef,
 };
 use reqwest::blocking::Client;
@@ -534,8 +534,8 @@ pub async fn validate_record_with_dns(
     };
 
     let grantor = bundle.warrant.claims().grantor.clone();
-    let grantor_domain = match grantor.rsplit_once('@') {
-        Some((_, d)) => d.to_string(),
+    let grantor_domain = match browserid_core::identity::email_domain(&grantor) {
+        Some(d) => d.to_string(),
         None => return RecordValidationResult::fail("warrant grantor is not an email"),
     };
     let cc_iss = bundle.config_cert.claims().iss.clone();
@@ -669,7 +669,7 @@ pub async fn verify_access_with_dns(
     let ac = pres.access_cert.claims();
     let email = ac.identity.clone();
     let iss = ac.iss.clone();
-    let email_domain = match email.split('@').nth(1) {
+    let email_domain = match browserid_core::identity::email_domain(&email) {
         Some(d) => d.to_string(),
         None => return AccessVerificationResult::fail("identity is not an email"),
     };
@@ -683,7 +683,7 @@ pub async fn verify_access_with_dns(
     // IdP's own certs — as "not authoritative".
     let cc_iss = pres.config_cert.claims().iss.clone();
     let grantor = pres.warrant.claims().grantor.clone();
-    let grantor_domain = match grantor.split('@').nth(1) {
+    let grantor_domain = match browserid_core::identity::email_domain(&grantor) {
         Some(d) => d.to_string(),
         None => return AccessVerificationResult::fail("warrant grantor is not an email"),
     };

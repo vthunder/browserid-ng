@@ -279,9 +279,9 @@ pub fn discover<F: SupportDocumentFetcher>(
     })
 }
 
-/// Extract domain from email address
+/// Extract domain from email address (canonical strict parse, audit L1).
 pub fn domain_from_email(email: &str) -> Option<&str> {
-    email.split('@').nth(1)
+    crate::identity::email_domain(email)
 }
 
 /// Build the well-known URL for a domain

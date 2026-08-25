@@ -1,29 +1,29 @@
 ---
 # browserid-ng-v1ia
 title: '[L1-L12] Security hardening batch (low severity)'
-status: in-progress
+status: completed
 type: task
 priority: low
 created_at: 2026-07-28T23:54:42Z
-updated_at: 2026-08-17T09:24:06Z
+updated_at: 2026-08-25T15:14:16Z
 parent: browserid-ng-wre6
 ---
 
 Low-severity defense-in-depth / consistency / hygiene items from docs/security-audit-2026-07-29.md. Each is independently small; batch or split as convenient.
 
-- [ ] L1: Canonical single-@ email parser; validate exactly-one-@ on identity fields; pick ONE domain-extraction helper (rsplit_once) everywhere (core/device.rs:67, verifier.rs:296, rp/lib.rs:221, consent.rs:851, agent_provision.rs:1329)
+- [x] L1 (2026-08-25): canonical `identity::email_parts`/`email_domain` (exactly-one-@, non-empty both sides) in browserid-core; all ~25 hand-split sites migrated across core/broker/registrar/rp; identity_eq/grantee_covers/warrant grantor+grantee now reject malformed (multi-@) emails fail-closed
 - [x] L2: jti single-use replay cache at /access/mint (SEEN_JTIS in device.rs)
-- [ ] L3: Tag the fb_email token with a type/domain claim; consider a separate key from the cert-signing root (fallback_idp.rs:125)
+- [x] L3 (2026-08-25): fb_email claims carry `typ: browserid-fb-email-v1`, required at verify — the one raw root-key signature now has typ discipline like every JWS; separate key judged unnecessary once tagged (outstanding cookies invalidated; holders redo the mailbox proof)
 - [x] L4: Rewrote stale cross-issuer doc; states caller conformance precondition (core/device.rs)
-- [ ] L5: Domain-anchor the single-* glob in identity_matches; gate/drop bare '*' (core/device.rs:54)
-- [ ] L6: Document/enforce that RP IdentityVerifier static primaries set must be complete, or use live discovery (rp/lib.rs:220)
+- [x] L5 (2026-08-25): glob confined to the LOCAL part with exact-match domain; bare '*', @-less globs (admin*), and domain-side stars match NOTHING (no issuer mints them — verified before dropping)
+- [x] L6 (2026-08-25): confirmed done earlier — verify_dnssec resolves primaries live per-domain (rp/lib.rs:331-341); the static path is documented 'Offline/testing only'. Checked off
 - [x] L7: require_csrf added to complete_email_addition
 - [x] L8: ct_eq constant-time admin-token compare (account.rs)
-- [ ] L9: Tighten CORS on /wsapi/* — don't mirror any Origin for enumeration endpoints (mod.rs:219)
-- [ ] L10: Scope/clarify the wallet's key-custody claim; docs note SDK seeds are plaintext-at-rest 0600 (sdk/wallet/server.mjs)
-- [ ] L11: Track hickory 0.24→0.25 upgrade to drop EOL rustls 0.21 (Cargo.toml:45)
+- [x] L9 (2026-08-25): global mirror layer REMOVED. CORS is per-surface: /fedcm/* keeps the mirror (credentialed FedCM reads + include.js logout ping); Any on the public reads (/.well-known/browserid, /status/proxy, /guestbook/feed for the marketing wall, /common/js wasm module imports, and the registrar's /.well-known/browserid-status which the status-poll redirect lands on). /wsapi/* and everything else emit NO CORS headers. Full e2e suite green
+- [x] L10 (2026-08-25): README + server.mjs header state plainly: plaintext JSON at rest, 0700/0600, no passphrase/keychain — the machine account is the custody boundary; revoke from /account on compromise
+- [x] L11 (2026-08-25): hickory-client 0.25 (tls-ring) + rustls 0.23 + webpki-roots 0.26; EOL rustls 0.21 out of the lockfile; unused hickory deps dropped from the broker. Port validated with a new #[ignore] live DoT test (sandmill.org resolves Secure) — rerun it after future dep bumps
 - [x] L12: broker-key.json + browserid.db* added to .dockerignore
-- [ ] Also: enable ed25519-dalek 'zeroize' feature; zeroize secret_bytes String copies (info-level, keys.rs:138 / Cargo.toml)
+- [x] zeroize (2026-08-25): ed25519-dalek 'zeroize' feature on (SigningKey wiped on drop); transient seed copies in the broker key save/load path zeroized. The agent SDK's secret_bytes exports are by-design API surface (documented under L10), not wiped
 
 ## Re-verification 2026-08-17 — status of remaining low items
 
@@ -35,3 +35,7 @@ Low-severity defense-in-depth / consistency / hygiene items from docs/security-a
 - L11 (STILL OPEN): Cargo.toml:43-45 still pins hickory 0.24; Cargo.lock:1976-1977 still has rustls 0.21.12 (alongside 0.23.35 at :1988). No 0.25 bump.
 - Zeroize (STILL OPEN): ed25519-dalek features are ["rand_core","serde"] only (Cargo.toml:20, browserid-core/Cargo.toml:9); zero Zeroize occurrences in any .rs. secret_bytes() (keys.rs:137-139) returns &[u8;32], unzeroized copies at config.rs:115, tenant_keys.rs:47, browserid-agent/src/lib.rs:273/:594.
 - Already-done (confirmed): L2, L4, L7, L8, L12.
+
+## Summary of Changes (2026-08-25)
+
+All remaining low items landed in one pass (no product decisions needed). Highlights: per-surface CORS (found two consumers the global mirror was silently serving: the marketing wall's /guestbook/feed and the status-poll redirect onto the registrar list — both now explicitly public); canonical strict email parsing with fail-closed malformed handling through the verification paths; hickory 0.25/rustls 0.23 with a live DoT regression test. Full workspace suite (59 targets) + full Playwright e2e (106) green.

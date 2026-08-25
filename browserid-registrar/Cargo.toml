@@ -10,6 +10,7 @@ description = "Reusable registrar component: provisioning-cert registry, endorse
 browserid-core = { path = "../browserid-core" }
 
 axum = { workspace = true }
+tower-http = { version = "0.5", features = ["cors"] }
 tower-cookies = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

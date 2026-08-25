@@ -71,11 +71,11 @@ struct PublicEntry {
 }
 
 fn local_part(email: &str) -> &str {
-    email.split('@').next().unwrap_or(email)
+    browserid_core::identity::email_parts(email).map(|(l, _)| l).unwrap_or(email)
 }
 
 fn email_domain(email: &str) -> &str {
-    email.rsplit('@').next().unwrap_or("")
+    browserid_core::identity::email_domain(email).unwrap_or("")
 }
 
 impl Entry {

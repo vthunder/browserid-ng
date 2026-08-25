@@ -124,7 +124,8 @@ where
     // The identity must sit at the proven handle — any label (the proof
     // covers the domain), exactly that domain.
     let email = req.email.trim().to_lowercase();
-    let (label, domain) = email.split_once('@').ok_or(BrokerError::InvalidEmail)?;
+    let (label, domain) =
+        browserid_core::identity::email_parts(&email).ok_or(BrokerError::InvalidEmail)?;
     if label.is_empty()
         || label.contains(['@', ' ', '+'])
         || !label.chars().all(|c| c.is_ascii_graphic())

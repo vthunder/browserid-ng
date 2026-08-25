@@ -25,6 +25,7 @@ tower.workspace = true
 uuid.workspace = true
 rand.workspace = true
 base64.workspace = true
+zeroize.workspace = true
 sha2.workspace = true
 tower-http = { version = "0.6", features = ["fs", "cors", "set-header"] }
 chacha20poly1305 = "0.10"
@@ -33,8 +34,6 @@ rusqlite.workspace = true
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder"] }
 dotenvy = "0.15"
 futures-util = "0.3"
-hickory-resolver.workspace = true
-hickory-client.workspace = true
 rustls.workspace = true
 webpki-roots.workspace = true
 

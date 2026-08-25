@@ -102,9 +102,8 @@ fn check_and_record_send(email: &str) -> Result<(), &'static str> {
 
 fn normalize_email(email: &str) -> Option<String> {
     let e = email.trim().to_lowercase();
-    let mut parts = e.split('@');
-    let (local, domain) = (parts.next()?, parts.next()?);
-    if local.is_empty() || domain.is_empty() || parts.next().is_some() || e.contains(char::is_whitespace) {
+    // Canonical exactly-one-@ parse (audit L1) + no embedded whitespace.
+    if browserid_core::identity::email_parts(&e).is_none() || e.contains(char::is_whitespace) {
         return None;
     }
     Some(e)
@@ -117,6 +116,14 @@ fn gen_code() -> String {
 
 // --- signed email cookie (stateless; signed by the broker key) -------------
 
+/// Type tag inside the signed `fb_email` claims (audit L3): every other
+/// root-key-signed object in the system is a JWS with a `typ` discipline;
+/// this was the one raw signature over attacker-influenceable JSON. Tagging
+/// (and requiring the tag at verify) closes the signing-confusion channel
+/// without needing a separate key. Rolling this out invalidates outstanding
+/// cookies — holders just redo the mailbox proof.
+const EMAIL_TOKEN_TYP: &str = "browserid-fb-email-v1";
+
 fn issue_email_token<U, S, E>(state: &AppState<U, S, E>, email: &str) -> String
 where
     U: UserStore,
@@ -124,7 +131,7 @@ where
     E: EmailSender,
 {
     let exp = (Utc::now() + Duration::days(EMAIL_COOKIE_DAYS)).timestamp();
-    let claims = json!({ "email": email, "exp": exp }).to_string();
+    let claims = json!({ "typ": EMAIL_TOKEN_TYP, "email": email, "exp": exp }).to_string();
     let sig = state.keypair.sign(claims.as_bytes());
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     format!("{}.{}", b64.encode(claims.as_bytes()), b64.encode(sig))
@@ -144,6 +151,9 @@ where
     let sig = b64.decode(sig_b64).ok()?;
     state.keypair.public_key().verify(&claims, &sig).ok()?;
     let v: serde_json::Value = serde_json::from_slice(&claims).ok()?;
+    if v.get("typ")?.as_str()? != EMAIL_TOKEN_TYP {
+        return None; // untyped/foreign root-key signature — reject (audit L3)
+    }
     let exp = v.get("exp")?.as_i64()?;
     if Utc::now().timestamp() >= exp {
         return None;

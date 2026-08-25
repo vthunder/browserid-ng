@@ -59,7 +59,7 @@ pub use store::{RegistrarStore, StoreResult};
 /// or `danmills+claude@sandmill.org`. What names are *permitted* is enforced by
 /// [`agent_name_allowed`], not by rewriting here.
 pub fn agent_identity_email(delegator_email: &str, name: &str) -> String {
-    let domain = delegator_email.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
+    let domain = browserid_core::identity::email_domain(delegator_email).unwrap_or("");
     format!("{name}@{domain}")
 }
 
@@ -80,7 +80,7 @@ pub fn agent_name_allowed(name: &str, delegator_email: &str, idp_domain: &str) -
     if name.is_empty() {
         return false;
     }
-    let (local, domain) = match delegator_email.rsplit_once('@') {
+    let (local, domain) = match browserid_core::identity::email_parts(delegator_email) {
         Some(x) => x,
         None => return false,
     };
@@ -206,8 +206,20 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         .route("/wsapi/forget_warrant", post(consent::forget_warrant))
         .route("/wsapi/revoke_warrant", post(consent::revoke_warrant))
         .route("/wsapi/allocate_warrant_status", post(consent::allocate_warrant_status))
-        // Signed revocation status list (core §6.4):
-        .route("/.well-known/browserid-status", get(consent::status_list))
+        // Signed revocation status list (core §6.4): a public, signed
+        // artifact read cross-origin — include.js's page-side revocation
+        // poll lands here via the broker's /status/proxy redirect, so it
+        // needs non-credentialed CORS (audit L9: the ONLY registrar route
+        // that answers cross-origin; everything else is same-origin or
+        // server-to-server).
+        .route(
+            "/.well-known/browserid-status",
+            get(consent::status_list).layer(
+                tower_http::cors::CorsLayer::new()
+                    .allow_origin(tower_http::cors::Any)
+                    .allow_methods([axum::http::Method::GET]),
+            ),
+        )
         .with_state(state)
 }
 

@@ -84,7 +84,7 @@ pub fn is_google_domain(domain: &str, mx_host: Option<&str>) -> bool {
 /// lowercased — Workspace admins may make dots/`+` significant.
 pub fn normalize_google_email(email: &str) -> String {
     let email = email.trim().to_ascii_lowercase();
-    let Some((local, domain)) = email.split_once('@') else {
+    let Some((local, domain)) = browserid_core::identity::email_parts(&email) else {
         return email;
     };
     if GOOGLE_CONSUMER_DOMAINS.contains(&domain) {
@@ -527,7 +527,7 @@ pub fn verify_id_token(
     // the token's `hd` (hosted domain) must equal it — so a random Google
     // account can't claim an address at a Workspace domain it doesn't belong
     // to. (Consumer gmail.com tokens carry no `hd`.)
-    let domain = claimed_norm.split('@').nth(1).unwrap_or("");
+    let domain = browserid_core::identity::email_domain(&claimed_norm).unwrap_or("");
     if !GOOGLE_CONSUMER_DOMAINS.contains(&domain) {
         match &claims.hd {
             Some(hd) if hd.eq_ignore_ascii_case(domain) => {}
