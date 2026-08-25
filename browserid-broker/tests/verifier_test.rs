@@ -243,6 +243,10 @@ async fn verify_access_accepts_cross_issuer_on_behalf_of() {
     // The attributed identity is the GRANTOR; the acting one is the grantee.
     assert_eq!(r.email.as_deref(), Some("danmills.bsky.social@bsky.browserid.me"));
     assert_eq!(r.grantee.as_deref(), Some("danmills+claude@sandmill.org"));
+    // Both issuers are surfaced: `issuer` vouches for the attributed identity,
+    // `grantee_issuer` for the actor (audit D2, bean i9rr).
+    assert_eq!(r.issuer.as_deref(), Some("bsky.browserid.me"));
+    assert_eq!(r.grantee_issuer.as_deref(), Some("sandmill.org"));
 }
 
 /// The cross-issuer path must not become a hole: a config cert signed by an

@@ -122,6 +122,11 @@ pub struct AccessVerificationResult {
     pub scopes: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issuer: Option<String>,
+    /// The grantee/actor's issuer (the access cert's `iss`). Equals `issuer`
+    /// for an as-you presentation; differs for a cross-issuer delegated grant
+    /// (audit D2, bean i9rr).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grantee_issuer: Option<String>,
     /// The presentation's status refs (access cert / config cert / warrant,
     /// whichever are present), so the RP can re-check revocation later —
     /// on session activity via `POST /status/check` — without retaining the
@@ -134,7 +139,7 @@ pub struct AccessVerificationResult {
 
 impl AccessVerificationResult {
     pub(crate) fn fail(reason: impl Into<String>) -> Self {
-        Self { status: "failure".into(), email: None, grantee: None, holder: None, scopes: None, issuer: None, status_refs: None, reason: Some(reason.into()) }
+        Self { status: "failure".into(), email: None, grantee: None, holder: None, scopes: None, issuer: None, grantee_issuer: None, status_refs: None, reason: Some(reason.into()) }
     }
 }
 
@@ -757,6 +762,7 @@ pub async fn verify_access_with_dns(
         holder: Some(v.holder.as_str().to_string()),
         scopes: Some(v.scopes),
         issuer: Some(v.issuer),
+        grantee_issuer: Some(v.grantee_issuer),
         status_refs: if status_refs.is_empty() { None } else { Some(status_refs) },
         reason: None,
     }

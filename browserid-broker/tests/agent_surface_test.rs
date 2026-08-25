@@ -84,9 +84,12 @@ async fn test_openapi_spec_served() {
     assert!(content_type.starts_with("application/json"));
     let spec: Value = response.json();
     assert!(spec["openapi"].as_str().unwrap().starts_with("3."));
-    for path in ["/verify-access", "/validate-record", "/status/check", "/.well-known/browserid"] {
+    for path in ["/verify", "/verify-access", "/validate-record", "/status/check", "/.well-known/browserid"] {
         assert!(spec["paths"][path].is_object(), "spec must document {path}");
     }
+    // /verify is canonical; /verify-access is documented as its permanent
+    // (deprecated-flagged) alias — bean 44jm.
+    assert_eq!(spec["paths"]["/verify-access"]["post"]["deprecated"], true);
 
     // CORS: public documentation, fetchable from any origin.
     let cors = server
@@ -143,13 +146,35 @@ async fn test_llms_txt_without_marketing_origin() {
     assert!(response.text().contains("llms.txt"));
 }
 
+/// /verify is the canonical hosted-verifier route; /verify-access is its
+/// PERMANENT alias (bean 44jm, decision 2026-08-25). Same handler, identical
+/// behavior — this is the alias regression test the cutover requires.
+#[tokio::test]
+async fn test_verify_and_verify_access_are_the_same_endpoint() {
+    let (server, _) = create_test_server();
+
+    let body = serde_json::json!({
+        "presentation": "not~a~real~presentation",
+        "audience": "https://rp.example.com",
+    });
+    let canonical = server.post("/verify").json(&body).await;
+    let alias = server.post("/verify-access").json(&body).await;
+
+    assert_eq!(canonical.status_code(), 200);
+    assert_eq!(alias.status_code(), 200);
+    let canonical: Value = canonical.json();
+    let alias: Value = alias.json();
+    assert_eq!(canonical["status"], "failure");
+    assert_eq!(canonical, alias, "/verify and /verify-access must answer identically");
+}
+
 /// Malformed bodies on the public API endpoints return structured JSON 400s
 /// (error.code = bad_request), not axum's plain-text rejection.
 #[tokio::test]
 async fn test_malformed_api_bodies_get_json_errors() {
     let (server, _) = create_test_server();
 
-    for path in ["/verify-access", "/validate-record", "/status/check"] {
+    for path in ["/verify", "/verify-access", "/validate-record", "/status/check"] {
         // Missing required fields.
         let response = server.post(path).json(&serde_json::json!({})).await;
         assert_eq!(response.status_code(), 400, "{path}");

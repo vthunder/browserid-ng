@@ -199,6 +199,10 @@ where
         // Device-cert model (DC Phases 2/6) — additive alongside the legacy routes.
         .route("/device/issue", post(device::device_issue))
         .route("/access/mint", post(device::access_mint))
+        // /verify is the canonical hosted-verifier route (spec §6.1);
+        // /verify-access is its PERMANENT alias (bean 44jm, 2026-08-25) —
+        // same handler, never retired.
+        .route("/verify", post(device::verify_access))
         .route("/verify-access", post(device::verify_access))
         // Two-object record validation (operation A, spec §6.4) — the hosted
         // admission-side check beside /verify-access; no caller auth.

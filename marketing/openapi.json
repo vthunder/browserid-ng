@@ -10,7 +10,7 @@
   },
   "servers": [{ "url": "https://browserid.me", "description": "Production broker (auth/issuer origin)" }],
   "paths": {
-    "/verify-access": {
+    "/verify": {
       "post": {
         "operationId": "verifyAccess",
         "summary": "Verify a four-object presentation (RP sign-in check)",
@@ -38,12 +38,44 @@
                       "grantee": "alice+researcher@gmail.com",
                       "scopes": ["post"],
                       "issuer": "gmail.com",
+                      "grantee_issuer": "gmail.com",
                       "status_refs": [{ "uri": "https://browserid.me/.well-known/browserid-status", "idx": 42 }]
                     }
                   },
                   "failure": { "value": { "status": "failure", "reason": "Assertion expired" } }
                 }
               }
+            }
+          },
+          "400": {
+            "description": "Malformed request (invalid JSON or missing fields)",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+            }
+          }
+        }
+      }
+    },
+    "/verify-access": {
+      "post": {
+        "operationId": "verifyAccessAlias",
+        "deprecated": true,
+        "summary": "Permanent alias of /verify",
+        "description": "Identical to `POST /verify` (same handler). This is the endpoint's original name, kept as a permanent alias — existing integrations never break — but new integrations should call `/verify`.",
+        "tags": ["verification"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/VerifyAccessRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Verification outcome (success or failure — see `status`)",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/AccessVerificationResult" } }
             }
           },
           "400": {
@@ -87,7 +119,7 @@
       "post": {
         "operationId": "statusCheck",
         "summary": "Fail-closed revocation re-check for RP backends",
-        "description": "Re-check the `status_refs` returned by /verify-access without retaining the (short-lived) presentation. Fail closed: `ok: false` MUST be treated as revoked by the caller. Accepts 1–16 refs per call.",
+        "description": "Re-check the `status_refs` returned by /verify without retaining the (short-lived) presentation. Fail closed: `ok: false` MUST be treated as revoked by the caller. Accepts 1–16 refs per call.",
         "tags": ["verification"],
         "requestBody": {
           "required": true,
@@ -225,6 +257,7 @@
           "holder": { "type": "string", "description": "Opaque holder id of the thing that acted (advisory)." },
           "scopes": { "type": "array", "items": { "type": "string" }, "description": "What the human's warrant authorized at this audience." },
           "issuer": { "type": "string", "description": "The issuing domain, checked against its own DNS." },
+          "grantee_issuer": { "type": "string", "description": "The acting identity's issuing domain — equals issuer for a human sign-in; differs for a cross-issuer delegated grant." },
           "status_refs": { "type": "array", "items": { "$ref": "#/components/schemas/StatusRef" }, "description": "Refs for later revocation re-checks via POST /status/check." },
           "reason": { "type": "string", "description": "Failure reason (present when status is failure)." }
         }
