@@ -11,8 +11,8 @@ fills the remaining claims:
 
 The `binding` claim holds a set of authenticated-channel entries, all of
 which must check out (a singular object is shorthand for a one-entry set —
-the form all deployed records use; see the signing-grants note §3 for the
-kind × operation table). Five use cases exist today (four live, one
+the form all deployed records use; see the protocol spec §5 for the
+kind × operation table, normative since 2026-08-25). Five use cases exist today (four live, one
 proposed).
 
 ---

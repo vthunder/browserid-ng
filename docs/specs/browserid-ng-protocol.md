@@ -359,12 +359,15 @@ constraints until the verifiers it cares about conform.
   |---|---|
   | `aud` | The RP origin the assertion is for. |
   | `exp` | Expiry (short). |
+  | `req_origin` | OPTIONAL. The **requesting channel**: the authenticated origin the signing request arrived from, stamped by the wallet at dispatch. Present iff the presented warrant carries a `requester` binding entry (§5); matched by verifiers fail-closed (§6.6 invariant 13). |
 
 - **Warrant (`browserid-warrant-v2`)** — the **authorization record**, signed by
   a **config cert** (§4.3). It records that a **`grantor`** authorizes a
   **`grantee`** at one **`audience`** [+ `scopes`], and carries exactly one
-  **`binding`** — the instance qualifier that pins *which instance of the
-  grantee* may exercise the grant. Identities (`grantor`, `grantee`) are
+  **`binding`** claim, holding a **set of channel entries** (a singular
+  object is shorthand for a one-entry set) — the instance qualifiers that pin
+  *the circumstances under which the grant operates*: which instance of the
+  grantee acts and, on self-grants, which channel may initiate. Identities (`grantor`, `grantee`) are
   **always email strings**; bindings are warrant-local qualifiers, are **not
   identities**, and never appear where identities live. A warrant is **always**
   present at the RP (self-logins carry one too, where grantor == grantee).
@@ -383,9 +386,9 @@ constraints until the verifiers it cares about conform.
   | `iat`, `exp` | Validity window (reference: 90 days). |
   | `grantor` | The identity the action is **attributed** to (the effective author). Always an **exact** email — never a matcher. The signing config cert MUST be authoritative for it (§4.3). |
   | `grantee` | The identity that **acts**. An exact email — or, on admission-consumed records only, a **grantee matcher** (below). Equals `grantor` for an "as-you" grant; differs for delegated on-behalf grants. |
-  | `binding` | **Exactly one object**, mandatory `kind`, kind-specific fields (table below). A missing `binding`, or an unimplemented `kind`, ⇒ reject — fail-closed. |
-  | `audience` | **Exactly one** RP audience (exact string match, same normalization as assertion `aud`). |
-  | `scopes` | OPTIONAL array of opaque strings, interpreted only by the RP. |
+  | `binding` | **A set of channel entries** — a JSON array, or a single object as shorthand for a one-entry set (the only form pre-amendment records use). Each entry: mandatory `kind`, kind-specific fields (table below); entries are **conjunctive**. A missing or empty `binding`, or an entry with an unimplemented `kind`, ⇒ reject — fail-closed. |
+  | `audience` | **Exactly one** audience (exact string match, same normalization as assertion `aud`) — an RP origin, or a non-web destination such as an SBO database ref on a `sign:`-scoped record. |
+  | `scopes` | OPTIONAL array of **scope entries**: a bare string `s` (shorthand for `{"scope": s}`) or an object carrying the scope string plus **parameters** (below). Resource scopes are opaque to this protocol and interpreted only by the RP; the `sign:` namespace (below) is interpreted by wallets. |
   | `status` | **REQUIRED** revocation ref, rooted at the **hosted broker's warrant registry** (§6.3). |
 
   ```json
@@ -400,15 +403,39 @@ constraints until the verifiers it cares about conform.
     "status": { "uri": "https://browserid.me/.well-known/browserid-status", "idx": 168 } }
   ```
 
-  **Bindings.** The binding slot is singular by construction — "exactly one
-  binding" is structural — and future kinds never add new *top-level* claims:
-  an unknown claim tends to be ignored by verifiers, while an unknown `kind`
-  inside a mandatory slot is fail-closed by rule.
+  **Bindings.** The structural rule is *exactly one `binding` claim, holding
+  a set* (amended 2026-08-25 from "exactly one binding object"; the singular
+  shorthand keeps every previously issued record valid, and pre-amendment
+  verifiers reject the array shape — fail-closed, the intended versioning
+  behavior, §6.6 invariant 14). Future kinds never add new *top-level*
+  claims: an unknown claim tends to be ignored by verifiers, while an unknown
+  `kind` inside the mandatory slot is fail-closed by rule. Each entry is a
+  rule from the grantor about the circumstances under which the grant
+  operates — which device signs, who may ask — and **all entries must check
+  out**: each kind defines how it evaluates in each operation, and an
+  *unsatisfiable* cell fails that operation.
 
-  | `kind` | Fields | Pins | Subject authenticated by | Operations |
-  |---|---|---|---|---|
-  | `holder` | `matcher` — `*` (any holder), `<ns>.*` (a namespace), or `<id>` (one holder) | which **device holders** of the grantee (v1 semantics verbatim), checked against the grantee's access-cert holder (anti-fungibility) or login holder | key possession — access cert + assertion (§6.1) — or a browserid login carrying a holder (§6.4) | P and A |
-  | `connection` | `protocol`, `id`, `client_host`, `client_name` | which **custody channel** of the grantee | per `protocol` — for `"oauth"`: authorization codes released only to the registered redirect URI, PKCE binding the exchange to the authorize initiator | A only |
+  | `kind` | Fields | Pins | Subject authenticated by |
+  |---|---|---|---|
+  | `holder` | `matcher` — `*` (any holder), `<ns>.*` (a namespace), or `<id>` (one holder) | which **device holders** of the grantee (v1 semantics verbatim), checked against the grantee's access-cert holder (anti-fungibility) or login holder | key possession — access cert + assertion (§6.1) — or a browserid login carrying a holder (§6.4) |
+  | `connection` | `protocol`, `id`, `client_host`, `client_name` | which **custody channel** of the grantee | per `protocol` — for `"oauth"`: authorization codes released only to the registered redirect URI, PKCE binding the exchange to the authorize initiator |
+  | `requester` | `origin` — one web origin, exact | which **requesting channel** may ask the grantor's **wallet** to sign under the grant (prose below) | the wallet authenticates the request's source itself — for a website, the browser-verified message origin, unforgeable by page JS — and stamps it into the assertion (`req_origin`) for downstream re-checking |
+
+  How each entry evaluates, per operation — an unsatisfiable cell fails that
+  operation:
+
+  | `kind` | op P (presentation, §6.1) | op A (admission, §6.4) | evaluated by |
+  |---|---|---|---|
+  | `holder` | access cert's holder covered by the matcher | login's holder covered by the matcher | verifier / resource |
+  | `connection` | *unsatisfiable* | the custody dance bound to `binding.id` | resource |
+  | `requester` | `req_origin` stamped in the assertion equals `origin` | *unsatisfiable* | wallet at dispatch; verifiers re-check the stamp |
+
+  This table subsumes rules previously stated as standalone prohibitions: a
+  `connection`-bound record cannot verify in a presentation, and a
+  `requester` entry can admit no one — both are unsatisfiable cells, not
+  special cases. A record whose set satisfies no operation at all is dead
+  paper — fail-closed and harmless — but signing surfaces MUST refuse to mint
+  one (mint-side lint).
 
   Within `connection`, an unimplemented `protocol` ⇒ reject. Both extension
   doors are explicit and fail-closed: a future custody channel with different
@@ -447,6 +474,49 @@ constraints until the verifiers it cares about conform.
   custody channel — the exact shape self-logins already have, plus the
   qualifier.
 
+  **The `requester` kind: who may ask.** Some grants are exercised not by the
+  grantee's own key possession alone but *through the grantor's* **wallet** —
+  the party holding the user's keys and signing on the user's behalf (in the
+  reference deployment, the broker-origin signer surface backed by the
+  browser keystore; equally a hosted or CLI wallet). A `requester` entry
+  says: only honor requests that arrive from this source. The wallet MUST
+  authenticate the source to its own satisfaction before honoring a request —
+  for a website, the browser-verified origin of the request message, which
+  page JS cannot forge; a web origin is the only requester source specced.
+  Only the wallet witnesses the ask, so the wallet is the enforcement point
+  (§6.6 invariant 9); it additionally stamps the origin into each fresh
+  assertion (`req_origin`) so conforming verifiers re-check the same fact
+  downstream (invariant 13). The rule lives in the signed record rather than
+  wallet-local storage so a wallet bookkeeping bug cannot cross grants — each
+  record carries its own answer to "may this site ask?" — and so the user's
+  account ledger shows exactly what was authorized.
+
+  *Honesty tier, stated plainly.* The stamp is as honest as the stamper.
+  WebAuthn's stamper is the browser itself; a JS wallet's is code on the
+  wallet origin — strong against page JS, but a compromised wallet origin
+  could lie. No new trust is introduced (that origin already holds the keys);
+  the gain is that honest-but-buggy dispatch becomes downstream-detectable
+  and every signature carries a signed audit trail of who asked. Stronger
+  wallet honesty is a certification / hardware-attestation matter, open to a
+  future hardware-backed wallet, out of reach for a JS one.
+
+  **Multi-entry sets are self-grant-only.** On a delegated record (grantor ≠
+  grantee) the binding set MUST be exactly one `holder` entry — v1 channel
+  semantics verbatim. Nothing is *incoherent* about richer sets on delegated
+  records; each known combination is one specific unsolved problem, so each
+  stays a labeled door: **(1)** a `requester` entry on a delegated grant
+  inverts the enforcement point — the rule would be enforced by the
+  *grantee's* wallet, the constrained party policing itself and
+  self-attesting the stamp (same syntax, much weaker meaning); **(2)** a
+  `connection` entry on a grantor-signed record is unconstructible in one
+  ceremony — `binding.id` is minted at the grantee's consent, after the
+  grantor signed; a host *matcher* ("via claude.ai, any connection") avoids
+  the id problem and is enforceable by the resource, and this field is its
+  natural home when that is designed; **(3)** the composition rules (§6.5) do
+  not yet say how channel entries on a policy record conjoin with the
+  connection record's own set. All three are design work, not prohibitions;
+  until done, fail closed.
+
   **Grantee matchers (admission only).** An admission-consumed record MAY
   carry a grantee matcher: `*@<domain>` (anyone at the domain) or `*` (any
   authenticated email) — policy rows such as "everyone at my company gets the
@@ -468,6 +538,64 @@ constraints until the verifiers it cares about conform.
   form. A `*@<domain>` matcher compares `<domain>` under the same rule
   against the subject's entire domain part — subdomains do not match — and
   covers any local part, subaddressed (§4.6) ones included.
+
+  **Scope entries & parameters.** Three rules: **(1)** everywhere the system
+  treats scopes as identifiers — constraint checks (§4.7, §6.1 step 7), scope
+  intersection (§6.5's S ∩ S′) — an entry's identity is its scope *string*;
+  parameters ride along. **(2)** Parameters are **attenuations** with a
+  defined stricter-wins order; a consumer MUST refuse an entry carrying a
+  parameter it does not implement (§6.6 invariant 14). **(3)** `mode` is the
+  first parameter, defined on `sign:` scopes: `"prompt"` makes the wallet
+  render the object to be signed in its own UI and wait for approval before
+  signing; absent ⇒ `"auto"` — the grant's baseline is standing silent
+  authority, prompt is the explicit tightening (`prompt` > `auto`).
+  Wallet-local overrides may only tighten, never loosen. Future parameters
+  (counts, rate caps — stateful, wallet-enforced) enter as new object keys,
+  never new claims. Mode's threat model, flatly: it constrains a bad
+  *requester*, not a bad *wallet* — a dishonest wallet holds the keys and no
+  mode bit binds it, the same position as WebAuthn's user-presence flag,
+  where verifiers trust the authenticator's word (see the honesty tier
+  above).
+
+  **The `sign:` scope namespace.** `sign:<kind>` scopes — disjoint from
+  resource scopes — name **what a wallet may be asked to sign**: the scope
+  determines what the wallet will sign, the consent-card verb, and the
+  payload discipline — a typed object destined for the warrant's audience,
+  never a bare hash or arbitrary blob. The current vocabulary is
+  `sign:sbo:<action>` (typed SBO envelopes by action, e.g. `sign:sbo:post`,
+  `sign:sbo:delete`); extending it is deferred until another instance is
+  real.
+
+  **Signing grants.** A **signing grant** is the record type the two
+  generalizations above exist for: a self-grant with an exact grantee, the
+  channel set {`holder`, `requester`}, one exact audience, and `sign:` scopes
+  — "*this website* may submit objects of *this kind* to be signed as me,
+  for *this audience*." It is authored only in a consent ceremony (§6.6
+  invariant 11, ceremony in §7.5), registered like any other warrant (status
+  index, account ledger row), and **stored at the wallet**, which is the
+  enforcement point: every incoming request either matches a stored record —
+  channel set, `grantee`, `audience`, and `sign:` scope, honoring the scope
+  entry's parameters — or is refused (invariant 9). Per use the wallet mints
+  a fresh access cert and assertion (with `req_origin` stamped) and presents
+  them with the *stored* warrant — by the kind × operation table a signing
+  grant operates in op P only. One record per (requester, audience) pair
+  keeps revocation per-site and per-audience. Auto-mode scopes are standing
+  authority — the site submits objects of that kind silently and repeatedly;
+  the consent card MUST say so in its verb, counterweighted by the scope
+  constraint, the pinned audience, the ledger row, the revocation bit, and
+  prompt mode for scopes that warrant it.
+
+  ```json
+  { "typ": "browserid-warrant-v2",
+    "iat": 1756100000, "exp": 1763876000,
+    "grantor": "dan@example.com",
+    "grantee": "dan@example.com",
+    "binding": [ { "kind": "holder",    "matcher": "<this device's holder>" },
+                 { "kind": "requester", "origin": "https://mingo.example" } ],
+    "audience": "sbo+raw://avail:turing:506/",
+    "scopes": ["sign:sbo:post", { "scope": "sign:sbo:delete", "mode": "prompt" }],
+    "status": { "uri": "https://browserid.me/.well-known/browserid-status", "idx": 171 } }
+  ```
 
   **`status` is REQUIRED** on v2 records. In v1 it is optional because a
   leaked warrant is inert without the grantee's key; a connection-bound record
@@ -519,9 +647,11 @@ constraints until the verifiers it cares about conform.
 
   The auth cert is **never** presented. A verifier MUST reject
   a bundle that is not exactly these four objects, in this order — the parse is
-  fail-closed. Only a warrant with a `holder` binding **and** an exact
-  (non-matcher) grantee can ever verify in a bundle (§6.1, §6.6 invariant 1);
-  a `connection`-bound record is admission-only and never presents.
+  fail-closed. Only a warrant whose channel set is satisfiable
+  in operation P — a `holder` entry, no `connection` entry, any `requester`
+  entry matched by the assertion's `req_origin` stamp — **and** whose grantee
+  is exact (non-matcher) can ever verify in a bundle (§6.1, §6.6 invariants 1
+  and 13); a `connection`-bound record is admission-only and never presents.
 
 ## 6. Verification
 
@@ -557,11 +687,14 @@ config-cert / grantor) may differ.
    config_cert` (§5). Reject any other shape, and any object bearing an
    unrecognized `typ` or `purpose` — fail-closed. The warrant is
    `browserid-warrant-v2`, or v1 interpreted as its holder-binding sugar (§5).
-   A v2 warrant missing `binding` or `status`, or whose binding `kind` is
-   unimplemented, ⇒ reject. **Presentation requires a `holder` binding and an
-   exact grantee:** a `connection`-bound or matcher-grantee record MUST NOT
-   verify in a bundle — mechanically it carries no holder matcher or no exact
-   join for step 6, and the verifier MUST also reject it explicitly here.
+   A v2 warrant missing `binding` or `status`, with an empty binding set, or
+   with any binding entry whose `kind` is unimplemented, ⇒ reject (§5).
+   **Presentation requires a channel set satisfiable in op P and an exact
+   grantee:** the set MUST contain a `holder` entry and MUST NOT contain a
+   `connection` entry (unsatisfiable in P, §5's kind × operation table); a
+   matcher-grantee record MUST NOT verify in a bundle — mechanically it
+   carries no exact join for step 6, and the verifier MUST also reject it
+   explicitly here.
 2. **Per-identity issuer authority.** Resolve `access_cert.iss` and
    `config_cert.iss` **via the authenticated DNSSEC record** (§3) — one resolution
    if they are equal, otherwise two. The verifier MUST require each issuer to be
@@ -580,9 +713,11 @@ config-cert / grantor) may differ.
 6. Verify the **warrant** under the config cert's `public-key`; check it is
    unexpired and that the join holds: `warrant.grantee == access_cert.identity`
    (exact, per §5's identity comparison — a grantee matcher never satisfies
-   this join), the holder matcher
-   (v2 `binding.matcher`; v1 `holder`) covers `access_cert.holder`, and
-   `warrant.audience` == the RP audience.
+   this join), **every** binding entry evaluates satisfied per §5's kind ×
+   operation table — the holder matcher (the v2 `holder` entry; v1 `holder`
+   claim) covers `access_cert.holder`; a `requester` entry requires the
+   assertion's `req_origin` to be present and equal to its `origin`
+   (invariant 13) — and `warrant.audience` == the RP audience.
 7. **Enforce constraints** (§4.7). For each presented cert carrying a
    `constraints` claim (access cert, config cert), check the presentation
    satisfies it: the RP audience against `aud` (by salted hash), the warrant
@@ -687,15 +822,17 @@ matched against. Three steps, each fail-closed:
 
 1. **Validate the record** (on acquisition; status re-checked per use, below):
    a. parse; `typ` is `browserid-warrant-v2` (or v1, as a holder-binding
-      record, §5); a single `binding` of an implemented kind (and, for
-      `connection`, an implemented `protocol`); `status` present (v2);
+      record, §5); a non-empty `binding` set, every entry of an implemented
+      kind (and, for `connection`, an implemented `protocol`); `status`
+      present (v2);
    b. resolve `config_cert.iss` **via the authenticated DNSSEC record** (§3);
       require it authoritative for the grantor's domain (§8.1 fallbacks apply
       as in §6.1 step 2); verify the config cert (unexpired, `purpose ==
       authorization`, `identities` cover `warrant.grantor`);
    c. verify the warrant under the config cert's `public-key`; unexpired;
-      `audience` == this resource (exact); if the binding is a `connection`,
-      `grantor == grantee` (§5);
+      `audience` == this resource (exact); if the binding set contains a
+      `connection` entry, or has more than one entry, `grantor == grantee`
+      (§5, §6.6 invariants 4 and 10);
    d. enforce config-cert constraints (§4.7) in full, exactly as §6.1
       step 7: this resource's audience (== `warrant.audience`, step 1c)
       against `aud` (by salted hash), and the warrant against `scopes` and
@@ -709,14 +846,17 @@ matched against. Three steps, each fail-closed:
    mechanics, §5), or a browserid login (`holder`). The authenticated
    artifact is the subject's **own** credential — it may itself be a
    presentation (a §7.3 login bundle) — never the held record.
-3. **Match** the subject against grantee + binding:
+3. **Match** the subject against grantee + every binding entry (per §5's
+   kind × operation table — entries are conjunctive):
    - `connection`: the authenticated dance is the one bound to `binding.id`
      (the 1:1 rule, §6.6 invariant 5) and satisfies the `protocol`'s
      normative checks (§5 — for `"oauth"`: exact-match registered redirect
      URI whose host equals `binding.client_host`, PKCE S256);
    - `holder`: the login's identity matches `grantee` (exact per §5's
      identity comparison, or per a grantee matcher — permission only, never
-     attribution, §5) AND the holder matcher covers the login's holder.
+     attribution, §5) AND the holder matcher covers the login's holder;
+   - `requester`: unsatisfiable in operation A (§5's table) — a set
+     containing one fails the match.
 
    A matching step that cannot be evaluated (an unknown binding; a non-`*`
    matcher against a holder-less authentication) MUST fail closed; `*`
@@ -842,16 +982,19 @@ config-row policy and record policy answer the same admission question.
 
 A conforming implementation MUST uphold all of these:
 
-1. Operation P requires a `holder` binding AND an exact (non-matcher)
-   grantee; a `connection`-bound or matcher-grantee record MUST NOT verify in
-   a four-object bundle. (Mechanically guaranteed — no holder matcher ⇒ §6.1
+1. Operation P requires a `holder` entry, no `connection` entry (§5's kind ×
+   operation table), AND an exact (non-matcher) grantee; a
+   `connection`-bound or matcher-grantee record MUST NOT verify in a
+   four-object bundle. (Mechanically guaranteed — no holder matcher ⇒ §6.1
    step 6 cannot pass — and stated explicitly at §6.1 step 1.)
 2. Conforming v1 verifiers already reject v2 objects (unknown `typ` ⇒ reject,
    §6.1 step 1): downgrade protection at every deployed verifier is by
    explicit rule.
-3. A v2 record without `status`, without a `binding` object, or with an
-   unimplemented binding `kind` (or connection `protocol`) MUST be rejected.
-   Signing surfaces MUST refuse to mint such records.
+3. A v2 record without `status`, without a non-empty `binding` set, or with
+   any binding entry of an unimplemented `kind` (or connection `protocol`)
+   MUST be rejected. Signing surfaces MUST refuse to mint such records, and
+   likewise any record whose channel set satisfies no operation (§5, dead
+   paper).
 4. A `connection`-bound record MUST be a self-grant (`grantor == grantee`).
 5. **`binding.id` is 1:1 with its record:** the id is minted by the broker in
    one consent flow and bound to the record signed in that same flow; the
@@ -867,6 +1010,38 @@ A conforming implementation MUST uphold all of these:
 8. Record validation authenticates no one. Only presentation (P) or the
    binding's subject authentication (A step 2) establishes an acting party.
    Bindings are never identities and appear nowhere identities live.
+9. A **wallet** (§5) MUST NOT sign for an external request except under a
+   stored, valid, unrevoked record whose channel set, `grantee`, `audience`,
+   and `sign:` scope all cover the request, honoring the scope entry's
+   parameters. No covering record, an unevaluable check, an unclassifiable
+   object, or a prompt-mode scope on a wallet with no interactive surface ⇒
+   refuse.
+10. A signing grant is a self-grant (`grantor == grantee`) with an exact
+    grantee and the channel set {`holder`, `requester`} — by §5's kind ×
+    operation table it operates in op P only. A delegated record (grantor ≠
+    grantee) MUST carry exactly one `holder` entry: multi-entry sets are
+    self-grant-only (the labeled doors, §5).
+11. Wallets MUST NOT author warrants without a **consent ceremony** — the
+    standing grant card and a per-request approval are both ceremonies;
+    signing on the say-so of a message alone is never one. A request can
+    only match an existing record or trigger a ceremony.
+12. A `sign:`-scoped record is never reusable as any other grant type, and
+    vice versa. (Often also blocked mechanically — an SBO grant's audience
+    is a ref no login verifier accepts — but the rule is stated, not
+    inferred.)
+13. A presentation under a record carrying a `requester` entry MUST have the
+    requesting channel stamped in its assertion (`req_origin`); conforming
+    verifiers MUST match the stamp against the entry, fail-closed.
+14. **Unknown means reject.** A consumer of set-form records — any record
+    whose `binding` is an array or whose `scopes` carry object entries —
+    MUST reject one carrying a claim, channel kind, or scope parameter it
+    does not implement. Adding one is therefore a versioned change — a new
+    `typ`, a new shape old parsers reject (the binding array itself), or a
+    capability the consumer explicitly advertises — never a silent addition.
+    Consequence: a restriction the signer believes in can never be ignored
+    by a deployed consumer. (For these records this deliberately supersedes
+    the working assumption that verifiers ignore unknown claims — §5
+    "Bindings".)
 
 ## 7. Issuance & obtaining credentials
 
@@ -1136,6 +1311,23 @@ The wire shape mirrors the connection flow:
 
 A policy edit is revoke-old + sign-new in one ceremony; roles remain a
 resource-side abstraction — the protocol sees only flat records.
+
+**Signing grants (wallet ceremony).** A signing grant (§5) is authored where
+the wallet is: the requesting site opens the user's wallet surface (in the
+reference deployment, the broker login dialog) declaring the audience(s) and
+`sign:` scopes it asks for, and after sign-in the wallet renders the standard
+consent card — verified requesting origin, identity, audience, and a verb
+per scope, prompt-mode scopes called out. Approval signs one record per
+(requester, audience) with the config cert, registers it (status index,
+account ledger row), and stores it at the wallet; the `requester` origin in
+the record is the one the wallet itself authenticated, never a declared
+value. No audience proof is required (contrast the connection flow): the
+request arrives through a surface the requesting site itself opened, so the
+browser-verified origin authenticates the requester, and the record is a
+self-grant — a forged request buys only consent spam, the same bounded
+stakes as above. Where config keys are device-resident, each device signs
+its own record on first use — one card per device, the posture holder
+channels already impose.
 
 The consent page is the trust boundary against consent-phishing: it MUST render the
 verified target origin (not only a friendly name), and approval MUST be deliberate.

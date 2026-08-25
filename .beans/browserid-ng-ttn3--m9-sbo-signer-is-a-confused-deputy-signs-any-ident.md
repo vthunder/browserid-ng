@@ -5,13 +5,12 @@ status: in-progress
 type: bug
 priority: normal
 created_at: 2026-07-28T23:54:23Z
-updated_at: 2026-08-25T10:11:25Z
+updated_at: 2026-08-25T10:36:14Z
 parent: browserid-ng-wre6
 ---
 
 docs/security-audit-2026-07-29.md (M9). sbo-signer.js:186 gates only on a per-origin boolean; d.email/d.audience opener-supplied + unchecked; popup holds device certs for ALL identities. Granted origin signs as any identity/audience, unlimited.
-- [ ] Scope grant to a specific identity + audience
-- [ ] Require per-request/per-identity consent
+(Fix tracked via the phased checklist at the bottom of this bean.)
 
 ## Re-verification 2026-08-17 — STILL VALID, unchanged in substance
 
@@ -48,12 +47,7 @@ user's own custodian. Silent login and agent assertion pulls are future
 instances of the same primitive.
 
 - [x] Design note review (Dan) — signed off 2026-08-25 after 5 rounds
-- [ ] Spec text: requester claim + sign: scopes with inline parameters (mode) + assertion req_origin + wallet invariants 9-14 (incl. unknown-claims-fail-closed)
-- [ ] Dialog: standard-card consent variant, sign+register+store record, RP declares audience
-- [ ] Popup: stored-record lookup, delete warrant fabrication (sbo-signer.js:147-151)
-- [ ] /account rendering + revocation; make the consent copy true
-- [ ] mingo: pass audience with sboSign, handle not-covered error
-- [ ] Audit SBO callers actually check the warrant status ref
+(Work items restructured into the phased implementation plan at the bottom of this bean, 2026-08-25.)
 
 ## Design update (2026-08-25) — supersedes the record-shape wording above
 
@@ -77,3 +71,22 @@ Do this in a fresh session. Read first:
 3. This bean's unchecked work items (the component-impact table in the note §6 is the implementation surface)
 
 Not part of this bean but adjacent: rjmm carries the 'binding set amendment' note that must fold into the v2 spec PR when it lands; beans eodu/0ijs are deferred language extensions, out of scope.
+
+## Implementation plan (2026-08-25) — docs/plans/2026-08-25-signing-grants-implementation-plan.md
+
+The plan doc is authoritative for details, file:line targets, and the per-phase
+checklists; the phases here mirror it. Two survey findings baked into the
+ordering: (1) NO SBO caller checks the warrant status refs today (sbo-daemon
+drops them — revocation is currently a no-op network-wide), and (2) sbo-core's
+scopes_authorize fails closed on unknown scope dimensions, so the daemon must
+understand sign:sbo:* BEFORE the broker starts presenting the new records —
+phase 2 deploys before phase 3.
+
+- [x] Code survey: broker consent machinery, spec/Rust verification path, mingo/sbo caller side (2026-08-25)
+- [x] Implementation plan written (docs/plans/2026-08-25-signing-grants-implementation-plan.md)
+- [ ] Phase 0 — spec amendment PR: binding set + kind×op table + requester kind + scope entries/mode + req_origin + invariants 9-14 in docs/specs/browserid-ng-protocol.md (this IS rjmm's pending binding-set amendment — note it there when landed). DRAFTED 2026-08-25, uncommitted, awaiting Dan's review before phases 1+
+- [ ] Phase 1 — browserid-core: BindingSet (singular shorthand, unknown-kind reject, self-grant-only multi-entry), Requester kind, ScopeEntry, assertion req_origin, full-set op P/A evaluation; compile-fix registrar/broker match sites; tests + v2 test-vectors
+- [ ] Phase 2 — SBO side (deploy FIRST): sbo-core browserid-core bump + sign:sbo:* in scopes_authorize; sbo-daemon status-ref checking fail-closed; mingo rev bump + daemon deploy
+- [ ] Phase 3 — broker: shared warrant-mint module, sboSign object param, standard consent card minting+registering+storing the record, sbo-signer.js stored-record dispatch (delete fabrication, req_origin stamp, prompt mode, grant-info, error vocab), /account rows + revoke, wipe sbo_sign_granted booleans
+- [ ] Phase 4 — mingo web: declare audiences/scopes at consent, handle not_granted/prompt_declined/scope_not_granted, grant-info rendering
+- [ ] Phase 5 — Playwright e2e for the full consent→sign→revoke path (none exists today), smoke test, ordered deploys, M9 closure re-verification, flip use-cases doc to live
