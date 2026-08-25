@@ -1,11 +1,11 @@
 ---
 # browserid-ng-wre6
 title: 'Security audit: browserid-ng (production, browserid.me)'
-status: in-progress
+status: completed
 type: epic
 priority: high
 created_at: 2026-07-28T23:40:19Z
-updated_at: 2026-08-25T15:14:32Z
+updated_at: 2026-08-25T19:04:51Z
 ---
 
 Full adversarial security audit of the browserid-ng identity protocol and hosted broker, treating browserid.me as live production. Six workstreams: (1) verification-core proofs, (2) credential issuance & minting, (3) account lifecycle & auth, (4) network-facing input & DoS, (5) client key custody (SDKs), (6) dependency & secrets hygiene. Each candidate finding is confirmed or refuted by an independent adversarial reviewer (no PoCs required). Deliverables: a written security-audit report (docs/) and one child bean per confirmed finding.
@@ -45,3 +45,11 @@ Report updated: docs/security-audit-2026-07-29.md (Remediation status section).
 ## Remediation complete except ttn3 sign-off (2026-08-25)
 
 Every audit finding is now closed: C1/H1/H2/M3/M5/M8 + lows batch part 1 (2026-07-29), M7 two-phase (2026-08-20), M1 (2026-08-19), M2, M6, M9 structurally (ttn3, signing grants — open only for Dan's interactive testing + spec editing pass), M4 fully (qtl7 incl. negative caching, 2026-08-25), and v1ia's remaining lows L1/L3/L5/L6/L9/L10/L11/zeroize (2026-08-25). This bean can complete when ttn3 does.
+
+## Keyless support-document sweep (2026-08-25, Dan-directed, zexp/0p5f lineage)
+
+All five live origins now serve keyless /.well-known/browserid (broker + hosted-idp already did; sandmill PHP, mingo-idp, bsky bridge fixed + deployed + verified). browserid-core's SupportDocument::new() is keyless by construction; the DNSSEC resolver attaches keys via with_discovered_key(); the broker's localhost-only dev exception is now the single place any codebase puts a key on the wire. Consumer sweep found TWO real TLS-key-trusting verifiers, both in the bsky bridge (startup broker-key fetch — surfaced as a deploy panic — and fetch_well_known_key backing four /verify paths); both now resolve via the _browserid DNSSEC record over DoT. Broker discovery pipeline confirmed already DNS-overridden; rp, SDKs, and client JS clean.
+
+## Summary of Changes — audit CLOSED (2026-08-25, Dan's sign-off)
+
+All 24 findings remediated, deployed, and verified: C1 + H1 + H2 + M3/M5/M8 + five lows in the 2026-07-29 pass; M7 in two phases (2026-08-20); M1 mint chokepoint (2026-08-19); M2 allowAgent removal; M6 rate limiting; M4 fully incl. negative caching (2026-08-25); the lows batch L1/L3/L5/L6/L9/L10/L11 + zeroize (2026-08-25); and M9 structurally via signing grants — consent-minted revocable records, wallet-side per-sign revocation checks (authoritative, no TTL on the broker origin), daemon submit-gate status checks, end-to-end revoke/re-consent loop verified interactively by Dan. Follow-on hardening the M9 work surfaced (keyless support documents everywhere, DNSSEC-rooted status verification, replay-deterministic clocks) landed the same day. Bean ttn3 stays open only for post-audit signing-grants polish (spec editorial pass), not for any audit finding.

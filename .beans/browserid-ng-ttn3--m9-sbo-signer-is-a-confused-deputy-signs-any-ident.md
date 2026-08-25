@@ -5,7 +5,7 @@ status: in-progress
 type: bug
 priority: normal
 created_at: 2026-07-28T23:54:23Z
-updated_at: 2026-08-25T12:00:23Z
+updated_at: 2026-08-25T18:47:41Z
 parent: browserid-ng-wre6
 ---
 
@@ -95,3 +95,7 @@ phase 2 deploys before phase 3.
 ## Summary of Changes (2026-08-25, phases 0-5 shipped)
 
 M9 is closed structurally: the popup can no longer author warrants — the fabrication block is gone and every request must match a stored, consent-minted signing-grant record on (origin, email, audience, action, device holder), with req_origin stamped into each assertion and re-verified in browserid-core. Revocation is now real end to end: /account Revoke flips the registrar bit AND the sbo-daemon checks all three status refs fail-closed at its submit gate (new status.rs; deliberately submission-time-only so replay stays deterministic — previously NO SBO caller checked them at all). Commits: browserid-ng c8e8964 (spec) + 73d4625 (core) + 73831d8 (broker/e2e); sbo cf6df3f; mingo 3d0561a-ish pin bump + b3f0ece (web). Known deferrals recorded in the phase checklist (cross-language v2 vectors, consent.html mint-module dedup, grant-info UI).
+
+## M9 interactive testing fallout (2026-08-25, Dan) — all fixed same-day
+
+Testing surfaced four real issues, none in the signing-grant mechanism itself: (1) hosted-IdP mint CORS regression from the L9 rescope (fixed, cors_surface_test pins it — in v1ia); (2) daemon status gate keyed on support-doc keys → reworked to DNSSEC (sbo 594c2ac), which then led to the full keyless-support-doc sweep across 5 origins; (3) on-chain DNSSEC evidence for browserid.me had lapsed → daemon now live-captures a proof when the chain copy is stale (sbo 4a2b056); (4) Dan's delete routed via the mingo POSTER whose stored bundle carried a long-revoked config cert — the new revocation gate caught genuinely revoked paper in active use; poster now self-disables on revocation + client falls back to the signing grant + the off-switch is honored per-browser (mingo b3f0ece..latest). End state verified by Dan: silent post works, prompted delete works. Remaining: revoke-path test + spec editing pass.
