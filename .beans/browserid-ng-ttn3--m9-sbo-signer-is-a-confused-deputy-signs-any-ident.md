@@ -5,7 +5,7 @@ status: in-progress
 type: bug
 priority: normal
 created_at: 2026-07-28T23:54:23Z
-updated_at: 2026-08-25T09:21:27Z
+updated_at: 2026-08-25T10:11:25Z
 parent: browserid-ng-wre6
 ---
 
@@ -47,7 +47,7 @@ initiate* — they coincide for OAuth connections, split when the actor is the
 user's own custodian. Silent login and agent assertion pulls are future
 instances of the same primitive.
 
-- [ ] Design note review (Dan)
+- [x] Design note review (Dan) — signed off 2026-08-25 after 5 rounds
 - [ ] Spec text: requester claim + sign: scopes with inline parameters (mode) + assertion req_origin + wallet invariants 9-14 (incl. unknown-claims-fail-closed)
 - [ ] Dialog: standard-card consent variant, sign+register+store record, RP declares audience
 - [ ] Popup: stored-record lookup, delete warrant fabrication (sbo-signer.js:147-151)
@@ -68,3 +68,12 @@ self-grant-only; delegated records keep exactly one holder entry (three
 labeled doors in the note §3). Scope modes are inline scope-entry
 parameters. The note (docs/plans/2026-08-22-signing-grants-design.md) is the
 source of truth; earlier wording in this bean is historical.
+
+## Handoff (2026-08-25): design COMPLETE, next step is an implementation plan
+
+Do this in a fresh session. Read first:
+1. docs/plans/2026-08-22-signing-grants-design.md — the design, source of truth (final at commit 95f4f45)
+2. docs/warrant-use-cases.md — context: where signing grants sit among the five warrant use cases
+3. This bean's unchecked work items (the component-impact table in the note §6 is the implementation surface)
+
+Not part of this bean but adjacent: rjmm carries the 'binding set amendment' note that must fold into the v2 spec PR when it lands; beans eodu/0ijs are deferred language extensions, out of scope.
