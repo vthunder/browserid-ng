@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-13T18:10:47Z
-updated_at: 2026-08-15T07:22:09Z
+updated_at: 2026-08-21T22:31:39Z
 ---
 
 From the Lane B design review with Dan (2026-08-13, after the mcp-demo connector E2E):
@@ -83,3 +83,14 @@ Deferred follow-ups: per-mint status-snapshot retention (§6.4 SHOULD, needs /va
 ## Post-test design round (2026-08-15, gate 0.7.1→0.9.0)
 
 From Dan's live testing: signing banner bugs fixed (stale cache; banner only on Roles tab while sharing happens on People tab → moved into the header sync pill/popover); connect flow made identity-visible (interstitial 'Continue as X / switch' — a live gate session never silently bounces; switch clears the member session). Trust discussion outcome: signed policy records do NOT constrain a hostile enforcement point (irreducible for hosted resources) — their value is provenance integrity, honest-but-sloppy containment, unilateral owner revocation, and the door to verification moving down the stack. Decision: enforcement source is a deployment property — LOCAL roles default for self-hosted, --signed-grants sticky opt-in (gate 0.9.0). Two-tier future direction captured in its own draft bean. npm: mcp-auth 0.5.0 published; gate 0.9.0 awaiting Dan's OTP publish.
+
+## Sibling design (2026-08-22)
+
+The SBO signer fix (bean ttn3, audit M9) generalized into **signing grants** —
+docs/plans/2026-08-22-signing-grants-design.md — the presentation-side mirror
+of connection records: same consent card / registry / ledger / status-bit
+machinery, record parked at the user's key custodian instead of the resource.
+Adds a `requester` sibling claim to the v2 record (custodian-enforced, like
+the client binding's PKCE-enforced precedent) and a `sign:` scope namespace.
+No change to operations P/A. If the v2 spec PR (phase 1 here) lands first,
+the signing-grant spec text should ride as a small addition to it.
