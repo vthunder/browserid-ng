@@ -138,9 +138,27 @@ where
                 .allow_headers([header::CONTENT_TYPE, header::ACCEPT]),
         );
 
+    // The hosted-primary IdP's tenant surface lives on a DIFFERENT origin
+    // (idp.<broker-domain>): a login dialog — ours on the broker origin, or
+    // any foreign broker's — calls the headless access-cert mint cross-origin
+    // with credentials omitted (auth is the signed device-cert + access-
+    // request payload). It must answer CORS or every tenant-identity sign-in
+    // dies with "Failed to fetch" (the L9 rescope regression, 2026-08-25).
+    // The rest of /idp/* is same-origin from the device-authorize page and
+    // stays closed.
+    let idp_cors_routes = Router::new()
+        .route("/idp/access_cert", post(hosted_idp::idp_access_cert))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(tower_http::cors::Any)
+                .allow_methods([Method::POST, Method::OPTIONS])
+                .allow_headers([header::CONTENT_TYPE, header::ACCEPT]),
+        );
+
     let mut app = Router::new()
         .merge(fedcm_routes)
         .merge(public_cors_routes)
+        .merge(idp_cors_routes)
         .route("/wsapi/session_context", get(session::get_session_context))
         // Admin seed provisioning (ADMIN_TOKEN-gated; for @mingo.place demo accounts)
         .route("/admin/create_account", post(account::admin_create_account))
@@ -223,7 +241,6 @@ where
         .route("/idp/whoami", get(hosted_idp::idp_whoami))
         .route("/idp/password", post(hosted_idp::idp_password))
         .route("/idp/device_cert", post(hosted_idp::idp_device_cert))
-        .route("/idp/access_cert", post(hosted_idp::idp_access_cert))
         .route_service(
             "/idp/device-authorize",
             ServeFile::new(format!("{}/idp/device-authorize.html", static_path)),
