@@ -5,7 +5,7 @@ status: in-progress
 type: bug
 priority: normal
 created_at: 2026-07-28T23:54:23Z
-updated_at: 2026-08-24T19:33:59Z
+updated_at: 2026-08-25T09:21:27Z
 parent: browserid-ng-wre6
 ---
 
@@ -54,3 +54,17 @@ instances of the same primitive.
 - [ ] /account rendering + revocation; make the consent copy true
 - [ ] mingo: pass audience with sboSign, handle not-covered error
 - [ ] Audit SBO callers actually check the warrant status ref
+
+## Design update (2026-08-25) — supersedes the record-shape wording above
+
+Review round 5 unified the channel concepts: there is no separate requester
+claim. The v2 `binding` claim now holds a SET of channel entries (singular
+object = shorthand for one entry, so deployed records are unchanged); the
+signing grant's set is {holder, requester}. Entries are conjunctive; each
+kind has a defined evaluation per operation (unsatisfiable cells fail that
+op) — this table replaces the old 'connection not presentable' / 'requester
+not admittable' special-case invariants. Multi-entry sets are
+self-grant-only; delegated records keep exactly one holder entry (three
+labeled doors in the note §3). Scope modes are inline scope-entry
+parameters. The note (docs/plans/2026-08-22-signing-grants-design.md) is the
+source of truth; earlier wording in this bean is historical.

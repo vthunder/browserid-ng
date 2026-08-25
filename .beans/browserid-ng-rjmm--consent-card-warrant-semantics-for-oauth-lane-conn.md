@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-13T18:10:47Z
-updated_at: 2026-08-21T22:31:39Z
+updated_at: 2026-08-25T09:21:31Z
 ---
 
 From the Lane B design review with Dan (2026-08-13, after the mcp-demo connector E2E):
@@ -94,3 +94,16 @@ Adds a `requester` sibling claim to the v2 record (custodian-enforced, like
 the client binding's PKCE-enforced precedent) and a `sign:` scope namespace.
 No change to operations P/A. If the v2 spec PR (phase 1 here) lands first,
 the signing-grant spec text should ride as a small addition to it.
+
+## Sibling-design update (2026-08-25)
+
+The signing-grants note now AMENDS this design's 'exactly one binding is
+structural' invariant: `binding` holds a set of channel entries, singular
+object remains valid shorthand (deployed connection/authoring records are
+byte-unchanged; pre-amendment verifiers reject the array shape, fail-closed).
+Entries are conjunctive with a kind × operation evaluation table; the
+signing grant's set is {holder, requester}. Multi-entry sets are
+self-grant-only — the delegated combinations (requester-on-agent-grant,
+connection-on-policy-record / §3.4 host constraints) stay labeled doors.
+When the v2 spec PR lands, fold this amendment in. Source of truth:
+docs/plans/2026-08-22-signing-grants-design.md §3.

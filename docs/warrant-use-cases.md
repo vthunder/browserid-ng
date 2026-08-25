@@ -9,7 +9,11 @@ fills the remaining claims:
 
 > **I authorize [who] to [do what] as/with [identity], at/for [where].**
 
-Five use cases exist today (four live, one proposed).
+The `binding` claim holds a set of authenticated-channel entries, all of
+which must check out (a singular object is shorthand for a one-entry set —
+the form all deployed records use; see the signing-grants note §3 for the
+kind × operation table). Five use cases exist today (four live, one
+proposed).
 
 ---
 
@@ -91,9 +95,10 @@ comes from their own login).
 ## 5. Signing grant *(proposed — `2026-08-22-signing-grants-design.md`, v2)*
 
 Stored at the user's wallet; the wallet refuses any signing request not
-covered by a stored record. Presented per use with a fresh access cert. One
-claim beyond the common set — `requester` (which channel may ask) — plus
-parameterized scope entries (`mode`: silent vs prompted, per scope).
+covered by a stored record. Presented per use with a fresh access cert. Its
+binding is a two-entry channel set — the signing device (`holder`) and the
+site allowed to ask (`requester`) — and scope entries carry parameters
+(`mode`: silent vs prompted, per scope).
 
 > "I authorize **mingo.example** to submit **SBO posts** (silently) and
 > **deletes** (with a prompt) to be signed as **me**, for **database
@@ -102,8 +107,8 @@ parameterized scope entries (`mode`: silent vs prompted, per scope).
 ```json
 { "typ": "browserid-warrant-v2", "iat": …, "exp": …,
   "grantor": "dan@example.com", "grantee": "dan@example.com",
-  "binding": { "kind": "holder", "matcher": "<this device's holder>" },
-  "requester": { "kind": "origin", "origin": "https://mingo.example" },
+  "binding": [ { "kind": "holder",    "matcher": "<this device's holder>" },
+               { "kind": "requester", "origin": "https://mingo.example" } ],
   "audience": "sbo+raw://avail:turing:506/",
   "scopes": ["sign:sbo:post", { "scope": "sign:sbo:delete", "mode": "prompt" }],
   "status": { … } }
@@ -119,7 +124,7 @@ At a glance:
 | 2 | Agent grant | the agent | `holder` (agent's) | anyone verifies presentation |
 | 3 | Connection | self | `binding: connection` | resource holds, admits |
 | 4 | Policy | another person | `binding: holder *` | resource holds, admits |
-| 5 | Signing grant | self | `binding: holder` + `requester`, scope params | wallet holds, then presents |
+| 5 | Signing grant | self | binding set {holder, requester}, scope params | wallet holds, then presents |
 
 ## Known limits (2026-08-24 review)
 
