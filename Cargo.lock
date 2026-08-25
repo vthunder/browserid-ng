@@ -274,6 +274,7 @@ dependencies = [
  "browserid-core",
  "browserid-dnssec",
  "browserid-registrar",
+ "browserid-verifier",
  "chacha20poly1305",
  "chrono",
  "cookie",
@@ -364,6 +365,18 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "browserid-verifier"
+version = "0.1.0"
+dependencies = [
+ "browserid-core",
+ "browserid-dnssec",
+ "reqwest",
+ "serde",
  "thiserror 1.0.69",
  "tokio",
 ]

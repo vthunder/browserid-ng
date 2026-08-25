@@ -256,3 +256,16 @@ impl IntoResponse for BrokerError {
         (status, axum::Json(body)).into_response()
     }
 }
+
+// Discovery errors from the shared verifier crate map onto the broker's
+// existing variants so the HTTP response mapping above applies unchanged.
+impl From<browserid_verifier::VerifierError> for BrokerError {
+    fn from(e: browserid_verifier::VerifierError) -> Self {
+        match e {
+            browserid_verifier::VerifierError::DnssecValidationFailed { domain } => {
+                BrokerError::DnssecValidationFailed { domain }
+            }
+            browserid_verifier::VerifierError::Discovery(msg) => BrokerError::Discovery(msg),
+        }
+    }
+}

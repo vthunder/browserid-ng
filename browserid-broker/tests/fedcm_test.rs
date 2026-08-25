@@ -7,7 +7,7 @@
 mod common;
 
 use axum::http::{HeaderName, HeaderValue};
-use browserid_broker::error::BrokerError;
+use browserid_verifier::VerifierError;
 use browserid_broker::verifier::verify_access_with_dns;
 use browserid_broker::{Discoverer, FallbackResult};
 use browserid_core::discovery::SupportDocument;
@@ -29,7 +29,7 @@ impl Discoverer for BrokerFallback {
     fn discover(
         &self,
         _domain: &str,
-    ) -> impl std::future::Future<Output = Result<FallbackResult, BrokerError>> + Send {
+    ) -> impl std::future::Future<Output = Result<FallbackResult, VerifierError>> + Send {
         let res = Ok(FallbackResult {
             document: SupportDocument::new().with_discovered_key(self.key.clone()),
             authoritative_domain: BROKER.to_string(),

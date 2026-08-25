@@ -1,0 +1,15 @@
+[package]
+name = "browserid-verifier"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The BrowserID-NG verification algorithm: DNSSEC-rooted discovery, presentation/record verification, and fail-closed revocation checks"
+
+[dependencies]
+browserid-core = { path = "../browserid-core" }
+browserid-dnssec = { path = "../browserid-dnssec" }
+reqwest.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

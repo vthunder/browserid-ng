@@ -9,25 +9,28 @@ COPY Cargo.toml Cargo.lock ./
 COPY browserid-core/Cargo.toml browserid-core/
 COPY browserid-dnssec/Cargo.toml browserid-dnssec/
 COPY browserid-registrar/Cargo.toml browserid-registrar/
+COPY browserid-verifier/Cargo.toml browserid-verifier/
 COPY browserid-broker/Cargo.toml browserid-broker/
 COPY browserid-agent/Cargo.toml browserid-agent/
 COPY browserid-rp/Cargo.toml browserid-rp/
 
 # Create dummy source files to cache dependencies
-RUN mkdir -p browserid-core/src browserid-dnssec/src browserid-registrar/src browserid-broker/src browserid-agent/src browserid-rp/src && \
+RUN mkdir -p browserid-core/src browserid-dnssec/src browserid-registrar/src browserid-verifier/src browserid-broker/src browserid-agent/src browserid-rp/src && \
     echo "pub fn dummy() {}" > browserid-core/src/lib.rs && \
     echo "pub fn dummy() {}" > browserid-dnssec/src/lib.rs && \
     echo "pub fn dummy() {}" > browserid-registrar/src/lib.rs && \
+    echo "pub fn dummy() {}" > browserid-verifier/src/lib.rs && \
     echo "pub fn dummy() {}" > browserid-agent/src/lib.rs && \
     echo "pub fn dummy() {}" > browserid-rp/src/lib.rs && \
     echo "fn main() {}" > browserid-broker/src/main.rs && \
     cargo build --release --package browserid-broker && \
-    rm -rf browserid-core/src browserid-dnssec/src browserid-registrar/src browserid-broker/src browserid-agent/src browserid-rp/src
+    rm -rf browserid-core/src browserid-dnssec/src browserid-registrar/src browserid-verifier/src browserid-broker/src browserid-agent/src browserid-rp/src
 
 # Copy actual source code
 COPY browserid-core/src browserid-core/src
 COPY browserid-dnssec/src browserid-dnssec/src
 COPY browserid-registrar/src browserid-registrar/src
+COPY browserid-verifier/src browserid-verifier/src
 COPY browserid-agent/src browserid-agent/src
 COPY browserid-rp/src browserid-rp/src
 COPY browserid-broker/src browserid-broker/src
@@ -35,7 +38,7 @@ COPY browserid-broker/src browserid-broker/src
 COPY browserid-broker/openapi.json browserid-broker/
 
 # Touch files to invalidate cache and rebuild
-RUN touch browserid-core/src/lib.rs browserid-dnssec/src/lib.rs browserid-registrar/src/lib.rs browserid-agent/src/lib.rs browserid-rp/src/lib.rs browserid-broker/src/main.rs && \
+RUN touch browserid-core/src/lib.rs browserid-dnssec/src/lib.rs browserid-registrar/src/lib.rs browserid-verifier/src/lib.rs browserid-agent/src/lib.rs browserid-rp/src/lib.rs browserid-broker/src/main.rs && \
     cargo build --release --package browserid-broker
 
 # Stage 2: Runtime

@@ -5,6 +5,7 @@ members = [
     "browserid-dnssec",
     "browserid-registrar",
     "browserid-broker",
+    "browserid-verifier",
     "browserid-agent",
     "browserid-rp",
 ]

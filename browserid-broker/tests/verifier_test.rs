@@ -5,7 +5,7 @@
 //! is a primary IdP only if it publishes an authenticated `_browserid` record;
 //! otherwise the only acceptable issuer is the trusted broker.
 
-use browserid_broker::error::BrokerError;
+use browserid_verifier::VerifierError;
 use browserid_broker::fallback_fetcher::{Discoverer, FallbackResult};
 use browserid_core::{discovery::SupportDocument, Assertion, KeyPair, PublicKey};
 use chrono::Duration;
@@ -43,9 +43,9 @@ impl MockDiscoverer {
         self
     }
 
-    fn resolve(&self, domain: &str) -> Result<FallbackResult, BrokerError> {
+    fn resolve(&self, domain: &str) -> Result<FallbackResult, VerifierError> {
         if self.bogus.contains(domain) {
-            return Err(BrokerError::DnssecValidationFailed {
+            return Err(VerifierError::DnssecValidationFailed {
                 domain: domain.to_string(),
             });
         }
@@ -71,7 +71,7 @@ impl Discoverer for MockDiscoverer {
     fn discover(
         &self,
         domain: &str,
-    ) -> impl std::future::Future<Output = Result<FallbackResult, BrokerError>> + Send {
+    ) -> impl std::future::Future<Output = Result<FallbackResult, VerifierError>> + Send {
         let res = self.resolve(domain);
         async move { res }
     }

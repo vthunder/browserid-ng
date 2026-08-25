@@ -1,0 +1,769 @@
+//! Access-presentation verification for BrowserID-NG (device-cert model)
+//!
+//! Provides HTTP-based domain discovery and DNSSEC-rooted verification of the
+//! 4-object `access_cert~assertion~warrant~config_cert` presentation.
+
+use browserid_core::{
+    discovery::{SupportDocument, SupportDocumentFetcher},
+    BindingSet, Error as CoreError, RecordBundle, Result as CoreResult, StatusListToken,
+    StatusRef,
+};
+use reqwest::blocking::Client;
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
+use std::time::Duration;
+
+
+/// HTTP-based support document fetcher
+pub struct HttpFetcher {
+    client: Client,
+    require_https: bool,
+}
+
+impl HttpFetcher {
+    /// Create a new HTTP fetcher
+    pub fn new() -> Self {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("Failed to create HTTP client");
+
+        Self {
+            client,
+            require_https: true,
+        }
+    }
+
+    /// Create a fetcher that allows HTTP (for testing/local development)
+    pub fn allow_http() -> Self {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("Failed to create HTTP client");
+
+        Self {
+            client,
+            require_https: false,
+        }
+    }
+}
+
+impl SupportDocumentFetcher for HttpFetcher {
+    fn fetch(&self, domain: &str) -> CoreResult<SupportDocument> {
+        // Try HTTPS first, then HTTP if allowed
+        let https_url = format!("https://{}/.well-known/browserid", domain);
+        let http_url = format!("http://{}/.well-known/browserid", domain);
+
+        let response = self.client.get(&https_url).send();
+
+        let response = match response {
+            Ok(r) if r.status().is_success() => r,
+            _ if !self.require_https => {
+                // Try HTTP as fallback
+                self.client.get(&http_url).send().map_err(|e| {
+                    CoreError::DiscoveryFailed {
+                        domain: domain.to_string(),
+                        reason: format!("HTTP request failed: {}", e),
+                    }
+                })?
+            }
+            Ok(r) => {
+                return Err(CoreError::DiscoveryFailed {
+                    domain: domain.to_string(),
+                    reason: format!("HTTP error: {}", r.status()),
+                });
+            }
+            Err(e) => {
+                return Err(CoreError::DiscoveryFailed {
+                    domain: domain.to_string(),
+                    reason: format!("HTTPS request failed: {}", e),
+                });
+            }
+        };
+
+        if !response.status().is_success() {
+            return Err(CoreError::DiscoveryFailed {
+                domain: domain.to_string(),
+                reason: format!("HTTP error: {}", response.status()),
+            });
+        }
+
+        let doc: SupportDocument = response.json().map_err(|e| CoreError::DiscoveryFailed {
+            domain: domain.to_string(),
+            reason: format!("Invalid JSON: {}", e),
+        })?;
+
+        Ok(doc)
+    }
+}
+
+// ===========================================================================
+// Device-cert model verification (DC Phase 6) — the 4-object presentation
+// `access_cert ~ assertion ~ warrant ~ config_cert`, DNSSEC-rooted with the
+// SAME primary/fallback conformance as `verify_assertion_with_dns`.
+// ===========================================================================
+
+/// Result of verifying a device-cert access presentation.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AccessVerificationResult {
+    pub status: String, // "okay" | "failure"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// The ACTING identity — the warrant's grantee (== the access-cert
+    /// identity). Equals `email` for an as-you presentation; differs when an
+    /// agent acted on the attributed identity's behalf. RPs get both names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grantee: Option<String>,
+    /// The opaque holder id the presentation carried (which of the user's
+    /// things acted). Advisory; the old user/agent subject axis is gone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holder: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    /// The grantee/actor's issuer (the access cert's `iss`). Equals `issuer`
+    /// for an as-you presentation; differs for a cross-issuer delegated grant
+    /// (audit D2, bean i9rr).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grantee_issuer: Option<String>,
+    /// The presentation's status refs (access cert / config cert / warrant,
+    /// whichever are present), so the RP can re-check revocation later —
+    /// on session activity via `POST /status/check` — without retaining the
+    /// (short-lived) presentation itself. Bean 6u70.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_refs: Option<Vec<StatusRef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl AccessVerificationResult {
+    pub fn fail(reason: impl Into<String>) -> Self {
+        Self { status: "failure".into(), email: None, grantee: None, holder: None, scopes: None, issuer: None, grantee_issuer: None, status_refs: None, reason: Some(reason.into()) }
+    }
+}
+
+/// Where a verifier resolves revocation status (core §6.4) — all three
+/// checks fail-closed.
+///
+/// A ref whose `uri` is this deployment's **own** status list is checked
+/// authoritatively against the local store (no network, no staleness). Any
+/// other ref is a **foreign** list: fetched over HTTPS, bound to its
+/// publishing authority (the list's `iss` claim MUST be the URI's host, and
+/// the signature MUST verify under that domain's discovered key), and cached
+/// while fresh. An unreachable, stale, or unverifiable list rejects the
+/// presentation — "cannot prove unrevoked" is a failure, per spec §6.4.
+pub struct StatusCtx<'a> {
+    /// This deployment's own status-list URI
+    /// (`browserid_registrar::consent::status_list_uri`)
+    pub own_uri: String,
+    /// Authoritative local check: is `idx` revoked on our own list?
+    pub is_own_revoked: &'a (dyn Fn(u64) -> Result<bool, String> + Send + Sync),
+    /// Cache of verified foreign list tokens, keyed by URI (see
+    /// `AppState::status_lists`)
+    pub cache: &'a RwLock<HashMap<String, StatusListToken>>,
+    /// Relax the SSRF guard on foreign status fetches (audit H1) to permit
+    /// `http` and private/loopback hosts. MUST be `false` in production; set
+    /// `true` only for localhost dev and tests, where status authorities are
+    /// served on `127.0.0.1`.
+    pub allow_private_hosts: bool,
+}
+
+pub fn status_http() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            // Do not follow redirects: a status URI is validated (below) before
+            // the request, and a redirect would let the target re-point the
+            // fetch at an internal host after the check (SSRF, audit H1).
+            .redirect(reqwest::redirect::Policy::none())
+            // Skip platform proxy detection — ~11s stall on macOS (bean 7g2q).
+            .no_proxy()
+            .build()
+            .expect("failed to build status HTTP client")
+    })
+}
+
+/// Ceiling on how long we honor a foreign issuer's status list, regardless of
+/// the `ttl` it declares (audit M3). Matches the reference 5-minute cache window.
+const MAX_FOREIGN_STATUS_TTL: i64 = 300;
+
+/// Cap on the number of foreign status lists cached at once (audit M4). The
+/// cache is keyed by an attacker-authored URI, so it must be bounded; at the cap
+/// we drop stale entries and, failing that, skip caching rather than grow without
+/// limit.
+const MAX_STATUS_CACHE_ENTRIES: usize = 1024;
+
+/// Max bytes read from a foreign status list before rejecting (audit H1/M4).
+/// A status list is a zlib-compressed, base64url bitstring; the decompressor is
+/// separately capped at 4 MiB (`status.rs`), so a few MiB of transport is ample
+/// and bounds a malicious server's response.
+const MAX_STATUS_BODY: usize = 4 * 1024 * 1024;
+
+/// How long a FAILED foreign status fetch is remembered (audit M4 follow-up).
+/// Without this, a blackholed URI stalls every request for the full client
+/// timeout (5s) — unauthenticated amplification via `/verify-access` and
+/// `/guestbook`. Remembering the failure briefly turns repeats into instant
+/// rejects; correctness is unchanged (fail-closed either way), only the stall
+/// goes. Short, so a recovering authority is retried quickly.
+const NEGATIVE_STATUS_TTL: Duration = Duration::from_secs(30);
+
+/// The negative cache itself: uri → (failed_at, reason). Process-wide (the
+/// failure of a URI is not per-AppState) and bounded like the positive cache —
+/// the key is attacker-authored.
+fn negative_status_cache() -> &'static RwLock<HashMap<String, (std::time::Instant, String)>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, (std::time::Instant, String)>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn negative_status_record(uri: &str, reason: &str) {
+    let mut neg = negative_status_cache().write().unwrap();
+    if neg.len() >= MAX_STATUS_CACHE_ENTRIES && !neg.contains_key(uri) {
+        neg.retain(|_, (at, _)| at.elapsed() < NEGATIVE_STATUS_TTL);
+    }
+    if neg.len() < MAX_STATUS_CACHE_ENTRIES || neg.contains_key(uri) {
+        neg.insert(uri.to_string(), (std::time::Instant::now(), reason.to_string()));
+    }
+}
+
+/// SSRF guard (audit H1): a foreign status-list URI is attacker-authored (it
+/// rides in the certs of a self-minted bundle), so before fetching it we require
+/// `https` and reject any host that resolves to a non-global address
+/// (loopback / private / link-local / ULA / unspecified / multicast). Combined
+/// with the no-redirect client this stops a presentation from steering the
+/// verifier at cloud metadata endpoints or internal services.
+///
+/// Residual: resolution here and the client's own resolution are distinct
+/// lookups (a TOCTOU rebinding window). The no-redirect policy and the
+/// authenticated-issuer binding downstream bound the impact; pinning the checked
+/// IP into the connection would close it fully and is a future hardening.
+pub async fn validate_status_url(uri: &str, allow_private: bool) -> Result<(), String> {
+    if allow_private {
+        // Localhost dev / tests: status authorities run on 127.0.0.1 over http.
+        return Ok(());
+    }
+    let url = reqwest::Url::parse(uri).map_err(|e| format!("bad status uri '{uri}': {e}"))?;
+    if url.scheme() != "https" {
+        return Err(format!("status uri '{uri}' is not https"));
+    }
+    let host = url.host_str().ok_or_else(|| format!("status uri '{uri}' has no host"))?;
+    let port = url.port_or_known_default().unwrap_or(443);
+
+    // Resolve and require every resolved address to be globally routable.
+    let addrs = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| format!("resolve '{host}': {e}"))?;
+    let mut any = false;
+    for addr in addrs {
+        any = true;
+        if !is_global_ip(addr.ip()) {
+            return Err(format!("status host '{host}' resolves to non-global address {}", addr.ip()));
+        }
+    }
+    if !any {
+        return Err(format!("status host '{host}' did not resolve"));
+    }
+    Ok(())
+}
+
+/// Whether an IP is safe to fetch from — i.e. not loopback, private, link-local,
+/// unique-local, unspecified, or multicast. `std`'s `is_global` is unstable, so
+/// we enumerate the non-global ranges explicitly.
+fn is_global_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_multicast()
+                // 100.64.0.0/10 carrier-grade NAT
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 0x40))
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_global_ip(std::net::IpAddr::V4(v4));
+            }
+            let seg0 = v6.segments()[0];
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                // fc00::/7 unique-local
+                || (seg0 & 0xfe00) == 0xfc00
+                // fe80::/10 link-local
+                || (seg0 & 0xffc0) == 0xfe80)
+        }
+    }
+}
+
+/// The list's signer must be authoritative for the URI's host — the
+/// credential's issuer chose the URI, and a list served there is only
+/// honored if signed by a key that answers for that host (else a
+/// compromised host could serve someone else's all-clear list). Two hosts
+/// qualify: the issuer domain itself, and the issuer's DNSSEC-declared
+/// `host=` serving host (a hosted primary publishes no web content at its
+/// own domain, so its list lives on its provider; the declaration rides
+/// the same authenticated record as the key, bean g5qt).
+fn uri_matches_issuer(uri: &str, iss: &str, serving_host: Option<&str>) -> bool {
+    let Ok(u) = reqwest::Url::parse(uri) else { return false };
+    let Some(host) = u.host_str() else { return false };
+    let uri_host = match u.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
+    };
+    uri_host == iss || serving_host.is_some_and(|sh| uri_host == sh)
+}
+
+/// Read a response body into a String, rejecting once more than `max` bytes
+/// have arrived (streaming-safe — does not trust `Content-Length`).
+pub async fn read_capped(mut resp: reqwest::Response, max: usize) -> Result<String, String> {
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if buf.len() + chunk.len() > max {
+            return Err(format!("response exceeds {max} bytes"));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8(buf).map_err(|e| e.to_string())
+}
+
+/// Fresh (cache-busting) foreign-status check, for the post-revocation
+/// confirmation path (browserid-ng-ft55): evict any cached list for the
+/// ref's uri first, so a just-flipped bit is never masked by a younger-
+/// than-TTL cache entry. The fresh fetch re-verifies and re-caches.
+pub async fn check_foreign_status_fresh(
+    r: &StatusRef,
+    discoverer: &impl crate::discovery::Discoverer,
+    cache: &RwLock<HashMap<String, StatusListToken>>,
+    allow_private: bool,
+) -> Result<bool, String> {
+    cache.write().unwrap().remove(&r.uri);
+    negative_status_cache().write().unwrap().remove(&r.uri);
+    check_foreign_status(r, discoverer, cache, allow_private).await
+}
+
+/// Check a foreign status ref fail-closed: `Ok(revoked)`, or `Err` when the
+/// check cannot be made (which the caller MUST treat as a rejection).
+async fn check_foreign_status(
+    r: &StatusRef,
+    discoverer: &impl crate::discovery::Discoverer,
+    cache: &RwLock<HashMap<String, StatusListToken>>,
+    allow_private: bool,
+) -> Result<bool, String> {
+    let token = fetch_foreign_status_list(&r.uri, discoverer, cache, allow_private).await?;
+    Ok(token.is_revoked(r.idx))
+}
+
+/// Fetch the VERIFIED status list published at `uri`, serving from the cache
+/// while fresh. Every returned token has passed the full authority chain:
+/// SSRF-guarded fetch, issuer == URI host, signature under the issuer's
+/// discovered key, freshness cap. Shared by the in-process revocation checks
+/// above and by `GET /status/proxy` (bean 6u70), which re-serves the token to
+/// RP pages — the verification is what keeps that endpoint from being an open
+/// proxy: it can only ever emit a valid, issuer-signed status list.
+pub async fn fetch_foreign_status_list(
+    uri: &str,
+    discoverer: &impl crate::discovery::Discoverer,
+    cache: &RwLock<HashMap<String, StatusListToken>>,
+    allow_private: bool,
+) -> Result<StatusListToken, String> {
+    // Fresh cached list → answer without network. (Scoped: the guard must not
+    // live across an await.)
+    {
+        let lists = cache.read().unwrap();
+        if let Some(tok) = lists.get(uri) {
+            if tok.is_fresh_capped(0, MAX_FOREIGN_STATUS_TTL) {
+                return Ok(tok.clone());
+            }
+        }
+    }
+
+    // Recently failed → refuse instantly instead of stalling on the network
+    // again (audit M4 follow-up; still fail-closed).
+    {
+        let neg = negative_status_cache().read().unwrap();
+        if let Some((at, reason)) = neg.get(uri) {
+            if at.elapsed() < NEGATIVE_STATUS_TTL {
+                return Err(format!("{reason} (cached failure)"));
+            }
+        }
+    }
+
+    match fetch_foreign_status_list_uncached(uri, discoverer, cache, allow_private).await {
+        Ok(tok) => {
+            negative_status_cache().write().unwrap().remove(uri);
+            Ok(tok)
+        }
+        Err(e) => {
+            negative_status_record(uri, &e);
+            Err(e)
+        }
+    }
+}
+
+/// The un-negative-cached fetch path — every `Err` from here is recorded by
+/// the wrapper above.
+async fn fetch_foreign_status_list_uncached(
+    uri: &str,
+    discoverer: &impl crate::discovery::Discoverer,
+    cache: &RwLock<HashMap<String, StatusListToken>>,
+    allow_private: bool,
+) -> Result<StatusListToken, String> {
+
+    // SSRF guard: validate the attacker-authored URI before touching the network.
+    validate_status_url(uri, allow_private).await?;
+
+    let resp = status_http()
+        .get(uri)
+        .send()
+        .await
+        .and_then(|resp| resp.error_for_status())
+        .map_err(|e| format!("fetch {uri}: {e}"))?;
+
+    // Read the body with a hard cap so a malicious server can't stream unbounded
+    // data into the verifier (audit H1/M4).
+    let body = read_capped(resp, MAX_STATUS_BODY)
+        .await
+        .map_err(|e| format!("read {uri}: {e}"))?;
+    let token = StatusListToken::parse(body.trim()).map_err(|e| e.to_string())?;
+
+    let iss = token.claims().iss.clone();
+    let disc = discoverer
+        .discover(&iss)
+        .await
+        .map_err(|e| format!("status issuer discovery '{iss}': {e}"))?;
+    if !uri_matches_issuer(uri, &iss, disc.serving_host.as_deref()) {
+        return Err(format!("list at {uri} signed by non-authoritative issuer '{iss}'"));
+    }
+    let key = disc
+        .document
+        .public_key
+        .ok_or_else(|| format!("status issuer '{iss}' has no key"))?;
+    token.verify(&key, uri).map_err(|e| e.to_string())?;
+    if !token.is_fresh_capped(0, MAX_FOREIGN_STATUS_TTL) {
+        return Err(format!("status list {uri} is stale"));
+    }
+
+    {
+        // Bounded insert (audit M4): keep the cache from growing without limit
+        // under attacker-supplied URIs. Evict stale entries first; if still at
+        // the cap, skip caching this one (correctness is unaffected — the next
+        // request just re-fetches).
+        let mut lists = cache.write().unwrap();
+        if lists.len() >= MAX_STATUS_CACHE_ENTRIES && !lists.contains_key(uri) {
+            lists.retain(|_, t| t.is_fresh_capped(0, MAX_FOREIGN_STATUS_TTL));
+        }
+        if lists.len() < MAX_STATUS_CACHE_ENTRIES || lists.contains_key(uri) {
+            lists.insert(uri.to_string(), token.clone());
+        }
+    }
+    Ok(token)
+}
+
+/// Result of validating a held record (`warrant ~ config_cert`, spec §6.4
+/// steps 1b–1e). Record validation authenticates no one: an `okay` here means
+/// the record is authentic and unrevoked — redemption authority is custody
+/// plus subject matching, both at the resource.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RecordValidationResult {
+    pub status: String, // "okay" | "failure"
+    /// The attributed identity (the record's grantor).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grantor: Option<String>,
+    /// The acting identity: an exact email, or (admission-only) a grantee
+    /// matcher (`*` / `*@<domain>`) — permission, never attribution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grantee: Option<String>,
+    /// The record's binding set, normalized (a v1 record reads as a one-entry
+    /// holder set; a singular set serializes as the bare-object shorthand).
+    /// For `connection` entries, `client_name` is display-only and unverified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding: Option<BindingSet>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    /// The grantor's IdP (the config cert's issuer).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    /// The record's status refs (config cert / warrant), for the resource's
+    /// per-use fail-closed re-checks (`POST /status/check`) — §6.4's split
+    /// rule: status and expiry are live bounds, not acquisition-time facts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_refs: Option<Vec<StatusRef>>,
+    /// The warrant's `exp` (unix seconds) — the other live bound the resource
+    /// must re-check per use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl RecordValidationResult {
+    pub fn fail(reason: impl Into<String>) -> Self {
+        Self {
+            status: "failure".into(),
+            grantor: None,
+            grantee: None,
+            binding: None,
+            scopes: None,
+            issuer: None,
+            status_refs: None,
+            expires_at: None,
+            reason: Some(reason.into()),
+        }
+    }
+}
+
+/// Validate a held `warrant ~ config_cert` record (operation A, spec §6.4
+/// steps 1b–1e) — the hosted two-object record-validation call beside
+/// `/verify-access`. No caller authentication: anyone holding the record holds
+/// attributed paper, readable and spendable nowhere (§6.4).
+///
+/// Step 1a (parse, per-version shape matrix) is `RecordBundle::parse`; 1b
+/// resolves the config cert's issuer with the same DNSSEC-rooted conformance
+/// rule as `/verify-access` (authoritative for the grantor's domain, §8.1
+/// fallbacks); 1c–1d run in core; 1e checks the status refs fail-closed.
+pub async fn validate_record_with_dns(
+    record: &str,
+    audience: &str,
+    discoverer: &impl crate::discovery::Discoverer,
+    accepted_fallbacks: &[String],
+    status: StatusCtx<'_>,
+) -> RecordValidationResult {
+    let bundle = match RecordBundle::parse(record) {
+        Ok(b) => b,
+        Err(e) => return RecordValidationResult::fail(format!("parse: {e}")),
+    };
+
+    let grantor = bundle.warrant.claims().grantor.clone();
+    let grantor_domain = match browserid_core::identity::email_domain(&grantor) {
+        Some(d) => d.to_string(),
+        None => return RecordValidationResult::fail("warrant grantor is not an email"),
+    };
+    let cc_iss = bundle.config_cert.claims().iss.clone();
+
+    // §6.4 step 1b: the config cert's issuer, DNSSEC-resolved and required
+    // authoritative for the grantor's domain.
+    let config_key = match resolve_conformant_key(
+        discoverer,
+        accepted_fallbacks,
+        &grantor_domain,
+        &cc_iss,
+    )
+    .await
+    {
+        Ok(k) => k,
+        Err(e) => return RecordValidationResult::fail(e),
+    };
+
+    let v = match bundle.validate(audience, |req_iss| {
+        if req_iss == cc_iss {
+            Ok(config_key.clone())
+        } else {
+            Err(browserid_core::Error::InvalidProvisioning(format!(
+                "issuer '{req_iss}' not authoritative"
+            )))
+        }
+    }) {
+        Ok(v) => v,
+        Err(e) => return RecordValidationResult::fail(e.to_string()),
+    };
+
+    // §6.4 step 1e: fail-closed status on each chain object that carries a
+    // ref — config cert → its IdP; warrant → the hosted registry (always
+    // present on v2, optional on v1).
+    for (label, r) in [("config cert", &v.config_status), ("warrant", &v.warrant_status)] {
+        let Some(r) = r else { continue };
+        let revoked = if r.uri == status.own_uri {
+            (status.is_own_revoked)(r.idx)
+        } else {
+            check_foreign_status(r, discoverer, status.cache, status.allow_private_hosts).await
+        };
+        match revoked {
+            Ok(false) => {}
+            Ok(true) => return RecordValidationResult::fail(format!("{label} revoked")),
+            Err(e) => {
+                return RecordValidationResult::fail(format!(
+                    "{label} status unavailable (fail-closed): {e}"
+                ))
+            }
+        }
+    }
+
+    let status_refs = v.status_refs();
+    RecordValidationResult {
+        status: "okay".into(),
+        grantor: Some(v.grantor),
+        grantee: Some(v.grantee),
+        binding: Some(v.binding),
+        scopes: Some(v.scopes),
+        issuer: Some(v.grantor_issuer),
+        status_refs: if status_refs.is_empty() { None } else { Some(status_refs) },
+        expires_at: Some(bundle.warrant.claims().exp),
+        reason: None,
+    }
+}
+
+/// Resolve the published IdP key for `iss`, enforcing that `iss` is
+/// authoritative for `domain`: a primary domain must be served by its own
+/// `iss == domain`; a no-primary domain must name an accepted fallback. This
+/// is the conformance rule applied independently to each identity in a
+/// presentation — the grantee (access cert) under its domain, and the grantor
+/// (config cert) under its own, which need not be the same IdP.
+pub async fn resolve_conformant_key(
+    discoverer: &impl crate::discovery::Discoverer,
+    accepted_fallbacks: &[String],
+    domain: &str,
+    iss: &str,
+) -> Result<browserid_core::PublicKey, String> {
+    let disc = discoverer
+        .discover(domain)
+        .await
+        .map_err(|e| format!("discovery failed: {e}"))?;
+    let key_doc = if disc.is_primary {
+        if iss != domain {
+            return Err(format!("issuer '{iss}' is not authorized for primary domain '{domain}'"));
+        }
+        disc.document
+    } else {
+        if !accepted_fallbacks.iter().any(|f| f == iss) {
+            return Err(format!("issuer '{iss}' is not an accepted fallback"));
+        }
+        if iss == disc.authoritative_domain {
+            disc.document
+        } else {
+            discoverer
+                .discover(iss)
+                .await
+                .map_err(|e| format!("fallback discovery failed: {e}"))?
+                .document
+        }
+    };
+    key_doc.public_key.ok_or_else(|| "issuer has no key".to_string())
+}
+
+/// Verify a device-cert `access_cert~assertion~warrant~config_cert` bundle.
+///
+/// Enforces conformance: the access cert AND config cert must each be issued
+/// by their own identity's IdP (a primary for a primary domain; an accepted
+/// fallback for a no-primary domain). The two issuers may differ — an
+/// on-behalf-of warrant attributes to the GRANTOR (the config cert's
+/// identity), whose IdP is not necessarily the grantee's — so both are
+/// resolved up front and handed to the sync join.
+///
+/// Revocation (core §6.4): after the cryptographic join, the three status
+/// refs (access cert, config cert, warrant) are checked **fail-closed**
+/// through `status` — own-list refs against the local store, foreign refs by
+/// authenticated fetch. A revoked bit or an uncheckable ref rejects.
+pub async fn verify_access_with_dns(
+    presentation: &str,
+    audience: &str,
+    discoverer: &impl crate::discovery::Discoverer,
+    accepted_fallbacks: &[String],
+    status: StatusCtx<'_>,
+) -> AccessVerificationResult {
+    use browserid_core::device::AccessPresentation;
+
+    let pres = match AccessPresentation::parse(presentation) {
+        Ok(p) => p,
+        Err(e) => return AccessVerificationResult::fail(format!("parse: {e}")),
+    };
+    let ac = pres.access_cert.claims();
+    let email = ac.identity.clone();
+    let iss = ac.iss.clone();
+    let email_domain = match browserid_core::identity::email_domain(&email) {
+        Some(d) => d.to_string(),
+        None => return AccessVerificationResult::fail("identity is not an email"),
+    };
+
+    // The GRANTOR's issuer — the config cert's — which may differ from the
+    // grantee's (an on-behalf-of warrant where the actor and the identity it
+    // speaks for live at different IdPs: e.g. an `@sandmill.org` agent posting
+    // as an `@bsky.browserid.me` handle). `AccessPresentation::verify` asks the
+    // resolver for BOTH issuers separately; resolving only the access cert's,
+    // as this path once did, rejected every cross-issuer bundle — including an
+    // IdP's own certs — as "not authoritative".
+    let cc_iss = pres.config_cert.claims().iss.clone();
+    let grantor = pres.warrant.claims().grantor.clone();
+    let grantor_domain = match browserid_core::identity::email_domain(&grantor) {
+        Some(d) => d.to_string(),
+        None => return AccessVerificationResult::fail("warrant grantor is not an email"),
+    };
+
+    let access_key =
+        match resolve_conformant_key(discoverer, accepted_fallbacks, &email_domain, &iss).await {
+            Ok(k) => k,
+            Err(e) => return AccessVerificationResult::fail(e),
+        };
+    // Reuse only when the grantor is the SAME identity domain under the SAME
+    // issuer; otherwise resolve the grantor's IdP with the same conformance
+    // rule applied to the grantor's domain.
+    let config_key = if cc_iss == iss && grantor_domain == email_domain {
+        access_key.clone()
+    } else {
+        match resolve_conformant_key(discoverer, accepted_fallbacks, &grantor_domain, &cc_iss).await
+        {
+            Ok(k) => k,
+            Err(e) => return AccessVerificationResult::fail(e),
+        }
+    };
+
+    let v = match pres.verify(audience, |req_iss| {
+        if req_iss == iss {
+            Ok(access_key.clone())
+        } else if req_iss == cc_iss {
+            Ok(config_key.clone())
+        } else {
+            Err(browserid_core::Error::InvalidProvisioning(format!("issuer '{req_iss}' not authoritative")))
+        }
+    }) {
+        Ok(v) => v,
+        Err(e) => return AccessVerificationResult::fail(e.to_string()),
+    };
+
+    // Three fail-closed status authorities (§6.4, §6.2 step 8).
+    for (label, r) in [
+        ("access cert", &v.access_status),
+        ("config cert", &v.config_status),
+        ("warrant", &v.warrant_status),
+    ] {
+        let Some(r) = r else { continue };
+        let revoked = if r.uri == status.own_uri {
+            (status.is_own_revoked)(r.idx)
+        } else {
+            check_foreign_status(r, discoverer, status.cache, status.allow_private_hosts).await
+        };
+        match revoked {
+            Ok(false) => {}
+            Ok(true) => return AccessVerificationResult::fail(format!("{label} revoked")),
+            Err(e) => {
+                return AccessVerificationResult::fail(format!(
+                    "{label} status unavailable (fail-closed): {e}"
+                ))
+            }
+        }
+    }
+
+    // Hand the RP the refs it needs for later re-checks (POST /status/check on
+    // session activity — bean 6u70); the presentation itself is too short-lived
+    // to retain for that.
+    let status_refs: Vec<StatusRef> = [&v.access_status, &v.config_status, &v.warrant_status]
+        .into_iter()
+        .filter_map(|r| r.clone())
+        .collect();
+
+    AccessVerificationResult {
+        status: "okay".into(),
+        email: Some(v.email),
+        grantee: Some(v.grantee),
+        holder: Some(v.holder.as_str().to_string()),
+        scopes: Some(v.scopes),
+        issuer: Some(v.issuer),
+        grantee_issuer: Some(v.grantee_issuer),
+        status_refs: if status_refs.is_empty() { None } else { Some(status_refs) },
+        reason: None,
+    }
+}

@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 browserid-core = { path = "../browserid-core" }
 browserid-dnssec = { path = "../browserid-dnssec" }
+browserid-verifier = { path = "../browserid-verifier" }
 browserid-registrar = { path = "../browserid-registrar" }
 tokio.workspace = true
 axum.workspace = true
