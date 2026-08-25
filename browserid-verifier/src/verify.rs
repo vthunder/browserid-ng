@@ -665,87 +665,12 @@ pub async fn verify_access_with_dns(
     accepted_fallbacks: &[String],
     status: StatusCtx<'_>,
 ) -> AccessVerificationResult {
-    use browserid_core::device::AccessPresentation;
-
-    let pres = match AccessPresentation::parse(presentation) {
-        Ok(p) => p,
-        Err(e) => return AccessVerificationResult::fail(format!("parse: {e}")),
-    };
-    let ac = pres.access_cert.claims();
-    let email = ac.identity.clone();
-    let iss = ac.iss.clone();
-    let email_domain = match browserid_core::identity::email_domain(&email) {
-        Some(d) => d.to_string(),
-        None => return AccessVerificationResult::fail("identity is not an email"),
-    };
-
-    // The GRANTOR's issuer — the config cert's — which may differ from the
-    // grantee's (an on-behalf-of warrant where the actor and the identity it
-    // speaks for live at different IdPs: e.g. an `@sandmill.org` agent posting
-    // as an `@bsky.browserid.me` handle). `AccessPresentation::verify` asks the
-    // resolver for BOTH issuers separately; resolving only the access cert's,
-    // as this path once did, rejected every cross-issuer bundle — including an
-    // IdP's own certs — as "not authoritative".
-    let cc_iss = pres.config_cert.claims().iss.clone();
-    let grantor = pres.warrant.claims().grantor.clone();
-    let grantor_domain = match browserid_core::identity::email_domain(&grantor) {
-        Some(d) => d.to_string(),
-        None => return AccessVerificationResult::fail("warrant grantor is not an email"),
-    };
-
-    let access_key =
-        match resolve_conformant_key(discoverer, accepted_fallbacks, &email_domain, &iss).await {
-            Ok(k) => k,
-            Err(e) => return AccessVerificationResult::fail(e),
-        };
-    // Reuse only when the grantor is the SAME identity domain under the SAME
-    // issuer; otherwise resolve the grantor's IdP with the same conformance
-    // rule applied to the grantor's domain.
-    let config_key = if cc_iss == iss && grantor_domain == email_domain {
-        access_key.clone()
-    } else {
-        match resolve_conformant_key(discoverer, accepted_fallbacks, &grantor_domain, &cc_iss).await
-        {
-            Ok(k) => k,
-            Err(e) => return AccessVerificationResult::fail(e),
-        }
-    };
-
-    let v = match pres.verify(audience, |req_iss| {
-        if req_iss == iss {
-            Ok(access_key.clone())
-        } else if req_iss == cc_iss {
-            Ok(config_key.clone())
-        } else {
-            Err(browserid_core::Error::InvalidProvisioning(format!("issuer '{req_iss}' not authoritative")))
-        }
-    }) {
+    let v = match verify_access_core(presentation, audience, discoverer, accepted_fallbacks, status)
+        .await
+    {
         Ok(v) => v,
-        Err(e) => return AccessVerificationResult::fail(e.to_string()),
+        Err(e) => return AccessVerificationResult::fail(e),
     };
-
-    // Three fail-closed status authorities (§6.4, §6.2 step 8).
-    for (label, r) in [
-        ("access cert", &v.access_status),
-        ("config cert", &v.config_status),
-        ("warrant", &v.warrant_status),
-    ] {
-        let Some(r) = r else { continue };
-        let revoked = if r.uri == status.own_uri {
-            (status.is_own_revoked)(r.idx)
-        } else {
-            check_foreign_status(r, discoverer, status.cache, status.allow_private_hosts).await
-        };
-        match revoked {
-            Ok(false) => {}
-            Ok(true) => return AccessVerificationResult::fail(format!("{label} revoked")),
-            Err(e) => {
-                return AccessVerificationResult::fail(format!(
-                    "{label} status unavailable (fail-closed): {e}"
-                ))
-            }
-        }
-    }
 
     // Hand the RP the refs it needs for later re-checks (POST /status/check on
     // session activity — bean 6u70); the presentation itself is too short-lived
@@ -766,4 +691,84 @@ pub async fn verify_access_with_dns(
         status_refs: if status_refs.is_empty() { None } else { Some(status_refs) },
         reason: None,
     }
+}
+
+/// The same verification as [`verify_access_with_dns`], returning the rich
+/// [`browserid_core::device::VerifiedAccess`] (typed holder, scope entries,
+/// per-object status refs) instead of the hosted endpoint's response shape.
+/// In-process consumers (`browserid-rp`) call this; a failed verification is
+/// `Err(reason)` — data, not an exceptional condition.
+pub async fn verify_access_core(
+    presentation: &str,
+    audience: &str,
+    discoverer: &impl crate::discovery::Discoverer,
+    accepted_fallbacks: &[String],
+    status: StatusCtx<'_>,
+) -> Result<browserid_core::device::VerifiedAccess, String> {
+    use browserid_core::device::AccessPresentation;
+
+    let pres = AccessPresentation::parse(presentation).map_err(|e| format!("parse: {e}"))?;
+    let ac = pres.access_cert.claims();
+    let email = ac.identity.clone();
+    let iss = ac.iss.clone();
+    let email_domain = browserid_core::identity::email_domain(&email)
+        .ok_or("identity is not an email")?
+        .to_string();
+
+    // The GRANTOR's issuer — the config cert's — which may differ from the
+    // grantee's (an on-behalf-of warrant where the actor and the identity it
+    // speaks for live at different IdPs: e.g. an `@sandmill.org` agent posting
+    // as an `@bsky.browserid.me` handle). `AccessPresentation::verify` asks the
+    // resolver for BOTH issuers separately; resolving only the access cert's,
+    // as this path once did, rejected every cross-issuer bundle — including an
+    // IdP's own certs — as "not authoritative".
+    let cc_iss = pres.config_cert.claims().iss.clone();
+    let grantor = pres.warrant.claims().grantor.clone();
+    let grantor_domain = browserid_core::identity::email_domain(&grantor)
+        .ok_or("warrant grantor is not an email")?
+        .to_string();
+
+    let access_key =
+        resolve_conformant_key(discoverer, accepted_fallbacks, &email_domain, &iss).await?;
+    // Reuse only when the grantor is the SAME identity domain under the SAME
+    // issuer; otherwise resolve the grantor's IdP with the same conformance
+    // rule applied to the grantor's domain.
+    let config_key = if cc_iss == iss && grantor_domain == email_domain {
+        access_key.clone()
+    } else {
+        resolve_conformant_key(discoverer, accepted_fallbacks, &grantor_domain, &cc_iss).await?
+    };
+
+    let v = pres
+        .verify(audience, |req_iss| {
+            if req_iss == iss {
+                Ok(access_key.clone())
+            } else if req_iss == cc_iss {
+                Ok(config_key.clone())
+            } else {
+                Err(browserid_core::Error::InvalidProvisioning(format!("issuer '{req_iss}' not authoritative")))
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Three fail-closed status authorities (§6.4, §6.2 step 8).
+    for (label, r) in [
+        ("access cert", &v.access_status),
+        ("config cert", &v.config_status),
+        ("warrant", &v.warrant_status),
+    ] {
+        let Some(r) = r else { continue };
+        let revoked = if r.uri == status.own_uri {
+            (status.is_own_revoked)(r.idx)
+        } else {
+            check_foreign_status(r, discoverer, status.cache, status.allow_private_hosts).await
+        };
+        match revoked {
+            Ok(false) => {}
+            Ok(true) => return Err(format!("{label} revoked")),
+            Err(e) => return Err(format!("{label} status unavailable (fail-closed): {e}")),
+        }
+    }
+
+    Ok(v)
 }

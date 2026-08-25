@@ -145,8 +145,17 @@ pub struct Verifier {
     /// Spec §6.4 makes the three status checks mandatory and fail-closed, so
     /// by default a presentation carrying a `status` ref is rejected unless a
     /// [`StatusCache`] is configured to check it. `without_status_checks()`
-    /// opts out (dev/test only — non-conformant).
+    /// opts out (dev/test only — non-conformant, pinned-table path only:
+    /// [`Verifier::verify_dnssec`] always checks fail-closed).
     require_status_checks: bool,
+    /// Cache of verified foreign status-list tokens for the
+    /// [`Verifier::verify_dnssec`] path (same machinery as the hosted
+    /// verifier's, bean kozn).
+    foreign_status_lists: std::sync::RwLock<HashMap<String, browserid_core::StatusListToken>>,
+    /// Relax the SSRF guard on foreign status fetches to permit `http` and
+    /// private/loopback hosts. MUST stay `false` in production; see
+    /// [`Verifier::allow_private_status_hosts`].
+    allow_private_status_hosts: bool,
 }
 
 impl Verifier {
@@ -161,7 +170,18 @@ impl Verifier {
             scopes: Vec::new(),
             status_cache: None,
             require_status_checks: true,
+            foreign_status_lists: std::sync::RwLock::new(HashMap::new()),
+            allow_private_status_hosts: false,
         }
+    }
+
+    /// Relax the SSRF guard on [`Verifier::verify_dnssec`]'s foreign status
+    /// fetches to permit `http` and private/loopback hosts. Dev/test only —
+    /// local status authorities run on `127.0.0.1`; MUST NOT be set in
+    /// production.
+    pub fn allow_private_status_hosts(mut self) -> Self {
+        self.allow_private_status_hosts = true;
+        self
     }
 
     /// Accept presentations whose credentials carry `status` refs even when no
@@ -294,73 +314,66 @@ impl Verifier {
         self.finish_verify(verified, |identity, iss| self.issuer_conformant(identity, iss))
     }
 
-    /// Verify a presentation the **conformant** way (spec §3): resolve every
-    /// issuer's key from its authenticated `_browserid` DNSSEC record — the
-    /// sole root of trust — never from a pinned or `.well-known`-served key,
-    /// and honoring a hosted primary's `host=` implicitly (the key is in the
-    /// record, so the tenant domain is never fetched for it). An identity's
-    /// own domain is authoritative iff it is a DNSSEC primary; otherwise an
-    /// accepted fallback ([`Verifier::accept_fallback`]) may vouch for it.
+    /// Verify a presentation the **conformant** way (spec §3), by running the
+    /// SAME algorithm the hosted `/verify` endpoint runs
+    /// ([`browserid_verifier::verify_access_core`], bean kozn): every issuer's
+    /// key resolves from its authenticated `_browserid` DNSSEC record — the
+    /// sole root of trust — honoring a hosted primary's `host=`; an identity's
+    /// own domain is authoritative iff it is a DNSSEC primary, otherwise an
+    /// accepted fallback ([`Verifier::accept_fallback`]) may vouch for it; and
+    /// the three revocation refs are checked **fail-closed** (core §6.4) by
+    /// authenticated, SSRF-guarded fetch of their foreign status lists. There
+    /// is no opt-out on this path — `without_status_checks()` applies only to
+    /// the pinned-table [`Verifier::verify`], the offline/test convenience.
     pub async fn verify_dnssec(
         &self,
         presentation: &str,
         fetcher: &browserid_dnssec::DnsFetcher,
     ) -> Result<VerifiedIdentity, ExchangeError> {
-        let pres = AccessPresentation::parse(presentation)
-            .map_err(|e| ExchangeError::InvalidAssertion(e.to_string()))?;
+        // The discoverer's trusted-broker default is only the discovery target
+        // for no-primary domains; whether an issuer is ACCEPTED is decided by
+        // `accepted_fallbacks` below (an empty set rejects every no-primary
+        // identity, the strictest posture).
+        let trusted_broker = self
+            .accepted_fallbacks
+            .iter()
+            .min()
+            .cloned()
+            .unwrap_or_else(|| "browserid.me".to_string());
+        let discoverer = browserid_verifier::FallbackFetcher::with_dns_fetcher(
+            fetcher.clone(),
+            trusted_broker,
+        );
+        let accepted: Vec<String> = self.accepted_fallbacks.iter().cloned().collect();
 
-        let ce =
-            |iss: &str, e: browserid_dnssec::ResolveError| ExchangeError::InvalidAssertion(format!("issuer '{iss}': {e}"));
+        // An RP has no own status list: every ref is foreign. `own_uri` is
+        // empty (no ref matches), so the own-list hook is unreachable.
+        let no_own_list = |_: u64| Err("RP has no own status list".to_string());
+        let status = browserid_verifier::StatusCtx {
+            own_uri: String::new(),
+            is_own_revoked: &no_own_list,
+            cache: &self.foreign_status_lists,
+            allow_private_hosts: self.allow_private_status_hosts,
+        };
 
-        // Resolve the two IdP keys (grantee's access-cert issuer, grantor's
-        // config-cert issuer) from DNSSEC.
-        let access_iss = pres.access_cert.claims().iss.clone();
-        let config_iss = pres.config_cert.claims().iss.clone();
-        let mut keys: HashMap<String, PublicKey> = HashMap::new();
-        for iss in [&access_iss, &config_iss] {
-            if !keys.contains_key(iss) {
-                let key = browserid_dnssec::resolve_idp_key(fetcher, iss)
-                    .await
-                    .map_err(|e| ce(iss, e))?;
-                keys.insert(iss.clone(), key);
-            }
-        }
+        let verified = browserid_verifier::verify::verify_access_core(
+            presentation,
+            &self.audience,
+            &discoverer,
+            &accepted,
+            status,
+        )
+        .await
+        .map_err(ExchangeError::InvalidAssertion)?;
 
-        // Which identity domains are DNSSEC primaries? (Determines whether the
-        // issuer must equal the domain, or an accepted fallback may vouch.)
-        let grantor = pres.warrant.claims().grantor.clone();
-        let grantee = pres.access_cert.claims().identity.clone();
-        let mut primary_domains: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for id in [&grantor, &grantee] {
-            if let Some(domain) = browserid_core::identity::email_domain(id) {
-                if !primary_domains.contains(domain)
-                    && browserid_dnssec::resolve_idp_key(fetcher, domain).await.is_ok()
-                {
-                    primary_domains.insert(domain.to_string());
-                }
-            }
-        }
-
-        let verified = pres
-            .verify(&self.audience, |domain| {
-                keys.get(domain)
-                    .cloned()
-                    .ok_or_else(|| browserid_core::Error::DiscoveryFailed {
-                        domain: domain.to_string(),
-                        reason: "issuer key not DNSSEC-resolved".to_string(),
-                    })
-            })
-            .map_err(|e| ExchangeError::InvalidAssertion(e.to_string()))?;
-
-        self.finish_verify(verified, |identity, iss| {
-            let Some(domain) = browserid_core::identity::email_domain(identity) else {
-                return false;
-            };
-            if primary_domains.contains(domain) {
-                iss == domain
-            } else {
-                self.accepted_fallbacks.contains(iss)
-            }
+        Ok(VerifiedIdentity {
+            email: verified.email,
+            issuer: verified.issuer,
+            grantee: verified.grantee,
+            grantee_issuer: verified.grantee_issuer,
+            holder: verified.holder,
+            scopes: verified.scopes,
+            warrant_status: verified.warrant_status,
         })
     }
 

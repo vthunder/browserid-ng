@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 browserid-core = { path = "../browserid-core" }
 browserid-dnssec = { path = "../browserid-dnssec" }
+browserid-verifier = { path = "../browserid-verifier" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

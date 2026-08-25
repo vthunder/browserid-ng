@@ -360,6 +360,7 @@ dependencies = [
  "base64",
  "browserid-core",
  "browserid-dnssec",
+ "browserid-verifier",
  "chrono",
  "rand 0.8.5",
  "reqwest",

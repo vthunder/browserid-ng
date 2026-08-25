@@ -16,6 +16,6 @@ pub use discovery::{Discoverer, FallbackFetcher, FallbackResult};
 pub use error::VerifierError;
 pub use verify::{
     check_foreign_status_fresh, fetch_foreign_status_list, resolve_conformant_key,
-    validate_record_with_dns, verify_access_with_dns, AccessVerificationResult, HttpFetcher,
-    RecordValidationResult, StatusCtx,
+    validate_record_with_dns, verify_access_core, verify_access_with_dns,
+    AccessVerificationResult, HttpFetcher, RecordValidationResult, StatusCtx,
 };

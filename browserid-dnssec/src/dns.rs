@@ -59,6 +59,7 @@ fn tls_client_config() -> Arc<rustls::ClientConfig> {
 /// Sends queries with the EDNS DO bit over DNS-over-TLS to a validating
 /// resolver and trusts the AD flag only because the transport is
 /// authenticated.
+#[derive(Clone)]
 pub struct DnsFetcher {
     resolver_addr: SocketAddr,
     tls_name: String,
