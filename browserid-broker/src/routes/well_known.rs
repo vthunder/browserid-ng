@@ -39,7 +39,7 @@ where
         return Json(super::hosted_idp::tenant_support_document());
     }
 
-    let mut doc = SupportDocument::new(state.keypair.public_key())
+    let mut doc = SupportDocument::new()
         .with_authentication("/auth")
         .with_provisioning("/provision")
         // Device-cert conformance: browser device issuance rides the fallback
@@ -57,17 +57,16 @@ where
     // identity key comes solely from the authenticated `_browserid` DNSSEC
     // record. Serving an advisory key here is a downgrade vector for any
     // verifier that reads it instead of DNS — exactly what bean 0p5f closed
-    // across our verifiers. The struct field stays (the DNSSEC resolver fills
-    // it in from the record); we simply do not advertise one.
+    // across our verifiers. `SupportDocument::new()` is keyless by
+    // construction (2026-08-25 sweep); the field is resolver-side only.
     //
     // DEV exception (localhost only): the fallback fetcher's dev_local_broker
     // path has no DNSSEC to consult and, by design, trusts the key a
-    // localhost broker serves here — the zexp hardening silently emptied that
-    // path ("issuer has no key" on every dev fallback resolution). A
-    // localhost domain can never be a production broker, so the downgrade
-    // vector doesn't apply.
-    if super::session::cookie_secure(&state.domain) {
-        doc.public_key = None;
+    // localhost broker serves here. A localhost domain can never be a
+    // production broker, so the downgrade vector doesn't apply — and this is
+    // the ONLY place in any codebase that puts a key on the wire.
+    if !super::session::cookie_secure(&state.domain) {
+        doc.public_key = Some(state.keypair.public_key());
     }
 
     Json(doc)

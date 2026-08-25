@@ -51,14 +51,14 @@ impl MockDiscoverer {
         }
         if let Some(key) = self.primaries.get(domain) {
             Ok(FallbackResult {
-                document: SupportDocument::new(key.clone()),
+                document: SupportDocument::new().with_discovered_key(key.clone()),
                 authoritative_domain: domain.to_string(),
                 is_primary: true,
                 serving_host: None,
             })
         } else {
             Ok(FallbackResult {
-                document: SupportDocument::new(self.broker_key.clone()),
+                document: SupportDocument::new().with_discovered_key(self.broker_key.clone()),
                 authoritative_domain: BROKER.to_string(),
                 is_primary: false,
                 serving_host: None,

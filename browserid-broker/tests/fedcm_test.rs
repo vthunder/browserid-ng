@@ -31,7 +31,7 @@ impl Discoverer for BrokerFallback {
         _domain: &str,
     ) -> impl std::future::Future<Output = Result<FallbackResult, BrokerError>> + Send {
         let res = Ok(FallbackResult {
-            document: SupportDocument::new(self.key.clone()),
+            document: SupportDocument::new().with_discovered_key(self.key.clone()),
             authoritative_domain: BROKER.to_string(),
             is_primary: false,
             serving_host: None,

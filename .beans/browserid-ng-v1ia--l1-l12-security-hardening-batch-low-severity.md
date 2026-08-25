@@ -5,7 +5,7 @@ status: completed
 type: task
 priority: low
 created_at: 2026-07-28T23:54:42Z
-updated_at: 2026-08-25T15:14:16Z
+updated_at: 2026-08-25T16:38:09Z
 parent: browserid-ng-wre6
 ---
 
@@ -39,3 +39,7 @@ Low-severity defense-in-depth / consistency / hygiene items from docs/security-a
 ## Summary of Changes (2026-08-25)
 
 All remaining low items landed in one pass (no product decisions needed). Highlights: per-surface CORS (found two consumers the global mirror was silently serving: the marketing wall's /guestbook/feed and the status-poll redirect onto the registrar list — both now explicitly public); canonical strict email parsing with fail-closed malformed handling through the verification paths; hickory 0.25/rustls 0.23 with a live DoT regression test. Full workspace suite (59 targets) + full Playwright e2e (106) green.
+
+## Regression + fix (2026-08-25, same day): hosted-IdP mint lost CORS
+
+The L9 rescope missed that the hosted-primary tenant surface is a DIFFERENT origin (idp.browserid.me): dialogs call /idp/access_cert cross-origin, so tenant-identity sign-ins (e.g. danmills@sandmill.org) died with 'Failed to fetch'. Caught by Dan in manual testing (~1.5h exposure); e2e never covered the hosted-tenant lane (primary specs use mock IdPs). Fixed: non-credentialed Any CORS on the mint only; new cors_surface_test pins the full L9 posture (mint open, /wsapi silent, public reads open). Follow-up candidate: an e2e spec for the hosted-tenant sign-in lane.

@@ -66,7 +66,7 @@ mod public_key_retrieval {
 
         fetcher.add_domain(
             "example.domain",
-            SupportDocument::new(domain_key.public_key())
+            SupportDocument::new().with_discovered_key(domain_key.public_key())
                 .with_authentication("/sign_in.html")
                 .with_provisioning("/provision.html"),
         );
@@ -94,7 +94,7 @@ mod public_key_retrieval {
 
         fetcher.add_domain(
             "example.domain",
-            SupportDocument::new(domain_key.public_key())
+            SupportDocument::new().with_discovered_key(domain_key.public_key())
                 .with_authentication("/sign_in.html")
                 .with_provisioning("/provision.html"),
         );
@@ -274,7 +274,7 @@ mod malformed_authority {
         let mut fetcher = MockFetcher::new();
 
         // Create a document with empty authority string
-        let mut doc = SupportDocument::new(key.public_key());
+        let mut doc = SupportDocument::new().with_discovered_key(key.public_key());
         doc.authority = Some("".to_string());
         fetcher.add_domain("empty.authority.domain", doc);
 
@@ -312,7 +312,7 @@ mod support_document_format {
     #[test]
     fn test_full_document_format() {
         let key = KeyPair::generate();
-        let doc = SupportDocument::new(key.public_key())
+        let doc = SupportDocument::new().with_discovered_key(key.public_key())
             .with_authentication("/sign_in.html")
             .with_provisioning("/provision.html");
 

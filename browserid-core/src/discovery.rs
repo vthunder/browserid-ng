@@ -84,10 +84,15 @@ pub struct SupportDocument {
 }
 
 impl SupportDocument {
-    /// Create a new support document with just a public key
-    pub fn new(public_key: PublicKey) -> Self {
+    /// Create a new support document. KEYLESS by construction: a support
+    /// document served over HTTP must never carry a key — the `_browserid`
+    /// DNSSEC record is the sole root of trust, and a TLS-served key is a
+    /// downgrade vector for any verifier that reads it (spec §3/§3.1, bean
+    /// zexp). The `public_key` field exists for the RESOLVER side only
+    /// ([`SupportDocument::with_discovered_key`]).
+    pub fn new() -> Self {
         Self {
-            public_key: Some(public_key),
+            public_key: None,
             authentication: None,
             provisioning: None,
             authority: None,
@@ -98,6 +103,14 @@ impl SupportDocument {
             device_revocation: None,
             record_grants: None,
         }
+    }
+
+    /// Attach the DNSSEC-validated key to an in-process discovery RESULT.
+    /// Resolver/test use only — a document SERVED over HTTP must never carry
+    /// a key (see [`SupportDocument::new`]).
+    pub fn with_discovered_key(mut self, public_key: PublicKey) -> Self {
+        self.public_key = Some(public_key);
+        self
     }
 
     /// Set the authentication path
@@ -319,7 +332,7 @@ mod tests {
         };
         fetcher.documents.insert(
             "example.com".to_string(),
-            SupportDocument::new(key.public_key())
+            SupportDocument::new().with_discovered_key(key.public_key())
                 .with_authentication("/auth")
                 .with_provisioning("/provision"),
         );
@@ -346,7 +359,7 @@ mod tests {
 
         fetcher.documents.insert(
             "idp.example.net".to_string(),
-            SupportDocument::new(key.public_key()),
+            SupportDocument::new().with_discovered_key(key.public_key()),
         );
 
         let config = DiscoveryConfig::default();
@@ -366,7 +379,7 @@ mod tests {
     #[test]
     fn test_support_document_serialization() {
         let key = KeyPair::generate();
-        let doc = SupportDocument::new(key.public_key())
+        let doc = SupportDocument::new().with_discovered_key(key.public_key())
             .with_authentication("/browserid/auth")
             .with_provisioning("/browserid/provision");
 

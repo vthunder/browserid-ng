@@ -65,7 +65,7 @@ mod primary_idp_discovery {
 
         fetcher.add_domain(
             "example.domain",
-            SupportDocument::new(domain_key.public_key())
+            SupportDocument::new().with_discovered_key(domain_key.public_key())
                 .with_authentication("/sign_in.html")
                 .with_provisioning("/provision.html"),
         );
@@ -168,7 +168,7 @@ mod support_document_format {
     #[test]
     fn test_support_document_has_public_key() {
         let key = KeyPair::generate();
-        let doc = SupportDocument::new(key.public_key());
+        let doc = SupportDocument::new().with_discovered_key(key.public_key());
 
         let json = serde_json::to_string(&doc).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -180,7 +180,7 @@ mod support_document_format {
     #[test]
     fn test_support_document_paths() {
         let key = KeyPair::generate();
-        let doc = SupportDocument::new(key.public_key())
+        let doc = SupportDocument::new().with_discovered_key(key.public_key())
             .with_authentication("/browserid/auth")
             .with_provisioning("/browserid/provision");
 
@@ -235,7 +235,7 @@ mod delegation {
         // idp.example.org is the actual IdP
         fetcher.add_domain(
             "idp.example.org",
-            SupportDocument::new(key.public_key())
+            SupportDocument::new().with_discovered_key(key.public_key())
                 .with_authentication("/auth")
                 .with_provisioning("/provision"),
         );
@@ -256,7 +256,7 @@ mod delegation {
         // a.com -> b.com -> c.com (actual IdP)
         fetcher.add_domain("a.com", SupportDocument::delegate("b.com"));
         fetcher.add_domain("b.com", SupportDocument::delegate("c.com"));
-        fetcher.add_domain("c.com", SupportDocument::new(key.public_key()));
+        fetcher.add_domain("c.com", SupportDocument::new().with_discovered_key(key.public_key()));
 
         let config = DiscoveryConfig::default();
         let result = discover("a.com", &fetcher, &config).unwrap();
