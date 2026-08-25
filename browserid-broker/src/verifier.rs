@@ -196,6 +196,33 @@ const MAX_STATUS_CACHE_ENTRIES: usize = 1024;
 /// and bounds a malicious server's response.
 const MAX_STATUS_BODY: usize = 4 * 1024 * 1024;
 
+/// How long a FAILED foreign status fetch is remembered (audit M4 follow-up).
+/// Without this, a blackholed URI stalls every request for the full client
+/// timeout (5s) — unauthenticated amplification via `/verify-access` and
+/// `/guestbook`. Remembering the failure briefly turns repeats into instant
+/// rejects; correctness is unchanged (fail-closed either way), only the stall
+/// goes. Short, so a recovering authority is retried quickly.
+const NEGATIVE_STATUS_TTL: Duration = Duration::from_secs(30);
+
+/// The negative cache itself: uri → (failed_at, reason). Process-wide (the
+/// failure of a URI is not per-AppState) and bounded like the positive cache —
+/// the key is attacker-authored.
+fn negative_status_cache() -> &'static RwLock<HashMap<String, (std::time::Instant, String)>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, (std::time::Instant, String)>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn negative_status_record(uri: &str, reason: &str) {
+    let mut neg = negative_status_cache().write().unwrap();
+    if neg.len() >= MAX_STATUS_CACHE_ENTRIES && !neg.contains_key(uri) {
+        neg.retain(|_, (at, _)| at.elapsed() < NEGATIVE_STATUS_TTL);
+    }
+    if neg.len() < MAX_STATUS_CACHE_ENTRIES || neg.contains_key(uri) {
+        neg.insert(uri.to_string(), (std::time::Instant::now(), reason.to_string()));
+    }
+}
+
 /// SSRF guard (audit H1): a foreign status-list URI is attacker-authored (it
 /// rides in the certs of a self-minted bundle), so before fetching it we require
 /// `https` and reject any host that resolves to a non-global address
@@ -310,6 +337,7 @@ pub(crate) async fn check_foreign_status_fresh(
     allow_private: bool,
 ) -> Result<bool, String> {
     cache.write().unwrap().remove(&r.uri);
+    negative_status_cache().write().unwrap().remove(&r.uri);
     check_foreign_status(r, discoverer, cache, allow_private).await
 }
 
@@ -348,6 +376,38 @@ pub(crate) async fn fetch_foreign_status_list(
             }
         }
     }
+
+    // Recently failed → refuse instantly instead of stalling on the network
+    // again (audit M4 follow-up; still fail-closed).
+    {
+        let neg = negative_status_cache().read().unwrap();
+        if let Some((at, reason)) = neg.get(uri) {
+            if at.elapsed() < NEGATIVE_STATUS_TTL {
+                return Err(format!("{reason} (cached failure)"));
+            }
+        }
+    }
+
+    match fetch_foreign_status_list_uncached(uri, discoverer, cache, allow_private).await {
+        Ok(tok) => {
+            negative_status_cache().write().unwrap().remove(uri);
+            Ok(tok)
+        }
+        Err(e) => {
+            negative_status_record(uri, &e);
+            Err(e)
+        }
+    }
+}
+
+/// The un-negative-cached fetch path — every `Err` from here is recorded by
+/// the wrapper above.
+async fn fetch_foreign_status_list_uncached(
+    uri: &str,
+    discoverer: &impl crate::fallback_fetcher::Discoverer,
+    cache: &RwLock<HashMap<String, StatusListToken>>,
+    allow_private: bool,
+) -> Result<StatusListToken, String> {
 
     // SSRF guard: validate the attacker-authored URI before touching the network.
     validate_status_url(uri, allow_private).await?;

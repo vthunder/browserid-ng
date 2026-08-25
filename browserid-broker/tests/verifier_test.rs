@@ -320,6 +320,26 @@ async fn verify_access_rejects_unreachable_foreign_status() {
 }
 
 #[tokio::test]
+async fn failed_foreign_status_fetch_is_negative_cached() {
+    // M4 follow-up: a repeat check against a URI that just failed must be
+    // refused from the negative cache (instant, still fail-closed) instead of
+    // stalling on the network again. Distinct URI from the test above so the
+    // process-wide negative cache can't couple the two tests.
+    let (idp, disc) = primary_setup();
+    let pres = device_presentation_with_status(
+        "sandmill.org", "sandmill.org", "danmills@sandmill.org", "https://mingo.place", &idp,
+        Some(StatusRef { uri: "http://127.0.0.1:9/.well-known/browserid-status-negcache".into(), idx: 0 }),
+    );
+    let cache = RwLock::new(HashMap::new());
+    let r = verify_access_with_dns(&pres, "https://mingo.place", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
+    assert_eq!(r.status, "failure", "{:?}", r);
+    assert!(!r.reason.as_deref().unwrap_or("").contains("cached failure"), "first miss must be a live fetch: {:?}", r);
+    let r = verify_access_with_dns(&pres, "https://mingo.place", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
+    assert_eq!(r.status, "failure", "{:?}", r);
+    assert!(r.reason.as_deref().unwrap_or("").contains("cached failure"), "repeat must come from the negative cache: {:?}", r);
+}
+
+#[tokio::test]
 async fn verify_access_checks_foreign_status_list() {
     let (idp, _) = primary_setup();
     // A foreign status authority: its list says idx 3 is revoked, idx 5 is not.
