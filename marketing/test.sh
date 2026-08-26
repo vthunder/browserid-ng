@@ -43,6 +43,29 @@ check() { # check <desc> <actual> <expected-grep-ere>
   fi
 }
 
+# --- principles copies stay in sync (local repo files, not the server) ------
+# docs/principles.md is the source of truth; the md mirror must be
+# byte-identical (also pinned by a cargo test), and the hand-set html page
+# must contain every paragraph of the doc (tags stripped, whitespace and
+# space-before-punctuation normalized).
+check "principles md mirror is byte-identical to docs/principles.md" \
+  "$(cmp -s ../docs/principles.md principles.md && echo same || echo diverged)" '^same$'
+SYNC_HTML=$(python3 - <<'PYEOF'
+import re
+md = open("../docs/principles.md").read()
+html = open("principles.html").read()
+text = re.sub(r"<[^>]+>", " ", html)
+def norm(s):
+    s = s.replace("`", "").replace("*", "")
+    s = re.sub(r"\s+", " ", s)
+    return re.sub(r"\s+([.,;:!?])", r"\1", s).strip()
+text_n = norm(text)
+missing = [p[:50] for p in (norm(b.lstrip("#")) for b in md.split("\n\n")) if p and p not in text_n]
+print("ok" if not missing else "MISSING: " + " | ".join(missing))
+PYEOF
+)
+check "principles.html carries every paragraph of docs/principles.md" "$SYNC_HTML" '^ok$'
+
 # --- agent-friendly 404 -----------------------------------------------------
 check "404 status on unknown path" \
   "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/some-path-that-does-not-exist")" '^404$'

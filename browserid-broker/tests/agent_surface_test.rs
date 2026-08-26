@@ -381,3 +381,22 @@ async fn test_sitemap_and_robots_redirect_to_marketing_origin() {
         assert_eq!(bare.get(path).await.status_code(), 404, "{path} without marketing origin");
     }
 }
+
+/// The principles are published in three hand-synced copies:
+/// docs/principles.md (source of truth), marketing/principles.md (the
+/// content-negotiated mirror), and marketing/principles.html. This test pins
+/// the doc <-> mirror pair byte-identical in the always-run test workflow;
+/// marketing/test.sh checks the html rendering against the doc.
+#[test]
+fn test_principles_doc_matches_marketing_mirror() {
+    let doc =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/principles.md"))
+            .expect("docs/principles.md must exist");
+    let mirror =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../marketing/principles.md"))
+            .expect("marketing/principles.md must exist");
+    assert_eq!(
+        doc, mirror,
+        "docs/principles.md and marketing/principles.md have diverged — run: cp docs/principles.md marketing/principles.md (and update marketing/principles.html to match)"
+    );
+}
