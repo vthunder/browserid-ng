@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "browserid-mcp-auth"
-version = "0.1.0"
+version = "0.1.1"
 description = "Warrant-gated MCP tools over MCP's own OAuth 2.1: a BrowserID 7521 assertion-grant AS + fail-closed per-call revocation checks."
 readme = "README.md"
 requires-python = ">=3.9"
