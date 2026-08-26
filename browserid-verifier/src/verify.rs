@@ -203,7 +203,7 @@ const MAX_STATUS_BODY: usize = 4 * 1024 * 1024;
 
 /// How long a FAILED foreign status fetch is remembered (audit M4 follow-up).
 /// Without this, a blackholed URI stalls every request for the full client
-/// timeout (5s) — unauthenticated amplification via `/verify-access` and
+/// timeout (5s) — unauthenticated amplification via `/verify` and
 /// `/guestbook`. Remembering the failure briefly turns repeats into instant
 /// rejects; correctness is unchanged (fail-closed either way), only the stall
 /// goes. Short, so a recovering authority is retried quickly.
@@ -519,12 +519,12 @@ impl RecordValidationResult {
 
 /// Validate a held `warrant ~ config_cert` record (operation A, spec §6.4
 /// steps 1b–1e) — the hosted two-object record-validation call beside
-/// `/verify-access`. No caller authentication: anyone holding the record holds
+/// `/verify`. No caller authentication: anyone holding the record holds
 /// attributed paper, readable and spendable nowhere (§6.4).
 ///
 /// Step 1a (parse, per-version shape matrix) is `RecordBundle::parse`; 1b
 /// resolves the config cert's issuer with the same DNSSEC-rooted conformance
-/// rule as `/verify-access` (authoritative for the grantor's domain, §8.1
+/// rule as `/verify` (authoritative for the grantor's domain, §8.1
 /// fallbacks); 1c–1d run in core; 1e checks the status refs fail-closed.
 pub async fn validate_record_with_dns(
     record: &str,

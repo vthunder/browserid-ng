@@ -5,7 +5,7 @@ status: completed
 type: task
 priority: high
 created_at: 2026-07-24T13:43:05Z
-updated_at: 2026-08-25T20:57:03Z
+updated_at: 2026-08-26T08:28:47Z
 ---
 
 Dan (2026-07-24): the hosted verifier should live at browserid.me/verify — the tighter endpoint. The device-cert migration left it at /verify-access (the old /verify was the retired cert~assertion path; audit item D2 documents the drift; spec §6.1 already says /verify).
@@ -37,3 +37,5 @@ Suggested order: add /verify as an alias at the broker first (deploy), flip all 
 ## Summary of Changes
 
 Done 2026-08-25. Broker: /verify is the canonical route, /verify-access the permanent alias (same handler); alias regression test (agent_surface). openapi.json (both copies) documents /verify canonical + deprecated-flagged alias. Spec §6 mentions renamed with the alias noted at first mention. verify-quickstart.md rewritten to the actual wire shape (presentation/audience; grantee/holder/issuer/grantee_issuer/status_refs). Mechanical flip across sdk/* (DEFAULT_VERIFIER), examples, scripts/e2e, github-mcp, python-mcp-demo, wallet-service, marketing. All SDK + workspace tests green; deployed and verified on prod (both routes answer identically; openapi live). External repos (bsky/mingo/sbo) tracked in bean bhfi — nothing is broken meanwhile since the alias is permanent. npm publish of the new SDK defaults rides bean bf47.
+
+**Decision superseded (Dan, 2026-08-26):** with every consumer switched to /verify, the permanent-alias policy is reversed — /verify-access is removed entirely. See the removal bean.

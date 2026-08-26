@@ -8,7 +8,7 @@
 //! design: the token comes from an IdP HTTP endpoint, so no client JS can
 //! sign). The ephemeral access/config keys live only inside this one request
 //! and are discarded — the same server-custody property the classic FedCM lane
-//! had. The token is byte-compatible with the popup path, so `/verify-access`
+//! had. The token is byte-compatible with the popup path, so `/verify`
 //! and every verifier library are unchanged.
 //!
 //! Fallback-only: we only surface **Secondary** emails — the ones browserid.me

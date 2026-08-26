@@ -670,9 +670,9 @@ Presentation verification joins **two independent DNSSEC-rooted paths** — one
 through the access cert (the grantee's actor credential) and one through the
 config cert (the grantor's authorization) — and attributes the result to the
 grantor. (The `browserid.me` broker offers a hosted HTTP verifier for RP
-convenience — `/verify` for bundles (with `/verify-access` as its permanent
-alias) and a two-object record-validation call for admission (§6.4); those
-endpoints are a service, not part of this protocol.)
+convenience — `/verify` for bundles and a two-object record-validation call
+for admission (§6.4); those endpoints are a service, not part of this
+protocol.)
 
 ### 6.1 Verification algorithm
 

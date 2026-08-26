@@ -23,7 +23,7 @@
     no-primary domains), obtains device certs, mints a fresh-key access cert,
     and returns the 4-object presentation
     <code>access_cert~assertion~warrant~config_cert</code>. This page then
-    verifies it via <code>POST /verify-access</code>.</p>
+    verifies it via <code>POST /verify</code>.</p>
 
   <p><button id="login">Sign in</button></p>
   <h3>Result</h3>
@@ -38,7 +38,7 @@
       loggedInUser: null,
       onlogin: function (presentation) {
         show('Got presentation — verifying…');
-        fetch('/verify-access', {
+        fetch('/verify', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ presentation: presentation, audience: window.location.origin })

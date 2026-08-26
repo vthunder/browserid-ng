@@ -56,37 +56,6 @@
         }
       }
     },
-    "/verify-access": {
-      "post": {
-        "operationId": "verifyAccessAlias",
-        "deprecated": true,
-        "summary": "Permanent alias of /verify",
-        "description": "Identical to `POST /verify` (same handler). This is the endpoint's original name, kept as a permanent alias — existing integrations never break — but new integrations should call `/verify`.",
-        "tags": ["verification"],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/VerifyAccessRequest" }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Verification outcome (success or failure — see `status`)",
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/AccessVerificationResult" } }
-            }
-          },
-          "400": {
-            "description": "Malformed request (invalid JSON or missing fields)",
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
-            }
-          }
-        }
-      }
-    },
     "/validate-record": {
       "post": {
         "operationId": "validateRecord",

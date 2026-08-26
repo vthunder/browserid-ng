@@ -5,7 +5,7 @@
  * Include this script to get the navigator.id API (watch/request/logout).
  * Device-cert model: onlogin receives the 4-object ACCESS PRESENTATION
  * (`access_cert~assertion~warrant~config_cert`) — verify it server-side via
- * POST /verify-access (or the @browserid-ng/verify SDK).
+ * POST /verify (or the @browserid-ng/verify SDK).
  *
  * watch() v2 (bean 6u70): logins are always explicitly triggered (request()
  * → popup/redirect), except FedCM auto-reauthn where the browser mediates.

@@ -1,5 +1,5 @@
 //! HTTP integration test for DC Phase 2 endpoints: /device/issue + /access/mint.
-//! (verify-access conformance is covered in verifier_test.rs.)
+//! (/verify conformance is covered in verifier_test.rs.)
 
 mod common;
 

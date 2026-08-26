@@ -25,7 +25,7 @@ Most of the server-side pattern is built:
   agents never guess them. Out-of-band discovery reuses RFC 8414
   `.well-known/oauth-authorization-server`.
 - **Verifier SDKs**: `browserid-rp` (Rust, fully local verify) and
-  `@browserid-ng/verify` (JS, zero-dep, verifies via hosted `/verify-access`).
+  `@browserid-ng/verify` (JS, zero-dep, verifies via hosted `/verify`).
 - **Token exchange** (`browserid-rp::exchange`): OAuth-shaped `/token` endpoint
   accepting `grant_type=urn:x-browserid:grant-type:assertion`, returning an
   RP-issued bearer token scoped to warrant-scopes ∩ RP vocabulary. Shaped like

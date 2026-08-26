@@ -6,7 +6,7 @@
 //!   with a per-device status ref.
 //! - `POST /access/mint`   (device-cert-authed) → a fresh-key **access cert**,
 //!   rooted at the issuing device's status index.
-//! - `POST /verify-access` → verify an `access_cert~assertion~warrant~config_cert`
+//! - `POST /verify` → verify an `access_cert~assertion~warrant~config_cert`
 //!   bundle with real primary/fallback conformance (convenience verifier).
 //!
 //! The warrant is signed CLIENT-side by the config cert; its registry/status
@@ -421,7 +421,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// POST /verify-access  (convenience verifier, real conformance)
+// POST /verify  (convenience verifier, real conformance)
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -485,7 +485,7 @@ pub struct ValidateRecordRequest {
     pub accepted_fallbacks: Option<Vec<String>>,
 }
 
-/// The record-validation call beside `/verify-access` (§6.4 steps 1b–1e). No
+/// The record-validation call beside `/verify` (§6.4 steps 1b–1e). No
 /// caller authentication: record validation authenticates no one, and a
 /// record is attributed paper — readable, spendable nowhere — so serving the
 /// check openly leaks nothing (§6.4).
@@ -499,7 +499,7 @@ where
     E: EmailSender,
 {
     use crate::verifier::RecordValidationResult;
-    // Same structured-JSON rejection contract as /verify-access.
+    // Same structured-JSON rejection contract as /verify.
     let Json(req) = match req {
         Ok(json) => json,
         Err(rej) => return crate::error::bad_request_json(rej.body_text()),

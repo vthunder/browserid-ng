@@ -2,7 +2,7 @@
 //! shareable demo of browserid-ng agent auth (device-cert model). An agent
 //! presents an access presentation for audience `<origin>/guestbook` whose
 //! warrant grants the `guestbook-sign` scope; we verify it (DNSSEC-rooted,
-//! same path as `/verify-access`), then record the message attributed to the
+//! same path as `/verify`), then record the message attributed to the
 //! agent identity. `GET /guestbook` is a public page anyone can view.
 //!
 //! Storage is a ring of the last `MAX_ENTRIES`, persisted to a JSON file next to

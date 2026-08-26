@@ -34,9 +34,6 @@ Content-Type: application/json
 }
 ```
 
-(`/verify-access` is a permanent alias of `/verify` — same handler; existing
-integrations keep working.)
-
 **Response** (HTTP 200 in both cases — inspect `status`):
 
 ```jsonc

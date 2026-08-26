@@ -7,7 +7,7 @@
 //!   to the broker (which already learned the pairing at login), and primary
 //!   IdPs see only the broker's aggregate cache-refresh fetches.
 //! - `POST /status/check` — fail-closed revocation re-check for RP backends,
-//!   taking the `status_refs` returned by `/verify-access`. This is the
+//!   taking the `status_refs` returned by `/verify`. This is the
 //!   enforcement path; the page-side poll is UX only.
 
 use std::sync::Arc;
@@ -33,7 +33,7 @@ fn allow_private<U: UserStore, S: SessionStore, E: EmailSender>(
     state: &AppState<U, S, E>,
 ) -> bool {
     // Enforce the SSRF guard in production; relax only on localhost dev —
-    // same policy as /verify-access.
+    // same policy as /verify.
     !super::session::cookie_secure(&state.domain)
 }
 
@@ -109,7 +109,7 @@ where
     E: EmailSender,
 {
     // Malformed bodies get the structured-JSON rejection contract shared by
-    // the public API endpoints (/verify-access, /validate-record).
+    // the public API endpoints (/verify, /validate-record).
     let Json(req) = match req {
         Ok(json) => json,
         Err(rej) => return Ok(crate::error::bad_request_json(rej.body_text())),
