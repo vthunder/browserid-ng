@@ -5,14 +5,14 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-08-26T13:46:09Z
-updated_at: 2026-08-26T19:57:41Z
+updated_at: 2026-08-26T21:03:43Z
 ---
 
 The trust pages shipped in bean 1w4g (commit 4018a11) were first-draft copy written to satisfy the Is Agentic audit (real pages, ≥500 chars, honest content). Dan wants to rework the content on all three.
 
 Constraints to keep when rewriting:
 - [x] Rework /about copy (about.html + about.md) — v2 shipped: minimal first-person story + principles spirit + try-it CTA; pricing reduced to a clause; heading/who-runs-it/pricing-section/design-paragraph all cut per Dan
-- [ ] Rework /contact copy (contact.html + contact.md)
+- [x] Rework /contact copy (contact.html + contact.md) — bare 'Contact' h1, no subtitle, zero subheadings, two-paragraph blurb (issues/repo + email/security/agent note)
 - [ ] Rework /privacy copy (privacy.html + privacy.md)
 - [ ] Keep html and md mirrors in sync (Accept: text/markdown negotiation serves the .md)
 - [ ] Keep the anchors/claims tests rely on: marketing/test.sh asserts canonical + ≥500 chars of text per page, "Everything is free" on /about, and the /about#pricing anchor is linked from llms.txt
