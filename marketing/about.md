@@ -7,11 +7,14 @@ I led the BrowserID/Persona effort at Mozilla from its first days — first
 building, then as product lead — until shortly after Persona launched. Plenty
 of people contributed as much as I did, and more on the technical side; but I
 was in the room for just about every protocol and product decision, so I know
-what we got right and where it failed. What we got right: your email address
-is your identity, its domain is your issuer, and no vendor needs to sit
-between you and the sites you sign into. Where it failed: passwords were just
-barely tolerable for humans, so an open protocol stayed optional — and
-optional wasn't enough.
+what we got right and where it failed. What we got right, I'd still defend
+today: email as identity, and shipping the scaffolding ourselves — it worked
+with any email, in any browser, from day one, and the only people we had to
+convince were websites. Why it died is a longer story: timing and priorities
+inside Mozilla at least as much as anything in the market, a too-late bridge
+to the big mail providers, and, yes, passwords that were just barely
+tolerable — so an open protocol stayed optional. The project failed; the idea
+never did.
 
 A decade of other work later, agents changed the terms. You cannot hand an
 agent your password and call it fine; credentials that merely annoyed humans

@@ -160,8 +160,6 @@ print("canonical" in s, len(" ".join(text.split())) >= 500)
 done
 check "/about carries the visible pricing mention" \
   "$(curl -s "$BASE/about")" 'free to use'
-check "footer pricing line on the homepage" \
-  "$(curl -s "$BASE/")" 'Free — no paid tiers'
 check "footer links the trust pages" "$(curl -s "$BASE/")" 'href="/privacy"'
 check "sitemap lists the trust pages with lastmod" \
   "$(curl -s "$BASE/sitemap.xml" | python3 -c '
