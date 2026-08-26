@@ -93,10 +93,10 @@ way is harder than the shortcut, the shortcut wins. Passwords get handed to
 agents, keys get pasted into configs, and an open protocol loses to the
 button that just works.
 
-In practice: signing in has to be easier than the password it replaces;
-adding it to a site takes five minutes — one call, no registration; giving
-an agent its own identity has to be easier than giving it yours. A design
-that is correct but burdensome is not correct yet.
+In practice: signing in has to be easier than the password it replaces, and
+giving an agent its own identity has to be easier than handing it yours. For
+a site, adopting all of this is one call and five minutes — no registration,
+no keys. A design that is correct but burdensome is not correct yet.
 
 ### 7. No one has to choose between open and working.
 
