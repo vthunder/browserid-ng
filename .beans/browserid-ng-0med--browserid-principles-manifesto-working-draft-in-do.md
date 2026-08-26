@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-08-26T15:43:15Z
-updated_at: 2026-08-26T17:37:54Z
+updated_at: 2026-08-26T20:51:12Z
 ---
 
 Develop a declaration of principles for BrowserID — what we're solving and what constrains the solutions. Audience: fellow-travelers. Format: bold principle sentence + short explanation, optional below-the-fold detail. First draft lives in docs/principles.md.
@@ -46,3 +46,11 @@ Replacing the broker is not unilateral for any single party. Either the RP choos
 - Diagnosis beat (borrowed passwords / no boundaries / no kill switch) joining "Why now"
 - Contrast-pairs coda (human authority over agent autonomy; legible over unlinkable; open federation over curated trust; revocation over rotation; working defaults over pure decentralization)
 - The word "censorship resistance" appears nowhere; substance lives in (2)+(3)
+
+## Principle 8 added (2026-08-26, shipped 1157050)
+
+"Ease of use is not an afterthought." — Dan's headline. Body says both halves: delight matters in its own right AND ease is load-bearing (path of least resistance = the threat model; the shortcut wins when the right way is harder). Concrete bars: sign-in easier than a password, adding to a site takes five minutes, agent identity easier than handing over yours. Closer: "A design that is correct but burdensome is not correct yet."
+
+Reorder: ease slots at 6, loyalty ("Anything that acts between you and the world…") moves to 8 as the deliberate closer. All other numbers unchanged, so the (see 2)/(see 7) cross-references survived untouched. P5's "honesty cheaper than masquerade" now reads as the agent-specific instance of 6.
+
+All three copies synced (guardrails green); /about "in one breath" gained the ease clause and says "full eight".
