@@ -46,6 +46,6 @@ jobs:
       # what the registry serves at the SAME version — i.e. someone changed
       # shipped code without bumping. The fix is always to bump the version
       # in this PR; publishing itself happens in publish.yml on main.
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
       - name: publish drift gate
         run: node scripts/publish-status.mjs
