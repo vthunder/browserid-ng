@@ -1,11 +1,11 @@
 ---
 # browserid-ng-0med
 title: BrowserID principles manifesto (working draft in docs/principles.md)
-status: in-progress
+status: completed
 type: task
 priority: normal
 created_at: 2026-08-26T15:43:15Z
-updated_at: 2026-08-26T20:51:12Z
+updated_at: 2026-08-26T22:18:50Z
 ---
 
 Develop a declaration of principles for BrowserID — what we're solving and what constrains the solutions. Audience: fellow-travelers. Format: bold principle sentence + short explanation, optional below-the-fold detail. First draft lives in docs/principles.md.
@@ -20,8 +20,8 @@ Decisions so far:
 
 Open items:
 - [x] Workshop bold lines for principles 2 and 3 — (2) "No gatekeepers.", (3) reframed around ownership ("Every identity answers to its owner")
-- [ ] Decide whether a diagnosis beat (borrowed passwords / no boundaries / no kill switch) joins the opening story
-- [ ] Decide on contrast-pairs coda
+- [x] Decide whether a diagnosis beat joins the opening story — decided: no, "Why now" stands as-is
+- [x] Decide on contrast-pairs coda — decided: omitted, the eight principles stand alone
 - [x] Tighten below-the-fold texts; cut anything that repeats a sibling principle (full tightening pass in v3)
 - [x] Final pass for "will" language leaking into principles (dreams belong in the opening, promises in the principles)
 
@@ -54,3 +54,20 @@ Replacing the broker is not unilateral for any single party. Either the RP choos
 Reorder: ease slots at 6, loyalty ("Anything that acts between you and the world…") moves to 8 as the deliberate closer. All other numbers unchanged, so the (see 2)/(see 7) cross-references survived untouched. P5's "honesty cheaper than masquerade" now reads as the agent-specific instance of 6.
 
 All three copies synced (guardrails green); /about "in one breath" gained the ease clause and says "full eight".
+
+## Summary of Changes
+
+The manifesto is done and published. Final state: docs/principles.md (source of truth) = "Why now" (3 paragraphs: the platforms filled the identity gap; open attempts incl. our own Persona lineage lost; agents forcibly reopen the question) + eight principles, each a bold sentence with a short plain explanation:
+
+1. Your identity is an email-shaped name.
+2. No gatekeepers.
+3. Every identity answers to its owner — and no one else.
+4. All authority is borrowed.
+5. One protocol for humans and machines.
+6. Ease of use is not an afterthought.
+7. No one has to choose between open and working.
+8. Anything that acts between you and the world owes its loyalty to you. (deliberate closer)
+
+Published at https://www.browserid.me/principles (html + md mirror), drift-guarded by a cargo byte-sync test and a test.sh html-containment check (bean fip9). Reached from the footer sitewide and from /about's "Read the eight principles →" link; /about is in the top nav and carries the one-breath paraphrase. README links the doc up top.
+
+Open items resolved by decision: no diagnosis beat added to "Why now"; contrast-pairs coda omitted. Candidates preserved in this bean's earlier notes if ever revisited.
