@@ -108,8 +108,8 @@ and they can be replaced.
 ### 7. No one has to choose between open and working.
 
 Identity systems that need many kinds of parties to adopt before anyone
-benefits are stillborn — chicken-and-egg is what killed the last generation.
-So we ship the scaffolding that makes the system whole from day one: a
+benefits are stillborn. So we ship the scaffolding that makes the system
+whole from day one: a
 fallback issuer for domains that have none, a hosted verifier, a hosted
 wallet. Any site can adopt today and reach everyone with an email address.
 
@@ -152,6 +152,13 @@ as the default broker because principle 7 demands *some* default. This is
 why (7) names the per-party swap paths (issuer↔domain, verifier↔site,
 native browser↔user) instead of claiming "anyone can swap the broker"
 flatly, and why (2) says "sites still pick which brokers they trust."
+
+**Settled in review:**
+
+- The revocation beats in both (4) ("never costs the human their own
+  access") and (5) ("without that person rotating their own life") are
+  intentional and stay — different points (human's safety vs. agent's
+  addressability), natural in each home.
 
 **Structural questions still open:**
 
