@@ -84,7 +84,36 @@ And consequences need an address: an agent with its own identity can be
 blocked or rate-limited without touching the person behind it, and revoked
 without that person rotating their own life.
 
-### 6. Anything that acts between you and the world owes its loyalty to you.
+### 6. Ease of use is not an afterthought.
+
+Identity is something people touch every day, and using it should be
+genuinely pleasant — that matters in its own right. But ease is also
+load-bearing: people take the path of least resistance, and when the right
+way is harder than the shortcut, the shortcut wins. Passwords get handed to
+agents, keys get pasted into configs, and an open protocol loses to the
+button that just works.
+
+In practice: signing in has to be easier than the password it replaces;
+adding it to a site takes five minutes — one call, no registration; giving
+an agent its own identity has to be easier than giving it yours. A design
+that is correct but burdensome is not correct yet.
+
+### 7. No one has to choose between open and working.
+
+Identity systems that need many kinds of parties to adopt before anyone
+benefits are stillborn. So we ship the scaffolding that makes the system
+whole from day one: a fallback issuer for domains that have none, a hosted
+verifier, a hosted wallet. Any site can adopt today and reach everyone with
+an email address.
+
+The scaffolding is essential and may well stay — browserid.me may remain
+the common broker for a long time, and that's fine. What matters is not
+that anyone replaces it, but that anyone can: your own issuer for your
+domain, your own verifier for your site, a browser that speaks the protocol
+natively for the user. Openness lives in the ability to leave, not the
+obligation to.
+
+### 8. Anything that acts between you and the world owes its loyalty to you.
 
 The browser was named the "user agent" for a reason: software that stands
 between a person and the network represents that person. We extend the same
@@ -104,18 +133,3 @@ lie for you: everything they assert is verifiable by the party receiving
 it, which is what lets a broker take the user's side and still be trusted
 ground for sites and issuers. They know as little as their job requires,
 and they can be replaced.
-
-### 7. No one has to choose between open and working.
-
-Identity systems that need many kinds of parties to adopt before anyone
-benefits are stillborn. So we ship the scaffolding that makes the system
-whole from day one: a fallback issuer for domains that have none, a hosted
-verifier, a hosted wallet. Any site can adopt today and reach everyone with
-an email address.
-
-The scaffolding is essential and may well stay — browserid.me may remain
-the common broker for a long time, and that's fine. What matters is not
-that anyone replaces it, but that anyone can: your own issuer for your
-domain, your own verifier for your site, a browser that speaks the protocol
-natively for the user. Openness lives in the ability to leave, not the
-obligation to.

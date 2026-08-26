@@ -30,10 +30,11 @@ Everything here is built against a short set of written principles. Their
 spirit, in one breath: your identity is an email-shaped name that answers to
 you and no one else; anyone can join the system — as an issuer, a site, or a
 broker — without asking permission; an agent is a real actor whose authority
-is always borrowed — scoped, attributed, revocable; everything that stands
-between you and the world, browser and wallet and broker and the AI agent
-itself, owes its loyalty to you; and none of it may ask anyone to choose
-between open and working. The full seven are short and worth reading:
+is always borrowed — scoped, attributed, revocable; all of it has to be easy,
+because ease is what makes the right way the common way; everything that
+stands between you and the world, browser and wallet and broker and the AI
+agent itself, owes its loyalty to you; and none of it may ask anyone to
+choose between open and working. The full eight are short and worth reading:
 [the principles](/principles).
 
 ## Try it

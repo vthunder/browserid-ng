@@ -177,7 +177,7 @@ print(p["name"], "email" in p)
 ')" '^Dan Mills True$'
 check "llms.txt links the trust pages" "$(curl -s "$BASE/llms.txt")" 'browserid\.me/privacy'
 check "llms.txt links the principles" "$(curl -s "$BASE/llms.txt")" 'browserid\.me/principles'
-check "/principles carries the seven principles and a timestamp" \
+check "/principles carries the eight principles and a timestamp" \
   "$(curl -s "$BASE/principles" | python3 -c '
 import sys
 s = sys.stdin.read()

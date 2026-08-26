@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="The BrowserID principles: why the open identity question is being reopened by agents, and the seven commitments that shape everything we build.">
+<meta name="description" content="The BrowserID principles: why the open identity question is being reopened by agents, and the eight commitments that shape everything we build.">
 <title>BrowserID principles — what we build by | browserid.me</title>
 <link rel="canonical" href="https://www.browserid.me/principles">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='90'%3E%F0%9F%AA%AA%3C/text%3E%3C/svg%3E">
@@ -73,14 +73,18 @@
       <p class="sec-lede">No caste system, no separate agent lane, and no pretending the protocol can tell which actors are human — any protocol that claims to is wrong or lying. Walling agents out of "human-only" actions doesn't produce a web without agents; it produces agents wearing their humans' faces. We make honesty cheaper than masquerade: acting as itself, with borrowed authority, works everywhere, so an agent never needs to impersonate anyone.</p>
       <p class="sec-lede">And consequences need an address: an agent with its own identity can be blocked or rate-limited without touching the person behind it, and revoked without that person rotating their own life.</p>
 
-      <h2 class="sec" style="margin-top:44px">6. Anything that acts between you and the world owes its loyalty to you.</h2>
-      <p class="sec-lede">The browser was named the "user agent" for a reason: software that stands between a person and the network represents that person. We extend the same duty to everything identity requires — the wallet, the broker, and the AI agent itself are all the user's agent.</p>
-      <p class="sec-lede">This is a duty, not a description. People worry — rightly — that an AI agent may serve its vendor, or its objective, before its user. We cannot make every agent loyal. What the identity layer can do is give the duty teeth: an agent acts within a scope its human granted, under a name that consequences can attach to, with access that ends the moment trust does. Where loyalty can't be verified, boundaries can be enforced.</p>
-      <p class="sec-lede">For the intermediaries we build — the wallet, the broker — the duty is concrete: loyal in interest, neutral in fact. They represent you but never lie for you: everything they assert is verifiable by the party receiving it, which is what lets a broker take the user's side and still be trusted ground for sites and issuers. They know as little as their job requires, and they can be replaced.</p>
+      <h2 class="sec" style="margin-top:44px">6. Ease of use is not an afterthought.</h2>
+      <p class="sec-lede">Identity is something people touch every day, and using it should be genuinely pleasant — that matters in its own right. But ease is also load-bearing: people take the path of least resistance, and when the right way is harder than the shortcut, the shortcut wins. Passwords get handed to agents, keys get pasted into configs, and an open protocol loses to the button that just works.</p>
+      <p class="sec-lede">In practice: signing in has to be easier than the password it replaces; adding it to a site takes five minutes — one call, no registration; giving an agent its own identity has to be easier than giving it yours. A design that is correct but burdensome is not correct yet.</p>
 
       <h2 class="sec" style="margin-top:44px">7. No one has to choose between open and working.</h2>
       <p class="sec-lede">Identity systems that need many kinds of parties to adopt before anyone benefits are stillborn. So we ship the scaffolding that makes the system whole from day one: a fallback issuer for domains that have none, a hosted verifier, a hosted wallet. Any site can adopt today and reach everyone with an email address.</p>
       <p class="sec-lede">The scaffolding is essential and may well stay — browserid.me may remain the common broker for a long time, and that's fine. What matters is not that anyone replaces it, but that anyone can: your own issuer for your domain, your own verifier for your site, a browser that speaks the protocol natively for the user. Openness lives in the ability to leave, not the obligation to.</p>
+
+      <h2 class="sec" style="margin-top:44px">8. Anything that acts between you and the world owes its loyalty to you.</h2>
+      <p class="sec-lede">The browser was named the "user agent" for a reason: software that stands between a person and the network represents that person. We extend the same duty to everything identity requires — the wallet, the broker, and the AI agent itself are all the user's agent.</p>
+      <p class="sec-lede">This is a duty, not a description. People worry — rightly — that an AI agent may serve its vendor, or its objective, before its user. We cannot make every agent loyal. What the identity layer can do is give the duty teeth: an agent acts within a scope its human granted, under a name that consequences can attach to, with access that ends the moment trust does. Where loyalty can't be verified, boundaries can be enforced.</p>
+      <p class="sec-lede">For the intermediaries we build — the wallet, the broker — the duty is concrete: loyal in interest, neutral in fact. They represent you but never lie for you: everything they assert is verifiable by the party receiving it, which is what lets a broker take the user's side and still be trusted ground for sites and issuers. They know as little as their job requires, and they can be replaced.</p>
 
       <p class="sec-lede" style="margin-top:44px">These principles live in the open, like everything else here: <a href="https://github.com/vthunder/browserid-ng/blob/main/docs/principles.md">docs/principles.md</a>.</p>
     </div>
