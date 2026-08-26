@@ -8,10 +8,10 @@
 
 The web never got an identity layer. Into that gap came the platforms:
 "Sign in with" a company, on that company's terms, under that company's
-watch. We tried to build the open alternative once — BrowserID, Mozilla
-Persona — and lost. We lost in part because, for humans, passwords were just
-barely tolerable: the open protocol was optional, and optional wasn't
-enough.
+watch. The open alternative has been tried more than once — OpenID, Mozilla
+Persona and its BrowserID protocol (our own lineage), and others — and every
+attempt lost. They lost in part because, for humans, passwords were just
+barely tolerable: an open protocol was optional, and optional wasn't enough.
 
 Agents end that truce. You cannot hand an agent your password and call it
 fine; borrowed credentials that merely annoyed humans become indefensible at
@@ -34,29 +34,32 @@ root — split on the `@` and you know who vouches for it. Anything that is
 not an email is plumbing, or gets tied to an email before a human or agent
 has to deal with it.
 
-### 2. New identity providers, sites, and brokers need no one's blessing.
+### 2. No gatekeepers.
 
-Joining the system means publishing a record and speaking the protocol — not
-applying, registering, paying, or partnering. There is no list of blessed
-parties anywhere in the design: a two-person domain and the largest mail
-provider on earth have exactly the same standing. Structural openness is the
-guarantee; the protocol can't dictate whom the market favors, but it will
-never hard-code a favorite.
+Anyone can join the system — as an identity provider, a site, or a broker —
+by publishing a record and speaking the protocol: no applying, no
+registering, no paying, no partnering. There is no list of blessed parties
+anywhere in the design; a two-person domain and the largest mail provider on
+earth have exactly the same standing. The openness is structural, not
+promised: the protocol can't dictate whom the market favors — sites still
+choose which brokers they'll accept — but it will never hard-code the choice
+for them.
 
-### 3. Where you sign in is between you and the site.
+### 3. Every identity answers to its owner — and no one else.
 
-Your identity provider vouches for your name; it does not learn where you
-use it and it does not get a veto. This is architecture, not policy: for a
-personal identity the issuer sits outside the sign-in path entirely, so
+You own your personal identity, so where you sign in is between you and the
+site. Your identity provider vouches for your name; it does not learn where
+you use it and it does not get a veto. This is architecture, not policy: for
+a personal identity the issuer sits outside the sign-in path entirely, so
 watching or selectively blocking your logins is structurally unavailable to
 it — the worst it can do is refuse you service outright, which is coarse,
 visible, and escapable (see 2).
 
-Managed identities are the disclosed exception, by the same rule: they
-belong to organizations, not users. The organization that issues a managed
-identity legitimately sees and governs its use — and everyone dealing with
-one can see that it is that kind of identity. What a party may see and stop
-is exactly what its authority covers; nobody holds hidden levers.
+Organizations own managed identities — the same rule with a different owner.
+The organization that issues a managed identity legitimately sees and
+governs its use, and everyone dealing with one can see that it is that kind
+of identity. In both cases, who an identity answers to is disclosed, and no
+one else holds levers over it.
 
 ### 4. All authority is borrowed.
 
@@ -66,9 +69,9 @@ signature, scoped to named places and actions, expiring on a date, revocable
 at any moment — and when in doubt, the answer is no. Revoking an agent never
 costs the human their own access.
 
-Below the fold: borrowing composes but never amplifies — a delegate that
-granted more than it holds would be lending authority it never borrowed, so
-delegation can only narrow. And honesty about reach: the protocol delivers
+Borrowing composes but never amplifies: a delegate that granted more than
+it holds would be lending authority it never borrowed, so delegation can
+only narrow. And honesty about reach: the protocol delivers
 attribution and scope to the relying party; whether an RP displays "agent A
 acting for user U," and whether a human grants an agent everything, are
 their choices. We build the rails; we can't force the trains.
@@ -82,8 +85,8 @@ agents; it produces agents wearing their humans' faces. So we make honesty
 cheaper than masquerade: an agent never needs to impersonate anyone, because
 acting as itself, with borrowed authority, works everywhere.
 
-Below the fold: consequences need an address. Because an agent has an
-identity of its own, consequences can attach to it — a site can block or
+And consequences need an address: because an agent has an identity of its
+own, consequences can attach to it — a site can block or
 rate-limit one agent without touching the person behind it, and a person can
 revoke one agent without rotating their own life.
 
@@ -94,44 +97,64 @@ between a person and the network represents that person. We extend the same
 duty to everything identity requires — the wallet, the broker, and the AI
 agent itself are all the user's agent.
 
-Loyal in interest, neutral in fact: your agent represents you, but it never
-lies for you. Everything an intermediary asserts to a counterparty is
-verifiable by that counterparty, so sites and issuers trust the protocol,
-not the operator's character — that verifiability is what lets a broker be
-loyal to users and still be trusted ground for everyone else. And the
-loyalty is enforced by architecture, not promises: an intermediary holds the
-minimum knowledge needed to do its job (it can't betray what it can't see),
-and every intermediary is replaceable (it stays honest because you can walk
-away).
+This is a duty, not a description. People worry — rightly — that an AI
+agent may serve its vendor, or its objective, before its user. We cannot
+make every agent loyal. What the identity layer can do is give the duty
+teeth: an agent acts within a scope its human granted, under a name that
+consequences can attach to, with access that ends the moment trust does.
+Where loyalty can't be verified, boundaries can be enforced.
 
-### 7. Open must also mean working.
+For the intermediaries we build — the wallet, the broker — the duty is
+concrete: loyal in interest, neutral in fact. They represent you, but never
+lie for you. Everything they assert to a counterparty is verifiable by that
+counterparty, so sites and issuers trust the protocol rather than the
+operator's character — that verifiability is what lets a broker be loyal to
+users and still be trusted ground for everyone else. And the loyalty is
+enforced by architecture, not promises: hold the minimum knowledge needed
+(you can't betray what you can't see), and stay replaceable (honest because
+your users can walk away).
 
-A site adopting the protocol targets 100% of people with an email address on
-day one — no waiting for issuers to adopt, no chicken-and-egg. We ship the
-scaffolding that makes this true: a fallback issuer for domains that have
-none, a hosted verifier, a hosted wallet. An RP never has to choose between
-"open" and "working."
+### 7. No one has to choose between open and working.
 
-Scaffolding, not a cathedral: every scaffold is designed to be replaced —
-by your own domain, your own verifier, your own broker — and its success is
-measured by its eventual irrelevance.
+A site adopting the protocol reaches 100% of people with an email address on
+day one — no waiting for issuers to adopt, no chicken-and-egg. Identity
+systems that need many kinds of parties to join before anyone benefits are
+stillborn; we ship the scaffolding that makes the system whole from the
+start: a fallback issuer for domains that have none, a hosted verifier, a
+hosted wallet.
+
+The scaffolding is essential, and it may well stay: browserid.me may remain
+the common broker for a long time, and that's fine. What matters is not
+that anyone replaces it, but that anyone can — every hosted piece can be
+swapped for your own domain, your own verifier, your own broker. Openness
+lives in the ability to leave, not the obligation to.
 
 ---
 
 ## Workshop notes (not part of the manifesto)
 
-**Bold lines still being workshopped:**
+**Bold-line status:**
 
-- (2) current line is serviceable but flat. Rejected: "Entry requires a
-  domain, not a deal" (reads AI-punchy). Other candidates: "Anyone can set
-  up shop." / "No gatekeepers at the door."
-- (3) candidates rejected so far: "Attestation is not dominion" (opaque),
-  "Issuers vouch; they don't watch" (misses the veto half, punchy).
-  Current line is closest to the plain statement of the principle.
-- (7) alternatives: "Working everywhere is part of the protocol."
+- (2) "No gatekeepers." adopted (Dan's pick from the candidates). Rejected
+  along the way: "Entry requires a domain, not a deal" (reads AI-punchy),
+  "New IdPs/sites/brokers need no one's blessing" (brokers weakened the
+  claim — a site still chooses which brokers to accept; now said honestly
+  in the body).
+- (3) reframed around ownership ("Every identity answers to its owner")
+  so managed identities read as the same rule with a different owner, not
+  an exception contradicting the headline. Earlier rejections: "Attestation
+  is not dominion" (opaque), "Issuers vouch; they don't watch" (misses the
+  veto half).
+- (7) "No one has to choose between open and working." — Dan's suggested
+  line, shifted from "should have to" into is/does form per the
+  dreams-in-the-opening rule.
 
 **Structural questions still open:**
 
+- (1): do the three qualities of email (understood as identity; openly
+  federated; trust root discoverable from the name) stay folded under one
+  principle, or become principles of their own? Current lean: folded —
+  they're the argument for a choice, not independent commitments.
 - Does the diagnosis (borrowed passwords, no boundaries, no kill switch —
   the homepage problem statement) join the "Why now" story, or is that
   audience already converted?
@@ -142,6 +165,10 @@ measured by its eventual irrelevance.
 - "Censorship resistance" as a word appears nowhere; the substance lives in
   3 (coarse/visible/escapable) and 2 (exit). Confirm we're happy leaving
   the term out.
+- (6): the AI-agent paragraph now frames loyalty as a duty the identity
+  layer enforces boundaries around ("where loyalty can't be verified,
+  boundaries can be enforced") — confirm this is the right register, vs.
+  stating it as pure aspiration.
 
 **Deliberately excluded:**
 
