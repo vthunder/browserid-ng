@@ -1,4 +1,4 @@
-# Why BrowserID exists
+# Why browserid.me exists
 
 > The web never got an open identity layer. Agents are forcing the question
 > open again — and this time, the open answer has to be the one that works.
