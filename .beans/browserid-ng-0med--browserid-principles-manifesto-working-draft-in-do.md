@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-08-26T15:43:15Z
-updated_at: 2026-08-26T16:13:53Z
+updated_at: 2026-08-26T16:36:25Z
 ---
 
 Develop a declaration of principles for BrowserID — what we're solving and what constrains the solutions. Audience: fellow-travelers. Format: bold principle sentence + short explanation, optional below-the-fold detail. First draft lives in docs/principles.md.
@@ -22,5 +22,5 @@ Open items:
 - [x] Workshop bold lines for principles 2 and 3 — (2) "No gatekeepers.", (3) reframed around ownership ("Every identity answers to its owner")
 - [ ] Decide whether a diagnosis beat (borrowed passwords / no boundaries / no kill switch) joins the opening story
 - [ ] Decide on contrast-pairs coda
-- [ ] Tighten below-the-fold texts; cut anything that repeats a sibling principle
+- [x] Tighten below-the-fold texts; cut anything that repeats a sibling principle (full tightening pass in v3)
 - [ ] Final pass for "will" language leaking into principles (dreams belong in the opening, promises in the principles)

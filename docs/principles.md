@@ -26,69 +26,63 @@ are the principles we're choosing by.
 
 ### 1. Your identity is an email-shaped name.
 
-For humans and for agents alike. Email addresses are the only identifier
-with all three of the qualities an open identity system needs: everyone
-already understands them as identity; they are openly federated — anyone can
-become an issuer by registering a domain; and the name carries its own trust
-root — split on the `@` and you know who vouches for it. Anything that is
-not an email is plumbing, or gets tied to an email before a human or agent
-has to deal with it.
+For humans and agents alike. Email addresses are the only identifier with
+all three qualities an open identity system needs: everyone already
+understands them as identity; anyone can issue them by registering a domain;
+and the name carries its own trust root — split on the `@` and you know who
+vouches for it. Anything that isn't an email is plumbing, or gets tied to an
+email before a person or agent has to deal with it.
 
 ### 2. No gatekeepers.
 
-Anyone can join the system — as an identity provider, a site, or a broker —
-by publishing a record and speaking the protocol: no applying, no
-registering, no paying, no partnering. There is no list of blessed parties
-anywhere in the design; a two-person domain and the largest mail provider on
-earth have exactly the same standing. The openness is structural, not
-promised: the protocol can't dictate whom the market favors — sites still
-choose which brokers they'll accept — but it will never hard-code the choice
-for them.
+Anyone can join — as an identity provider, a site, or a broker — by
+publishing a record and speaking the protocol. No applying, no registering,
+no paying, no partnering. There is no list of blessed parties anywhere in
+the design; a two-person domain and the largest mail provider on earth have
+the same standing. The protocol can't dictate whom the market favors —
+sites still pick which brokers they trust — but it will never hard-code the
+choice.
 
 ### 3. Every identity answers to its owner — and no one else.
 
 You own your personal identity, so where you sign in is between you and the
-site. Your identity provider vouches for your name; it does not learn where
-you use it and it does not get a veto. This is architecture, not policy: for
-a personal identity the issuer sits outside the sign-in path entirely, so
-watching or selectively blocking your logins is structurally unavailable to
-it — the worst it can do is refuse you service outright, which is coarse,
+site: your identity provider vouches for your name, but never learns where
+you use it and gets no veto. That's architecture, not policy — the issuer
+sits outside the sign-in path, so watching or selectively blocking you is
+structurally impossible. The worst it can do is refuse you outright: coarse,
 visible, and escapable (see 2).
 
-Organizations own managed identities — the same rule with a different owner.
-The organization that issues a managed identity legitimately sees and
-governs its use, and everyone dealing with one can see that it is that kind
-of identity. In both cases, who an identity answers to is disclosed, and no
-one else holds levers over it.
+Organizations own managed identities — the same rule, different owner. The
+issuing organization rightly sees and governs their use, and anyone dealing
+with one can see what kind of identity it is. Either way, who an identity
+answers to is disclosed, and no one else holds levers over it.
 
 ### 4. All authority is borrowed.
 
 Agents are real actors with real identities, but everything an agent may do
-is delegated to it: granted by a person (or an organization) in an explicit
-signature, scoped to named places and actions, expiring on a date, revocable
-at any moment — and when in doubt, the answer is no. Revoking an agent never
-costs the human their own access.
+is delegated: granted by a person or an organization in an explicit
+signature, scoped to named places and actions, expiring, revocable at any
+moment — and when in doubt, the answer is no. Revoking an agent never costs
+the human their own access.
 
-Borrowing composes but never amplifies: a delegate that granted more than
-it holds would be lending authority it never borrowed, so delegation can
-only narrow. And honesty about reach: the protocol delivers
-attribution and scope to the relying party; whether an RP displays "agent A
-acting for user U," and whether a human grants an agent everything, are
-their choices. We build the rails; we can't force the trains.
+Borrowed authority can be passed on but never amplified — a delegate can
+grant only a narrower slice of what it holds. And the protocol delivers
+attribution and scope to the site; whether the site displays them, and how
+much a human chooses to grant, remain their choices. We build the rails; we
+can't force the trains.
 
 ### 5. One protocol for humans and machines.
 
 No caste system, no separate agent lane, and no pretending the protocol can
 tell which actors are human — any protocol that claims to is wrong or lying.
 Walling agents out of "human-only" actions doesn't produce a web without
-agents; it produces agents wearing their humans' faces. So we make honesty
-cheaper than masquerade: an agent never needs to impersonate anyone, because
-acting as itself, with borrowed authority, works everywhere.
+agents; it produces agents wearing their humans' faces. We make honesty
+cheaper than masquerade: acting as itself, with borrowed authority, works
+everywhere, so an agent never needs to impersonate anyone.
 
-And consequences need an address: because an agent has an identity of its
-own, consequences can attach to it — a site can block or
-rate-limit one agent without touching the person behind it, and a person can
-revoke one agent without rotating their own life.
+And consequences need an address: an agent with its own identity can be
+blocked or rate-limited without touching the person behind it, and revoked
+without that person rotating their own life.
 
 ### 6. Anything that acts between you and the world owes its loyalty to you.
 
@@ -105,29 +99,26 @@ consequences can attach to, with access that ends the moment trust does.
 Where loyalty can't be verified, boundaries can be enforced.
 
 For the intermediaries we build — the wallet, the broker — the duty is
-concrete: loyal in interest, neutral in fact. They represent you, but never
-lie for you. Everything they assert to a counterparty is verifiable by that
-counterparty, so sites and issuers trust the protocol rather than the
-operator's character — that verifiability is what lets a broker be loyal to
-users and still be trusted ground for everyone else. And the loyalty is
-enforced by architecture, not promises: hold the minimum knowledge needed
-(you can't betray what you can't see), and stay replaceable (honest because
-your users can walk away).
+concrete: loyal in interest, neutral in fact. They represent you but never
+lie for you: everything they assert is verifiable by the party receiving
+it, which is what lets a broker take the user's side and still be trusted
+ground for sites and issuers. They know as little as their job requires,
+and they can be replaced.
 
 ### 7. No one has to choose between open and working.
 
-A site adopting the protocol reaches 100% of people with an email address on
-day one — no waiting for issuers to adopt, no chicken-and-egg. Identity
-systems that need many kinds of parties to join before anyone benefits are
-stillborn; we ship the scaffolding that makes the system whole from the
-start: a fallback issuer for domains that have none, a hosted verifier, a
-hosted wallet.
+Identity systems that need many kinds of parties to adopt before anyone
+benefits are stillborn — chicken-and-egg is what killed the last generation.
+So we ship the scaffolding that makes the system whole from day one: a
+fallback issuer for domains that have none, a hosted verifier, a hosted
+wallet. Any site can adopt today and reach everyone with an email address.
 
-The scaffolding is essential, and it may well stay: browserid.me may remain
+The scaffolding is essential and may well stay — browserid.me may remain
 the common broker for a long time, and that's fine. What matters is not
-that anyone replaces it, but that anyone can — every hosted piece can be
-swapped for your own domain, your own verifier, your own broker. Openness
-lives in the ability to leave, not the obligation to.
+that anyone replaces it, but that anyone can: your own issuer for your
+domain, your own verifier for your site, a browser that speaks the protocol
+natively for the user. Openness lives in the ability to leave, not the
+obligation to.
 
 ---
 
@@ -147,7 +138,20 @@ lives in the ability to leave, not the obligation to.
   veto half).
 - (7) "No one has to choose between open and working." — Dan's suggested
   line, shifted from "should have to" into is/does form per the
-  dreams-in-the-opening rule.
+  dreams-in-the-opening rule. Alternate headline candidate if this one ever
+  wobbles: something built on "no chicken-and-egg."
+
+**Framing memo — swapping the broker (keep in mind, not in the text):**
+Replacing the broker is not unilateral for any single party. Either the RP
+chooses a different broker (real cost: users won't have it set up and face
+an unfamiliar implementation), or the user's browser natively implements
+the navigator.id.* APIs (fine — the user's own choice), but if that
+browser's broker issues fallback certificates the RP still has to trust
+that fallback; no way around it. Our implementations hard-code browserid.me
+as the default broker because principle 7 demands *some* default. This is
+why (7) names the per-party swap paths (issuer↔domain, verifier↔site,
+native browser↔user) instead of claiming "anyone can swap the broker"
+flatly, and why (2) says "sites still pick which brokers they trust."
 
 **Structural questions still open:**
 
