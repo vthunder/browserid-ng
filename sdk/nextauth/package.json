@@ -1,6 +1,6 @@
 {
   "name": "@browserid-ng/nextauth",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Drop-in 'Sign in with BrowserID' for Auth.js / NextAuth: a Credentials provider that verifies a BrowserID presentation server-side, plus browser helpers to drive the login dialog.",
   "type": "module",
   "main": "./index.mjs",
@@ -50,6 +50,6 @@
   "license": "MPL-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vthunder/browserid-ng"
+    "url": "git+https://github.com/vthunder/browserid-ng.git"
   }
 }

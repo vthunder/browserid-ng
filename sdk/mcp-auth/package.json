@@ -1,6 +1,6 @@
 {
   "name": "@browserid-ng/mcp-auth",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Warrant-gated MCP tools over MCP's own OAuth 2.1: a BrowserID 7521 assertion-grant AS + fail-closed per-call revocation checks. Every tool call attributable to 'agent X on behalf of human Y', revocable in one click.",
   "type": "module",
   "main": "./index.mjs",
@@ -37,6 +37,6 @@
   "license": "MPL-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vthunder/browserid-ng"
+    "url": "git+https://github.com/vthunder/browserid-ng.git"
   }
 }

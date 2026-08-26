@@ -1,12 +1,12 @@
 {
   "name": "@browserid-ng/gate",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "Publish stdio MCP servers as remote, BrowserID-gated HTTP endpoints. One command runs the gateway + web console (npx @browserid-ng/gate --admin you@example.com): add servers by name + mount + command, grant access with roles — per person, per server, per tool. Every call is scoped, attributed, and revocable. Works without a tunnel (localhost); claims a tailscale funnel automatically when available.",
   "type": "module",
   "main": "./src/gate.mjs",
   "types": "./index.d.ts",
   "bin": {
-    "gate": "./bin/gate.mjs"
+    "gate": "bin/gate.mjs"
   },
   "exports": {
     ".": {
@@ -47,6 +47,6 @@
   "license": "MPL-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vthunder/browserid-ng"
+    "url": "git+https://github.com/vthunder/browserid-ng.git"
   }
 }

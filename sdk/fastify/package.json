@@ -1,6 +1,6 @@
 {
   "name": "@browserid-ng/fastify",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Sign in with BrowserID for Fastify: a preHandler hook that verifies a BrowserID presentation server-side.",
   "type": "module",
   "main": "./index.mjs",
@@ -42,6 +42,6 @@
   "license": "MPL-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vthunder/browserid-ng"
+    "url": "git+https://github.com/vthunder/browserid-ng.git"
   }
 }

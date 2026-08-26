@@ -28,8 +28,8 @@ jobs:
       id-token: write # OIDC for npm trusted publishing + --provenance
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -45,8 +45,8 @@ jobs:
       id-token: write # OIDC for PyPI trusted publishing
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
       - name: is the local version unpublished?
         id: status
         run: |
