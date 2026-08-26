@@ -1,9 +1,5 @@
 # BrowserID principles
 
-> **Working draft.** This is a baseline to iterate on, not a finished
-> declaration. Workshop notes and open questions are at the bottom.
-> Tracking: bean browserid-ng-0med.
-
 ## Why now
 
 The web never got an identity layer. Into that gap came the platforms:
@@ -26,22 +22,24 @@ are the principles we're choosing by.
 
 ### 1. Your identity is an email-shaped name.
 
-For humans and agents alike. Email addresses are the only identifier with
-all three qualities an open identity system needs: everyone already
-understands them as identity; anyone can issue them by registering a domain;
-and the name carries its own trust root — split on the `@` and you know who
-vouches for it. Anything that isn't an email is plumbing, or gets tied to an
-email before a person or agent has to deal with it.
+For humans and agents alike. An open identity system needs its identifiers
+to have three qualities: everyone already understands them as identity;
+anyone can issue them; and each name carries its own trust root, so whoever
+vouches for it can be found from the name alone. Email addresses are the
+only identifier that has all three — anyone can issue by registering a
+domain, and the name declares its issuer at the `@`. Anything that isn't an
+email is plumbing, or gets tied to an email before a person or agent has to
+deal with it.
 
 ### 2. No gatekeepers.
 
 Anyone can join — as an identity provider, a site, or a broker — by
 publishing a record and speaking the protocol. No applying, no registering,
-no paying, no partnering. There is no list of blessed parties anywhere in
-the design; a two-person domain and the largest mail provider on earth have
-the same standing. The protocol can't dictate whom the market favors —
-sites still pick which brokers they trust — but it will never hard-code the
-choice.
+no paying, no partnering. There is no list of blessed parties in the design;
+a two-person domain and the largest mail provider on earth have the same
+standing. Defaults exist — our implementations point at browserid.me so the
+system works out of the box (see 7) — but a default is not a gate: nothing
+in the protocol requires it, and every default has an escape hatch.
 
 ### 3. Every identity answers to its owner — and no one else.
 
@@ -109,9 +107,9 @@ and they can be replaced.
 
 Identity systems that need many kinds of parties to adopt before anyone
 benefits are stillborn. So we ship the scaffolding that makes the system
-whole from day one: a
-fallback issuer for domains that have none, a hosted verifier, a hosted
-wallet. Any site can adopt today and reach everyone with an email address.
+whole from day one: a fallback issuer for domains that have none, a hosted
+verifier, a hosted wallet. Any site can adopt today and reach everyone with
+an email address.
 
 The scaffolding is essential and may well stay — browserid.me may remain
 the common broker for a long time, and that's fine. What matters is not
@@ -119,74 +117,3 @@ that anyone replaces it, but that anyone can: your own issuer for your
 domain, your own verifier for your site, a browser that speaks the protocol
 natively for the user. Openness lives in the ability to leave, not the
 obligation to.
-
----
-
-## Workshop notes (not part of the manifesto)
-
-**Bold-line status:**
-
-- (2) "No gatekeepers." adopted (Dan's pick from the candidates). Rejected
-  along the way: "Entry requires a domain, not a deal" (reads AI-punchy),
-  "New IdPs/sites/brokers need no one's blessing" (brokers weakened the
-  claim — a site still chooses which brokers to accept; now said honestly
-  in the body).
-- (3) reframed around ownership ("Every identity answers to its owner")
-  so managed identities read as the same rule with a different owner, not
-  an exception contradicting the headline. Earlier rejections: "Attestation
-  is not dominion" (opaque), "Issuers vouch; they don't watch" (misses the
-  veto half).
-- (7) "No one has to choose between open and working." — Dan's suggested
-  line, shifted from "should have to" into is/does form per the
-  dreams-in-the-opening rule. Alternate headline candidate if this one ever
-  wobbles: something built on "no chicken-and-egg."
-
-**Framing memo — swapping the broker (keep in mind, not in the text):**
-Replacing the broker is not unilateral for any single party. Either the RP
-chooses a different broker (real cost: users won't have it set up and face
-an unfamiliar implementation), or the user's browser natively implements
-the navigator.id.* APIs (fine — the user's own choice), but if that
-browser's broker issues fallback certificates the RP still has to trust
-that fallback; no way around it. Our implementations hard-code browserid.me
-as the default broker because principle 7 demands *some* default. This is
-why (7) names the per-party swap paths (issuer↔domain, verifier↔site,
-native browser↔user) instead of claiming "anyone can swap the broker"
-flatly, and why (2) says "sites still pick which brokers they trust."
-
-**Settled in review:**
-
-- The revocation beats in both (4) ("never costs the human their own
-  access") and (5) ("without that person rotating their own life") are
-  intentional and stay — different points (human's safety vs. agent's
-  addressability), natural in each home.
-
-**Structural questions still open:**
-
-- (1): do the three qualities of email (understood as identity; openly
-  federated; trust root discoverable from the name) stay folded under one
-  principle, or become principles of their own? Current lean: folded —
-  they're the argument for a choice, not independent commitments.
-- Does the diagnosis (borrowed passwords, no boundaries, no kill switch —
-  the homepage problem statement) join the "Why now" story, or is that
-  audience already converted?
-- Contrast-pairs coda (human authority over agent autonomy; legible over
-  unlinkable; open federation over curated trust; revocation over rotation;
-  working defaults over pure decentralization) — parked; decide after the
-  main text settles.
-- "Censorship resistance" as a word appears nowhere; the substance lives in
-  3 (coarse/visible/escapable) and 2 (exit). Confirm we're happy leaving
-  the term out.
-- (6): the AI-agent paragraph now frames loyalty as a duty the identity
-  layer enforces boundaries around ("where loyalty can't be verified,
-  boundaries can be enforced") — confirm this is the right register, vs.
-  stating it as pure aspiration.
-
-**Deliberately excluded:**
-
-- Operator commitments (free hosted service, etc.) — kept out per the test
-  "would we demand this of someone else's deployment?" The one that passes
-  ("no fee to federate") already lives in 2.
-- Attenuation as its own principle — derivable from 4; chained warrants are
-  roadmap.
-- The "a web where…" aspirational preamble — the principles drive; the
-  "Why now" story carries the stakes.
