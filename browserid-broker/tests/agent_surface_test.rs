@@ -197,3 +197,73 @@ async fn test_malformed_api_bodies_get_json_errors() {
         assert_eq!(body["error"]["code"], "bad_request", "{path}: {body}");
     }
 }
+
+/// The v1 verification API stamps every response — success or error — with
+/// `API-Version: 1`, the header the published versioning policy (openapi.json
+/// info.description) promises to integrators.
+#[tokio::test]
+async fn test_verification_api_carries_api_version_header() {
+    let (server, _) = create_test_server();
+
+    // A failure-shaped but well-formed /verify call (HTTP 200).
+    let response = server
+        .post("/verify")
+        .json(&serde_json::json!({
+            "presentation": "not~a~real~presentation",
+            "audience": "https://rp.example.com",
+        }))
+        .await;
+    assert_eq!(response.status_code(), 200);
+    assert_eq!(
+        response.headers().get("api-version").expect("/verify 200 must carry API-Version"),
+        "1"
+    );
+
+    // Malformed bodies (HTTP 400) carry it too — the layer wraps the routes,
+    // not just the happy path.
+    for path in ["/verify", "/validate-record", "/status/check"] {
+        let response = server.post(path).json(&serde_json::json!({})).await;
+        assert_eq!(response.status_code(), 400, "{path}");
+        assert_eq!(
+            response
+                .headers()
+                .get("api-version")
+                .unwrap_or_else(|| panic!("{path} 400 must carry API-Version")),
+            "1",
+            "{path}"
+        );
+    }
+
+    // Routes outside the versioned verification surface don't claim a version.
+    let feed = server.get("/guestbook/feed").await;
+    assert!(
+        feed.headers().get("api-version").is_none(),
+        "/guestbook/feed is not part of the versioned API"
+    );
+}
+
+/// The published spec declares the versioning & deprecation policy agents rely
+/// on: the API-Version response header on the verification endpoints and the
+/// Deprecation/Sunset commitment in the description.
+#[tokio::test]
+async fn test_openapi_spec_declares_versioning_policy() {
+    let (server, _) = create_test_server();
+    let spec: Value = server.get("/openapi.json").await.json();
+
+    let description = spec["info"]["description"].as_str().unwrap();
+    assert!(
+        description.contains("Versioning & deprecation policy"),
+        "info.description must state the policy"
+    );
+    assert!(
+        description.contains("Deprecation") && description.contains("Sunset"),
+        "policy must name the deprecation signal headers"
+    );
+    assert!(description.contains("Pricing: free"), "info.description must state pricing");
+
+    for path in ["/verify", "/validate-record", "/status/check"] {
+        let headers = &spec["paths"][path]["post"]["responses"]["200"]["headers"];
+        assert!(headers["API-Version"].is_object(), "{path} 200 must document API-Version");
+    }
+    assert!(spec["components"]["headers"]["ApiVersion"].is_object());
+}

@@ -6,6 +6,8 @@
 #   - /openapi.json (valid JSON, CORS-open)
 #   - structured JSON errors on /api/*
 #   - llms.txt / robots.txt / sitemap.xml discoverability
+#   - JSON-LD identity + canonical URLs, when-to-use & pricing in llms.txt,
+#     and the API versioning/deprecation policy (audit round 2)
 #
 # Usage: ./test.sh [existing-base-url]
 #   With no argument: builds marketing/Dockerfile, runs it on an ephemeral
@@ -95,6 +97,33 @@ check "robots.txt served with sitemap" "$(curl -s "$BASE/robots.txt")" 'Sitemap:
 check "sitemap.xml served" \
   "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/sitemap.xml")" '^200$'
 check "page titles carry the product name" "$(curl -s "$BASE/")" '<title>BrowserID'
+
+# --- structured data & agent instructions (Is Agentic round 2) ---------------
+check "homepage JSON-LD parses and is a SoftwareApplication priced free" \
+  "$(curl -s "$BASE/" | python3 -c '
+import json, re, sys
+m = re.search(r"<script type=\"application/ld\+json\">(.*?)</script>", sys.stdin.read(), re.S)
+d = json.loads(m.group(1))
+nodes = d.get("@graph", [d])
+app = next(n for n in nodes if n["@type"] == "SoftwareApplication")
+print(app["name"], app["offers"]["price"], "sameAs" in app)
+')" '^BrowserID 0 True$'
+check "homepage has rel=canonical" "$(curl -s "$BASE/")" 'rel="canonical" href="https://www.browserid.me/"'
+check "/developers has rel=canonical" \
+  "$(curl -s "$BASE/developers")" 'rel="canonical" href="https://www.browserid.me/developers"'
+check "llms.txt has when-to-use agent instructions" \
+  "$(curl -s "$BASE/llms.txt")" '## When to use BrowserID'
+check "llms.txt states pricing (free)" "$(curl -s "$BASE/llms.txt")" '## Pricing'
+check "llms.txt states the versioning/deprecation policy" \
+  "$(curl -s "$BASE/llms.txt")" 'Versioning & deprecation'
+check "openapi.json declares the versioning policy and API-Version header" \
+  "$(curl -s "$BASE/openapi.json" | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+print("Versioning & deprecation policy" in s["info"]["description"],
+      "ApiVersion" in s["components"].get("headers", {}),
+      "Pricing: free" in s["info"]["description"])
+')" '^True True True$'
 
 # --- existing behavior preserved --------------------------------------------
 check "clean URL /developers still serves HTML" \

@@ -5,7 +5,45 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="browserid.me — identity for agents, answerable to humans. Your agent gets an identity of its own, asks permission site by site, and every grant is yours to approve and yours to take back.">
 <title>BrowserID — identity for agents, answerable to humans | browserid.me</title>
+<link rel="canonical" href="https://www.browserid.me/">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='90'%3E%F0%9F%AA%AA%3C/text%3E%3C/svg%3E">
+<!-- Machine-readable identity (JSON-LD): what this product is, that it's free,
+     and where the canonical machine-readable resources live. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://www.browserid.me/#website",
+      "url": "https://www.browserid.me/",
+      "name": "BrowserID"
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://www.browserid.me/#software",
+      "name": "BrowserID",
+      "alternateName": "browserid-ng",
+      "url": "https://www.browserid.me/",
+      "description": "An open, DNS-rooted identity protocol: AI agents get their own cryptographic identity, delegated from a human, scoped to exactly what the human approved, revocable at any time. Human passwordless sign-in included.",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "Any",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD",
+        "description": "Free and open source — no API keys, no registration, no paid tiers. Open service; self-hostable."
+      },
+      "license": "https://www.mozilla.org/en-US/MPL/2.0/",
+      "softwareHelp": [
+        { "@type": "CreativeWork", "name": "Agent index (llms.txt)", "url": "https://www.browserid.me/llms.txt" },
+        { "@type": "CreativeWork", "name": "OpenAPI spec of the broker API", "url": "https://www.browserid.me/openapi.json" }
+      ],
+      "sameAs": ["https://github.com/vthunder/browserid-ng"]
+    }
+  ]
+}
+</script>
 <!-- Marketing origin (www.browserid.me) config: where the auth/issuer broker lives.
      Deploy overrides authOrigin; defaults to production. See marketing/config.js. -->
 <script src="/config.js"></script>

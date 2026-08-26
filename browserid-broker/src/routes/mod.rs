@@ -160,10 +160,32 @@ where
                 .allow_headers([header::CONTENT_TYPE, header::ACCEPT]),
         );
 
+    // The stable server-to-server verification API (spec §6), declared v1 in
+    // /openapi.json. Every response carries `API-Version: 1` so integrators can
+    // pin the surface they coded against; the deprecation policy (Deprecation +
+    // Sunset headers, ≥90 days) is published in the spec's info.description.
+    let verification_api_routes = Router::new()
+        // /verify is the hosted-verifier route (spec §6.1). Its former name
+        // /verify-access was retired 2026-08-26 (bean 992k) after every
+        // consumer moved — the retirement is pinned in agent_surface_test.
+        .route("/verify", post(device::verify_access))
+        // Two-object record validation (operation A, spec §6.4) — the hosted
+        // admission-side check beside /verify; no caller auth.
+        .route("/validate-record", post(device::validate_record))
+        // Status-list distribution (watch() v2, bean 6u70): the RP-backend
+        // re-check. (Its page-side sibling /status/proxy lives on the
+        // cross-origin router above.)
+        .route("/status/check", post(status::status_check))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("api-version"),
+            HeaderValue::from_static("1"),
+        ));
+
     let mut app = Router::new()
         .merge(fedcm_routes)
         .merge(public_cors_routes)
         .merge(idp_cors_routes)
+        .merge(verification_api_routes)
         .route("/wsapi/session_context", get(session::get_session_context))
         // Admin seed provisioning (ADMIN_TOKEN-gated; for @mingo.place demo accounts)
         .route("/admin/create_account", post(account::admin_create_account))
@@ -199,17 +221,6 @@ where
         // Device-cert model (DC Phases 2/6) — additive alongside the legacy routes.
         .route("/device/issue", post(device::device_issue))
         .route("/access/mint", post(device::access_mint))
-        // /verify is the hosted-verifier route (spec §6.1). Its former name
-        // /verify-access was retired 2026-08-26 (bean 992k) after every
-        // consumer moved — the retirement is pinned in agent_surface_test.
-        .route("/verify", post(device::verify_access))
-        // Two-object record validation (operation A, spec §6.4) — the hosted
-        // admission-side check beside /verify; no caller auth.
-        .route("/validate-record", post(device::validate_record))
-        // Status-list distribution (watch() v2, bean 6u70): the RP-backend
-        // re-check. (Its page-side sibling /status/proxy lives on the
-        // cross-origin router below.)
-        .route("/status/check", post(status::status_check))
         .route("/wsapi/device_certs", get(device::device_certs))
         .route("/wsapi/issuer_revoke_url", get(device::issuer_revoke_url))
         .route("/wsapi/cert_revocation_status", get(device::cert_revocation_status))

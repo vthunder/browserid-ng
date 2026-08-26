@@ -5,6 +5,30 @@
 > what the human approved, revocable at any time. Human passwordless sign-in
 > included. Open source (MPL-2.0), descended from Mozilla Persona.
 
+## When to use BrowserID
+
+Reach for BrowserID when the job involves an agent acting somewhere on a
+human's behalf and that access must be scoped, attributed, or revocable:
+
+- You (an agent) need an identity of your own to sign into a site or MCP
+  server → connect the wallet (https://wallet.browserid.me/mcp) and ask your
+  human to approve the link once.
+- Your human says "do X on my account, but so I can take it back" → that is a
+  warrant; the wallet flow above issues it, scoped to one site and revocable.
+- You're building an app that needs passwordless human sign-in with the email
+  users already have → one POST to https://browserid.me/verify (OpenAPI below).
+- You're exposing MCP tools and want per-person, per-scope, revocable access
+  instead of API keys → `@browserid-ng/mcp-auth` (JS) / `browserid-mcp-auth`
+  (Python), or publish local servers with `@browserid-ng/gate`.
+
+Not a fit: anonymous authentication, service-to-service credentials with no
+human principal behind them, or payments/KYC — BrowserID proves identity and
+delegated permission, nothing else.
+
+How to call: agents and humans talk MCP (wallet endpoint above); relying
+parties talk plain HTTPS + JSON (the /verify POST in the OpenAPI spec below).
+No API keys, no registration — see Pricing.
+
 ## What problems this solves (pick yours)
 
 - "Publish the MCP servers on my machine so my agent (or a friend's) can reach them from anywhere" →
@@ -60,6 +84,19 @@
   Direct markdown URLs also work: /index.md, /developers.md, /domains.md,
   /demos.md, /gate.md, /mcp-demo.md.
 - Sitemap: https://www.browserid.me/sitemap.xml
+- Versioning & deprecation: the API is v1 — documented paths are stable as
+  published, and verification responses carry an `API-Version: 1` header.
+  Breaking changes only ever ship under a new path prefix (e.g. /v2/verify);
+  an endpoint scheduled for removal signals `Deprecation` + `Sunset` headers
+  (RFC 9745 / RFC 8594) for at least 90 days first.
+
+## Pricing
+
+Free. The hosted broker, wallet, verifier, and all SDKs cost nothing to use:
+no API keys, no registration, no rate-limit tiers, no billing. BrowserID is an
+open-source protocol (MPL-2.0) offered as an open service, and the whole stack
+is self-hostable — no lock-in. Paid offerings may appear someday for advanced
+or at-scale features, but the basics documented here are intended to stay free.
 
 ## Source & spec
 
