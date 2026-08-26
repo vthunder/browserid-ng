@@ -87,8 +87,8 @@ without that person rotating their own life.
 ### 6. Ease of use is not an afterthought.
 
 Identity is something people touch every day, and using it should be
-genuinely pleasant — that matters in its own right. But ease is also
-load-bearing: people take the path of least resistance, and when the right
+genuinely pleasant — that matters in its own right. But ease is also a
+security property: people take the path of least resistance, and when the right
 way is harder than the shortcut, the shortcut wins. Passwords get handed to
 agents, keys get pasted into configs, and an open protocol loses to the
 button that just works.
