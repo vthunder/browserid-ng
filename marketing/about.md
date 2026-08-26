@@ -34,8 +34,9 @@ is always borrowed — scoped, attributed, revocable; all of it has to be easy,
 because ease is what makes the right way the common way; everything that
 stands between you and the world, browser and wallet and broker and the AI
 agent itself, owes its loyalty to you; and none of it may ask anyone to
-choose between open and working. The full eight are short and worth reading:
-[the principles](/principles).
+choose between open and working.
+
+→ [Read the eight principles](/principles)
 
 ## Try it
 
