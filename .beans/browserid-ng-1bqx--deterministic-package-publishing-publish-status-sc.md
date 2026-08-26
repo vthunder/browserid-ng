@@ -1,10 +1,11 @@
 ---
 # browserid-ng-1bqx
 title: 'Deterministic package publishing: publish-status script + CI drift gate + auto-publish on version bump'
-status: todo
+status: in-progress
 type: task
+priority: normal
 created_at: 2026-08-26T06:51:28Z
-updated_at: 2026-08-26T06:51:28Z
+updated_at: 2026-08-26T07:00:42Z
 ---
 
 Yesterday's failure mode (2026-08-26): package content changed (/verify default) without version bumps, so 'for i in *; do npm publish; done' silently no-op'd on gate + mcp-auth (registry already had those versions with OLD code), and nobody could tell what actually needed publishing without hand-diffing npm. Fix by making publish state derivable and enforced:
@@ -24,9 +25,9 @@ Run publish-status in the existing sdk-tests workflow on every push to main. NEE
 New workflow on push to main: for each package where local version > registry, npm publish --provenance --access public via npm trusted publishing (OIDC — no NPM_TOKEN secret), and uv publish via PyPI trusted publishing for the python package. Publishing then == merging a version bump; no local npm auth, no loops, no ordering mistakes.
 
 ## Notes
-- [ ] script + make target
-- [ ] wire into sdk-tests.yml (gate on drift)
-- [ ] publish.yml workflow + configure npm/PyPI trusted publishing for the org
+- [x] script + make target (scripts/publish-status.mjs, make publish-status)
+- [x] wire into sdk-tests.yml (gate on drift)
+- [x] publish.yml workflow written; [ ] Dan: configure npm/PyPI trusted publishing (instructions delivered 2026-08-26)
 - [ ] document the flow in sdk/README (bump-in-PR convention)
 - Depends on bean 2nay only cosmetically (dir names in the table); no ordering constraint.
 - wallet-service file:-dep migration stays bean bf47; once auto-publish exists it gets easier.

@@ -20,7 +20,7 @@ HOST ?= dokku@browserid.me
 SSH  := ssh -i $(HOME)/.ssh/mini-ops -o StrictHostKeyChecking=accept-new
 REG  := ghcr.io/vthunder/browserid-ng
 
-.PHONY: build test push watch release deploy \
+.PHONY: build test push watch release deploy publish-status \
         release-broker release-www release-wallet release-mcp-demo \
         release-python-mcp-demo release-guestbook
 
@@ -29,6 +29,11 @@ build:
 
 test:
 	cargo test --workspace
+
+# Publish-state oracle for the SDK packages: local vs registry version, plus a
+# content diff when versions match (catches "changed code, same version").
+publish-status:
+	node scripts/publish-status.mjs
 
 push:
 	git push origin HEAD

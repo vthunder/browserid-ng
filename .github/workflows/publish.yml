@@ -1,0 +1,63 @@
+# Auto-publish SDK packages whose local version is ahead of the registry
+# (bean 1bqx). Publishing == merging a version bump to main: the drift gate in
+# sdk-tests.yml forces content changes to carry a bump, and this workflow
+# turns that bump into a release via OIDC trusted publishing — no long-lived
+# tokens, no local npm auth, no for-loops that swallow errors.
+#
+# One-time setup (else the publish steps fail with an auth error):
+#   npm:  each package on npmjs.com → Settings → Trusted Publisher →
+#         GitHub Actions, repo vthunder/browserid-ng, workflow publish.yml
+#   PyPI: project browserid-mcp-auth → Settings → Publishing → add GitHub
+#         publisher: owner vthunder, repo browserid-ng, workflow publish.yml,
+#         environment pypi
+name: publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdk/**"
+      - "scripts/publish-status.mjs"
+      - ".github/workflows/publish.yml"
+  workflow_dispatch: {}
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC for npm trusted publishing + --provenance
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm >= 11.5.1.
+      - run: npm install -g npm@latest
+      - name: publish packages whose local version is ahead
+        run: node scripts/publish-status.mjs --publish
+
+  pypi:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # OIDC for PyPI trusted publishing
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: is the local version unpublished?
+        id: status
+        run: |
+          NEED=$(node scripts/publish-status.mjs --json | jq -r '.[] | select(.kind=="pypi" and .status=="NEEDS PUBLISH") | .name' | head -1)
+          echo "need=$NEED" >> "$GITHUB_OUTPUT"
+      - name: build sdist + wheel
+        if: steps.status.outputs.need != ''
+        working-directory: sdk/python-mcp-auth
+        run: uv build --out-dir dist-ci
+      - name: publish to PyPI (trusted publishing)
+        if: steps.status.outputs.need != ''
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdk/python-mcp-auth/dist-ci

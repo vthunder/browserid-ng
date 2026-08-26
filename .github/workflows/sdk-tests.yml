@@ -42,3 +42,10 @@ jobs:
       - name: python mcp-auth tests
         working-directory: sdk/python-mcp-auth
         run: python -m unittest discover -s tests -v
+      # Drift gate (bean 1bqx): fails when a package's content differs from
+      # what the registry serves at the SAME version — i.e. someone changed
+      # shipped code without bumping. The fix is always to bump the version
+      # in this PR; publishing itself happens in publish.yml on main.
+      - uses: astral-sh/setup-uv@v5
+      - name: publish drift gate
+        run: node scripts/publish-status.mjs
