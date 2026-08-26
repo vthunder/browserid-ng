@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="The BrowserID principles: why the open identity question is being reopened by agents, and the seven commitments that shape everything we build.">
+<title>BrowserID principles — what we build by | browserid.me</title>
+<link rel="canonical" href="https://www.browserid.me/principles">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='90'%3E%F0%9F%AA%AA%3C/text%3E%3C/svg%3E">
+<script src="/config.js"></script>
+<script src="/vendor/posthog.js"></script>
+<script src="/analytics.js" defer></script>
+<script>
+  (function () {
+    var t;
+    try { t = localStorage.getItem("browserid:theme"); } catch (e) {}
+    document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+  })();
+</script>
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+
+<div class="nav-outer">
+  <div class="wrap nav">
+    <a href="/" class="brand"><span class="ring"><i></i></span><span>browserid<span class="me">.me</span></span></a>
+    <nav>
+      <a href="/gate" class="spoke">Gate</a>
+      <a href="/developers" class="spoke">Developers</a>
+      <a href="/domains" class="spoke">Domains</a>
+      <a href="/demos" class="spoke">Demos</a>
+      <a href="https://github.com/vthunder/browserid-ng/blob/main/README.md" class="hide-sm">Docs</a>
+      <a href="/account" data-auth-href="/account" class="signin">Sign in</a>
+      <button class="theme-toggle" id="themeToggle" title="Toggle color theme" aria-label="Toggle color theme">
+        <span class="theme-icon-moon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"></circle><path d="M8 1.2v1.8M8 13v1.8M1.2 8H3M13 8h1.8M3.2 3.2l1.3 1.3M11.5 11.5l1.3 1.3M12.8 3.2l-1.3 1.3M4.5 11.5l-1.3 1.3"></path></svg></span>
+        <span class="theme-icon-sun"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path></svg></span>
+      </button>
+    </nav>
+  </div>
+</div>
+
+<section>
+  <div class="wrap hero-lite" style="padding:66px 0 30px">
+    <span class="kicker">Principles</span>
+    <h1>BrowserID principles</h1>
+    <p style="color:var(--muted);font-size:13px;margin-top:10px">Last updated: 2026-08-26</p>
+  </div>
+</section>
+
+<section style="border-top:none">
+  <div class="wrap pad" style="padding-top:20px">
+    <div style="max-width:46em">
+      <h2 class="sec">Why now</h2>
+      <p class="sec-lede">The web never got an identity layer. Into that gap came the platforms: "Sign in with" a company, on that company's terms, under that company's watch. The open alternative has been tried more than once — OpenID, Mozilla Persona and its BrowserID protocol (our own lineage), and others — and every attempt lost. They lost in part because, for humans, passwords were just barely tolerable: an open protocol was optional, and optional wasn't enough.</p>
+      <p class="sec-lede">Agents end that truce. You cannot hand an agent your password and call it fine; borrowed credentials that merely annoyed humans become indefensible at machine speed. The identity question is being forcibly reopened right now, and the answer will harden into infrastructure that lasts decades. Layers this deep get rebuilt about once a generation.</p>
+      <p class="sec-lede">We get to make this choice again. Let's choose correctly this time. These are the principles we're choosing by.</p>
+
+      <h2 class="sec" style="margin-top:44px">1. Your identity is an email-shaped name.</h2>
+      <p class="sec-lede">For humans and agents alike. An open identity system needs its identifiers to have three qualities: everyone already understands them as identity; anyone can issue them; and each name carries its own trust root, so whoever vouches for it can be found from the name alone. Email addresses are the only identifier that has all three — anyone can issue by registering a domain, and the name declares its issuer at the <code class="mono" style="font-size:0.9em">@</code>. Anything that isn't an email is plumbing, or gets tied to an email before a person or agent has to deal with it.</p>
+
+      <h2 class="sec" style="margin-top:44px">2. No gatekeepers.</h2>
+      <p class="sec-lede">Anyone can join — as an identity provider, a site, or a broker — by publishing a record and speaking the protocol. No applying, no registering, no paying, no partnering. There is no list of blessed parties in the design; a two-person domain and the largest mail provider on earth have the same standing. Defaults exist — our implementations point at browserid.me so the system works out of the box (see 7) — but a default is not a gate: nothing in the protocol requires it, and every default has an escape hatch.</p>
+
+      <h2 class="sec" style="margin-top:44px">3. Every identity answers to its owner — and no one else.</h2>
+      <p class="sec-lede">You own your personal identity, so where you sign in is between you and the site: your identity provider vouches for your name, but never learns where you use it and gets no veto. That's architecture, not policy — the issuer sits outside the sign-in path, so watching or selectively blocking you is structurally impossible. The worst it can do is refuse you outright: coarse, visible, and escapable (see 2).</p>
+      <p class="sec-lede">Organizations own managed identities — the same rule, different owner. The issuing organization rightly sees and governs their use, and anyone dealing with one can see what kind of identity it is. Either way, who an identity answers to is disclosed, and no one else holds levers over it.</p>
+
+      <h2 class="sec" style="margin-top:44px">4. All authority is borrowed.</h2>
+      <p class="sec-lede">Agents are real actors with real identities, but everything an agent may do is delegated: granted by a person or an organization in an explicit signature, scoped to named places and actions, expiring, revocable at any moment — and when in doubt, the answer is no. Revoking an agent never costs the human their own access.</p>
+      <p class="sec-lede">Borrowed authority can be passed on but never amplified — a delegate can grant only a narrower slice of what it holds. And the protocol delivers attribution and scope to the site; whether the site displays them, and how much a human chooses to grant, remain their choices. We build the rails; we can't force the trains.</p>
+
+      <h2 class="sec" style="margin-top:44px">5. One protocol for humans and machines.</h2>
+      <p class="sec-lede">No caste system, no separate agent lane, and no pretending the protocol can tell which actors are human — any protocol that claims to is wrong or lying. Walling agents out of "human-only" actions doesn't produce a web without agents; it produces agents wearing their humans' faces. We make honesty cheaper than masquerade: acting as itself, with borrowed authority, works everywhere, so an agent never needs to impersonate anyone.</p>
+      <p class="sec-lede">And consequences need an address: an agent with its own identity can be blocked or rate-limited without touching the person behind it, and revoked without that person rotating their own life.</p>
+
+      <h2 class="sec" style="margin-top:44px">6. Anything that acts between you and the world owes its loyalty to you.</h2>
+      <p class="sec-lede">The browser was named the "user agent" for a reason: software that stands between a person and the network represents that person. We extend the same duty to everything identity requires — the wallet, the broker, and the AI agent itself are all the user's agent.</p>
+      <p class="sec-lede">This is a duty, not a description. People worry — rightly — that an AI agent may serve its vendor, or its objective, before its user. We cannot make every agent loyal. What the identity layer can do is give the duty teeth: an agent acts within a scope its human granted, under a name that consequences can attach to, with access that ends the moment trust does. Where loyalty can't be verified, boundaries can be enforced.</p>
+      <p class="sec-lede">For the intermediaries we build — the wallet, the broker — the duty is concrete: loyal in interest, neutral in fact. They represent you but never lie for you: everything they assert is verifiable by the party receiving it, which is what lets a broker take the user's side and still be trusted ground for sites and issuers. They know as little as their job requires, and they can be replaced.</p>
+
+      <h2 class="sec" style="margin-top:44px">7. No one has to choose between open and working.</h2>
+      <p class="sec-lede">Identity systems that need many kinds of parties to adopt before anyone benefits are stillborn. So we ship the scaffolding that makes the system whole from day one: a fallback issuer for domains that have none, a hosted verifier, a hosted wallet. Any site can adopt today and reach everyone with an email address.</p>
+      <p class="sec-lede">The scaffolding is essential and may well stay — browserid.me may remain the common broker for a long time, and that's fine. What matters is not that anyone replaces it, but that anyone can: your own issuer for your domain, your own verifier for your site, a browser that speaks the protocol natively for the user. Openness lives in the ability to leave, not the obligation to.</p>
+
+      <p class="sec-lede" style="margin-top:44px">These principles live in the open, like everything else here: <a href="https://github.com/vthunder/browserid-ng/blob/main/docs/principles.md">docs/principles.md</a>.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <span>browserid-ng — identity for agents and the humans behind them. Descended from Mozilla Persona.<br>Reading this as an agent? Start at <a href="/llms.txt">browserid.me/llms.txt</a>.</span>
+    <span><a href="/about">About</a> · <a href="/principles">Principles</a> · <a href="/contact">Contact</a> · <a href="/privacy">Privacy</a> · <a href="https://github.com/vthunder/browserid-ng">GitHub</a> · <a href="https://github.com/vthunder/browserid-ng/tree/main/docs/specs">Spec</a> · Open protocol · MPL-2.0 · Free — no paid tiers</span>
+  </div>
+</footer>
+
+<script src="/site.js"></script>
+</body>
+</html>

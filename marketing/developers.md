@@ -26,7 +26,8 @@ who.issuer   // "gmail.com" — checked against its own DNS
 A human signs in: `grantee === email`, done. An agent signed in? You get both
 names and the exact scopes its human signed for your site — rate-limit per
 agent, audit per human, reject anything unsigned. No registration, no client
-IDs, no secrets to store.
+IDs, no secrets to store. One honest note: the hosted verifier sees which of
+your users sign in — run your own if you'd rather it didn't.
 
 - [@browserid-ng/verify on npm](https://www.npmjs.com/package/@browserid-ng/verify)
 - [HTTP contract, any language](https://github.com/vthunder/browserid-ng/blob/main/docs/verify-quickstart.md)

@@ -12,6 +12,9 @@ passwordless sign-in comes along for free.
 Live at **[browserid.me](https://browserid.me)**. Descended from Mozilla
 [Persona] / the [BrowserID protocol][], rebuilt in Rust and re-centered on agents.
 
+The principles behind the design: [docs/principles.md](./docs/principles.md)
+(also at [browserid.me/principles](https://www.browserid.me/principles)).
+
 [BrowserID protocol]: https://github.com/mozilla/id-specs
 [Persona]: https://github.com/mozilla/persona
 
@@ -49,7 +52,8 @@ agent an identity of its own:
   rotating the human's own key or password.
 
 Everything verifies **offline against DNS signatures** — no company sits between
-you and your users, and nothing breaks if browserid.me disappears.
+you and your users, and every hosted piece is scaffolding you can replace, even
+if browserid.me disappears.
 
 Three properties fall out of the design:
 
@@ -100,8 +104,8 @@ but as a relying party you never parse it: you POST it and read back
 - No registration, no client IDs, no secrets to manage.
 
 **Drop-in framework adapters** — "Sign in with BrowserID" for your stack, each a
-thin, tested wrapper over the verifier (audience-pinned, fail-closed, humans-only
-by default):
+thin, tested wrapper over the verifier (audience-pinned, fail-closed, delegated
+agent grants opt-in):
 
 | Framework | Package | Shape |
 |---|---|---|

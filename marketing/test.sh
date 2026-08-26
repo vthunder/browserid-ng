@@ -53,7 +53,7 @@ check "404 content-type is text/markdown; charset=utf-8" \
   '^text/markdown; charset=utf-8$'
 
 # --- markdown content negotiation (acceptmarkdown.com) ----------------------
-for page in / /developers /domains /demos /gate /mcp-demo /about /contact /privacy; do
+for page in / /developers /domains /demos /gate /mcp-demo /about /contact /privacy /principles; do
   check "markdown negotiation on $page" \
     "$(curl -s -o /dev/null -w '%{content_type}' -H 'Accept: text/markdown' "$BASE$page")" \
     '^text/markdown; charset=utf-8$'
@@ -126,7 +126,7 @@ print("Versioning & deprecation policy" in s["info"]["description"],
 ')" '^True True True$'
 
 # --- trust anchor pages (Is Agentic round 3) ---------------------------------
-for page in about contact privacy; do
+for page in about contact privacy principles; do
   check "/$page serves HTML with canonical + substantial content" \
     "$(curl -s "$BASE/$page" | python3 -c '
 import sys, re
@@ -144,7 +144,7 @@ check "sitemap lists the trust pages with lastmod" \
   "$(curl -s "$BASE/sitemap.xml" | python3 -c '
 import sys
 s = sys.stdin.read()
-print(all(u in s for u in ["/about", "/contact", "/privacy"]), "<lastmod>" in s)
+print(all(u in s for u in ["/about", "/contact", "/privacy", "/principles"]), "<lastmod>" in s)
 ')" '^True True$'
 check "homepage JSON-LD includes the maker Person with contact email" \
   "$(curl -s "$BASE/" | python3 -c '
@@ -155,6 +155,13 @@ p = next(n for n in nodes if n["@type"] == "Person")
 print(p["name"], "email" in p)
 ')" '^Dan Mills True$'
 check "llms.txt links the trust pages" "$(curl -s "$BASE/llms.txt")" 'browserid\.me/privacy'
+check "llms.txt links the principles" "$(curl -s "$BASE/llms.txt")" 'browserid\.me/principles'
+check "/principles carries the seven principles and a timestamp" \
+  "$(curl -s "$BASE/principles" | python3 -c '
+import sys
+s = sys.stdin.read()
+print("All authority is borrowed" in s, "No gatekeepers" in s, "Last updated:" in s)
+')" '^True True True$'
 check "llms.txt documents the rate limits" "$(curl -s "$BASE/llms.txt")" 'RateLimit-Limit'
 check "openapi.json documents rate limiting" \
   "$(curl -s "$BASE/openapi.json" | python3 -c '

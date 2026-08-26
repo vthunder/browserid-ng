@@ -106,6 +106,7 @@ Human-readable statement: https://www.browserid.me/about#pricing
 
 ## Project, contact & trust
 
+- The principles (what we build by, and why now): https://www.browserid.me/principles
 - About the project (lineage, who runs it, pricing): https://www.browserid.me/about
 - Contact (GitHub issues, email, security reports): https://www.browserid.me/contact
 - Privacy policy (what is stored, what's public, deletion): https://www.browserid.me/privacy
