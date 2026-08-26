@@ -53,7 +53,7 @@ check "404 content-type is text/markdown; charset=utf-8" \
   '^text/markdown; charset=utf-8$'
 
 # --- markdown content negotiation (acceptmarkdown.com) ----------------------
-for page in / /developers /domains /demos /gate /mcp-demo; do
+for page in / /developers /domains /demos /gate /mcp-demo /about /contact /privacy; do
   check "markdown negotiation on $page" \
     "$(curl -s -o /dev/null -w '%{content_type}' -H 'Accept: text/markdown' "$BASE$page")" \
     '^text/markdown; charset=utf-8$'
@@ -124,6 +124,44 @@ print("Versioning & deprecation policy" in s["info"]["description"],
       "ApiVersion" in s["components"].get("headers", {}),
       "Pricing: free" in s["info"]["description"])
 ')" '^True True True$'
+
+# --- trust anchor pages (Is Agentic round 3) ---------------------------------
+for page in about contact privacy; do
+  check "/$page serves HTML with canonical + substantial content" \
+    "$(curl -s "$BASE/$page" | python3 -c '
+import sys, re
+s = sys.stdin.read()
+text = re.sub(r"<script.*?</script>|<[^>]+>", " ", s, flags=re.S)
+print("canonical" in s, len(" ".join(text.split())) >= 500)
+')" '^True True$'
+done
+check "/about carries the visible pricing statement" \
+  "$(curl -s "$BASE/about")" 'Everything is free'
+check "footer pricing line on the homepage" \
+  "$(curl -s "$BASE/")" 'Free — no paid tiers'
+check "footer links the trust pages" "$(curl -s "$BASE/")" 'href="/privacy"'
+check "sitemap lists the trust pages with lastmod" \
+  "$(curl -s "$BASE/sitemap.xml" | python3 -c '
+import sys
+s = sys.stdin.read()
+print(all(u in s for u in ["/about", "/contact", "/privacy"]), "<lastmod>" in s)
+')" '^True True$'
+check "homepage JSON-LD includes the maker Person with contact email" \
+  "$(curl -s "$BASE/" | python3 -c '
+import json, re, sys
+m = re.search(r"<script type=\"application/ld\+json\">(.*?)</script>", sys.stdin.read(), re.S)
+nodes = json.loads(m.group(1))["@graph"]
+p = next(n for n in nodes if n["@type"] == "Person")
+print(p["name"], "email" in p)
+')" '^Dan Mills True$'
+check "llms.txt links the trust pages" "$(curl -s "$BASE/llms.txt")" 'browserid\.me/privacy'
+check "llms.txt documents the rate limits" "$(curl -s "$BASE/llms.txt")" 'RateLimit-Limit'
+check "openapi.json documents rate limiting" \
+  "$(curl -s "$BASE/openapi.json" | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+print("Rate limits" in s["info"]["description"], "RateLimited" in s["components"]["responses"])
+')" '^True True$'
 
 # --- existing behavior preserved --------------------------------------------
 check "clean URL /developers still serves HTML" \

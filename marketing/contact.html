@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="How to reach the BrowserID project: GitHub issues for bugs and questions, email for everything else, and where to send security reports.">
+<title>Contact BrowserID — issues, email, security reports | browserid.me</title>
+<link rel="canonical" href="https://www.browserid.me/contact">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='90'%3E%F0%9F%AA%AA%3C/text%3E%3C/svg%3E">
+<script src="/config.js"></script>
+<script src="/vendor/posthog.js"></script>
+<script src="/analytics.js" defer></script>
+<script>
+  (function () {
+    var t;
+    try { t = localStorage.getItem("browserid:theme"); } catch (e) {}
+    document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+  })();
+</script>
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+
+<div class="nav-outer">
+  <div class="wrap nav">
+    <a href="/" class="brand"><span class="ring"><i></i></span><span>browserid<span class="me">.me</span></span></a>
+    <nav>
+      <a href="/gate" class="spoke">Gate</a>
+      <a href="/developers" class="spoke">Developers</a>
+      <a href="/domains" class="spoke">Domains</a>
+      <a href="/demos" class="spoke">Demos</a>
+      <a href="https://github.com/vthunder/browserid-ng/blob/main/README.md" class="hide-sm">Docs</a>
+      <a href="/account" data-auth-href="/account" class="signin">Sign in</a>
+      <button class="theme-toggle" id="themeToggle" title="Toggle color theme" aria-label="Toggle color theme">
+        <span class="theme-icon-moon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"></circle><path d="M8 1.2v1.8M8 13v1.8M1.2 8H3M13 8h1.8M3.2 3.2l1.3 1.3M11.5 11.5l1.3 1.3M12.8 3.2l-1.3 1.3M4.5 11.5l-1.3 1.3"></path></svg></span>
+        <span class="theme-icon-sun"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path></svg></span>
+      </button>
+    </nav>
+  </div>
+</div>
+
+<section>
+  <div class="wrap hero-lite" style="padding:66px 0 30px">
+    <span class="kicker">Contact</span>
+    <h1>Reach a person, not a ticket queue.</h1>
+    <p class="lede" style="font-size:19px;max-width:36em">BrowserID is developed in the open by <a href="/about">one person</a>, so every channel below lands with someone who can actually fix your problem.</p>
+  </div>
+</section>
+
+<section style="border-top:none">
+  <div class="wrap pad" style="padding-top:20px">
+    <div style="max-width:46em">
+      <h2 class="sec">Bugs, questions, and ideas</h2>
+      <p class="sec-lede">The best channel for anything about the protocol, the hosted service, an SDK, or these docs is a <a href="https://github.com/vthunder/browserid-ng/issues">GitHub issue</a> — it's public, searchable, and other integrators benefit from the answer. Pull requests are welcome too; the whole stack, this website included, lives in <a href="https://github.com/vthunder/browserid-ng">the one repository</a>.</p>
+
+      <h2 class="sec" style="margin-top:40px">Email</h2>
+      <p class="sec-lede">For anything that doesn't fit a public issue — account trouble, domain onboarding help, press, or just to say hello — write to <a href="mailto:code@sandmill.org"><span class="mono" style="font-size:0.95em">code@sandmill.org</span></a>. This is a small operation: you'll get a human reply, usually within a few days.</p>
+
+      <h2 class="sec" style="margin-top:40px">Security reports</h2>
+      <p class="sec-lede">If you believe you've found a security vulnerability in the protocol, the broker, or any SDK, please email <a href="mailto:code@sandmill.org"><span class="mono" style="font-size:0.95em">code@sandmill.org</span></a> with <span class="mono" style="font-size:0.95em">[security]</span> in the subject line rather than opening a public issue, so a fix can ship before details are public. Reports are read with priority and you'll hear back about triage and timeline.</p>
+
+      <h2 class="sec" style="margin-top:40px">If you're an agent</h2>
+      <p class="sec-lede">Start at <a href="/llms.txt">/llms.txt</a> — it indexes every machine-readable resource on this site, including the <a href="/openapi.json">OpenAPI spec</a> and the MCP wallet endpoint. If your human needs to reach us, point them at this page.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <span>browserid-ng — identity for agents and the humans behind them. Descended from Mozilla Persona.<br>Reading this as an agent? Start at <a href="/llms.txt">browserid.me/llms.txt</a>.</span>
+    <span><a href="/about">About</a> · <a href="/contact">Contact</a> · <a href="/privacy">Privacy</a> · <a href="https://github.com/vthunder/browserid-ng">GitHub</a> · <a href="https://github.com/vthunder/browserid-ng/tree/main/docs/specs">Spec</a> · Open protocol · MPL-2.0 · Free — no paid tiers</span>
+  </div>
+</footer>
+
+<script src="/site.js"></script>
+</body>
+</html>

@@ -267,3 +267,117 @@ async fn test_openapi_spec_declares_versioning_policy() {
     }
     assert!(spec["components"]["headers"]["ApiVersion"].is_object());
 }
+
+/// Every verification-API response carries the RateLimit self-throttling
+/// headers, and the 301st request in a window from one IP gets a structured
+/// JSON 429 with Retry-After (still stamped API-Version).
+#[tokio::test]
+async fn test_verification_api_rate_limit() {
+    let (server, _) = create_test_server();
+
+    // Distinct IPs so this test neither trips nor is tripped by the shared
+    // in-process limiter state other tests touch (they fall in the
+    // "unknown" bucket; these XFF addresses are ours alone).
+    let response = server
+        .post("/verify")
+        .add_header("x-forwarded-for", "198.51.100.7")
+        .json(&serde_json::json!({
+            "presentation": "not~a~real~presentation",
+            "audience": "https://rp.example.com",
+        }))
+        .await;
+    assert_eq!(response.status_code(), 200);
+    assert_eq!(response.headers().get("ratelimit-limit").expect("RateLimit-Limit"), "300");
+    let remaining: u32 = response
+        .headers()
+        .get("ratelimit-remaining")
+        .expect("RateLimit-Remaining")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(remaining < 300);
+    let reset: u64 = response
+        .headers()
+        .get("ratelimit-reset")
+        .expect("RateLimit-Reset")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(reset >= 1 && reset <= 60);
+
+    // Exhaust a fresh IP's window; the 301st call must be a 429.
+    for _ in 0..300 {
+        let r = server
+            .post("/status/check")
+            .add_header("x-forwarded-for", "198.51.100.8")
+            .json(&serde_json::json!({}))
+            .await;
+        assert_eq!(r.status_code(), 400);
+    }
+    let limited = server
+        .post("/status/check")
+        .add_header("x-forwarded-for", "198.51.100.8")
+        .json(&serde_json::json!({}))
+        .await;
+    assert_eq!(limited.status_code(), 429);
+    assert!(limited.headers().get("retry-after").is_some(), "429 must carry Retry-After");
+    assert_eq!(limited.headers().get("ratelimit-remaining").unwrap(), "0");
+    assert_eq!(limited.headers().get("api-version").unwrap(), "1");
+    let body: Value = limited.json();
+    assert_eq!(body["error"]["code"], "rate_limited");
+    assert!(body["error"]["hint"].is_string());
+}
+
+/// The published spec documents the rate-limit conventions the middleware
+/// enforces: the RateLimit headers on each verification endpoint and the
+/// shared 429 response.
+#[tokio::test]
+async fn test_openapi_spec_documents_rate_limits() {
+    let (server, _) = create_test_server();
+    let spec: Value = server.get("/openapi.json").await.json();
+
+    assert!(spec["info"]["description"].as_str().unwrap().contains("Rate limits"));
+    assert!(spec["components"]["responses"]["RateLimited"].is_object());
+    for path in ["/verify", "/validate-record", "/status/check"] {
+        let responses = &spec["paths"][path]["post"]["responses"];
+        assert!(responses["429"].is_object(), "{path} must document 429");
+        assert!(
+            responses["200"]["headers"]["RateLimit-Limit"].is_object(),
+            "{path} 200 must document RateLimit-Limit"
+        );
+    }
+}
+
+/// Crawler discovery files probed on the apex redirect to the marketing
+/// origin (like /llms.txt); without an origin split they 404 recoverably.
+#[tokio::test]
+async fn test_sitemap_and_robots_redirect_to_marketing_origin() {
+    let keypair = KeyPair::generate();
+    let email_sender = Arc::new(MockEmailSender::new());
+    let mut state = AppState::new_with_arcs(
+        keypair,
+        "localhost".to_string(),
+        Arc::new(InMemoryUserStore::new()),
+        Arc::new(InMemorySessionStore::new()),
+        email_sender,
+    );
+    state.marketing_url = Some("https://www.browserid.me".to_string());
+    let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
+
+    for path in ["/sitemap.xml", "/robots.txt"] {
+        let response = server.get(path).await;
+        assert_eq!(response.status_code(), 308, "{path}");
+        assert_eq!(
+            response.headers().get("location").unwrap().to_str().unwrap(),
+            format!("https://www.browserid.me{path}"),
+            "{path}"
+        );
+    }
+
+    let (bare, _) = create_test_server();
+    for path in ["/sitemap.xml", "/robots.txt"] {
+        assert_eq!(bare.get(path).await.status_code(), 404, "{path} without marketing origin");
+    }
+}

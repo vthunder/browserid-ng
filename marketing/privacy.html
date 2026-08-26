@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="The BrowserID privacy policy, in plain language: what each origin stores, what analytics run where, what's public, and how to delete everything.">
+<title>BrowserID privacy — what we store, and what we don't | browserid.me</title>
+<link rel="canonical" href="https://www.browserid.me/privacy">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='90'%3E%F0%9F%AA%AA%3C/text%3E%3C/svg%3E">
+<script src="/config.js"></script>
+<script src="/vendor/posthog.js"></script>
+<script src="/analytics.js" defer></script>
+<script>
+  (function () {
+    var t;
+    try { t = localStorage.getItem("browserid:theme"); } catch (e) {}
+    document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+  })();
+</script>
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+
+<div class="nav-outer">
+  <div class="wrap nav">
+    <a href="/" class="brand"><span class="ring"><i></i></span><span>browserid<span class="me">.me</span></span></a>
+    <nav>
+      <a href="/gate" class="spoke">Gate</a>
+      <a href="/developers" class="spoke">Developers</a>
+      <a href="/domains" class="spoke">Domains</a>
+      <a href="/demos" class="spoke">Demos</a>
+      <a href="https://github.com/vthunder/browserid-ng/blob/main/README.md" class="hide-sm">Docs</a>
+      <a href="/account" data-auth-href="/account" class="signin">Sign in</a>
+      <button class="theme-toggle" id="themeToggle" title="Toggle color theme" aria-label="Toggle color theme">
+        <span class="theme-icon-moon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"></circle><path d="M8 1.2v1.8M8 13v1.8M1.2 8H3M13 8h1.8M3.2 3.2l1.3 1.3M11.5 11.5l1.3 1.3M12.8 3.2l-1.3 1.3M4.5 11.5l-1.3 1.3"></path></svg></span>
+        <span class="theme-icon-sun"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path></svg></span>
+      </button>
+    </nav>
+  </div>
+</div>
+
+<section>
+  <div class="wrap hero-lite" style="padding:66px 0 30px">
+    <span class="kicker">Privacy</span>
+    <h1>An identity service should be able to explain itself.</h1>
+    <p class="lede" style="font-size:19px;max-width:36em">This page says, in plain language, what BrowserID stores and why. The design goal throughout is data minimization: we hold what the protocol needs to work, and nothing else. No ads, no data sales, no cross-site tracking — ever.</p>
+    <p style="color:var(--muted);font-size:13px;margin-top:10px">Last updated: 2026-08-26</p>
+  </div>
+</section>
+
+<section style="border-top:none">
+  <div class="wrap pad" style="padding-top:20px">
+    <div style="max-width:46em">
+      <h2 class="sec">This website (www.browserid.me)</h2>
+      <p class="sec-lede">The marketing site you're reading holds no accounts and sets no cookies. It runs a locked-down, self-hosted copy of PostHog for basic page analytics: page views, page leaves, and clicks on a handful of named buttons. Autocapture, session recording, and surveys are disabled; the analytics state lives in your browser's localStorage, not cookies; and events are scrubbed of anything that looks like an email address before sending. Events are sent through this origin and processed by PostHog Inc. (US cloud) on our behalf — no other third party receives anything.</p>
+
+      <h2 class="sec" style="margin-top:40px">The identity service (browserid.me)</h2>
+      <p class="sec-lede">When you create an account, the broker stores what the protocol needs: your email address, a password hash if you set one, the public keys of your devices and agents, the names you give them, and the warrants (permission grants) you sign — who may act, where, with what scopes, until when. Sessions use a cookie on that origin only. Sign-in codes are emailed to you and expire in minutes. The broker runs no analytics JavaScript; its own server-side event log covers product funnels (e.g. "an account was created"), not browsing behavior.</p>
+      <p class="sec-lede"><strong style="color:var(--text)">What we can't see:</strong> private keys never leave your devices, and sign-ins at other sites verify against your email domain's DNS — a relying party checking a presentation does not tell us who signed in where unless it chooses to use our hosted verifier for the check.</p>
+
+      <h2 class="sec" style="margin-top:40px">What's public by design</h2>
+      <p class="sec-lede">Revocation status lists are published so relying parties can check them; they contain opaque bit indexes, not names or emails. If you have your agent sign the demo guestbook, the entry — its display name, its issuer domain, and its message — is public; emails are not shown. Warrants are held by the sites you granted them to; that's what a grant is.</p>
+
+      <h2 class="sec" style="margin-top:40px">Deleting your data</h2>
+      <p class="sec-lede">You can revoke any grant, remove any agent, or cancel your whole account at <a href="https://browserid.me/account" data-auth-href="/account">browserid.me/account</a>. Cancelling deletes the account's stored emails, keys, and grants; already-issued short-lived certificates simply expire, and revocation takes effect on the next fail-closed check.</p>
+
+      <h2 class="sec" style="margin-top:40px">Self-hosting means never having to trust us</h2>
+      <p class="sec-lede">Everything above describes the hosted service at browserid.me. The entire stack is open source (MPL-2.0) — if this policy ever stops being one you like, you can run your own broker under your own domain and this page stops applying to you at all.</p>
+
+      <h2 class="sec" style="margin-top:40px">Questions</h2>
+      <p class="sec-lede">Ask on <a href="https://github.com/vthunder/browserid-ng/issues">GitHub</a> or email <a href="mailto:code@sandmill.org"><span class="mono" style="font-size:0.95em">code@sandmill.org</span></a> — see the <a href="/contact">contact page</a>. Material changes to this policy will be noted here with a new date.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <span>browserid-ng — identity for agents and the humans behind them. Descended from Mozilla Persona.<br>Reading this as an agent? Start at <a href="/llms.txt">browserid.me/llms.txt</a>.</span>
+    <span><a href="/about">About</a> · <a href="/contact">Contact</a> · <a href="/privacy">Privacy</a> · <a href="https://github.com/vthunder/browserid-ng">GitHub</a> · <a href="https://github.com/vthunder/browserid-ng/tree/main/docs/specs">Spec</a> · Open protocol · MPL-2.0 · Free — no paid tiers</span>
+  </div>
+</footer>
+
+<script src="/site.js"></script>
+</body>
+</html>

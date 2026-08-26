@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://www.browserid.me/</loc></url>
-  <url><loc>https://www.browserid.me/developers</loc></url>
-  <url><loc>https://www.browserid.me/domains</loc></url>
-  <url><loc>https://www.browserid.me/demos</loc></url>
-  <url><loc>https://www.browserid.me/gate</loc></url>
-  <url><loc>https://www.browserid.me/mcp-demo</loc></url>
+  <url><loc>https://www.browserid.me/</loc><lastmod>2026-08-26</lastmod></url>
+  <url><loc>https://www.browserid.me/developers</loc><lastmod>2026-08-26</lastmod></url>
+  <url><loc>https://www.browserid.me/domains</loc><lastmod>2026-08-26</lastmod></url>
+  <url><loc>https://www.browserid.me/demos</loc><lastmod>2026-08-26</lastmod></url>
+  <url><loc>https://www.browserid.me/gate</loc><lastmod>2026-08-26</lastmod></url>
+  <url><loc>https://www.browserid.me/mcp-demo</loc><lastmod>2026-08-26</lastmod></url>
+  <url><loc>https://www.browserid.me/about</loc><lastmod>2026-08-26</lastmod></url>
+  <url><loc>https://www.browserid.me/contact</loc><lastmod>2026-08-26</lastmod></url>
+  <url><loc>https://www.browserid.me/privacy</loc><lastmod>2026-08-26</lastmod></url>
 </urlset>

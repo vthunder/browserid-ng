@@ -82,8 +82,13 @@ No API keys, no registration — see Pricing.
 - Every page on www.browserid.me serves markdown via content negotiation —
   request it with `Accept: text/markdown` (responses set `Vary: Accept`).
   Direct markdown URLs also work: /index.md, /developers.md, /domains.md,
-  /demos.md, /gate.md, /mcp-demo.md.
+  /demos.md, /gate.md, /mcp-demo.md, /about.md, /contact.md, /privacy.md.
 - Sitemap: https://www.browserid.me/sitemap.xml
+- Rate limits: the verification endpoints (/verify, /validate-record,
+  /status/check) allow 300 requests per minute per client IP and say so on
+  every response via `RateLimit-Limit` / `RateLimit-Remaining` /
+  `RateLimit-Reset` headers; exceeding the limit returns HTTP 429 with a
+  `Retry-After` header. Self-throttle on the headers rather than retry-looping.
 - Versioning & deprecation: the API is v1 — documented paths are stable as
   published, and verification responses carry an `API-Version: 1` header.
   Breaking changes only ever ship under a new path prefix (e.g. /v2/verify);
@@ -97,6 +102,14 @@ no API keys, no registration, no rate-limit tiers, no billing. BrowserID is an
 open-source protocol (MPL-2.0) offered as an open service, and the whole stack
 is self-hostable — no lock-in. Paid offerings may appear someday for advanced
 or at-scale features, but the basics documented here are intended to stay free.
+Human-readable statement: https://www.browserid.me/about#pricing
+
+## Project, contact & trust
+
+- About the project (lineage, who runs it, pricing): https://www.browserid.me/about
+- Contact (GitHub issues, email, security reports): https://www.browserid.me/contact
+- Privacy policy (what is stored, what's public, deletion): https://www.browserid.me/privacy
+- Maintainer: Dan Mills (https://github.com/vthunder) · code@sandmill.org
 
 ## Source & spec
 

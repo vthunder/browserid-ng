@@ -17,7 +17,16 @@
       "@type": "WebSite",
       "@id": "https://www.browserid.me/#website",
       "url": "https://www.browserid.me/",
-      "name": "BrowserID"
+      "name": "BrowserID",
+      "publisher": { "@id": "https://www.browserid.me/#maker" }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://www.browserid.me/#maker",
+      "name": "Dan Mills",
+      "url": "https://www.browserid.me/about",
+      "email": "mailto:code@sandmill.org",
+      "sameAs": ["https://github.com/vthunder"]
     },
     {
       "@type": "SoftwareApplication",
@@ -35,6 +44,7 @@
         "description": "Free and open source — no API keys, no registration, no paid tiers. Open service; self-hostable."
       },
       "license": "https://www.mozilla.org/en-US/MPL/2.0/",
+      "author": { "@id": "https://www.browserid.me/#maker" },
       "softwareHelp": [
         { "@type": "CreativeWork", "name": "Agent index (llms.txt)", "url": "https://www.browserid.me/llms.txt" },
         { "@type": "CreativeWork", "name": "OpenAPI spec of the broker API", "url": "https://www.browserid.me/openapi.json" }
@@ -264,7 +274,7 @@
 <footer>
   <div class="wrap foot">
     <span>browserid-ng — identity for agents and the humans behind them. Descended from Mozilla Persona.<br>Reading this as an agent? Start at <a href="/llms.txt">browserid.me/llms.txt</a>.</span>
-    <span><a href="https://github.com/vthunder/browserid-ng">GitHub</a> · <a href="https://github.com/vthunder/browserid-ng/tree/main/docs/specs">Spec</a> · Open protocol · MPL-2.0</span>
+    <span><a href="/about">About</a> · <a href="/contact">Contact</a> · <a href="/privacy">Privacy</a> · <a href="https://github.com/vthunder/browserid-ng">GitHub</a> · <a href="https://github.com/vthunder/browserid-ng/tree/main/docs/specs">Spec</a> · Open protocol · MPL-2.0 · Free — no paid tiers</span>
   </div>
 </footer>
 

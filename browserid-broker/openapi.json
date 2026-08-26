@@ -2,9 +2,9 @@
   "openapi": "3.1.0",
   "info": {
     "title": "BrowserID broker API",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "summary": "Public HTTP API of the BrowserID (browserid-ng) broker at browserid.me",
-    "description": "The public, server-to-server surface of the BrowserID broker: assertion verification for relying parties, record validation, fail-closed revocation re-checks, the DNS-rooted support document, and the public guestbook feed.\n\nBrowserID is an open, DNS-rooted identity protocol: AI agents get their own cryptographic identity, delegated from a human, scoped to exactly what the human approved, revocable at any time. Human passwordless sign-in included.\n\nStart here as an agent: https://www.browserid.me/llms.txt\nRP quickstart: https://github.com/vthunder/browserid-ng/blob/main/docs/verify-quickstart.md\nSpec: https://github.com/vthunder/browserid-ng/tree/main/docs/specs\n\nVersioning & deprecation policy: this document describes v1 of the API. The paths above are stable as published (no version prefix); every response from the verification endpoints carries an `API-Version: 1` header. A breaking change will only ever ship under a new version prefix (e.g. `/v2/verify`) — an existing path never changes shape. An endpoint scheduled for removal is marked `deprecated: true` in this document and signals `Deprecation` and `Sunset` headers (RFC 9745 / RFC 8594) for at least 90 days before it is removed.\n\nPricing: free. No API keys, no registration, no rate-limit tiers, no billing. BrowserID is an open-source protocol (MPL-2.0), this broker is an open service, and everything here can be self-hosted.\n\nEndpoints not listed here (e.g. /wsapi/*) are the broker's own browser UI surface — session-gated, same-origin, and not a stable API.",
+    "description": "The public, server-to-server surface of the BrowserID broker: assertion verification for relying parties, record validation, fail-closed revocation re-checks, the DNS-rooted support document, and the public guestbook feed.\n\nBrowserID is an open, DNS-rooted identity protocol: AI agents get their own cryptographic identity, delegated from a human, scoped to exactly what the human approved, revocable at any time. Human passwordless sign-in included.\n\nStart here as an agent: https://www.browserid.me/llms.txt\nRP quickstart: https://github.com/vthunder/browserid-ng/blob/main/docs/verify-quickstart.md\nSpec: https://github.com/vthunder/browserid-ng/tree/main/docs/specs\n\nVersioning & deprecation policy: this document describes v1 of the API. The paths above are stable as published (no version prefix); every response from the verification endpoints carries an `API-Version: 1` header. A breaking change will only ever ship under a new version prefix (e.g. `/v2/verify`) — an existing path never changes shape. An endpoint scheduled for removal is marked `deprecated: true` in this document and signals `Deprecation` and `Sunset` headers (RFC 9745 / RFC 8594) for at least 90 days before it is removed.\n\nRate limits: the verification endpoints (/verify, /validate-record, /status/check) allow 300 requests per minute per client IP. Every response carries `RateLimit-Limit`, `RateLimit-Remaining`, and `RateLimit-Reset` headers so callers can self-throttle; exceeding the limit returns HTTP 429 with a `Retry-After` header and a structured error (`error.code = rate_limited`).\n\nPricing: free. No API keys, no registration, no rate-limit tiers, no billing. BrowserID is an open-source protocol (MPL-2.0), this broker is an open service, and everything here can be self-hosted.\n\nEndpoints not listed here (e.g. /wsapi/*) are the broker's own browser UI surface — session-gated, same-origin, and not a stable API.",
     "license": { "name": "MPL-2.0", "identifier": "MPL-2.0" },
     "contact": { "url": "https://github.com/vthunder/browserid-ng" }
   },
@@ -27,7 +27,7 @@
         "responses": {
           "200": {
             "description": "Verification outcome (success or failure — see `status`)",
-            "headers": { "API-Version": { "$ref": "#/components/headers/ApiVersion" } },
+            "headers": { "API-Version": { "$ref": "#/components/headers/ApiVersion" }, "RateLimit-Limit": { "$ref": "#/components/headers/RateLimitLimit" }, "RateLimit-Remaining": { "$ref": "#/components/headers/RateLimitRemaining" }, "RateLimit-Reset": { "$ref": "#/components/headers/RateLimitReset" } },
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/AccessVerificationResult" },
@@ -50,11 +50,12 @@
           },
           "400": {
             "description": "Malformed request (invalid JSON or missing fields)",
-            "headers": { "API-Version": { "$ref": "#/components/headers/ApiVersion" } },
+            "headers": { "API-Version": { "$ref": "#/components/headers/ApiVersion" }, "RateLimit-Limit": { "$ref": "#/components/headers/RateLimitLimit" }, "RateLimit-Remaining": { "$ref": "#/components/headers/RateLimitRemaining" }, "RateLimit-Reset": { "$ref": "#/components/headers/RateLimitReset" } },
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
             }
-          }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
     },
@@ -73,18 +74,19 @@
         "responses": {
           "200": {
             "description": "Validation outcome (success or failure — see `status`)",
-            "headers": { "API-Version": { "$ref": "#/components/headers/ApiVersion" } },
+            "headers": { "API-Version": { "$ref": "#/components/headers/ApiVersion" }, "RateLimit-Limit": { "$ref": "#/components/headers/RateLimitLimit" }, "RateLimit-Remaining": { "$ref": "#/components/headers/RateLimitRemaining" }, "RateLimit-Reset": { "$ref": "#/components/headers/RateLimitReset" } },
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/RecordValidationResult" } }
             }
           },
           "400": {
             "description": "Malformed request (invalid JSON or missing fields)",
-            "headers": { "API-Version": { "$ref": "#/components/headers/ApiVersion" } },
+            "headers": { "API-Version": { "$ref": "#/components/headers/ApiVersion" }, "RateLimit-Limit": { "$ref": "#/components/headers/RateLimitLimit" }, "RateLimit-Remaining": { "$ref": "#/components/headers/RateLimitRemaining" }, "RateLimit-Reset": { "$ref": "#/components/headers/RateLimitReset" } },
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
             }
-          }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
     },
@@ -103,18 +105,19 @@
         "responses": {
           "200": {
             "description": "Per-ref revocation states",
-            "headers": { "API-Version": { "$ref": "#/components/headers/ApiVersion" } },
+            "headers": { "API-Version": { "$ref": "#/components/headers/ApiVersion" }, "RateLimit-Limit": { "$ref": "#/components/headers/RateLimitLimit" }, "RateLimit-Remaining": { "$ref": "#/components/headers/RateLimitRemaining" }, "RateLimit-Reset": { "$ref": "#/components/headers/RateLimitReset" } },
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/StatusCheckResponse" } }
             }
           },
           "400": {
             "description": "Malformed request (invalid JSON, or refs not in 1..=16)",
-            "headers": { "API-Version": { "$ref": "#/components/headers/ApiVersion" } },
+            "headers": { "API-Version": { "$ref": "#/components/headers/ApiVersion" }, "RateLimit-Limit": { "$ref": "#/components/headers/RateLimitLimit" }, "RateLimit-Remaining": { "$ref": "#/components/headers/RateLimitRemaining" }, "RateLimit-Reset": { "$ref": "#/components/headers/RateLimitReset" } },
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
             }
-          }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
     },
@@ -202,7 +205,34 @@
     }
   },
   "components": {
+    "responses": {
+      "RateLimited": {
+        "description": "Rate limit exceeded (300 requests per minute per client IP). Wait Retry-After seconds, then self-throttle on the RateLimit headers.",
+        "headers": {
+          "API-Version": { "$ref": "#/components/headers/ApiVersion" },
+          "Retry-After": { "description": "Seconds until the current window resets and requests will be accepted again.", "schema": { "type": "integer" } },
+          "RateLimit-Limit": { "$ref": "#/components/headers/RateLimitLimit" },
+          "RateLimit-Remaining": { "$ref": "#/components/headers/RateLimitRemaining" },
+          "RateLimit-Reset": { "$ref": "#/components/headers/RateLimitReset" }
+        },
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+        }
+      }
+    },
     "headers": {
+      "RateLimitLimit": {
+        "description": "Requests allowed per fixed 60-second window per client IP.",
+        "schema": { "type": "integer" }
+      },
+      "RateLimitRemaining": {
+        "description": "Requests remaining in the current window for this client IP.",
+        "schema": { "type": "integer" }
+      },
+      "RateLimitReset": {
+        "description": "Seconds until the current window resets.",
+        "schema": { "type": "integer" }
+      },
       "ApiVersion": {
         "description": "Major version of the API surface that produced this response. Currently always `1`; a breaking change would ship under a new path prefix and bump this value there.",
         "schema": { "type": "string", "enum": ["1"] }

@@ -13,6 +13,7 @@ mod holders;
 mod hosted_idp;
 mod oidc;
 mod primary;
+mod rate_limit;
 pub(crate) mod session;
 mod signin_code;
 mod status;
@@ -176,6 +177,10 @@ where
         // re-check. (Its page-side sibling /status/proxy lives on the
         // cross-origin router above.)
         .route("/status/check", post(status::status_check))
+        // Per-IP rate limiting with RateLimit-* headers on every response and
+        // a structured JSON 429 (+ Retry-After) over the limit.
+        .layer(axum::middleware::from_fn(rate_limit::verification_api))
+        // Outermost, so API-Version also lands on rate-limited 429s.
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("api-version"),
             HeaderValue::from_static("1"),
@@ -324,6 +329,10 @@ where
         // always resolves. Without an origin split (local dev) there is no
         // marketing site — answer with the agent-friendly 404 instead.
         .route("/llms.txt", get(llms_txt))
+        // Crawler discovery files probed on the apex (Is Agentic round 3):
+        // both live on the marketing origin; redirect like /llms.txt.
+        .route("/sitemap.xml", get(sitemap_xml))
+        .route("/robots.txt", get(robots_txt))
         // Serve static files (dialog, CSS, JS)
         .nest_service("/dialog", ServeDir::new(static_path))
         // Unmatched paths: a 404 an agent can recover from — structured JSON
@@ -560,6 +569,21 @@ async fn openapi_spec() -> impl IntoResponse {
     )
 }
 
+/// Redirect a crawler/agent discovery file to the marketing origin's copy
+/// (single source of truth). Without an origin split (local dev) there is no
+/// marketing site — answer with the agent-friendly 404 instead.
+fn marketing_file_redirect<U, S, E>(state: &AppState<U, S, E>, path: &'static str) -> Response
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    if let Some(url) = &state.marketing_url {
+        return axum::response::Redirect::permanent(&format!("{url}{path}")).into_response();
+    }
+    not_found_markdown(path)
+}
+
 /// `GET /llms.txt` — redirect to the marketing origin's copy (see the route
 /// comment).
 async fn llms_txt<U, S, E>(State(state): State<Arc<AppState<U, S, E>>>) -> Response
@@ -568,10 +592,29 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    if let Some(url) = &state.marketing_url {
-        return axum::response::Redirect::permanent(&format!("{url}/llms.txt")).into_response();
-    }
-    not_found_markdown("/llms.txt")
+    marketing_file_redirect(&state, "/llms.txt")
+}
+
+/// `GET /sitemap.xml` — crawlers and audits probe the apex for it; the real
+/// sitemap lives on the marketing origin.
+async fn sitemap_xml<U, S, E>(State(state): State<Arc<AppState<U, S, E>>>) -> Response
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    marketing_file_redirect(&state, "/sitemap.xml")
+}
+
+/// `GET /robots.txt` — same story as /sitemap.xml (crawlers follow robots.txt
+/// redirects and apply the target's rules to this origin).
+async fn robots_txt<U, S, E>(State(state): State<Arc<AppState<U, S, E>>>) -> Response
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    marketing_file_redirect(&state, "/robots.txt")
 }
 
 /// Fallback for unmatched paths. Agents recover from a 404 only if it says
