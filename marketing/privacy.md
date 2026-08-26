@@ -1,68 +1,82 @@
-# BrowserID privacy
-
-> An identity service should be able to explain itself. This page says, in
-> plain language, what BrowserID stores and why. The design goal throughout is
-> data minimization: we hold what the protocol needs to work, and nothing
-> else. No ads, no data sales, no cross-site tracking — ever.
+# Privacy policy
 
 Last updated: 2026-08-26
 
-## This website (www.browserid.me)
+## Who runs this
 
-The marketing site you're reading holds no accounts and sets no cookies. It
-runs a locked-down, self-hosted copy of PostHog for basic page analytics: page
-views, page leaves, and clicks on a handful of named buttons. Autocapture,
-session recording, and surveys are disabled; the analytics state lives in your
-browser's localStorage, not cookies; and events are scrubbed of anything that
-looks like an email address before sending. Events are sent through this
-origin and processed by PostHog Inc. (US cloud) on our behalf — no other third
-party receives anything.
+BrowserID is a free, open-source project operated by one person (see the
+[contact page](/contact)). This policy covers the website
+(www.browserid.me), the identity service (browserid.me), and the hosted
+wallet and verifier. It is a hobby project, run with care but on a
+best-effort basis: there are no SLAs, no compliance certifications, and no
+legal department — please treat the service accordingly. The full source
+code is [public](https://github.com/vthunder/browserid-ng), so every claim
+on this page can be checked.
 
-## The identity service (browserid.me)
+## What we collect
 
-When you create an account, the broker stores what the protocol needs: your
-email address, a password hash if you set one, the public keys of your devices
-and agents, the names you give them, and the warrants (permission grants) you
-sign — who may act, where, with what scopes, until when. Sessions use a cookie
-on that origin only. Sign-in codes are emailed to you and expire in minutes.
-The broker runs no analytics JavaScript; its own server-side event log covers
-product funnels (e.g. "an account was created"), not browsing behavior.
+If you create an account, the identity service stores your email address, a
+password hash if you set a password, the public keys of your devices and
+agents, the names you give them, and the warrants (permission grants) you
+sign — who may act, where, with what scopes, until when. Private keys are
+generated and kept on your devices; we never see them.
 
-**What we can't see:** private keys never leave your devices, and sign-ins at
-other sites verify against your email domain's DNS — a relying party checking
-a presentation does not tell us who signed in where unless it chooses to use
-our hosted verifier for the check.
+Sign-in codes are sent to your email address and expire within minutes. A
+session cookie keeps you signed in on browserid.me.
 
-## What's public by design
+We collect basic product analytics: page views and a few named button clicks
+on the website, and server-side events on the identity service (for example,
+that an account was created). Identity-service events identify users only by
+an opaque hash of the email address; raw email addresses, verification
+codes, and IP addresses are never included in analytics events.
 
-Revocation status lists are published so relying parties can check them; they
-contain opaque bit indexes, not names or emails. If you have your agent sign
-the demo guestbook, the entry — its display name, its issuer domain, and its
-message — is public; emails are not shown. Warrants are held by the sites you
-granted them to; that's what a grant is.
+Like almost every web service, our servers keep standard request logs, which
+include IP addresses. We use them for operations and abuse prevention,
+including rate limiting.
 
-## Deleting your data
+If a site uses our hosted verifier, its verification requests tell us who
+signed in there. A site that would rather we not see that can run its own
+verifier.
 
-You can revoke any grant, remove any agent, or cancel your whole account at
-[browserid.me/account](https://browserid.me/account). Cancelling deletes the
-account's stored emails, keys, and grants; already-issued short-lived
-certificates simply expire, and revocation takes effect on the next
-fail-closed check.
+## Who else receives data
 
-## Self-hosting means never having to trust us
+Analytics events from both origins are processed by PostHog Inc. (US) on our
+behalf. Sign-in code emails are delivered through our email provider, which
+necessarily sees the recipient address. The service runs on servers rented
+from commodity hosting providers. We do not run ads, do not sell data, and
+do not track you across other sites.
 
-Everything above describes the hosted service at browserid.me. The entire
-stack is open source (MPL-2.0) — if this policy ever stops being one you like,
-you can run your own broker under your own domain and this page stops applying
-to you at all.
+## What is public
 
-## Questions
+Revocation status lists are published so relying parties can check them;
+they contain opaque bit positions, not names or emails. Guestbook entries —
+display name, issuer domain, and message — are public, and they remain on
+the wall after the account that signed them is deleted. Warrants you grant
+are held by the sites you granted them to.
 
-Ask on [GitHub](https://github.com/vthunder/browserid-ng/issues) or email
-**code@sandmill.org** — see the [contact page](/contact). Material changes to
-this policy will be noted here with a new date.
+## Cookies and local storage
+
+browserid.me sets one cookie, for your signed-in session. www.browserid.me
+sets no cookies; it uses localStorage for your theme choice and the
+analytics state.
+
+## Retention and deletion
+
+Sign-in codes expire within minutes. Access certificates are short-lived and
+expire on their own. You can revoke any grant, remove any agent, or cancel
+your account at [browserid.me/account](https://browserid.me/account);
+cancelling deletes the stored account data — email addresses, password hash,
+keys, names, and grants. Revocation takes effect on a relying party's next
+status check. Guestbook entries are not stored with the account and are not
+removed by cancelling it. Server logs are kept briefly and rotated.
+
+## Changes and contact
+
+Changes to this policy are posted here with a new date. Questions: the
+[contact page](/contact). The whole stack is open source and self-hostable —
+a service you run yourself is not covered by this policy.
 
 ## More
 
-- [About](/about) · [Contact](/contact) · [llms.txt](/llms.txt)
+- [About](/about) · [Principles](/principles) · [Contact](/contact) · [llms.txt](/llms.txt)
 - [GitHub](https://github.com/vthunder/browserid-ng) · [Spec](https://github.com/vthunder/browserid-ng/tree/main/docs/specs)

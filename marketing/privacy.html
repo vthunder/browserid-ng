@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="The BrowserID privacy policy, in plain language: what each origin stores, what analytics run where, what's public, and how to delete everything.">
-<title>BrowserID privacy — what we store, and what we don't | browserid.me</title>
+<meta name="description" content="The BrowserID privacy policy: what we collect, who else receives data, what is public, and how retention and deletion work.">
+<title>BrowserID privacy policy | browserid.me</title>
 <link rel="canonical" href="https://www.browserid.me/privacy">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='90'%3E%F0%9F%AA%AA%3C/text%3E%3C/svg%3E">
 <script src="/config.js"></script>
@@ -42,8 +42,7 @@
 <section>
   <div class="wrap hero-lite" style="padding:66px 0 30px">
     <span class="kicker">Privacy</span>
-    <h1>An identity service should be able to explain itself.</h1>
-    <p class="lede" style="font-size:19px;max-width:36em">This page says, in plain language, what BrowserID stores and why. The design goal throughout is data minimization: we hold what the protocol needs to work, and nothing else. No ads, no data sales, no cross-site tracking — ever.</p>
+    <h1>Privacy policy</h1>
     <p style="color:var(--muted);font-size:13px;margin-top:10px">Last updated: 2026-08-26</p>
   </div>
 </section>
@@ -51,24 +50,30 @@
 <section style="border-top:none">
   <div class="wrap pad" style="padding-top:20px">
     <div style="max-width:46em">
-      <h2 class="sec">This website (www.browserid.me)</h2>
-      <p class="sec-lede">The marketing site you're reading holds no accounts and sets no cookies. It runs a locked-down, self-hosted copy of PostHog for basic page analytics: page views, page leaves, and clicks on a handful of named buttons. Autocapture, session recording, and surveys are disabled; the analytics state lives in your browser's localStorage, not cookies; and events are scrubbed of anything that looks like an email address before sending. Events are sent through this origin and processed by PostHog Inc. (US cloud) on our behalf — no other third party receives anything.</p>
+      <h2 class="sec">Who runs this</h2>
+      <p class="sec-lede">BrowserID is a free, open-source project operated by one person (see the <a href="/contact">contact page</a>). This policy covers the website (www.browserid.me), the identity service (browserid.me), and the hosted wallet and verifier. It is a hobby project, run with care but on a best-effort basis: there are no SLAs, no compliance certifications, and no legal department — please treat the service accordingly. The full source code is <a href="https://github.com/vthunder/browserid-ng">public</a>, so every claim on this page can be checked.</p>
 
-      <h2 class="sec" style="margin-top:40px">The identity service (browserid.me)</h2>
-      <p class="sec-lede">When you create an account, the broker stores what the protocol needs: your email address, a password hash if you set one, the public keys of your devices and agents, the names you give them, and the warrants (permission grants) you sign — who may act, where, with what scopes, until when. Sessions use a cookie on that origin only. Sign-in codes are emailed to you and expire in minutes. The broker runs no analytics JavaScript; its own server-side event log covers product funnels (e.g. "an account was created"), not browsing behavior.</p>
-      <p class="sec-lede"><strong style="color:var(--text)">What we can't see:</strong> private keys never leave your devices, and sign-ins at other sites verify against your email domain's DNS — a relying party checking a presentation does not tell us who signed in where unless it chooses to use our hosted verifier for the check.</p>
+      <h2 class="sec" style="margin-top:40px">What we collect</h2>
+      <p class="sec-lede">If you create an account, the identity service stores your email address, a password hash if you set a password, the public keys of your devices and agents, the names you give them, and the warrants (permission grants) you sign — who may act, where, with what scopes, until when. Private keys are generated and kept on your devices; we never see them.</p>
+      <p class="sec-lede">Sign-in codes are sent to your email address and expire within minutes. A session cookie keeps you signed in on browserid.me.</p>
+      <p class="sec-lede">We collect basic product analytics: page views and a few named button clicks on the website, and server-side events on the identity service (for example, that an account was created). Identity-service events identify users only by an opaque hash of the email address; raw email addresses, verification codes, and IP addresses are never included in analytics events.</p>
+      <p class="sec-lede">Like almost every web service, our servers keep standard request logs, which include IP addresses. We use them for operations and abuse prevention, including rate limiting.</p>
+      <p class="sec-lede">If a site uses our hosted verifier, its verification requests tell us who signed in there. A site that would rather we not see that can run its own verifier.</p>
 
-      <h2 class="sec" style="margin-top:40px">What's public by design</h2>
-      <p class="sec-lede">Revocation status lists are published so relying parties can check them; they contain opaque bit indexes, not names or emails. If you have your agent sign the demo guestbook, the entry — its display name, its issuer domain, and its message — is public; emails are not shown. Warrants are held by the sites you granted them to; that's what a grant is.</p>
+      <h2 class="sec" style="margin-top:40px">Who else receives data</h2>
+      <p class="sec-lede">Analytics events from both origins are processed by PostHog Inc. (US) on our behalf. Sign-in code emails are delivered through our email provider, which necessarily sees the recipient address. The service runs on servers rented from commodity hosting providers. We do not run ads, do not sell data, and do not track you across other sites.</p>
 
-      <h2 class="sec" style="margin-top:40px">Deleting your data</h2>
-      <p class="sec-lede">You can revoke any grant, remove any agent, or cancel your whole account at <a href="https://browserid.me/account" data-auth-href="/account">browserid.me/account</a>. Cancelling deletes the account's stored emails, keys, and grants; already-issued short-lived certificates simply expire, and revocation takes effect on the next fail-closed check.</p>
+      <h2 class="sec" style="margin-top:40px">What is public</h2>
+      <p class="sec-lede">Revocation status lists are published so relying parties can check them; they contain opaque bit positions, not names or emails. Guestbook entries — display name, issuer domain, and message — are public, and they remain on the wall after the account that signed them is deleted. Warrants you grant are held by the sites you granted them to.</p>
 
-      <h2 class="sec" style="margin-top:40px">Self-hosting means never having to trust us</h2>
-      <p class="sec-lede">Everything above describes the hosted service at browserid.me. The entire stack is open source (MPL-2.0) — if this policy ever stops being one you like, you can run your own broker under your own domain and this page stops applying to you at all.</p>
+      <h2 class="sec" style="margin-top:40px">Cookies and local storage</h2>
+      <p class="sec-lede">browserid.me sets one cookie, for your signed-in session. www.browserid.me sets no cookies; it uses localStorage for your theme choice and the analytics state.</p>
 
-      <h2 class="sec" style="margin-top:40px">Questions</h2>
-      <p class="sec-lede">Ask on <a href="https://github.com/vthunder/browserid-ng/issues">GitHub</a> or email <a href="mailto:code@sandmill.org"><span class="mono" style="font-size:0.95em">code@sandmill.org</span></a> — see the <a href="/contact">contact page</a>. Material changes to this policy will be noted here with a new date.</p>
+      <h2 class="sec" style="margin-top:40px">Retention and deletion</h2>
+      <p class="sec-lede">Sign-in codes expire within minutes. Access certificates are short-lived and expire on their own. You can revoke any grant, remove any agent, or cancel your account at <a href="https://browserid.me/account" data-auth-href="/account">browserid.me/account</a>; cancelling deletes the stored account data — email addresses, password hash, keys, names, and grants. Revocation takes effect on a relying party's next status check. Guestbook entries are not stored with the account and are not removed by cancelling it. Server logs are kept briefly and rotated.</p>
+
+      <h2 class="sec" style="margin-top:40px">Changes and contact</h2>
+      <p class="sec-lede">Changes to this policy are posted here with a new date. Questions: the <a href="/contact">contact page</a>. The whole stack is open source and self-hostable — a service you run yourself is not covered by this policy.</p>
     </div>
   </div>
 </section>

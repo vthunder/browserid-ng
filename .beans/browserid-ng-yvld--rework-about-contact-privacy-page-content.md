@@ -1,11 +1,11 @@
 ---
 # browserid-ng-yvld
 title: Rework /about, /contact, /privacy page content
-status: in-progress
+status: completed
 type: task
 priority: normal
 created_at: 2026-08-26T13:46:09Z
-updated_at: 2026-08-26T21:03:43Z
+updated_at: 2026-08-26T21:40:23Z
 ---
 
 The trust pages shipped in bean 1w4g (commit 4018a11) were first-draft copy written to satisfy the Is Agentic audit (real pages, ≥500 chars, honest content). Dan wants to rework the content on all three.
@@ -13,7 +13,7 @@ The trust pages shipped in bean 1w4g (commit 4018a11) were first-draft copy writ
 Constraints to keep when rewriting:
 - [x] Rework /about copy (about.html + about.md) — v2 shipped: minimal first-person story + principles spirit + try-it CTA; pricing reduced to a clause; heading/who-runs-it/pricing-section/design-paragraph all cut per Dan
 - [x] Rework /contact copy (contact.html + contact.md) — bare 'Contact' h1, no subtitle, zero subheadings, two-paragraph blurb (issues/repo + email/security/agent note)
-- [ ] Rework /privacy copy (privacy.html + privacy.md)
+- [x] Rework /privacy copy (privacy.html + privacy.md) — conventional-policy rewrite
 - [ ] Keep html and md mirrors in sync (Accept: text/markdown negotiation serves the .md)
 - [ ] Keep the anchors/claims tests rely on: marketing/test.sh asserts canonical + ≥500 chars of text per page, "Everything is free" on /about, and the /about#pricing anchor is linked from llms.txt
 - [ ] Privacy claims must keep matching the implementation (PostHog posture, broker data inventory, deletion via /account); update "Last updated" date on change
@@ -26,3 +26,18 @@ Keep/rework: "Where it comes from" is more or less ok, keep some.
 New structure: (1) backstory — why Dan is building this; (2) lean hard on the principles (summarize/paraphrase/link to /principles). That's about it.
 
 Open dependency: pricing must find a new home before the /about section is removed — test.sh asserts "Everything is free" on /about, llms.txt links /about#pricing, and JSON-LD offers reference it conceptually. Candidates: footer line only, or a line on /developers.
+
+## Summary of Changes
+
+All three trust pages reworked across several sessions (final commits: about 99915e3-era, contact 99915e3, privacy this commit).
+
+/privacy v2 (conventional-policy rewrite):
+- Plain "Privacy policy" title, no subtitle, dated; seven lifecycle-ordered sections (who runs this / collect / who else receives / public / cookies / retention & deletion / changes & contact).
+- Correctness fixes found by checking the code: broker server-side analytics DO go to PostHog Inc. US (was implied local) with the hash/no-PII caveat stated; guestbook entries persist after account deletion (was silent); server logs + IPs and rate limiting disclosed; email delivery provider disclosed generically.
+- Hobby disclaimer in "Who runs this": best-effort, no SLAs/compliance certs, treat accordingly, code public so claims are checkable.
+- Kept-generic per Dan: email provider, hosting, log retention. PostHog stays named (already public). No GDPR/CCPA boilerplate.
+- Verified in code: account_cancel cascades 13 user-keyed tables + pending verifications, so the deletion claim is accurate.
+
+Earlier in the bean: /about → "Why browserid.me exists" (minimal first-person story, principles spirit, try-it CTA); /contact → bare title, two-sentence blurb (option A).
+
+Note: the checkbox constraints written at bean creation ("Everything is free" on /about, /about#pricing anchor) were consciously superseded by Dan's later pricing-visibility decisions.
