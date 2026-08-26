@@ -1,58 +1,49 @@
-# About BrowserID
+# Why BrowserID exists
 
-> An open identity protocol, run in the open. BrowserID (browserid-ng) is an
-> open, DNS-rooted identity protocol: AI agents get their own cryptographic
-> identity, delegated from a human, scoped to exactly what the human approved,
-> and revocable at any time. Human passwordless sign-in included.
+> The web never got an open identity layer. Agents are forcing the question
+> open again — and this time, the open answer has to be the one that works.
 
-## Where it comes from
+I led the BrowserID/Persona effort at Mozilla from its first days — first
+building, then as product lead — until shortly after Persona launched. Plenty
+of people contributed as much as I did, and more on the technical side; but I
+was in the room for just about every protocol and product decision, so I know
+what we got right and where it failed. What we got right: your email address
+is your identity, its domain is your issuer, and no vendor needs to sit
+between you and the sites you sign into. Where it failed: passwords were just
+barely tolerable for humans, so an open protocol stayed optional — and
+optional wasn't enough.
 
-The protocol descends from **BrowserID**, the email-based sign-in protocol
-behind Mozilla Persona (2011–2016). browserid-ng is an independent successor —
-it keeps Persona's best idea, that your email address is your identity and its
-domain is your issuer, and extends it to the thing 2011 never anticipated:
-agents acting on your behalf. It is not affiliated with or endorsed by Mozilla.
+A decade of other work later, agents changed the terms. You cannot hand an
+agent your password and call it fine; credentials that merely annoyed humans
+become indefensible at machine speed. The identity question is open again,
+and the answer will harden into infrastructure that lasts decades.
+browserid-ng is my second run at it: Persona's best idea, kept — and extended
+to the thing 2011 never anticipated, agents acting on your behalf. It's an
+independent project, not affiliated with Mozilla.
 
-Everything the original got right is still here: no passwords held by relying
-parties, no central identity vendor at sign-in time, verification rooted in
-the domain's own DNS. What's new is the authority model — warrants a human
-signs for an agent, scoped to one site and a few actions, checked fail-closed
-on every call, and revocable from one page.
+## What guides it
 
-## Who builds and runs it
+Everything here is built against a short set of written principles. Their
+spirit, in one breath: your identity is an email-shaped name that answers to
+you and no one else; anyone can join the system — as an issuer, a site, or a
+broker — without asking permission; an agent is a real actor whose authority
+is always borrowed — scoped, attributed, revocable; everything that stands
+between you and the world, browser and wallet and broker and the AI agent
+itself, owes its loyalty to you; and none of it may ask anyone to choose
+between open and working. The full seven are short and worth reading:
+[the principles](/principles).
 
-BrowserID is built and operated by **Dan Mills**
-([@vthunder](https://github.com/vthunder)). The code is open source under the
-[Mozilla Public License 2.0](https://www.mozilla.org/en-US/MPL/2.0/) and
-developed in public at
-[github.com/vthunder/browserid-ng](https://github.com/vthunder/browserid-ng) —
-the protocol spec, the broker, the SDKs, and this website included. Questions
-and bug reports are welcome on the [contact page](/contact).
+## Try it
 
-## Pricing
-
-**Everything is free.** The hosted broker, the wallet, the verifier, domain
-onboarding, and all SDKs cost nothing to use — no API keys, no registration,
-no rate-limit tiers, no billing. BrowserID is an open-source protocol offered
-as an open service.
-
-Will that change? Paid offerings may appear someday for advanced or at-scale
-features, but the basics — sign-in, verification, the wallet, revocation — are
-intended to stay free. And because the protocol is open and the whole stack is
-self-hostable, you are never locked in: your domain's one DNS record can point
-at a key you hold instead of ours, any time.
-
-## The design in one paragraph
-
-Your identity is your email address. Its domain publishes one DNSSEC-signed
-record that makes the domain its own issuer (or delegates to a hosted one). A
-human signs a *warrant* naming an agent, a site, and a scope; the agent
-presents it alongside its own certificate; the relying party verifies the
-whole chain in one call — against DNS, not against a vendor. Revoking the
-warrant kills the agent's access on its next check, everywhere, without
-touching the human's own credentials.
+The whole stack is open source (MPL-2.0), free to use, and developed in
+public by me, Dan Mills ([@vthunder](https://github.com/vthunder)) —
+protocol, broker, SDKs, this site. But the fastest way to understand it is to
+try it: in a couple of minutes your agent can have an identity of its own,
+sign a public wall with it, and lose the permission the moment you revoke it.
+Start with [the demos](/demos), or say hello via the
+[contact page](/contact).
 
 ## More
 
-- [Contact](/contact) · [Privacy](/privacy) · [llms.txt](/llms.txt)
+- [Principles](/principles) · [Contact](/contact) · [Privacy](/privacy) · [llms.txt](/llms.txt)
 - [GitHub](https://github.com/vthunder/browserid-ng) · [Spec](https://github.com/vthunder/browserid-ng/tree/main/docs/specs)

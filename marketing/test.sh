@@ -158,8 +158,8 @@ text = re.sub(r"<script.*?</script>|<[^>]+>", " ", s, flags=re.S)
 print("canonical" in s, len(" ".join(text.split())) >= 500)
 ')" '^True True$'
 done
-check "/about carries the visible pricing statement" \
-  "$(curl -s "$BASE/about")" 'Everything is free'
+check "/about carries the visible pricing mention" \
+  "$(curl -s "$BASE/about")" 'free to use'
 check "footer pricing line on the homepage" \
   "$(curl -s "$BASE/")" 'Free — no paid tiers'
 check "footer links the trust pages" "$(curl -s "$BASE/")" 'href="/privacy"'
