@@ -1,11 +1,11 @@
 ---
 # browserid-ng-0zj6
 title: Same-tab redirect fallback for the login dialog (Arc / popup-blocked browsers)
-status: in-progress
+status: todo
 type: feature
 priority: normal
 created_at: 2026-07-19T15:21:34Z
-updated_at: 2026-07-19T15:47:03Z
+updated_at: 2026-08-26T23:08:09Z
 parent: browserid-ng-oup3
 ---
 
@@ -31,3 +31,5 @@ Full-page redirect alternative to the WinChan popup, auto-engaged when the popup
 - [ ] 4. Arc manual validation (Dan)
 
 ## Decision (Dan, 2026-07-19): remove browserid.login() entirely — watch()/request() is the only RP API (a .login() promise cannot survive the redirect navigation; the user would land back logged-out).
+
+**Audit note 2026-08-27:** all engineering done and e2e-tested (b2e4f82 redirect fallback in include.js/dialog.js; 2a6e9ac made redirect the default on mobile; 12 passing e2e tests). Only step 4 — Arc manual validation by Dan — remains unconfirmed, so moved back to todo pending that check. Circumstantial evidence it works: Arc on macOS holds the canonical browser holder in prod (i8a2).

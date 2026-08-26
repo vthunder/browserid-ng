@@ -1,11 +1,11 @@
 ---
 # browserid-ng-b6pp
 title: 'M1: authorization-code lane in mcp-auth + browserid.me approval-return endpoint'
-status: in-progress
+status: completed
 type: feature
 priority: high
 created_at: 2026-08-12T12:21:46Z
-updated_at: 2026-08-12T15:21:08Z
+updated_at: 2026-08-26T23:09:10Z
 parent: browserid-ng-81s6
 ---
 
@@ -56,3 +56,7 @@ Documented in sdk/mcp-auth/README.md ("curl walkthrough (local broker)"): wallet
 
 ## Reviewed + merged 2026-08-12
 Reviewed the security-critical parts directly: cross-user mutex (withAgent holds the lock across the async assertionFor — no interleaving; per-code warrant re-hold is correct and better than the spec sketch), validate_return_url (rejects non-http(s), origin ∈ identity-domain ∨ audience-origin — gateway rides the audience rule), verifyPkceS256 (RFC 7636 + timingSafeEqual). All sound. Merged to main (ff). Rust 284 pass, mcp-auth 34 pass. Broker return_url deploying. SDK publish (agent 0.4.1 + mcp-auth) deferred until M2 needs npx.
+
+## Summary of Changes
+
+Built and merged the full Lane-B authorization-code flow: mcp-auth gained discovery metadata, RFC 7591 DCR, PKCE-S256 /authorize, /authorize/return, and an authorization_code /token grant terminating in the same redeemPresentation fail-closed mint as Lane A; the broker/registrar gained an origin-validated return_url on the warrant consent flow (migration v27). The lane has since carried the 0.3.0–0.5.3 releases including refresh tokens and the connection lane. Verified live: mcp-demo.browserid.me advertises the auth-code lane in production (authorization_endpoint, DCR, S256) and generic OAuth hosts connect through it. SDKs published (agent ≥0.5.x, mcp-auth ≥0.4.0, 2026-08-14). (Closed by audit 2026-08-27.)

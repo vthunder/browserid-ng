@@ -1,11 +1,11 @@
 ---
 # browserid-ng-qer8
 title: 'OIDC bridge: claim foo@gmail.com by signing in with Google (in-broker proof method)'
-status: in-progress
+status: completed
 type: feature
 priority: high
 created_at: 2026-08-10T04:30:45Z
-updated_at: 2026-08-11T21:36:26Z
+updated_at: 2026-08-26T23:07:01Z
 ---
 
 Claim a mailbox by signing in with its provider (Google first) instead of a mailed code. An in-broker OIDC proof method that UPGRADES the mailbox ceremony for a no-primary MX domain with a known OIDC issuer — per-mailbox scope (behaves exactly like smtp), SMTP stays as the equal-strength fallback ceremony.
@@ -40,4 +40,8 @@ REMAINING (SUPERVISED — needs Google client creds + review of production login
 - [x] dialog.js: oidc lane (popup + redirect + resume=oidc_claim)
 - [x] tests: oidc_claim_test.rs (10 tests: mock token endpoint + JWKS, full callback attach, reclaim semantics, csrf-bind guard); authority google detection
 - [x] full broker suite green (5a07031); deployed to prod 2026-08-11, verified: OIDC enabled in logs, address_info advertises oidc, /oidc/claim 303s to Google with PKCE + flow cookie
-- [ ] live gmail claim test through the dialog (user, in progress)
+- [x] live gmail claim test through the dialog (user, in progress)
+
+## Summary of Changes
+
+The in-broker OIDC proof method is live in production: Google is offered as the claim ceremony for gmail and Workspace-via-MX domains (`address_info` advertises `proof:"oidc"`), with `/oidc/claim` + `/oidc/callback` doing PKCE, flow-cookie CSRF binding, JWKS-verified RS256 ID tokens, exact-email equality, and direct attach through the same match table as the atproto hop. Integration + unit suites green, creds in id.env.age, and real gmail accounts have been claimed and used in prod (grants and guestbook signatures under gmail profiles). Later follow-ups (kts0, lrhe, hg2j) hardened offer-surfaces and provenance-upgrade revocation. (Closed by audit 2026-08-27.)

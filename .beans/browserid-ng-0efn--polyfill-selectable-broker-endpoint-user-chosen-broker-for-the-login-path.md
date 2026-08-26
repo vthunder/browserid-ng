@@ -1,3 +1,14 @@
+---
+# browserid-ng-0efn
+title: 'Polyfill selectable broker endpoint: user-chosen broker for the login path'
+status: draft
+type: task
+priority: normal
+created_at: 2026-07-11T13:01:08Z
+updated_at: 2026-08-26T23:10:40Z
+blocked_by:
+    - browserid-ng-dcgm
+---
 
 ## Refined analysis (2026-07-11)
 

@@ -1,11 +1,11 @@
 ---
 # browserid-ng-oup3
 title: 'Browser-as-first-agent: login via the agent mint (A direction)'
-status: in-progress
+status: todo
 type: epic
 priority: normal
 created_at: 2026-07-17T22:08:36Z
-updated_at: 2026-07-19T09:36:26Z
+updated_at: 2026-08-26T23:10:23Z
 ---
 
 Reframe human login as provisioning the browser's stable non-extractable key as an agent. Interactive bootstrap (top-level first-party, reusing mingo-ytrs consent.html handshake) yields a provisioning credential (U_cert~P_cert delegation to the browser key, ~90d, client-held). Cert issuance + refresh = cookie-free signature-authed POST to the SAME /provision/mint endpoint agents use (login-mode vs agent-mode a single param). Replaces the ITP-dead hidden-iframe+postMessage silent refresh. Chosen from a 3-way PoC spike (A=popup/same-tab, B=redirect, C=minimal-iframe-relies); A/B share the architecture, C rejected (entangles at URL but keeps cookie-auth => zero ITP fix). Guardrails: login is an explicit consented capability (typed login:bool + distinct consent); 'logout everywhere' = revoke provisioning cert. Spike A branch: worktree-agent-a050bf44400d2fe0d. This epic = produce a very thorough migration plan across spec, implementation, README, website, and consumer apps (sbo, mingo).
@@ -54,3 +54,5 @@ No regressions: core 68, broker lib 41, verifier 18 (incl fail-closed status), r
 Pushed to origin (0efbd1c) + deploying. Removed: provisioning.rs delegation types (jws helpers extracted to jws.rs first), /provision/* routes, provisioning-cert registry + endorse, legacy AgentCredential/AgentIdentity SDK, migrate_v13 DROP provisioning_certs+api_keys. Device model + browser warrant consent kept. Full workspace build + tests GREEN (delegation tests + the consent_flow flake removed with the chain).
 DONE: entire device-cert migration P0-P10 built, tested, pushed, deployed (browserid.me + sandmill.org). Live device-cert login verified.
 REMAINING (follow-ups): (1) finish consumer migration mingo/sbo onto the device model + bump their pin to 0efbd1c (partial WIP in those repos); (2) hidden-iframe deletion gated by SBO-signing relocation 3b8m; (3) account.html legacy Agents-create card removal (tracked, degrades gracefully); (4) a device-shaped /warrant/request path (browser consent respond/registry/status kept, but the agent-facing request entry was removed with the chain).
+
+**Audit note 2026-08-27:** the core of this epic shipped long ago and the protocol has since evolved past its framing — device-cert model live in prod (browserid.me well-known advertises device-cert/access-cert/record-grants), provisioning.rs/delegation chain retired, Model A + DC phase children completed, then superseded further by the holder model (129z) and warrant v2 + signing grants. Moved to todo as a stale container: remaining open children (zj2w, bwi4, ga3w, 7wj3, 10n1, kmvm, lq56, p5i0, 4d80, drafts jgta/850o) all stand on their own. Candidate for closure-with-respawn: the subject-axis/as: framing in the body no longer describes the shipped architecture.

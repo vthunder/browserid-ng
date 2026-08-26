@@ -1,11 +1,11 @@
 ---
 # browserid-ng-rau4
 title: e2e coverage for the atproto claim lane + first live handle claim
-status: todo
+status: scrapped
 type: task
 priority: normal
 created_at: 2026-07-30T22:54:26Z
-updated_at: 2026-07-31T08:39:37Z
+updated_at: 2026-08-26T23:10:15Z
 parent: browserid-ng-tsqk
 ---
 
@@ -14,3 +14,7 @@ Follow-up to browserid-ng-xcy6 (epic browserid-ng-tsqk). Two gaps deliberately l
 ## 2026-07-31: first live claim SUCCEEDED
 
 me@danmills.bsky.social: dialog sign-in at mingo.place, poster-service warrant authorization, and a group join (attributed write on the sbo chain) all worked end to end. The one failure on the way was unrelated infrastructure (expired /sys/dnssec/mingo.place evidence — see mingo-hg5z). Remaining scope of this bean: the mock-bridge e2e coverage, plus a mobile/redirect-lane live pass which has not been exercised yet.
+
+## Reasons for Scrapping
+
+Exact duplicate of browserid-ng-zq38 (identical title and scope, created 12 seconds apart on 2026-07-30 — a double-submit). The work continues under zq38. (Audit 2026-08-27.)

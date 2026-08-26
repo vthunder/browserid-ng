@@ -1,11 +1,11 @@
 ---
 # browserid-ng-tsqk
 title: 'Handle identities: <label>@<handle> + the authority hierarchy'
-status: in-progress
+status: todo
 type: epic
 priority: normal
 created_at: 2026-07-30T20:34:46Z
-updated_at: 2026-07-30T22:55:03Z
+updated_at: 2026-08-26T23:10:18Z
 ---
 
 Replace the bridge-owned identity shape `<handle>@bsky.browserid.me` with
@@ -41,3 +41,5 @@ Roots: browserid-ng-5kf3 (broker hierarchy) and browserid-ng-031k (bridge endpoi
 ## Status 2026-07-31
 
 Core build COMPLETE and deployed: 5kf3 (hierarchy + gates), 031k (bridge resolve/attest/claim page), 77mw (attestation acceptance + proof recording), xcy6 (dialog + /account claim flow) all completed. Live-verified in prod: address_info routes me@bsky.app to the atproto lane with the bridge claim URL; gmail.com to smtp. Remaining children: jaa1 (revocation-on-flip DECISION, draft — do not silently implement) and rau4 (atproto-lane e2e + first live claim).
+
+**Audit note 2026-08-27:** core built, deployed, and live-verified — address_info routes atproto handles to the bridge claim lane (proof:"atproto", claim at bsky.browserid.me) via handle_claim.rs; children 5kf3/031k/77mw/xcy6 all completed. Moved to todo because no active work: what remains is zq38 (e2e coverage + first live handle claim — no evidence one has ever been executed; rau4 scrapped as its exact duplicate) and the jaa1 revocation-on-flip decision (deliberately draft).

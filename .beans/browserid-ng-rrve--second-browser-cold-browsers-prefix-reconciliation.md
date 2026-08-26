@@ -1,11 +1,11 @@
 ---
 # browserid-ng-rrve
 title: Second-browser-cold browsers-prefix reconciliation
-status: in-progress
+status: completed
 type: task
 priority: low
 created_at: 2026-07-21T21:02:32Z
-updated_at: 2026-07-22T14:19:12Z
+updated_at: 2026-08-26T23:08:06Z
 parent: browserid-ng-oup3
 ---
 
@@ -21,5 +21,9 @@ Implementation (popup lane):
 
 Remaining:
 - [x] lazy-IdP robustness (Dan's ask): reissue falls back to RE-OPENING the authorize popup with the canonical holder as an explicit param — plain passthrough all IdPs already implement, so sandmill cold logins reconcile WITHOUT sandmill changes; hold mode is now just an optimization (no second popup flash). Popup-blocked re-open degrades to today's behavior. sandmill hold support = optional nice-to-have.
-- [ ] redirect-mode lane (primaryRedirectHop resume) + FedCM lane reconciliation
-- [ ] cleanup: existing orphaned namespaces from pre-fix cold logins (re-categorize UI bean 10n1 overlaps)
+- [x] redirect-mode lane (primaryRedirectHop resume) + FedCM lane reconciliation — redirect lane done via reissueViaRedirectHop (62f794a, i8a2); FedCM investigated and needs no reconciliation (never writes device-cert rows)
+- [x] cleanup: existing orphaned namespaces from pre-fix cold logins — resolved by design: server backstop register_orphan_browser_move self-heals orphans on next sign-in (i8a2); residual re-categorize UI tracked in 10n1 (re-categorize UI bean 10n1 overlaps)
+
+## Summary of Changes
+
+Cold second-browser logins no longer orphan their holder. The popup lane got a held-popup re-issue with a lazy-IdP fallback (d3e8e14, 47b29cb); i8a2s 62f794a closed the two remaining lanes — the redirect lane repairs via a second same-tab hop (reissueViaRedirectHop, at most once per sign-in), and a server-side backstop (register_orphan_browser_move) guarantees correct categorization immediately and re-issue on next sign-in even if every client lane fails. FedCM needs no reconciliation. Pre-fix orphans self-heal on their next sign-in; the re-categorize account-UI work is tracked in bean 10n1. (Closed by audit 2026-08-27; work landed under sibling bean i8a2.)

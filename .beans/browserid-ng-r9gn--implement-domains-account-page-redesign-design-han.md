@@ -1,11 +1,11 @@
 ---
 # browserid-ng-r9gn
 title: Implement domains + account page redesign (design handoff bundle)
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-08-11T21:33:35Z
-updated_at: 2026-08-11T22:00:14Z
+updated_at: 2026-08-26T23:07:14Z
 ---
 
 Recreate the high-fidelity design handoff (scratchpad: account-design/design_handoff_domains_integration/) in the broker's static pages: shared navbar, /domains list + stepped add-domain wizard + per-domain console (Users/Administrators/Managed identities/Settings tabs), account-page managed-identity indicators + Try-it-out card. Backend gaps to close: remove-admin endpoint; split max_ttl into device_cert_ttl + access_cert_ttl; standalone revoke-all endpoint; per-address managed flag in the account API. Spec = README.md in the bundle; copy strings verbatim. Delegated to a worktree agent.
@@ -36,3 +36,5 @@ Frontend:
 - **static/account.html**: navbar with Domains link + Sign out tooltip; managed pills on Your addresses (+footnote), roster blanket lines ('where {domain} allows' caveat), actor detail ('managed by {domain}' filled pill + amber managed note); 'Try it out' card (→ https://www.browserid.me/demos) replacing 'Goes well with'. INLINE_SCRIPT_HASHES updated in routes/mod.rs (csp guard test green).
 
 Deliberately deferred: account.html's pre-existing confirm()/alert() calls in cutoff / sign-out-everywhere / perm-forget flows (predate this handoff, out of its scope).
+
+**Closure addendum (audit 2026-08-27):** committed to main as a897b49 and verified live in production — the redesigned /domains stepped wizard and the /account Try-it-out card are both serving. See the Summary of Changes above for the full scope.

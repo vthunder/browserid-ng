@@ -1,11 +1,11 @@
 ---
 # browserid-ng-yhcx
 title: Cross-issuer agent warrants (third-party service delegation)
-status: in-progress
+status: scrapped
 type: feature
 priority: normal
 created_at: 2026-07-14T18:41:57Z
-updated_at: 2026-07-14T21:41:36Z
+updated_at: 2026-08-26T23:09:36Z
 blocking:
     - browserid-ng-gnu2
 ---
@@ -70,3 +70,7 @@ Ran a high-effort multi-agent review of the whole external-warrant diff. Strong 
 Cleared by finders (not bugs): XSS (all attacker strings escaped), cross-user ?code= leak (store query is user-scoped), issuer-confusion cross-user impersonation (broker-minted certs parent to the requester only), fresh-DB migration path.
 
 Deferred (browserid-ng-gnu2): account.html client-side external heuristic → server flag; discovery rate-limit / deferred allocation.
+
+## Reasons for Scrapping
+
+Superseded, not abandoned. The mechanism this bean specified (warrant_external / ExternalWarrantRequest, agent_cert~R cross-issuer delegation) was built and reviewed (e572cda), then deliberately retired three days later in the device-cert cutover (c136158) along with the legacy delegation chain. The motivating use case — a user authorizing a third-party service like mingo posting — shipped via a different mechanism: as-you holder services (ykjk/3b8m, live e2e confirmed) and warrant-v2 foreign grantees (7a9960f delegated foreign-grantee approval card, ba68022 external grantee recorded as a service). What survives in device-model form is the registrar's external-request plumbing (consent.rs external flag, deep-link-only listing, delegator routing); literal cross-issuer agent identities (bare agent names on a primary domain needing reverse name-registry lookup) remain unsupported today by design choice — if that becomes needed, open a fresh bean against the device model. (Audit 2026-08-27.)

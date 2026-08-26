@@ -1,11 +1,11 @@
 ---
 # browserid-ng-ykjk
 title: 'Holder-based authorization model (replace subject + as: with opaque holders)'
-status: in-progress
+status: todo
 type: feature
 priority: normal
 created_at: 2026-07-20T18:12:28Z
-updated_at: 2026-07-21T22:02:44Z
+updated_at: 2026-08-26T23:09:31Z
 parent: browserid-ng-oup3
 ---
 
@@ -18,7 +18,7 @@ Blocks: the device-model D (poster re-enable). A (browser signing) is already li
 - [~] broker 2a DONE: device_issue/fallback/fedcm assign broker holder; mint copies verbatim; namespaces table (prefix storage); login warrants <prefix>.*; gates dropped. 2b TODO: account holder-registry UI (list/labels/adopt/re-categorize)
 - [x] registrar/warrant flow (stage 3): namespace holder assignment via broker registry + hint; warrant_request persists agent holder; respond validates matcher covers holder + rejects bare *; consent.html signs <id> matcher (widenable <ns>.*); consent.html subject:'agent' fixed
 - [x] sbo (stage 4): device_attribution DeviceAttribution.subject->holder (from access_cert.holder); authorize unchanged (keys off email/owner); core rev bumped b2e4f82->b8526f6; sbo-core+daemon green. Committed sbo main 55314e9. Deploy (SBO_REV bump) pairs with stage 5 D.
-- [ ] D: mingo-poster as a warranted holder, owner=you
+- [x] D: mingo-poster as a warranted holder, owner=you (3b8m session 5; live e2e confirmed 2026-07-22)
 - [ ] conformance: holder passthrough+copy; monitor over-broad mints
 
 ## Stage 3 known-broken (pending): consent.html signWarrant still emits subject:'agent' (no holder matcher) — the agent-authorization consent flow is malformed against new core. Fix as part of stage 3 (registrar warrant matcher + D). agent_provision.rs also mints an inline agents.<rand> placeholder holder. Both to be rerouted through the broker namespace registry with <id> matchers when D is built.
@@ -50,15 +50,17 @@ VERIFIED: prod holder chain smoke green (device_issue->mint copy->login <ns>.* w
 - [ ] group primary holders by issuer namespace (they land in Uncategorized now)
 - [ ] delete sandmill dead legacy /browserid/auth + auth-complete views (unreachable now)
 - [ ] prefill email in /account->dialog handoff (minor UX)
-- [ ] D: mingo-poster server-side posting (browser signing works; server-side stubbed)
+- [x] D: mingo-poster server-side posting (rebuilt on holders, 3b8m session 5)
 
 ## Account-UI iteration (2026-07-21, sessions 2-3)
 Shipped on browserid.me: one-holder-per-browser (cold-login prefix adoption + client holder cache); unified Devices & services card; UA-derived holder labels; identity chips + per-identity trust table in holder detail; 'active' pill on identities; compact Authorized-sites rollup (audience->matcher, Sign-in-as line, +N more) with site-detail view; login warrants now registered at sign-in (status-backed, revocable); broker-origin audiences filtered from Sites with an honest trust note (broker holds account+keys, not a per-site grant). sandmill /browserid/demo rewritten to the device model (watch/request + pinned server-side verify relay).
 
 ## Queue
 - [x] Agent/D phase built+deployed (2026-07-21/22): merged one-approval provisioning incl. as-you + primary-signed certs (browserid-ng-dzq8), mingo-poster rebuilt on holder model (browserid-ng-3b8m, awaiting human e2e), handle bootstrap findings -> browserid-ng-p5i0
-- [ ] FedCM silent-lane warrant registration
+- [x] FedCM silent-lane warrant registration (7c805fd; fedcm.rs mints holder-bearing login warrants)
 - [ ] fallback_idp client-supplied holder param
-- [ ] second-browser-cold prefix reconciliation
+- [x] second-browser-cold prefix reconciliation (rrve + i8a2, 62f794a: reissueViaRedirectHop + register_orphan_browser_move backstop)
 - [ ] adopt-after-wipe + re-categorize UI
 - [ ] move any user-login demo RP off the broker origin (demo.browserid.me)
+
+**Audit note 2026-08-27:** the holder model itself is fully implemented, deployed, and load-bearing (opaque Holder + HolderMatcher + copy-at-mint in browserid-core with conformance tests; browsers-namespace assignment in fallback_idp; stage-2b holder-registry UI; warrant v2 kept the model). Moved back to todo because the queued cleanup/UX leftovers above remain: over-broad-mint monitoring, fallback_idp client-supplied holder (kmvm), adopt-after-wipe + re-categorize UI (10n1), demo RP off the broker origin (lq56), issuer-namespace grouping, email prefill, sandmill dead-view deletion. Consider closing this as done and letting the cross-referenced beans carry the leftovers.

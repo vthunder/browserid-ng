@@ -1,11 +1,11 @@
 ---
 # browserid-ng-4w3n
 title: 'MCP as the distribution vector: 7521 AS + mcp-auth middleware + flagship warrant-gated server'
-status: in-progress
+status: todo
 type: epic
 priority: normal
 created_at: 2026-08-02T21:54:40Z
-updated_at: 2026-08-12T07:09:22Z
+updated_at: 2026-08-26T23:10:27Z
 ---
 
 Design: docs/plans/2026-08-02-mcp-distribution-design.md (companion to the 2026-08-02 roadmap doc, Theme 2).
@@ -38,3 +38,5 @@ Left for the user (needs a real warrant approval / creds, not autonomous): the l
 Published to npm 2026-08-12: @browserid-ng/mcp-auth 0.1.0 (zero runtime deps). Also out the same day: verify 0.2.0, express/hono/fastify 0.1.0, wallet 0.4.4 (approval-contract fix). All scratch-install verified.
 
 PyPI published 2026-08-12: browserid-mcp-auth 0.1.0 (14 tests green, sdist+wheel via uv build). Clean-install verified from PyPI (imports, McpAuth/JWT_BEARER_GRANT exported). ALL registry publishes for the mcp-auth family are now done.
+
+**Audit note 2026-08-27:** parts 1 and 2 of the three-part artifact are shipped and live — mcp-auth (npm 0.5.x) + python-mcp-auth (PyPI) with fail-closed reference servers at mcp-demo/python-mcp-demo.browserid.me, and the GitHub flagship (github-mcp/, five tools, GitHub App auth, live demo 2026-08-12 with warrant-attributed bot commit + revoke exercised). Moved to todo because part 3 and later phases have no evidence of work: wallet distribution (registries, MCPB/DXT one-click bundles, Docker catalog), the approval-pending push channel (wallet still on the approval-URL fallback), scope-conventions registry, MCP spec-community engagement, per-call attestation hook, remote-wallet portability.

@@ -1,11 +1,11 @@
 ---
 # browserid-ng-gzq7
 title: Split identity-critical apps onto a dedicated host
-status: in-progress
+status: todo
 type: epic
 priority: high
 created_at: 2026-08-06T14:12:15Z
-updated_at: 2026-08-08T16:50:44Z
+updated_at: 2026-08-26T23:10:06Z
 ---
 
 Rebuild sandmill.org dokku host into two: an identity host (browserid.me broker, bsky-bridge, bsky-pds, browserid-wallet) and a hobby host (everything else), driven by a reproducible setup script with secrets in an encrypted git repo.
@@ -101,9 +101,9 @@ daily, both hosts, 14 kept each, encrypted host-side.
 DNS gotcha worth remembering: `bsky` needed an EXPLICIT record even with a wildcard present. Creating pds.bsky.browserid.me makes bsky.browserid.me an EMPTY NON-TERMINAL — the name exists in the tree, so per RFC 4592 the wildcard refuses to synthesize for it (NOERROR/0 answers, not NXDOMAIN). Same would apply to at.browserid.me. A wildcard also only ever matches ONE label.
 
 ## Stage 4 — hosted IdP (defers the sandmill.org IdP migration)
-- [ ] Spec/code: support-document endpoints MAY be absolute URLs (browserid-broker/src/routes/email.rs builds https://{domain}{path}); keeps iss == domain so the verifier trust model is unchanged
-- [ ] Generalize bsky-bridge's idp module into a multi-tenant hosted IdP
-- [ ] sandmill.org becomes tenant #1; retire the Laravel IdP; key moves to identity host
+- [x] Spec/code: hosted IdP serves the endpoints while iss stays the customer domain — achieved via the DNS host= pointer mechanism instead of absolute URLs (well_known_host in browserid-core/src/dns.rs; live at idp.browserid.me)
+- [x] Multi-tenant hosted IdP — achieved via the broker growing tenancy (hosted_idp.rs, epic g5qt) rather than generalizing the bridge module
+- [ ] sandmill.org becomes tenant #1; retire the Laravel IdP; key moves to identity host — PARTIAL: tenant #1 live (_browserid.sandmill.org → host=idp.browserid.me, key on identity host via 1431a3c), but the Laravel IdP is not retired (BrowserIdController.php still serves /.well-known/browserid, bypassed by conformant verifiers)
 
 ## Stage 5 — hobby host rebuild from the same script
 
@@ -156,3 +156,5 @@ A browserid-ng push deployed via CI while DOKKU_HOST still said sandmill.org: th
 - Set the browserid-ng repo variable DOKKU_HOST=browserid.me.
 
 REMAINING (needs laptop-admin/root): the id-host dokku user authorizes only laptop-admin + mini-ops — no CI deploy key. Until one is added (per-repo key per infra README: authorize on id-host dokku user + commit pubkey to keys/dokku/ + set browserid-ng secret DOKKU_SSH_KEY), every browserid-ng CI deploy fails loudly at the ssh step and needs the manual git:from-image fallback. Same will apply to deploy-www / deploy-guestbook / bsky-bridge CI if they target the id-host.
+
+**Audit note 2026-08-27:** identity host migration done (all identity apps on id-host with sandmill-infra confs; per-repo CI deploy keys landed via o7ip/4e2c061; hosted IdP shipped via g5qt). Moved to todo because what remains is exactly: (1) Stage 5 hobby-host rebuild — not started, sandmill.org still on the original droplet; (2) decommission the old host (blocked on stage 5); (3) retire the sandmill Laravel IdP.

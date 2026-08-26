@@ -1,11 +1,11 @@
 ---
 # browserid-ng-c7um
 title: 'Website: hub-and-spoke unified product (design brief + build)'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-08-10T12:18:12Z
-updated_at: 2026-08-10T13:03:52Z
+updated_at: 2026-08-26T23:07:10Z
 ---
 
 Expand www into hub-and-spoke unified product: home hub + /agents, /developers, /domains spokes, demos index, docs router. Design brief to feed Claude Design; then build.
@@ -35,6 +35,10 @@ Built (marketing/):
 All pages serve 200 locally; assets resolve; sections balanced.
 
 TODO next:
-- [ ] Owner eyeball / tweak copy
-- [ ] Demos index page + Docs router (deferred; nav Docs → GitHub for now)
+- [x] Owner eyeball / tweak copy
+- [x] Demos index page + Docs router (demos index live at /demos; docs router superseded by footer-Docs/About nav decision, 224ba3f)
 - [x] Deployed www (image f01f10b released via mini-ops; /agents /developers /domains live)
+
+## Summary of Changes
+
+Hub-and-spoke site designed (docs/plans/2026-08-10-website-design-brief.md), built, and deployed (f01f10b): shared site.css/site.js design system, audience-router home hub, and /developers + /domains spokes (the /agents spoke shipped but was deliberately retired the next day during owner review, redirecting to /). The demos index is live at /demos with a Labs section; the docs-router idea was superseded by the nav decision putting About/Principles in the nav and Docs in the footer as a GitHub link. Owner copy review happened in depth via the follow-up copy and nav commit series. (Closed by audit 2026-08-27.)

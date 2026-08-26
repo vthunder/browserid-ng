@@ -1,11 +1,11 @@
 ---
 # browserid-ng-8xvi
 title: 'Old-protocol removal step 1: device-cert login dialog + fallback-IdP device issuance'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-07-19T10:13:26Z
-updated_at: 2026-07-20T09:09:11Z
+updated_at: 2026-08-26T23:09:19Z
 parent: browserid-ng-oup3
 ---
 
@@ -31,11 +31,11 @@ Steps 1-4 of the removal punch-list are DONE and committed (2240ae6, adbc8b0, a5
 REMAINING:
 - [x] Deploy to browserid.me + prod smoke (mingo.place login broken until step 6 as expected)
 - [x] sandmill (2a0f7af, deployed): /browserid/device-authorize popup (fragment params -> sessionStorage across the /login round-trip -> first-party device_cert -> postMessage to opener), discovery advertises it, CORS on the headless access_cert mint, force.json on the API routes, config cert +* glob. VERIFIED live: discovery + page 200 + preflight 204 + broker address_info surfaces device_auth/access_mint for danmills@sandmill.org. Remaining: a HUMAN click-through of https://browserid.me/broker-demo with danmills@sandmill.org (needs the real sandmill password).
-- [ ] account.html + agents.html: strip dead classic sections (identity Activate via cert_key, chain-based agent create); repoint agents UI at /agent-provision device flow
-- [ ] sdk/agent + sdk/wallet JS -> device model (wallet gates guestbook signing; guestbook server now expects device presentations)
-- [ ] SBO relocation 3b8m -> then delete communication_iframe* + common/js classic stack + winchan dialog-side? (winchan still used by dialog)
-- [ ] marketing/ classic snippets
-- [ ] Consumers: mingo (idp+web+cli+poster), sbo — finish device migration, bump pins
+- [x] account.html + agents.html: strip dead classic sections (ad282d6, d632e36; standalone authorize.html replaced the old agents UI)
+- [x] sdk/agent + sdk/wallet JS -> device model (DeviceAgent in sdk/agent, agent 0.5.x published; guestbook verifies device presentations, 567b969)
+- [x] SBO relocation 3b8m -> communication_iframe* + classic common/js stack deleted (d9a6baf); winchan deliberately retained for the dialog
+- [x] marketing/ classic snippets (developers.md on device-model /verify; fedcm-demo on the restored presentation-based navigator.id)
+- [x] Consumers: mingo (idp+web+cli+poster), sbo — migrated and deployed (mingo 154cd7f, sbo 55314e9/ac48868); only sbo-cli identity-command rebuild remains, tracked separately
 
 ## Session 2 outcome
 Steps 1-4 of the removal + deploys are done. browserid.me and sandmill.org both run the device-cert model in production; the classic protocol is gone from the Rust workspace. Try it: https://browserid.me/broker-demo (any no-primary email = SMTP fallback; danmills@sandmill.org = primary popup).
@@ -62,3 +62,7 @@ Deployed (mingo 154cd7f). Verified live: discovery advertises device-cert/access
 
 ## sbo verifier migrated (session 4) — branch device-migration (ac48868)
 verify_device_attribution is the sole attribution path (4-object presentation, DNSSEC-rooted, envelope key == access-cert key). Classic Auth-Cert/Warrant verification removed; shared DNSSEC substrate kept. sbo-daemon validate.rs + authorize.rs + sbo-capture rewired; pinned to browserid-ng b2e4f82. Workspace green (354 pass, 2 ignored live). sbo-cli identity commands stubbed pending a device-cert CLI rebuild (follow-up, tracked in the mingo-follow-ups bean scope).
+
+## Summary of Changes
+
+The device-cert login mediator shipped: dialog.js/include.js rewritten (then re-ported to the original account-based UX and navigator.id API on device internals), fallback_idp issues device+config certs, and the classic protocol was removed from the Rust workspace — all deployed to browserid.me with real-browser e2e green. Every follow-on removal item has since landed: account/agents classic UI purged, sdk/agent+wallet on the device model, the hidden iframe and classic common/js stack deleted (3b8m), marketing rewritten against the device-model /verify, and mingo + sbo fully migrated and deployed. FedCM was later re-introduced natively on the device model. (Closed by audit 2026-08-27.)

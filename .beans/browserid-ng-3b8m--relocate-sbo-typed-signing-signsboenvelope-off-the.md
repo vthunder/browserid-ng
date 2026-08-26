@@ -1,11 +1,11 @@
 ---
 # browserid-ng-3b8m
 title: Relocate SBO typed-signing (signSboEnvelope) off the hidden iframe
-status: in-progress
+status: completed
 type: task
 priority: normal
 created_at: 2026-07-17T22:29:06Z
-updated_at: 2026-07-22T16:25:07Z
+updated_at: 2026-08-26T23:09:42Z
 parent: browserid-ng-oup3
 blocking:
     - browserid-ng-oup3
@@ -54,7 +54,7 @@ All tests green both repos (broker merged_provision_test 4, agent SDK roundtrip,
 
 - [x] deploy browserid.me (6b0eb2a released; prod holder smoke green; /agent-provision request+info verified live incl. as-you grants)
 - [x] deploy mingo-idp (58ed2ea released; poster endpoints session-gated not 503; device-authorize agent mode live)
-- [ ] human test: enable poster on mingo.place -> approve once at browserid.me -> server-side post lands on-chain owned by dan@mingo.place
+- [x] human test: enable poster on mingo.place -> approve once at browserid.me -> server-side post lands on-chain owned by dan@mingo.place (live e2e CONFIRMED by Dan 2026-07-22, recorded below)
 - [x] mingo-app CLI ported to the holder model (mingo main: as-you merged provisioning via request_provision, device presentation posting, seed agent-lane retired, pins unified e7c1197 + sbo 55314e9; 67 tests green). CORRECTION (Dan, 2026-07-22): as-you agents are indistinguishable from browsers to the IdP — the approval page now uses the standard user-mode device-authorize hop for them (agent pubkey as device key, holder passthrough), so @sandmill.org as-you provisioning works with ZERO sandmill changes. Agent-mode (mingo) is needed only for NAMED +tag agents (cert identity != session identity). Wire-compat with live daemon now exact (same sbo rev).
 
 ## Live e2e CONFIRMED by Dan (2026-07-22) + feedback round deployed
@@ -63,3 +63,7 @@ Dan had mingo post for him via the poster. Three issues from the run:
 2. "Close this tab" dead end on same-tab arrival → FIXED: "← Return to the app" + auto history.back() (consent.html pattern).
 3. No provenance hint that a post was agent-made → design bean filed (Surface agent/service provenance on posts, draft — creator marker vs attribution badge vs public holder class; needs Dan's ruling).
 Prod smoke green post-deploy. Remaining on this bean: human re-test of the fixed approval flow from a browser lacking the handle's config cert.
+
+## Summary of Changes
+
+SBO typed signing relocated off the ITP-dead hidden iframe onto the device-cert model: the /sign popup wallet (sign.html + sbo-signer.js) mints an access cert, signs the envelope with the access key, and returns the 4-object presentation that sbo's verify_device_attribution accepts; the iframe and the entire classic common/js Persona stack were deleted (d9a6baf). Browser signing (A) went live end-to-end across browserid.me, sbo-daemon, and mingo; delegated server-side posting (D) was rebuilt as an as-you holder service and confirmed live by Dan on 2026-07-22, with the approval-flow fixes from that run deployed (aea7f40). The surface has since been hardened so the popup only exercises consent-minted warrant-v2 signing-grant records (73831d8, audit M9). Unblocked beans 6gs4 and 4qmg. Residual nicety, not blocking: a human re-test of the fixed approval flow from a browser lacking the handle's config cert. (Closed by audit 2026-08-27.)
