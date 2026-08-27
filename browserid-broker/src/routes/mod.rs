@@ -309,8 +309,6 @@ where
         // (/authorize?code=…), moved off the /account dashboard. Old printed
         // /account?provision=… links still work — account.html redirects.
         .route_service("/authorize", ServeFile::new(format!("{}/authorize.html", static_path)))
-        // Demo RP on the device-cert model.
-        .route_service("/broker-demo", ServeFile::new(format!("{}/broker-demo.html", static_path)))
         // Root: with the origin split deployed (MARKETING_URL set), redirect to
         // the marketing site. Without it (local dev) there is no landing page —
         // the auth origin's own front door is the account dashboard.
@@ -333,8 +331,13 @@ where
         // both live on the marketing origin; redirect like /llms.txt.
         .route("/sitemap.xml", get(sitemap_xml))
         .route("/robots.txt", get(robots_txt))
-        // Serve static files (dialog, CSS, JS)
-        .nest_service("/dialog", ServeDir::new(static_path))
+        // The dialog's complete surface, served file-by-file. Deliberately NOT
+        // a ServeDir of the static root: that exposed every static file
+        // (including dev/demo pages) under /dialog/* in production.
+        .route_service("/dialog/dialog.html", ServeFile::new(format!("{}/dialog.html", static_path)))
+        .route_service("/dialog/dialog.css", ServeFile::new(format!("{}/dialog.css", static_path)))
+        .route_service("/dialog/dialog.js", ServeFile::new(format!("{}/dialog.js", static_path)))
+        .route_service("/dialog/winchan.js", ServeFile::new(format!("{}/winchan.js", static_path)))
         // Unmatched paths: a 404 an agent can recover from — structured JSON
         // for API-shaped requests, a short markdown site map for the rest —
         // never an empty body.
@@ -349,7 +352,13 @@ where
             .route("/wsapi/test/pending_verification", get(test::get_pending_verification))
             .route("/wsapi/test/set_mock_primary_idp", post(test::set_mock_primary_idp))
             .route("/wsapi/test/clear_mock_primary_idps", post(test::clear_mock_primary_idps))
-            .route("/wsapi/test/remove_mock_primary_idp", post(test::remove_mock_primary_idp));
+            .route("/wsapi/test/remove_mock_primary_idp", post(test::remove_mock_primary_idp))
+            // Dev/demo pages: demo RPs and test harnesses do not belong on the
+            // production broker origin — they mount only alongside the test
+            // endpoints, at the same paths the e2e scripts already use.
+            .route_service("/broker-demo", ServeFile::new(format!("{}/broker-demo.html", static_path)))
+            .route_service("/dialog/test.html", ServeFile::new(format!("{}/test.html", static_path)))
+            .route_service("/dialog/sbo-smoke-test.html", ServeFile::new(format!("{}/sbo-smoke-test.html", static_path)));
     }
 
     app.with_state(state)
