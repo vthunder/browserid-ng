@@ -9,14 +9,16 @@ const store = require('./store');
 let tray = null;
 
 function trayIcon() {
-  // 16x16 template image drawn as a simple "id" glyph placeholder.
-  // Prototype: use an empty image + title text so we need no asset pipeline.
-  return nativeImage.createEmpty();
+  // Monochrome template PNG (gen-icon.mjs) — an empty image collapses to a
+  // zero-width, invisible tray item on current macOS.
+  const img = nativeImage.createFromPath(path.join(__dirname, 'trayTemplate.png'));
+  img.setTemplateImage(true);
+  return img;
 }
 
 function updateTray(state) {
   if (!tray) return;
-  tray.setTitle(state.paired ? ' id✓' : ' id…');
+  tray.setTitle(state.identity ? '' : ' id…');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: state.identity ? `Signed in: ${state.identity}` : 'Not bootstrapped', enabled: false },
     { type: 'separator' },
@@ -64,9 +66,10 @@ app.whenReady().then(async () => {
   log('ready');
   try {
     if (app.dock) app.dock.hide(); // menubar-only
-    tray = new Tray(trayIcon());
+    const icon = trayIcon();
+    tray = new Tray(icon);
     tray.setToolTip('BrowserID wallet');
-    log('tray created');
+    log(`tray created (icon ${icon.isEmpty() ? 'EMPTY' : icon.getSize().width + 'px'})`);
     await store.init(app.getPath('userData'));
     updateTray(store.state());
     const port = await startServer({ approveLogin, notify, onStateChange: () => updateTray(store.state()) });
