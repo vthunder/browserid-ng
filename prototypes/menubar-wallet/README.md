@@ -13,12 +13,13 @@ the app.
 
 ## Morning test drive (Arc, against production)
 
-1. **Start the app** (first run downloads nothing; Electron is already in
-   node_modules):
+1. **Start the app with the launcher** (not `npx electron .` — on macOS 26,
+   terminal-spawned processes get no menubar slot, so the tray is invisible;
+   the launcher goes through LaunchServices where status items work):
 
    ```sh
    cd prototypes/menubar-wallet/app
-   npx electron .
+   ./run.sh        # console output: /tmp/wallet-app-trace.log
    ```
 
    A menubar item appears (`id…`). Click it → **Bootstrap with browserid.me…**
