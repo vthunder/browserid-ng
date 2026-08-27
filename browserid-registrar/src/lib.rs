@@ -199,6 +199,11 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         .route("/api/v1/requests", get(api::list_requests))
         .route("/api/v1/requests/claim", post(api::claim_request))
         .route("/api/v1/requests/respond", post(api::respond))
+        .route("/api/v1/warrants", get(api::list_warrants))
+        .route("/api/v1/warrants/register", post(api::register_warrant))
+        .route("/api/v1/warrants/revoke", post(api::revoke_warrant))
+        .route("/api/v1/warrants/forget", post(api::forget_warrant))
+        .route("/api/v1/warrants/allocate_status", post(api::allocate_status))
         .layer(axum::extract::DefaultBodyLimit::max(api::API_BODY_LIMIT));
     Router::new()
         .merge(api_v1)

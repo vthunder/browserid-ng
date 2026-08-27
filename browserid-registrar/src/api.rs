@@ -105,6 +105,8 @@ pub enum ApiError {
     InvalidProof(String),
     /// 403 — token scope does not cover the endpoint.
     InsufficientScope,
+    /// 409 — a state refusal (e.g. revoking a refless warrant).
+    Conflict { reason: &'static str, description: String },
     /// 422 — a client-signed warrant / admission record (or the claim
     /// precondition) failed the §5.1/§5.2 validation bar.
     InvalidWarrant { reason: &'static str, description: String },
@@ -141,6 +143,9 @@ impl IntoResponse for ApiError {
                 "the token's scope does not cover this endpoint".to_string(),
                 None,
             ),
+            ApiError::Conflict { reason, description } => {
+                (StatusCode::CONFLICT, "conflict", description, Some(reason))
+            }
             ApiError::InvalidWarrant { reason, description } => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "invalid_warrant",
@@ -592,6 +597,7 @@ fn consent_err(e: crate::error::RegistrarError) -> ApiError {
         E::WarrantValidation { reason, message } => {
             ApiError::InvalidWarrant { reason, description: message }
         }
+        E::Conflict { reason, message } => ApiError::Conflict { reason, description: message },
         E::WarrantRequestNotFound => ApiError::NotFound,
         E::ValidationError(m) => ApiError::InvalidRequest(m),
         E::AgentProvisioningDisabled => ApiError::NotFound,
@@ -664,6 +670,111 @@ pub async fn respond(
         }
     }
     Ok(Json(serde_json::Value::Object(resp)))
+}
+
+// ===========================================================================
+// Warrant registry over the token lane (§5.2)
+// ===========================================================================
+
+#[derive(Serialize)]
+pub struct ApiWarrantsResponse {
+    pub warrants: Vec<crate::consent::WarrantInfo>,
+}
+
+/// `GET /api/v1/warrants` — the account's registered warrants.
+pub async fn list_warrants(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+) -> Result<Json<ApiWarrantsResponse>, ApiError> {
+    let warrants = crate::consent::list_warrants_core(&state, user.user_id).map_err(consent_err)?;
+    Ok(Json(ApiWarrantsResponse { warrants }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiRegisterWarrantRequest {
+    warrant: String,
+    config_cert: String,
+}
+
+/// `POST /api/v1/warrants/register` — record an externally-minted warrant.
+pub async fn register_warrant(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    let req: ApiRegisterWarrantRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    crate::consent::register_warrant_core(&state, user.user_id, &req.warrant, &req.config_cert)
+        .map_err(consent_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiWarrantIdRequest {
+    id: u64,
+}
+
+/// `POST /api/v1/warrants/revoke` — flip the warrant's status bit (sticky).
+pub async fn revoke_warrant(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    let req: ApiWarrantIdRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    crate::consent::revoke_warrant_core(&state, user.user_id, req.id).map_err(consent_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/v1/warrants/forget` — delete the registry row WITHOUT revoking
+/// (the signed warrant stays valid to expiry; guard-rails: bean d51o).
+pub async fn forget_warrant(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    let req: ApiWarrantIdRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    state.store.delete_warrant(user.user_id, req.id).map_err(consent_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiAllocateStatusRequest {
+    agent_email: String,
+    audience: String,
+    #[serde(default)]
+    scopes: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct ApiAllocateStatusResponse {
+    pub uri: String,
+    pub idx: u64,
+}
+
+/// `POST /api/v1/warrants/allocate_status` — the stable status ref for a
+/// grant, fetched before signing. What lets a wallet mint login warrants
+/// WITH per-site revocation bits (closing the prototype gap).
+pub async fn allocate_status(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<Json<ApiAllocateStatusResponse>, ApiError> {
+    let req: ApiAllocateStatusRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    let (uri, idx) = crate::consent::allocate_status_core(
+        &state,
+        user.user_id,
+        &req.agent_email,
+        &req.audience,
+        &req.scopes,
+    )
+    .map_err(consent_err)?;
+    Ok(Json(ApiAllocateStatusResponse { uri, idx }))
 }
 
 #[cfg(test)]

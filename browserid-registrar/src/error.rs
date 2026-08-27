@@ -26,6 +26,12 @@ pub enum RegistrarError {
     #[error("Validation error: {message}")]
     WarrantValidation { reason: &'static str, message: String },
 
+    /// A state refusal (registry-api-v1 §7 `conflict`), e.g. revoking a
+    /// warrant that has no status ref. 409 on both lanes; the token lane
+    /// additionally surfaces the machine reason.
+    #[error("Conflict: {message}")]
+    Conflict { reason: &'static str, message: String },
+
     #[error("Internal error: {0}")]
     Internal(String),
 
@@ -69,6 +75,7 @@ impl IntoResponse for RegistrarError {
             RegistrarError::WarrantValidation { message, .. } => {
                 (StatusCode::BAD_REQUEST, message.as_str())
             }
+            RegistrarError::Conflict { message, .. } => (StatusCode::CONFLICT, message.as_str()),
             RegistrarError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")

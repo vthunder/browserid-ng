@@ -963,9 +963,19 @@ pub async fn list_warrants(
 ) -> Result<Json<ListWarrantsResponse>, RegistrarError> {
     require_enabled(&state)?;
     let user = require_session(&state, &cookies)?;
+    let warrants = list_warrants_core(&state, user.user_id)?;
+    Ok(Json(ListWarrantsResponse { success: true, warrants }))
+}
+
+/// The account's registered warrants as `WarrantInfo` rows — shared by both
+/// lanes (`revoked` computed live from each status bit).
+pub(crate) fn list_warrants_core(
+    state: &Arc<RegistrarState>,
+    user_id: u64,
+) -> Result<Vec<WarrantInfo>, RegistrarError> {
     let warrants = state
         .store
-        .list_warrants(user.user_id)?
+        .list_warrants(user_id)?
         .into_iter()
         .map(|r| {
             let revoked = r
@@ -1003,7 +1013,7 @@ pub async fn list_warrants(
             }
         })
         .collect();
-    Ok(Json(ListWarrantsResponse { success: true, warrants }))
+    Ok(warrants)
 }
 
 #[derive(Deserialize)]
@@ -1028,38 +1038,54 @@ pub async fn register_warrant(
     require_enabled(&state)?;
     let user = require_session(&state, &cookies)?;
     require_csrf(&user, &req.csrf)?;
-    let warrant = Warrant::parse(&req.warrant)
-        .map_err(|e| RegistrarError::ValidationError(format!("bad warrant: {e}")))?;
-    let config_cert = DeviceCert::parse(&req.config_cert)
-        .map_err(|e| RegistrarError::ValidationError(format!("bad config cert: {e}")))?;
+    register_warrant_core(&state, user.user_id, &req.warrant, &req.config_cert)?;
+    Ok(Json(RespondResponse { success: true, return_url: None }))
+}
+
+/// Record an externally-minted warrant — the shared core behind the cookie
+/// lane and `POST /api/v1/warrants/register` (registry-api-v1 §5.2).
+pub(crate) fn register_warrant_core(
+    state: &Arc<RegistrarState>,
+    user_id: u64,
+    warrant_jws: &str,
+    config_jws: &str,
+) -> Result<(), RegistrarError> {
+    let warrant = Warrant::parse(warrant_jws)
+        .map_err(|e| vfail("warrant_invalid", format!("bad warrant: {e}")))?;
+    let config_cert = DeviceCert::parse(config_jws)
+        .map_err(|e| vfail("config_cert_invalid", format!("bad config cert: {e}")))?;
     if config_cert.purpose() != Purpose::Authorization {
-        return Err(RegistrarError::ValidationError(
-            "signing cert is not an authorization (config) cert".into(),
+        return Err(vfail(
+            "config_cert_wrong_purpose",
+            "signing cert is not an authorization (config) cert",
         ));
     }
     warrant
         .verify(config_cert.public_key())
-        .map_err(|_| RegistrarError::ValidationError(
-            "warrant is not signed by the presented config cert".into(),
+        .map_err(|_| vfail(
+            "warrant_invalid",
+            "warrant is not signed by the presented config cert",
         ))?;
     let grantor = &warrant.claims().grantor;
     if !config_cert.authorizes_identity(grantor) {
-        return Err(RegistrarError::ValidationError(
-            "config cert does not authorize the warrant's grantor".into(),
+        return Err(vfail(
+            "grantor_not_authorized",
+            "config cert does not authorize the warrant's grantor",
         ));
     }
     let delegator = delegator_of(grantor);
-    if !state.host.owns_verified_email(user.user_id, &delegator)? {
-        return Err(RegistrarError::ValidationError(
-            "the warrant's delegator is not a verified email on this account".into(),
+    if !state.host.owns_verified_email(user_id, &delegator)? {
+        return Err(vfail(
+            "grantor_not_owned",
+            "the warrant's delegator is not a verified email on this account",
         ));
     }
     let mut record = warrant_to_record(
-        user.user_id,
+        user_id,
         &delegator,
         &warrant,
-        &req.warrant,
-        &req.config_cert,
+        warrant_jws,
+        config_jws,
     );
     // Trust the embedded status ref for OUR revoke lever only when it is
     // provably this grant's own index: our list URI, and the index the
@@ -1074,7 +1100,7 @@ pub async fn register_warrant(
             let own_idx = state.store.get_or_allocate_status(
                 "warrant",
                 &warrant_status_subject(
-                    user.user_id,
+                    user_id,
                     &claims.grantee,
                     &claims.audience,
                     &claims.scope_strings(),
@@ -1096,7 +1122,7 @@ pub async fn register_warrant(
         None => {}
     }
     state.store.upsert_warrant(record)?;
-    Ok(Json(RespondResponse { success: true, return_url: None }))
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -1148,22 +1174,33 @@ pub async fn allocate_warrant_status(
     require_enabled(&state)?;
     let user = require_session(&state, &cookies)?;
     require_csrf(&user, &req.csrf)?;
-    if req.audience.is_empty()
-        || req.audience.contains('*')
-        || req.audience.len() > 512
-        || req.audience.chars().any(|c| c.is_whitespace() || c.is_control())
+    let (uri, idx) =
+        allocate_status_core(&state, user.user_id, &req.agent_email, &req.audience, &req.scopes)?;
+    Ok(Json(AllocateStatusResponse { success: true, uri, idx }))
+}
+
+/// Allocate (idempotently) the stable status ref for a grant — shared by
+/// both lanes (registry-api-v1 §5.2 `warrants/allocate_status`). Stable per
+/// `(account, agent_email, audience, scope set)`.
+pub(crate) fn allocate_status_core(
+    state: &Arc<RegistrarState>,
+    user_id: u64,
+    agent_email: &str,
+    audience: &str,
+    scopes: &[String],
+) -> Result<(String, u64), RegistrarError> {
+    if audience.is_empty()
+        || audience.contains('*')
+        || audience.len() > 512
+        || audience.chars().any(|c| c.is_whitespace() || c.is_control())
     {
         return Err(RegistrarError::ValidationError("bad audience".into()));
     }
     let idx = state.store.get_or_allocate_status(
         "warrant",
-        &warrant_status_subject(user.user_id, &req.agent_email, &req.audience, &req.scopes),
+        &warrant_status_subject(user_id, agent_email, audience, scopes),
     )?;
-    Ok(Json(AllocateStatusResponse {
-        success: true,
-        uri: status_list_uri(&state.domain),
-        idx,
-    }))
+    Ok((status_list_uri(&state.domain), idx))
 }
 
 #[derive(Deserialize)]
@@ -1184,21 +1221,32 @@ pub async fn revoke_warrant(
     require_enabled(&state)?;
     let user = require_session(&state, &cookies)?;
     require_csrf(&user, &req.csrf)?;
+    revoke_warrant_core(&state, user.user_id, req.id)?;
+    Ok(Json(RespondResponse { success: true, return_url: None }))
+}
+
+/// Flip a registered warrant's status bit — shared by both lanes. A warrant
+/// without a status ref cannot be revoked: `409` / `no_status_ref`
+/// (registry-api-v1 §5.2) — the remedy is reissuing with an allocated ref.
+pub(crate) fn revoke_warrant_core(
+    state: &Arc<RegistrarState>,
+    user_id: u64,
+    warrant_id: u64,
+) -> Result<(), RegistrarError> {
     let record = state
         .store
-        .list_warrants(user.user_id)?
+        .list_warrants(user_id)?
         .into_iter()
-        .find(|r| r.id == req.id)
+        .find(|r| r.id == warrant_id)
         .ok_or(RegistrarError::WarrantRequestNotFound)?;
-    let idx = record.status_idx.ok_or_else(|| {
-        RegistrarError::ValidationError(
-            "this warrant predates status lists — reissue it (which replaces it) or revoke the agent key".into(),
-        )
+    let idx = record.status_idx.ok_or_else(|| RegistrarError::Conflict {
+        reason: "no_status_ref",
+        message: "this warrant predates status lists — reissue it (which replaces it) or revoke the agent key".into(),
     })?;
     state.store.set_status_revoked_idx(idx)?;
     tracing::info!(delegator = %record.delegator_email, audience = %record.audience,
         "warrant revoked (status bit set)");
-    Ok(Json(RespondResponse { success: true, return_url: None }))
+    Ok(())
 }
 
 // ===========================================================================

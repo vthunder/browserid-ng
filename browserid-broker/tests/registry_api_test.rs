@@ -514,6 +514,166 @@ async fn respond_over_the_token_lane_is_a_signing_ceremony() {
     assert_eq!(body["error"], "not_found");
 }
 
+/// The §5.2 warrant registry over the token lane: allocate a status ref,
+/// sign + register a warrant embedding it, list, revoke (bit flips), forget.
+#[tokio::test]
+async fn warrant_registry_over_the_token_lane() {
+    use browserid_core::StatusRef;
+    let l = live_broker().await;
+    let email = "registrar-user@gmail.com";
+    let (presentation, config_kp, _device_cert, config_cert) =
+        broker_presentation(&l, email, vec!["registry".into()]).await;
+    let (status, body) = exchange(&l, json!({ "presentation": presentation })).await;
+    assert_eq!(status, 200, "{body}");
+    let token = body["access_token"].as_str().unwrap().to_string();
+
+    let call = |method: &'static str, path: String, body: Option<Value>| {
+        let l = &l;
+        let token = token.clone();
+        let config_kp = &config_kp;
+        async move {
+            let url = format!("{}{path}", l.base);
+            let htu = url.clone();
+            let proof = build_proof(method, &htu, &token, config_kp);
+            let req = match method {
+                "GET" => l.client.get(&url),
+                _ => {
+                    let r = l.client.post(&url);
+                    match body {
+                        Some(b) => r.json(&b),
+                        None => r,
+                    }
+                }
+            };
+            req.header("authorization", format!("DPoP {token}"))
+                .header("dpop", proof)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // Allocate the stable ref for a login grant (idempotent).
+    let r = call(
+        "POST",
+        "/api/v1/warrants/allocate_status".into(),
+        Some(json!({ "agent_email": email, "audience": "https://site.example", "scopes": ["login"] })),
+    )
+    .await;
+    assert_eq!(r.status(), 200, "allocate");
+    let alloc: Value = r.json().await.unwrap();
+    let uri = alloc["uri"].as_str().unwrap().to_string();
+    let idx = alloc["idx"].as_u64().unwrap();
+    assert_eq!(uri, format!("{}/.well-known/browserid-status", l.base));
+    let r = call(
+        "POST",
+        "/api/v1/warrants/allocate_status".into(),
+        Some(json!({ "agent_email": email, "audience": "https://site.example", "scopes": ["login"] })),
+    )
+    .await;
+    assert_eq!(r.json::<Value>().await.unwrap()["idx"].as_u64().unwrap(), idx, "stable per grant");
+
+    // Sign a login warrant embedding the ref and register it.
+    let warrant = Warrant::create(
+        email,
+        email,
+        HolderMatcher::new("browsers.*").unwrap(),
+        "https://site.example",
+        vec!["login".into()],
+        Duration::days(90),
+        &config_kp,
+        Some(StatusRef { uri: uri.clone(), idx }),
+    )
+    .unwrap();
+    let r = call(
+        "POST",
+        "/api/v1/warrants/register".into(),
+        Some(json!({ "warrant": warrant.encoded(), "config_cert": config_cert })),
+    )
+    .await;
+    assert_eq!(r.status(), 204, "register");
+
+    // Listed, unrevoked, carrying the allocated index.
+    let r = call("GET", "/api/v1/warrants".into(), None).await;
+    assert_eq!(r.status(), 200);
+    let list: Value = r.json().await.unwrap();
+    let row = list["warrants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["audience"] == "https://site.example")
+        .expect("registered warrant listed")
+        .clone();
+    assert_eq!(row["status_idx"].as_u64(), Some(idx));
+    assert_eq!(row["revoked"], false);
+    let id = row["id"].as_u64().unwrap();
+
+    // Revoke flips the bit (visible in the next list).
+    let r = call("POST", "/api/v1/warrants/revoke".into(), Some(json!({ "id": id }))).await;
+    assert_eq!(r.status(), 204, "revoke");
+    let r = call("GET", "/api/v1/warrants".into(), None).await;
+    let list: Value = r.json().await.unwrap();
+    let row = list["warrants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["id"].as_u64() == Some(id))
+        .unwrap()
+        .clone();
+    assert_eq!(row["revoked"], true);
+
+    // A REFLESS warrant registers fine but cannot be revoked: 409 + reason.
+    let refless = Warrant::create(
+        email,
+        email,
+        HolderMatcher::new("browsers.*").unwrap(),
+        "https://other.example",
+        vec!["login".into()],
+        Duration::days(90),
+        &config_kp,
+        None,
+    )
+    .unwrap();
+    let r = call(
+        "POST",
+        "/api/v1/warrants/register".into(),
+        Some(json!({ "warrant": refless.encoded(), "config_cert": config_cert })),
+    )
+    .await;
+    assert_eq!(r.status(), 204);
+    let r = call("GET", "/api/v1/warrants".into(), None).await;
+    let list: Value = r.json().await.unwrap();
+    let refless_id = list["warrants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["audience"] == "https://other.example")
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let r = call("POST", "/api/v1/warrants/revoke".into(), Some(json!({ "id": refless_id }))).await;
+    assert_eq!(r.status(), 409);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["error"], "conflict");
+    assert_eq!(body["reason"], "no_status_ref");
+
+    // Forget drops the rows without touching bits.
+    for wid in [id, refless_id] {
+        let r = call("POST", "/api/v1/warrants/forget".into(), Some(json!({ "id": wid }))).await;
+        assert_eq!(r.status(), 204, "forget {wid}");
+    }
+    let r = call("GET", "/api/v1/warrants".into(), None).await;
+    let list: Value = r.json().await.unwrap();
+    assert!(
+        !list["warrants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| [Some(id), Some(refless_id)].contains(&w["id"].as_u64())),
+        "forgotten rows gone"
+    );
+}
+
 // --- Shape-level checks that need no verification stack (axum_test) ---
 
 #[tokio::test]
