@@ -46,15 +46,36 @@ function notify(title, body, onClick) {
   n.show();
 }
 
-// Native approval prompt for login requests coming from the extension.
-async function approveLogin({ origin, email }) {
+// Native approval prompt for login requests. This dialog is the last line
+// of defense on the localhost bridge, so it names everything the human has
+// to judge: the site, WHICH identity is about to be used, and WHO is asking
+// (the paired extension vs. an unidentified local process).
+async function approveLogin({ origin, email, caller }) {
   const { response } = await dialog.showMessageBox({
     type: 'question',
     buttons: ['Sign in', 'Cancel'],
     defaultId: 0,
     cancelId: 1,
     message: `Sign in to ${origin}?`,
-    detail: `The site at ${origin} is requesting a BrowserID login${email ? ` as ${email}` : ''}.`,
+    detail: `The site at ${origin} is requesting a BrowserID login.\n\n`
+      + `Identity: ${email || '(not set up)'}\n`
+      + `Requested via: ${caller || 'unknown caller'}`,
+  });
+  return response === 0;
+}
+
+// Native approval for a caller pairing with the bridge — the
+// trust-establishing step, so name the caller and default to Cancel.
+async function approvePair({ caller }) {
+  const { response } = await dialog.showMessageBox({
+    type: 'question',
+    buttons: ['Pair', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    message: 'Pair with your BrowserID wallet?',
+    detail: `${caller} is asking to connect to this wallet and route sign-ins through it.\n\n`
+      + 'Only pair if you just installed or reloaded the BrowserID browser extension. '
+      + 'Pairing replaces any previously paired caller.',
   });
   return response === 0;
 }
@@ -82,7 +103,7 @@ app.whenReady().then(async () => {
     log(`tray created (icon ${icon.isEmpty() ? 'EMPTY' : icon.getSize().width + 'px'})`);
     await store.init(app.getPath('userData'));
     updateTray(store.state());
-    const port = await startServer({ approveLogin, notify, onStateChange: () => updateTray(store.state()) });
+    const port = await startServer({ approveLogin, approvePair, notify, onStateChange: () => updateTray(store.state()) });
     log(`localhost server on 127.0.0.1:${port}`);
 
     if (store.state().deviceCert) {

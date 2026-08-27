@@ -15,6 +15,7 @@ let data = {};
 
 const EMPTY = {
   pairToken: null,
+  pairOrigin: null, // browser origin the token was issued to (null = native caller)
   identity: null,
   domain: null,     // access-request `domain` claim = the issuer
   mintUrl: null,
@@ -67,7 +68,6 @@ module.exports = {
   init,
   state: () => data,
   encryptedAtRest: () => encrypted,
-  setPairToken: async (t) => { data.pairToken = t; await save(); },
   set: async (patch) => { Object.assign(data, patch); await save(); },
   reset: async () => { data = { ...EMPTY }; await save(); },
 };

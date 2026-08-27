@@ -70,8 +70,15 @@ node e2e.mjs
 
 ## Trust model notes
 
-- Localhost bridge: 127.0.0.1 bind + native pairing confirm + bearer token.
-  Hardening (per-origin tokens, process attestation) is tracked on the bean.
+- Localhost bridge: 127.0.0.1 bind + native pairing confirm + bearer token,
+  bound to the browser origin it was paired under. Browser callers are
+  allowlisted (the extension's `chrome-extension://` origin plus loopback
+  pages for the e2e harness); any other web origin is 403'd before the
+  pairing dialog can fire, and CORS reflects the specific caller — never `*`.
+  Native local processes send no Origin and are gated by the pairing and
+  per-login dialogs, which name the caller (and the identity in play) so the
+  human isn't approving blind. Remaining hardening (per-caller token model,
+  process attestation) is tracked on the bean.
 - The extension shim installs `navigator.id` as an un-displaceable accessor
   so include.js's own shim cannot displace it.
 - Test lanes (`/test/*`) exist only under `WALLET_TEST=1` and never expose

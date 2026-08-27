@@ -107,10 +107,10 @@ async function buildBrokerPresentation() {
   return `${access.cert}~${assertion}~${warrant}~${s.configCert}`;
 }
 
-async function login({ origin, approveLogin }) {
+async function login({ origin, caller, approveLogin }) {
   const s = store.state();
   if (!s.deviceCert) return { error: 'wallet not bootstrapped' };
-  const ok = process.env.WALLET_AUTO_APPROVE === '1' || (await approveLogin({ origin, email: s.identity }));
+  const ok = process.env.WALLET_AUTO_APPROVE === '1' || (await approveLogin({ origin, email: s.identity, caller }));
   if (!ok) return { error: 'user cancelled' };
 
   const warrant = await ensureWarrant(origin);

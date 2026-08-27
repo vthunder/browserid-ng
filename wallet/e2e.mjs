@@ -174,6 +174,47 @@ must('signed warrant embeds the ref', !!wClaims.status && wClaims.status.idx ===
   JSON.stringify(wClaims.status));
 must('keys never leave the app (/test/state redacts them)', !('deviceKey' in state) && !('configKey' in state));
 
+// 9. Hostile callers are refused (b8q0/bd19 hardening).
+//    9a. Server-side origin gate: a request carrying a non-allowlisted web
+//    origin is 403'd before the pairing dialog can fire — the current token
+//    survives (a processed /pair would have rotated it, AUTO_APPROVE is on).
+r = await fetch('http://127.0.0.1:8873/pair', {
+  method: 'POST', headers: { origin: 'https://evil.example' },
+});
+must('web-origin /pair refused', r.status === 403);
+must('refusal happened before pairing (token not rotated)',
+  (await wallet2('/test/state', {})).status === 200);
+
+//    9b. Same gate on the token lane: a valid token presented from a
+//    disallowed origin is still refused.
+r = await fetch('http://127.0.0.1:8873/status', {
+  headers: { origin: 'https://evil.example', 'x-wallet-token': repair.token },
+});
+must('web-origin token use refused', r.status === 403);
+
+//    9c. Token↔origin binding: a token paired under one origin is refused
+//    from another (here: paired with no origin, replayed as an extension).
+r = await fetch('http://127.0.0.1:8873/status', {
+  headers: { origin: `chrome-extension://${'a'.repeat(32)}`, 'x-wallet-token': repair.token },
+});
+must('token bound to pairing origin', r.status === 401);
+
+//    9d. CORS reflects the specific allowed caller — never *.
+must('no wildcard CORS on allowed callers',
+  r.headers.get('access-control-allow-origin') === `chrome-extension://${'a'.repeat(32)}`);
+
+//    9e. A real cross-origin web page in the browser can't reach the bridge.
+const evil = await ctx.newPage();
+await evil.route('http://evil.example/', (route) =>
+  route.fulfill({ contentType: 'text/html', body: '<!doctype html><h1>evil</h1>' }));
+await evil.goto('http://evil.example/');
+const evilResult = await evil.evaluate(() =>
+  fetch('http://127.0.0.1:8873/pair', { method: 'POST' })
+    .then((r) => `reachable:${r.status}`, (e) => `blocked:${e.name}`));
+must('hostile web page cannot drive /pair', evilResult.startsWith('blocked:'), evilResult);
+must('hostile page attempt did not rotate the token',
+  (await wallet2('/test/state', {})).status === 200);
+
 await ctx.close();
 rp.close();
 app.kill();
