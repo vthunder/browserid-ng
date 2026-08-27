@@ -674,6 +674,350 @@ async fn warrant_registry_over_the_token_lane() {
     );
 }
 
+/// One token-authed API call; `htu` in the proof excludes any query string
+/// (§3.2 — the server compares against the path only). 204 → null body.
+async fn api_call(
+    l: &Live,
+    kp: &KeyPair,
+    token: &str,
+    method: &str,
+    path: &str,
+    query: Option<&str>,
+    body: Option<Value>,
+) -> (reqwest::StatusCode, Value) {
+    let htu = format!("{}{path}", l.base);
+    let url = match query {
+        Some(q) => format!("{htu}?{q}"),
+        None => htu.clone(),
+    };
+    let proof = build_proof(method, &htu, token, kp);
+    let req = if method == "GET" {
+        l.client.get(&url)
+    } else {
+        let r = l.client.post(&url);
+        match body {
+            Some(b) => r.json(&b),
+            None => r,
+        }
+    };
+    let r = req
+        .header("authorization", format!("DPoP {token}"))
+        .header("dpop", proof)
+        .send()
+        .await
+        .unwrap();
+    let status = r.status();
+    let body = if status == reqwest::StatusCode::NO_CONTENT {
+        json!(null)
+    } else {
+        r.json().await.unwrap_or(json!(null))
+    };
+    (status, body)
+}
+
+/// §5.3 devices + §5.4 holders/namespaces over the token lane: list, rename,
+/// revoke (authority-honest), status, move (redirect recorded), forget
+/// (revoke-then-delete with unrevocable surfaced), namespace lifecycle with
+/// the machine-reason taxonomy.
+#[tokio::test]
+async fn devices_and_holders_over_the_token_lane() {
+    use browserid_broker::store::DeviceCertRecord;
+    let l = live_broker().await;
+    let email = "wallet-owner@gmail.com";
+    let (presentation, config_kp, device_cert, _config_cert) =
+        broker_presentation(&l, email, vec!["registry".into()]).await;
+    let (status, body) = exchange(&l, json!({ "presentation": presentation })).await;
+    assert_eq!(status, 200, "{body}");
+    let token = body["access_token"].as_str().unwrap().to_string();
+    let holder =
+        browserid_core::device::DeviceCert::parse(&device_cert).unwrap().holder().as_str().to_string();
+    let call = |method: &'static str, path: &'static str, query: Option<&'static str>, body: Option<Value>| {
+        api_call(&l, &config_kp, &token, method, path, query, body)
+    };
+
+    // §5.3 list: the bootstrap certs are listed under our holder, unrevoked.
+    let (status, devices) = call("GET", "/api/v1/devices", None, None).await;
+    assert_eq!(status, 200, "{devices}");
+    let ours: Vec<&Value> =
+        devices["certs"].as_array().unwrap().iter().filter(|c| c["holder"] == holder).collect();
+    assert!(!ours.is_empty(), "bootstrap certs listed: {devices}");
+    assert!(ours.iter().all(|c| c["revoked"] == false && c["iss"] == l.domain.as_str()));
+
+    // §5.4 view: the holder sits in the browsers namespace, trusted (it holds
+    // a config cert), not external.
+    let (status, view) = call("GET", "/api/v1/holders", None, None).await;
+    assert_eq!(status, 200, "{view}");
+    let browsers = view["namespaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["name"] == "browsers")
+        .expect("browsers namespace");
+    let hv = browsers["holders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["holder_id"] == holder)
+        .expect("our holder in browsers");
+    assert_eq!(hv["trust"], "trusted");
+    assert_eq!(hv["external"], false);
+
+    // Rename the holder; the label shows in the next view. Grammar violations
+    // and owner-scoped misses use the §7 taxonomy.
+    let (status, _) = call(
+        "POST",
+        "/api/v1/holders/rename",
+        None,
+        Some(json!({ "holder_id": holder, "label": "  My Wallet " })),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (_, view) = call("GET", "/api/v1/holders", None, None).await;
+    let hv = view["namespaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|n| n["holders"].as_array().unwrap())
+        .find(|h| h["holder_id"] == holder)
+        .unwrap();
+    assert_eq!(hv["label"], "My Wallet", "trimmed label applied");
+    let (status, body) = call(
+        "POST",
+        "/api/v1/holders/rename",
+        None,
+        Some(json!({ "holder_id": holder, "label": "a\nb" })),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"], "invalid_request");
+    let (status, body) = call(
+        "POST",
+        "/api/v1/holders/rename",
+        None,
+        Some(json!({ "holder_id": "nope.zzzz", "label": "X" })),
+    )
+    .await;
+    assert_eq!(status, 404, "owner-scoped miss: {body}");
+    assert_eq!(body["error"], "not_found");
+
+    // Namespace lifecycle: grammar → create → rename → delete; deleting an
+    // occupied namespace is a 409 with the §7.1 reason.
+    let (status, body) =
+        call("POST", "/api/v1/namespaces/create", None, Some(json!({ "name": "Not Valid!" }))).await;
+    assert_eq!(status, 400, "{body}");
+    let (status, _) =
+        call("POST", "/api/v1/namespaces/create", None, Some(json!({ "name": "work" }))).await;
+    assert_eq!(status, 204);
+    let (status, _) = call(
+        "POST",
+        "/api/v1/namespaces/rename",
+        None,
+        Some(json!({ "name": "work", "label": "Work" })),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (_, view) = call("GET", "/api/v1/holders", None, None).await;
+    let work =
+        view["namespaces"].as_array().unwrap().iter().find(|n| n["name"] == "work").unwrap();
+    assert_eq!(work["label"], "Work");
+    assert_eq!(work["holders"].as_array().unwrap().len(), 0);
+    let (status, body) = call(
+        "POST",
+        "/api/v1/namespaces/rename",
+        None,
+        Some(json!({ "name": "gone", "label": "X" })),
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    let (status, _) =
+        call("POST", "/api/v1/namespaces/delete", None, Some(json!({ "name": "work" }))).await;
+    assert_eq!(status, 204);
+    let (status, body) =
+        call("POST", "/api/v1/namespaces/delete", None, Some(json!({ "name": "browsers" }))).await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["reason"], "namespace_not_empty");
+
+    // Seed a second holder ("the bot") under agents, with an own-list status
+    // ref, plus a foreign-issued cert — so revoke/move/forget can be
+    // exercised without killing the cert our token is bound to.
+    let user_id = l.user_store.get_email(email).unwrap().unwrap().user_id;
+    let agents_prefix = l.user_store.get_or_create_namespace(user_id, "agents").unwrap();
+    let bot_holder = format!("{agents_prefix}.botbot23");
+    let bot_idx = l.user_store.get_or_allocate_status("device", "bot-pubkey").unwrap();
+    let now = chrono::Utc::now();
+    let own_status_uri = format!("{}/.well-known/browserid-status", l.base);
+    let mk_cert = |holder: &str, pubkey: &str, iss: &str, uri: Option<String>, idx: Option<u64>| {
+        DeviceCertRecord {
+            id: 0,
+            user_id,
+            identities: vec![email.to_string()],
+            purpose: "authentication".into(),
+            holder: holder.to_string(),
+            pubkey: pubkey.to_string(),
+            iss: iss.to_string(),
+            issued_at: now,
+            expires_at: now + Duration::days(90),
+            revoked_at: None,
+            status_uri: uri,
+            status_idx: idx,
+            prov: "smtp".into(),
+        }
+    };
+    l.user_store
+        .insert_device_cert(mk_cert(
+            &bot_holder,
+            "bot-pubkey",
+            &l.domain,
+            Some(own_status_uri.clone()),
+            Some(bot_idx),
+        ))
+        .unwrap();
+    let foreign_holder = format!("{agents_prefix}.forgn234");
+    l.user_store
+        .insert_device_cert(mk_cert(
+            &foreign_holder,
+            "foreign-pubkey",
+            "idp.partner.example",
+            Some("https://idp.partner.example/.well-known/browserid-status".into()),
+            Some(987_654),
+        ))
+        .unwrap();
+
+    // §5.3 revoke: own-list authority → the bit flips and the API says so.
+    let (_, devices) = call("GET", "/api/v1/devices", None, None).await;
+    let bot_id = devices["certs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["holder"] == bot_holder)
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let (status, body) =
+        call("POST", "/api/v1/devices/revoke", None, Some(json!({ "id": bot_id }))).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["revoked"], true, "own list: the bit is ours to flip");
+    assert!(l.user_store.is_status_revoked_idx(bot_idx).unwrap(), "bit actually flipped");
+    let q = format!("id={bot_id}");
+    let q: &'static str = Box::leak(q.into_boxed_str());
+    let (status, body) = call("GET", "/api/v1/devices/status", Some(q), None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["state"], "revoked");
+
+    // A foreign-issued cert: the row hides, but the API MUST NOT claim the
+    // cert is dead — its bit numbers the ISSUER's list (ft55).
+    let (_, devices) = call("GET", "/api/v1/devices", None, None).await;
+    let foreign_id = devices["certs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["holder"] == foreign_holder)
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let (status, body) =
+        call("POST", "/api/v1/devices/revoke", None, Some(json!({ "id": foreign_id }))).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["revoked"], false, "foreign issuer: not ours to revoke");
+    assert!(
+        !l.user_store.is_status_revoked_idx(987_654).unwrap(),
+        "own-list idx NOT collaterally flipped for a foreign ref (ft55)"
+    );
+    let (status, body) =
+        call("POST", "/api/v1/devices/revoke", None, Some(json!({ "id": 999999 }))).await;
+    assert_eq!(status, 404, "owner-scoped miss: {body}");
+
+    // §5.4 move: the bot moves to services — permanent redirect recorded,
+    // and the view buckets it under the TARGET with the moving badge.
+    let (status, body) = call(
+        "POST",
+        "/api/v1/holders/move",
+        None,
+        Some(json!({ "holder_id": bot_holder, "namespace": "services" })),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let new_holder = body["new_holder"].as_str().unwrap().to_string();
+    let services_prefix = l.user_store.get_or_create_namespace(user_id, "services").unwrap();
+    assert!(new_holder.starts_with(&format!("{services_prefix}.")), "{new_holder}");
+    let q = format!("holder={bot_holder}");
+    let q: &'static str = Box::leak(q.into_boxed_str());
+    let (status, body) = call("GET", "/api/v1/holders/assignment", Some(q), None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["status"], "moved");
+    assert_eq!(body["new_holder"], new_holder.as_str());
+    let (_, view) = call("GET", "/api/v1/holders", None, None).await;
+    let services = view["namespaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["name"] == "services")
+        .unwrap();
+    let moved = services["holders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["holder_id"] == bot_holder)
+        .expect("pending-moved holder files under its target");
+    assert!(moved["moving_to"].is_string());
+
+    // Our own holder is current, and moving it into the namespace it already
+    // lives in is the §7.1 conflict — checked BEFORE anything is revoked.
+    let q = format!("holder={holder}");
+    let q: &'static str = Box::leak(q.into_boxed_str());
+    let (_, body) = call("GET", "/api/v1/holders/assignment", Some(q), None).await;
+    assert_eq!(body["status"], "current");
+    let (status, body) = call(
+        "POST",
+        "/api/v1/holders/move",
+        None,
+        Some(json!({ "holder_id": holder, "namespace": "browsers" })),
+    )
+    .await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["reason"], "already_in_namespace");
+    let (_, devices) = call("GET", "/api/v1/devices", None, None).await;
+    assert!(
+        devices["certs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["holder"] == holder)
+            .all(|c| c["revoked"] == false),
+        "a refused move must not have revoked anything"
+    );
+
+    // §5.4 forget: revoke-then-delete. The bot (own issuer, has a ref) leaves
+    // nothing unrevocable; the foreign holder surfaces its issuer.
+    let (status, body) =
+        call("POST", "/api/v1/holders/forget", None, Some(json!({ "holder_id": bot_holder }))).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["unrevocable"], json!([]));
+    let (status, body) = call(
+        "POST",
+        "/api/v1/holders/forget",
+        None,
+        Some(json!({ "holder_id": foreign_holder })),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["unrevocable"], json!(["idp.partner.example"]));
+    let (_, devices) = call("GET", "/api/v1/devices", None, None).await;
+    assert!(
+        !devices["certs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["holder"] == bot_holder || c["holder"] == foreign_holder),
+        "forgotten holders' rows are gone"
+    );
+
+    // Through it all the token stayed alive: its own bound cert was never
+    // touched.
+    let (status, _) = call("GET", "/api/v1/devices", None, None).await;
+    assert_eq!(status, 200);
+}
+
 // --- Shape-level checks that need no verification stack (axum_test) ---
 
 #[tokio::test]

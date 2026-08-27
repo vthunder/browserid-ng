@@ -1,11 +1,11 @@
 ---
 # browserid-ng-bw9q
 title: 'Registry lane for native wallets: device-cert-authenticated approvals inbox (+ client-supplied holder)'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-08-27T08:57:24Z
-updated_at: 2026-08-27T18:34:19Z
+updated_at: 2026-08-27T20:42:07Z
 ---
 
 The menubar-wallet prototype exposed that every registry operation is session-cookie-only, so a native wallet is a second-class registry client standing on borrowed cookies:
@@ -37,8 +37,12 @@ Bigger picture (client-broker vs server-broker delineation, recorded on 7v5l): m
 - [x] Implement: token exchange + proof verification + first consumer (inbox GET) — landed 2026-08-27: `/api/v1/token` + DPoP-proof extractor + `GET /api/v1/requests` in browserid-registrar/src/api.rs (host verification via PresentationVerifier trait, glue in registrar_glue.rs); api_tokens in BOTH stores (sqlite migration v33) + explicit sqlite round-trip test; in-memory replay cache (proof jtis + exchange assertions); registry key on /.well-known/browserid; ig9p phase 1 (dialog.js broker-audience warrants carry registry scope; broker logs scopeless); 7 integration tests incl. live-listener full-verification flow (tests/registry_api_test.rs)
 - [x] requests/respond + requests/claim over the token lane (2026-08-27): shared respond_core/claim_core in consent.rs so cookie + token bars cannot drift; §7.1 machine reasons via RegistrarError::WarrantValidation; e2e test drives sign-ceremony approve, deny, 422 status_ref_missing, owner-scoped 404
 - [x] §5.2 warrant registry over the token lane (2026-08-27): GET /api/v1/warrants + register/revoke/forget/allocate_status, shared cores with the cookie lane; revoke of a refless warrant is 409 conflict/no_status_ref on BOTH lanes now (cookie lane moved from 400 → 409, message unchanged); lifecycle e2e test
-- [ ] Remaining §5 endpoints over the token lane: devices (list/revoke/status, §5.3), holders + namespaces (§5.4)
+- [x] Remaining §5 endpoints over the token lane (2026-08-27): devices list/revoke/status (§5.3) + holders/namespaces (§5.4) — shared cores in browserid-registrar/src/holders.rs used by BOTH lanes (cookie handlers in broker holders.rs/device.rs now delegate), RegistrarStore grew the namespace/label/move primitives (default-erroring), RegistrarHost grew revoke_hosted_status (tenant-list routing). Revocation is authority-routed on both lanes now (own list local, hosted tenant via hook, foreign refused-and-surfaced — ft55 rule extended to move/forget; cookie revoke_device_cert gains tenant routing). Live-listener e2e: devices_and_holders_over_the_token_lane (list, rename+grammar, namespace lifecycle incl. namespace_not_empty 409, authority-honest revoke {revoked:bool}, status, move redirect + already_in_namespace 409, forget with unrevocable issuers, owner-scoped 404s).
 
 **§10 #7 RESOLVED (Dan, 2026-08-28): self-issued (secondary-identity) presentations ACCEPTED at the token exchange.** Rationale: the cookie lane rightly rejects them because a session is full account control including the password root that secondary certs derive from; the token's authority is scope-bounded to registry ops (no root ops in this API), a strict subset — so acceptance mints less than the session the cookie lane refuses. Per-scope gate: every future scope in the token family must re-justify self-issued acceptance (obligation recorded on d0xb). Practical win: secondary-only wallets get the token lane immediately, without waiting for d0xb.
 
 Deferred SHOULDs from §3.1 (not yet implemented, 2026-08-27): per-source/per-identity rate limiting on the exchange (429 + Retry-After); inbox long-poll `wait` (ignoring it is conformant). Note for future tests: full server-side presentation verification in broker tests needs a REAL listener (tests/registry_api_test.rs `live_broker()`) — the axum_test harness can't serve the localhost well-known self-discovery, and fallback_idp_test step 9 only ever exercised the failure path.
+
+## Summary of Changes
+
+Registry API v1 implemented end to end on the broker (browserid.me pending deploy): §3 token exchange + DPoP proofs, §5.1 inbox/claim/respond, §5.2 warrants, §5.3 devices, §5.4 holders + namespaces, §5.5 discovery. Every endpoint shares its core with the cookie sibling so the bars cannot drift. Deferred SHOULDs (per spec, conformant): exchange rate limiting (429), inbox long-poll wait.

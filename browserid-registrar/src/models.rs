@@ -257,3 +257,15 @@ pub struct WarrantRecord {
     pub signed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
+
+/// A holder-namespace registry row (holder-authorization model): a
+/// user-organized bucket of holders. `prefix` is the stored random dot-prefix
+/// every holder in the namespace shares (`<prefix>.…`), so a `<prefix>.*`
+/// warrant matcher covers the whole namespace; `label` is the user-facing
+/// name, editable without touching the opaque prefix.
+#[derive(Debug, Clone)]
+pub struct NamespaceRecord {
+    pub name: String,
+    pub prefix: String,
+    pub label: String,
+}

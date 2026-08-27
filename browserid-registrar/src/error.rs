@@ -35,6 +35,16 @@ pub enum RegistrarError {
     #[error("Internal error: {0}")]
     Internal(String),
 
+    /// Owner-scoped holder miss (registry-api-v1 §5.4): the holder appears on
+    /// none of the account's device certs. 404 on the token lane; the cookie
+    /// lane renders its legacy "no such holder" refusal.
+    #[error("No such holder")]
+    HolderNotFound,
+
+    /// Owner-scoped namespace miss (registry-api-v1 §5.4).
+    #[error("No such namespace")]
+    NamespaceNotFound,
+
     #[error("Invalid provisioning request: {0}")]
     InvalidProvisioningRequest(String),
 
@@ -113,6 +123,8 @@ impl IntoResponse for RegistrarError {
             RegistrarError::DeviceCertNotFound => {
                 (StatusCode::NOT_FOUND, "Device certificate not found")
             }
+            RegistrarError::HolderNotFound => (StatusCode::NOT_FOUND, "No such holder"),
+            RegistrarError::NamespaceNotFound => (StatusCode::NOT_FOUND, "No such namespace"),
         };
 
         let body = json!({

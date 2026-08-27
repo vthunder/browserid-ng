@@ -43,6 +43,7 @@ pub mod agent_provision;
 pub mod api;
 pub mod consent;
 pub mod error;
+pub mod holders;
 pub mod host;
 pub mod models;
 pub mod registry;
@@ -204,6 +205,17 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         .route("/api/v1/warrants/revoke", post(api::revoke_warrant))
         .route("/api/v1/warrants/forget", post(api::forget_warrant))
         .route("/api/v1/warrants/allocate_status", post(api::allocate_status))
+        .route("/api/v1/devices", get(api::list_devices))
+        .route("/api/v1/devices/revoke", post(api::revoke_device))
+        .route("/api/v1/devices/status", get(api::device_status))
+        .route("/api/v1/holders", get(api::list_holders))
+        .route("/api/v1/holders/rename", post(api::rename_holder))
+        .route("/api/v1/holders/move", post(api::move_holder))
+        .route("/api/v1/holders/forget", post(api::forget_holder))
+        .route("/api/v1/holders/assignment", get(api::holder_assignment))
+        .route("/api/v1/namespaces/create", post(api::create_namespace))
+        .route("/api/v1/namespaces/rename", post(api::rename_namespace))
+        .route("/api/v1/namespaces/delete", post(api::delete_namespace))
         .layer(axum::extract::DefaultBodyLimit::max(api::API_BODY_LIMIT));
     Router::new()
         .merge(api_v1)

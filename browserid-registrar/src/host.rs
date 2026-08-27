@@ -107,6 +107,18 @@ pub trait RegistrarHost: Send + Sync {
     /// Best-effort; a default no-op for hosts without a registry.
     fn set_agent_public_name(&self, _user_id: u64, _agent_email: &str, _name: &str) {}
 
+    /// Flip the revocation bit behind a status ref that is NOT on the
+    /// registrar's own list but may still be hosted by this deployment (the
+    /// broker also hosts its tenants' lists under the idp host's
+    /// `/status/<domain>`). `Ok(true)` = this deployment is the ref's
+    /// authority and the bit is now revoked; `Ok(false)` = a genuinely
+    /// foreign ref — nobody here can revoke it, and callers surface that
+    /// (registry-api-v1 §5.3/§5.4) instead of silently pretending. The
+    /// default hosts no foreign lists.
+    fn revoke_hosted_status(&self, _uri: &str, _idx: u64) -> Result<bool, RegistrarError> {
+        Ok(false)
+    }
+
     /// Whether this account has already met `agent_email` — an agent identity
     /// on the account, or a recorded device cert / service entry covering it —
     /// and what it knows about it. `None` = an unknown agent: the consent page

@@ -599,7 +599,10 @@ fn consent_err(e: crate::error::RegistrarError) -> ApiError {
         }
         E::Conflict { reason, message } => ApiError::Conflict { reason, description: message },
         E::WarrantRequestNotFound => ApiError::NotFound,
+        // Owner-scoped misses are indistinguishable from absence (§7).
+        E::DeviceCertNotFound | E::HolderNotFound | E::NamespaceNotFound => ApiError::NotFound,
         E::ValidationError(m) => ApiError::InvalidRequest(m),
+        E::PolicyRefused(m) => ApiError::InvalidRequest(m),
         E::AgentProvisioningDisabled => ApiError::NotFound,
         other => ApiError::Internal(other.to_string()),
     }
@@ -775,6 +778,288 @@ pub async fn allocate_status(
     )
     .map_err(consent_err)?;
     Ok(Json(ApiAllocateStatusResponse { uri, idx }))
+}
+
+// ===========================================================================
+// Devices over the token lane (§5.3)
+// ===========================================================================
+
+#[derive(Serialize)]
+pub struct ApiDevicesResponse {
+    pub certs: Vec<crate::holders::DeviceCertView>,
+}
+
+/// `GET /api/v1/devices` — the account's device certs (active and revoked).
+pub async fn list_devices(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+) -> Result<Json<ApiDevicesResponse>, ApiError> {
+    let certs =
+        crate::holders::device_certs_core(&*state.store, user.user_id).map_err(consent_err)?;
+    Ok(Json(ApiDevicesResponse { certs }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiDeviceIdRequest {
+    id: u64,
+}
+
+#[derive(Serialize)]
+pub struct ApiRevokeDeviceResponse {
+    /// Whether a status bit actually flipped here. `false` = the issuer is
+    /// foreign: the row is hidden but the cert is NOT dead — route revocation
+    /// to the issuing authority (§5.3).
+    pub revoked: bool,
+}
+
+/// `POST /api/v1/devices/revoke` — owner-scoped soft-revoke; honest about
+/// whether this registry was the revocation authority.
+pub async fn revoke_device(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<Json<ApiRevokeDeviceResponse>, ApiError> {
+    let req: ApiDeviceIdRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    let revoked = crate::holders::revoke_device_core(
+        &*state.store,
+        &*state.host,
+        &state.domain,
+        user.user_id,
+        req.id,
+    )
+    .map_err(consent_err)?;
+    Ok(Json(ApiRevokeDeviceResponse { revoked }))
+}
+
+#[derive(Deserialize)]
+pub struct ApiDeviceStatusQuery {
+    id: u64,
+}
+
+#[derive(Serialize)]
+pub struct ApiDeviceStatusResponse {
+    /// "revoked" | "active" | "unknown" (`unknown` = no status ref, or the
+    /// issuer's list is unreachable — the caller must not claim success).
+    pub state: &'static str,
+}
+
+/// `GET /api/v1/devices/status?id=` — did a revocation actually land on the
+/// issuer's signed list? Fresh-fetched for foreign issuers (a network side
+/// effect, but not a state change — §4's pure-GET rule refers to registry
+/// state).
+pub async fn device_status(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    Query(query): Query<ApiDeviceStatusQuery>,
+) -> Result<Json<ApiDeviceStatusResponse>, ApiError> {
+    let s = crate::holders::device_status_core(
+        &*state.store,
+        state.presentation_verifier.as_deref(),
+        &state.domain,
+        user.user_id,
+        query.id,
+    )
+    .await
+    .map_err(consent_err)?;
+    Ok(Json(ApiDeviceStatusResponse { state: s }))
+}
+
+// ===========================================================================
+// Holders + namespaces over the token lane (§5.4)
+// ===========================================================================
+
+/// `GET /api/v1/holders` — the grouped account view (namespaces → holders).
+pub async fn list_holders(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+) -> Result<Json<crate::holders::HoldersView>, ApiError> {
+    let view =
+        crate::holders::holders_view_core(&*state.store, user.user_id).map_err(consent_err)?;
+    Ok(Json(view))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiRenameHolderRequest {
+    holder_id: String,
+    label: String,
+}
+
+/// `POST /api/v1/holders/rename` — friendly label for one holder id.
+pub async fn rename_holder(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    let req: ApiRenameHolderRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    crate::holders::rename_holder_core(&*state.store, user.user_id, &req.holder_id, &req.label)
+        .map_err(consent_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiMoveHolderRequest {
+    holder_id: String,
+    namespace: String,
+}
+
+#[derive(Serialize)]
+pub struct ApiMoveHolderResponse {
+    /// The registry-assigned holder id the device will carry after re-issue.
+    pub new_holder: String,
+}
+
+/// `POST /api/v1/holders/move` — destructive and up-front (§5.4): revokes the
+/// old holder's certs, records the permanent redirect, carries the label.
+pub async fn move_holder(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<Json<ApiMoveHolderResponse>, ApiError> {
+    let req: ApiMoveHolderRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    let new_holder = crate::holders::move_holder_core(
+        &*state.store,
+        &*state.host,
+        &state.domain,
+        user.user_id,
+        &req.holder_id,
+        &req.namespace,
+    )
+    .map_err(consent_err)?;
+    Ok(Json(ApiMoveHolderResponse { new_holder }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiForgetHolderRequest {
+    holder_id: String,
+}
+
+#[derive(Serialize)]
+pub struct ApiForgetHolderResponse {
+    /// Issuers whose certs could NOT be revoked from here: the device can
+    /// keep signing in with them until they expire — only that issuer can
+    /// cut them off.
+    pub unrevocable: Vec<String>,
+}
+
+/// `POST /api/v1/holders/forget` — revoke-then-delete a device/service.
+pub async fn forget_holder(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<Json<ApiForgetHolderResponse>, ApiError> {
+    let req: ApiForgetHolderRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    let unrevocable = crate::holders::forget_holder_core(
+        &*state.store,
+        &*state.host,
+        &state.domain,
+        user.user_id,
+        &req.holder_id,
+    )
+    .map_err(consent_err)?;
+    Ok(Json(ApiForgetHolderResponse { unrevocable }))
+}
+
+#[derive(Deserialize)]
+pub struct ApiHolderAssignmentQuery {
+    holder: String,
+}
+
+#[derive(Serialize)]
+pub struct ApiHolderAssignmentResponse {
+    /// "current" | "moved"
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_holder: Option<String>,
+}
+
+/// `GET /api/v1/holders/assignment?holder=` — is this holder still current?
+pub async fn holder_assignment(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    Query(query): Query<ApiHolderAssignmentQuery>,
+) -> Result<Json<ApiHolderAssignmentResponse>, ApiError> {
+    let moved =
+        crate::holders::holder_assignment_core(&*state.store, user.user_id, &query.holder)
+            .map_err(consent_err)?;
+    Ok(Json(match moved {
+        Some(new_holder) => {
+            ApiHolderAssignmentResponse { status: "moved", new_holder: Some(new_holder) }
+        }
+        None => ApiHolderAssignmentResponse { status: "current", new_holder: None },
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiCreateNamespaceRequest {
+    name: String,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+/// `POST /api/v1/namespaces/create` — a new namespace (fresh random prefix).
+pub async fn create_namespace(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    let req: ApiCreateNamespaceRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    crate::holders::create_namespace_core(
+        &*state.store,
+        user.user_id,
+        &req.name,
+        req.label.as_deref(),
+    )
+    .map_err(consent_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiRenameNamespaceRequest {
+    name: String,
+    label: String,
+}
+
+/// `POST /api/v1/namespaces/rename` — friendly label for a namespace.
+pub async fn rename_namespace(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    let req: ApiRenameNamespaceRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    crate::holders::rename_namespace_core(&*state.store, user.user_id, &req.name, &req.label)
+        .map_err(consent_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiDeleteNamespaceRequest {
+    name: String,
+}
+
+/// `POST /api/v1/namespaces/delete` — remove an EMPTY namespace.
+pub async fn delete_namespace(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    let req: ApiDeleteNamespaceRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    crate::holders::delete_namespace_core(&*state.store, user.user_id, &req.name)
+        .map_err(consent_err)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]

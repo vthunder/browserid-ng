@@ -24,6 +24,7 @@ fn to_reg_err(e: BrokerError) -> RegistrarError {
         BrokerError::DeviceCertNotFound => RegistrarError::DeviceCertNotFound,
         BrokerError::NotAuthenticated => RegistrarError::NotAuthenticated,
         BrokerError::ValidationError(m) => RegistrarError::ValidationError(m),
+        BrokerError::PolicyRefused(m) => RegistrarError::PolicyRefused(m),
         other => RegistrarError::Internal(other.to_string()),
     }
 }
@@ -355,6 +356,81 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
         UserStore::revoke_device_cert(self.user_store.as_ref(), UserId(user_id), cert_id)
             .map_err(to_reg_err)
     }
+
+    fn list_namespaces(&self, user_id: u64) -> Result<Vec<reg::NamespaceRecord>, RegistrarError> {
+        UserStore::list_namespaces(self.user_store.as_ref(), UserId(user_id))
+            .map(|v| {
+                v.into_iter()
+                    .map(|n| reg::NamespaceRecord { name: n.name, prefix: n.prefix, label: n.label })
+                    .collect()
+            })
+            .map_err(to_reg_err)
+    }
+
+    fn create_namespace(&self, user_id: u64, name: &str, label: &str) -> Result<(), RegistrarError> {
+        UserStore::create_namespace(self.user_store.as_ref(), UserId(user_id), name, label)
+            .map_err(to_reg_err)
+    }
+
+    fn set_namespace_label(
+        &self,
+        user_id: u64,
+        name: &str,
+        label: &str,
+    ) -> Result<(), RegistrarError> {
+        UserStore::set_namespace_label(self.user_store.as_ref(), UserId(user_id), name, label)
+            .map_err(to_reg_err)
+    }
+
+    fn delete_namespace(&self, user_id: u64, name: &str) -> Result<(), RegistrarError> {
+        UserStore::delete_namespace(self.user_store.as_ref(), UserId(user_id), name)
+            .map_err(to_reg_err)
+    }
+
+    fn get_holder_labels(
+        &self,
+        user_id: u64,
+    ) -> Result<std::collections::HashMap<String, String>, RegistrarError> {
+        UserStore::get_holder_labels(self.user_store.as_ref(), UserId(user_id)).map_err(to_reg_err)
+    }
+
+    fn set_holder_label(
+        &self,
+        user_id: u64,
+        holder_id: &str,
+        label: &str,
+    ) -> Result<(), RegistrarError> {
+        UserStore::set_holder_label(self.user_store.as_ref(), UserId(user_id), holder_id, label)
+            .map_err(to_reg_err)
+    }
+
+    fn set_holder_move(
+        &self,
+        user_id: u64,
+        old_holder: &str,
+        new_holder: &str,
+    ) -> Result<(), RegistrarError> {
+        UserStore::set_holder_move(self.user_store.as_ref(), UserId(user_id), old_holder, new_holder)
+            .map_err(to_reg_err)
+    }
+
+    fn resolve_holder_move(
+        &self,
+        user_id: u64,
+        holder: &str,
+    ) -> Result<Option<String>, RegistrarError> {
+        UserStore::resolve_holder_move(self.user_store.as_ref(), UserId(user_id), holder)
+            .map_err(to_reg_err)
+    }
+
+    fn list_holder_moves(&self, user_id: u64) -> Result<Vec<(String, String)>, RegistrarError> {
+        UserStore::list_holder_moves(self.user_store.as_ref(), UserId(user_id)).map_err(to_reg_err)
+    }
+
+    fn forget_holder(&self, user_id: u64, holder: &str) -> Result<u64, RegistrarError> {
+        UserStore::forget_holder(self.user_store.as_ref(), UserId(user_id), holder)
+            .map_err(to_reg_err)
+    }
 }
 
 /// The broker's sessions + accounts, seen through the registrar's eyes.
@@ -363,6 +439,8 @@ pub struct BrokerRegistrarHost<U, S> {
     pub session_store: Arc<S>,
     /// The domain agent handles are minted under (`<name>@<domain>`).
     pub domain: String,
+    /// The hosted-IdP host (tenant status lists live under its `/status/`).
+    pub idp_host: String,
     /// Per-account cap on agent identities.
     pub max_agent_identities: usize,
 }
@@ -518,6 +596,25 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
             .add_email_with_type(user_id, email, true, EmailType::Primary)
             .map_err(to_reg_err)?;
         Ok(user_id.0)
+    }
+
+    fn revoke_hosted_status(&self, uri: &str, idx: u64) -> Result<bool, RegistrarError> {
+        // A hosted tenant's list? (`…/status/<domain>` on our idp host — the
+        // broker hosts those lists too, so their bits are ours to flip.)
+        let prefix = format!(
+            "{}/status/",
+            browserid_registrar::consent::public_origin(&self.idp_host)
+        );
+        let Some(domain) = uri.strip_prefix(&prefix) else {
+            return Ok(false);
+        };
+        match self.user_store.get_tenant(&domain.to_lowercase()).map_err(to_reg_err)? {
+            Some(tenant) => {
+                self.user_store.tenant_status_revoke_idx(tenant.id, idx).map_err(to_reg_err)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     fn agent_identities(&self, user_id: u64) -> Result<Vec<AgentIdentity>, RegistrarError> {
@@ -776,6 +873,7 @@ mod reserve_tests {
             user_store: us,
             session_store: Arc::new(InMemorySessionStore::new()),
             domain: "browserid.me".into(),
+            idp_host: "idp.browserid.me".into(),
             max_agent_identities: max,
         };
         (h, u1, u2)

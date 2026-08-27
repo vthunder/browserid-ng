@@ -5,9 +5,13 @@
 > §5.2 warrant group live on browserid.me; the real wallet exists at
 > `wallet/` (gxi9 email-first bootstrap, safeStorage custody, registry-API
 > inbox, .app packaging), e2e green locally; lbla shipped as the UA
-> product-token labeler. Remaining on bw9q: §5.3 devices + §5.4 holders
-> over the token lane. The wallet's PRIMARY-identity lane needs a human
-> walk on Dan's machine. Next design task: d0xb.
+> product-token labeler. 2026-08-27 follow-up session: §5.3 devices +
+> §5.4 holders/namespaces landed over the token lane (shared cores in
+> `browserid-registrar/src/holders.rs`, both lanes delegating) — bw9q
+> COMPLETE. Dan walked the PRIMARY lane (danmills@sandmill.org →
+> mingo.place sign-in OK); gxi9 closes once the silent broker join is
+> confirmed (device visible on browserid.me/account). Next design task:
+> d0xb.
 
 Purpose: start the build in a fresh session with zero re-deliberation.
 The design phase is DONE: `docs/specs/registry-api-v1.md` is complete,

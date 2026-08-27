@@ -87,6 +87,7 @@ where
                 user_store: state.user_store.clone(),
                 session_store: state.session_store.clone(),
                 domain: state.domain.clone(),
+                idp_host: state.idp_host.clone(),
                 max_agent_identities: state.max_agent_identities_per_user,
             }),
             issuer_resolver,

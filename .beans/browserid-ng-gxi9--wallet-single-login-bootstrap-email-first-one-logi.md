@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-27T08:57:18Z
-updated_at: 2026-08-27T18:48:03Z
+updated_at: 2026-08-27T20:15:13Z
 ---
 
 Agreed redesign from the menubar-wallet prototype (7oi3): the prototype bootstraps through a broker /account session and then hops to the IdP — the user logs in twice, which inverts the wallet's loyalty order. The protocol already supports the right shape:
@@ -27,3 +27,7 @@ Depends on nothing server-side; wallet-only change.
 Built as the first feature of the real wallet (`wallet/` at repo root — the production Electron app; prototype demoted to reference). Email-FIRST bootstrap per this bean: askEmail window → unauthenticated address_info → primary lane (ONE login at the IdP device-authorize page, return_url delivery, no holder passed — IdP self-assigns, join-side healing) then silent registry-scoped auth_with_presentation join; secondary lane (broker /account login IS the single login → /device/issue). Approval-watch now rides the registry API token lane (no borrowed session — works across restarts for both identity types). E2E green: single-login secondary bootstrap, token-lane inbox, popup-free RP login, site warrants WITH allocated status refs.
 
 Remaining before completing: human validation of the PRIMARY lane (device-authorize hop + silent join) with a real primary identity — needs Dan's machine (dev box display unobserved); prototype's hop code was mined verbatim but the email-first ordering is new.
+
+## Primary-lane validation (2026-08-27)
+
+Dan bootstrapped the wallet with danmills@sandmill.org (primary IdP) and signed in to mingo.place via wallet + addon — the device-authorize hop and email-first ordering work end-to-end with a real primary identity. Remaining one-glance check before completing: confirm the wallet device appears on browserid.me/account devices (proves the best-effort silent joinBroker succeeded; a working RP sign-in does not prove it).

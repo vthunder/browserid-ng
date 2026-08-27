@@ -2,7 +2,9 @@
 //! provides the persistence; the registrar owns the semantics.
 
 use crate::error::RegistrarError;
-use crate::models::{ApiTokenRecord, DeviceCertRecord, WarrantRecord, WarrantRequestRecord};
+use crate::models::{
+    ApiTokenRecord, DeviceCertRecord, NamespaceRecord, WarrantRecord, WarrantRequestRecord,
+};
 
 pub type StoreResult<T> = Result<T, RegistrarError>;
 
@@ -143,4 +145,71 @@ pub trait RegistrarStore: Send + Sync {
     /// Soft-revoke a device cert. Scoped to the owning user; errors with
     /// `DeviceCertNotFound` if it doesn't exist or belongs to someone else.
     fn revoke_device_cert(&self, user_id: u64, cert_id: u64) -> StoreResult<()>;
+
+    // --- Holder registry (registry-api-v1 §5.4) ---
+    //
+    // Defaults error so hosts without a holder registry keep compiling; the
+    // §5.4 endpoints are then simply unavailable on them (and §5.4's cookie
+    // siblings never existed there).
+
+    /// The user's holder namespaces.
+    fn list_namespaces(&self, _user_id: u64) -> StoreResult<Vec<NamespaceRecord>> {
+        Err(RegistrarError::Internal("holder registry not supported by this host".into()))
+    }
+
+    /// Create a namespace with a fresh random prefix. Errors if the name is
+    /// taken.
+    fn create_namespace(&self, _user_id: u64, _name: &str, _label: &str) -> StoreResult<()> {
+        Err(RegistrarError::Internal("holder registry not supported by this host".into()))
+    }
+
+    /// Relabel a namespace (the `name`/`prefix` are immutable).
+    fn set_namespace_label(&self, _user_id: u64, _name: &str, _label: &str) -> StoreResult<()> {
+        Err(RegistrarError::Internal("holder registry not supported by this host".into()))
+    }
+
+    /// Delete a namespace row. The store MAY refuse a non-empty namespace;
+    /// callers pre-check occupancy for the §5.4 `namespace_not_empty` reason.
+    fn delete_namespace(&self, _user_id: u64, _name: &str) -> StoreResult<()> {
+        Err(RegistrarError::Internal("holder registry not supported by this host".into()))
+    }
+
+    /// The user's holder labels, keyed by holder id.
+    fn get_holder_labels(
+        &self,
+        _user_id: u64,
+    ) -> StoreResult<std::collections::HashMap<String, String>> {
+        Err(RegistrarError::Internal("holder registry not supported by this host".into()))
+    }
+
+    /// Set (or replace) the friendly label for one holder id.
+    fn set_holder_label(&self, _user_id: u64, _holder_id: &str, _label: &str) -> StoreResult<()> {
+        Err(RegistrarError::Internal("holder registry not supported by this host".into()))
+    }
+
+    /// Record a pending namespace move `old_holder → new_holder`.
+    fn set_holder_move(
+        &self,
+        _user_id: u64,
+        _old_holder: &str,
+        _new_holder: &str,
+    ) -> StoreResult<()> {
+        Err(RegistrarError::Internal("holder registry not supported by this host".into()))
+    }
+
+    /// The recorded move target for `holder`, if one is pending.
+    fn resolve_holder_move(&self, _user_id: u64, _holder: &str) -> StoreResult<Option<String>> {
+        Err(RegistrarError::Internal("holder registry not supported by this host".into()))
+    }
+
+    /// All pending moves as `(old_holder, new_holder)` pairs.
+    fn list_holder_moves(&self, _user_id: u64) -> StoreResult<Vec<(String, String)>> {
+        Err(RegistrarError::Internal("holder registry not supported by this host".into()))
+    }
+
+    /// Delete a holder's cert rows + label (revocation is the caller's job —
+    /// `forget_holder_core` flips the bits first). Returns rows removed.
+    fn forget_holder(&self, _user_id: u64, _holder: &str) -> StoreResult<u64> {
+        Err(RegistrarError::Internal("holder registry not supported by this host".into()))
+    }
 }

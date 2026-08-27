@@ -533,29 +533,14 @@ where
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
-pub struct DeviceCertView {
-    pub id: u64,
-    pub identities: Vec<String>,
-    /// "authentication" (device/agent login) | "authorization" (config, warrant signer)
-    pub purpose: String,
-    /// The opaque broker-assigned holder id (`<ns>.<id>`) this cert acts as.
-    pub holder: String,
-    pub pubkey: String,
-    pub iss: String,
-    pub issued_at: String,
-    pub expires_at: String,
-    pub revoked: bool,
-}
-
-#[derive(Serialize)]
 pub struct DeviceCertsResponse {
     pub success: bool,
-    pub certs: Vec<DeviceCertView>,
+    pub certs: Vec<browserid_registrar::holders::DeviceCertView>,
 }
 
 /// GET /wsapi/device_certs — list the session account's device certs
 /// (authentication: user/agent) and config certs (authorization). Own-account
-/// only, session-gated.
+/// only, session-gated. Same core as `GET /api/v1/devices` (§5.3).
 pub async fn device_certs<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
@@ -567,22 +552,11 @@ where
 {
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
-    let certs = state
-        .user_store
-        .list_device_certs(session.user_id)?
-        .into_iter()
-        .map(|r| DeviceCertView {
-            id: r.id,
-            identities: r.identities,
-            purpose: r.purpose,
-            holder: r.holder,
-            pubkey: r.pubkey,
-            iss: r.iss,
-            issued_at: r.issued_at.to_rfc3339(),
-            expires_at: r.expires_at.to_rfc3339(),
-            revoked: r.revoked_at.is_some(),
-        })
-        .collect();
+    let certs = browserid_registrar::holders::device_certs_core(
+        &crate::registrar_glue::BrokerRegistrarStore { user_store: state.user_store.clone() },
+        session.user_id.0,
+    )
+    .map_err(|e| BrokerError::Internal(e.to_string()))?;
     Ok(Json(DeviceCertsResponse { success: true, certs }))
 }
 
@@ -602,9 +576,12 @@ pub struct RevokeDeviceCertResponse {
 }
 
 /// POST /wsapi/revoke_device_cert — owner-scoped soft-revoke. Also flips the
-/// cert's status-list bit so any outstanding access certs rooted at this device
-/// fail-closed at the RP verifier ("log this device/agent out"). Sticky: the
-/// revoked_at / status bit are never un-set.
+/// cert's status-list bit — at its revocation AUTHORITY (browserid-ng-ft55):
+/// our own list locally, a hosted tenant's list via the tenant store, and a
+/// genuinely foreign issuer not at all (the row is only soft-hidden; the
+/// issuer's advertised device-revoke page is where the user kills it). Same
+/// core as `POST /api/v1/devices/revoke` (§5.3), which additionally surfaces
+/// whether the bit flipped. Sticky: revoked_at / status bits are never un-set.
 pub async fn revoke_device_cert<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
@@ -618,35 +595,7 @@ where
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
     super::session::require_csrf(&session, &req.csrf)?;
-
-    // Capture status index + issuer BEFORE revoking (owner-scoped lookup).
-    let rec = state
-        .user_store
-        .list_device_certs(session.user_id)?
-        .into_iter()
-        .find(|r| r.id == req.id);
-    let status_idx = rec.as_ref().and_then(|r| r.status_idx);
-    let iss = rec.map(|r| r.iss).unwrap_or_default();
-
-    // Owner-scoped: errors DeviceCertNotFound if it isn't this user's cert.
-    state
-        .user_store
-        .revoke_device_cert(session.user_id, req.id)?;
-
-    // Kill outstanding access certs rooted at this device (fail-closed
-    // status) — but only OUR list's bits are ours to flip
-    // (browserid-ng-ft55). A foreign-issued cert's idx numbers the
-    // ISSUER's list: flipping the same index on our list would not revoke
-    // it anywhere a verifier looks, and could collaterally revoke an
-    // unrelated broker-issued cert. Foreign certs are revoked at the
-    // issuer via its advertised device-revoke page; here the row is only
-    // soft-hidden.
-    if iss.is_empty() || iss.eq_ignore_ascii_case(&state.domain) {
-        if let Some(idx) = status_idx {
-            state.user_store.set_status_revoked_idx(idx)?;
-        }
-    }
-
+    super::holders::revoke_device_core_for(&state, session.user_id.0, req.id)?;
     Ok(Json(RevokeDeviceCertResponse { success: true }))
 }
 
