@@ -1,5 +1,14 @@
 # Registry API + real wallet: build handoff (2026-08-28)
 
+> **Status (end of build session, 2026-08-27):** agenda items 1–3 are DONE
+> and deployed — token exchange + DPoP proofs + inbox/respond/claim + the
+> §5.2 warrant group live on browserid.me; the real wallet exists at
+> `wallet/` (gxi9 email-first bootstrap, safeStorage custody, registry-API
+> inbox, .app packaging), e2e green locally; lbla shipped as the UA
+> product-token labeler. Remaining on bw9q: §5.3 devices + §5.4 holders
+> over the token lane. The wallet's PRIMARY-identity lane needs a human
+> walk on Dan's machine. Next design task: d0xb.
+
 Purpose: start the build in a fresh session with zero re-deliberation.
 The design phase is DONE: `docs/specs/registry-api-v1.md` is complete,
 adversarially reviewed, and committed (8fb461b) with every decision
