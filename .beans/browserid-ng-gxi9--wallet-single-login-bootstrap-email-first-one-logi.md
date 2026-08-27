@@ -3,8 +3,9 @@
 title: 'Wallet single-login bootstrap: email-first, one login at the issuer, auth_with_presentation joins the broker'
 status: todo
 type: feature
+priority: normal
 created_at: 2026-08-27T08:57:18Z
-updated_at: 2026-08-27T08:57:18Z
+updated_at: 2026-08-27T11:04:43Z
 ---
 
 Agreed redesign from the menubar-wallet prototype (7oi3): the prototype bootstraps through a broker /account session and then hops to the IdP — the user logs in twice, which inverts the wallet's loyalty order. The protocol already supports the right shape:
@@ -16,3 +17,5 @@ Agreed redesign from the menubar-wallet prototype (7oi3): the prototype bootstra
 Details to handle: holder without a prior broker session (IdP assigns; heal to the browsers prefix after the auth_with_presentation join via the existing rrve machinery), and keeping approval-watch working off the joined session.
 
 Depends on nothing server-side; wallet-only change.
+
+**Confirmed 2026-08-28 (code check): zero broker/IdP changes needed, no security weakening.** The primary lane never touches the broker: address_info is unauthenticated; the hosted IdP's /idp/device_cert accepts a passthrough holder or self-assigns a fresh namespace on cold login (hosted_idp.rs:386-393); the optional broker join uses the existing auth_with_presentation, which requires a full valid presentation for the broker's own audience — strictly stronger than the password lane it replaces. Holder healing after the join rides the existing rrve/i8a2 machinery. Secondary identities are unaffected (the broker is their IdP, so that login is already single).

@@ -31,11 +31,11 @@ the app.
 2. **Load the extension in Arc**: `arc://extensions` → enable Developer Mode →
    *Load unpacked* → select `prototypes/menubar-wallet/extension/`.
 
-3. **Try it**: open https://browserid.me/broker-demo and click *Sign in*.
-   First click pairs the extension with the app (native confirm), then the
-   native "Sign in to https://browserid.me?" dialog appears — approve, and the
-   page verifies the presentation. No popup at any point. The fedcm-demo page
-   on www.browserid.me exercises the cross-origin RP case.
+3. **Try it**: open https://www.browserid.me/fedcm-demo.html and click sign
+   in. First click pairs the extension with the app (native confirm), then the
+   native "Sign in to…?" dialog appears — approve, and the page verifies the
+   presentation. No popup at any point. (Demo RPs deliberately do not live on
+   the broker origin; locally, `e2e.mjs` serves its own RP page.)
 
 Caveats for the prod run: the interactive bootstrap window and approval-watch
 were built tonight but only exercised via their test lanes (BrowserWindow

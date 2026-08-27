@@ -75,10 +75,6 @@ app.whenReady().then(async () => {
     tray = new Tray(icon);
     tray.setToolTip('BrowserID wallet');
     log(`tray created (icon ${icon.isEmpty() ? 'EMPTY' : icon.getSize().width + 'px'})`);
-    setTimeout(() => {
-      const { screen } = require('electron');
-      log(`tray bounds ${JSON.stringify(tray.getBounds())} display ${JSON.stringify(screen.getPrimaryDisplay().bounds)}`);
-    }, 1000);
     await store.init(app.getPath('userData'));
     updateTray(store.state());
     const port = await startServer({ approveLogin, notify, onStateChange: () => updateTray(store.state()) });

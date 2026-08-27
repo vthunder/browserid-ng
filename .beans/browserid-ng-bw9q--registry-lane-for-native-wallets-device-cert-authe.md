@@ -3,8 +3,9 @@
 title: 'Registry lane for native wallets: device-cert-authenticated approvals inbox (+ client-supplied holder)'
 status: todo
 type: feature
+priority: normal
 created_at: 2026-08-27T08:57:24Z
-updated_at: 2026-08-27T08:57:24Z
+updated_at: 2026-08-27T11:04:39Z
 ---
 
 The menubar-wallet prototype exposed that every registry operation is session-cookie-only, so a native wallet is a second-class registry client standing on borrowed cookies:
@@ -13,3 +14,5 @@ The menubar-wallet prototype exposed that every registry operation is session-co
 - **Client-supplied holder on the fallback lane** is the sibling gap, already tracked in kmvm.
 
 Bigger picture (client-broker vs server-broker delineation, recorded on 7v5l): making registry operations cert-authed is what turns the wallet into a first-class registry client, and is the prerequisite for anyone self-hosting the registry role.
+
+**Direction from Dan (2026-08-28):** build this as a carefully specified, well-defined API — not ad-hoc per-call device-cert auth. Shape: an auth endpoint that exchanges a presentation for a bearer token; the bearer token then authorizes all other registry endpoints (inbox, devices/holders, warrants, revocation). Spec-quality bar: an independent broker implementation must be buildable from the API spec alone, without reverse-engineering the current broker. Design carefully: token scoping/lifetime/revocation, relationship to auth_with_presentation (which mints a cookie session today — the token exchange is its API-shaped sibling), and how the existing cookie-authed /wsapi surface maps onto or retires into this. See docs/plans/2026-08-28-native-wallet-design-handoff.md.
