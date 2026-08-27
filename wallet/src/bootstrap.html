@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Set up BrowserID Wallet</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 24px; color: #222; }
+  h1 { font-size: 17px; margin: 0 0 6px; }
+  p { color: #555; margin: 0 0 16px; }
+  input { width: 100%; box-sizing: border-box; font-size: 15px; padding: 8px 10px;
+          border: 1px solid #bbb; border-radius: 6px; }
+  button { margin-top: 14px; width: 100%; padding: 9px; font-size: 14px;
+           border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
+  button:disabled { background: #9ca3af; }
+  .err { color: #b91c1c; font-size: 13px; min-height: 18px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>Which identity should this wallet hold?</h1>
+<p>You’ll sign in once, at the provider that owns this address.</p>
+<form id="f">
+  <input id="email" type="email" placeholder="you@example.com" autofocus required>
+  <button id="go" type="submit">Continue</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+  const f = document.getElementById('f');
+  const email = document.getElementById('email');
+  const go = document.getElementById('go');
+  f.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const v = email.value.trim();
+    if (!v || !v.includes('@')) {
+      document.getElementById('err').textContent = 'Enter an email address.';
+      return;
+    }
+    go.disabled = true;
+    go.textContent = 'Continuing…';
+    window.walletBridge.submitEmail(v);
+  });
+</script>
+</body>
+</html>

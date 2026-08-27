@@ -1,0 +1,34 @@
+{
+  "name": "@browserid-ng/wallet-app",
+  "productName": "BrowserID Wallet",
+  "version": "0.2.0",
+  "description": "Native menubar wallet: holds your BrowserID device keys, runs the login ceremony, and watches your approvals inbox over the registry API.",
+  "license": "MPL-2.0",
+  "main": "src/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron .",
+    "tray": "sh scripts/run-tray.sh",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "test": "node src/test-ceremony.mjs",
+    "e2e": "node e2e.mjs"
+  },
+  "build": {
+    "appId": "me.browserid.wallet",
+    "productName": "BrowserID Wallet",
+    "files": ["src/**", "assets/**", "package.json"],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [{ "target": "dir" }],
+      "identity": null,
+      "extendInfo": {
+        "LSUIElement": true
+      }
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^26.0.12"
+  }
+}
