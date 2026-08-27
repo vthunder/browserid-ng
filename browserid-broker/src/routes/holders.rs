@@ -266,8 +266,26 @@ pub(crate) fn ua_label(ua: &str) -> Option<String> {
         (Some(b), Some(o)) => Some(format!("{b} on {o}")),
         (Some(b), None) => Some(b.to_string()),
         (None, Some(o)) => Some(format!("Browser on {o}")),
-        (None, None) => None,
+        // Not a browser UA: the product-token convention (bean lbla) — a
+        // native client sending `Name/Version …` gets `Name` as its default
+        // label, so wallets don't register as bare holder ids.
+        (None, None) => product_token_label(ua),
     }
+}
+
+/// `Name/Version …` → `Name`, for non-browser clients (RFC 9110 product
+/// tokens). `None` for anything that doesn't cleanly parse — callers keep
+/// their generic default.
+fn product_token_label(ua: &str) -> Option<String> {
+    let first = ua.split_whitespace().next()?;
+    let (name, _version) = first.split_once('/')?;
+    let ok = !name.is_empty()
+        && name.len() <= 64
+        && name != "Mozilla"
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '+'));
+    ok.then(|| name.to_string())
 }
 
 /// Best-effort: give `holder_id` a UA-derived default label if the user hasn't
@@ -810,7 +828,26 @@ mod tests {
         // Android carries Linux — Android must win.
         let chrome_android = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36";
         assert_eq!(ua_label(chrome_android).as_deref(), Some("Chrome on Android"));
-        assert_eq!(ua_label("curl/8.7.1"), None);
+    }
+
+    // Non-browser clients: the product-token convention (bean lbla) — a
+    // native wallet's `Name/Version` UA yields `Name`, so its device row
+    // gets a friendly default instead of a bare holder id.
+    #[test]
+    fn ua_label_product_tokens() {
+        assert_eq!(ua_label("BrowserID-Wallet/0.1").as_deref(), Some("BrowserID-Wallet"));
+        assert_eq!(ua_label("BrowserID-Wallet/0.1 (macOS)").as_deref(), Some("BrowserID-Wallet"));
+        assert_eq!(ua_label("curl/8.7.1").as_deref(), Some("curl"));
+        // A browser UA never falls through to the product token.
+        assert_eq!(
+            ua_label("Mozilla/5.0 (Windows NT 10.0) Chrome/150.0 Safari/537.36").as_deref(),
+            Some("Chrome on Windows")
+        );
+        // Unparseable or spoof-y strings stay unlabeled.
+        assert_eq!(ua_label("Mozilla/4.0"), None);
+        assert_eq!(ua_label("no-slash-here"), None);
+        assert_eq!(ua_label("we ird/1.0"), None);
+        assert_eq!(ua_label(&format!("{}/1.0", "x".repeat(65))), None);
     }
 
     // The cold-login repair backstop (browserid-ng-i8a2). A browser whose
