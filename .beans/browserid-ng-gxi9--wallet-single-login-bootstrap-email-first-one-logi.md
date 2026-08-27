@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-08-27T08:57:18Z
-updated_at: 2026-08-27T11:04:43Z
+updated_at: 2026-08-27T16:49:24Z
 ---
 
 Agreed redesign from the menubar-wallet prototype (7oi3): the prototype bootstraps through a broker /account session and then hops to the IdP — the user logs in twice, which inverts the wallet's loyalty order. The protocol already supports the right shape:
@@ -19,3 +19,5 @@ Details to handle: holder without a prior broker session (IdP assigns; heal to t
 Depends on nothing server-side; wallet-only change.
 
 **Confirmed 2026-08-28 (code check): zero broker/IdP changes needed, no security weakening.** The primary lane never touches the broker: address_info is unauthenticated; the hosted IdP's /idp/device_cert accepts a passthrough holder or self-assigns a fresh namespace on cold login (hosted_idp.rs:386-393); the optional broker join uses the existing auth_with_presentation, which requires a full valid presentation for the broker's own audience — strictly stronger than the password lane it replaces. Holder healing after the join rides the existing rrve/i8a2 machinery. Secondary identities are unaffected (the broker is their IdP, so that login is already single).
+
+**Venue decision (Dan, 2026-08-28):** build gxi9 as the FIRST FEATURE OF THE REAL WALLET, not further prototype iteration — production app skeleton with real .app packaging (fixes macOS 26 tray via LaunchServices properly) and Keychain/secure-enclave key custody replacing the 0600 JSON file. The prototype (proto/menubar-wallet) becomes reference material to mine, not extend. Also fold in ig9p phase 1: mint scopes [{scope: "registry"}] on broker-audience warrants from day one. See docs/plans/2026-08-28-registry-api-and-wallet-build-handoff.md.
