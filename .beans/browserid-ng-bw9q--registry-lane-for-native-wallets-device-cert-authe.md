@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-27T08:57:24Z
-updated_at: 2026-08-27T18:02:03Z
+updated_at: 2026-08-27T18:19:29Z
 ---
 
 The menubar-wallet prototype exposed that every registry operation is session-cookie-only, so a native wallet is a second-class registry client standing on borrowed cookies:
@@ -35,7 +35,8 @@ Bigger picture (client-broker vs server-broker delineation, recorded on 7v5l): m
 - [x] Fleshed out: wire examples per endpoint, §7.1 machine-reason enumeration, normative holder/namespace grammars, 204/200 response conventions (2026-08-28)
 - [x] Adversarial review pass (fresh-eyes agent, 2026-08-28): 15 findings (3 high), all fixed — v1-warrant bootstrap coherence, per-kind consent validation bars, normative account resolution (self-presentation required, reason delegated_presentation), same-origin discovery endpoints + single-use exchange, htu/audience canonicalization, token-endpoint abuse controls, consent decision added to §10 log, all 'as today' references replaced with normative behavior, cross-ref corrections (core §4 typ rule). All handoff security invariants verified HELD.
 - [x] Implement: token exchange + proof verification + first consumer (inbox GET) — landed 2026-08-27: `/api/v1/token` + DPoP-proof extractor + `GET /api/v1/requests` in browserid-registrar/src/api.rs (host verification via PresentationVerifier trait, glue in registrar_glue.rs); api_tokens in BOTH stores (sqlite migration v33) + explicit sqlite round-trip test; in-memory replay cache (proof jtis + exchange assertions); registry key on /.well-known/browserid; ig9p phase 1 (dialog.js broker-audience warrants carry registry scope; broker logs scopeless); 7 integration tests incl. live-listener full-verification flow (tests/registry_api_test.rs)
-- [ ] Remaining §5 endpoints over the token lane: requests/respond + requests/claim, warrants (list/register/revoke/forget/allocate_status), devices (list/revoke/status), holders + namespaces (§5.4)
+- [x] requests/respond + requests/claim over the token lane (2026-08-27): shared respond_core/claim_core in consent.rs so cookie + token bars cannot drift; §7.1 machine reasons via RegistrarError::WarrantValidation; e2e test drives sign-ceremony approve, deny, 422 status_ref_missing, owner-scoped 404
+- [ ] Remaining §5 endpoints over the token lane: warrants (list/register/revoke/forget/allocate_status), devices (list/revoke/status), holders + namespaces (§5.4)
 
 **§10 #7 RESOLVED (Dan, 2026-08-28): self-issued (secondary-identity) presentations ACCEPTED at the token exchange.** Rationale: the cookie lane rightly rejects them because a session is full account control including the password root that secondary certs derive from; the token's authority is scope-bounded to registry ops (no root ops in this API), a strict subset — so acceptance mints less than the session the cookie lane refuses. Per-scope gate: every future scope in the token family must re-justify self-issued acceptance (obligation recorded on d0xb). Practical win: secondary-only wallets get the token lane immediately, without waiting for d0xb.
 

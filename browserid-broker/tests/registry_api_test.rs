@@ -354,6 +354,166 @@ async fn revoking_the_bound_cert_kills_the_token_fail_closed() {
     assert_eq!(body["error"], "invalid_token");
 }
 
+/// Consent is API-complete (§5.1): approval over the token lane carries the
+/// same client-signed warrants as the browser page, validated to the same
+/// bar (shared core), and the requester's poll delivers the result.
+#[tokio::test]
+async fn respond_over_the_token_lane_is_a_signing_ceremony() {
+    use browserid_core::StatusRef;
+    let l = live_broker().await;
+    let email = "approver@gmail.com";
+    let (presentation, config_kp, device_cert, config_cert) =
+        broker_presentation(&l, email, vec!["registry".into()]).await;
+    let (status, body) = exchange(&l, json!({ "presentation": presentation })).await;
+    assert_eq!(status, 200, "{body}");
+    let token = body["access_token"].as_str().unwrap().to_string();
+    let htu_inbox = format!("{}/api/v1/requests", l.base);
+    let htu_respond = format!("{}/api/v1/requests/respond", l.base);
+    let respond = |body: Value, proof: String| {
+        let l = &l;
+        let token = token.clone();
+        async move {
+            let r = l
+                .client
+                .post(format!("{}/api/v1/requests/respond", l.base))
+                .header("authorization", format!("DPoP {token}"))
+                .header("dpop", proof)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = r.status();
+            (status, r.json::<Value>().await.unwrap())
+        }
+    };
+
+    // The device cert raises a consent request for the account's own email.
+    let r = l
+        .client
+        .post(format!("{}/warrant/request", l.base))
+        .json(&json!({
+            "device_cert": device_cert,
+            "identity": email,
+            "grants": [ { "audience": "https://rp.example.com", "scopes": ["events:read"] } ],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let code = r.json::<Value>().await.unwrap()["code"].as_str().unwrap().to_string();
+
+    // Read the pending request from the token-lane inbox: holder + the
+    // allocated status ref the signed warrant must embed.
+    let (status, inbox) =
+        get_inbox(&l, &token, &build_proof("GET", &htu_inbox, &token, &config_kp)).await;
+    assert_eq!(status, 200);
+    let req0 = &inbox["requests"][0];
+    assert_eq!(req0["code"], code.as_str());
+    let holder = req0["holder"].as_str().unwrap().to_string();
+    let status_uri = inbox["status_uri"].as_str().unwrap().to_string();
+    let idx = req0["grants"][0]["status_idx"].as_u64().unwrap();
+
+    // A warrant missing its allocated ref fails the bar: 422 + machine reason.
+    let refless = Warrant::create(
+        email,
+        email,
+        HolderMatcher::new(&holder).unwrap(),
+        "https://rp.example.com",
+        vec!["events:read".into()],
+        Duration::days(30),
+        &config_kp,
+        None,
+    )
+    .unwrap();
+    let (status, body) = respond(
+        json!({
+            "code": code, "approve": true,
+            "warrants": [refless.encoded()], "config_cert": config_cert,
+        }),
+        build_proof("POST", &htu_respond, &token, &config_kp),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["error"], "invalid_warrant");
+    assert_eq!(body["reason"], "status_ref_missing");
+
+    // The real approval: the client-signed warrant embeds exactly the
+    // allocated {uri, idx}. Response is 200 {} (no return_url on request).
+    let warrant = Warrant::create(
+        email,
+        email,
+        HolderMatcher::new(&holder).unwrap(),
+        "https://rp.example.com",
+        vec!["events:read".into()],
+        Duration::days(30),
+        &config_kp,
+        Some(StatusRef { uri: status_uri, idx }),
+    )
+    .unwrap();
+    let (status, body) = respond(
+        json!({
+            "code": code, "approve": true,
+            "warrants": [warrant.encoded()], "config_cert": config_cert,
+        }),
+        build_proof("POST", &htu_respond, &token, &config_kp),
+    )
+    .await;
+    assert_eq!(status, 200, "approve: {body}");
+    assert_eq!(body, json!({}));
+
+    // The requester's poll picks up `warrant~config_cert` (single delivery).
+    let r = l
+        .client
+        .post(format!("{}/warrant/poll", l.base))
+        .json(&json!({ "code": code }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let poll: Value = r.json().await.unwrap();
+    assert_eq!(poll["status"], "approved", "{poll}");
+    let delivered = poll["grants"][0]["warrant"].as_str().unwrap();
+    assert!(delivered.starts_with(&format!("{}~", warrant.encoded())));
+
+    // Deny lane: a second request, denied over the API → the poll learns it.
+    let r = l
+        .client
+        .post(format!("{}/warrant/request", l.base))
+        .json(&json!({
+            "device_cert": device_cert,
+            "identity": email,
+            "grants": [ { "audience": "https://rp2.example.com" } ],
+        }))
+        .send()
+        .await
+        .unwrap();
+    let code2 = r.json::<Value>().await.unwrap()["code"].as_str().unwrap().to_string();
+    let (status, body) = respond(
+        json!({ "code": code2, "approve": false }),
+        build_proof("POST", &htu_respond, &token, &config_kp),
+    )
+    .await;
+    assert_eq!(status, 200, "deny: {body}");
+    assert_eq!(body, json!({}), "deny never carries a return_url (§5.1)");
+    let r = l
+        .client
+        .post(format!("{}/warrant/poll", l.base))
+        .json(&json!({ "code": code2 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.json::<Value>().await.unwrap()["status"], "denied");
+
+    // An unknown (or another account's) code is an owner-scoped 404.
+    let (status, body) = respond(
+        json!({ "code": "no-such-code", "approve": false }),
+        build_proof("POST", &htu_respond, &token, &config_kp),
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(body["error"], "not_found");
+}
+
 // --- Shape-level checks that need no verification stack (axum_test) ---
 
 #[tokio::test]

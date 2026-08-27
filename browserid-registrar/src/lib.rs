@@ -197,6 +197,8 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
     let api_v1 = Router::new()
         .route("/api/v1/token", post(api::token_exchange))
         .route("/api/v1/requests", get(api::list_requests))
+        .route("/api/v1/requests/claim", post(api::claim_request))
+        .route("/api/v1/requests/respond", post(api::respond))
         .layer(axum::extract::DefaultBodyLimit::max(api::API_BODY_LIMIT));
     Router::new()
         .merge(api_v1)

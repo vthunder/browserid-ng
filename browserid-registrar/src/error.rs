@@ -18,6 +18,14 @@ pub enum RegistrarError {
     #[error("Validation error: {0}")]
     ValidationError(String),
 
+    /// A consent-approval artifact (client-signed warrant / admission record,
+    /// config cert, or the claim precondition) failed the validation bar.
+    /// Carries the registry-api-v1 §7.1 machine reason so the token lane can
+    /// surface it; the cookie lane renders it exactly like a
+    /// [`RegistrarError::ValidationError`].
+    #[error("Validation error: {message}")]
+    WarrantValidation { reason: &'static str, message: String },
+
     #[error("Internal error: {0}")]
     Internal(String),
 
@@ -58,6 +66,9 @@ impl IntoResponse for RegistrarError {
             RegistrarError::NotAuthenticated => (StatusCode::UNAUTHORIZED, "Not authenticated"),
             RegistrarError::InvalidCsrf => (StatusCode::FORBIDDEN, "Invalid CSRF token"),
             RegistrarError::ValidationError(msg) => (StatusCode::BAD_REQUEST, msg.as_str()),
+            RegistrarError::WarrantValidation { message, .. } => {
+                (StatusCode::BAD_REQUEST, message.as_str())
+            }
             RegistrarError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")

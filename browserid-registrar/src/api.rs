@@ -105,6 +105,9 @@ pub enum ApiError {
     InvalidProof(String),
     /// 403 — token scope does not cover the endpoint.
     InsufficientScope,
+    /// 422 — a client-signed warrant / admission record (or the claim
+    /// precondition) failed the §5.1/§5.2 validation bar.
+    InvalidWarrant { reason: &'static str, description: String },
     /// 404 — owner-scoped miss, or the API is not served here.
     NotFound,
     /// 500 — a deployment fault, never a caller error.
@@ -137,6 +140,12 @@ impl IntoResponse for ApiError {
                 "insufficient_scope",
                 "the token's scope does not cover this endpoint".to_string(),
                 None,
+            ),
+            ApiError::InvalidWarrant { reason, description } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_warrant",
+                description,
+                Some(reason),
             ),
             ApiError::NotFound => {
                 (StatusCode::NOT_FOUND, "not_found", "not found".to_string(), None)
@@ -568,6 +577,93 @@ pub async fn list_requests(
         status_uri: status_list_uri(&state.domain),
         requests,
     }))
+}
+
+// ===========================================================================
+// POST /api/v1/requests/claim + /respond (§5.1)
+// ===========================================================================
+
+/// Map a shared-core consent error onto the API taxonomy (§7): reasoned
+/// validation failures → 422 invalid_warrant; owner-scoped misses → 404;
+/// missing/malformed inputs → 400 invalid_request.
+fn consent_err(e: crate::error::RegistrarError) -> ApiError {
+    use crate::error::RegistrarError as E;
+    match e {
+        E::WarrantValidation { reason, message } => {
+            ApiError::InvalidWarrant { reason, description: message }
+        }
+        E::WarrantRequestNotFound => ApiError::NotFound,
+        E::ValidationError(m) => ApiError::InvalidRequest(m),
+        E::AgentProvisioningDisabled => ApiError::NotFound,
+        other => ApiError::Internal(other.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiClaimRequest {
+    code: String,
+}
+
+/// `POST /api/v1/requests/claim` — the legacy GET's hidden side effect made
+/// explicit: verify the audience proof (fail-closed) and bind the record
+/// request to this account, allocating grant status indexes. Returns the
+/// claimed request in the §5.1 item shape.
+pub async fn claim_request(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<Json<crate::consent::PendingRequestInfo>, ApiError> {
+    let req: ApiClaimRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    let rec = crate::consent::claim_core(&state, user.user_id, &req.code)
+        .await
+        .map_err(consent_err)?;
+    Ok(Json(crate::consent::pending_info(&state, user.user_id, rec)))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiRespondRequest {
+    code: String,
+    approve: bool,
+    #[serde(default)]
+    warrants: Option<Vec<String>>,
+    #[serde(default)]
+    config_cert: Option<String>,
+    #[serde(default)]
+    grantor: Option<String>,
+}
+
+/// `POST /api/v1/requests/respond` — approve or deny a pending request.
+/// Identical semantics to `/wsapi/warrant_respond` minus `csrf`: the SAME
+/// shared core validates the client-signed warrants, so the two lanes'
+/// bars cannot drift. Always `200` with a JSON body — `{return_url}` on an
+/// approve whose request carried one, `{}` otherwise (including every deny).
+pub async fn respond(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let req: ApiRespondRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    let approve = req.approve;
+    let core = crate::consent::RespondCore {
+        code: req.code,
+        approve,
+        warrants: req.warrants,
+        config_cert: req.config_cert,
+        grantor: req.grantor,
+    };
+    let return_url =
+        crate::consent::respond_core(&state, user.user_id, &core).map_err(consent_err)?;
+    let mut resp = serde_json::Map::new();
+    if approve {
+        if let Some(url) = return_url {
+            resp.insert("return_url".into(), serde_json::Value::String(url));
+        }
+    }
+    Ok(Json(serde_json::Value::Object(resp)))
 }
 
 #[cfg(test)]

@@ -205,7 +205,7 @@ pub async fn list_requests(
                     && rec.status == WarrantRequestStatus::Pending
                     && !rec.is_expired()
                 {
-                    if let Some(rec) = surface_record_request(&state, &user, rec).await? {
+                    if let Some(rec) = surface_record_request(&state, user.user_id, rec).await? {
                         requests.push(pending_info(&state, user.user_id, rec));
                     }
                 }
@@ -264,7 +264,7 @@ pub(crate) fn pending_info(
 /// index so the page can embed the refs in the records it signs.
 async fn surface_record_request(
     state: &RegistrarState,
-    user: &crate::host::AuthedUser,
+    user_id: u64,
     mut rec: WarrantRequestRecord,
 ) -> Result<Option<WarrantRequestRecord>, RegistrarError> {
     let Some(mut meta) = rec.meta.clone() else { return Ok(None) };
@@ -273,15 +273,15 @@ async fn surface_record_request(
         let origin = audience_origin(&rec.grants[0].audience)?;
         let body = fetcher.fetch_proof(&origin, &rec.code).await?;
         if body.trim_end_matches(|c: char| c.is_ascii_whitespace()) != meta.challenge {
-            return Err(bad("audience proof mismatch"));
+            return Err(vfail("audience_unproven", "audience proof mismatch"));
         }
         meta.proof_ok = true;
         rec.meta = Some(meta.clone());
     }
-    let needs_claim = rec.user_id != user.user_id
-        || rec.grants.iter().any(|g| g.status_idx.is_none());
+    let needs_claim =
+        rec.user_id != user_id || rec.grants.iter().any(|g| g.status_idx.is_none());
     if needs_claim {
-        rec.user_id = user.user_id;
+        rec.user_id = user_id;
         let grants = std::mem::take(&mut rec.grants);
         rec.grants = grants
             .into_iter()
@@ -290,12 +290,12 @@ async fn surface_record_request(
                     // Per-connection revocation axis: stable per binding.id.
                     RequestKind::Connection => format!(
                         "cn|{}|{}",
-                        user.user_id,
+                        user_id,
                         meta.binding_id.as_deref().unwrap_or_default()
                     ),
                     // Policy rows: stable per (grantee, audience, scopes).
                     _ => warrant_status_subject(
-                        user.user_id,
+                        user_id,
                         g.grantee.as_deref().unwrap_or_default(),
                         &g.audience,
                         &g.scopes,
@@ -308,6 +308,34 @@ async fn surface_record_request(
         state.store.update_warrant_request(&rec)?;
     }
     Ok(Some(rec))
+}
+
+/// Claim a pending record request for `user_id` — the token lane's
+/// `POST /api/v1/requests/claim` (registry-api-v1 §5.1): the legacy GET's
+/// hidden side effect, made explicit. Verifies the audience proof
+/// (fail-closed; a fresh fetch when not yet proven) and binds the row,
+/// allocating each grant's status index. Idempotent for the same account; a
+/// request claimed by another account — or an agent-kind code, which is
+/// never claimable — is `WarrantRequestNotFound` (no existence leaks).
+pub(crate) async fn claim_core(
+    state: &Arc<RegistrarState>,
+    user_id: u64,
+    code: &str,
+) -> Result<WarrantRequestRecord, RegistrarError> {
+    let rec = state
+        .store
+        .get_warrant_request(code)?
+        .ok_or(RegistrarError::WarrantRequestNotFound)?;
+    if rec.kind == RequestKind::Agent
+        || rec.status != WarrantRequestStatus::Pending
+        || rec.is_expired()
+        || (rec.user_id != 0 && rec.user_id != user_id)
+    {
+        return Err(RegistrarError::WarrantRequestNotFound);
+    }
+    surface_record_request(state, user_id, rec)
+        .await?
+        .ok_or_else(|| vfail("audience_unproven", "the audience proof could not be verified"))
 }
 
 #[derive(Deserialize)]
@@ -355,30 +383,57 @@ pub async fn respond(
     require_enabled(&state)?;
     let user = require_session(&state, &cookies)?;
     require_csrf(&user, &req.csrf)?;
+    let core = RespondCore {
+        code: req.code,
+        approve: req.approve,
+        warrants: req.warrants,
+        config_cert: req.config_cert,
+        grantor: req.grantor,
+    };
+    // Echoed on a denial too: the page offers a manual "return to the app"
+    // link so the requesting service can pick up the denial (it never
+    // auto-navigates on deny).
+    let return_url = respond_core(&state, user.user_id, &core)?;
+    Ok(Json(RespondResponse { success: true, return_url }))
+}
 
+/// The lane-independent fields of a consent response (the cookie body minus
+/// `csrf`; exactly the registry-api-v1 §5.1 respond shape).
+pub(crate) struct RespondCore {
+    pub code: String,
+    pub approve: bool,
+    pub warrants: Option<Vec<String>>,
+    pub config_cert: Option<String>,
+    pub grantor: Option<String>,
+}
+
+/// Resolve a pending consent request for `user_id` — the shared core behind
+/// the cookie lane (`/wsapi/warrant_respond`) and the token lane
+/// (`POST /api/v1/requests/respond`), so the two validation bars can never
+/// drift. Returns the request's origin-validated `return_url`.
+pub(crate) fn respond_core(
+    state: &Arc<RegistrarState>,
+    user_id: u64,
+    req: &RespondCore,
+) -> Result<Option<String>, RegistrarError> {
     let rec = state
         .store
         .get_warrant_request(&req.code)?
         .ok_or(RegistrarError::WarrantRequestNotFound)?;
-    if rec.user_id != user.user_id {
+    if rec.user_id != user_id {
         return Err(RegistrarError::WarrantRequestNotFound);
     }
 
     // Record requests (§7.5) resolve through their own approval path: the
-    // page signed v2 admission records (a connection self-grant, or policy
-    // rows), not agent presentation warrants.
+    // approver signed v2 admission records (a connection self-grant, or
+    // policy rows), not agent presentation warrants.
     if rec.kind != RequestKind::Agent {
-        return respond_record(&state, &user, &req, rec);
+        return respond_record(state, user_id, req, rec);
     }
 
     if !req.approve {
-        state
-            .store
-            .respond_warrant_request(user.user_id, &req.code, None)?;
-        // Echoed on a denial too: the page offers a manual "return to the
-        // app" link so the requesting service can pick up the denial (it
-        // never auto-navigates on deny).
-        return Ok(Json(RespondResponse { success: true, return_url: rec.return_url }));
+        state.store.respond_warrant_request(user_id, &req.code, None)?;
+        return Ok(rec.return_url);
     }
 
     // All-or-nothing: exactly one signed warrant per requested grant, in
@@ -391,29 +446,30 @@ pub async fn respond(
     })?;
     // The grantee (actor) is always the requesting agent. The grantor
     // (attributed identity) defaults to the agent too — the original as-you
-    // shape — but the page may name one of the account's own identities so a
-    // later grant matches how the agent was authorized (on-behalf, bean 8v6c).
+    // shape — but the approver may name one of the account's own identities so
+    // a later grant matches how the agent was authorized (on-behalf, bean 8v6c).
     let grantor = match req.grantor.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         None => rec.agent_email.clone(),
         Some(g) => {
             let g = g.to_lowercase();
             if g != rec.agent_email
-                && !state.host.owns_verified_email(user.user_id, &delegator_of(&g))?
+                && !state.host.owns_verified_email(user_id, &delegator_of(&g))?
             {
-                return Err(RegistrarError::ValidationError(
-                    "the warrant grantor must be the agent or an identity on this account".into(),
+                return Err(vfail(
+                    "grantor_not_owned",
+                    "the warrant grantor must be the agent or an identity on this account",
                 ));
             }
             g
         }
     };
     // Honor the request's grantor pin (t1jp): a pinned request is
-    // approve/deny only — the page must not substitute a different grantor.
+    // approve/deny only — the approver must not substitute a different grantor.
     if rec.grantor != "*" && grantor != rec.grantor {
-        return Err(RegistrarError::ValidationError(format!(
-            "this request pins the grantor to '{}'",
-            rec.grantor
-        )));
+        return Err(vfail(
+            "grantor_pinned_mismatch",
+            format!("this request pins the grantor to '{}'", rec.grantor),
+        ));
     }
     let warrants = validate_grant_warrants(
         warrant_jwss,
@@ -439,7 +495,7 @@ pub async fn respond(
         .iter()
         .zip(warrant_jwss)
         .map(|(warrant, jws)| {
-            warrant_to_record(user.user_id, &rec.delegator_email, warrant, jws, config_jws)
+            warrant_to_record(user_id, &rec.delegator_email, warrant, jws, config_jws)
         })
         .collect();
 
@@ -451,14 +507,14 @@ pub async fn respond(
         .collect();
     state
         .store
-        .respond_warrant_request(user.user_id, &req.code, Some(&delivery))?;
+        .respond_warrant_request(user_id, &req.code, Some(&delivery))?;
     // Registry (jipx): the delegator's own reviewable record of each grant.
     for record in records {
         state.store.upsert_warrant(record)?;
     }
     tracing::info!(delegator = %rec.delegator_email, grants = rec.grants.len(),
         "warrant consent approved");
-    Ok(Json(RespondResponse { success: true, return_url: rec.return_url }))
+    Ok(rec.return_url)
 }
 
 /// Resolve a record request (§7.5): the connection variant's single
@@ -470,18 +526,18 @@ pub async fn respond(
 /// the allocated status refs. All-or-nothing, grant order.
 fn respond_record(
     state: &Arc<RegistrarState>,
-    user: &crate::host::AuthedUser,
-    req: &RespondBody,
+    user_id: u64,
+    req: &RespondCore,
     rec: WarrantRequestRecord,
-) -> Result<Json<RespondResponse>, RegistrarError> {
+) -> Result<Option<String>, RegistrarError> {
     let meta = rec.meta.clone().unwrap_or_default();
 
     if !req.approve {
-        state.store.respond_warrant_request(user.user_id, &req.code, None)?;
-        return Ok(Json(RespondResponse { success: true, return_url: rec.return_url }));
+        state.store.respond_warrant_request(user_id, &req.code, None)?;
+        return Ok(rec.return_url);
     }
     if !meta.proof_ok {
-        return Err(bad("audience proof not verified"));
+        return Err(vfail("audience_unproven", "audience proof not verified"));
     }
     let warrant_jwss = req.warrants.as_deref().ok_or_else(|| {
         RegistrarError::ValidationError("approve requires the signed records".into())
@@ -497,56 +553,64 @@ fn respond_record(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| bad("approve requires the signing identity (grantor)"))?
         .to_lowercase();
-    if !state.host.owns_verified_email(user.user_id, &delegator_of(&grantor))? {
-        return Err(bad("the grantor must be an identity on this account"));
+    if !state.host.owns_verified_email(user_id, &delegator_of(&grantor))? {
+        return Err(vfail("grantor_not_owned", "the grantor must be an identity on this account"));
     }
     // Identity-first pin (§7.5 rule shared with the JIT flow): a pinned
     // request is approve/deny only — never a different identity.
     if rec.grantor != "*" && grantor != rec.grantor {
-        return Err(bad(format!("this request pins the identity to '{}'", rec.grantor)));
+        return Err(vfail(
+            "grantor_pinned_mismatch",
+            format!("this request pins the identity to '{}'", rec.grantor),
+        ));
     }
 
-    let config_cert = DeviceCert::parse(config_jws).map_err(|e| bad(format!("bad config cert: {e}")))?;
+    let config_cert = DeviceCert::parse(config_jws)
+        .map_err(|e| vfail("config_cert_invalid", format!("bad config cert: {e}")))?;
     if config_cert.purpose() != Purpose::Authorization {
-        return Err(bad("config cert is not an authorization cert"));
+        return Err(vfail("config_cert_wrong_purpose", "config cert is not an authorization cert"));
     }
     if config_cert.is_expired() {
-        return Err(bad("config cert expired"));
+        return Err(vfail("config_cert_expired", "config cert expired"));
     }
     if !config_cert.authorizes_identity(&grantor) {
-        return Err(bad("config cert does not authorize the grantor"));
+        return Err(vfail("grantor_not_authorized", "config cert does not authorize the grantor"));
     }
     if warrant_jwss.len() != rec.grants.len() {
-        return Err(bad(format!(
-            "expected {} records (one per grant), got {}",
-            rec.grants.len(),
-            warrant_jwss.len()
-        )));
+        return Err(vfail(
+            "warrant_count_mismatch",
+            format!(
+                "expected {} records (one per grant), got {}",
+                rec.grants.len(),
+                warrant_jwss.len()
+            ),
+        ));
     }
 
     let status_uri = status_list_uri(&state.domain);
     let mut warrants = Vec::with_capacity(warrant_jwss.len());
     for (jws, grant) in warrant_jwss.iter().zip(&rec.grants) {
-        let warrant = Warrant::parse(jws).map_err(|e| bad(format!("bad record: {e}")))?;
+        let warrant = Warrant::parse(jws)
+            .map_err(|e| vfail("warrant_invalid", format!("bad record: {e}")))?;
         warrant
             .verify(config_cert.public_key())
-            .map_err(|_| bad("record is not signed by the presented config cert"))?;
+            .map_err(|_| vfail("warrant_invalid", "record is not signed by the presented config cert"))?;
         let claims = warrant.claims();
         if claims.typ != browserid_core::device::TYP_WARRANT_V2 {
-            return Err(bad("admission records must be browserid-warrant-v2"));
+            return Err(vfail("warrant_invalid", "admission records must be browserid-warrant-v2"));
         }
         if claims.grantor != grantor {
-            return Err(bad("record grantor does not match the approving identity"));
+            return Err(vfail("grantor_mismatch", "record grantor does not match the approving identity"));
         }
         if claims.audience != grant.audience {
-            return Err(bad("record audience does not match its grant"));
+            return Err(vfail("audience_mismatch", "record audience does not match its grant"));
         }
         let mut want = grant.scopes.clone();
         let mut got = claims.scope_strings();
         want.sort_unstable();
         got.sort_unstable();
         if want != got {
-            return Err(bad("record scopes do not match the requested grant"));
+            return Err(vfail("scope_mismatch", "record scopes do not match the requested grant"));
         }
         // The revocation ref must be EXACTLY the allocated one (same rule as
         // the agent flow): a record carrying someone else's index would arm
@@ -554,7 +618,8 @@ fn respond_record(
         let idx = grant.status_idx.ok_or_else(|| bad("grant has no allocated status index"))?;
         match &claims.status {
             Some(st) if st.uri == status_uri && st.idx == idx => {}
-            _ => return Err(bad("record status ref does not match the allocated one")),
+            Some(_) => return Err(vfail("status_ref_mismatch", "record status ref does not match the allocated one")),
+            None => return Err(vfail("status_ref_missing", "record is missing its allocated status ref")),
         }
         let bset = claims.binding_set();
         match (rec.kind, bset.entries()) {
@@ -565,22 +630,22 @@ fn respond_record(
                 // Warrant::parse already enforced the self-grant rule and an
                 // implemented protocol; pin the descriptor to the request.
                 if Some(id.as_str()) != meta.binding_id.as_deref() {
-                    return Err(bad("record binding.id does not match this request"));
+                    return Err(vfail("binding_mismatch", "record binding.id does not match this request"));
                 }
                 if Some(client_host.as_str()) != meta.client_host.as_deref() {
-                    return Err(bad("record client_host does not match this request"));
+                    return Err(vfail("binding_mismatch", "record client_host does not match this request"));
                 }
                 if *client_name != meta.client_name.clone().unwrap_or_default() {
-                    return Err(bad("record client_name does not match this request"));
+                    return Err(vfail("binding_mismatch", "record client_name does not match this request"));
                 }
             }
             (RequestKind::Authoring, [browserid_core::device::Binding::Holder { .. }]) => {
                 let want = grant.grantee.as_deref().unwrap_or_default();
                 if claims.grantee != want {
-                    return Err(bad("record grantee does not match its grant row"));
+                    return Err(vfail("grantee_mismatch", "record grantee does not match its grant row"));
                 }
             }
-            _ => return Err(bad("record binding kind does not match this request")),
+            _ => return Err(vfail("binding_mismatch", "record binding kind does not match this request")),
         }
         warrants.push(warrant);
     }
@@ -597,17 +662,17 @@ fn respond_record(
     let records: Vec<WarrantRecord> = warrants
         .iter()
         .zip(warrant_jwss)
-        .map(|(warrant, jws)| warrant_to_record(user.user_id, &delegator, warrant, jws, config_jws))
+        .map(|(warrant, jws)| warrant_to_record(user_id, &delegator, warrant, jws, config_jws))
         .collect();
     let delivery: Vec<String> =
         warrant_jwss.iter().map(|w| format!("{w}~{config_jws}")).collect();
-    state.store.respond_warrant_request(user.user_id, &req.code, Some(&delivery))?;
+    state.store.respond_warrant_request(user_id, &req.code, Some(&delivery))?;
     for record in records {
         state.store.upsert_warrant(record)?;
     }
     tracing::info!(kind = %rec.kind.as_str(), grants = rec.grants.len(),
         "record request approved");
-    Ok(Json(RespondResponse { success: true, return_url: rec.return_url }))
+    Ok(rec.return_url)
 }
 
 /// Validate a consent approval's client-signed warrants against the requested
@@ -634,28 +699,33 @@ pub(crate) fn validate_grant_warrants(
     status_uri: &str,
 ) -> Result<Vec<Warrant>, RegistrarError> {
     if warrant_jwss.len() != grants.len() {
-        return Err(RegistrarError::ValidationError(format!(
-            "expected {} warrants (one per grant), got {}",
-            grants.len(),
-            warrant_jwss.len()
-        )));
+        return Err(vfail(
+            "warrant_count_mismatch",
+            format!(
+                "expected {} warrants (one per grant), got {}",
+                grants.len(),
+                warrant_jwss.len()
+            ),
+        ));
     }
     let config_cert = DeviceCert::parse(config_jws)
-        .map_err(|e| RegistrarError::ValidationError(format!("bad config cert: {e}")))?;
+        .map_err(|e| vfail("config_cert_invalid", format!("bad config cert: {e}")))?;
     if config_cert.purpose() != Purpose::Authorization {
-        return Err(RegistrarError::ValidationError(
-            "signing cert is not an authorization (config) cert".into(),
+        return Err(vfail(
+            "config_cert_wrong_purpose",
+            "signing cert is not an authorization (config) cert",
         ));
     }
     if config_cert.is_expired() {
-        return Err(RegistrarError::ValidationError("config cert expired".into()));
+        return Err(vfail("config_cert_expired", "config cert expired"));
     }
     // The config cert must be authoritative for the GRANTOR (the attributed
     // identity that authorizes the grant) — NOT the grantee, which may be a
     // distinct/foreign service in a delegated grant.
     if !config_cert.authorizes_identity(grantor) {
-        return Err(RegistrarError::ValidationError(
-            "config cert does not authorize the warrant grantor".into(),
+        return Err(vfail(
+            "grantor_not_authorized",
+            "config cert does not authorize the warrant grantor",
         ));
     }
     let agent_holder = browserid_core::device::Holder::new(agent_holder.to_string())
@@ -663,44 +733,45 @@ pub(crate) fn validate_grant_warrants(
     let mut warrants = Vec::with_capacity(warrant_jwss.len());
     for (jws, grant) in warrant_jwss.iter().zip(grants) {
         let warrant = Warrant::parse(jws)
-            .map_err(|e| RegistrarError::ValidationError(format!("bad warrant: {e}")))?;
+            .map_err(|e| vfail("warrant_invalid", format!("bad warrant: {e}")))?;
         warrant
             .verify(config_cert.public_key())
-            .map_err(|_| RegistrarError::ValidationError(
-                "warrant is not signed by the presented config cert".into(),
+            .map_err(|_| vfail(
+                "warrant_invalid",
+                "warrant is not signed by the presented config cert",
             ))?;
         let claims = warrant.claims();
         if claims.audience != grant.audience {
-            return Err(RegistrarError::ValidationError(
-                "warrant audience does not match its grant".into(),
-            ));
+            return Err(vfail("audience_mismatch", "warrant audience does not match its grant"));
         }
         if claims.grantor != grantor {
-            return Err(RegistrarError::ValidationError(
-                "warrant grantor does not match the approving identity".into(),
+            return Err(vfail(
+                "grantor_mismatch",
+                "warrant grantor does not match the approving identity",
             ));
         }
         if claims.grantee != grantee {
-            return Err(RegistrarError::ValidationError(
-                "warrant grantee does not match the requested actor".into(),
+            return Err(vfail(
+                "grantee_mismatch",
+                "warrant grantee does not match the requested actor",
             ));
         }
         // This flow signs PRESENTATION grants for an agent, so the record must
         // be holder-bound (a connection-bound record is admission-only and is
         // minted by the broker's own consent surface, never supplied here).
         let Some(matcher) = claims.holder_matcher() else {
-            return Err(RegistrarError::ValidationError(
-                "warrant is not holder-bound".into(),
-            ));
+            return Err(vfail("not_holder_bound", "warrant is not holder-bound"));
         };
         if matcher.as_str() == "*" {
-            return Err(RegistrarError::ValidationError(
-                "over-broad holder matcher (bare `*`) not allowed".into(),
+            return Err(vfail(
+                "wildcard_holder",
+                "over-broad holder matcher (bare `*`) not allowed",
             ));
         }
         if !matcher.matches(&agent_holder) {
-            return Err(RegistrarError::ValidationError(
-                "warrant holder matcher does not cover the agent's holder".into(),
+            return Err(vfail(
+                "holder_mismatch",
+                "warrant holder matcher does not cover the agent's holder",
             ));
         }
         // The revocation ref must be EXACTLY the one allocated for this grant
@@ -711,13 +782,15 @@ pub(crate) fn validate_grant_warrants(
             match &claims.status {
                 Some(st) if st.uri == status_uri && st.idx == idx => {}
                 Some(_) => {
-                    return Err(RegistrarError::ValidationError(
-                        "warrant status ref does not match the allocated one".into(),
+                    return Err(vfail(
+                        "status_ref_mismatch",
+                        "warrant status ref does not match the allocated one",
                     ))
                 }
                 None => {
-                    return Err(RegistrarError::ValidationError(
-                        "warrant is missing its allocated status ref".into(),
+                    return Err(vfail(
+                        "status_ref_missing",
+                        "warrant is missing its allocated status ref",
                     ))
                 }
             }
@@ -1204,6 +1277,13 @@ pub struct WarrantRequestResponse {
 
 fn bad(msg: impl Into<String>) -> RegistrarError {
     RegistrarError::ValidationError(msg.into())
+}
+
+/// A consent-validation failure with its registry-api-v1 §7.1 machine
+/// reason. The cookie lane renders it exactly like [`bad`]; the token lane
+/// maps it to `422 invalid_warrant` + the reason.
+fn vfail(reason: &'static str, msg: impl Into<String>) -> RegistrarError {
+    RegistrarError::WarrantValidation { reason, message: msg.into() }
 }
 
 /// POST /warrant/request — an agent raises a consent request, authenticated
