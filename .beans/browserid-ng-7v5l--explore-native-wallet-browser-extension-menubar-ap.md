@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-08-26T23:21:44Z
-updated_at: 2026-08-26T23:26:59Z
+updated_at: 2026-08-27T08:57:50Z
 ---
 
 ## Idea
@@ -37,3 +37,14 @@ Two distinct shapes, not mutually exclusive:
 - [ ] Spike: MV3 extension that holds a device cert and answers a navigator.id request on one demo RP
 
 **2026-08-27 (Dan):** really cool idea — would dissolve many of the scaffolding concerns. Green light to prototype if feasible; the MV3 spike (hold a device cert, answer a navigator.id request on one demo RP) is the first concrete step.
+
+## Prototype outcome + the broker delineation (2026-08-28)
+
+The 7oi3 prototype validated the thesis end-to-end (Dan's real primary identity, real browser, no popup). Design insight it surfaced — "the broker" is four roles in a trenchcoat:
+
+1. **User-agent half** — dialog UI, keystore, holder cache, include.js mediation. The wallet replaces this; principle 8 says its loyalty runs to the user. PROVEN by the prototype.
+2. **Fallback IdP** — issuance for secondary identities. Server-side, stays.
+3. **Registry** — holders/devices, warrant consent + registry, status lists, approvals inbox. Server-side; today reachable only with a cookie session, so a native wallet is a second-class client. Fix tracked in [[bw9q]] (device-cert-authed registry lane); a self-hosted registry is the principle-7 escape hatch for the one role that currently has none — a future prototype.
+4. **Hosted conveniences** — /verify, hosted wallet UI, demos.
+
+Agreed next step for the wallet itself: single-login bootstrap ([[gxi9]]) — email-first, one login at the issuer, auth_with_presentation joins the broker silently. The double login in the prototype came from inheriting the dialog's broker-first worldview.
