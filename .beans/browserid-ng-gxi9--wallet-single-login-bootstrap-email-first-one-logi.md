@@ -1,11 +1,11 @@
 ---
 # browserid-ng-gxi9
 title: 'Wallet single-login bootstrap: email-first, one login at the issuer, auth_with_presentation joins the broker'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-08-27T08:57:18Z
-updated_at: 2026-08-27T20:15:13Z
+updated_at: 2026-08-27T21:06:41Z
 ---
 
 Agreed redesign from the menubar-wallet prototype (7oi3): the prototype bootstraps through a broker /account session and then hops to the IdP — the user logs in twice, which inverts the wallet's loyalty order. The protocol already supports the right shape:
@@ -31,3 +31,11 @@ Remaining before completing: human validation of the PRIMARY lane (device-author
 ## Primary-lane validation (2026-08-27)
 
 Dan bootstrapped the wallet with danmills@sandmill.org (primary IdP) and signed in to mingo.place via wallet + addon — the device-authorize hop and email-first ordering work end-to-end with a real primary identity. Remaining one-glance check before completing: confirm the wallet device appears on browserid.me/account devices (proves the best-effort silent joinBroker succeeded; a working RP sign-in does not prove it).
+
+## Validation complete (2026-08-27)
+
+Dan confirmed the wallet device/holder is visible on browserid.me/account — the silent auth_with_presentation join succeeded, closing the last open item (the primary-lane walk itself was validated via the mingo.place sign-in).
+
+## Summary of Changes
+
+Email-first single-login bootstrap shipped as the real wallet's first feature (wallet/ at repo root): askEmail → unauthenticated address_info → primary lane (one login at the IdP device-authorize page, return_url delivery, join-side holder healing) with silent registry-scoped auth_with_presentation broker join; secondary lane (broker /account login → /device/issue). Approval-watch rides the registry API token lane. Validated end-to-end with a real primary identity (danmills@sandmill.org).

@@ -32,6 +32,10 @@ function updateTray(state) {
     },
     { type: 'separator' },
     {
+      label: 'Open account page…',
+      click: () => require('electron').shell.openExternal(`${require('./broker').BROKER}/account`),
+    },
+    {
       label: state.identity ? 'Set up a different identity…' : 'Set up wallet…',
       click: () => require('./bootstrap').startBootstrap({ notify, updateTray: () => updateTray(store.state()) }),
     },

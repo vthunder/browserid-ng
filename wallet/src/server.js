@@ -108,6 +108,18 @@ function startServer({ approveLogin, approvePair, notify, onStateChange }) {
             // Drives the registry-API token lane end to end.
             return json(req, res, 200, await require('./registry').listRequests());
           }
+          if (url.pathname === '/test/label') {
+            // Drives the §5.4 friendly-label heal, returns the resulting view.
+            const registry = require('./registry');
+            await registry.ensureDeviceLabel();
+            const view = await registry.apiCall('GET', '/api/v1/holders');
+            const holder = store.state().holder;
+            const mine = [
+              ...(view.namespaces || []).flatMap((n) => n.holders || []),
+              ...(view.holders_without_namespace || []),
+            ].find((h) => h.holder_id === holder);
+            return json(req, res, 200, { holder, label: mine?.label ?? null });
+          }
           if (url.pathname === '/test/state') {
             const { pairToken: _p, deviceKey: _d, configKey: _c, ...rest } = store.state();
             return json(req, res, 200, rest); // never the keys, even in tests

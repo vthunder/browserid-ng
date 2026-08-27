@@ -68,6 +68,35 @@ async function registerWarrant(warrantJws) {
   });
 }
 
+// --- §5.4: the wallet's own device row ---
+
+// Give this wallet's holder a friendly name. The broker's UA convention
+// labels it with the bare product token ("BrowserID-Wallet"); the wallet
+// knows better — "Wallet on macOS". Replaces only the machine defaults;
+// anything the user chose on the account page is respected. Best-effort.
+async function ensureDeviceLabel() {
+  try {
+    const holder = store.state().holder;
+    if (!holder) return;
+    const os =
+      { darwin: 'macOS', win32: 'Windows', linux: 'Linux' }[process.platform] || process.platform;
+    const want = `Wallet on ${os}`;
+    const view = await apiCall('GET', '/api/v1/holders');
+    const mine = [
+      ...(view.namespaces || []).flatMap((n) => n.holders || []),
+      ...(view.holders_without_namespace || []),
+    ].find((h) => h.holder_id === holder);
+    if (!mine) return; // join hasn't landed yet — next launch heals it
+    const isMachineDefault =
+      mine.label === 'BrowserID-Wallet' || /^holder-/.test(mine.label || '');
+    if (!isMachineDefault || mine.label === want) return;
+    await apiCall('POST', '/api/v1/holders/rename', { holder_id: holder, label: want });
+    console.log(`[wallet] device label set to "${want}"`);
+  } catch (e) {
+    console.warn('[wallet] device label check failed:', e.message || e);
+  }
+}
+
 // --- §5.1: the approvals inbox ---
 
 async function listRequests() {
@@ -82,6 +111,7 @@ const seenCodes = new Set();
 
 function startInboxWatch({ notify }) {
   if (inboxTimer || !store.state().deviceCert) return;
+  ensureDeviceLabel(); // fire-and-forget: both startup paths converge here
   const { shell } = require('electron');
   const poll = async () => {
     try {
@@ -104,4 +134,12 @@ function startInboxWatch({ notify }) {
   poll();
 }
 
-module.exports = { getToken, apiCall, allocateStatus, registerWarrant, listRequests, startInboxWatch };
+module.exports = {
+  getToken,
+  apiCall,
+  allocateStatus,
+  registerWarrant,
+  listRequests,
+  startInboxWatch,
+  ensureDeviceLabel,
+};

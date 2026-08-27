@@ -86,6 +86,13 @@ must('inbox over the registry token lane', r.status === 200 && Array.isArray(inb
   JSON.stringify(inbox).slice(0, 120));
 must('inbox names the status list', typeof inbox.status_uri === 'string' && inbox.status_uri.includes('browserid-status'));
 
+// 4b. §5.4 lane: the wallet renames its own holder from the UA product-token
+//     default ("BrowserID-Wallet") to a friendly per-OS label.
+r = await wallet('/test/label', {});
+const lab = await r.json();
+must('device label healed to a friendly name', r.status === 200 && /^Wallet on /.test(lab.label || ''),
+  JSON.stringify(lab));
+
 // 5. A tiny RP of our own, cross-origin from the broker (client page +
 //    server-side verify lane, the realistic RP shape).
 const RP_PORT = 8899;
