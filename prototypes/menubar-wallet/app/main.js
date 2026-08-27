@@ -66,6 +66,11 @@ app.whenReady().then(async () => {
   log('ready');
   try {
     if (app.dock) app.dock.hide(); // menubar-only
+    // Without an application menu there are no Edit roles, so Cmd+V/C/X are
+    // dead in every window (e.g. pasting a password in the bootstrap window).
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' },
+    ]));
     const icon = trayIcon();
     tray = new Tray(icon);
     tray.setToolTip('BrowserID wallet');

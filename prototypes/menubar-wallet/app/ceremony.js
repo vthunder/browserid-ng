@@ -24,14 +24,6 @@ const UA = 'BrowserID-Menubar-Wallet/0.1 (prototype)';
 let electronSession = null; // set by bootstrapInteractive
 let jarCookie = '';         // test lane
 
-async function bareFetch(path, opts = {}) {
-  const res = await fetch(BROKER + path, {
-    ...opts,
-    headers: { 'content-type': 'application/json', accept: 'application/json', 'user-agent': UA, ...opts.headers },
-  });
-  return { status: res.status, data: await res.json().catch(() => ({})) };
-}
-
 async function sessionFetch(path, opts = {}) {
   if (electronSession) {
     const res = await electronSession.fetch(BROKER + path, {
@@ -61,42 +53,103 @@ async function csrf() {
 }
 
 // ---------------------------------------------------------------------------
+// Primary-IdP hop: open the IdP's device-authorize page (fragment carries the
+// pubkeys, per the dialog's contract), using the `return_url` delivery lane —
+// on success the page navigates to return_url#device_cert=…&config_cert=…,
+// which we intercept in Electron before it loads. The user authenticates
+// first-party on the IdP page if their IdP session is cold.
+function primaryHop({ deviceAuthUrl, email, devicePub, configPub, holder }) {
+  const { BrowserWindow } = require('electron');
+  const RETURN_URL = `${BROKER}/wallet-idp-return`; // never actually loaded
+  return new Promise((resolve, reject) => {
+    const win = new BrowserWindow({
+      width: 480, height: 640, title: `Sign in to ${new URL(deviceAuthUrl).host}`,
+      webPreferences: { partition: 'persist:browserid', nodeIntegration: false, contextIsolation: true },
+    });
+    const url = deviceAuthUrl +
+      '#email=' + encodeURIComponent(email) +
+      '&device_pubkey=' + encodeURIComponent(devicePub) +
+      '&config_pubkey=' + encodeURIComponent(configPub) +
+      (holder ? '&holder=' + encodeURIComponent(holder) : '') +
+      '&return_url=' + encodeURIComponent(RETURN_URL);
+
+    const timeout = setTimeout(() => { win.close(); reject(new Error('IdP authorization timed out')); }, 3 * 60 * 1000);
+    let settled = false;
+    const finish = (fn, arg) => { if (!settled) { settled = true; clearTimeout(timeout); fn(arg); setImmediate(() => win.close()); } };
+
+    const onNav = (event, navUrl) => {
+      if (!navUrl.startsWith(RETURN_URL)) return;
+      event.preventDefault();
+      const frag = new URLSearchParams(navUrl.slice(navUrl.indexOf('#') + 1));
+      if (frag.get('device_error')) return finish(reject, new Error(`IdP refused: ${frag.get('device_error')}`));
+      const device_cert = frag.get('device_cert'), config_cert = frag.get('config_cert');
+      if (!device_cert || !config_cert) return finish(reject, new Error('IdP return carried no certs'));
+      finish(resolve, { device_cert, config_cert });
+    };
+    win.webContents.on('will-navigate', onNav);
+    win.webContents.on('will-redirect', onNav);
+    win.on('closed', () => { if (!settled) { settled = true; clearTimeout(timeout); reject(new Error('IdP window closed')); } });
+    win.loadURL(url);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Bootstrap core: with an authenticated broker session in hand, issue the
 // device + config pair and persist everything the steady state needs.
+// Secondary (broker-vouched) identities issue at the broker's /device/issue;
+// primary identities hop to their IdP's device-authorize page.
 async function issueCredentials(email) {
   const ctx = await csrf();
   if (!ctx.authenticated) throw new Error('broker session not authenticated');
 
+  const info = (await sessionFetch(`/wsapi/address_info?email=${encodeURIComponent(email)}`)).data;
   const bh = await sessionFetch('/wsapi/browser_holder');
   if (bh.status !== 200 || !bh.data.prefix) throw new Error(`browser_holder failed: ${bh.status}`);
   const holder = `${bh.data.prefix}.${randHex(5)}`; // prefix + 10 hex, like dialog.js:339
 
   const device = await generateKey();
   const config = await generateKey();
-  const issue = await sessionFetch('/device/issue', {
-    method: 'POST',
-    body: JSON.stringify({
-      csrf: ctx.csrf_token, email,
-      device_pubkey: device.x, config_pubkey: config.x, holder,
-    }),
-  });
-  if (issue.status !== 200 || !issue.data.device_cert) {
-    throw new Error(`device/issue failed: ${issue.status} ${JSON.stringify(issue.data).slice(0, 200)}`);
+
+  let certs, issuer, mintUrl;
+  if (info.type === 'primary') {
+    if (!info.device_auth || !info.access_mint) throw new Error(`primary identity but no device_auth/access_mint in address_info`);
+    certs = await primaryHop({
+      deviceAuthUrl: info.device_auth, email,
+      devicePub: device.x, configPub: config.x, holder,
+    });
+    issuer = info.issuer;
+    mintUrl = info.access_mint;
+  } else {
+    const issue = await sessionFetch('/device/issue', {
+      method: 'POST',
+      body: JSON.stringify({
+        csrf: ctx.csrf_token, email,
+        device_pubkey: device.x, config_pubkey: config.x, holder,
+      }),
+    });
+    if (issue.status !== 200 || !issue.data.device_cert) {
+      throw new Error(`device/issue failed: ${issue.status} ${JSON.stringify(issue.data).slice(0, 200)}`);
+    }
+    certs = issue.data;
+    issuer = ctx.domain;
+    mintUrl = `${BROKER}/access/mint`;
   }
-  const assignedHolder = decodeJws(issue.data.device_cert).holder;
+
+  const assignedHolder = decodeJws(certs.device_cert).holder;
   await store.set({
     identity: email,
-    domain: ctx.domain,
+    domain: issuer,       // access-request `domain` claim = the issuer
+    mintUrl,
     holder: assignedHolder,
     holderPrefix: assignedHolder.split('.')[0],
     deviceKey: device.privJwk,
-    deviceCert: issue.data.device_cert,
+    deviceCert: certs.device_cert,
     configKey: config.privJwk,
-    configCert: issue.data.config_cert,
+    configCert: certs.config_cert,
     warrants: {},
     bootstrappedAt: nowS(),
   });
-  return { email, holder: assignedHolder };
+  return { email, holder: assignedHolder, issuer };
 }
 
 // Interactive bootstrap: open browserid.me in an Electron window, let the
@@ -126,8 +179,20 @@ async function startBootstrap({ notify, updateTray }) {
       if (!data.authenticated) return;
       clearInterval(poll);
       const emails = (await sessionFetch('/wsapi/list_emails')).data.emails || [];
-      const email = emails[0];
-      if (!email) throw new Error('authenticated session has no emails');
+      if (!emails.length) throw new Error('authenticated session has no emails');
+      let email = emails[0];
+      if (emails.length > 1) {
+        const { dialog } = require('electron');
+        const choices = emails.slice(0, 3);
+        const { response } = await dialog.showMessageBox(win, {
+          type: 'question',
+          buttons: [...choices, 'Cancel'],
+          cancelId: choices.length,
+          message: 'Which identity should this wallet hold?',
+        });
+        if (response >= choices.length) throw new Error('user cancelled identity choice');
+        email = choices[response];
+      }
       const r = await issueCredentials(email);
       win.close();
       notify('BrowserID wallet', `Wallet bootstrapped as ${r.email}`);
@@ -186,10 +251,13 @@ async function mintAccess() {
     domain: s.domain, identity: s.identity, holder: s.holder,
     'access-key': { algorithm: 'Ed25519', publicKey: access.x },
   });
-  const mint = await bareFetch('/access/mint', {
+  const mintUrl = s.mintUrl || `${BROKER}/access/mint`;
+  const res = await fetch(mintUrl, {
     method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json', 'user-agent': UA },
     body: JSON.stringify({ device_cert: s.deviceCert, access_request: areq }),
   });
+  const mint = { status: res.status, data: await res.json().catch(() => ({})) };
   if (mint.status !== 200 || !mint.data.access_cert) {
     throw new Error(`access/mint failed: ${mint.status} ${mint.data.reason || JSON.stringify(mint.data).slice(0, 200)}`);
   }
