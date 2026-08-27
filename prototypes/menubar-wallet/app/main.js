@@ -70,11 +70,23 @@ app.whenReady().then(async () => {
     tray = new Tray(icon);
     tray.setToolTip('BrowserID wallet');
     log(`tray created (icon ${icon.isEmpty() ? 'EMPTY' : icon.getSize().width + 'px'})`);
+    setTimeout(() => {
+      const { screen } = require('electron');
+      log(`tray bounds ${JSON.stringify(tray.getBounds())} display ${JSON.stringify(screen.getPrimaryDisplay().bounds)}`);
+    }, 1000);
     await store.init(app.getPath('userData'));
     updateTray(store.state());
     const port = await startServer({ approveLogin, notify, onStateChange: () => updateTray(store.state()) });
     log(`localhost server on 127.0.0.1:${port}`);
     require('./ceremony').resumeSession({ notify });
+
+    // The tray can be suppressed (macOS 26 menu-bar management / menubar
+    // managers), so don't depend on it: auto-open the bootstrap window when
+    // the wallet has no identity yet. Day-to-day logins are extension-driven.
+    if (!store.state().identity && process.env.WALLET_TEST !== '1') {
+      log('not bootstrapped — opening bootstrap window');
+      require('./ceremony').startBootstrap({ notify, updateTray: () => updateTray(store.state()) });
+    }
   } catch (err) {
     log('startup failed:', err.stack || err);
   }
