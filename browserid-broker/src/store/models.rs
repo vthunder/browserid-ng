@@ -290,6 +290,28 @@ pub struct WarrantRecord {
     pub expires_at: DateTime<Utc>,
 }
 
+/// A registry API access token (registry-api-v1 §3.1): the server-side record
+/// behind an opaque token minted by `POST /api/v1/token`. Only the token's
+/// SHA-256 is stored; the token is sender-constrained to `proof_key` (the
+/// bound config cert's key), and the cert's status ref is re-checked
+/// fail-closed on every authorized call.
+#[derive(Debug, Clone)]
+pub struct ApiTokenRecord {
+    /// base64url(SHA-256(token)) — the lookup key.
+    pub token_hash: String,
+    pub user_id: UserId,
+    /// The bound config cert's public key (base64).
+    pub proof_key: String,
+    /// The bound config cert's status ref, when it carries one.
+    pub cert_status_uri: Option<String>,
+    pub cert_status_idx: Option<u64>,
+    /// Space-separated granted scopes (v1: "registry").
+    pub scope: String,
+    pub created_at: DateTime<Utc>,
+    /// Capped by the bound config cert's own expiry.
+    pub expires_at: DateTime<Utc>,
+}
+
 /// A namespace registry row (holder-authorization model): a user-organized
 /// bucket of holders (`browsers` / `agents` / `services` / …). `prefix` is the
 /// stored random dot-prefix every holder in the namespace shares (`<prefix>.…`),

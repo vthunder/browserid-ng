@@ -40,6 +40,7 @@ use axum::Router;
 use browserid_core::KeyPair;
 
 pub mod agent_provision;
+pub mod api;
 pub mod consent;
 pub mod error;
 pub mod host;
@@ -179,11 +180,26 @@ pub struct RegistrarState {
     pub proof_fetcher: Option<Arc<dyn AudienceProofFetcher>>,
     /// Per-origin rate limiter for record requests (spec §7.5 SHOULD).
     pub record_request_limiter: consent::RecordRequestLimiter,
+    /// Full core §6 presentation verification + fail-closed status checking
+    /// for the registry API token lane (registry-api-v1 §3). The host wires
+    /// in its verification stack; `None` refuses the token exchange.
+    pub presentation_verifier: Option<Arc<dyn api::PresentationVerifier>>,
+    /// Single-use tracking for the token lane: request-proof `jti`s and
+    /// exchange assertions (registry-api-v1 §3.1/§3.2).
+    pub api_replay: api::ReplayCache,
 }
 
 /// The registrar's routes, ready to merge into a host router.
 pub fn router(state: Arc<RegistrarState>) -> Router {
+    // Registry API v1 (registry-api-v1 spec): the token lane. Bodies are
+    // capped API-wide (§3.1 abuse controls); auth is header-borne, so the
+    // cookie surface's CSRF machinery does not exist here.
+    let api_v1 = Router::new()
+        .route("/api/v1/token", post(api::token_exchange))
+        .route("/api/v1/requests", get(api::list_requests))
+        .layer(axum::extract::DefaultBodyLimit::max(api::API_BODY_LIMIT));
     Router::new()
+        .merge(api_v1)
         // Paired agent provisioning (device-grant bootstrap, 74u1):
         .route("/agent-provision/request", post(agent_provision::request))
         .route("/agent-provision/poll", post(agent_provision::poll))

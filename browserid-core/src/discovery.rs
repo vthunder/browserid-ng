@@ -81,6 +81,32 @@ pub struct SupportDocument {
     /// the credential-less connection lane; absent = unsupported here.
     #[serde(rename = "record-grants", skip_serializing_if = "Option::is_none")]
     pub record_grants: Option<String>,
+
+    /// The registry role's discovery object (registry-api-v1 §5.5). Present
+    /// only when this origin serves the registry API; clients MUST treat its
+    /// absence as "no registry here". Like every other key, it carries no key
+    /// material — trust roots stay in DNSSEC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<RegistrySupport>,
+}
+
+/// The `registry` object of a support document (registry-api-v1 §5.5).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RegistrySupport {
+    /// Highest registry API version served (e.g. "v1").
+    pub version: String,
+    /// Absolute URL of the token exchange (§3.1). MUST be same-origin with
+    /// the document advertising it — consumers reject an off-origin value.
+    pub token_endpoint: String,
+    /// This registry's signed status list (core §6.3), same-origin like
+    /// `token_endpoint`. Advertisement only — verifiers reach lists through
+    /// the `uri` inside each status ref.
+    pub status_list: String,
+    /// Browser-ceremony URLs a native wallet opens for flows it cannot
+    /// perform natively; keys are defined by the fallback-IdP spec. REQUIRED
+    /// on the wire (may be empty).
+    #[serde(default)]
+    pub browser: std::collections::BTreeMap<String, String>,
 }
 
 impl SupportDocument {
@@ -102,6 +128,7 @@ impl SupportDocument {
             agent_device_authorization: None,
             device_revocation: None,
             record_grants: None,
+            registry: None,
         }
     }
 
@@ -161,6 +188,12 @@ impl SupportDocument {
         self
     }
 
+    /// Set the registry discovery object (registry-api-v1 §5.5)
+    pub fn with_registry(mut self, registry: RegistrySupport) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+
     /// Create a delegation document
     pub fn delegate(authority: impl Into<String>) -> Self {
         Self {
@@ -174,6 +207,7 @@ impl SupportDocument {
             agent_device_authorization: None,
             device_revocation: None,
             record_grants: None,
+            registry: None,
         }
     }
 

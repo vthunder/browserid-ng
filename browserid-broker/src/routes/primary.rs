@@ -80,6 +80,16 @@ where
     // docs/plans/2026-07-20-holder-authorization-model.md). Any of the user's
     // holders presenting a valid login warrant for this audience authenticates
     // the browser session — they are all "you".
+    // ig9p phase 1 (registry-api-v1 §3.3): the cookie lane will adopt the
+    // token lane's requirement that broker-audience warrants carry the
+    // `registry` scope. dialog.js and the wallet mint it now; LOG scopeless
+    // presentations through the deprecation window, enforce later.
+    if !result.scopes.as_deref().unwrap_or_default().iter().any(|s| s == "registry") {
+        tracing::info!(
+            email = result.email.as_deref().unwrap_or(""),
+            "auth_with_presentation without the registry scope (ig9p migration: will be required)"
+        );
+    }
     let email = result
         .email
         .ok_or_else(|| BrokerError::InvalidAssertion("no email in presentation".to_string()))?;

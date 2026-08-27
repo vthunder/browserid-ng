@@ -8,7 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
+    ApiTokenRecord, DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, Tenant, TenantStatus, User, UserId, UserStore, VerificationType,
 };
@@ -44,6 +44,8 @@ pub struct InMemoryUserStore {
     tenant_status: RwLock<HashMap<(u64, String), (u64, bool)>>,
     /// email -> when a VISIBLE bridge ceremony last proved it (lrhe)
     interactive_proofs: RwLock<HashMap<String, chrono::DateTime<Utc>>>,
+    /// token_hash -> registry API token record (registry-api-v1 §3.1)
+    api_tokens: RwLock<HashMap<String, ApiTokenRecord>>,
 }
 
 impl InMemoryUserStore {
@@ -69,6 +71,7 @@ impl InMemoryUserStore {
             tenant_roster: RwLock::new(HashMap::new()),
             tenant_status: RwLock::new(HashMap::new()),
             interactive_proofs: RwLock::new(HashMap::new()),
+            api_tokens: RwLock::new(HashMap::new()),
         }
     }
 
@@ -528,6 +531,23 @@ impl UserStore for InMemoryUserStore {
             }
             _ => Err(BrokerError::WarrantRequestNotFound),
         }
+    }
+
+    fn create_api_token(&self, rec: ApiTokenRecord) -> StoreResult<()> {
+        self.api_tokens.write().unwrap().insert(rec.token_hash.clone(), rec);
+        Ok(())
+    }
+
+    fn get_api_token(&self, token_hash: &str) -> StoreResult<Option<ApiTokenRecord>> {
+        Ok(self.api_tokens.read().unwrap().get(token_hash).cloned())
+    }
+
+    fn cleanup_expired_api_tokens(&self) -> StoreResult<u64> {
+        let now = Utc::now();
+        let mut tokens = self.api_tokens.write().unwrap();
+        let before = tokens.len();
+        tokens.retain(|_, r| r.expires_at > now);
+        Ok((before - tokens.len()) as u64)
     }
 
     fn get_or_allocate_status(&self, kind: &str, subject: &str) -> StoreResult<u64> {

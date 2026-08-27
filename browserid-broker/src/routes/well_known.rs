@@ -51,6 +51,18 @@ where
     // Advertised only when the consent surface is on.
     if state.agent_provisioning_enabled {
         doc = doc.with_record_grants("/warrant/record-request");
+        // Registry discovery (registry-api-v1 §5.5): the token lane's entry
+        // point. Both URLs are absolute and same-origin by construction —
+        // clients MUST reject off-origin values, so never derive these from
+        // request headers. `browser` stays empty until the fallback-IdP spec
+        // (d0xb) defines its ceremony keys.
+        let origin = browserid_registrar::consent::public_origin(&state.domain);
+        doc = doc.with_registry(browserid_core::discovery::RegistrySupport {
+            version: "v1".to_string(),
+            token_endpoint: format!("{origin}/api/v1/token"),
+            status_list: browserid_registrar::consent::status_list_uri(&state.domain),
+            browser: Default::default(),
+        });
     }
 
     // The support document carries NO key (spec §3/§3.1, bean zexp): an IdP's

@@ -199,6 +199,36 @@ impl DeviceCertRecord {
     }
 }
 
+/// A registry API access token (registry-api-v1 §3.1): the server-side record
+/// behind an opaque token minted by the presentation→token exchange. The
+/// token itself is never stored — only its SHA-256 — so a leaked store dump
+/// can't replay live tokens. The token is sender-constrained: every use must
+/// carry a proof signed by `proof_key` (the config cert's key), and the bound
+/// cert's status ref is re-checked fail-closed on every call.
+#[derive(Debug, Clone)]
+pub struct ApiTokenRecord {
+    /// base64url(SHA-256(token)) — the lookup key.
+    pub token_hash: String,
+    pub user_id: u64,
+    /// The bound config cert's public key (base64) — verifies request proofs.
+    pub proof_key: String,
+    /// The bound config cert's status ref, when it carries one — re-checked
+    /// fail-closed on every authorized call.
+    pub cert_status_uri: Option<String>,
+    pub cert_status_idx: Option<u64>,
+    /// Space-separated granted scopes (v1: "registry").
+    pub scope: String,
+    pub created_at: DateTime<Utc>,
+    /// Capped by the bound config cert's own expiry (invariant 4).
+    pub expires_at: DateTime<Utc>,
+}
+
+impl ApiTokenRecord {
+    pub fn is_expired(&self) -> bool {
+        Utc::now() > self.expires_at
+    }
+}
+
 /// A registered warrant (jipx): the delegator's own record of a grant they
 /// signed — one agent at one audience. Kept per account (shown only to the
 /// delegator's session), upserted on (user, agent, audience) so a reissue

@@ -191,7 +191,7 @@ pub async fn list_requests(
         .list_pending_warrant_requests(user.user_id)?
         .into_iter()
         .filter(|r| !r.external || query.code.as_deref() == Some(r.code.as_str()))
-        .map(|r| pending_info(&state, &user, r))
+        .map(|r| pending_info(&state, user.user_id, r))
         .collect();
     // Record requests (§7.5) are unclaimed at creation (user_id 0) so they
     // never appear in an inbox listing — they are surfaced only through
@@ -206,7 +206,7 @@ pub async fn list_requests(
                     && !rec.is_expired()
                 {
                     if let Some(rec) = surface_record_request(&state, &user, rec).await? {
-                        requests.push(pending_info(&state, &user, rec));
+                        requests.push(pending_info(&state, user.user_id, rec));
                     }
                 }
             }
@@ -219,9 +219,9 @@ pub async fn list_requests(
     }))
 }
 
-fn pending_info(
+pub(crate) fn pending_info(
     state: &RegistrarState,
-    user: &crate::host::AuthedUser,
+    user_id: u64,
     r: WarrantRequestRecord,
 ) -> PendingRequestInfo {
     // The trustworthy "who" (eywc) — agent flow only: the user-chosen name and
@@ -230,7 +230,7 @@ fn pending_info(
     // have no requesting agent; their gate is the audience proof, so the card
     // is always offered ("known").
     let met = if r.kind == RequestKind::Agent {
-        state.host.known_agent(user.user_id, &r.agent_email).unwrap_or(None)
+        state.host.known_agent(user_id, &r.agent_email).unwrap_or(None)
     } else {
         None
     };

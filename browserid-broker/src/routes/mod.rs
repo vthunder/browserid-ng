@@ -97,6 +97,13 @@ where
                 allow_private: !session::cookie_secure(&state.domain),
             })),
             record_request_limiter: Default::default(),
+            // Registry API token lane (registry-api-v1 §3): full core §6
+            // verification + fail-closed status checks, via the same stack
+            // as the cookie sibling auth_with_presentation.
+            presentation_verifier: Some(Arc::new(
+                crate::registrar_glue::BrokerPresentationVerifier { state: state.clone() },
+            )),
+            api_replay: Default::default(),
         },
     ));
 

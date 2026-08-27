@@ -180,6 +180,32 @@ fn from_reg_device_cert(c: reg::DeviceCertRecord) -> crate::store::DeviceCertRec
     }
 }
 
+fn to_reg_api_token(t: crate::store::ApiTokenRecord) -> reg::ApiTokenRecord {
+    reg::ApiTokenRecord {
+        token_hash: t.token_hash,
+        user_id: t.user_id.0,
+        proof_key: t.proof_key,
+        cert_status_uri: t.cert_status_uri,
+        cert_status_idx: t.cert_status_idx,
+        scope: t.scope,
+        created_at: t.created_at,
+        expires_at: t.expires_at,
+    }
+}
+
+fn from_reg_api_token(t: reg::ApiTokenRecord) -> crate::store::ApiTokenRecord {
+    crate::store::ApiTokenRecord {
+        token_hash: t.token_hash,
+        user_id: UserId(t.user_id),
+        proof_key: t.proof_key,
+        cert_status_uri: t.cert_status_uri,
+        cert_status_idx: t.cert_status_idx,
+        scope: t.scope,
+        created_at: t.created_at,
+        expires_at: t.expires_at,
+    }
+}
+
 /// Adapts any broker `UserStore` into the registrar's store.
 pub struct BrokerRegistrarStore<U> {
     pub user_store: Arc<U>,
@@ -253,6 +279,21 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
     fn delete_warrant(&self, user_id: u64, warrant_id: u64) -> Result<(), RegistrarError> {
         UserStore::delete_warrant(self.user_store.as_ref(), UserId(user_id), warrant_id)
             .map_err(to_reg_err)
+    }
+
+    fn create_api_token(&self, rec: reg::ApiTokenRecord) -> Result<(), RegistrarError> {
+        UserStore::create_api_token(self.user_store.as_ref(), from_reg_api_token(rec))
+            .map_err(to_reg_err)
+    }
+
+    fn get_api_token(&self, token_hash: &str) -> Result<Option<reg::ApiTokenRecord>, RegistrarError> {
+        UserStore::get_api_token(self.user_store.as_ref(), token_hash)
+            .map(|o| o.map(to_reg_api_token))
+            .map_err(to_reg_err)
+    }
+
+    fn cleanup_expired_api_tokens(&self) -> Result<u64, RegistrarError> {
+        UserStore::cleanup_expired_api_tokens(self.user_store.as_ref()).map_err(to_reg_err)
     }
 
     fn get_or_allocate_status(&self, kind: &str, subject: &str) -> Result<u64, RegistrarError> {
@@ -463,6 +504,22 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
             .map(|e| e.user_id.0))
     }
 
+    fn account_for_presented_identity(&self, email: &str) -> Result<u64, RegistrarError> {
+        // Token-lane account resolution (registry-api-v1 §3.1): the caller
+        // PROVED the identity with a full presentation. Existing owner wins
+        // (same rule as the cookie lane's no-session path); otherwise a fresh
+        // account holding exactly this identity — never linking or transfer,
+        // which are session ceremonies with no token-lane analogue.
+        if let Some(rec) = self.user_store.get_email(email).map_err(to_reg_err)? {
+            return Ok(rec.user_id.0);
+        }
+        let user_id = self.user_store.create_user_no_password().map_err(to_reg_err)?;
+        self.user_store
+            .add_email_with_type(user_id, email, true, EmailType::Primary)
+            .map_err(to_reg_err)?;
+        Ok(user_id.0)
+    }
+
     fn agent_identities(&self, user_id: u64) -> Result<Vec<AgentIdentity>, RegistrarError> {
         Ok(self
             .user_store
@@ -591,6 +648,117 @@ impl browserid_registrar::IssuerKeyResolver for BrokerIssuerResolver {
                 // (hosted primaries, g5qt) — same trust root as the key.
                 serving_host: result.serving_host.clone(),
             })
+        })
+    }
+}
+
+/// The broker's core §6 verification stack behind the registry API token
+/// lane (registry-api-v1 §3): the exact `verify_access_with_dns` call the
+/// cookie sibling `auth_with_presentation` makes — same audience (the
+/// broker's own public origin), same accepted fallback, same fail-closed
+/// status context — plus the per-call status re-check token-authed
+/// endpoints run on the bound config cert.
+pub struct BrokerPresentationVerifier<U: UserStore, S: SessionStore, E: crate::email::EmailSender>
+{
+    pub state: Arc<crate::state::AppState<U, S, E>>,
+}
+
+impl<U, S, E> browserid_registrar::api::PresentationVerifier for BrokerPresentationVerifier<U, S, E>
+where
+    U: UserStore + 'static,
+    S: SessionStore + 'static,
+    E: crate::email::EmailSender + 'static,
+{
+    fn verify_presentation<'a>(
+        &'a self,
+        presentation: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<browserid_registrar::api::VerifiedPresentation, String>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let state = &self.state;
+            let fetcher = state
+                .fallback_fetcher()
+                .await
+                .map_err(|e| format!("DNS discovery not configured: {e}"))?;
+            let audience = browserid_registrar::consent::public_origin(&state.domain);
+            let accepted = vec![state.domain.clone()];
+            let is_own_revoked =
+                |idx: u64| state.user_store.is_status_revoked_idx(idx).map_err(|e| e.to_string());
+            let status = crate::verifier::StatusCtx {
+                own_uri: browserid_registrar::consent::status_list_uri(&state.domain),
+                is_own_revoked: &is_own_revoked,
+                cache: &state.foreign_status_lists,
+                allow_private_hosts: !crate::routes::session::cookie_secure(&state.domain),
+            };
+            let result = crate::verifier::verify_access_with_dns(
+                presentation,
+                &audience,
+                fetcher.as_ref(),
+                &accepted,
+                status,
+            )
+            .await;
+            if result.status != "okay" {
+                return Err(result.reason.unwrap_or_else(|| "verification failed".into()));
+            }
+            Ok(browserid_registrar::api::VerifiedPresentation {
+                email: result.email.ok_or("no email in presentation")?,
+                grantee: result.grantee.ok_or("no grantee in presentation")?,
+                issuer: result.issuer.ok_or("no issuer in presentation")?,
+                holder: result.holder.unwrap_or_default(),
+                scopes: result.scopes.unwrap_or_default(),
+            })
+        })
+    }
+
+    fn check_status_ref<'a>(
+        &'a self,
+        uri: &'a str,
+        idx: u64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let state = &self.state;
+            // Same authority routing as record_device_cert: our own list is
+            // authoritative locally; a hosted tenant's list lives under the
+            // idp host's /status/<domain>; anything else is a foreign list,
+            // fetched and verified fail-closed.
+            let own_uri = browserid_registrar::consent::status_list_uri(&state.domain);
+            if uri == own_uri {
+                return state.user_store.is_status_revoked_idx(idx).map_err(|e| e.to_string());
+            }
+            let idp_status_prefix = format!(
+                "{}/status/",
+                browserid_registrar::consent::public_origin(&state.idp_host)
+            );
+            if let Some(tenant) = uri
+                .strip_prefix(&idp_status_prefix)
+                .and_then(|d| state.user_store.get_tenant(&d.to_lowercase()).ok().flatten())
+            {
+                return state
+                    .user_store
+                    .tenant_status_is_revoked(tenant.id, idx)
+                    .map_err(|e| e.to_string());
+            }
+            let fetcher = state
+                .fallback_fetcher()
+                .await
+                .map_err(|e| format!("DNS discovery not configured: {e}"))?;
+            let r = browserid_core::StatusRef { uri: uri.to_string(), idx };
+            crate::verifier::check_foreign_status_fresh(
+                &r,
+                fetcher.as_ref(),
+                &state.foreign_status_lists,
+                !crate::routes::session::cookie_secure(&state.domain),
+            )
+            .await
+            .map_err(|e| e.to_string())
         })
     }
 }

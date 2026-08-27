@@ -2,7 +2,7 @@
 //! provides the persistence; the registrar owns the semantics.
 
 use crate::error::RegistrarError;
-use crate::models::{DeviceCertRecord, WarrantRecord, WarrantRequestRecord};
+use crate::models::{ApiTokenRecord, DeviceCertRecord, WarrantRecord, WarrantRequestRecord};
 
 pub type StoreResult<T> = Result<T, RegistrarError>;
 
@@ -107,6 +107,26 @@ pub trait RegistrarStore: Send + Sync {
 
     /// All revoked indices plus the current max index (bitmap capacity)
     fn revoked_status_indices(&self) -> StoreResult<(Vec<u64>, u64)>;
+
+    // --- Registry API tokens (registry-api-v1 §3.1) ---
+    //
+    // Defaults error so hosts that predate the token lane keep compiling;
+    // the token exchange is then simply unavailable on them.
+
+    /// Persist a minted API token record (keyed by its token hash).
+    fn create_api_token(&self, _rec: ApiTokenRecord) -> StoreResult<()> {
+        Err(RegistrarError::Internal("API tokens not supported by this host".into()))
+    }
+
+    /// Look up an API token record by base64url(SHA-256(token)).
+    fn get_api_token(&self, _token_hash: &str) -> StoreResult<Option<ApiTokenRecord>> {
+        Err(RegistrarError::Internal("API tokens not supported by this host".into()))
+    }
+
+    /// Drop expired API token rows. Best-effort housekeeping.
+    fn cleanup_expired_api_tokens(&self) -> StoreResult<u64> {
+        Ok(0)
+    }
 
     // --- Device certs (DC Phase 3/4): durable, revocable IdP-signed certs ---
 

@@ -47,6 +47,18 @@ pub trait RegistrarHost: Send + Sync {
     /// local user whose consent it needs.
     fn user_for_verified_email(&self, email: &str) -> Result<Option<u64>, RegistrarError>;
 
+    /// Token-lane account resolution (registry-api-v1 §3.1): the caller has
+    /// PROVEN control of `email` with a fully verified presentation. If an
+    /// account owns the identity, that account authenticates; otherwise a new
+    /// account containing exactly that identity is created. No linking,
+    /// transfer, or merge — those are cookie-lane / fallback-IdP ceremonies.
+    /// Default errors, so hosts without the token lane keep compiling.
+    fn account_for_presented_identity(&self, _email: &str) -> Result<u64, RegistrarError> {
+        Err(RegistrarError::Internal(
+            "token-lane account resolution not supported by this host".into(),
+        ))
+    }
+
     /// The account's agent identities (for key-revocation status flips).
     fn agent_identities(&self, user_id: u64) -> Result<Vec<AgentIdentity>, RegistrarError>;
 

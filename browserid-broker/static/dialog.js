@@ -478,10 +478,16 @@
     // broker's own origin (e.g. /broker-demo) still registers.
     let statusRef = null;
     const registerable = !noRegister;
+    // ig9p phase 1: warrants for the BROKER's own audience (the session-join
+    // presentation, or an RP hosted on this origin) carry the `registry`
+    // scope — the registry API token exchange requires it, and the cookie
+    // lane will require it too once the migration window closes.
+    const warrantScopes = (audience === window.location.origin)
+      ? ['login', 'registry'] : ['login'];
     if (registerable) {
       try {
         const alloc = await apiCall('/wsapi/allocate_warrant_status', 'POST', {
-          agent_email: email, audience, scopes: ['login']
+          agent_email: email, audience, scopes: warrantScopes
         });
         if (alloc && alloc.uri) statusRef = { uri: alloc.uri, idx: alloc.idx };
       } catch (e) { console.warn('warrant status allocation failed:', e.message || e); }
@@ -494,7 +500,7 @@
       grantee: email,
       holder: loginMatcher,
       audience,
-      scopes: ['login']
+      scopes: warrantScopes
     };
     if (statusRef) warrantClaims.status = statusRef;
     const warrant = await signJws(pair.config.privateKey, warrantClaims);
