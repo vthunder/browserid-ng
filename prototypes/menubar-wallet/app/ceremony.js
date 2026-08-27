@@ -111,6 +111,12 @@ async function startBootstrap({ notify, updateTray }) {
     width: 480, height: 640, title: 'Sign in to BrowserID',
     webPreferences: { partition: 'persist:browserid', nodeIntegration: false, contextIsolation: true },
   });
+  // The account page may sign the user in via a window.open dialog —
+  // allow child windows in the same session so that flow works in-app.
+  win.webContents.setWindowOpenHandler(() => ({
+    action: 'allow',
+    overrideBrowserWindowOptions: { webPreferences: { partition: 'persist:browserid' } },
+  }));
   win.loadURL(`${BROKER}/account`);
 
   // Poll the window's session until it is authenticated, then issue.
