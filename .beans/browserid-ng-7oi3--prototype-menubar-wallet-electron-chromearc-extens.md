@@ -3,8 +3,9 @@
 title: 'Prototype: menubar wallet (Electron) + Chrome/Arc extension — native login + approval push'
 status: in-progress
 type: task
+priority: normal
 created_at: 2026-08-26T23:52:02Z
-updated_at: 2026-08-26T23:52:02Z
+updated_at: 2026-08-27T00:12:50Z
 parent: browserid-ng-7v5l
 ---
 
@@ -18,11 +19,13 @@ Overnight prototype build (2026-08-27 → 28), decisions made with Dan before be
 
 ## Todo
 
-- [ ] Recon: map the dialog.js login ceremony (endpoints, session requirements, presentation shape, include.js delivery)
-- [ ] Recon: map bootstrap/pairing lanes + pending-approval visibility for notifications
-- [ ] Scaffold Electron app: tray, keystore, localhost server, ceremony client
-- [ ] Scaffold MV3 extension: navigator.id shim content script + service worker bridge
-- [ ] Bootstrap pairing flow working against prod (test identity)
-- [ ] Login e2e: demo RP signs in via the app under Playwright
-- [ ] Approval-push notifications (best-effort without broker changes; if it needs a new endpoint, document instead of deploying)
-- [ ] Write-up: what worked, protocol gaps found (expect kmvm territory), morning test instructions for Arc
+- [x] Recon: map the dialog.js login ceremony (endpoints, session requirements, presentation shape, include.js delivery)
+- [x] Recon: map bootstrap/pairing lanes + pending-approval visibility for notifications (finding: agent-provision lane yields no config cert, so session-lane bootstrap chosen; no external approvals endpoint, so cookie-session polling)
+- [x] Scaffold Electron app: tray, keystore, localhost server, ceremony client
+- [x] Scaffold MV3 extension: navigator.id shim content script + service worker bridge (accessor-with-swallowing-setter beats include.js reinstall)
+- [ ] Bootstrap pairing flow working against prod: interactive BrowserWindow lane built but only exercised via the password test lane against the local broker; Dan walks it on prod in the morning
+- [x] Login e2e: demo RP signs in via the app under Playwright (e2e.mjs green: shim owns navigator.id on the real broker-demo, no popup, /verify okay)
+- [x] Approval-push notifications: wired via persisted-Electron-session polling of /wsapi/warrant_requests (test-approvals.mjs green); no external endpoint exists, clean fix documented in README (device-cert-authed inbox)
+- [x] Write-up: README.md with morning Arc instructions, design notes, and protocol findings
+
+**Overnight status (2026-08-28 early):** all automated lanes green against a local broker: ceremony unit test (bootstrap, device/config certs, self-signed warrant, cookie-free access mint, /verify okay, warrant reuse, wrong-audience rejected), approvals-path test, and the full Playwright e2e (Chromium + unpacked extension + real broker-demo page: no popup, page logs in). Remaining: the morning walk-through by Dan (interactive bootstrap window against prod browserid.me + the same click-through in Arc). Code on branch proto/menubar-wallet under prototypes/menubar-wallet/.

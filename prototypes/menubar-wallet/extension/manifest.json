@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "BrowserID Wallet Bridge",
+  "version": "0.1.0",
+  "description": "Routes BrowserID logins to the native menubar wallet instead of the browserid.me popup.",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1:8873/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["shim.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["relay.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
