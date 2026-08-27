@@ -245,15 +245,20 @@ async function ensureWarrant(audience) {
   return warrant;
 }
 
-async function mintAccess() {
+async function mintAccess(audience) {
   const s = store.state();
   const access = await generateKey();
-  const areq = await jws(s.deviceKey, {
+  const claims = {
     typ: 'browserid-access-request-v1',
     iat: nowS(), exp: nowS() + 600, jti: randHex(16),
     domain: s.domain, identity: s.identity, holder: s.holder,
     'access-key': { algorithm: 'Ed25519', publicKey: access.x },
-  });
+  };
+  // Managed identities mint per-audience access certs (spec §4.2/§4.7) —
+  // same rule dialog.js applies: name the audience ONLY when the device
+  // cert is marked managed; unmanaged mints stay RP-blind.
+  if (decodeJws(s.deviceCert).managed === true) claims.audience = audience;
+  const areq = await jws(s.deviceKey, claims);
   const mintUrl = s.mintUrl || `${BROKER}/access/mint`;
   const res = await fetch(mintUrl, {
     method: 'POST',
@@ -274,7 +279,7 @@ async function login({ origin, approveLogin }) {
   if (!ok) return { error: 'user cancelled' };
 
   const warrant = await ensureWarrant(origin);
-  const access = await mintAccess();
+  const access = await mintAccess(origin);
   const assertion = await jws(access.privJwk, { exp: nowS() + 300, aud: origin });
   const presentation = `${access.cert}~${assertion}~${warrant}~${s.configCert}`;
   return { presentation, email: s.identity };
