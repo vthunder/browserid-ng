@@ -71,6 +71,9 @@ function primaryHop({ deviceAuthUrl, email, devicePub, configPub, holder }) {
       '&device_pubkey=' + encodeURIComponent(devicePub) +
       '&config_pubkey=' + encodeURIComponent(configPub) +
       (holder ? '&holder=' + encodeURIComponent(holder) : '') +
+      // return_origin is a page precondition (postMessage lane target); the
+      // return_url delivery lane is what we actually consume.
+      '&return_origin=' + encodeURIComponent(new URL(BROKER).origin) +
       '&return_url=' + encodeURIComponent(RETURN_URL);
 
     const timeout = setTimeout(() => { win.close(); reject(new Error('IdP authorization timed out')); }, 3 * 60 * 1000);
