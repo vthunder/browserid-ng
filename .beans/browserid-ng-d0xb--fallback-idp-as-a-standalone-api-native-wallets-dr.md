@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-27T11:04:49Z
-updated_at: 2026-08-28T11:03:46Z
+updated_at: 2026-08-28T19:35:49Z
 blocked_by:
     - browserid-ng-bw9q
 ---
@@ -41,3 +41,12 @@ Skeleton redrafted twice on review: (1) issuance bar corrected to password + dur
 - Holder: same as the primary lane — issuer-assigned fresh holder bound to the fragment keys, never derived from the ceremony page's browser session (the wallet must not show up as a web device). No client-supplied holder param; kmvm stays independent.
 - Registration reframed as a first-class, client-configured relationship with the registry, distinct from issuance: token exchange (or session join) with the new certs; issuer==registry is the redundant case (issuance already recorded), and the lanes' self-issued rules make that composition safe by construction. Registry choice surfaced at wallet setup; default preserves current UX.
 - Remaining open: verification max-age window; config-cert identity set; page mount (new route vs broker-as-own-tenant on the hosted-IdP machinery).
+
+## Review rulings round 3 (Dan, 2026-08-28)
+
+- Verification max-age: issuer policy, NOT in the spec; browserid.me implements 90 days (uboq).
+- Old open Q3 (page mount) dropped from the spec — implementation detail, decide at build time.
+- Spec gained a §1 model section: four parties (RP / wallet / IdP / registry), independently chosen, identical APIs regardless of operator. RP acceptance of fallbacks (core §8.1) is part of the model.
+- Registration is ALWAYS wallet-driven, even when issuer == registry: token exchange + a new POST /api/v1/devices/register (idempotent upsert; to add to registry-api-v1 §5.3 during flesh-out — the token exchange records nothing today). Issuer-side recording demoted to an internal convenience nothing may rely on.
+- New bean u6jq: the native wallet lane drops the RP's acceptedFallbacks (extension does not forward them to the localhost bridge).
+- Remaining open: config-cert identity coverage (exact address vs local+*@domain sub-address wildcard).
