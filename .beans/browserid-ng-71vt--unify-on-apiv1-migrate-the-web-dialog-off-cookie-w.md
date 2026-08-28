@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-08-28T21:00:26Z
-updated_at: 2026-08-28T21:00:26Z
+updated_at: 2026-08-28T21:06:48Z
 blocked_by:
     - browserid-ng-d0xb
 ---
@@ -38,3 +38,18 @@ After native-wallet convergence (d0xb) proves token-lane ergonomics on the simpl
 
 ## Risks
 Every dialog change is the dialog.js class green-CI won't catch; migrate one operation at a time behind local e2e. Account page shares the (A) cores' envelopes — migrate it in lockstep or it breaks on the deleted routes.
+
+## Correction (Dan, 2026-08-28): /device/issue is not a wallet API — it's the ceremony page's backend
+
+Earlier framing wrongly listed /device/issue among 'broker-private endpoints the web wallet keeps calling'. It is not a wallet-facing API for ANY wallet. Issuance has no wallet API in the specs — only the device-authorization ceremony-page CONTRACT (pubkeys in fragment → certs via return_url). How the issuer mints behind that page (session check, authorize_mint, /device/issue) is issuer-internal and unspecified, same as a primary's internal minting.
+
+The current web dialog calls /device/issue directly only because it FUSES two roles: wallet (keys, identity choice) + issuer ceremony page (human auth, mint trigger). That fusion is an implementation artifact.
+
+**Target = separate the roles (option a):** the web dialog becomes a PURE wallet. For a fallback identity it drives the same-origin device-authorization ceremony page exactly as a native wallet does, gets certs via the return contract, registers via /api/v1. It then never calls /device/issue — issuance is fully internal to the ceremony page (possibly not even a distinct route, just the page's POST handler). One issuance implementation for all wallets; one place issuance security lives (9it0, mint bar, verification freshness).
+
+**Revised surface model — three surfaces, not two:**
+1. Standard WALLET APIs: /api/v1 (registry) + the device-authorization ceremony contract (issuance). Every wallet, identical.
+2. Ceremony-PAGE-internal endpoints: the issuer page's own human-auth + mint (authenticate_user, stage/complete_signin_code, set_password, stage_email/complete_email_addition, complete_handle_claim, /device/issue, and the auth/session primitives it needs). NOT wallet-facing; issuer-implementation-private even when browserid.me runs it. A clean wallet calls NONE of these.
+3. address_info / list_emails / session_context etc. are ceremony-page/discovery concerns, likewise not wallet APIs.
+
+So a clean wallet has ZERO broker-private endpoints — it uses only surface 1. Whatever remains under /wsapi belongs to the issuer's ceremony-page role, not the wallet role. This makes 'the web wallet uses the same APIs as any wallet' literally true. Adds scope to this bean: dialog restructure to split wallet-role (chooser + keystore + /api/v1 + ceremony driver) from ceremony-page-role (login/mint UI behind device-authorization).
