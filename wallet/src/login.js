@@ -107,10 +107,27 @@ async function buildBrokerPresentation() {
   return `${access.cert}~${assertion}~${warrant}~${s.configCert}`;
 }
 
-async function login({ origin, caller, approveLogin }) {
+async function login({ origin, caller, approveLogin, acceptedFallbacks }) {
   const s = store.state();
   if (!s.deviceCert) return { error: 'wallet not bootstrapped' };
-  const ok = process.env.WALLET_AUTO_APPROVE === '1' || (await approveLogin({ origin, email: s.identity, caller }));
+  // Core §8.1 (bean u6jq): the RP names the fallback IdPs its verifier
+  // accepts. Our identity is fallback-issued when its issuer differs from
+  // the email's domain; if that issuer is not in the RP's set, the login
+  // will be rejected at verification — warn the human before they approve.
+  let warning = null;
+  const emailDomain = (s.identity || '').split('@')[1] || '';
+  const fallbackIssued =
+    s.domain && emailDomain && s.domain.toLowerCase() !== emailDomain.toLowerCase();
+  if (
+    fallbackIssued &&
+    Array.isArray(acceptedFallbacks) &&
+    !acceptedFallbacks.some((f) => String(f).toLowerCase() === s.domain.toLowerCase())
+  ) {
+    warning = `This site does not accept ${s.domain} (the service that vouches for `
+      + `${s.identity}), so the sign-in will likely be rejected.`;
+  }
+  const ok = process.env.WALLET_AUTO_APPROVE === '1'
+    || (await approveLogin({ origin, email: s.identity, caller, warning }));
   if (!ok) return { error: 'user cancelled' };
 
   const warrant = await ensureWarrant(origin);

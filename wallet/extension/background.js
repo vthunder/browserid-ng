@@ -34,7 +34,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     try {
       if (msg.cmd === 'login') {
-        sendResponse(await walletCall('/login', { origin: msg.payload.origin }));
+        sendResponse(await walletCall('/login', {
+          origin: msg.payload.origin,
+          acceptedFallbacks: msg.payload.acceptedFallbacks || null,
+        }));
       } else {
         sendResponse({ error: `unknown cmd ${msg.cmd}` });
       }

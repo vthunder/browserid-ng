@@ -54,16 +54,17 @@ function notify(title, body, onClick) {
 // of defense on the localhost bridge, so it names everything the human has
 // to judge: the site, WHICH identity is about to be used, and WHO is asking
 // (the paired extension vs. an unidentified local process).
-async function approveLogin({ origin, email, caller }) {
+async function approveLogin({ origin, email, caller, warning }) {
   const { response } = await dialog.showMessageBox({
-    type: 'question',
+    type: warning ? 'warning' : 'question',
     buttons: ['Sign in', 'Cancel'],
-    defaultId: 0,
+    defaultId: warning ? 1 : 0,
     cancelId: 1,
     message: `Sign in to ${origin}?`,
     detail: `The site at ${origin} is requesting a BrowserID login.\n\n`
       + `Identity: ${email || '(not set up)'}\n`
-      + `Requested via: ${caller || 'unknown caller'}`,
+      + `Requested via: ${caller || 'unknown caller'}`
+      + (warning ? `\n\n⚠️ ${warning}` : ''),
   });
   return response === 0;
 }

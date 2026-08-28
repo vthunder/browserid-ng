@@ -38,9 +38,16 @@
       observers = { login: opts.onlogin, logout: opts.onlogout || null, ready: opts.onready || null };
       if (observers.ready) setTimeout(() => observers.ready(), 0);
     },
-    request() {
+    request(opts) {
+      opts = opts || {};
       if (!observers.login) throw new Error('navigator.id.watch must be called before navigator.id.request');
-      callWallet('login', { origin: location.origin }).then((result) => {
+      // Forward the RP's accepted fallback IdPs (spec §8.1, bean u6jq) so
+      // the wallet can warn when its identity's issuer will be rejected at
+      // the RP's verifier.
+      callWallet('login', {
+        origin: location.origin,
+        acceptedFallbacks: Array.isArray(opts.acceptedFallbacks) ? opts.acceptedFallbacks : null,
+      }).then((result) => {
         if (result && result.presentation) {
           observers.login(result.presentation, { presentation: result.presentation, email: result.email });
         } else if (result && result.error) {

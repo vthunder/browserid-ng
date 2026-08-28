@@ -88,10 +88,11 @@ function startServer({ approveLogin, approvePair, notify, onStateChange }) {
           // { origin } -> presentation for that RP origin, after native
           // approval. The RP origin in the body is caller-claimed; the
           // caller line shown to the human comes from the Origin header.
-          const { origin: rpOrigin } = await readBody(req);
+          const { origin: rpOrigin, acceptedFallbacks } = await readBody(req);
           if (!rpOrigin) return json(req, res, 400, { error: 'origin required' });
           const result = await require('./login').login({
             origin: rpOrigin, caller: describeCaller(origin), approveLogin, notify,
+            acceptedFallbacks,
           });
           return json(req, res, result.error ? 400 : 200, result);
         }
