@@ -858,6 +858,94 @@ where
             .map_err(|e| e.to_string())
         })
     }
+
+    /// The §5.3 per-cert bar behind `devices/register` — the same pipeline
+    /// as the cookie lane's `record_device_cert` (issuer-conformant key from
+    /// DNSSEC discovery, signature, fail-closed status at the cert's own
+    /// authority), with distinguishable refusals for §7.1's `invalid_cert`
+    /// vocabulary.
+    fn verify_device_cert<'a>(
+        &'a self,
+        cert: &'a str,
+        expected_purpose: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        browserid_registrar::api::VerifiedDeviceCert,
+                        browserid_registrar::api::DeviceCertRefusal,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        use browserid_core::device::{DeviceCert, Purpose};
+        use browserid_registrar::api::DeviceCertRefusal as Refusal;
+        Box::pin(async move {
+            let state = &self.state;
+            let cert = DeviceCert::parse(cert).map_err(|e| Refusal::Malformed(e.to_string()))?;
+            let cc = cert.claims();
+            let purpose = match cc.purpose {
+                Purpose::Authentication => "authentication",
+                Purpose::Authorization => "authorization",
+            };
+            if purpose != expected_purpose {
+                return Err(Refusal::WrongPurpose(format!(
+                    "purpose is '{purpose}', expected '{expected_purpose}'"
+                )));
+            }
+            if cert.is_expired() {
+                return Err(Refusal::Expired);
+            }
+            let Some(identity) = cc.identities.iter().find(|i| !i.contains('*')) else {
+                return Err(Refusal::Malformed("cert carries no concrete identity".into()));
+            };
+            let Some(domain) = browserid_core::identity::email_domain(identity) else {
+                return Err(Refusal::Malformed(format!("malformed identity '{identity}'")));
+            };
+            let fetcher = state
+                .fallback_fetcher()
+                .await
+                .map_err(|e| Refusal::Internal(format!("DNS discovery not configured: {e}")))?;
+            // The operator's accepted-fallback set (registry-api-v1 §5.3):
+            // the broker's registry accepts its own fallback role only —
+            // same set as the cookie lane's record_device_cert.
+            let accepted = vec![state.domain.clone()];
+            let key = crate::verifier::resolve_conformant_key(
+                fetcher.as_ref(),
+                &accepted,
+                domain,
+                &cc.iss,
+            )
+            .await
+            .map_err(Refusal::IssuerNotAccepted)?;
+            if cert.verify(&key).is_err() {
+                return Err(Refusal::SignatureInvalid);
+            }
+            if let Some(r) = &cc.status {
+                match self.check_status_ref(&r.uri, r.idx).await {
+                    Ok(false) => {}
+                    Ok(true) => return Err(Refusal::Revoked("the cert's status bit is set".into())),
+                    Err(e) => {
+                        return Err(Refusal::Revoked(format!(
+                            "status unverifiable (fail-closed): {e}"
+                        )))
+                    }
+                }
+            }
+            Ok(browserid_registrar::api::VerifiedDeviceCert {
+                identities: cc.identities.clone(),
+                purpose: purpose.to_string(),
+                holder: cc.holder.as_str().to_string(),
+                pubkey: cc.public_key.to_base64(),
+                iss: cc.iss.clone(),
+                iat: cc.iat,
+                exp: cc.exp,
+                status_uri: cc.status.as_ref().map(|s| s.uri.clone()),
+                status_idx: cc.status.as_ref().map(|s| s.idx),
+            })
+        })
+    }
 }
 
 #[cfg(test)]

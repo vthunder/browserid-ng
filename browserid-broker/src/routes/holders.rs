@@ -125,60 +125,9 @@ where
     }))
 }
 
-/// A friendly holder label derived from a User-Agent, e.g. "Chrome on macOS".
-/// Order matters: Edge ships "Chrome/" too, Chrome ships "Safari/", Android
-/// ships "Linux". None when nothing recognizable — callers fall back to the
-/// generic default label.
-pub(crate) fn ua_label(ua: &str) -> Option<String> {
-    let browser = if ua.contains("Edg/") {
-        Some("Edge")
-    } else if ua.contains("Chrome/") {
-        Some("Chrome")
-    } else if ua.contains("Firefox/") {
-        Some("Firefox")
-    } else if ua.contains("Safari/") {
-        Some("Safari")
-    } else {
-        None
-    };
-    let os = if ua.contains("Windows") {
-        Some("Windows")
-    } else if ua.contains("iPhone") || ua.contains("iPad") {
-        Some("iOS")
-    } else if ua.contains("Mac OS X") {
-        Some("macOS")
-    } else if ua.contains("Android") {
-        Some("Android")
-    } else if ua.contains("Linux") {
-        Some("Linux")
-    } else {
-        None
-    };
-    match (browser, os) {
-        (Some(b), Some(o)) => Some(format!("{b} on {o}")),
-        (Some(b), None) => Some(b.to_string()),
-        (None, Some(o)) => Some(format!("Browser on {o}")),
-        // Not a browser UA: the product-token convention (bean lbla) — a
-        // native client sending `Name/Version …` gets `Name` as its default
-        // label, so wallets don't register as bare holder ids.
-        (None, None) => product_token_label(ua),
-    }
-}
-
-/// `Name/Version …` → `Name`, for non-browser clients (RFC 9110 product
-/// tokens). `None` for anything that doesn't cleanly parse — callers keep
-/// their generic default.
-fn product_token_label(ua: &str) -> Option<String> {
-    let first = ua.split_whitespace().next()?;
-    let (name, _version) = first.split_once('/')?;
-    let ok = !name.is_empty()
-        && name.len() <= 64
-        && name != "Mozilla"
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '+'));
-    ok.then(|| name.to_string())
-}
+// `ua_label` / `product_token_label` moved to browserid_registrar::holders
+// (shared with the token lane's devices/register). Re-imported below.
+use browserid_registrar::holders::ua_label;
 
 /// Best-effort: give `holder_id` a UA-derived default label if the user hasn't
 /// labeled it yet. Never clobbers an existing label; never fails the caller.
@@ -561,44 +510,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{register_orphan_browser_move, ua_label};
+    use super::register_orphan_browser_move;
     use crate::store::{InMemoryUserStore, UserStore};
-
-    #[test]
-    fn ua_label_common_browsers() {
-        let chrome_mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
-        assert_eq!(ua_label(chrome_mac).as_deref(), Some("Chrome on macOS"));
-        let ff_linux = "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0";
-        assert_eq!(ua_label(ff_linux).as_deref(), Some("Firefox on Linux"));
-        let safari_ios = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
-        assert_eq!(ua_label(safari_ios).as_deref(), Some("Safari on iOS"));
-        // Edge carries Chrome/ too — Edge must win.
-        let edge_win = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0";
-        assert_eq!(ua_label(edge_win).as_deref(), Some("Edge on Windows"));
-        // Android carries Linux — Android must win.
-        let chrome_android = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36";
-        assert_eq!(ua_label(chrome_android).as_deref(), Some("Chrome on Android"));
-    }
-
-    // Non-browser clients: the product-token convention (bean lbla) — a
-    // native wallet's `Name/Version` UA yields `Name`, so its device row
-    // gets a friendly default instead of a bare holder id.
-    #[test]
-    fn ua_label_product_tokens() {
-        assert_eq!(ua_label("BrowserID-Wallet/0.1").as_deref(), Some("BrowserID-Wallet"));
-        assert_eq!(ua_label("BrowserID-Wallet/0.1 (macOS)").as_deref(), Some("BrowserID-Wallet"));
-        assert_eq!(ua_label("curl/8.7.1").as_deref(), Some("curl"));
-        // A browser UA never falls through to the product token.
-        assert_eq!(
-            ua_label("Mozilla/5.0 (Windows NT 10.0) Chrome/150.0 Safari/537.36").as_deref(),
-            Some("Chrome on Windows")
-        );
-        // Unparseable or spoof-y strings stay unlabeled.
-        assert_eq!(ua_label("Mozilla/4.0"), None);
-        assert_eq!(ua_label("no-slash-here"), None);
-        assert_eq!(ua_label("we ird/1.0"), None);
-        assert_eq!(ua_label(&format!("{}/1.0", "x".repeat(65))), None);
-    }
 
     // The cold-login repair backstop (browserid-ng-i8a2). A browser whose
     // IdP-self-assigned prefix can't be adopted must not sit in no namespace at

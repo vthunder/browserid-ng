@@ -206,6 +206,7 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         .route("/api/v1/warrants/forget", post(api::forget_warrant))
         .route("/api/v1/warrants/allocate_status", post(api::allocate_status))
         .route("/api/v1/devices", get(api::list_devices))
+        .route("/api/v1/devices/register", post(api::register_device))
         .route("/api/v1/devices/revoke", post(api::revoke_device))
         .route("/api/v1/devices/status", get(api::device_status))
         .route("/api/v1/holders", get(api::list_holders))

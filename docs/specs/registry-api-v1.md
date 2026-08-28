@@ -748,9 +748,9 @@ With `invalid_cert` (`422`, §5.3 `devices/register`) — in check order:
 | `cert_malformed` | Either cert fails to parse as a device cert. |
 | `wrong_purpose` | `device_cert` is not `purpose: authentication`, or `config_cert` is not `purpose: authorization`. |
 | `cert_expired` | Either cert is past `exp`. |
-| `cert_revoked` | A status ref on either cert checks revoked, or is uncheckable (fail-closed). |
 | `issuer_not_accepted` | The cert's issuer is neither the identity domain's DNSSEC-published IdP nor in the registry's accepted-fallback set. |
 | `signature_invalid` | A cert's signature does not verify under the resolved issuer key. |
+| `cert_revoked` | A status ref on either cert checks revoked, or is uncheckable (fail-closed). |
 | `identity_not_owned` | A concrete identity on the pair is not owned by the token's account. |
 | `holder_mismatch` | The two certs name different holders. |
 | `config_cert_not_bound` | The config cert is not the one the token is bound to. |

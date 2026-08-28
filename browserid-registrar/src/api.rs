@@ -85,6 +85,83 @@ pub trait PresentationVerifier: Send + Sync {
         uri: &'a str,
         idx: u64,
     ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>>;
+
+    /// Verify ONE device cert for §5.3 `devices/register`: parse, purpose,
+    /// expiry, issuer acceptance (the identity domain's DNSSEC key, or a
+    /// fallback issuer in the operator's accepted set), signature, and a
+    /// fail-closed status check. Refusals are distinguishable so the
+    /// endpoint can surface §7.1's `invalid_cert` reasons — unlike the
+    /// anonymous exchange, this endpoint is authenticated, so it is not a
+    /// verification oracle.
+    fn verify_device_cert<'a>(
+        &'a self,
+        cert: &'a str,
+        expected_purpose: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<VerifiedDeviceCert, DeviceCertRefusal>> + Send + 'a>>;
+}
+
+/// What §5.3 registration learns from one fully verified device cert.
+#[derive(Debug, Clone)]
+pub struct VerifiedDeviceCert {
+    /// Emails (or single-`*` globs) the cert authorizes.
+    pub identities: Vec<String>,
+    /// "authentication" | "authorization".
+    pub purpose: String,
+    /// The opaque holder id the cert acts as.
+    pub holder: String,
+    /// The cert's public key, base64.
+    pub pubkey: String,
+    /// Issuing IdP domain.
+    pub iss: String,
+    /// Issued-at / expiry, epoch seconds.
+    pub iat: i64,
+    pub exp: i64,
+    /// The cert's own status ref, when it carries one.
+    pub status_uri: Option<String>,
+    pub status_idx: Option<u64>,
+}
+
+/// Why [`PresentationVerifier::verify_device_cert`] refused — one variant per
+/// §7.1 `invalid_cert` reason the host can decide.
+#[derive(Debug)]
+pub enum DeviceCertRefusal {
+    /// Does not parse as a device cert (or carries no concrete identity).
+    Malformed(String),
+    /// `purpose` differs from the expected one.
+    WrongPurpose(String),
+    /// Past `exp`.
+    Expired,
+    /// Issuer is neither the identity domain's DNSSEC IdP nor in the
+    /// operator's accepted-fallback set.
+    IssuerNotAccepted(String),
+    /// Signature does not verify under the resolved issuer key.
+    SignatureInvalid,
+    /// A status ref checks revoked, or is uncheckable (fail-closed).
+    Revoked(String),
+    /// A deployment fault, never a caller error.
+    Internal(String),
+}
+
+impl DeviceCertRefusal {
+    /// Map onto the §7.1 `invalid_cert` reason vocabulary; `which` names the
+    /// offending request field in the human diagnostic.
+    fn into_api_error(self, which: &str) -> ApiError {
+        let (reason, description) = match self {
+            DeviceCertRefusal::Malformed(d) => ("cert_malformed", format!("{which}: {d}")),
+            DeviceCertRefusal::WrongPurpose(d) => ("wrong_purpose", format!("{which}: {d}")),
+            DeviceCertRefusal::Expired => ("cert_expired", format!("{which} is expired")),
+            DeviceCertRefusal::IssuerNotAccepted(d) => {
+                ("issuer_not_accepted", format!("{which}: {d}"))
+            }
+            DeviceCertRefusal::SignatureInvalid => (
+                "signature_invalid",
+                format!("{which}: signature does not verify under the issuer's key"),
+            ),
+            DeviceCertRefusal::Revoked(d) => ("cert_revoked", format!("{which}: {d}")),
+            DeviceCertRefusal::Internal(d) => return ApiError::Internal(d),
+        };
+        ApiError::InvalidCert { reason, description }
+    }
 }
 
 // ===========================================================================
@@ -110,6 +187,8 @@ pub enum ApiError {
     /// 422 — a client-signed warrant / admission record (or the claim
     /// precondition) failed the §5.1/§5.2 validation bar.
     InvalidWarrant { reason: &'static str, description: String },
+    /// 422 — the `devices/register` cert pair failed the §5.3 bar.
+    InvalidCert { reason: &'static str, description: String },
     /// 404 — owner-scoped miss, or the API is not served here.
     NotFound,
     /// 500 — a deployment fault, never a caller error.
@@ -149,6 +228,12 @@ impl IntoResponse for ApiError {
             ApiError::InvalidWarrant { reason, description } => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "invalid_warrant",
+                description,
+                Some(reason),
+            ),
+            ApiError::InvalidCert { reason, description } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_cert",
                 description,
                 Some(reason),
             ),
@@ -831,6 +916,125 @@ pub async fn revoke_device(
     )
     .map_err(consent_err)?;
     Ok(Json(ApiRevokeDeviceResponse { revoked }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiRegisterDeviceRequest {
+    device_cert: String,
+    config_cert: String,
+}
+
+/// `POST /api/v1/devices/register` — the registration half of issuance
+/// (§5.3 / fallback-IdP spec §4): the wallet records a freshly issued
+/// device + config cert pair at its configured registry. The token exchange
+/// verified only the config cert (inside the presentation); this endpoint
+/// explicitly verifies BOTH certs to the §5.3 bar before recording.
+pub async fn register_device(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    let req: ApiRegisterDeviceRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    let verifier = state.presentation_verifier.as_ref().ok_or_else(|| {
+        ApiError::Internal("device-cert verification is not configured on this host".into())
+    })?;
+
+    // Host-side bar per cert (§5.3): parse, purpose, expiry, issuer
+    // acceptance, signature, fail-closed status.
+    let device = verifier
+        .verify_device_cert(&req.device_cert, "authentication")
+        .await
+        .map_err(|r| r.into_api_error("device_cert"))?;
+    let config = verifier
+        .verify_device_cert(&req.config_cert, "authorization")
+        .await
+        .map_err(|r| r.into_api_error("config_cert"))?;
+
+    // Every concrete identity on the pair must be one this account owns.
+    for ident in device.identities.iter().chain(config.identities.iter()) {
+        if ident.contains('*') {
+            continue;
+        }
+        let owned = state
+            .host
+            .owns_verified_email(user.user_id, ident)
+            .map_err(|e| ApiError::Internal(format!("identity ownership lookup: {e}")))?;
+        if !owned {
+            return Err(ApiError::InvalidCert {
+                reason: "identity_not_owned",
+                description: format!("'{ident}' is not an identity this account owns"),
+            });
+        }
+    }
+
+    // One holder across the pair, and the config cert must be the token's
+    // bound cert — that is what makes registration verification-covered.
+    if device.holder != config.holder {
+        return Err(ApiError::InvalidCert {
+            reason: "holder_mismatch",
+            description: "the two certs name different holders".into(),
+        });
+    }
+    if config.pubkey != user.proof_key {
+        return Err(ApiError::InvalidCert {
+            reason: "config_cert_not_bound",
+            description: "the config cert is not the one this token is bound to".into(),
+        });
+    }
+
+    // A holder mid-move must not resurrect its old row (§5.4): same guard as
+    // the cookie lane's recording paths.
+    let moved = state
+        .store
+        .resolve_holder_move(user.user_id, &device.holder)
+        .map_err(|e| ApiError::Internal(format!("holder-move lookup: {e}")))?;
+    if moved.is_some() {
+        return Err(ApiError::Conflict {
+            reason: "holder_moved",
+            description: "this holder was moved; re-issue under the new holder \
+                          (see holders/assignment)"
+                .into(),
+        });
+    }
+
+    // Record the pair. Inserts upsert on pubkey, so re-registration is the
+    // idempotent no-op success §5.3 requires.
+    for cert in [&device, &config] {
+        let rec = crate::models::DeviceCertRecord {
+            id: 0,
+            user_id: user.user_id,
+            identities: cert.identities.clone(),
+            purpose: cert.purpose.clone(),
+            holder: cert.holder.clone(),
+            pubkey: cert.pubkey.clone(),
+            iss: cert.iss.clone(),
+            issued_at: DateTime::from_timestamp(cert.iat, 0).unwrap_or_else(Utc::now),
+            expires_at: DateTime::from_timestamp(cert.exp, 0).unwrap_or_else(Utc::now),
+            revoked_at: None,
+            status_uri: cert.status_uri.clone(),
+            status_idx: cert.status_idx,
+        };
+        state
+            .store
+            .insert_device_cert(rec)
+            .map_err(|e| ApiError::Internal(format!("device cert store: {e}")))?;
+    }
+
+    // Same default-label hook as the cookie lane (§5.3 MAY): a wallet's
+    // product-token UA names its holder instead of a bare id.
+    crate::holders::maybe_label_holder_from_ua(
+        &*state.store,
+        user.user_id,
+        &device.holder,
+        headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok()),
+    );
+
+    tracing::info!(holder = %device.holder, iss = %device.iss,
+        "devices/register: recorded device pair");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

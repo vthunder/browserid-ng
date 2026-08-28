@@ -1122,3 +1122,229 @@ async fn api_tokens_round_trip_on_sqlite() {
     assert!(store.get_api_token("hash-1").unwrap().is_some());
     assert!(store.get_api_token("hash-2").unwrap().is_none());
 }
+
+// ===========================================================================
+// §5.3 devices/register (fallback-idp-api-v1 §4: wallet-driven registration)
+// ===========================================================================
+
+/// A fresh device+config pair for an EXISTING account — the wallet's
+/// re-issuance lane: password auth + SMTP-fresh cookie + /auth/device_cert.
+async fn issue_pair(l: &Live, email: &str) -> (String, String) {
+    let post = |path: &str, body: Value| l.client.post(format!("{}{path}", l.base)).json(&body);
+    let r = post("/wsapi/authenticate_user", json!({"email": email, "pass": "password123"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let session = set_cookie(&r, "browserid_session");
+    let r = post("/auth/send", json!({"email": email})).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let code = l.email_sender.get_code(email).expect("auth code emailed");
+    let r = post("/auth/verify", json!({"email": email, "code": code})).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let fb = set_cookie(&r, "fb_email");
+    let device_kp = KeyPair::generate();
+    let config_kp = KeyPair::generate();
+    let r = l
+        .client
+        .post(format!("{}/auth/device_cert", l.base))
+        .header("cookie", format!("browserid_session={session}; fb_email={fb}"))
+        .json(&json!({
+            "email": email,
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": config_kp.public_key().to_base64(),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "second device_cert");
+    let certs: Value = r.json().await.unwrap();
+    (
+        certs["device_cert"].as_str().unwrap().to_string(),
+        certs["config_cert"].as_str().unwrap().to_string(),
+    )
+}
+
+/// POST /api/v1/devices/register with an optional User-Agent.
+async fn register_call(
+    l: &Live,
+    kp: &KeyPair,
+    token: &str,
+    body: Value,
+    ua: Option<&str>,
+) -> (reqwest::StatusCode, Value) {
+    let htu = format!("{}/api/v1/devices/register", l.base);
+    let mut req = l
+        .client
+        .post(&htu)
+        .header("authorization", format!("DPoP {token}"))
+        .header("dpop", build_proof("POST", &htu, token, kp))
+        .json(&body);
+    if let Some(ua) = ua {
+        req = req.header("user-agent", ua);
+    }
+    let r = req.send().await.unwrap();
+    let status = r.status();
+    let body = if status == reqwest::StatusCode::NO_CONTENT {
+        json!(null)
+    } else {
+        r.json().await.unwrap_or(json!(null))
+    };
+    (status, body)
+}
+
+/// §5.3 devices/register: verified pair recording, idempotency, the §7.1
+/// invalid_cert taxonomy, the holder-move guard, and the UA label hook —
+/// registration must work with NO issuer-side convenience rows present
+/// (fallback-idp-api-v1 §4: wallets must not rely on issuer recording).
+#[tokio::test]
+async fn devices_register_over_the_token_lane() {
+    let l = live_broker().await;
+    let email = "wallet-register@gmail.com";
+    let (presentation, config_kp, device_cert, config_cert) =
+        broker_presentation(&l, email, vec!["registry".into()]).await;
+    let (status, body) = exchange(&l, json!({ "presentation": presentation })).await;
+    assert_eq!(status, 200, "{body}");
+    let token = body["access_token"].as_str().unwrap().to_string();
+    let holder = browserid_core::device::DeviceCert::parse(&device_cert)
+        .unwrap()
+        .holder()
+        .as_str()
+        .to_string();
+    let user_id = l.user_store.get_email(email).unwrap().unwrap().user_id;
+
+    // Wipe the issuer-side convenience rows: registration alone must record.
+    UserStore::forget_holder(&*l.user_store, user_id, &holder).unwrap();
+    let call = |method: &'static str, path: &'static str, query: Option<&'static str>, body: Option<Value>| {
+        api_call(&l, &config_kp, &token, method, path, query, body)
+    };
+    let (_, devices) = call("GET", "/api/v1/devices", None, None).await;
+    assert!(
+        !devices["certs"].as_array().unwrap().iter().any(|c| c["holder"] == holder.as_str()),
+        "precondition: no issuer-side rows remain"
+    );
+
+    // Register the pair (product-token UA → default holder label).
+    let (status, body) = register_call(
+        &l,
+        &config_kp,
+        &token,
+        json!({ "device_cert": device_cert, "config_cert": config_cert }),
+        Some("BrowserID-Wallet/0.1"),
+    )
+    .await;
+    assert_eq!(status, 204, "register: {body}");
+    let (_, devices) = call("GET", "/api/v1/devices", None, None).await;
+    let ours: Vec<_> = devices["certs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["holder"] == holder.as_str())
+        .collect();
+    assert_eq!(ours.len(), 2, "both certs recorded: {devices}");
+    let purposes: Vec<_> = ours.iter().map(|c| c["purpose"].as_str().unwrap()).collect();
+    assert!(purposes.contains(&"authentication") && purposes.contains(&"authorization"));
+    assert!(ours.iter().all(|c| c["revoked"] == false && c["iss"] == l.domain.as_str()));
+    let labels = UserStore::get_holder_labels(&*l.user_store, user_id).unwrap();
+    assert_eq!(labels.get(&holder).map(String::as_str), Some("BrowserID-Wallet"));
+
+    // Idempotent: same pair again is a no-op success, and no duplicate rows.
+    let (status, _) = register_call(
+        &l,
+        &config_kp,
+        &token,
+        json!({ "device_cert": device_cert, "config_cert": config_cert }),
+        None,
+    )
+    .await;
+    assert_eq!(status, 204, "re-register is idempotent");
+    let (_, devices) = call("GET", "/api/v1/devices", None, None).await;
+    let n = devices["certs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["holder"] == holder.as_str())
+        .count();
+    assert_eq!(n, 2, "no duplicate rows on re-register");
+
+    // Swapped fields → wrong_purpose (the pair's roles are checked).
+    let (status, body) = register_call(
+        &l,
+        &config_kp,
+        &token,
+        json!({ "device_cert": config_cert, "config_cert": device_cert }),
+        None,
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["error"], "invalid_cert");
+    assert_eq!(body["reason"], "wrong_purpose");
+
+    // Unknown fields are rejected (§4).
+    let (status, body) = register_call(
+        &l,
+        &config_kp,
+        &token,
+        json!({ "device_cert": device_cert, "config_cert": config_cert, "extra": 1 }),
+        None,
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"], "invalid_request");
+
+    // A second pair for the SAME account: internally consistent, but its
+    // config cert is not the one this token is bound to.
+    let (device2, config2) = issue_pair(&l, email).await;
+    let (status, body) = register_call(
+        &l,
+        &config_kp,
+        &token,
+        json!({ "device_cert": device2, "config_cert": config2 }),
+        None,
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["reason"], "config_cert_not_bound");
+
+    // Mixing the pairs: different holders → holder_mismatch (checked before
+    // the binding).
+    let (status, body) = register_call(
+        &l,
+        &config_kp,
+        &token,
+        json!({ "device_cert": device2, "config_cert": config_cert }),
+        None,
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["reason"], "holder_mismatch");
+
+    // Another ACCOUNT's pair under our token → identity_not_owned.
+    let other = "other-wallet@gmail.com";
+    let (_, _, other_device, other_config) =
+        broker_presentation(&l, other, vec!["registry".into()]).await;
+    let (status, body) = register_call(
+        &l,
+        &config_kp,
+        &token,
+        json!({ "device_cert": other_device, "config_cert": other_config }),
+        None,
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["reason"], "identity_not_owned");
+
+    // A moved holder must not resurrect its old row: 409 holder_moved.
+    UserStore::set_holder_move(&*l.user_store, user_id, &holder, "browsers.fresh12345").unwrap();
+    let (status, body) = register_call(
+        &l,
+        &config_kp,
+        &token,
+        json!({ "device_cert": device_cert, "config_cert": config_cert }),
+        None,
+    )
+    .await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["error"], "conflict");
+    assert_eq!(body["reason"], "holder_moved");
+}
