@@ -5,7 +5,8 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-27T11:04:49Z
-updated_at: 2026-08-28T20:13:27Z
+updated_at: 2026-08-28T21:18:17Z
+parent: browserid-ng-9yyk
 blocking:
     - browserid-ng-rjge
 blocked_by:

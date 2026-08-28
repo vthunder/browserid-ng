@@ -3,8 +3,10 @@
 title: Consolidate the broker's three device-cert issuance lanes onto one core
 status: todo
 type: task
+priority: normal
 created_at: 2026-08-28T19:54:54Z
-updated_at: 2026-08-28T19:54:54Z
+updated_at: 2026-08-28T21:18:17Z
+parent: browserid-ng-9yyk
 blocked_by:
     - browserid-ng-d0xb
 ---
