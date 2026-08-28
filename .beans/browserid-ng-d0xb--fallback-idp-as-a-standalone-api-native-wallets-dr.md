@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-27T11:04:49Z
-updated_at: 2026-08-28T09:39:18Z
+updated_at: 2026-08-28T11:03:46Z
 blocked_by:
     - browserid-ng-bw9q
 ---
@@ -33,3 +33,11 @@ Same spec-quality bar as bw9q: implementable independently from the spec. See do
 ## Direction change (Dan, 2026-08-28): fallback-as-primary
 
 Skeleton redrafted twice on review: (1) issuance bar corrected to password + durable verified flag (/device/issue parity, not the two-lane union). (2) Dan chose option (a) — no credential ever crosses a native API — plus 'treat the fallback as a primary': address_info advertises device_auth/access_mint for secondaries, the broker mounts a device-authorize page implementing the standard fragment/return contract (made normative), and the wallet keeps ONE bootstrap flow with a single skip-the-join branch. All native password/code endpoints (stage/complete/email send+verify/issue, email_proof) deleted from the spec. Headless secondary issuance deliberately not offered (agent lane covers scripted clients). New sibling bean uboq: time-expire SMTP verification (issuer policy §3.4). Open: holder continuity param (absorbs kmvm), max-age window, config-cert identity set, page mount.
+
+## Review rulings round 2 (Dan, 2026-08-28)
+
+- Spec cleaned of draft archaeology (meta-commentary lives here, not in the doc).
+- address_info DROPPED from the native contract: native clients run core §3 discovery themselves and CHOOSE their fallback (client configuration = the escape hatch); the endpoint stays web-dialog-only. Support document already carries device_authorization (core discovery.rs:55) — the broker just has to advertise it for its own fallback role (+ access_mint).
+- Holder: same as the primary lane — issuer-assigned fresh holder bound to the fragment keys, never derived from the ceremony page's browser session (the wallet must not show up as a web device). No client-supplied holder param; kmvm stays independent.
+- Registration reframed as a first-class, client-configured relationship with the registry, distinct from issuance: token exchange (or session join) with the new certs; issuer==registry is the redundant case (issuance already recorded), and the lanes' self-issued rules make that composition safe by construction. Registry choice surfaced at wallet setup; default preserves current UX.
+- Remaining open: verification max-age window; config-cert identity set; page mount (new route vs broker-as-own-tenant on the hosted-IdP machinery).
