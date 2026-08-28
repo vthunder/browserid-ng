@@ -1,6 +1,6 @@
 # Fallback-IdP API v1 (draft skeleton)
 
-Status: **draft**, 2026-08-27. Flows and shapes for review; wire
+Status: **draft**, 2026-08-28. Flows and shapes for review; wire
 examples and machine reasons come after the §6 questions are settled.
 Same family as `registry-api-v1.md`: same error taxonomy, same
 independently-implementable bar. No cookies, no CSRF, no sessions.
@@ -10,40 +10,55 @@ device + config certs from the broker (acting as fallback IdP)
 without driving the web dialog. Primaries never touch this API —
 their issuance belongs to their own IdP (the device-authorize hop).
 
-**The one rule everything follows.** Issuance requires BOTH:
+**The one rule everything follows.** Issuance requires:
 
-    a fresh email proof   — "I control this mailbox right now"
-    + the password        — "I am the account root"
+    the password                  — "I am the account root"
+    + a VERIFIED address          — the account's durable verified flag,
+                                    set by a past mailbox ceremony
 
-Certs and registry tokens are *derived* from the password, so they
-can never substitute for it here — otherwise a stolen cert could
+This is exactly today's `/device/issue` bar (Full session ≡ password;
+`verified` flag durable), neither weaker nor stricter. A **fresh**
+mailbox proof is demanded only when the address is NOT currently
+verified — mid-signup, or after a password reset un-verified it
+(kgb9). Certs and registry tokens are *derived* from the password, so
+they never substitute for it here — otherwise a stolen cert could
 mint more certs (privilege loop). Registry tokens are refused on
 every endpoint in this spec.
 
 ## 1. The flows
 
-Four flows cover the whole lifecycle. A, B, and D are three entries
-into the same last step; C is the handoff case.
+Four flows cover the whole lifecycle. B is the common case and is one
+credentialed call; A and D are the ceremonies that get you there; C
+is the handoff case.
 
 ### A. New user — first wallet setup
 
 1. `GET  address_info?email=`            → `type: "secondary"` (else: primary hop, not this API)
 2. `POST idp/stage    {email, pass}`     → 204 — a 6-digit code is mailed
-3. `POST idp/complete {email, code}`     → `{email_proof}` — account created
-4. `POST idp/issue    {email, pass, email_proof, device_pubkey, config_pubkey}`
+3. `POST idp/complete {email, code}`     → 204 — account created, address VERIFIED
+4. `POST idp/issue    {email, pass, device_pubkey, config_pubkey}`
                                          → `{device_cert, config_cert}`
 5. Wallet silently joins the registry (registry-api-v1 §3). Done.
 
-One code ceremony total: `complete` proves the mailbox, so it hands
-back the same `email_proof` artifact the standalone ceremony (flow B)
-produces.
+One code ceremony total; step 3's ceremony is what set the verified
+flag step 4 relies on.
 
 ### B. Existing user, knows the password — new device
 
-1. `GET  address_info?email=`             → secondary
-2. `POST idp/email/send   {email}`        → 204 — code mailed
-3. `POST idp/email/verify {email, code}`  → `{email_proof}`
-4. `POST idp/issue …`                     → certs (same call as A.4)
+1. `GET  address_info?email=`  → secondary
+2. `POST idp/issue …`          → certs. That's it — the address was
+   verified long ago; the password alone signs in a new device,
+   matching today's device-B experience.
+
+If the address has meanwhile LOST its verified flag, `issue` answers
+`403 reason: "email_verification_required"` and the client runs the
+re-verification ceremony, then retries with the proof attached:
+
+2a. `POST idp/email/send   {email}`        → 204 — code mailed
+2b. `POST idp/email/verify {email, code}`  → `{email_proof}`
+2c. `POST idp/issue {…, email_proof}`      → certs (and the durable
+    flag is re-set: password + fresh proof together meet the same bar
+    as the session-lane re-verification ceremony).
 
 ### C. Bridge-proofed address (gmail via OIDC, atproto handle)
 
@@ -55,10 +70,12 @@ from discovery (§4). Native bridge issuance is a later revision.
 
 ### D. Forgot password — recovery
 
-Identical to flow A: `stage` + `complete` reset the password when the
-account exists (and the responses never reveal which case occurred —
-anti-enumeration). Known side effects, kept normative: every session
-dies and sibling SMTP addresses are un-verified (kgb9). Then A.4.
+Flow A again: `stage` + `complete` reset the password when the
+account already exists (and the responses never reveal which case
+occurred — anti-enumeration). Normative side effects: every session
+dies, and sibling SMTP addresses lose their verified flag (kgb9) —
+so a wallet holding a *sibling* address will hit flow B's 2a–2c on
+its next issuance.
 
 ## 2. The endpoints
 
@@ -70,14 +87,15 @@ browser; both lanes share one core each so the bars cannot drift
 |---|---|---|---|
 | `GET address_info` | none | classify: primary / secondary / bridge-proofed | `/wsapi/address_info` (blessed subset) |
 | `POST stage` | none | mail a code; stage account-create-or-password-reset | `/wsapi/stage_signin_code` |
-| `POST complete` | code | create account / reset password; returns `email_proof` | `/wsapi/complete_signin_code` (which returns nothing) |
+| `POST complete` | code | create account / reset password; verifies the address | `/wsapi/complete_signin_code` |
 | `POST email/send` | none | mail a code (no account changes) | `/auth/send` |
-| `POST email/verify` | code | returns `email_proof` | `/auth/verify` (which sets a cookie instead) |
-| `POST issue` | `email_proof` + `pass` | mint the device + config cert pair | `/device/issue` (session+csrf) and `/auth/device_cert` (cookies) — superseded by one call |
+| `POST email/verify` | code | returns `email_proof` for re-verification | `/auth/verify` (which sets a cookie instead) |
+| `POST issue` | `pass` (+ `email_proof` only when demanded) | mint the device + config cert pair | `/device/issue` (session+csrf); `/auth/device_cert` (cookies) — superseded by one call |
 
 Rules that carry over unchanged (normative in the full draft):
-existing rate limits (code sends, guess-burning, login-failure
-throttle), uniform anti-enumeration responses, per-key status refs on
+existing rate limits (code sends, guess-burning, the
+`authenticate_user` failure throttle applied to `issue`'s password
+check), uniform anti-enumeration responses, per-key status refs on
 issued certs, `authorize_mint` as the unchanged chokepoint behind
 `issue`.
 
@@ -89,9 +107,10 @@ issued certs, `authorize_mint` as the unchanged chokepoint behind
 The signed claim today's `fb_email` cookie carries
 (`browserid-fb-email-v1`: `email`, `exp`), returned in the response
 body instead of a cookie. Stateless; verified by signature at
-`issue`. Proposed lifetime: **≤ 1 hour** (the cookie's 30 days is a
-browser convenience that has no business in a portable artifact —
-§6 Q1).
+`issue`. Its only role is the re-verification path (flow B 2a–2c) —
+the common flows never touch it. Proposed lifetime: **≤ 1 hour**
+(the cookie's 30 days is a browser convenience that has no business
+in a portable artifact — §6 Q1).
 
 ## 4. Browser handoff (fills registry-api-v1 §5.5's `browser` object)
 
@@ -111,8 +130,8 @@ offered here".
 
 Registry-api-v1 §7 verbatim. New `reason` values (enumerated fully
 later): `credentials_invalid` (one uniform answer for wrong password
-/ no account / wrong state — no oracles), `email_proof_invalid`,
-`password_required`, `bridge_required`, `delegate_to_primary`.
+/ no account / wrong state — no oracles), `email_verification_required`,
+`email_proof_invalid`, `bridge_required`, `delegate_to_primary`.
 
 ## 6. Open questions
 
@@ -128,5 +147,16 @@ later): `credentials_invalid` (one uniform answer for wrong password
    `[email, local+*@domain]`, `/auth/device_cert` grants the exact
    address only. Pin one for both lanes.
 5. **Re-issuance invariant (confirm)** — another device on an
-   existing account always re-runs the full bar (proof + password);
-   no shortcut via existing certs or tokens.
+   existing account always re-runs `issue`'s full bar; no shortcut
+   via existing certs or tokens.
+
+## 7. Decision log
+
+- **2026-08-28 (Dan, skeleton review): issuance does NOT require a
+  fresh mailbox proof.** The bar is password + the durable verified
+  flag — exactly `/device/issue` today. An earlier draft required a
+  fresh proof on every issuance (the union of both legacy lanes),
+  which was stricter than the real chokepoint and would have cost a
+  mailed code per new device. Fresh proof is demanded only when the
+  flag is absent, and presenting proof + password together re-sets
+  it.
