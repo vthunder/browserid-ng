@@ -1,11 +1,11 @@
 ---
 # browserid-ng-71vt
 title: 'Unify on /api/v1: migrate the web dialog off cookie /wsapi, retire the duplicated surface'
-status: todo
+status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-28T21:00:26Z
-updated_at: 2026-08-28T21:18:17Z
+updated_at: 2026-08-28T22:40:49Z
 parent: browserid-ng-9yyk
 blocked_by:
     - browserid-ng-d0xb
@@ -54,3 +54,13 @@ The current web dialog calls /device/issue directly only because it FUSES two ro
 3. address_info / list_emails / session_context etc. are ceremony-page/discovery concerns, likewise not wallet APIs.
 
 So a clean wallet has ZERO broker-private endpoints — it uses only surface 1. Whatever remains under /wsapi belongs to the issuer's ceremony-page role, not the wallet role. This makes 'the web wallet uses the same APIs as any wallet' literally true. Adds scope to this bean: dialog restructure to split wallet-role (chooser + keystore + /api/v1 + ceremony driver) from ceremony-page-role (login/mint UI behind device-authorization).
+
+## Progress (2026-08-29, autonomous run)
+
+**Landed + deployed:** shared browser token client common/js/registry-token.js (self-presentation mint → /api/v1/token exchange, DPoP proofs signed with the config key, per-config-cert token cache, 401 re-exchange). Dialog wallet-role calls migrated: warrants/allocate_status + warrants/register (login + SBO-grant ceremonies), record_device_cert self-heal → devices/register (verified pair + move guard), device_certs keystore hygiene → GET /api/v1/devices (now runs post-identity-selection; state.proofs stashed at startup). No /wsapi routes deleted yet (cookie fallback intact). Full e2e green.
+
+**Reclassification during migration:** holder_assignment is NOT a wallet-role migration target for the dialog — it serves move-HEALING for a device whose certs were revoked at move time, which can never mint a token; it belongs to the ceremony role (like /device/issue). The /api/v1/holders/assignment route still exists for valid-cert wallets. parent_of deferred (read-only; needs a spec section before any /api/v1 route).
+
+**Open question for Dan (blocks consent/account/authorize migration):** the cookie lane authenticates the SESSION account; the token lane authenticates the account owning the PAIR the token was minted from. On consent.html/account.html a multi-account browser could hold a pair from account X while the session is account Y — migrated pages would show X's inbox/warrants where today they show Y's. Options: (a) accept pair-account semantics (single-account browsers unaffected; deep-linked ?code= lane already cross-account by design); (b) classify the broker-hosted consent/account PAGES as hosted-convenience surfaces that legitimately stay on the cookie lane (the native wallet + dialog already use /api/v1 — 'duplicated surface' then means only the DIALOG's usage, which is now migrated); (c) migrate but pin the token pair to an identity the session owns (needs a cheap 'session owns X' check). Route deletions wait on this call.
+
+**Also remaining:** the option-a role split (dialog as pure wallet driving /device-authorize instead of calling /device/issue directly) — sequenced last per the bean.

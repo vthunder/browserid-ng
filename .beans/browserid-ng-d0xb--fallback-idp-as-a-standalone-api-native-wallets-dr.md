@@ -1,11 +1,11 @@
 ---
 # browserid-ng-d0xb
 title: 'Fallback-IdP as a standalone API: native wallets drive secondary-identity issuance without the dialog'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-08-27T11:04:49Z
-updated_at: 2026-08-28T22:22:06Z
+updated_at: 2026-08-28T22:30:46Z
 parent: browserid-ng-9yyk
 blocking:
     - browserid-ng-rjge
@@ -89,3 +89,11 @@ Clean checks: registration wallet-driven, holder self-assign, self-issued token 
 5. uboq verified_at expiry in authorize_mint — independent, land before advertising §3.2 conformance.
 6. Wallet convergence (2m7y context) — needs 2 and 4 live.
 7. u6jq acceptedFallbacks forwarding; ig9p cookie-lane registry-scope — separate tracks.
+
+## Summary of Changes
+
+Spec finalized (fallback-idp-api-v1: fallback-presents-as-primary, ceremony contract normative, wallet-driven registration, operator accepted-fallback policy for devices/register — Dan's call 2026-08-28). Built and deployed:
+- POST /api/v1/devices/register (registry-api-v1 §5.3): verified-pair recording with the full §7.1 invalid_cert taxonomy, token binding, holder-move guard, idempotent upsert, UA labeling, and the i8a2 holder healing (browsers-prefix adoption + orphan move + completion) ported to registrar-store twins — the token lane no longer needs the cookie join for healing.
+- Fallback ceremony page + discovery (see 2jfh) and verification freshness (see uboq).
+- Wallet convergence: bootstrap.js is ONE ceremony flow for primary and fallback identities (fallback resolved via the broker's own support document), zero cookie code in the app, registration via token exchange + devices/register; test lane drives the real page in a hidden window with injected password; ceremony partition pins the wallet UA. Wallet e2e green end to end.
+Spec gaps (a)/(b)/(c) from the impact analysis all closed (operator policy; core §3.1 fallback qualification; healing on devices/register). Remaining epic work is 71vt (dialog on /api/v1 + role split) and fl6r (low).
