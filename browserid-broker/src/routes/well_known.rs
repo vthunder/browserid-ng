@@ -42,9 +42,12 @@ where
     let mut doc = SupportDocument::new()
         .with_authentication("/auth")
         .with_provisioning("/provision")
-        // Device-cert conformance: browser device issuance rides the fallback
-        // SMTP surface; the mint is headless (device cert = the credential).
-        .with_device_cert("/auth/device_cert")
+        // The fallback presents as a primary (fallback-idp-api-v1 §2): the
+        // ceremony page + the headless mint, the same two keys any primary
+        // advertises. The legacy `device-cert` batch API retired with the
+        // /auth/device_cert lane (bean 2jfh) — issuance is ceremony-page-
+        // internal, through the /device/issue core.
+        .with_device_authorization("/device-authorize")
         .with_access_cert("/access/mint");
     // Admission-record flows (spec §7.5): the support advertisement resources
     // capability-detect before using the credential-less connection lane.
@@ -52,16 +55,18 @@ where
     if state.agent_provisioning_enabled {
         doc = doc.with_record_grants("/warrant/record-request");
         // Registry discovery (registry-api-v1 §5.5): the token lane's entry
-        // point. Both URLs are absolute and same-origin by construction —
+        // point. All URLs are absolute and same-origin by construction —
         // clients MUST reject off-origin values, so never derive these from
-        // request headers. `browser` stays empty until the fallback-IdP spec
-        // (d0xb) defines its ceremony keys.
+        // request headers. `browser` keys are defined by the fallback-IdP
+        // spec (§5): `account` opens the registry's account-management page.
         let origin = browserid_registrar::consent::public_origin(&state.domain);
         doc = doc.with_registry(browserid_core::discovery::RegistrySupport {
             version: "v1".to_string(),
             token_endpoint: format!("{origin}/api/v1/token"),
             status_list: browserid_registrar::consent::status_list_uri(&state.domain),
-            browser: Default::default(),
+            browser: [("account".to_string(), format!("{origin}/account"))]
+                .into_iter()
+                .collect(),
         });
     }
 

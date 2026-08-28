@@ -55,10 +55,10 @@ A fallback IdP MUST advertise both — the same keys as a primary.
 (`/wsapi/address_info` is not part of this contract; it exists for
 the web dialog, which cannot run discovery itself.)
 
-The reference fallback IdP does not yet advertise
-`device-authorization` (only its legacy `/auth/device_cert` lane);
-exposing the ceremony page for the fallback role is part of the
-build (beans d0xb, 2jfh).
+The reference fallback IdP advertises both: its ceremony page is
+mounted at `/device-authorize` over the broker-session backend, and
+its one issuance core also serves the web dialog (the legacy
+`/auth/device_cert` batch lane is retired; bean 2jfh).
 
 ## 3. The ceremony page
 

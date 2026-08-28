@@ -5,7 +5,6 @@ mod auth;
 mod code_guard;
 mod device;
 mod email;
-mod fallback_idp;
 mod fedcm;
 mod guestbook;
 mod handle_claim;
@@ -259,13 +258,15 @@ where
         // The agent guestbook demo (a public RP only agents can sign).
         .route("/guestbook", get(guestbook::page).post(guestbook::sign))
         .route("/public-name", get(guestbook::public_name))
-        // Fallback-IdP surface (apgv, device-cert model): SMTP-verified email
-        // control gates batch device-cert issuance, so the broker can vouch
-        // for emails whose domain runs no primary IdP.
-        .route("/auth/send", post(fallback_idp::auth_send))
-        .route("/auth/verify", post(fallback_idp::auth_verify))
-        .route("/whoami", get(fallback_idp::whoami))
-        .route("/auth/device_cert", post(fallback_idp::device_cert))
+        // Fallback-IdP ceremony page (fallback-idp-api-v1 §3, beans d0xb +
+        // 2jfh): the standard device-authorization contract over the
+        // broker-session backend — issuance itself goes through the one
+        // /device/issue core. Replaces the retired /auth/send + /auth/verify
+        // + /auth/device_cert cookie lane (exact-only variant, 7ww7).
+        .route_service(
+            "/device-authorize",
+            ServeFile::new(format!("{}/device-authorize.html", static_path)),
+        )
         // Hosted-primary IdP surface (bean g5qt): the §7 pages + APIs a
         // TENANT domain delegates to. Reached only via discovery + host=;
         // the dialog is untouched.

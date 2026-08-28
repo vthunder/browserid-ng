@@ -293,21 +293,22 @@ fn issuance_call_sites_are_registered() {
     minting_files.sort();
 
     // The audited issuance surfaces. device.rs + fedcm.rs mint off the broker
-    // session → chokepoint required. fallback_idp.rs is the 7ww7 slice.
-    // hosted_idp.rs is the tenant PRIMARY's own issuance (the E1 voucher
-    // itself) — outside the broker-session chokepoint by design.
+    // session → chokepoint required. hosted_idp.rs is the tenant PRIMARY's
+    // own issuance (the E1 voucher itself) — outside the broker-session
+    // chokepoint by design. (fallback_idp.rs — the 7ww7 exact-only slice —
+    // retired with bean 2jfh: the fallback ceremony page issues through the
+    // /device/issue core in device.rs.)
     assert_eq!(
         minting_files,
         vec![
             "routes/device.rs".to_string(),
-            "routes/fallback_idp.rs".to_string(),
             "routes/fedcm.rs".to_string(),
             "routes/hosted_idp.rs".to_string(),
         ],
         "unaudited issuance call site — wire it through authorize_mint (u4xz) and register it here"
     );
 
-    for file in ["routes/device.rs", "routes/fedcm.rs", "routes/fallback_idp.rs"] {
+    for file in ["routes/device.rs", "routes/fedcm.rs"] {
         let text = std::fs::read_to_string(src.join(file)).unwrap();
         assert!(
             text.contains("authorize_mint"),

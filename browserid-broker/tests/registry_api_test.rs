@@ -106,30 +106,12 @@ async fn broker_presentation(
     assert_eq!(r.status(), 200);
     let session = set_cookie(&r, "browserid_session");
 
-    // SMTP-fresh email cookie.
-    let r = post("/auth/send", json!({"email": email})).send().await.unwrap();
-    assert_eq!(r.status(), 200);
-    let code = l.email_sender.get_code(email).expect("auth code emailed");
-    let r = post("/auth/verify", json!({"email": email, "code": code})).send().await.unwrap();
-    assert_eq!(r.status(), 200);
-    let fb = set_cookie(&r, "fb_email");
-
-    // Device + config certs.
+    // Device + config certs through the one issuance core (/device/issue;
+    // the /auth/device_cert cookie lane retired with bean 2jfh).
     let device_kp = KeyPair::generate();
     let config_kp = KeyPair::generate();
-    let r = l
-        .client
-        .post(format!("{}/auth/device_cert", l.base))
-        .header("cookie", format!("browserid_session={session}; fb_email={fb}"))
-        .json(&json!({
-            "email": email,
-            "device_pubkey": device_kp.public_key().to_base64(),
-            "config_pubkey": config_kp.public_key().to_base64(),
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200, "device_cert");
+    let r = device_issue(l, &session, email, &device_kp, &config_kp).await;
+    assert_eq!(r.status(), 200, "device/issue");
     let certs: Value = r.json().await.unwrap();
     let device_cert = certs["device_cert"].as_str().unwrap().to_string();
     let config_cert = certs["config_cert"].as_str().unwrap().to_string();
@@ -176,6 +158,40 @@ async fn broker_presentation(
 fn rand_suffix() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     format!("{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos())
+}
+
+/// Session-authed batch issuance through the /device/issue core: fetch the
+/// session's CSRF token, then mint a device + config pair for `email`.
+async fn device_issue(
+    l: &Live,
+    session: &str,
+    email: &str,
+    device_kp: &KeyPair,
+    config_kp: &KeyPair,
+) -> reqwest::Response {
+    let ctx: Value = l
+        .client
+        .get(format!("{}/wsapi/session_context", l.base))
+        .header("cookie", format!("browserid_session={session}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let csrf = ctx["csrf_token"].as_str().expect("csrf token").to_string();
+    l.client
+        .post(format!("{}/device/issue", l.base))
+        .header("cookie", format!("browserid_session={session}"))
+        .json(&json!({
+            "csrf": csrf,
+            "email": email,
+            "device_pubkey": device_kp.public_key().to_base64(),
+            "config_pubkey": config_kp.public_key().to_base64(),
+        }))
+        .send()
+        .await
+        .unwrap()
 }
 
 async fn exchange(l: &Live, body: Value) -> (reqwest::StatusCode, Value) {
@@ -1128,7 +1144,7 @@ async fn api_tokens_round_trip_on_sqlite() {
 // ===========================================================================
 
 /// A fresh device+config pair for an EXISTING account — the wallet's
-/// re-issuance lane: password auth + SMTP-fresh cookie + /auth/device_cert.
+/// re-issuance lane: password auth + the /device/issue core.
 async fn issue_pair(l: &Live, email: &str) -> (String, String) {
     let post = |path: &str, body: Value| l.client.post(format!("{}{path}", l.base)).json(&body);
     let r = post("/wsapi/authenticate_user", json!({"email": email, "pass": "password123"}))
@@ -1137,27 +1153,10 @@ async fn issue_pair(l: &Live, email: &str) -> (String, String) {
         .unwrap();
     assert_eq!(r.status(), 200);
     let session = set_cookie(&r, "browserid_session");
-    let r = post("/auth/send", json!({"email": email})).send().await.unwrap();
-    assert_eq!(r.status(), 200);
-    let code = l.email_sender.get_code(email).expect("auth code emailed");
-    let r = post("/auth/verify", json!({"email": email, "code": code})).send().await.unwrap();
-    assert_eq!(r.status(), 200);
-    let fb = set_cookie(&r, "fb_email");
     let device_kp = KeyPair::generate();
     let config_kp = KeyPair::generate();
-    let r = l
-        .client
-        .post(format!("{}/auth/device_cert", l.base))
-        .header("cookie", format!("browserid_session={session}; fb_email={fb}"))
-        .json(&json!({
-            "email": email,
-            "device_pubkey": device_kp.public_key().to_base64(),
-            "config_pubkey": config_kp.public_key().to_base64(),
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200, "second device_cert");
+    let r = device_issue(l, &session, email, &device_kp, &config_kp).await;
+    assert_eq!(r.status(), 200, "second device/issue");
     let certs: Value = r.json().await.unwrap();
     (
         certs["device_cert"].as_str().unwrap().to_string(),

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      background: #f6f7f9; color: #1a1a1a;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #16181c; color: #e8e8ea; }
+    }
+    .card {
+      width: min(92vw, 380px); background: #fff; border-radius: 14px;
+      padding: 28px; box-shadow: 0 6px 30px rgba(0,0,0,.10);
+    }
+    @media (prefers-color-scheme: dark) { .card { background: #22252b; box-shadow: none; border: 1px solid #33363d; } }
+    h1 { font-size: 19px; margin: 0 0 4px; }
+    .sub { color: #6b7280; font-size: 13px; margin: 0 0 20px; word-break: break-all; }
+    label { display: block; font-size: 13px; font-weight: 600; margin: 14px 0 5px; }
+    input {
+      width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 8px;
+      font-size: 15px; background: #fff; color: inherit;
+    }
+    @media (prefers-color-scheme: dark) { input { background: #1a1c21; border-color: #3a3d45; } }
+    button {
+      width: 100%; margin-top: 20px; padding: 11px; border: 0; border-radius: 8px;
+      background: #2563eb; color: #fff; font-size: 15px; font-weight: 600; cursor: pointer;
+    }
+    button:disabled { opacity: .6; cursor: default; }
+    button.secondary { background: transparent; color: #6b7280; margin-top: 8px; font-weight: 500; }
+    .err { color: #dc2626; font-size: 13px; margin-top: 14px; min-height: 18px; }
+    .muted { color: #6b7280; font-size: 12px; margin-top: 16px; text-align: center; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1 id="title">Sign in</h1>
+    <p class="sub" id="subtitle">Continue to your account</p>
+
+    <!-- Live session: an explicit consent gesture, never silent issuance
+         (bean mxcn). -->
+    <form id="confirm-form" class="hidden">
+      <button type="submit" id="confirm-btn">Authorize this device</button>
+      <button type="button" class="secondary" id="confirm-cancel">Cancel</button>
+      <div class="err" id="confirm-err"></div>
+    </form>
+
+    <form id="login-form" class="hidden">
+      <label for="password">Password</label>
+      <input type="password" id="password" autocomplete="current-password" autofocus />
+      <button type="submit" id="login-btn">Sign in</button>
+      <button type="button" class="secondary" id="login-cancel">Cancel</button>
+      <div class="err" id="login-err"></div>
+    </form>
+
+    <div id="fatal" class="hidden">
+      <div class="err" id="fatal-msg"></div>
+    </div>
+
+    <p class="muted" id="brand">browserid.me</p>
+  </div>
+  <script src="/common/js/fb-device-authorize.js"></script>
+</body>
+</html>
