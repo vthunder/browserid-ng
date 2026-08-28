@@ -1,58 +1,24 @@
-// Single-login bootstrap (bean gxi9). Email-FIRST, issuer-first — the
-// wallet's loyalty order:
+// Single-login bootstrap (bean gxi9, converged per d0xb). Email-FIRST,
+// issuer-first — and ONE flow (fallback-idp-api-v1 §1):
 //
 //   1. ask WHICH email (native window, before any network auth)
-//   2. unauthenticated /wsapi/address_info decides the lane:
-//      - primary:  ONE login at the IDENTITY'S OWN IdP (device-authorize
-//        hop); then the wallet joins the broker registry silently via
-//        auth_with_presentation — no broker password ever.
-//      - secondary: the broker IS the IdP, so the /account login is the
-//        single login; /device/issue from that session.
-//   3. persist keys+certs (encrypted at rest) and start the registry-API
-//      inbox watch.
+//   2. resolve the ISSUER: the identity domain's own IdP if it runs one,
+//      otherwise the wallet's configured fallback IdP — which presents
+//      exactly as a primary (same discovery keys, same ceremony page)
+//   3. run the issuer's device-authorization ceremony (fragment carries the
+//      pubkeys; the user authenticates FIRST-PARTY on the issuer's page)
+//   4. persist keys+certs (encrypted at rest), then REGISTER the pair at
+//      the wallet's registry over the token lane (§4: /api/v1/token +
+//      /api/v1/devices/register) and start the registry-API inbox watch.
 //
-// The prototype bootstrapped broker-first (two logins for primaries); this
-// inverts it. The one-time issuer session below is the ONLY cookie-carrying
-// code in the app.
+// No credential ever crosses a native API and no cookie ever reaches this
+// app — the ceremony page owns human auth (this deleted the prototype's
+// only cookie-carrying code). The wallet never assumes the issuer and the
+// registry talk to each other, even when they are the same host.
 const path = require('path');
 const store = require('./store');
 const broker = require('./broker');
-const { generateKey, decodeJws, nowS, randHex } = require('./crypto');
-
-// ---------------------------------------------------------------------------
-// The one-time issuer session (secondary lane). Interactive mode uses the
-// Electron BrowserWindow session; the test lane uses a plain cookie jar
-// filled by authenticate_user.
-let electronSession = null;
-let jarCookie = '';
-
-async function sessionFetch(path_, opts = {}) {
-  if (electronSession) {
-    const res = await electronSession.fetch(broker.BROKER + path_, {
-      ...opts,
-      credentials: 'include',
-      headers: { 'content-type': 'application/json', accept: 'application/json', ...opts.headers },
-    });
-    return { status: res.status, data: await res.json().catch(() => ({})) };
-  }
-  const res = await fetch(broker.BROKER + path_, {
-    ...opts,
-    headers: {
-      'content-type': 'application/json', accept: 'application/json', 'user-agent': broker.UA,
-      ...(jarCookie ? { cookie: jarCookie } : {}), ...opts.headers,
-    },
-  });
-  for (const c of res.headers.getSetCookie?.() || []) {
-    if (c.startsWith('browserid_session=')) jarCookie = c.split(';')[0];
-  }
-  return { status: res.status, data: await res.json().catch(() => ({})) };
-}
-
-async function csrf() {
-  const { data } = await sessionFetch('/wsapi/session_context');
-  if (!data.csrf_token) throw new Error('no session_context csrf');
-  return data;
-}
+const { generateKey, decodeJws, nowS } = require('./crypto');
 
 // ---------------------------------------------------------------------------
 // Step 1: which email? A small native window, before any auth anywhere.
@@ -81,28 +47,70 @@ function askEmail() {
 }
 
 // ---------------------------------------------------------------------------
-// Primary lane: the IdP's device-authorize page (fragment carries the
-// pubkeys, per the dialog's contract), consumed over the `return_url`
-// delivery lane — the page navigates to return_url#device_cert=…, which we
-// intercept before it loads. The user authenticates first-party at their
-// IdP if that session is cold. No holder is passed: cold bootstrap has no
-// broker session to fetch a prefix from, so the IdP self-assigns one and
-// the broker's join-side adoption/move machinery (rrve/i8a2) heals it into
-// the account's `browsers` namespace.
-function primaryHop({ deviceAuthUrl, email, devicePub, configPub }) {
-  const { BrowserWindow } = require('electron');
+// Step 2: issuer resolution. The primary branch still leans on the broker's
+// /wsapi/address_info as its discovery convenience (client-side core §3
+// DNSSEC discovery is future work); the fallback branch reads the configured
+// fallback's OWN support document — the same two keys any primary advertises
+// (fallback-idp-api-v1 §2), so step 3 is one code path.
+async function resolveIssuer(email) {
+  const info = await broker.bare(`/wsapi/address_info?email=${encodeURIComponent(email)}`);
+  if (info.status !== 200) throw new Error(`address_info failed: ${info.status}`);
+  if (info.data.type === 'primary') {
+    if (!info.data.device_auth || !info.data.access_mint) {
+      throw new Error('this identity\'s IdP does not support device authorization');
+    }
+    return {
+      issuer: info.data.issuer,
+      deviceAuthUrl: info.data.device_auth,
+      mintUrl: info.data.access_mint,
+    };
+  }
+  const doc = await broker.bare('/.well-known/browserid');
+  if (doc.status !== 200) throw new Error(`fallback discovery failed: ${doc.status}`);
+  const deviceAuth = doc.data['device-authorization'];
+  const accessCert = doc.data['access-cert'];
+  if (!deviceAuth || !accessCert) {
+    throw new Error('the configured fallback IdP does not advertise device authorization');
+  }
+  return {
+    issuer: new URL(broker.BROKER).host,
+    deviceAuthUrl: new URL(deviceAuth, broker.BROKER).toString(),
+    mintUrl: new URL(accessCert, broker.BROKER).toString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Step 3: the issuer's device-authorize page (fragment carries the pubkeys,
+// per the ceremony contract), consumed over the `return_url` delivery lane —
+// the page navigates to return_url#device_cert=…, which we intercept before
+// it loads. The user authenticates first-party at their issuer if that
+// session is cold. No holder is passed: the issuer self-assigns a fresh one
+// (fallback-idp-api-v1 §3.2) and the registry's adoption/move machinery
+// heals it into the account's `browsers` namespace at registration.
+//
+// `testPassword` (WALLET_TEST lane): the REAL page in a hidden window, with
+// the password typed by injection — the test stands in for the human, never
+// for the flow.
+function primaryHop({ deviceAuthUrl, email, devicePub, configPub, testPassword }) {
+  const { BrowserWindow, session } = require('electron');
+  // The ceremony partition is the WALLET's surface: its product-token UA is
+  // what the issuer's UA-label hook sees, so the resulting device row reads
+  // "BrowserID-Wallet", not "Chrome on macOS".
+  session.fromPartition('persist:browserid').setUserAgent(broker.UA);
   const RETURN_URL = `${broker.BROKER}/wallet-idp-return`; // never actually loaded
   return new Promise((resolve, reject) => {
     const win = new BrowserWindow({
       width: 480, height: 640, title: `Sign in to ${new URL(deviceAuthUrl).host}`,
+      show: !testPassword,
       webPreferences: { partition: 'persist:browserid', nodeIntegration: false, contextIsolation: true },
     });
     const url = deviceAuthUrl +
       '#email=' + encodeURIComponent(email) +
       '&device_pubkey=' + encodeURIComponent(devicePub) +
       '&config_pubkey=' + encodeURIComponent(configPub) +
-      // return_origin is a page precondition (postMessage lane target); the
-      // return_url delivery lane is what we actually consume.
+      // return_origin is the page's postMessage target precondition and the
+      // origin its return_url must match (9it0); the return_url delivery
+      // lane is what we actually consume.
       '&return_origin=' + encodeURIComponent(broker.ORIGIN) +
       '&return_url=' + encodeURIComponent(RETURN_URL);
 
@@ -123,6 +131,21 @@ function primaryHop({ deviceAuthUrl, email, devicePub, configPub }) {
     win.webContents.on('will-navigate', onNav);
     win.webContents.on('will-redirect', onNav);
     win.on('closed', () => { if (!settled) { settled = true; clearTimeout(timeout); reject(new Error('IdP window closed')); } });
+    if (testPassword) {
+      win.webContents.on('did-finish-load', () => {
+        win.webContents.executeJavaScript(`(function retry(n) {
+          var c = document.getElementById('confirm-form');
+          if (c && !c.classList.contains('hidden')) { c.requestSubmit(); return; }
+          var f = document.getElementById('login-form');
+          if (f && !f.classList.contains('hidden')) {
+            document.getElementById('password').value = ${JSON.stringify(testPassword)};
+            f.requestSubmit();
+            return;
+          }
+          if (n > 0) setTimeout(function () { retry(n - 1); }, 200);
+        })(50);`).catch(() => {});
+      });
+    }
     win.loadURL(url);
   });
 }
@@ -145,129 +168,43 @@ async function persist({ email, issuer, mintUrl, device, config, certs }) {
   });
 }
 
-// The silent broker-registry join (primary lane): a full presentation for
-// the broker's OWN audience — strictly stronger than the password lane it
-// replaces — links the identity into an account, records this device's
-// config cert (labeled from our UA), and schedules holder healing.
-// Best-effort: the wallet works without it; the account page just won't
-// list this device until a later join succeeds.
-async function joinBroker() {
+// Step 4: registration is the WALLET's act (fallback-idp-api-v1 §4): a token
+// exchange with the new certs, then devices/register records the verified
+// pair — the token lane replaces the prototype's cookie session join.
+// Best-effort: the wallet works unregistered; the account page just won't
+// list this device until a later call succeeds (the token machinery runs
+// again on the inbox watch anyway).
+async function registerAtRegistry() {
   try {
-    const presentation = await require('./login').buildBrokerPresentation();
-    const r = await broker.bare('/wsapi/auth_with_presentation', {
-      method: 'POST',
-      body: { presentation, ephemeral: true },
+    const s = store.state();
+    await require('./registry').apiCall('POST', '/api/v1/devices/register', {
+      device_cert: s.deviceCert,
+      config_cert: s.configCert,
     });
-    if (r.status !== 200) {
-      console.warn(`[wallet] broker join failed (non-fatal): ${r.status} ${JSON.stringify(r.data).slice(0, 150)}`);
-    }
   } catch (e) {
-    console.warn('[wallet] broker join failed (non-fatal):', e.message || e);
+    console.warn('[wallet] device registration failed (non-fatal):', e.message || e);
   }
-}
-
-async function bootstrapPrimary(email, info) {
-  if (!info.device_auth || !info.access_mint) {
-    throw new Error('this identity\'s IdP does not support device authorization');
-  }
-  const device = await generateKey();
-  const config = await generateKey();
-  const certs = await primaryHop({
-    deviceAuthUrl: info.device_auth, email, devicePub: device.x, configPub: config.x,
-  });
-  await persist({ email, issuer: info.issuer, mintUrl: info.access_mint, device, config, certs });
-  await joinBroker();
-  return { email };
-}
-
-// Secondary lane: the broker is the issuer, so its /account login IS the
-// single login. The account must hold the chosen email; /device/issue
-// enforces it server-side and we fail early with a clear message.
-async function bootstrapSecondary(email, { interactive }) {
-  if (interactive) await interactiveIssuerLogin(email);
-  const ctx = await csrf();
-  if (!ctx.authenticated) throw new Error('issuer session not authenticated');
-  const bh = await sessionFetch('/wsapi/browser_holder');
-  if (bh.status !== 200 || !bh.data.prefix) throw new Error(`browser_holder failed: ${bh.status}`);
-  const holder = `${bh.data.prefix}.${randHex(5)}`;
-  const device = await generateKey();
-  const config = await generateKey();
-  const issue = await sessionFetch('/device/issue', {
-    method: 'POST',
-    body: JSON.stringify({
-      csrf: ctx.csrf_token, email,
-      device_pubkey: device.x, config_pubkey: config.x, holder,
-    }),
-  });
-  if (issue.status !== 200 || !issue.data.device_cert) {
-    throw new Error(`device/issue failed: ${issue.status} ${JSON.stringify(issue.data).slice(0, 200)}`);
-  }
-  await persist({
-    email, issuer: ctx.domain, mintUrl: `${broker.BROKER}/access/mint`,
-    device, config, certs: issue.data,
-  });
-  return { email };
-}
-
-function interactiveIssuerLogin(email) {
-  const { BrowserWindow, session } = require('electron');
-  const ses = session.fromPartition('persist:browserid');
-  ses.setUserAgent(broker.UA);
-  electronSession = ses;
-  return new Promise((resolve, reject) => {
-    const win = new BrowserWindow({
-      width: 480, height: 640, title: 'Sign in to BrowserID',
-      webPreferences: { partition: 'persist:browserid', nodeIntegration: false, contextIsolation: true },
-    });
-    // The account page may sign the user in via a window.open dialog —
-    // allow child windows in the same session so that flow works in-app.
-    win.webContents.setWindowOpenHandler(() => ({
-      action: 'allow',
-      overrideBrowserWindowOptions: { webPreferences: { partition: 'persist:browserid' } },
-    }));
-    win.loadURL(`${broker.BROKER}/account`);
-    let settled = false;
-    const finish = (fn, arg) => {
-      if (settled) return;
-      settled = true;
-      clearInterval(poll);
-      fn(arg);
-      if (!win.isDestroyed()) win.close();
-    };
-    const poll = setInterval(async () => {
-      try {
-        const { data } = await sessionFetch('/wsapi/session_context');
-        if (!data.authenticated) return;
-        const emails = (await sessionFetch('/wsapi/list_emails')).data.emails || [];
-        if (!emails.some((e) => String(e).toLowerCase() === email)) {
-          return finish(reject, new Error(`the signed-in account does not hold ${email}`));
-        }
-        finish(resolve);
-      } catch (err) {
-        finish(reject, err);
-      }
-    }, 1500);
-    win.on('closed', () => finish(reject, new Error('sign-in window closed')));
-  });
 }
 
 // ---------------------------------------------------------------------------
 // Entry points.
-async function bootstrapForEmail(email, { interactive }) {
-  const info = await broker.bare(`/wsapi/address_info?email=${encodeURIComponent(email)}`);
-  if (info.status !== 200) throw new Error(`address_info failed: ${info.status}`);
-  if (info.data.type === 'primary') {
-    if (!interactive) throw new Error('primary identities need the interactive flow');
-    return bootstrapPrimary(email, info.data);
-  }
-  return bootstrapSecondary(email, { interactive });
+async function bootstrapForEmail(email, { testPassword } = {}) {
+  const { issuer, deviceAuthUrl, mintUrl } = await resolveIssuer(email);
+  const device = await generateKey();
+  const config = await generateKey();
+  const certs = await primaryHop({
+    deviceAuthUrl, email, devicePub: device.x, configPub: config.x, testPassword,
+  });
+  await persist({ email, issuer, mintUrl, device, config, certs });
+  await registerAtRegistry();
+  return { email };
 }
 
 async function startBootstrap({ notify, updateTray }) {
   const email = await askEmail();
   if (!email) return;
   try {
-    const r = await bootstrapForEmail(email, { interactive: true });
+    const r = await bootstrapForEmail(email);
     notify('BrowserID Wallet', `Wallet ready as ${r.email}`);
     updateTray?.();
     require('./registry').startInboxWatch({ notify });
@@ -277,15 +214,9 @@ async function startBootstrap({ notify, updateTray }) {
   }
 }
 
-// Test lane (WALLET_TEST=1): password auth against a local broker — the
-// secondary path with a plain cookie jar, no windows.
+// Test lane (WALLET_TEST=1): same flow, hidden window, injected password.
 async function bootstrapPassword({ email, pass }) {
-  const auth = await sessionFetch('/wsapi/authenticate_user', {
-    method: 'POST',
-    body: JSON.stringify({ email, pass, ephemeral: false }),
-  });
-  if (auth.status !== 200) throw new Error(`authenticate_user failed: ${auth.status} ${JSON.stringify(auth.data)}`);
-  return bootstrapForEmail(email.trim().toLowerCase(), { interactive: false });
+  return bootstrapForEmail(email.trim().toLowerCase(), { testPassword: pass });
 }
 
 module.exports = { startBootstrap, bootstrapPassword };

@@ -1000,6 +1000,26 @@ pub async fn register_device(
         });
     }
 
+    // Holder healing (i8a2, carried from the cookie join lane): a cold
+    // bootstrap's IdP-self-assigned holder is adopted as the account's
+    // `browsers` namespace while unused; otherwise a non-revoking move into
+    // `browsers` is scheduled so the wallet's device never reads as an
+    // agent. Completing a pending move drops the old holder's rows.
+    let mut move_target = None;
+    if let Some((prefix, _)) = device.holder.split_once('.') {
+        match state.store.adopt_namespace_prefix(user.user_id, "browsers", prefix) {
+            Ok(true) => {}
+            Ok(false) => {
+                move_target = crate::holders::register_orphan_browser_move(
+                    &*state.store,
+                    user.user_id,
+                    &device.holder,
+                );
+            }
+            Err(e) => tracing::warn!("browsers prefix adoption failed: {e}"),
+        }
+    }
+
     // Record the pair. Inserts upsert on pubkey, so re-registration is the
     // idempotent no-op success §5.3 requires.
     for cert in [&device, &config] {
@@ -1025,12 +1045,14 @@ pub async fn register_device(
 
     // Same default-label hook as the cookie lane (§5.3 MAY): a wallet's
     // product-token UA names its holder instead of a bare id.
-    crate::holders::maybe_label_holder_from_ua(
-        &*state.store,
-        user.user_id,
-        &device.holder,
-        headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok()),
-    );
+    let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
+    crate::holders::maybe_label_holder_from_ua(&*state.store, user.user_id, &device.holder, ua);
+    // A scheduled move takes the label along so the device keeps its name
+    // once it re-issues; registering under a move target completes it.
+    if let Some(target) = &move_target {
+        crate::holders::maybe_label_holder_from_ua(&*state.store, user.user_id, target, ua);
+    }
+    crate::holders::finish_holder_move(&*state.store, user.user_id, &device.holder);
 
     tracing::info!(holder = %device.holder, iss = %device.iss,
         "devices/register: recorded device pair");

@@ -713,6 +713,91 @@ fn product_token_label(ua: &str) -> Option<String> {
     ok.then(|| name.to_string())
 }
 
+/// Registrar-store twin of the broker's cold-login orphan repair
+/// (`routes::holders::register_orphan_browser_move`, browserid-ng-i8a2),
+/// for the token lane's `devices/register`: a holder whose prefix matches
+/// none of the account's namespaces would read as an agent in the account
+/// view, so schedule a move into `browsers`. NOT a revoking move — the
+/// device is mid-registration with these very certs. Best-effort; returns
+/// the target holder when a move was recorded.
+pub fn register_orphan_browser_move(
+    store: &dyn RegistrarStore,
+    user_id: u64,
+    holder: &str,
+) -> Option<String> {
+    let (prefix, _) = holder.split_once('.')?;
+    // Only a TRUE orphan is repaired: a holder under any namespace the user
+    // owns is categorized as its owner intended.
+    match store.list_namespaces(user_id) {
+        Ok(namespaces) => {
+            if namespaces.iter().any(|n| n.prefix == prefix) {
+                return None;
+            }
+        }
+        Err(e) => {
+            tracing::warn!("orphan-holder repair skipped (namespaces: {e})");
+            return None;
+        }
+    }
+    // A foreign service's holder (empty-pubkey cert rows) has nothing to
+    // re-issue — never auto-move it.
+    match store.list_device_certs(user_id) {
+        Ok(certs) => {
+            if certs.iter().any(|c| c.holder == holder && c.pubkey.is_empty()) {
+                return None;
+            }
+        }
+        Err(e) => {
+            tracing::warn!("orphan-holder repair skipped (device certs: {e})");
+            return None;
+        }
+    }
+    // Already scheduled by an earlier registration the device hasn't
+    // completed yet.
+    match store.resolve_holder_move(user_id, holder) {
+        Ok(Some(_)) => return None,
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!("orphan-holder repair skipped (move lookup: {e})");
+            return None;
+        }
+    }
+    let target = match store.get_or_create_namespace(user_id, "browsers") {
+        Ok(prefix) => assign_holder_id(&prefix),
+        Err(e) => {
+            tracing::warn!("orphan-holder repair skipped (browsers namespace: {e})");
+            return None;
+        }
+    };
+    if let Err(e) = store.set_holder_move(user_id, holder, &target) {
+        tracing::warn!("orphan-holder repair failed: {e}");
+        return None;
+    }
+    tracing::info!("registered holder '{holder}' orphaned; scheduled move to '{target}'");
+    Some(target)
+}
+
+/// Registrar-store twin of the broker's move-completion hook
+/// (`routes::holders::finish_holder_move`): when certs land under the
+/// TARGET of a pending move, the old holder's rows (revoked at move time)
+/// are deleted so the device appears exactly once.
+pub fn finish_holder_move(store: &dyn RegistrarStore, user_id: u64, holder: &str) {
+    let moved_from: Vec<String> = match store.list_holder_moves(user_id) {
+        Ok(moves) => moves
+            .into_iter()
+            .filter(|(_, new)| new == holder)
+            .map(|(old, _)| old)
+            .collect(),
+        Err(_) => return,
+    };
+    for old in moved_from {
+        cleanup_holder_warrants(store, user_id, &old);
+        if let Err(e) = store.forget_holder(user_id, &old) {
+            tracing::warn!("holder move cleanup for '{old}' failed: {e}");
+        }
+    }
+}
+
 /// Best-effort: give `holder_id` a UA-derived default label if the user
 /// hasn't labeled it yet. Never clobbers an existing label; never fails the
 /// caller.
