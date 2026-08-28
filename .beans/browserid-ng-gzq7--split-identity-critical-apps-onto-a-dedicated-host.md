@@ -50,10 +50,9 @@ daily, both hosts, 14 kept each, encrypted host-side.
 
 ## Next, in order
 
-1. **Hobby host rebuild** (stage 5) from the same scripts. Note `apply-apps.sh`
-   and `audit-host.sh` currently assume the identity app set; the hobby host
-   needs its own `apps/` entries and `audit-host.sh --hobby`. Its ufw profile
-   also differs (IRC on 6667), so do NOT just re-run `provision-host.sh` at it.
+1. **Hobby host rebuild** (stage 5) — IN PROGRESS, see "Stage 5" section below.
+   Repo prep is DONE (host profiles, hobby confs, secrets seeded); remaining
+   stages need laptop-admin (agent forwarding to the mini).
 2. **Decommission the old droplet** once confident.
 3. **`browserid-ng-v96n`** — move the guestbook out of the broker. Independent
    of the host work; a good standalone task.
@@ -106,6 +105,162 @@ DNS gotcha worth remembering: `bsky` needed an EXPLICIT record even with a wildc
 - [ ] sandmill.org becomes tenant #1; retire the Laravel IdP; key moves to identity host — PARTIAL: tenant #1 live (_browserid.sandmill.org → host=idp.browserid.me, key on identity host via 1431a3c), but the Laravel IdP is not retired (BrowserIdController.php still serves /.well-known/browserid, bypassed by conformant verifiers)
 
 ## Stage 5 — hobby host rebuild from the same script
+
+### Decisions (2026-08-27, confirmed with owner)
+- Migrate 7 apps: sandmill, mingo, sbo-daemon, rolodexterity, sandmill-bot,
+  sandmill-irc, sandmill-proxy. RETIRE fedcm-rp, sandmill-relay,
+  virtual-ethernet-switch (legacy WS ethernet path superseded by in-browser
+  virtual-gateway; fedcm-rp sources live in browserid-ng). They stay on the
+  old droplet until decommission = the rollback for this call.
+- New droplet: **1GB/25GB sfo3** ($6) — deliberate experiment; hobby profile
+  adds a 2G swapfile for the on-host herokuish build of sandmill
+  (composer+webpack). If it OOMs, DO resize 1GB→2GB is reversible (CPU/RAM-only).
+- Root access: laptop-admin via agent forwarding (no root key minted on mini).
+- Git hosting (old host ~/git, 11 bare repos incl. sandmill's origin):
+  sandmill → private GitHub repo as new origin; the rest archived as
+  ~/backups/sandmill/salvage/git-repos-sandmill.org.tar.gz (done).
+
+### Done 2026-08-27 (no root needed)
+- [x] sandmill-infra restructured: hosts/{identity,hobby}.conf profiles
+  (ufw ports, extra plugins, swap), apps/ → apps/identity/ + apps/hobby/,
+  all scripts take PROFILE= (default identity). Commit 6abecaf, pushed.
+- [x] Hobby confs written from LIVE old-host inventory (domains/ports/storage
+  verified via dokku, not from docs). sandmill-irc maps tcp:6667; hobby ufw
+  = 22/80/443/6667; http-auth plugin 0.10.0 (rolodexterity, user ailiangan).
+- [x] Hobby secrets seeded from the 2026-08-26 backup (7 apps, committed).
+  GOTCHA: seed-secrets MUST be profile-scoped — the hobby backup carries meta
+  for the STOPPED identity rollback apps and an unscoped run overwrites fresh
+  identity secrets with stale ones (happened; reverted via git).
+- [x] audit-host.sh --hobby validated against the old host: reports exactly
+  the known deltas and nothing else.
+- [x] rolodexterity salvage (no source repo exists): image
+  dokku/rolodexterity:latest → ~/backups/sandmill/salvage/rolodexterity-image.tar.gz
+  (200M, gzip-verified) + rolodexterity.htpasswd. Deploy on new host:
+  gunzip | docker load, retag rolodexterity:salvaged, git:from-image; restore
+  htpasswd + `dokku http-auth:on`.
+- [x] All 11 ~/git bare repos archived to the mini (see salvage dir).
+
+### Hobby host BUILT and verified 2026-08-27 (droplet `hobby-host`, 143.198.71.94, 1GB/25GB sfo3)
+- All 7 apps deployed and verified via Host: curls: sandmill 200 (+title),
+  www 200, proxy 200, rolodexterity 401 (http-auth, ailian's htpasswd),
+  mingo.place 200, irc 6667 open. sqlite integrity ok (sandmill, mingo,
+  rolodexterity). State restored from the 2026-08-27T0320 backup.
+  audit-host --hobby: NO DRIFT. Disk 40%; herokuish Laravel build succeeded
+  fine on 1GB (2G swap present).
+- **sbo-daemon and sandmill-bot are deliberately STOPPED on the new host**
+  until cutover: sbo-daemon publishes checkpoints/attestations with the
+  authority keys (two live instances = double publishing); bot would join
+  IRC/Discord twice. At cutover: stop on old host FIRST, then ps:start both
+  on new. sandmill-bot also needed `ps:scale sandmill-bot worker=1` (scale is
+  not part of git push).
+- Gotchas hit and fixed (all committed to sandmill-infra):
+  - ~/.ssh/laptop-admin.pub on the mini was a STALE key and got authorized as
+    dokku 'admin' — git push denied. keys/dokku/ is the truth; provision now
+    defaults to it. The mini's copy was replaced.
+  - `dokku git:from-image` (BuildKit) ignores locally-loaded images — worked
+    around with a throwaway `registry:2` on localhost:5000 (push tag there,
+    from-image localhost:5000/rolodexterity:salvaged, rm container). Also:
+    dokku's post-deploy prune DELETES loaded-but-unreferenced images, so the
+    load→release chain must run without another deploy in between.
+  - http-auth:on fails on a fresh host: needs `whois` (mkpasswd), then still
+    dies in a sudo privilege drop. Replicated the end state directly instead:
+    property file /var/lib/dokku/config/http-auth/<app>/enabled=true +
+    nginx.conf.d/http-auth.conf + htpasswd. And dokku's "Reloading nginx" did
+    NOT apply it — needed a real `systemctl reload nginx` (curl went 200→401).
+  - Plugin pinning: dokku-http-auth stopped tagging at 0.9.0, so a v<version>
+    committish silently takes HEAD. PLUGINS specs are now
+    name:version[:committish]; http-auth = 0.13.0 @ aa1c43a.
+1. ~~build~~ DONE (above).
+2. ~~deploy + restore + verify~~ DONE (above).
+3. ~~Cutover~~ DONE 2026-08-27 ~20:40Z. Flipped four A records (sandmill.org
+   `@` `*` `id`, mingo.place `@`) → 143.198.71.94. Order executed: stopped
+   sbo-daemon+bot on OLD host → final backup (pulled by IP,
+   sandmill-final-cutover-2026-08-27T202524) → delta restore → started both
+   on new host → letsencrypt all 5 web apps → verified https 200s (401s =
+   intended auth gates) → mini known_hosts refreshed → backup job ran clean
+   against both hosts by hostname → mingo/sbo CI needs nothing (fresh
+   ssh-keyscan per run; mingo-ci already authorized).
+   - DNS learned: the zone had NO records for www/proxy/rolodexterity/da —
+     the `*.sandmill.org` wildcard carries them. `id.sandmill.org` A record
+     KEPT: `send.id` TXT+MX + `resend._domainkey.id` are the BROKER's
+     login-email identity (id@id.sandmill.org via Resend, on SES infra —
+     easily mistaken for SES leftovers; bean j5rn moves it to browserid.me).
+     While `send.id` exists, `id` is an empty non-terminal the wildcard will
+     NOT cover (RFC 4592 again).
+   - sandmill-proxy cert initially unissuable: its custom nginx.conf.sigil
+     gated the nginx.conf.d include (= ACME challenge location) on SSL_INUSE
+     — chicken-and-egg on any fresh host. Fixed in sandmill-proxy 273e-ish
+     commit ("include nginx.conf.d on port 80 before SSL exists").
+   - TODO: raise Namecheap TTLs (sandmill.org @/*/id, mingo.place @) back to
+     Automatic/1800 after a day or two of stability.
+   Original checklist for reference: (sandmill.org zone incl.
+   *.sandmill.org wildcard + explicit records, AND mingo.place); final
+   backup → re-restore delta; flip A records; letsencrypt per app (was
+   SKIP_TLS); refresh mini known_hosts for sandmill.org (backup job runs
+   BatchMode and fails loudly on new host key); authorize mingo-ci key on new
+   host (mingo/sbo-daemon CI DOKKU_HOST=sandmill.org stays right); consider
+   config:unset sandmill ETHERNET_RELAY_URL ETHERNET_WS_URL (retired apps).
+4. Decommission (after ~a week). ~~GitHub part DONE 2026-08-27~~: private
+   repo github.com/vthunder/sandmill created, main pushed, origin repointed,
+   AGENTS.md updated (old bare repo archived in salvage tarball with the 10
+   others; promote any of those to GitHub individually if ever needed).
+   Decommission SWEEP done 2026-08-28 (thorough; nothing left of value):
+   - Archived encrypted to ~/backups/sandmill/salvage/
+     old-host-home-stragglers.tar.gz.age (27M, decrypt-verified):
+     ~/sandmill-backup (a PERSONAL-DATA CHEST mislabeled as backups — dot-ssh,
+     sandmill.org.databases.sql, twitterbot-secrets.json, webflow-sites,
+     contacts), sandmill.old, example-app, sandmill.tar.gz, bootstrap.sh,
+     working-tree .claude/settings.local.json (vendor/node_modules excluded).
+   - Confirmed nothing else: no orphan dokku storage dirs, no private
+     SSH/GPG keys in any home, no custom systemd units, /usr/local only had
+     the bud watcher + our backup-snapshot, nginx stock, 38 dangling docker
+     volumes are detritus of apps already in the 2026-08-06 decommission
+     bundle. ~/sandmill.git is an EMPTY bare repo (the real one was ~/git/
+     sandmill.git, archived + on GitHub). Working-tree HEAD is in main.
+   - Disabled (dated, reversible) the old host's leftover automations:
+     thunder cron bsky-bridge-watchdog (would have restarted the STALE
+     rollback bridge if prod ever blipped), root acme.sh renewal cron
+     (dueling with id-host's), /etc/cron.d/bud-rebuild (dormant).
+   - Sweep found TWO id-host gaps, both fixed: (1) NO letsencrypt auto-renew
+     cron — certs would have silently expired ~2026-11-05; cron added on both
+     hosts and folded into provision-host.sh. letsencrypt:enable does NOT
+     imply renewal. (2) the bsky-bridge fd-exhaustion watchdog was never
+     ported with the bridge; now at /usr/local/bin/bsky-bridge-watchdog.sh
+     on the id-host, root crontab, */2min, test-run healthy.
+   Old droplet POWERED OFF 2026-08-27 ~19:52Z as a smoke test (doctl
+   droplet-action shutdown; power-on = instant rollback). The test earned
+   its keep immediately — TWO breakages surfaced, both fixed + codified:
+   - sandmill-irc unreachable: dokku's nginx template renders tcp maps as an
+     upstream with NO listener. Old host had legacy DOKKU_DISABLE_PROXY=1
+     (docker publishes the port) which seed-secrets rightly drops as
+     dokku-managed. Fix: proxy:disable + docker-options deploy "-p 6667:6667"
+     + ps:rebuild. Now declared in apps/hobby/sandmill-irc.conf.
+   - sandmill-bot crash-looping since deploy: its IRC target
+     `sandmill-irc.web` is a docker-network alias; the old host's shared
+     network was NEVER captured by backup meta. Off-network, the name
+     resolves via PUBLIC DNS to ICANN's .web gTLD collision sinkhole
+     (127.0.53.53) — fails as "connection closed", not NXDOMAIN. Fix: dokku
+     network sandmill-net with initial-network on both apps
+     (attach-post-deploy silently does not fire for proxy-disabled apps on
+     0.37.3). backup-snapshot now captures network/proxy/docker-options per
+     app on both hosts.
+   Verified after fixes: irc 6667 open externally, bot joined #sandmill,
+   external 6667 + all https endpoints green with old droplet OFF.
+   THIRD smoke-test find (owner noticed the Mac OS 8 VM's IRC client dead):
+   **sandmill-relay was MIS-RETIRED** — it is NOT the legacy path. The
+   current virtual-gateway sends HTTP via WebOne but relays raw-TCP port
+   6667 as wss://relay.sandmill.org/relay?host=irc.sandmill.org&port=6667
+   (JSVirtualGateway.ts port→relay map; index.js allowlists exactly that
+   target). It actually broke at DNS CUTOVER (wildcard moved relay.* to a
+   host with no app), masked until the VM was exercised. Restored same day:
+   conf added back, git push deploy, TLS issued; verified WebSocket 101 →
+   relay log "ESTABLISHED irc.sandmill.org:6667". Only fedcm-rp and
+   virtual-ethernet-switch stay retired. Lesson recorded in infra README:
+   "part of the old path" is not evidence — trace the callers.
+   Remaining: doctl compute droplet delete sandmill.org once the owner is
+   confident — this also destroys the identity rollback apps, closing
+   "next" step 2. Then update this bean to completed.
+   (TTLs already restored to Automatic by owner, 2026-08-27.)
 
 ## Backup gotchas found by testing the SCHEDULED path (not just manual)
 launchd runs with a minimal PATH (no Homebrew -> age missing) and NO ssh-agent; the admin RSA key exists only in the agent, not on disk. Both are now explicit in the script. A backup that only works when run by hand is not a backup.

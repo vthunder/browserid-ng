@@ -5,7 +5,9 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-27T11:04:49Z
-updated_at: 2026-08-28T20:07:15Z
+updated_at: 2026-08-28T20:13:27Z
+blocking:
+    - browserid-ng-rjge
 blocked_by:
     - browserid-ng-bw9q
 ---
@@ -61,3 +63,28 @@ Skeleton redrafted twice on review: (1) issuance bar corrected to password + dur
 - MED 7: device_error enum the page doesn't emit. Now open set; unknown = generic refusal.
 - LOW 9: registry-api-v1 §5.5 browser-key example was stale. Updated to 'account'.
 Clean checks: registration wallet-driven, holder self-assign, self-issued token scoping all verified sound.
+
+## Impact analysis (2026-08-28, fresh-eyes agent): no deeper protocol change needed
+
+**Core spec** (bean rjge): support-doc schema already allows a fallback to advertise device-authorization/access-cert (§3.1 generic 'an IdP'); the work is rewording the many spots that weld the registry to 'the hosted broker' (§5/§6.3/§7.5/§1.3/§8) + the §3 AD-unset routing conflation. Mechanism-neutral. Plus qualify §3.1 device-cert REQUIRED once /auth/device_cert (2jfh) retires.
+
+**registry-api-v1** (d0xb build): add POST /api/v1/devices/register to §5.3 (fallback §4 bar), its §7.1 machine reasons, and fix the §9 mapping row (record_device_cert records only the config cert; devices/register records the pair). §3.1 account-resolution + v1-warrant bootstrap already suit a just-issued identity — no change. agent-provisioning spec: no conflict (headless vs interactive lanes).
+
+**Registry impl**: new handler in registrar/src/api.rs + route in lib.rs. Confirmed token_exchange (api.rs:243-355) never parses the authentication device_cert → registration must verify it. The registrar can't verify certs itself (PresentationVerifier trait has only verify_presentation/check_status_ref); needs a third capability, refactored from the broker-side record_device_cert pipeline (primary.rs:287-400: resolve_conformant_key, sig, fail-closed status, holder-move guard, insert). record_agent_device_cert records unverified; record_device_cert refuses non-authorization certs — devices/register is the verified union of both. Idempotent free (insert upserts on pubkey).
+
+**Fallback impl**: broker's own support doc (well_known.rs:42-48) lacks device-authorization — add it + populate registry.browser.account. Ceremony page (static/idp/device-authorize.html + common/js) is structurally reusable but hardwired to the tenant /idp/* backend; fallback role needs the same page shape over the broker-session backend, issuing via the /device/issue core (already implements §3.2's authorize_mint bar + wildcard rule). Real new work: embedded-friendly sign-in/create UX (today /account is a full page).
+
+**Web dialog**: NO required change — stays on the cookie lane, issuer-side recording + self-heal cover it (explicitly permitted by §4). Only shared-page 9it0 fix must not regress its postMessage lane.
+
+**Native wallet**: bootstrap.js secondary lane (186-210) replaced by primaryHop (92-128) — deletes the app's only cookie code; both lanes end with token exchange + devices/register instead of joinBroker(). WATCH: holder healing/labeling rides the join + /device/issue move-resolution today; devices/register must carry the move-guard + UA-label hook or wallet devices lose healing.
+
+**Three spec gaps to close while building:** (a) whose accepted-fallbacks set governs devices/register verification at an INDEPENDENT registry (record_device_cert uses accepted=[own domain]); (b) core §3.1 device-cert REQUIRED vs the two-key fallback contract post-2jfh; (c) holder healing needs a token-lane path.
+
+## Sequencing (dependency-ordered)
+1. NOW/independent: 9it0 (return_url, hardens live tenant lane); spec patches (registry §5.3 devices/register + §7.1 + §9; core wording rjge).
+2. Parallel/independent: devices/register impl (registrar endpoint + verifier-trait extension + refactor primary.rs:287-400 into shared verified-recording core) — testable against existing-lane certs.
+3. 2jfh consolidation (blocked by d0xb finalization): one issuance core; migrate dialog's /auth/device_cert; retire exact-only lane.
+4. Fallback ceremony page + discovery advertisement — depends on 3 + embedded sign-in UX.
+5. uboq verified_at expiry in authorize_mint — independent, land before advertising §3.2 conformance.
+6. Wallet convergence (2m7y context) — needs 2 and 4 live.
+7. u6jq acceptedFallbacks forwarding; ig9p cookie-lane registry-scope — separate tracks.
