@@ -56,11 +56,12 @@ warrant's holder-matcher reads it (§4.5) — one kind of warrant **binding**
 
 The **broker** is the user's agent (in the user-agent sense), not a party to any
 identity claim. Its **client** component holds the user's keys on the device and
-mediates the web login exchange (§7.3); its **hosted** component (browserid.me is
-the reference) keeps the warrant registry and the revocation/status endpoints. A
-hosted broker MAY additionally serve as a **fallback IdP** that an RP chooses to
-accept or not (§8.1) — but that is a separate role; as a broker it verifies
-nothing.
+mediates the web login exchange (§7.3); the warrant registry and the
+revocation/status endpoints are the **registry** role — a service specified by
+its own API (registry-api-v1) that any party can operate; browserid.me runs the
+reference deployment. A registry operator MAY additionally serve as a
+**fallback IdP** that an RP chooses to accept or not (§8.1) — but that is a
+separate role, chosen independently; as a registry it verifies nothing.
 
 ## 2. Cryptography & key formats
 
@@ -88,9 +89,9 @@ for an IdP's identity key.**
   bit set — and accepted only when the resolver's **AD** flag is set. `SERVFAIL`
   is treated as **Bogus → hard reject** (a broken DNSSEC chain is an attack
   signal, not a fall-through). An **insecure** (AD-unset) result means the
-  domain is not a primary → the identity is handled via the broker (§8). The
-  fallback broker's *own* key is likewise DNSSEC-resolved; a fallback without
-  DNSSEC is a hard error.
+  domain is not a primary → the identity is issued by the wallet's configured
+  fallback IdP (§8). The fallback IdP's *own* key is likewise DNSSEC-resolved;
+  a fallback without DNSSEC is a hard error.
 
 - **`.well-known/browserid`** carries an IdP's **endpoints** (§3.1) and an optional
   host certificate (§4.4) — never a key. An IdP's identity key comes only from the
@@ -104,7 +105,7 @@ for an IdP's identity key.**
 |---|---|
 | `authentication` | Path to the interactive authentication page (§7). |
 | `provisioning` | Path to the provisioning page (§7). |
-| `device-cert` | Path to the **batch device-cert issuance API** (session/interactive-authed): issues the user (`authentication`) + config (`authorization`) device certs. REQUIRED — every IdP MUST implement it (§7). |
+| `device-cert` | Path to the **batch device-cert issuance API** (session/interactive-authed): issues the user (`authentication`) + config (`authorization`) device certs. REQUIRED for primary IdPs (§7). A **fallback IdP** (§8) MAY omit it and satisfy issuance entirely through its `device-authorization` page (the ceremony contract, fallback-IdP spec) plus `access-cert`. |
 | `access-cert` | Path to the **headless access-cert mint API** (§7): device-signed access request → short-lived access cert. The device cert is the credential, so agents mint with no browser. REQUIRED — every IdP MUST implement it (§7). |
 | `device-authorization` | Path to the browser-facing device-authorization page — the login popup hand-off that gets a device its certs first-party. |
 | `agent-device-authorization` | Optional. The device-authorization page's agent mode (merged provisioning): issues a **named-agent** device cert (an identity differing from the session's, e.g. a `+tag` sub-address). Absent ⇒ named agents unsupported here; "as-you" agents need no support. |
@@ -389,7 +390,7 @@ constraints until the verifiers it cares about conform.
   | `binding` | **A set of channel entries** — a JSON array, or a single object as shorthand for a one-entry set (the only form pre-amendment records use). Each entry: mandatory `kind`, kind-specific fields (table below); entries are **conjunctive**. A missing or empty `binding`, or an entry with an unimplemented `kind`, ⇒ reject — fail-closed. |
   | `audience` | **Exactly one** audience (exact string match, same normalization as assertion `aud`) — an RP origin, or a non-web destination such as an SBO database ref on a `sign:`-scoped record. |
   | `scopes` | OPTIONAL array of **scope entries**: a bare string `s` (shorthand for `{"scope": s}`) or an object carrying the scope string plus **parameters** (below). Resource scopes are opaque to this protocol and interpreted only by the RP; the `sign:` namespace (below) is interpreted by wallets. |
-  | `status` | **REQUIRED** revocation ref, rooted at the **hosted broker's warrant registry** (§6.3). |
+  | `status` | **REQUIRED** revocation ref, rooted at the **user's warrant registry** (§6.3, registry-api-v1) — the ref's `uri` names the allocating registry. |
 
   ```json
   { "typ": "browserid-warrant-v2",
@@ -601,12 +602,12 @@ constraints until the verifiers it cares about conform.
   leaked warrant is inert without the grantee's key; a connection-bound record
   authorizes with no grantee key in the picture, so the registrar bit is the
   kill switch and a record without one is malformed. (Requiring it on all v2
-  records also makes the broker's revocation ledger complete by
+  records also makes the registry's revocation ledger complete by
   construction.)
 
   A holder-bound warrant is **over the grantor/grantee + holder-matcher, not
   bound to any device/access key**, so it is signed **once** by a config cert,
-  **stored** in the hosted broker registry, and **reused device-agnostically**:
+  **stored** in the user's warrant registry, and **reused device-agnostically**:
   any device whose holder the matcher covers, that can mint an access cert for
   the grantee, presents the stored warrant alongside it. A warrant is
   long-lived and **not a secret** — a leaked holder-bound record is useless
@@ -725,8 +726,8 @@ config-cert / grantor) may differ.
    implement ⇒ reject — fail-closed.
 8. **Three fail-closed status authorities.** Check the revocation ref on each of
    the three objects that carries one — the **access cert** (→ its IdP, per-device
-   index), the **config cert** (→ its IdP), and the **warrant** (→ hosted broker
-   registry). All three checks are **fail-closed** (§6.3).
+   index), the **config cert** (→ its IdP), and the **warrant** (→ the warrant
+   registry its own `status.uri` names). All three checks are **fail-closed** (§6.3).
 9. Return the attributed identity (grantor), the grantee (actor of record), the
    grantor and grantee issuers, the `holder`, and the scopes.
 
@@ -759,8 +760,9 @@ step 8):
 - the **access cert** → its **IdP**, rooted at the **issuing device's** status
   index (revoking one device kills its access certs, not the whole identity);
 - the **config cert** → its **IdP**;
-- the **warrant** → the **hosted broker's warrant registry** (per-grant index,
-  so the user revokes one audience grant without touching the others).
+- the **warrant** → the **warrant registry that allocated its ref** (per-grant
+  index, so the user revokes one audience grant without touching the others;
+  registry-api-v1 — the ref's `uri` names the authority).
 
 Because every access cert is **IdP-gated online at mint** (§4.2), the
 authentication path is already fresh at issuance; the status refs give sub-TTL
@@ -773,7 +775,7 @@ revocation of live sessions. A ref carries:
 - `uri` names a **signed status list** published by the authority; `idx` is the
   credential's position in it. Issuers allocate **one index per device** for
   access certs (stable across re-mints, so one bit kills a device's outstanding
-  access certs) and the hosted broker allocates **one per warrant grant**
+  access certs) and the warrant registry allocates **one per warrant grant**
   (stable across reissues). The list format follows the
   **IETF OAuth Token Status List** mechanism in shape — 1 bit per entry,
   LSB-first, zlib-compressed, base64url — carried in this protocol's usual
@@ -839,8 +841,8 @@ matched against. Three steps, each fail-closed:
       `max-ttl`; a constraint key the verifier does not implement ⇒ reject;
    e. check the revocation ref on each chain object that carries one, each
       check **fail-closed** (§6.3): the config cert (→ its IdP) and the
-      warrant (→ hosted broker registry; the warrant's ref is always present
-      on v2, optional on v1).
+      warrant (→ its warrant registry, per its `status.uri`; the warrant's
+      ref is always present on v2, optional on v1).
 2. **Authenticate the subject** by the binding's method: the custody
    protocol's dance (`connection` — e.g. the OAuth redirect-URI + PKCE
    mechanics, §5), or a browserid login (`holder`). The authenticated
@@ -1167,8 +1169,8 @@ warrant's grantor/grantee (§5).
 A warrant (§5) authorizes a `grantor → grantee` at one audience, signed by the
 grantor's **config cert** client-side — so only a party holding a config cert can
 create one. The IdP never sees an audience or scopes; the signed warrant is stored
-in the hosted-broker registry for device-agnostic reuse (§5) and per-grant
-revocation (§6.3).
+in the user's warrant registry (registry-api-v1) for device-agnostic reuse
+(§5) and per-grant revocation (§6.3).
 
 Presentation-consumed warrants reach their grantee's holders as below;
 admission-consumed records (§6.4) instead reach the **resource** that will
@@ -1189,9 +1191,9 @@ How a holder comes to present a warrant depends on what it was issued:
   broker) signs on its behalf.
 
 The **just-in-time consent flow** lets a holder obtain a warrant with the user
-approving out of band. A **broker that serves such holders MUST host it and the
-warrant registry.** It keeps the shape of the OAuth device authorization grant
-(RFC 8628):
+approving out of band. A **registry that serves such holders MUST host this
+flow alongside the warrant registry** (registry-api-v1). It keeps the shape of
+the OAuth device authorization grant (RFC 8628):
 
 1. **Request.** The holder posts an object signed by its device key, naming its
    identity (the prospective grantee) and **1–8 grants**, each a
@@ -1348,10 +1350,12 @@ another supported proof of control where applicable) and then issues **device
 certs** (both purposes) and runs the **mint API** for it,
 all under its own `iss`, published under its own `_browserid` DNSSEC key, so
 every object verifies through the same DNSSEC-rooted path (§3) as any primary.
-`browserid.me` is the reference fallback and the **hosted broker** — it also
-hosts the **warrant registry / revocation UI / status endpoints** (§6.3). It is a
-convenience, **not a mandatory party**: any DNSSEC-publishing domain can run a
-fallback, and an RP chooses which fallbacks it accepts (§8.1).
+`browserid.me` is the reference fallback; it also operates the reference
+**registry** (warrant registry / revocation UI / status endpoints — §6.3,
+registry-api-v1). Those are two independent roles it happens to co-host: either
+can be replaced without the other, and neither is a mandatory party — any
+DNSSEC-publishing domain can run a fallback, and an RP chooses which fallbacks
+it accepts (§8.1).
 
 **Conformance boundary.** A fallback serves **only no-primary domains**. A
 fallback-issued device/access/config cert for a domain that **has** a primary

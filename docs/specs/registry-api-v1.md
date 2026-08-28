@@ -501,6 +501,49 @@ bytes.
 }
 ```
 
+**`POST /api/v1/devices/register`** — record a newly issued device pair:
+
+```json
+{ "device_cert": "<JWS>", "config_cert": "<JWS>" }
+```
+
+→ `204`. The registration half of issuance (fallback-IdP spec §4):
+issuance yields certs, and the wallet records them here at its configured
+registry. This is the token lane's only device-adding write — the §3.1
+exchange itself records nothing, and issuer-side recording is an internal
+convenience wallets MUST NOT rely on. The registry MUST verify, and
+reject otherwise:
+
+- Both certs parse as device certs (core §4.3); `device_cert` is
+  `purpose: authentication`, `config_cert` is `purpose: authorization`;
+  both are unexpired; and every status ref either carries checks
+  unrevoked, fail-closed (core §6.3 — uncheckable ⇒ revoked).
+- Both verify against an issuer the registry accepts for their identity:
+  for a domain that publishes an IdP, the domain's own DNSSEC-resolved
+  key (core §3); for a domain that does not, a fallback issuer in the
+  **registry operator's configured accepted-fallback set** — the
+  registry-side mirror of the RP-side acceptance rule (core §8.1). The
+  reference registry's default set is its own domain. A cert whose
+  signature verifies but whose issuer is outside the accepted set is
+  refused, not recorded.
+- Every concrete (non-wildcard) identity on the pair is an identity the
+  token's account owns (§3.1 resolution).
+- Both certs name the same holder, and the config cert is the one the
+  token is bound to (public-key match) — so registration is covered by
+  the exchange's verification of that cert, and this endpoint's explicit
+  verification covers the sibling `device_cert` the exchange never
+  parses.
+- The named holder has not been moved (§5.4 `holders/move`): registering
+  onto a moved holder is refused (`409`, reason `holder_moved`) rather
+  than resurrecting the old row — the client consults
+  `holders/assignment` and re-issues under the new holder.
+
+Validation failures are `422` with a §7.1 machine reason. Idempotent:
+matched on cert public key, re-registering an already-recorded device is
+a no-op success. The registry MAY derive a default label for a
+newly seen holder from observable client metadata (e.g. `User-Agent`),
+as the cookie lane does.
+
 **`POST /api/v1/devices/revoke`** — `{ "id": 7 }` → `200` with
 `{ "revoked": true }`. Owner-scoped. When this registry is the cert's
 revocation authority (the cert's `iss` is this registry's domain), it
@@ -655,6 +698,7 @@ Errors follow the core §9 precedent: OAuth-shaped JSON.
 | 404 | `not_found` | Owner-scoped lookup misses — including "exists but isn't yours" (no existence leaks). |
 | 409 | `conflict` | State refusals, e.g. deleting a non-empty namespace. |
 | 422 | `invalid_warrant` | Respond, claim, and register: client-signed warrants (or the claim precondition) fail the §5.1/§5.2 validation bar. |
+| 422 | `invalid_cert` | `devices/register`: the submitted cert pair fails the §5.3 validation bar. |
 | 429 | `slow_down` | Rate limits. Responses SHOULD carry `Retry-After`. |
 
 `error_description` is a human-readable diagnostic and MUST NOT be
@@ -697,6 +741,20 @@ With `invalid_warrant` (`422`, §5.1 respond / claim and §5.2 register)
 | `status_ref_missing` / `status_ref_mismatch` | Grant carries a `status_idx` but the warrant's `status` is absent, or differs from the registry's `{uri, idx}`. |
 | `audience_unproven` | Claim (§5.1): the request's core §7.5 audience proof does not validate. |
 
+With `invalid_cert` (`422`, §5.3 `devices/register`) — in check order:
+
+| Reason | Meaning |
+|---|---|
+| `cert_malformed` | Either cert fails to parse as a device cert. |
+| `wrong_purpose` | `device_cert` is not `purpose: authentication`, or `config_cert` is not `purpose: authorization`. |
+| `cert_expired` | Either cert is past `exp`. |
+| `cert_revoked` | A status ref on either cert checks revoked, or is uncheckable (fail-closed). |
+| `issuer_not_accepted` | The cert's issuer is neither the identity domain's DNSSEC-published IdP nor in the registry's accepted-fallback set. |
+| `signature_invalid` | A cert's signature does not verify under the resolved issuer key. |
+| `identity_not_owned` | A concrete identity on the pair is not owned by the token's account. |
+| `holder_mismatch` | The two certs name different holders. |
+| `config_cert_not_bound` | The config cert is not the one the token is bound to. |
+
 With `conflict` (`409`):
 
 | Reason | Meaning |
@@ -704,6 +762,7 @@ With `conflict` (`409`):
 | `no_status_ref` | Revoking a warrant that has no status ref (§5.2). |
 | `namespace_not_empty` | Deleting a namespace that still has holders (§5.4). |
 | `external_holder` / `already_in_namespace` | `move_holder` preconditions (§5.4). |
+| `holder_moved` | `devices/register` onto a holder that has been moved (§5.3). |
 
 ## 8. Versioning and conformance
 
@@ -753,7 +812,7 @@ With `conflict` (`409`):
 | `POST /wsapi/revoke_device_cert` | `POST /api/v1/devices/revoke` | |
 | `GET /wsapi/cert_revocation_status` | `GET /api/v1/devices/status` | |
 | `GET /wsapi/holders` etc. | §5.4 table | |
-| `POST /wsapi/record_device_cert` | — (unchanged) | Already sessionless, cryptographically gated. |
+| `POST /wsapi/record_device_cert` | `POST /api/v1/devices/register` | Legacy lane records only the config cert (best-effort self-heal); `devices/register` verifies and records the pair. Cookie endpoint stays for the self-heal lane. |
 | `/warrant/request`, `/warrant/poll`, `/warrant/record-request`, `/agent-provision/*` | — (out of scope) | Agent side; core §7.5. |
 | `GET /wsapi/session_context` | — (not needed) | CSRF token has no token-lane equivalent. |
 

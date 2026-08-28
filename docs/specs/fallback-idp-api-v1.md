@@ -132,8 +132,12 @@ exchange verifies only the presentation's config and access certs,
 not the sibling authentication `device_cert`, so registration must
 verify it explicitly). It MUST require, and reject otherwise:
 
-- both certs verify against a DNSSEC-authoritative issuer for their
-  identity (core §6), and are unexpired and unrevoked;
+- both certs verify against an issuer the registry accepts for their
+  identity — the domain's own DNSSEC-published IdP (core §3/§6), or,
+  for a domain without one, a fallback issuer in the registry
+  operator's configured accepted-fallback set (the registry-side
+  mirror of the RP rule, core §8.1; the reference registry's default
+  set is its own domain) — and are unexpired and unrevoked;
 - their identity is one the token's account owns (§3.1 resolution);
 - both share one holder, and the config cert is the one the token is
   bound to.
@@ -147,6 +151,9 @@ Rules:
   a registry MAY pre-record its own issuances, but wallets MUST NOT
   rely on that — the flow above is identical whether or not the
   issuer and registry are the same host.
+- A registry is free to refuse issuers outside its accepted set;
+  wallet configuration should pair a fallback IdP with a registry
+  that accepts it (issuer == registry always composes).
 - One registry per identity in v1.
 
 ## 5. The registry `browser` object
