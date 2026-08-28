@@ -31,6 +31,14 @@
       if (u.protocol === "https:" || u.protocol === "http:") returnOrigin = u.origin;
     }
   } catch (e) { /* invalid */ }
+  // The certs certify the fragment's pubkeys, so the return_url delivery
+  // lane must never navigate to a foreign origin: honor return_url only
+  // when it is same-origin with the validated return_origin (bean 9it0).
+  if (returnUrl) {
+    try {
+      if (!returnOrigin || new URL(returnUrl).origin !== returnOrigin) returnUrl = "";
+    } catch (e) { returnUrl = ""; }
+  }
   // Drop the fragment from the address bar (defense in depth).
   try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
 

@@ -1,11 +1,11 @@
 ---
 # browserid-ng-9yyk
 title: 'Wallets on one standardized API surface: four-role separation (RP / wallet / IdP / registry)'
-status: todo
+status: in-progress
 type: epic
 priority: normal
 created_at: 2026-08-28T21:18:17Z
-updated_at: 2026-08-28T21:18:17Z
+updated_at: 2026-08-28T21:26:27Z
 ---
 
 Umbrella for the design worked out 2026-08-27/28. Goal: RP, wallet, IdP (primary or fallback), and registry are cleanly separated and independently operable, with identical spec'd APIs regardless of operator (browserid.me runs all four by default; any can be replaced). A conforming wallet — native or the browserid.me web dialog — uses ONLY standard surfaces: /api/v1 (registry-api-v1) + the device-authorization ceremony contract (fallback-idp-api-v1) for issuance. Broker-private endpoints belong to the issuer's ceremony-page role, never the wallet role.
