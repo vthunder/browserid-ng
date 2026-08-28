@@ -46,6 +46,15 @@ pub trait UserStore: Send + Sync {
     /// Mark an email as verified
     fn verify_email(&self, email: &str) -> StoreResult<()>;
 
+    /// Overwrite an email's `verified_at` timestamp. Test/support tooling
+    /// for the uboq freshness window (`mint::verification_stale`); no
+    /// production path calls it.
+    fn set_email_verified_at(
+        &self,
+        email: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> StoreResult<()>;
+
     /// Remove an email from a user's account
     fn remove_email(&self, user_id: UserId, email: &str) -> StoreResult<()>;
 

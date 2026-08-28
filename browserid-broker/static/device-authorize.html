@@ -60,6 +60,16 @@
       <div class="err" id="login-err"></div>
     </form>
 
+    <!-- Stale SMTP verification (bean uboq): a fresh mailbox code before
+         issuance resumes. -->
+    <form id="verify-form" class="hidden">
+      <label for="code">Verification code</label>
+      <input id="code" inputmode="numeric" autocomplete="one-time-code" />
+      <button type="submit" id="verify-btn">Verify</button>
+      <button type="button" class="secondary" id="verify-cancel">Cancel</button>
+      <div class="err" id="verify-err"></div>
+    </form>
+
     <div id="fatal" class="hidden">
       <div class="err" id="fatal-msg"></div>
     </div>

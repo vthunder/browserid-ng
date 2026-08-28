@@ -95,7 +95,7 @@
 
   // --- Screens --------------------------------------------------------------
   function show(id) {
-    ["confirm-form", "login-form", "fatal"].forEach(function (s) {
+    ["confirm-form", "login-form", "verify-form", "fatal"].forEach(function (s) {
       $(s).classList.toggle("hidden", s !== id);
     });
   }
@@ -139,11 +139,13 @@
       });
     }).then(function (res) {
       if (res && res.ok && res.body.device_cert) return res.body;
-      var err = new Error((res && res.body && res.body.reason) || "issuance failed");
-      // 401 = the chokepoint wants the account password (step-up); anything
+      var reason = (res && res.body && res.body.reason) || "issuance failed";
+      var err = new Error(reason);
+      // 401 = the chokepoint wants the account password (step-up); a stale
+      // SMTP verification (uboq) re-runs the mailbox ceremony; anything
       // else is a policy refusal the wallet should hear about.
       err.step_up = res && res.status === 401;
-      err.policy = res && res.status !== 401;
+      err.reverify = res && res.status === 403 && /verification expired/i.test(reason);
       throw err;
     });
   }
@@ -151,8 +153,28 @@
   function issueAndDeliver() {
     return issueCerts().then(deliver).catch(function (e) {
       if (e.step_up) { showLogin(""); return; }
-      // Refused at the chokepoint (wrong account, primary identity, stale
-      // verification, …): tell the wallet, and show the reason here too.
+      if (e.reverify) { startReverify(); return; }
+      // Refused at the chokepoint (wrong account, primary identity, …):
+      // tell the wallet, and show the reason here too.
+      fatal(String(e.message || e));
+      fail("policy_refused");
+    });
+  }
+
+  // --- Stale verification (uboq): fresh mailbox code, then retry ------------
+  function startReverify() {
+    api("/wsapi/session_context").then(function (ctx) {
+      return api("/wsapi/stage_email", { email: email, csrf: ctx.body.csrf_token || "" });
+    }).then(function (res) {
+      if (!res.ok || !res.body.success) {
+        throw new Error(res.body.reason || "could not send a verification code");
+      }
+      $("title").textContent = "Check your email";
+      $("subtitle").textContent =
+        "It has been a while — we sent a fresh verification code to " + email + ".";
+      show("verify-form");
+      $("code").focus();
+    }).catch(function (e) {
       fatal(String(e.message || e));
       fail("policy_refused");
     });
@@ -183,6 +205,29 @@
   });
   $("confirm-cancel").addEventListener("click", function () { fail("cancelled"); });
   $("login-cancel").addEventListener("click", function () { fail("cancelled"); });
+  $("verify-cancel").addEventListener("click", function () { fail("cancelled"); });
+
+  $("verify-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var btn = $("verify-btn");
+    btn.disabled = true;
+    $("verify-err").textContent = "";
+    api("/wsapi/session_context").then(function (ctx) {
+      return api("/wsapi/complete_email_addition", {
+        email: email,
+        token: $("code").value.trim(),
+        csrf: ctx.body.csrf_token || "",
+      });
+    }).then(function (res) {
+      if (!res.ok || !res.body.success) {
+        throw new Error(res.body.reason || "wrong or expired code");
+      }
+      return issueAndDeliver();
+    }).catch(function (err) {
+      $("verify-err").textContent = String(err.message || err);
+      btn.disabled = false;
+    });
+  });
 
   $("login-form").addEventListener("submit", function (e) {
     e.preventDefault();

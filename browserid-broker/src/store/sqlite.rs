@@ -1208,6 +1208,25 @@ impl UserStore for SqliteStore {
         Ok(())
     }
 
+    fn set_email_verified_at(
+        &self,
+        email: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> StoreResult<()> {
+        let normalized = email.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        let rows_affected = conn
+            .execute(
+                "UPDATE emails SET verified_at = ?1 WHERE email = ?2",
+                params![at.to_rfc3339(), normalized],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows_affected == 0 {
+            return Err(BrokerError::EmailNotFound);
+        }
+        Ok(())
+    }
+
     fn remove_email(&self, user_id: UserId, email: &str) -> StoreResult<()> {
         let normalized = email.to_lowercase();
         let conn = self.conn.lock().unwrap();
@@ -2947,6 +2966,14 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn verify_email(&self, email: &str) -> StoreResult<()> {
         (**self).verify_email(email)
+    }
+
+    fn set_email_verified_at(
+        &self,
+        email: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> StoreResult<()> {
+        (**self).set_email_verified_at(email, at)
     }
 
     fn remove_email(&self, user_id: UserId, email: &str) -> StoreResult<()> {

@@ -141,6 +141,39 @@ test.describe('fallback device-authorize ceremony', () => {
     expect(new URL(page.url()).pathname).toBe('/device-authorize');
   });
 
+  test('stale verification demands a fresh mailbox code before issuing (uboq)', async ({ context, page, baseURL }) => {
+    const email = uniqueEmail('stale');
+    await createAccount(context, baseURL!, email);
+    const bd = await context.request.post(`${baseURL}/wsapi/test/set_verified_at`, {
+      data: { email, days_ago: 120 },
+    });
+    expect((await bd.json()).success).toBeTruthy();
+    const r = await context.request.post(`${baseURL}/wsapi/authenticate_user`, {
+      data: { email, pass: PASSWORD },
+    });
+    expect(r.ok()).toBeTruthy();
+
+    await stubReturn(page);
+    await page.goto(pageUrl(baseURL!, email));
+    await expect(page.locator('#confirm-form')).toBeVisible();
+    await page.click('#confirm-btn');
+
+    // Issuance is refused (verification expired) → the page stages a fresh
+    // mailbox code instead of delivering.
+    await expect(page.locator('#verify-form')).toBeVisible({ timeout: 10000 });
+    const pending = await (
+      await context.request.get(
+        `${baseURL}/wsapi/test/pending_verification?email=${encodeURIComponent(email)}&type=add_email`
+      )
+    ).json();
+    expect(pending.code).toBeDefined();
+    await page.fill('#code', pending.code);
+    await page.click('#verify-btn');
+
+    await page.waitForURL((url) => url.pathname === '/wallet-return', { timeout: 15000 });
+    expect(new URL(page.url()).hash).toContain('device_cert=');
+  });
+
   test('wrong password shows an error and stays put', async ({ context, page, baseURL }) => {
     const email = uniqueEmail('wrongpw');
     await createAccount(context, baseURL!, email);

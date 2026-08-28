@@ -777,11 +777,14 @@ where
     ) {
         Some(session) => match state.user_store.get_email(&normalized)? {
             Some(ref email) if email.user_id == session.user_id => {
-                if !email.verified {
-                    // Marked for re-verification (kgb9: a password reset
-                    // unverifies the account's sibling E3 addresses): a fresh
-                    // proof — SMTP code or bridge hop, per `proof` — is
-                    // required before this address signs in or mints again.
+                if !email.verified || crate::mint::verification_stale(email) {
+                    // Marked for re-verification — kgb9 (a password reset
+                    // unverifies the account's sibling E3 addresses) or uboq
+                    // (an E3 verification older than the issuer's max-age):
+                    // a fresh proof — SMTP code or bridge hop, per `proof` —
+                    // is required before this address signs in or mints
+                    // again. The dialog's existing unverified lane covers
+                    // both cases.
                     Some("unverified")
                 } else {
                     let password_known = state.user_store.has_password(email.user_id)?;

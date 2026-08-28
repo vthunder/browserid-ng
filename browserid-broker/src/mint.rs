@@ -32,6 +32,26 @@
 
 use crate::store::{Email, EmailType, ProofMethod, SessionLevel};
 
+/// browserid.me's SMTP re-verification window (bean uboq): verification does
+/// not last forever (fallback-idp-api-v1 §3.2 — freshness is issuer policy,
+/// so the number lives here, not in the spec).
+pub const SMTP_VERIFICATION_MAX_AGE_DAYS: i64 = 90;
+
+/// Whether an E3 (SMTP-proofed) address's verification is too old to mint
+/// from. Only E3 ages: a primary vouches per-login, a bridge runs its own
+/// live proof, and an agent identity is controlled by its parent. A verified
+/// row with no `verified_at` (pre-tracking legacy) is stale — its age is
+/// unknown, and the remedy is one fresh mailbox code.
+pub fn verification_stale(email: &Email) -> bool {
+    if !(email.email_type == EmailType::Secondary && email.proof == ProofMethod::Smtp) {
+        return false;
+    }
+    match email.verified_at {
+        Some(at) => chrono::Utc::now() - at > chrono::Duration::days(SMTP_VERIFICATION_MAX_AGE_DAYS),
+        None => true,
+    }
+}
+
 /// Which voucher a delegated mint must come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Voucher {
@@ -55,6 +75,11 @@ pub enum MintDecision {
     /// delegated to the named voucher, which runs its own live proof and
     /// decides the cert TTL (browserid-ng-pr3a).
     Delegate(Voucher),
+    /// The SMTP verification is stale (bean uboq): a fresh mailbox code must
+    /// land before this address mints again. HTTP surfaces map this to
+    /// `EmailVerificationExpired` (403); the dialog and the ceremony page
+    /// run the re-verification flow.
+    Reverify,
 }
 
 /// Decide whether a mint for `email` is authorized under a session of
@@ -69,8 +94,11 @@ pub fn authorize_mint(email: &Email, level: SessionLevel) -> MintDecision {
         (EmailType::Secondary, ProofMethod::Oidc) => MintDecision::Delegate(Voucher::Oidc),
         (EmailType::Secondary, ProofMethod::Atproto) => MintDecision::Delegate(Voucher::Atproto),
 
-        // E3: password territory.
+        // E3: password territory — and, once past the password, freshness
+        // territory (uboq): the password gate first (a lightweight session
+        // must not trigger inbox codes), then the verification max-age.
         (EmailType::Secondary, ProofMethod::Smtp) => match level {
+            SessionLevel::Full if verification_stale(email) => MintDecision::Reverify,
             SessionLevel::Full => MintDecision::Allow,
             SessionLevel::Lightweight => MintDecision::NeedPassword,
         },
@@ -150,5 +178,40 @@ mod tests {
                 "({email_type:?}, {proof:?}, {level:?})"
             );
         }
+    }
+
+    /// uboq: E3 verification ages out at the chokepoint. Only E3 — and only
+    /// past the password gate, so a lightweight session still steps up to
+    /// the password before any inbox code is triggered.
+    #[test]
+    fn e3_verification_freshness() {
+        use EmailType::*;
+        use ProofMethod::*;
+        use SessionLevel::*;
+
+        let stale_at = Utc::now() - chrono::Duration::days(SMTP_VERIFICATION_MAX_AGE_DAYS + 1);
+        let fresh_at = Utc::now() - chrono::Duration::days(SMTP_VERIFICATION_MAX_AGE_DAYS - 1);
+
+        let mut rec = email(Secondary, Smtp);
+        rec.verified_at = Some(fresh_at);
+        assert_eq!(authorize_mint(&rec, Full), MintDecision::Allow);
+
+        rec.verified_at = Some(stale_at);
+        assert_eq!(authorize_mint(&rec, Full), MintDecision::Reverify);
+        assert_eq!(authorize_mint(&rec, Lightweight), MintDecision::NeedPassword);
+
+        // Legacy rows without a timestamp have unknown age → stale.
+        rec.verified_at = None;
+        assert_eq!(authorize_mint(&rec, Full), MintDecision::Reverify);
+
+        // Non-E3 provenances never age here: their freshness is the
+        // voucher's business (primary per-login, bridge per-proof, agent via
+        // its parent).
+        let mut agent = email(Agent, Smtp);
+        agent.verified_at = None;
+        assert_eq!(authorize_mint(&agent, Full), MintDecision::Allow);
+        let mut oidc = email(Secondary, Oidc);
+        oidc.verified_at = Some(stale_at);
+        assert_eq!(authorize_mint(&oidc, Full), MintDecision::Delegate(Voucher::Oidc));
     }
 }

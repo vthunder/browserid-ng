@@ -174,3 +174,29 @@ where
         removed,
     })
 }
+
+#[derive(Debug, Deserialize)]
+pub struct SetVerifiedAtRequest {
+    pub email: String,
+    /// How far back to move `verified_at` from now.
+    pub days_ago: i64,
+}
+
+/// POST /wsapi/test/set_verified_at
+/// Backdate an email's `verified_at` so E2E can exercise the uboq
+/// verification max-age (mint::verification_stale) without waiting 90 days.
+pub async fn set_verified_at<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    Json(req): Json<SetVerifiedAtRequest>,
+) -> Json<serde_json::Value>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let at = chrono::Utc::now() - chrono::Duration::days(req.days_ago);
+    match state.user_store.set_email_verified_at(&req.email, at) {
+        Ok(()) => Json(serde_json::json!({"success": true})),
+        Err(e) => Json(serde_json::json!({"success": false, "reason": e.to_string()})),
+    }
+}

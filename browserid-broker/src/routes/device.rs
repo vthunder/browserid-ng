@@ -94,6 +94,7 @@ fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
             prov,
         )),
         crate::mint::MintDecision::NeedPassword => Err(BrokerError::PasswordRequired),
+        crate::mint::MintDecision::Reverify => Err(BrokerError::EmailVerificationExpired),
         crate::mint::MintDecision::Delegate(crate::mint::Voucher::Primary) => {
             Err(BrokerError::PolicyRefused(
                 "issuance for a primary identity is its own IdP's; the broker cannot sign it"

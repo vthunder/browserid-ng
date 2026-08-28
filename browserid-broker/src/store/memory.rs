@@ -75,7 +75,8 @@ impl InMemoryUserStore {
         }
     }
 
-    /// Set the verified_at timestamp for an email (for testing purposes)
+    /// Set the verified_at timestamp for an email (for testing purposes).
+    /// The trait method [`UserStore::set_email_verified_at`] delegates here.
     pub fn set_verified_at(
         &self,
         email: &str,
@@ -183,6 +184,14 @@ impl UserStore for InMemoryUserStore {
         } else {
             Err(BrokerError::EmailNotFound)
         }
+    }
+
+    fn set_email_verified_at(
+        &self,
+        email: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> StoreResult<()> {
+        self.set_verified_at(email, at)
     }
 
     fn remove_email(&self, user_id: UserId, email: &str) -> StoreResult<()> {

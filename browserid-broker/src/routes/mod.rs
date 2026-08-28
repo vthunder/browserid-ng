@@ -360,6 +360,7 @@ where
         app = app
             .route("/wsapi/test/pending_verification", get(test::get_pending_verification))
             .route("/wsapi/test/set_mock_primary_idp", post(test::set_mock_primary_idp))
+            .route("/wsapi/test/set_verified_at", post(test::set_verified_at))
             .route("/wsapi/test/clear_mock_primary_idps", post(test::clear_mock_primary_idps))
             .route("/wsapi/test/remove_mock_primary_idp", post(test::remove_mock_primary_idp))
             // Dev/demo pages: demo RPs and test harnesses do not belong on the
