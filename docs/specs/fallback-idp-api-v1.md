@@ -1,162 +1,168 @@
 # Fallback-IdP API v1 (draft skeleton)
 
-Status: **draft**, 2026-08-28. Flows and shapes for review; wire
-examples and machine reasons come after the §6 questions are settled.
-Same family as `registry-api-v1.md`: same error taxonomy, same
-independently-implementable bar. No cookies, no CSRF, no sessions.
+Status: **draft**, 2026-08-28 — redrafted after review (§7): the
+fallback IdP presents itself to native clients **as a primary**. Same
+family as `registry-api-v1.md`; wire examples follow once §6 settles.
 
 **What this is.** How a native wallet gets a secondary identity's
-device + config certs from the broker (acting as fallback IdP)
-without driving the web dialog. Primaries never touch this API —
-their issuance belongs to their own IdP (the device-authorize hop).
+device + config certs from the broker (acting as fallback IdP). The
+answer: the same way it gets them from any primary — a browser-page
+ceremony at the issuer, discovered from `address_info`. No password,
+code, or credential ever crosses a native API; the wallet has ONE
+bootstrap flow for every identity type.
 
-**The one rule everything follows.** Issuance requires:
-
-    the password                  — "I am the account root"
-    + a VERIFIED address          — the account's durable verified flag,
-                                    set by a past mailbox ceremony
-
-This is exactly today's `/device/issue` bar (Full session ≡ password;
-`verified` flag durable), neither weaker nor stricter. A **fresh**
-mailbox proof is demanded only when the address is NOT currently
-verified — mid-signup, or after a password reset un-verified it
-(kgb9). Certs and registry tokens are *derived* from the password, so
-they never substitute for it here — otherwise a stolen cert could
-mint more certs (privilege loop). Registry tokens are refused on
-every endpoint in this spec.
+**The one rule.** All authentication — password, signup, reset,
+re-verification, bridge proof — happens inside the issuer's own
+browser page, where the password manager, origin UI, and recovery
+links live. The native contract is only: *open this URL with these
+public keys; receive certs on the return navigation*. The
+mint-authorization chokepoint behind the page is unchanged.
 
 ## 1. The flows
 
-Four flows cover the whole lifecycle. B is the common case and is one
-credentialed call; A and D are the ceremonies that get you there; C
-is the handoff case.
+### A. Wallet bootstrap — any secondary address
 
-### A. New user — first wallet setup
+1. `GET address_info?email=` → for a secondary, NOW includes (new):
 
-1. `GET  address_info?email=`            → `type: "secondary"` (else: primary hop, not this API)
-2. `POST idp/stage    {email, pass}`     → 204 — a 6-digit code is mailed
-3. `POST idp/complete {email, code}`     → 204 — account created, address VERIFIED
-4. `POST idp/issue    {email, pass, device_pubkey, config_pubkey}`
-                                         → `{device_cert, config_cert}`
-5. Wallet silently joins the registry (registry-api-v1 §3). Done.
+       "device_auth":  "https://broker.example/device-authorize",
+       "access_mint":  "https://broker.example/access/mint"
 
-One code ceremony total; step 3's ceremony is what set the verified
-flag step 4 relies on.
+   — the same two fields a primary advertises. The wallet no longer
+   branches on `type`.
 
-### B. Existing user, knows the password — new device
+2. Wallet opens `device_auth` in a browser surface (embedded window
+   or system browser — client's choice, §3.3) with the standard
+   fragment: `#email=…&device_pubkey=…&config_pubkey=…&
+   return_origin=…&return_url=…`.
 
-1. `GET  address_info?email=`  → secondary
-2. `POST idp/issue …`          → certs. That's it — the address was
-   verified long ago; the password alone signs in a new device,
-   matching today's device-B experience.
+3. The page does whatever this user needs — sign in, create the
+   account, reset a forgotten password, re-verify a stale address
+   (§3.4), or run a bridge-proof ceremony. All server-side UX; the
+   wallet neither knows nor cares which happened.
 
-If the address has meanwhile LOST its verified flag, `issue` answers
-`403 reason: "email_verification_required"` and the client runs the
-re-verification ceremony, then retries with the proof attached:
+4. On success the page navigates to
+   `return_url#device_cert=…&config_cert=…` (or `#device_error=…`);
+   the wallet intercepts the navigation and persists the certs.
 
-2a. `POST idp/email/send   {email}`        → 204 — code mailed
-2b. `POST idp/email/verify {email, code}`  → `{email_proof}`
-2c. `POST idp/issue {…, email_proof}`      → certs (and the durable
-    flag is re-set: password + fresh proof together meet the same bar
-    as the session-lane re-verification ceremony).
+5. If `issuer` ≠ the wallet's registry host, the wallet joins the
+   registry silently (`auth_with_presentation`, gxi9). When the
+   fallback IdP IS the registry host, issuance already recorded the
+   device — the join is skipped. This one-line branch is all that
+   remains of the old two-lane bootstrap.
 
-### C. Bridge-proofed address (gmail via OIDC, atproto handle)
+### B. Primary address — unchanged, shown for symmetry
 
-These accounts have no password; their root credential is the bridge
-ceremony, which is a top-level browser navigation by construction.
-v1 keeps them browser-side: `idp/issue` answers
-`403 reason: "bridge_required"` and the client opens the `claim` URL
-from discovery (§4). Native bridge issuance is a later revision.
+Identical steps; `device_auth` just points at the primary's own IdP.
+That is the point: **the fallback IdP is the primary of last
+resort**, not a different kind of thing.
 
-### D. Forgot password — recovery
+### C. Re-issuance / new device
 
-Flow A again: `stage` + `complete` reset the password when the
-account already exists (and the responses never reveal which case
-occurred — anti-enumeration). Normative side effects: every session
-dies, and sibling SMTP addresses lose their verified flag (kgb9) —
-so a wallet holding a *sibling* address will hit flow B's 2a–2c on
-its next issuance.
+Flow A again. With a live browser session in the page's partition the
+ceremony may complete without retyping anything; with a stale
+verification (§3.4) the page demands a fresh mailbox code first.
 
-## 2. The endpoints
+## 2. What this deletes
 
-Six, all under `/api/v1/idp/`. Legacy siblings stay mounted for the
-browser; both lanes share one core each so the bars cannot drift
-(the bw9q pattern).
+The previous draft's native endpoints — `stage`, `complete`,
+`email/send`, `email/verify`, `issue`, and the `email_proof`
+artifact — are all gone (§7, decision 2). Headless secondary
+issuance is deliberately not offered: scripted clients use the
+agent-provision lane (core §7.5), and tests use test endpoints.
+Passwords cannot be credential-stuffed through an API that never
+accepts one.
 
-| Endpoint | Auth | Does | Legacy sibling |
-|---|---|---|---|
-| `GET address_info` | none | classify: primary / secondary / bridge-proofed | `/wsapi/address_info` (blessed subset) |
-| `POST stage` | none | mail a code; stage account-create-or-password-reset | `/wsapi/stage_signin_code` |
-| `POST complete` | code | create account / reset password; verifies the address | `/wsapi/complete_signin_code` |
-| `POST email/send` | none | mail a code (no account changes) | `/auth/send` |
-| `POST email/verify` | code | returns `email_proof` for re-verification | `/auth/verify` (which sets a cookie instead) |
-| `POST issue` | `pass` (+ `email_proof` only when demanded) | mint the device + config cert pair | `/device/issue` (session+csrf); `/auth/device_cert` (cookies) — superseded by one call |
+## 3. The contract
 
-Rules that carry over unchanged (normative in the full draft):
-existing rate limits (code sends, guess-burning, the
-`authenticate_user` failure throttle applied to `issue`'s password
-check), uniform anti-enumeration responses, per-key status refs on
-issued certs, `authorize_mint` as the unchanged chokepoint behind
-`issue`.
+### 3.1 `address_info` additions (normative)
 
-`issue` details to pin during review: client-supplied `holder`
-(§6 Q3) and the config-cert identity set (§6 Q4).
+For `type: "secondary"` addresses the issuer MUST advertise
+`device_auth` and `access_mint` (today these appear only for
+primaries). Existing anti-enumeration behavior is unchanged — the
+fields are properties of the issuer, not of the account.
 
-## 3. The `email_proof` artifact
+### 3.2 The device-authorize page
 
-The signed claim today's `fb_email` cookie carries
-(`browserid-fb-email-v1`: `email`, `exp`), returned in the response
-body instead of a cookie. Stateless; verified by signature at
-`issue`. Its only role is the re-verification path (flow B 2a–2c) —
-the common flows never touch it. Proposed lifetime: **≤ 1 hour**
-(the cookie's 30 days is a browser convenience that has no business
-in a portable artifact — §6 Q1).
+The fragment/return contract that today exists as implementation
+(the hosted-IdP page; the wallet's `primaryHop`) becomes normative
+here: REQUIRED fragment params (`email`, `device_pubkey`,
+`config_pubkey`, `return_origin`, `return_url`), success return
+(`device_cert`, `config_cert`), error return (`device_error` +
+enumerated values), and the rule that params ride the **fragment**
+(never sent to the server) while delivery rides the return
+navigation. The broker mounts this page for its own secondaries;
+behind it, issuance is the existing session-authed chokepoint
+(`authorize_mint`) — Full session for E3, live bridge grant for E2,
+holder assigned under the account's `browsers` namespace.
+
+### 3.3 Client guidance: embedded vs system browser
+
+The contract works in both. RECOMMENDED: an embedded window with a
+persistent partition (the wallet's existing primary-hop shape) —
+consistent UX, clean return interception, and the live session makes
+re-issuance ceremony-free. Tradeoff to disclose: an embedded window
+does not reach the user's system-browser password manager. A client
+MAY use the system browser instead (loopback `return_url`).
+
+### 3.4 Verification freshness (issuer policy, new)
+
+An address MUST NOT stay verified forever. The issuer enforces a
+maximum verification age (window: §6 Q2); an issuance attempt past
+it re-runs the mailbox ceremony inside the page before certs are
+returned. (Broker gap tracked in bean uboq: `verified_at` is
+currently write-only and `EmailVerificationExpired` is never
+raised; kgb9's reset-unverifies rule is today's only re-trigger.)
 
 ## 4. Browser handoff (fills registry-api-v1 §5.5's `browser` object)
 
-What a native client opens in the system browser, discovered from the
-support document:
+The device-authorize page absorbed claim/recovery, so the object
+shrinks to:
 
 | Key | Opens | Used by |
 |---|---|---|
-| `account` | the account page | menu shortcut; email add/remove, cancel — browser-only in v1 |
-| `claim` | bridge-proof ceremony | flow C |
-| `recover` | guided recovery page | optional human-friendly wrapper around flow D |
+| `account` | the account page | menu shortcut; email add/remove, cancel |
 
-Clients MUST ignore unknown keys; a missing key means "ceremony not
-offered here".
+Clients MUST ignore unknown keys.
 
 ## 5. Errors
 
-Registry-api-v1 §7 verbatim. New `reason` values (enumerated fully
-later): `credentials_invalid` (one uniform answer for wrong password
-/ no account / wrong state — no oracles), `email_verification_required`,
-`email_proof_invalid`, `bridge_required`, `delegate_to_primary`.
+Native surface: only the `device_error` fragment values (to
+enumerate: `cancelled`, `email_mismatch`, `policy_refused`, …) and
+registry-api-v1 §7 for `address_info`. Everything else is page UX.
 
 ## 6. Open questions
 
-1. **`email_proof` lifetime** — lean ≤ 1h, refresh by redoing the
-   ceremony.
-2. **Password handling at `issue`** — per-call (lean: the whole
-   lifecycle is ≤ 2 credentialed calls) vs minting a short-lived
-   issuance token after one proof.
-3. **Client-supplied `holder` on `issue`** — lean yes, with
-   `/device/issue`'s validation (browsers-namespace or pending-move
-   target); absorbs bean kmvm and gives wallets holder continuity.
-4. **Config-cert identity set** — `/device/issue` grants
-   `[email, local+*@domain]`, `/auth/device_cert` grants the exact
-   address only. Pin one for both lanes.
-5. **Re-issuance invariant (confirm)** — another device on an
-   existing account always re-runs `issue`'s full bar; no shortcut
-   via existing certs or tokens.
+1. **Client-supplied `holder`** — the page contract has no holder
+   param today (primaries self-assign + join-side healing). For the
+   fallback the broker assigns from the account's real namespace, so
+   healing isn't needed — but wallet holder *continuity* across
+   re-issuance may still want an optional fragment param validated
+   like `/device/issue`'s (absorbing bean kmvm). Lean: add it,
+   optional.
+2. **Verification max-age window** (§3.4) — 90 days? 180?
+3. **Config-cert identity set** — the page's issuance should pin one
+   behavior for `[email]` vs `[email, local+*@domain]` (today's two
+   lanes disagree).
+4. **Page mount + naming** — new `/device-authorize` on the broker
+   vs reusing the hosted-IdP page machinery with the broker as its
+   own tenant. Implementation-leaning, but affects the URL the spec
+   blesses.
 
 ## 7. Decision log
 
-- **2026-08-28 (Dan, skeleton review): issuance does NOT require a
-  fresh mailbox proof.** The bar is password + the durable verified
-  flag — exactly `/device/issue` today. An earlier draft required a
-  fresh proof on every issuance (the union of both legacy lanes),
-  which was stricter than the real chokepoint and would have cost a
-  mailed code per new device. Fresh proof is demanded only when the
-  flag is absent, and presenting proof + password together re-sets
-  it.
+- **2026-08-28 (Dan): no credential ever crosses a native API**
+  (option a). The earlier draft's native password lane
+  (`stage`/`complete`/`issue`, password-over-TLS) is deleted, not
+  rationalized: literal-password APIs are parity with the browser
+  lanes but scriptable; digest schemes are theater against bcrypt
+  storage; PAKE/passkeys are protocol-wide successors (bean n0ut).
+  The browser page keeps the phishing/password surface where the
+  tooling for it lives.
+- **2026-08-28 (Dan): the fallback presents as a primary.**
+  `address_info` advertises `device_auth`/`access_mint` for
+  secondaries; the wallet's per-type bootstrap branch reduces to
+  "skip the registry join when the issuer is the registry".
+- **2026-08-28 (Dan): issuance bar = password + durable verified
+  flag** — `/device/issue`'s bar, unchanged; now enforced inside the
+  page. Freshness is issuer policy (§3.4), newly required to be
+  time-bounded.

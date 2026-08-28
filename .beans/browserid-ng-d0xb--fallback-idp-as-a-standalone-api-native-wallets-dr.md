@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-27T11:04:49Z
-updated_at: 2026-08-27T21:14:43Z
+updated_at: 2026-08-28T09:39:18Z
 blocked_by:
     - browserid-ng-bw9q
 ---
@@ -29,3 +29,7 @@ Same spec-quality bar as bw9q: implementable independently from the spec. See do
 - [ ] Flesh out: wire examples, machine reasons, normative grammars
 - [ ] Adversarial review pass (fresh-eyes agent), fix findings
 - [ ] Per-scope self-issued re-review gate: justify (or refuse) self-issued presentations for EVERY new scope this spec adds
+
+## Direction change (Dan, 2026-08-28): fallback-as-primary
+
+Skeleton redrafted twice on review: (1) issuance bar corrected to password + durable verified flag (/device/issue parity, not the two-lane union). (2) Dan chose option (a) — no credential ever crosses a native API — plus 'treat the fallback as a primary': address_info advertises device_auth/access_mint for secondaries, the broker mounts a device-authorize page implementing the standard fragment/return contract (made normative), and the wallet keeps ONE bootstrap flow with a single skip-the-join branch. All native password/code endpoints (stage/complete/email send+verify/issue, email_proof) deleted from the spec. Headless secondary issuance deliberately not offered (agent lane covers scripted clients). New sibling bean uboq: time-expire SMTP verification (issuer policy §3.4). Open: holder continuity param (absorbs kmvm), max-age window, config-cert identity set, page mount.
