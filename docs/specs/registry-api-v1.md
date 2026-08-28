@@ -608,7 +608,7 @@ not serve the registry API" and MUST ignore keys they don't recognize.
 | `version` | REQUIRED. Highest API version served. |
 | `token_endpoint` | REQUIRED. Absolute URL of §3.1. MUST be same-origin with the document that advertises it — a support document naming an off-origin token endpoint MUST be rejected (a rogue document must not be able to redirect presentation submission elsewhere). |
 | `status_list` | REQUIRED. This registry's signed status list (core §6.3), same-origin like `token_endpoint`. Advertisement only — verifiers reach the list through the `uri` inside each status ref, never through discovery; the list itself remains a separate signed artifact, not metadata. |
-| `browser` | REQUIRED (may be empty). Browser-ceremony URLs a native wallet opens for flows it cannot perform natively. Keys are defined by the fallback-IdP spec (password reset, account management, …). |
+| `browser` | REQUIRED (may be empty). Browser-ceremony URLs a native wallet opens for flows it cannot perform natively. Keys are defined by the fallback-IdP spec; v1 defines `account` (the account-management page). Issuer ceremonies (sign-in, password reset, recovery) live behind the issuer's `device-authorization` page, not here. |
 
 The support document carries no key material (core §3.1: an IdP's key
 comes solely from DNSSEC); the `registry` object follows the same rule.

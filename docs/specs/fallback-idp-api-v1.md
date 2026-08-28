@@ -27,9 +27,11 @@ It MUST NOT assume the IdP and registry talk to each other — even
 when they are the same host.
 
 A fallback IdP presents itself to the wallet exactly as a primary
-does: same discovery keys, same ceremony page. A conforming wallet
-has one issuance flow and never needs to know which kind of issuer
-it reached.
+does: same discovery keys, same ceremony page. The target is a
+wallet with one issuance flow that never needs to know which kind of
+issuer it reached. (The reference wallet has not yet converged: it
+still branches on `address_info` into separate primary and secondary
+lanes. Convergence is tracked in bean d0xb.)
 
 ## 2. Discovery
 
@@ -37,28 +39,48 @@ it reached.
    that is the issuer.
 2. Otherwise the issuer is the wallet's configured fallback IdP.
 
+The issuer's key comes solely from the domain's DNSSEC `_browserid`
+record (core §3). The support document carries no key; a client MUST
+ignore any key material served in it, and MUST treat a DNSSEC
+failure as a hard reject rather than trusting a TLS-served answer.
+
 The issuer's support document (`/.well-known/browserid`) supplies:
 
 | Key | Meaning |
 |---|---|
-| `device_authorization` | The ceremony page (§3). |
-| `access_mint` | The access-cert mint (core §5). |
+| `device-authorization` | The ceremony page (§3). |
+| `access-cert` | The access-cert mint (core §5). |
 
 A fallback IdP MUST advertise both — the same keys as a primary.
 (`/wsapi/address_info` is not part of this contract; it exists for
 the web dialog, which cannot run discovery itself.)
 
+The reference fallback IdP does not yet advertise
+`device-authorization` (only its legacy `/auth/device_cert` lane);
+exposing the ceremony page for the fallback role is part of the
+build (beans d0xb, 2jfh).
+
 ## 3. The ceremony page
 
 ### 3.1 Contract
 
-The wallet opens `device_authorization` with fragment parameters
+The wallet opens `device-authorization` with fragment parameters
 `email`, `device_pubkey`, `config_pubkey`, `return_origin`,
 `return_url`. Fragments are never sent to the server. The wallet
 intercepts the navigation to `return_url`:
 
     return_url#device_cert=…&config_cert=…      success
     return_url#device_error=…                   refusal
+
+The page MUST validate `return_origin` (a well-formed http(s)
+origin, or the wallet's registered loopback/custom-scheme origin)
+and MUST reject unless `return_url` is same-origin with it, before
+delivering anything. The certs bind the fragment's public keys, so a
+page that navigates to an unvalidated `return_url` hands a
+victim-identity config cert to whoever supplied the URL and the keys
+— a warrant-signing takeover. (The current shared page validates
+`return_origin` for its postMessage lane but not the `return_url`
+lane; bean 9it0.)
 
 The page may be rendered in an embedded window or the system
 browser; the contract is the same. Embedded with a persistent
@@ -80,11 +102,18 @@ satisfy:
 - **Verification freshness is issuer policy.** Verification does not
   last forever; when the issuer considers it stale (age, password
   reset), the page re-runs the mailbox ceremony before returning
-  certs.
+  certs. (Not yet enforced by the broker: `verified_at` is currently
+  write-only; bean uboq.)
 - **A fresh holder.** The certs bind the fragment's keys to a holder
   the issuer assigns fresh — never taken from the page's own browser
   session. The resulting device is the wallet, not the browser the
   ceremony ran in. Same rule as the primary lane.
+- **Config-cert coverage tracks the bar.** A config cert covering
+  the address's sub-addresses (`local+*@domain`) grants authority
+  over the holder's derived agent identities, so the wildcard is
+  permitted ONLY when the ceremony reached the password / session
+  bar above. A weaker bar (e.g. mailbox proof alone) MUST issue an
+  exact-address config cert (the 7ww7 blast-radius rule).
 - **Per-key status refs** on both certs (core §6.3).
 
 ## 4. Registration
@@ -93,18 +122,31 @@ Issuance yields certs. The wallet then registers them at its
 configured registry:
 
 1. `POST /api/v1/token` (registry-api-v1 §3.1) with a presentation
-   of the new certs — this resolves or creates the account.
+   built from the new certs — resolves or creates the account and
+   binds the token to the config cert's key.
 2. `POST /api/v1/devices/register { device_cert, config_cert }` —
-   records the device. Idempotent (upsert on public key). To be
-   added to registry-api-v1 §5.3; validation details there.
+   records the device.
+
+`devices/register` is a new registry-api-v1 §5.3 endpoint (the token
+exchange verifies only the presentation's config and access certs,
+not the sibling authentication `device_cert`, so registration must
+verify it explicitly). It MUST require, and reject otherwise:
+
+- both certs verify against a DNSSEC-authoritative issuer for their
+  identity (core §6), and are unexpired and unrevoked;
+- their identity is one the token's account owns (§3.1 resolution);
+- both share one holder, and the config cert is the one the token is
+  bound to.
+
+Idempotent: re-registering an already-recorded device (matched on
+public key) is a no-op success.
 
 Rules:
 
 - Registration is always the wallet's act. An issuer that also runs
   a registry MAY pre-record its own issuances, but wallets MUST NOT
   rely on that — the flow above is identical whether or not the
-  issuer and registry are the same host, and re-registering an
-  already-recorded device is a no-op.
+  issuer and registry are the same host.
 - One registry per identity in v1.
 
 ## 5. The registry `browser` object
@@ -121,9 +163,11 @@ keys here — they live behind `device_authorization` (§3).
 
 ## 6. Errors
 
-`device_error` values (enumerated with wire examples): `cancelled`,
-`email_mismatch`, `policy_refused`, `unsupported_key`. Discovery
-errors are core §3; registration errors are registry-api-v1 §7.
+`device_error` carries a short reason. Recognized values are
+`cancelled`, `email_mismatch`, `policy_refused`, `unsupported_key`;
+the set is open, and a wallet MUST treat any unrecognized value as a
+generic refusal. Discovery errors are core §3; registration errors
+are registry-api-v1 §7.
 
 ## 7. Decision log
 
@@ -146,9 +190,8 @@ Resolved (2026-08-28 review):
 6. **Fallback choice is bounded by RP acceptance** (core §8.1),
    enforced at verification. Gap: the native wallet lane does not
    yet forward the RP's `acceptedFallbacks` (bean u6jq).
-7. **Config-cert identity coverage follows the authentication bar.**
-   Certs issued under this spec cover `[email, local+*@domain]` —
-   the session-bar coverage, since the ceremony page always reaches
-   that bar (§3.2). The exact-only variant was 7ww7's narrowing of a
-   mailbox-rooted lane this spec retires; consolidation of the
-   broker's three issuance lanes onto one core is bean 2jfh.
+7. **Config-cert coverage tracks the authentication bar** (§3.2):
+   the `local+*@domain` wildcard is allowed only when the ceremony
+   reached the password/session bar; a weaker bar issues exact-only
+   (the 7ww7 rule). Consolidation of the broker's three issuance
+   lanes onto one core is bean 2jfh.

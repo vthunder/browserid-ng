@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-27T11:04:49Z
-updated_at: 2026-08-28T19:35:49Z
+updated_at: 2026-08-28T20:07:15Z
 blocked_by:
     - browserid-ng-bw9q
 ---
@@ -50,3 +50,14 @@ Skeleton redrafted twice on review: (1) issuance bar corrected to password + dur
 - Registration is ALWAYS wallet-driven, even when issuer == registry: token exchange + a new POST /api/v1/devices/register (idempotent upsert; to add to registry-api-v1 §5.3 during flesh-out — the token exchange records nothing today). Issuer-side recording demoted to an internal convenience nothing may rely on.
 - New bean u6jq: the native wallet lane drops the RP's acceptedFallbacks (extension does not forward them to the localhost bridge).
 - Remaining open: config-cert identity coverage (exact address vs local+*@domain sub-address wildcard).
+
+## Adversarial review round 1 (2026-08-28, fresh-eyes agent): 10 findings, all addressed
+- HIGH 1: §2 named address_info fields (access_mint/device_auth) as support-doc keys — WRONG. Fixed to device-authorization/access-cert (core §3.1 / discovery.rs).
+- HIGH 2: return_url delivery lane unvalidated → cert exfiltration. Real CURRENT vuln in the shared device-authorize page (postMessage lane checks return_origin, return_url lane doesn't). Spec MUST added; code bean 9it0 (high).
+- HIGH 3: devices/register undefined + token-exchange presentation contains config_cert but NOT the authentication device_cert, so registration wasn't verification-covered. §4 now specifies the validation (DNSSEC issuer, account owns identity, shared holder, token-bound config cert); to add to registry-api-v1 §5.3.
+- MED 4: §2 omitted DNSSEC-only trust root → client-side discovery downgrade. Added.
+- MED 5/8/10: model stated as fact but reference wallet/fallback-doc/verified_at not yet converged. Marked target-state with bean refs (d0xb/2jfh/uboq).
+- MED 6: wildcard widening rested on soft 'strongest session bar'. Now conditional: wildcard only at the password bar, exact-only otherwise (7ww7).
+- MED 7: device_error enum the page doesn't emit. Now open set; unknown = generic refusal.
+- LOW 9: registry-api-v1 §5.5 browser-key example was stale. Updated to 'account'.
+Clean checks: registration wallet-driven, holder self-assign, self-issued token scoping all verified sound.
