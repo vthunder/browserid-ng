@@ -27,6 +27,7 @@
     callback: null,
     winchanCallback: null,  // WinChan response callback
     emails: [],
+    proofs: null,  // per-address proof classes (listEmails) — keystore hygiene input
     derived: {},  // subordinate identity -> controlling parent email (mingo-cm8z)
     agents: [],       // agent identities (subset of emails) — collapsed section in the picker
     publicNames: {},  // agent identity -> public display name (shown in the picker + success)
@@ -485,8 +486,19 @@
     const warrantScopes = (audience === window.location.origin)
       ? ['login', 'registry'] : ['login'];
     if (registerable) {
+      // Wallet-role registry calls ride the standard /api/v1 token lane
+      // (71vt) — the same surface a native wallet uses. Configured here,
+      // where the active pair is known; the noRegister (token-mint) path
+      // never re-enters this branch, so token acquisition cannot recurse.
+      RegistryToken.configure({
+        pair: {
+          deviceCert: pair.device.cert, devicePrivateKey: pair.device.privateKey,
+          configCert: pair.config.cert, configPrivateKey: pair.config.privateKey
+        },
+        identity: email, issuer, mintUrl
+      });
       try {
-        const alloc = await apiCall('/wsapi/allocate_warrant_status', 'POST', {
+        const alloc = await RegistryToken.call('POST', '/api/v1/warrants/allocate_status', {
           agent_email: email, audience, scopes: warrantScopes
         });
         if (alloc && alloc.uri) statusRef = { uri: alloc.uri, idx: alloc.idx };
@@ -506,7 +518,7 @@
     const warrant = await signJws(pair.config.privateKey, warrantClaims);
     if (registerable) {
       try {
-        await apiCall('/wsapi/register_warrant', 'POST', {
+        await RegistryToken.call('POST', '/api/v1/warrants/register', {
           warrant, config_cert: pair.config.cert
         });
       } catch (e) { console.warn('warrant registration failed:', e.message || e); }
@@ -515,17 +527,36 @@
     // 3. Assertion for the RP's audience, signed by the fresh access key.
     const assertion = await signJws(access.privateKey, { exp: nowS() + 300, aud: audience });
 
-    // Self-healing registry (fire-and-forget): re-record this device's config
-    // cert so the account view converges to reality on EVERY login — a row
-    // removed or swept server-side while the device kept valid certs comes
-    // back on next use. Server-side the record is gated cryptographically
-    // (signature + fail-closed status), so this can't resurrect a revoked cert.
-    try {
-      apiCall('/wsapi/record_device_cert', 'POST', { config_cert: pair.config.cert })
-        .catch(() => { /* best-effort */ });
-    } catch (e) { /* best-effort */ }
+    // Self-healing registry (fire-and-forget): re-register this device's
+    // pair over the token lane so the account view converges to reality on
+    // EVERY login — a row removed or swept server-side while the device kept
+    // valid certs comes back on next use. devices/register is verified and
+    // idempotent, so this can't resurrect a revoked cert, and a pending
+    // holder move refuses (409) instead of resurrecting the old row.
+    if (registerable) {
+      RegistryToken.call('POST', '/api/v1/devices/register', {
+        device_cert: pair.device.cert, config_cert: pair.config.cert
+      }).catch(() => { /* best-effort */ });
+      keystoreHygiene();
+    }
 
     return `${minted.access_cert}~${assertion}~${warrant}~${pair.config.cert}`;
+  }
+
+  // Keystore hygiene, remote pass (y9vr), over the token lane: diff the
+  // local pairs against the registry + current proof classes, at most once
+  // a day — the sign-in path must not grow a fetch on every open.
+  function keystoreHygiene() {
+    try {
+      if (!state.proofs) return; // proofs unseen this session — next time
+      const last = Number(localStorage.getItem('browserid:keystore_health_ts') || 0);
+      if (Date.now() - last > 24 * 3600 * 1000) {
+        RegistryToken.call('GET', '/api/v1/devices')
+          .then(dc => Keystore.healthRemote(dc.certs || [], state.proofs || [], location.host))
+          .then(() => localStorage.setItem('browserid:keystore_health_ts', String(Date.now())))
+          .catch(() => { /* hygiene only */ });
+      }
+    } catch (e) { /* hygiene only */ }
   }
 
   // Normalize the RP's acceptedFallbacks argument (spec §8.1): null/absent →
@@ -2048,6 +2079,7 @@
           const info = await checkEmail(email);
           if (info.proof === 'oidc' || info.proof === 'atproto') {
             const owned = await apiCall(API.listEmails);
+            state.proofs = owned.proofs || state.proofs;
             const lower = email.toLowerCase();
             // Agent (+tag) and derived identities ride their parent — the
             // bridge proves the PARENT mailbox/handle, never these.
@@ -2286,7 +2318,9 @@
     if (!holder) throw new Error('device cert carries no holder');
     const scopeStrings = req.scopes.map(s => (typeof s === 'string' ? s : s.scope));
     for (const aud of req.audiences) {
-      const alloc = await apiCall('/wsapi/allocate_warrant_status', 'POST', {
+      // Token lane (71vt): RegistryToken was configured with this same pair
+      // by the sign-in's buildPresentation before signingContext was set.
+      const alloc = await RegistryToken.call('POST', '/api/v1/warrants/allocate_status', {
         agent_email: ctx.email, audience: aud, scopes: scopeStrings
       });
       if (!alloc || !alloc.uri) throw new Error((alloc && alloc.reason) || 'status allocation failed');
@@ -2304,7 +2338,7 @@
         scopes: req.scopes,
         status: { uri: alloc.uri, idx: alloc.idx }
       });
-      await apiCall('/wsapi/register_warrant', 'POST', {
+      await RegistryToken.call('POST', '/api/v1/warrants/register', {
         warrant: jws, config_cert: ctx.pair.config.cert
       });
       const siteInfo = JSON.parse(localStorage.getItem('siteInfo') || '{}');
@@ -2963,17 +2997,10 @@
         (emailsResponse.public_names || []).forEach(p => { state.publicNames[p.email] = p.public_name; });
         rememberAccountEmails(emailsResponse);
 
-        // Keystore hygiene, remote pass (y9vr): diff the local pairs against
-        // the registry + current proof classes, at most once a day — the
-        // sign-in path must not grow a fetch on every open.
-        try {
-          const last = Number(localStorage.getItem('browserid:keystore_health_ts') || 0);
-          if (Date.now() - last > 24 * 3600 * 1000) {
-            const dc = await apiCall('/wsapi/device_certs');
-            await Keystore.healthRemote(dc.certs || [], emailsResponse.proofs || [], location.host);
-            localStorage.setItem('browserid:keystore_health_ts', String(Date.now()));
-          }
-        } catch (e) { /* hygiene only */ }
+        // Keystore hygiene moved to the token lane (71vt): it runs after an
+        // identity is selected and its pair configured (keystoreHygiene() in
+        // buildPresentation) — stash the proof classes it diffs against.
+        state.proofs = emailsResponse.proofs || [];
 
         if (state.emails.length >= 1) {
           // Show email picker - even with one email, let user confirm or add another
