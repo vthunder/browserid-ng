@@ -107,19 +107,23 @@ Rules:
   already-recorded device is a no-op.
 - One registry per identity in v1.
 
-## 5. Errors
+## 5. The registry `browser` object
+
+Registry-api-v1 §5.5 reserves a `browser` object in the registry's
+discovery and delegates its keys here. One key in v1:
+
+| Key | Opens |
+|---|---|
+| `account` | The registry's account-management page (devices, warrants, approvals). |
+
+Clients MUST ignore unknown keys. Issuer-side ceremonies need no
+keys here — they live behind `device_authorization` (§3).
+
+## 6. Errors
 
 `device_error` values (enumerated with wire examples): `cancelled`,
 `email_mismatch`, `policy_refused`, `unsupported_key`. Discovery
 errors are core §3; registration errors are registry-api-v1 §7.
-
-## 6. Open questions
-
-1. **Config-cert identity coverage.** Does the issued config cert
-   cover only the exact address, or also its sub-addresses
-   (`local+*@domain`, which lets one cert sign warrants for derived
-   agent identities)? The broker's two legacy lanes disagree; pin
-   one.
 
 ## 7. Decision log
 
@@ -142,3 +146,9 @@ Resolved (2026-08-28 review):
 6. **Fallback choice is bounded by RP acceptance** (core §8.1),
    enforced at verification. Gap: the native wallet lane does not
    yet forward the RP's `acceptedFallbacks` (bean u6jq).
+7. **Config-cert identity coverage follows the authentication bar.**
+   Certs issued under this spec cover `[email, local+*@domain]` —
+   the session-bar coverage, since the ceremony page always reaches
+   that bar (§3.2). The exact-only variant was 7ww7's narrowing of a
+   mailbox-rooted lane this spec retires; consolidation of the
+   broker's three issuance lanes onto one core is bean 2jfh.
