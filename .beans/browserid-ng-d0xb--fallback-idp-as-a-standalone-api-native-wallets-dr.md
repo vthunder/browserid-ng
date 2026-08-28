@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-27T11:04:49Z
-updated_at: 2026-08-28T21:18:17Z
+updated_at: 2026-08-28T22:22:06Z
 parent: browserid-ng-9yyk
 blocking:
     - browserid-ng-rjge
@@ -28,10 +28,10 @@ Same spec-quality bar as bw9q: implementable independently from the spec. See do
 - [x] Recon (2026-08-27): exact wire shapes of the current secondary-issuance surfaces (dialog cookie lane: authenticate_user / stage+complete_signin_code / browser_holder / device/issue; fallback-IdP lane: /auth/send / /auth/verify / /auth/device_cert), password lifecycle + recovery endpoints, existing rate limits, address_info
 - [x] Walk the native-wallet account lifecycle (2026-08-27; per-step lane decisions drafted into the skeleton §5) end to end; per step decide native API / browser handoff (registry §5.5 `browser` keys) / out of scope
 - [x] Spec skeleton (2026-08-27): docs/specs/fallback-idp-api-v1.md — auth model (composition with registry-api-v1 token family + the first-issuance email ceremony), endpoint inventory with legacy mapping, `browser` discovery keys, error taxonomy, invariants, open questions
-- [ ] Dan reviews skeleton; resolve open questions (decision log in spec)
-- [ ] Flesh out: wire examples, machine reasons, normative grammars
-- [ ] Adversarial review pass (fresh-eyes agent), fix findings
-- [ ] Per-scope self-issued re-review gate: justify (or refuse) self-issued presentations for EVERY new scope this spec adds
+- [x] Dan reviews skeleton; resolve open questions (decision log in spec)
+- [x] Flesh out: wire examples, machine reasons, normative grammars
+- [x] Adversarial review pass (fresh-eyes agent), fix findings
+- [x] Per-scope self-issued re-review gate: no new scope was added — devices/register sits under the existing registry scope, whose §3.1 self-issued justification bounds it (§5 ops only; registration records verified material and mints nothing)
 
 ## Direction change (Dan, 2026-08-28): fallback-as-primary
 

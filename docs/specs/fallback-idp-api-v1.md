@@ -27,11 +27,12 @@ It MUST NOT assume the IdP and registry talk to each other — even
 when they are the same host.
 
 A fallback IdP presents itself to the wallet exactly as a primary
-does: same discovery keys, same ceremony page. The target is a
-wallet with one issuance flow that never needs to know which kind of
-issuer it reached. (The reference wallet has not yet converged: it
-still branches on `address_info` into separate primary and secondary
-lanes. Convergence is tracked in bean d0xb.)
+does: same discovery keys, same ceremony page. The wallet has one
+issuance flow that never needs to know which kind of issuer it
+reached — the reference wallet runs a single ceremony lane for both
+and holds no issuer cookies. (Its issuer *resolution* still leans on
+the broker's `address_info` as a discovery convenience; client-side
+core §3 DNSSEC discovery remains future work.)
 
 ## 2. Discovery
 
