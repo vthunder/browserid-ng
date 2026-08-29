@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-08-29T20:49:11Z
-updated_at: 2026-08-29T23:09:37Z
+updated_at: 2026-08-29T23:16:06Z
 parent: browserid-ng-9yyk
 blocking:
     - browserid-ng-71vt
@@ -41,3 +41,5 @@ Dan missed that sentence at drafting time and rejects it as a standing position:
 Each op re-justifies self-issued acceptance individually; inbox consent is the general strong answer (bar = human approval on a trusted device, not credential provenance).
 
 **Next:** draft a registry-api-v1 'Account membership' section (ops, consent-request shapes, §7.1 reasons) for Dan's review before code. Spec §3.1 sentence annotated as under review meanwhile.
+
+**Draft ready for review (2026-08-30):** docs/specs/registry-api-v1-account-membership-draft.md — flows first (attach / transfer-as-release / detach), the one rule (tokens raise, only client-signed browserid-membership-v1 records complete), endpoint + record shapes, threat analysis (stolen-config-key durability → ≥2-device key-independence rule for attach; thief-detach bounded + recoverable; transfer-phish framing; no-existence-leak on foreign-owned attach), §7.1 additions, and 6 numbered decision points for Dan.
