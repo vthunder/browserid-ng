@@ -130,10 +130,13 @@ MUST NOT become reachable this way — see the fallback-IdP spec).
 On success the registry resolves the account: if an existing account
 owns the verified identity, the token authenticates as that account;
 otherwise a new account containing exactly that identity is created.
-No account linking, merging, or transfer happens in the token lane —
-the cookie lane's session-based linking has no analogue here, and
-multi-identity ceremonies are a browser / fallback-IdP concern. The
-response:
+The exchange itself never links, merges, or transfers accounts.
+*(Under review, bean 1sb3 — ruled 2026-08-30: with the cookie lane
+reclassified as broker-page-internal, identity-membership operations
+(attach/detach/transfer) MUST exist on this API or the protocol has
+none; an anchor-token + inbox-consent design is being drafted. Until
+that section lands, a new identity presented here does create a
+standalone account.)* The response:
 
 ```json
 {

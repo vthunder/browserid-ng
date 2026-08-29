@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-08-29T20:49:11Z
-updated_at: 2026-08-29T20:49:19Z
+updated_at: 2026-08-29T23:09:37Z
 parent: browserid-ng-9yyk
 blocking:
     - browserid-ng-71vt
@@ -26,3 +26,18 @@ The current token is MORE account-like than it first appears: the exchange resol
 
 ## Deliverable
 A short written recommendation against these options (+ any better shape), the per-scope self-issued justification for whatever reads are added, and the resulting registry-api-v1 spec patch. Blocks the remaining 71vt route-retirement decisions.
+
+## Ruling (Dan, 2026-08-30): the §3.1 'no linking in the token lane' statement is challenged and falls
+
+Dan missed that sentence at drafting time and rejects it as a standing position: now that the cookie APIs are classified broker-page-internal (outside the official spec surface), 'linking/merging/transfer only via cookie APIs' means the official browserid specs don't allow them AT ALL — they'd be registry-implementation-internal actions. Wrong: these flows were worked out in the cookie era and are still required; with cookie APIs retiring from the spec surface, they must exist in the token lane.
+
+**Role split that scopes the work:** identity MEMBERSHIP (which identities an account owns: attach/detach/transfer/merge) is registry business → registry-api-v1. CREDENTIALS + verification (passwords, codes, bridge proofs, recovery) are IdP business → stay behind the issuer's sign-in page, preserving the root-op gate.
+
+**Token-lane operation inventory (working direction):**
+1. attach — anchor token (account membership) + new pair's issuer-verified certs (control of the new email) + approvals-inbox consent request (human gesture; also defeats the stolen-config-key durability escalation — a thief cannot approve their own attach without a second compromised device).
+2. detach — remove identity from account; needs a not-the-last-identity rule + revoke-then-delete semantics for the identity's certs/warrants.
+3. transfer — attach generalized: target owned by account B ⇒ the consent request raises in B's inbox ('release x@y?'), optionally an A-side confirm; both legs are existing proof machinery.
+4. merge — bulk transfer; defer to v2 unless needed sooner.
+Each op re-justifies self-issued acceptance individually; inbox consent is the general strong answer (bar = human approval on a trusted device, not credential provenance).
+
+**Next:** draft a registry-api-v1 'Account membership' section (ops, consent-request shapes, §7.1 reasons) for Dan's review before code. Spec §3.1 sentence annotated as under review meanwhile.
