@@ -40,7 +40,17 @@ let r = await fetch(`${BROKER}/admin/create_account`, {
 });
 must('seed account', r.status === 200);
 
-// 2. launch the Electron wallet app (fresh userData, test lanes on)
+// 2. launch the Electron wallet app (fresh userData, test lanes on).
+// The port must be free FIRST: a leftover wallet instance (e.g. the
+// packaged app from interactive testing) also answers /status, and the
+// suite then talks to the wrong process and fails with "unknown endpoint"
+// on the /test/* lanes. Fail loudly instead.
+try {
+  await fetch('http://127.0.0.1:8873/status');
+  must('port 8873 free before spawn', false,
+    'another wallet instance is already listening — kill it (lsof -ti :8873) and re-run');
+  process.exit(1);
+} catch { /* free — good */ }
 const userData = fs.mkdtempSync('/tmp/wallet-e2e-');
 const electron = requireLocal('electron');
 const app = spawn(electron, ['.'], {
