@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-08-29T20:49:11Z
-updated_at: 2026-08-29T23:16:06Z
+updated_at: 2026-08-29T23:39:51Z
 parent: browserid-ng-9yyk
 blocking:
     - browserid-ng-71vt
@@ -43,3 +43,5 @@ Each op re-justifies self-issued acceptance individually; inbox consent is the g
 **Next:** draft a registry-api-v1 'Account membership' section (ops, consent-request shapes, §7.1 reasons) for Dan's review before code. Spec §3.1 sentence annotated as under review meanwhile.
 
 **Draft ready for review (2026-08-30):** docs/specs/registry-api-v1-account-membership-draft.md — flows first (attach / transfer-as-release / detach), the one rule (tokens raise, only client-signed browserid-membership-v1 records complete), endpoint + record shapes, threat analysis (stolen-config-key durability → ≥2-device key-independence rule for attach; thief-detach bounded + recoverable; transfer-phish framing; no-existence-leak on foreign-owned attach), §7.1 additions, and 6 numbered decision points for Dan.
+
+**Ruling #2 (Dan, 2026-08-30): no release consent — transfer-on-proof adopted.** Fresh issuer attestation = proof of CURRENT ownership; the previous owner is notified (inbox notice + out-of-band SHOULD, revocations land immediately) and cannot block: 'they don't own that email anymore — the best we can do is make that visible.' Draft r2 written: Flow B folded into attach (§1.1 transfer effects at completion, atomic), release kind + record action deleted, hg2j cert revocation + empty-account deletion adopted, last_identity now detach-only, decision log records rulings 1-3; open points renumbered Q1-Q6 (attach approval independence, detach bar, TTL, merge deferral, agent-children-on-transfer edge, cookie-parity routing).
