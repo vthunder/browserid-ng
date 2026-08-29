@@ -162,3 +162,82 @@ With `invalid_warrant` (422, respond): `record_key_not_independent`
 6. **Cookie-lane parity:** once this lands, the account page's
    add/remove-email UI should route through the same pending-request
    machinery (one bar everywhere) — sequencing with 71vt/ig9p.
+
+## 7. Parity with the shipped implementation (added 2026-08-30)
+
+The cookie lane already adjudicated these threats. Decision-by-decision,
+against the code (`oidc.rs attach_verified`, `handle_claim.rs`,
+`primary.rs auth_with_presentation`, `signin_code.rs`, `email.rs`,
+`code_guard.rs`):
+
+**P1 — Transfer authority is per-provenance, and the loser is not
+asked.** The shipped doctrine is *transfer-on-fresh-proof* (Persona
+per-email semantics, mingo-z8im): a verified presentation from a
+primary's own IdP, or a fresh bridge proof under a session, moves the
+email into the prover's account immediately — the losing account gets no
+consent step, because the identity's **voucher** adjudicates ownership,
+not registry bookkeeping. My §1 Flow B instead made the losing account
+the adjudicator (release consent). That is a doctrine change, not a
+carry-over — and it would let a stale account veto the rightful owner.
+**Proposed amendment:** Flow B becomes transfer-on-proof: the §5.3 cert
+bar already *is* the issuer's fresh attestation, so a verified pair for
+an identity owned elsewhere transfers it (A-side inbox consent as in
+Flow A; B is **notified** via its inbox, not asked). The `release`
+request kind survives only if we deliberately want to be stricter than
+today — a decision, not parity (new **Q7**).
+
+**P2 — The E3 password fence carries over automatically.** Cold bridge
+claims refuse when the target account is password-backed (kts0/shyj:
+inbox compromise must not take the identity without the password; the
+mailbox's channel into a password-backed account is the reset flow, with
+kgb9 sibling-unverification and H2 session eviction). In the token
+model the equivalent attack cannot arise: the broker's own sign-in page
+only issues certs for an E3 address under a session that owns it, so a
+stranger cannot obtain the pair that Flow B would need — their only
+door remains the reset ceremony, exactly as today. No spec text needed
+beyond noting it; the fence lives at issuance.
+
+**P3 — hg2j: a change of holder revokes the former account's certs for
+that address.** Every shipped transfer arm calls
+`revoke_user_certs_for_email(former, email)` — flip the status bits,
+precisely scoped to the (account, email) pair. §1 Flow B said "rows
+dropped + warrants revoked" — **gap**: it must also revoke B's device
+certs naming the identity (dropping rows leaves signed certs alive).
+Bonus parity: cert revocation kills B's tokens bound to those certs
+fail-closed on next use — the token lane inherits H2's
+"recovery evicts sessions" for free.
+
+**P4 — Emptied accounts are deleted, not protected.** primary.rs
+deletes the former account when its last email transfers away. §1's
+`last_identity` refusal on release inverts this and would block the
+*main* migration case (moving your only address to a new account).
+**Proposed amendment:** allow last-identity transfer-out; the emptied
+account is deleted (its devices/warrants revoked-then-dropped).
+`last_identity` stays only for **detach** (delete-without-destination),
+where it still prevents accidental lockout.
+
+**P5 — Enumeration hygiene (M7/dw35, C1) maps cleanly.** Account state
+is disclosed only to owners; completions are target-bound and
+attempt-burned; responses don't reveal which branch ran. The draft's
+same-`{code}`-either-way attach response follows this; with P1 the
+foreign-owned case doesn't even have a consent branch to leak. Keep
+C1's spirit for the membership request codes: unguessable,
+single-target, TTL'd, rate-limited per identity.
+
+**P6 — kgb9's blast-radius rule.** A transfer moves exactly one
+identity and revokes exactly its certs/warrants at the loser — never a
+sibling's. P3's precise scoping preserves this; nothing in the draft
+widens it.
+
+**P7 — The ≥2-device attach rule (Q1) is NEW strictness, not parity.**
+The cookie bar for adding an email is session + mailbox code — a
+session thief can attach an address they control *today*. So matching
+the shipped model means allowing self-approval always; the
+second-device requirement is an upgrade to adopt (or not) on its own
+merits, no precedent either way.
+
+**Net amendments proposed:** Flow B → transfer-on-proof with B-notify
+(P1); add hg2j cert revocation + empty-account deletion (P3, P4);
+`release` kind demoted to an optional strictness decision (Q7); Q1
+reframed as an upgrade beyond parity. Flows A and C and the consent-
+record mechanics are unaffected.
