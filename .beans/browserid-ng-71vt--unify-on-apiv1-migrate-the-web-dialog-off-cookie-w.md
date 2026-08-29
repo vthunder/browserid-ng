@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-28T21:00:26Z
-updated_at: 2026-08-28T22:40:49Z
+updated_at: 2026-08-29T20:49:19Z
 parent: browserid-ng-9yyk
 blocked_by:
     - browserid-ng-d0xb
@@ -64,3 +64,5 @@ So a clean wallet has ZERO broker-private endpoints — it uses only surface 1. 
 **Open question for Dan (blocks consent/account/authorize migration):** the cookie lane authenticates the SESSION account; the token lane authenticates the account owning the PAIR the token was minted from. On consent.html/account.html a multi-account browser could hold a pair from account X while the session is account Y — migrated pages would show X's inbox/warrants where today they show Y's. Options: (a) accept pair-account semantics (single-account browsers unaffected; deep-linked ?code= lane already cross-account by design); (b) classify the broker-hosted consent/account PAGES as hosted-convenience surfaces that legitimately stay on the cookie lane (the native wallet + dialog already use /api/v1 — 'duplicated surface' then means only the DIALOG's usage, which is now migrated); (c) migrate but pin the token pair to an identity the session owns (needs a cheap 'session owns X' check). Route deletions wait on this call.
 
 **Also remaining:** the option-a role split (dialog as pure wallet driving /device-authorize instead of calling /device/issue directly) — sequenced last per the bean.
+
+**Blocked (2026-08-29):** the account/consent-page migration + /wsapi retirements now wait on bean 1sb3 — Dan's account-concept analysis (the cookie authenticates to the ACCOUNT; pair-derived tokens authenticate resources and only resolve an account implicitly; the chooser UX depends on account-level reads the token lane doesn't offer).
