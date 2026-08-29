@@ -130,13 +130,9 @@ MUST NOT become reachable this way — see the fallback-IdP spec).
 On success the registry resolves the account: if an existing account
 owns the verified identity, the token authenticates as that account;
 otherwise a new account containing exactly that identity is created.
-The exchange itself never links, merges, or transfers accounts.
-*(Under review, bean 1sb3 — ruled 2026-08-30: with the cookie lane
-reclassified as broker-page-internal, identity-membership operations
-(attach/detach/transfer) MUST exist on this API or the protocol has
-none; an anchor-token + inbox-consent design is being drafted. Until
-that section lands, a new identity presented here does create a
-standalone account.)* The response:
+The exchange itself never links, merges, or transfers accounts —
+identity membership changes are explicit operations (§5.6), never a
+side effect of authentication. The response:
 
 ```json
 {
@@ -382,6 +378,11 @@ registry's `{uri, idx}` status ref. On approve, per grant: the registry stores t
 `{warrant}~{config_cert}` for single pickup by the requester's core
 §7.5 poll, and upserts one warrant record into the §5.2 registry.
 Validation failures are `422` with a §7.1 machine reason.
+
+The inbox also carries the §5.6 membership kinds — `"attach"` and
+`"detach"` requests (approved by signing a §5.6.4 membership record)
+and actionless `"notice"` items (e.g. an identity claimed away by its
+current owner), which have no respond action and expire on their own.
 
 The bar above applies to `kind: "agent"` requests, whose approval signs
 presentation warrants. The other kinds carry **admission records**
@@ -662,6 +663,105 @@ This section amends core §3.1 additively, and makes explicit a rule
 core §3.1 leaves unstated: clients MUST ignore support-document keys
 they do not recognize.
 
+### 5.6 Account membership
+
+Which identities one account owns is registry business; the
+credentials that prove them (passwords, mailbox codes, bridge proofs)
+are the issuer's and never appear on this API. Two rules govern every
+operation here:
+
+1. **A token can raise a membership request; only a client-signed
+   membership record (§5.6.4) completes one.** The registry records
+   consent, it never manufactures it — §5.1's invariant.
+2. **Ownership follows the identity's voucher.** Fresh issuer-attested
+   certs for an identity are proof of *current* ownership; an account
+   that used to hold the identity is **notified, never asked** (Persona
+   per-email semantics, carried from the reference implementation).
+
+#### 5.6.1 Attach — `POST /api/v1/account/attach`
+
+`{ "device_cert": "<JWS>", "config_cert": "<JWS>" }` → `200`
+`{ "code": "...", "expires_at": "..." }`. The caller's token is the
+**anchor**: minted from a pair for an identity the account already
+owns. The submitted pair — obtained from the new identity's issuer via
+its device-authorization page — is verified to the full §5.3
+`devices/register` bar (`422 invalid_cert` otherwise). A pending
+attach is created (one per (account, identity); re-raising returns the
+live code, reason `attach_pending`) and a `kind: "attach"` request
+appears in the account's own §5.1 inbox. The response is identical
+whether or not another account currently holds the identity — no
+existence leak, and raising mutates nothing anywhere.
+
+Approval (§5.1 respond, a signed §5.6.4 record) completes atomically:
+the identity joins the account and the pair is recorded with full
+§5.3 semantics. `GET /api/v1/account/attach/status?code=` (anchor
+token) → `{ "state": "pending" | "granted" | "denied" | "expired" }`.
+Pending TTL: RECOMMENDED 1 hour. Raises are rate-limited per target
+identity; codes are unguessable, single-target, and expire.
+
+First-ever bootstrap is unchanged: the §3.1 exchange creates a fresh
+account for a never-seen identity. Attach exists to join an existing
+one.
+
+#### 5.6.2 Transfer: attach of an identity owned elsewhere
+
+Same call, same flow — the difference is in completion. When the
+identity sits on another account (the prover holds fresh issuer certs,
+so they own the email *now*), approval additionally runs, atomically,
+before the join:
+
+- The losing account's device certs naming the identity, where this
+  registry is their revocation authority, are revoked — status bits
+  flipped, scoped precisely to that (account, identity) pair — and its
+  warrants with that identity as grantor are revoked. Tokens bound to
+  the revoked certs die fail-closed on next use.
+- The losing account receives a `kind: "notice"` inbox item naming the
+  identity, and the registry SHOULD notify its remaining addresses
+  out-of-band. The previous owner cannot prevent the transfer; the
+  registry's obligation is immediate visibility.
+- If that was the losing account's last identity, the account is
+  deleted (remaining devices and warrants revoked, then dropped).
+
+Note the mailbox fence is upstream: the reference fallback issues
+certs for a mailbox-verified address only under a session that owns
+it, so inbox control alone cannot produce the pair this flow needs —
+entry into a password-backed account remains its reset ceremony.
+
+#### 5.6.3 Detach — `POST /api/v1/account/detach`
+
+`{ "identity": "..." }` → `200 { "code": "...", "expires_at": "..." }`,
+a `kind: "detach"` request in the account's own inbox. Approval
+revokes the identity's device certs this registry is authority for and
+its grantor warrants, then removes the identity. Refusals (`409`):
+`last_identity` (detach has no destination; whole-account deletion is
+the issuer's `account_cancel` ceremony), `has_derived_identities`
+(live derived agent identities first — v1).
+
+#### 5.6.4 The membership record
+
+```json
+{ "typ": "browserid-membership-v1",
+  "action": "attach" | "detach",
+  "iat": 0, "exp": 0,
+  "grantor": "an identity the approving account owns",
+  "subject": "the identity being attached / detached",
+  "subject_config_key": "<attach: the new pair's config pubkey; detach: absent>",
+  "code": "<the pending request's code>" }
+```
+
+Validated at respond exactly as §5.1's bar validates signers: the
+supplied config cert parses, is `purpose: authorization`, unexpired
+and unrevoked, and authorizes `grantor`; `grantor` is owned by the
+approving account; `subject`, `subject_config_key`, and `code` match
+the pending request byte-for-byte. `exp` at most one hour; a record is
+consumed once and never stored for reuse. Whether the attach record
+may be signed by the *same* config key as the anchor pair's, or must
+come from a different device when one exists, is open (§10).
+
+Self-issued presentations and this section: raising is harmless (it
+mutates nothing), and completion rests on the signed record — token
+provenance is never load-bearing, so the §3.1 per-scope gate holds.
+
 ## 6. Out of scope (and why)
 
 Explicitly **not** in this API:
@@ -679,9 +779,11 @@ Explicitly **not** in this API:
   of §3-style proofs are under discussion — bean `9mfw`.)
 - **Public surfaces** — `/.well-known/browserid-status`, `/verify`,
   `/status/check`: unauthenticated by design, specified in core §6.
-- **Account/browser ceremonies** — password ops, email add/remove,
-  `account_cancel`, tenant management, `session_context`: cookie-lane
-  and/or fallback-IdP concerns, not registry operations.
+- **Credential ceremonies** — password ops, mailbox/bridge
+  verification, `account_cancel`, tenant management, `session_context`:
+  issuer (fallback-IdP) and broker-page concerns. Identity
+  *membership* — which account owns which identity — is in scope
+  (§5.6); the credentials that prove identities never are.
 
 ## 7. Errors
 
@@ -766,6 +868,17 @@ With `conflict` (`409`):
 | `namespace_not_empty` | Deleting a namespace that still has holders (§5.4). |
 | `external_holder` / `already_in_namespace` | `move_holder` preconditions (§5.4). |
 | `holder_moved` | `devices/register` onto a holder that has been moved (§5.3). |
+| `attach_pending` | A live pending attach already exists for this (account, identity) — the response carries its code (§5.6.1). |
+| `last_identity` | Detaching the account's only identity (§5.6.3). |
+| `has_derived_identities` | Detaching an identity with live derived agent identities (§5.6.3). |
+
+With `invalid_warrant` (`422`, §5.6 membership respond):
+
+| Reason | Meaning |
+|---|---|
+| `record_mismatch` | The membership record's `subject`, `subject_config_key`, or `code` differs from the pending request. |
+| `record_expired` | The membership record is past `exp`. |
+| `record_key_not_independent` | Reserved for the open §10 approval-independence rule. |
 
 ## 8. Versioning and conformance
 
@@ -866,3 +979,21 @@ Deferred elsewhere:
    here mints less than the session the cookie lane refuses.
    Per-scope gate recorded: every future scope must re-justify
    self-issued acceptance (re-review obligation logged on `d0xb`).
+
+8. **Account membership lives on this API** (§5.6) — resolved with Dan
+   2026-08-30, replacing the earlier "no linking in the token lane"
+   scoping: with the cookie lane reclassified broker-page-internal,
+   membership had to exist here or nowhere. Transfer is
+   **on-proof**: fresh issuer attestation is current ownership; the
+   previous holder is notified, never asked ("they don't own that
+   email anymore — the best we can do is make that visible"). Merge is
+   deferred indefinitely: identities move one at a time, and each move
+   re-proves at the issuer anyway, so bulk merge adds little. The
+   broker's own account-page email UI will route through the wallet →
+   this API once 71vt lands (one bar everywhere). Open: whether attach
+   approval must come from a different device's key when the account
+   has one (the only knob with no cookie-lane precedent — a session
+   thief can attach today); the detach bar; the pending TTL; and what
+   happens to derived agent identities when their parent transfers
+   away (the reference implementation leaves them behind on the losing
+   account, operational — flagged as its own bug).

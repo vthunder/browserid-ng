@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-08-29T20:49:11Z
-updated_at: 2026-08-29T23:39:51Z
+updated_at: 2026-08-29T23:50:42Z
 parent: browserid-ng-9yyk
 blocking:
     - browserid-ng-71vt
@@ -45,3 +45,18 @@ Each op re-justifies self-issued acceptance individually; inbox consent is the g
 **Draft ready for review (2026-08-30):** docs/specs/registry-api-v1-account-membership-draft.md — flows first (attach / transfer-as-release / detach), the one rule (tokens raise, only client-signed browserid-membership-v1 records complete), endpoint + record shapes, threat analysis (stolen-config-key durability → ≥2-device key-independence rule for attach; thief-detach bounded + recoverable; transfer-phish framing; no-existence-leak on foreign-owned attach), §7.1 additions, and 6 numbered decision points for Dan.
 
 **Ruling #2 (Dan, 2026-08-30): no release consent — transfer-on-proof adopted.** Fresh issuer attestation = proof of CURRENT ownership; the previous owner is notified (inbox notice + out-of-band SHOULD, revocations land immediately) and cannot block: 'they don't own that email anymore — the best we can do is make that visible.' Draft r2 written: Flow B folded into attach (§1.1 transfer effects at completion, atomic), release kind + record action deleted, hg2j cert revocation + empty-account deletion adopted, last_identity now detach-only, decision log records rulings 1-3; open points renumbered Q1-Q6 (attach approval independence, detach bar, TTL, merge deferral, agent-children-on-transfer edge, cookie-parity routing).
+
+## Parity table (existing implementation vs §5.6) — for Dan's review, 2026-08-30
+
+| # | Existing implementation decision | Where (code) | §5.6 | Delta |
+|---|---|---|---|---|
+| P1 | Transfer-on-fresh-proof: the identity's voucher adjudicates; the losing account is never asked | oidc.rs attach_verified, primary.rs, handle_claim.rs | ADOPTED (rule 2; Dan ruled — release consent deleted) | none |
+| P2 | Inbox control can't take a password-backed account's E3 address; its channel is the reset ceremony (kgb9 unverify + H2 eviction) | signin_code.rs, oidc.rs cold-claim arm | inherited automatically — the fence lives at ISSUANCE (certs for an E3 address only mint under an owning session) | none |
+| P3 | Change of holder revokes the former account's certs for that address, precisely scoped (hg2j) | every transfer arm | ADOPTED §5.6.2; also kills the loser's bound tokens fail-closed (= H2 for free) | none (was an r1 gap, fixed) |
+| P4 | An emptied former account is deleted, not protected | primary.rs | ADOPTED §5.6.2; last_identity guards only detach | none (was an r1 gap, fixed) |
+| P5 | Enumeration hygiene: owner-only state disclosure (M7/dw35), target-bound attempt-burned codes (C1), branch-indistinguishable responses | email.rs, code_guard.rs | ADOPTED: attach responds identically for owned/unowned targets; codes unguessable + TTL'd + rate-limited | none |
+| P6 | Blast radius: one identity's certs/warrants, never a sibling's | hg2j scoping | preserved by P3 | none |
+| P7 | No second-factor on adding an email (session + mailbox code; a session thief can attach today) | email.rs stage/complete | OPEN Q1: proposed ≥2-device different-key rule is STRICTER than shipped | new strictness, Dan to decide |
+| Q5 | transfer_email moves ONE row; derived agent children stay behind, operational by the loser | store transfer_email + callers | OPEN — shipped behavior is arguably a bug (filed a93p, high); recommend revoke-and-drop children on transfer-out | shipped gap either way |
+
+**Also resolved by Dan 2026-08-30:** Q4 merge deferred indefinitely (one-at-a-time transfer re-proves at the issuer anyway; bulk gains little). Q6: the account page UI invokes the WALLET, which talks to the registry — recorded in registry-api-v1 §10.8. **Merged:** the draft is now registry-api-v1 §5.6 (+ §5.1 kinds, §7.1 reasons, §10.8); the standalone draft file is deleted.
