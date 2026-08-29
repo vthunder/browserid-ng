@@ -188,3 +188,101 @@ test.describe('fallback device-authorize ceremony', () => {
     expect(new URL(page.url()).pathname).toBe('/device-authorize');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bridge-verified (E2) identities — bean n5ty. The local broker has no
+// Google credentials, so discovery is stubbed to proof=oidc and the claim
+// popup is faked; the broker session and the issuance behind the page stay
+// REAL (the account is password-backed, so the mint allows once the page
+// believes the bridge hop succeeded).
+test.describe('fallback device-authorize: bridge-verified identities', () => {
+  async function stubOidcDiscovery(page: Page, baseURL: string, email: string) {
+    await page.context().route('**/wsapi/address_info**', (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          type: 'secondary', issuer: 'localhost:3000', disabled: false,
+          normalizedEmail: email, proof: 'oidc', claim: `${baseURL}/oidc/claim`,
+        }),
+      }));
+  }
+
+  function fakeClaimPopup(page: Page, result: Record<string, unknown>) {
+    // The popup stands in for the broker's post-OAuth resume page: it
+    // broadcasts the claim result on the dialog's same-origin channel.
+    return page.context().route('**/oidc/claim**', (route) =>
+      route.fulfill({
+        contentType: 'text/html',
+        body: `<html><body><script>
+          const chan = new BroadcastChannel('browserid:oidc_claim_resume');
+          let n = 0;
+          const t = setInterval(() => {
+            chan.postMessage(Object.assign({ type: 'browserid:oidc_claim_result',
+              nonce: 'test-' + n }, ${JSON.stringify(result)}));
+            if (++n > 10) clearInterval(t);
+          }, 200);
+        </script></body></html>`,
+      }));
+  }
+
+  test('routes a bridge-verified identity to the bridge screen, never the password form', async ({ context, page, baseURL }) => {
+    const email = uniqueEmail('bridge-route');
+    await createAccount(context, baseURL!, email);
+    await context.clearCookies();
+    await stubOidcDiscovery(page, baseURL!, email);
+
+    await stubReturn(page);
+    await page.goto(pageUrl(baseURL!, email));
+    await expect(page.locator('#bridge-form')).toBeVisible();
+    await expect(page.locator('#bridge-btn')).toContainText('Continue with Google');
+    await expect(page.locator('#login-form')).toBeHidden();
+    // No issuance without the gesture.
+    await page.waitForTimeout(1200);
+    expect(new URL(page.url()).pathname).toBe('/device-authorize');
+
+    await page.click('#bridge-cancel');
+    await page.waitForURL((url) => url.pathname === '/wallet-return', { timeout: 10000 });
+    expect(new URL(page.url()).hash).toContain('device_error=cancelled');
+  });
+
+  test('bridge hop → issuance → delivery (claim simulated, session + mint real)', async ({ context, page, baseURL }) => {
+    const email = uniqueEmail('bridge-ok');
+    await createAccount(context, baseURL!, email);
+    const r = await context.request.post(`${baseURL}/wsapi/authenticate_user`, {
+      data: { email, pass: PASSWORD },
+    });
+    expect(r.ok()).toBeTruthy();
+    await stubOidcDiscovery(page, baseURL!, email);
+    await fakeClaimPopup(page, { ok: true, email });
+
+    await stubReturn(page);
+    await page.goto(pageUrl(baseURL!, email));
+    await expect(page.locator('#bridge-form')).toBeVisible();
+    await page.click('#bridge-btn');
+
+    await page.waitForURL((url) => url.pathname === '/wallet-return', { timeout: 15000 });
+    const frag = new URL(page.url()).hash;
+    expect(frag).toContain('device_cert=');
+    expect(frag).toContain('config_cert=');
+  });
+
+  test('claim refused with password-required runs the attach leg: password, then the bridge again', async ({ context, page, baseURL }) => {
+    const email = uniqueEmail('bridge-pw');
+    await createAccount(context, baseURL!, email);
+    await context.clearCookies();
+    await stubOidcDiscovery(page, baseURL!, email);
+    await fakeClaimPopup(page, { ok: false, email, reason: 'password required' });
+
+    await stubReturn(page);
+    await page.goto(pageUrl(baseURL!, email));
+    await expect(page.locator('#bridge-form')).toBeVisible();
+    await page.click('#bridge-btn');
+
+    // kts0: the page collects the password, then offers the bridge again.
+    await expect(page.locator('#login-form')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#login-err')).toContainText('Confirm your password');
+    await page.fill('#password', PASSWORD);
+    await page.click('#login-btn');
+    await expect(page.locator('#bridge-form')).toBeVisible({ timeout: 10000 });
+  });
+});

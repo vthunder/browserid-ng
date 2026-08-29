@@ -114,7 +114,16 @@ function primaryHop({ deviceAuthUrl, email, devicePub, configPub, testPassword }
       '&return_origin=' + encodeURIComponent(broker.ORIGIN) +
       '&return_url=' + encodeURIComponent(RETURN_URL);
 
-    const timeout = setTimeout(() => { win.close(); reject(new Error('IdP authorization timed out')); }, 3 * 60 * 1000);
+    // The issuer's page may need a child window for a bridge proof (Google /
+    // Bluesky popup) — allow it in the same partition, as the old account-
+    // page lane did. What the popup does is the issuer's business.
+    win.webContents.setWindowOpenHandler(() => ({
+      action: 'allow',
+      overrideBrowserWindowOptions: {
+        webPreferences: { partition: 'persist:browserid', nodeIntegration: false, contextIsolation: true },
+      },
+    }));
+    const timeout = setTimeout(() => { win.close(); reject(new Error('IdP authorization timed out')); }, 5 * 60 * 1000);
     let settled = false;
     const finish = (fn, arg) => {
       if (!settled) { settled = true; clearTimeout(timeout); fn(arg); setImmediate(() => win.close()); }
@@ -210,6 +219,14 @@ async function startBootstrap({ notify, updateTray }) {
     require('./registry').startInboxWatch({ notify });
   } catch (err) {
     console.error('[wallet] bootstrap failed', err);
+    // A real dialog, not just a notification — macOS drops notifications
+    // from un-blessed processes, which made failures look like silence.
+    try {
+      require('electron').dialog.showErrorBox(
+        'BrowserID Wallet — setup failed',
+        String(err.message || err),
+      );
+    } catch (e) { /* headless */ }
     notify('BrowserID Wallet', `Setup failed: ${err.message}`);
   }
 }

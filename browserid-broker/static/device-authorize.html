@@ -60,6 +60,14 @@
       <div class="err" id="login-err"></div>
     </form>
 
+    <!-- Bridge-verified identities (Google / Bluesky): the proof runs at the
+         bridge, in a popup; the click doubles as the consent gesture. -->
+    <form id="bridge-form" class="hidden">
+      <button type="submit" id="bridge-btn">Continue</button>
+      <button type="button" class="secondary" id="bridge-cancel">Cancel</button>
+      <div class="err" id="bridge-err"></div>
+    </form>
+
     <!-- Stale SMTP verification (bean uboq): a fresh mailbox code before
          issuance resumes. -->
     <form id="verify-form" class="hidden">
@@ -72,6 +80,7 @@
 
     <div id="fatal" class="hidden">
       <div class="err" id="fatal-msg"></div>
+      <button type="button" class="secondary" id="fatal-close">Close</button>
     </div>
 
     <p class="muted" id="brand">browserid.me</p>

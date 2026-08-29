@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: high
 created_at: 2026-08-29T10:43:40Z
-updated_at: 2026-08-29T10:43:46Z
+updated_at: 2026-08-29T20:05:28Z
 parent: browserid-ng-9yyk
 ---
 
@@ -16,3 +16,5 @@ ROOT CAUSE: /device-authorize issues via /device/issue → authorize_mint. For a
 FIX DIRECTION (needs a call): the ceremony page should read the identity's proof class (address_info is same-origin/allowed for the page role) and route: password bar for E3, bridge hop for E2 — either embed the dialog's claim start (popup to the bridge, needs setWindowOpenHandler in the wallet's primaryHop window, which the old interactiveIssuerLogin had and the new window does NOT) or show 'Continue with Google/Bluesky' driving the same /oidc claim endpoints the dialog uses, then /device/issue consumes the grant.
 
 ALSO in scope (error UX): on a policy refusal the page calls fatal() then fail() which navigates away INSTANTLY — the red error is an unreadable flash. Show the error with a Close/Back action that then returns device_error; and the wallet needs a visible failure surface (macOS notification from a spawned Electron app is unreliable; menu still claims the old identity as signed in).
+
+**Reframing (Dan, 2026-08-29):** E2 vs E3 is — and must stay — opaque to the wallet; the wallet just opens the issuer's sign-in page and consumes certs or an error. This bug is therefore NOT a wallet issue: it is a gap in browserid.me's own fallback sign-in page (/device-authorize), which implements only the password bar even though fallback-idp-api-v1 §3.2 explicitly makes 'bridge proof' part of the page's own UX obligations. Fix stays page-side (detect proof class via same-origin address_info, offer the Google/Bluesky hop, keep the wallet contract unchanged); the wallet needs nothing except the unrelated error-UX affordances (readable refusal, visible failure state).

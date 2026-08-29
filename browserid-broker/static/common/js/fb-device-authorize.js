@@ -95,13 +95,18 @@
 
   // --- Screens --------------------------------------------------------------
   function show(id) {
-    ["confirm-form", "login-form", "verify-form", "fatal"].forEach(function (s) {
+    ["confirm-form", "login-form", "verify-form", "bridge-form", "fatal"].forEach(function (s) {
       $(s).classList.toggle("hidden", s !== id);
     });
   }
 
-  function fatal(msg) {
+  // A refusal the user can actually READ: show the message and only return
+  // the device_error to the wallet when they dismiss it (the old
+  // navigate-immediately behavior reduced every refusal to a red flash).
+  var fatalReason = null;
+  function fatal(msg, reason) {
     $("fatal-msg").textContent = msg;
+    fatalReason = reason || null;
     show("fatal");
   }
 
@@ -154,10 +159,149 @@
     return issueCerts().then(deliver).catch(function (e) {
       if (e.step_up) { showLogin(""); return; }
       if (e.reverify) { startReverify(); return; }
+      // A bridge-verified identity refused for want of a live bridge proof:
+      // run the bridge hop rather than giving up (defensive — the proof
+      // route below normally catches this before issuance is attempted).
+      if (bridge.claim && /bridge proof/i.test(String(e.message || ""))) {
+        showBridge("");
+        return;
+      }
       // Refused at the chokepoint (wrong account, primary identity, …):
-      // tell the wallet, and show the reason here too.
-      fatal(String(e.message || e));
-      fail("policy_refused");
+      // show the reason; the device_error returns when the user dismisses.
+      fatal(String(e.message || e), "policy_refused");
+    });
+  }
+
+  // --- Bridge-verified identities (Google / Bluesky) ------------------------
+  // The mint bar for these is a LIVE bridge proof (fallback-idp-api-v1
+  // §3.2: "bridge proof" is this page's own UX obligation) — a password
+  // session is deliberately not enough. The proof runs in a popup at the
+  // bridge, exactly as the login dialog does it; the button click is also
+  // the consent gesture, so no separate confirm screen.
+  var bridge = { proof: null, claim: null };
+  // Set when a password confirm must be followed by something other than
+  // direct issuance (the bridge attach leg, kts0).
+  var afterLogin = null;
+
+  function providerName() {
+    return bridge.proof === "atproto" ? "Bluesky" : "Google";
+  }
+
+  function showBridge(err) {
+    $("title").textContent = "Authorize this device?";
+    $("subtitle").textContent = "A device is asking to sign in as " + email +
+      ". Continue with " + providerName() + " to approve it.";
+    $("bridge-btn").textContent = "Continue with " + providerName();
+    $("bridge-btn").disabled = false;
+    show("bridge-form");
+    if (err) $("bridge-err").textContent = err;
+  }
+
+  function normalizeGoogleEmail(e) {
+    var lower = String(e || "").toLowerCase();
+    var at = lower.lastIndexOf("@");
+    if (at < 0) return lower;
+    var local = lower.slice(0, at);
+    var domain = lower.slice(at + 1);
+    if (domain === "gmail.com" || domain === "googlemail.com") {
+      local = local.split("+")[0].replace(/\./g, "");
+    }
+    return local + "@" + domain;
+  }
+
+  // Google: popup to /oidc/claim (302 → Google). COOP severs the window
+  // handle, so the result arrives on the dialog's same-origin
+  // BroadcastChannel from the broker's resume page.
+  function oidcPopup() {
+    return new Promise(function (resolve, reject) {
+      var popup = window.open(bridge.claim + "?email=" + encodeURIComponent(email),
+        "browserid_oidc_claim", "width=600,height=700");
+      if (!popup) return reject(new Error("The sign-in window was blocked. Allow popups and try again."));
+      var chan;
+      try { chan = new BroadcastChannel("browserid:oidc_claim_resume"); }
+      catch (e) { try { popup.close(); } catch (e2) {} return reject(new Error("This browser cannot complete the sign-in.")); }
+      var settled = false;
+      var tid = setTimeout(function () { finish(new Error("Timed out waiting for " + providerName() + " sign-in")); }, 3 * 60 * 1000);
+      function finish(err) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(tid);
+        try { chan.close(); } catch (e) {}
+        if (err) reject(err); else resolve();
+      }
+      chan.onmessage = function (ev) {
+        var m = ev.data || {};
+        if (m.type !== "browserid:oidc_claim_result") return;
+        var anonymousError = !m.ok && !m.email;
+        if (!anonymousError && normalizeGoogleEmail(m.email) !== normalizeGoogleEmail(email)) return;
+        try { chan.postMessage({ type: "browserid:oidc_claim_ack", nonce: m.nonce }); } catch (e) {}
+        if (m.ok) finish(null);
+        else finish(new Error(m.reason || providerName() + " sign-in failed"));
+      };
+    });
+  }
+
+  // Bluesky: popup to the bridge's claim page (fragment contract), which
+  // postMessages an attestation back; redeem it at the broker.
+  function atprotoPopup() {
+    return new Promise(function (resolve, reject) {
+      var claimOrigin;
+      try { claimOrigin = new URL(bridge.claim).origin; }
+      catch (e) { return reject(new Error("The verification service is unavailable.")); }
+      var url = bridge.claim +
+        "#email=" + encodeURIComponent(email) +
+        "&return_origin=" + encodeURIComponent(window.location.origin);
+      var popup = window.open(url, "browserid_handle_claim", "width=600,height=700");
+      if (!popup) return reject(new Error("The sign-in window was blocked. Allow popups and try again."));
+      var settled = false;
+      var tid = setTimeout(function () { finish(new Error("Timed out waiting for Bluesky verification")); }, 3 * 60 * 1000);
+      function finish(err, attestation) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(tid);
+        window.removeEventListener("message", onMessage);
+        if (err) reject(err); else resolve(attestation);
+      }
+      function onMessage(ev) {
+        if (ev.origin !== claimOrigin) return;
+        var d = ev.data || {};
+        if (d.email && String(d.email).toLowerCase() !== email) return;
+        if (d.type === "browserid:handle_attestation") finish(null, d.attestation);
+        else if (d.type === "browserid:handle_error") finish(new Error(d.reason || "handle verification failed"));
+      }
+      window.addEventListener("message", onMessage);
+    });
+  }
+
+  function runBridge() {
+    $("bridge-btn").disabled = true;
+    $("bridge-err").textContent = "";
+    var hop = bridge.proof === "atproto"
+      ? atprotoPopup().then(function (attestation) {
+          return api("/wsapi/session_context").then(function (ctx) {
+            return api("/wsapi/complete_handle_claim", {
+              email: email, attestation: attestation, csrf: (ctx.body.csrf_token || ""),
+            });
+          }).then(function (res) {
+            if (!res.ok || res.body.success === false) {
+              throw new Error(res.body.reason || "handle verification failed");
+            }
+          });
+        })
+      : oidcPopup();
+    hop.then(function () {
+      // The claim attached/created the broker session and recorded the mint
+      // grant — issuance can now consume it.
+      return issueAndDeliver();
+    }).catch(function (e) {
+      // A password-backed account links the bridge only after a password
+      // confirm (kts0): collect it, then re-run the bridge hop.
+      if (/password required/i.test(String(e.message || ""))) {
+        afterLogin = function () { showBridge(""); };
+        showLogin("Confirm your password first, then continue with " + providerName() + ".");
+        return;
+      }
+      showBridge(String(e.message || e));
     });
   }
 
@@ -175,8 +319,7 @@
       show("verify-form");
       $("code").focus();
     }).catch(function (e) {
-      fatal(String(e.message || e));
-      fail("policy_refused");
+      fatal(String(e.message || e), "policy_refused");
     });
   }
 
@@ -187,10 +330,24 @@
   }
   $("subtitle").textContent = "Signing in as " + email;
 
-  // A live session skips the password but NEVER the human: issuance needs an
-  // explicit click (bean mxcn — a session-holding visitor merely loading
-  // this page must not mint).
-  api("/wsapi/session_context").then(function (ctx) {
+  // Route by how the identity is verified (opaque to the wallet that opened
+  // us — fallback-idp-api-v1 §3.2 makes this the page's own business):
+  // bridge-verified → the bridge hop (its click is the consent gesture);
+  // otherwise a live session skips the password but NEVER the human —
+  // issuance needs an explicit click (bean mxcn).
+  Promise.all([
+    api("/wsapi/session_context"),
+    api("/wsapi/address_info?email=" + encodeURIComponent(email))
+      .catch(function () { return { ok: false, body: {} }; }),
+  ]).then(function (res) {
+    var ctx = res[0], info = res[1].body || {};
+    if (info.proof === "oidc" || info.proof === "atproto") {
+      bridge.proof = info.proof;
+      bridge.claim = info.claim || null;
+      if (bridge.claim) { showBridge(""); return; }
+      // Bridge unavailable: fall through — issuance will refuse and the
+      // reason shows readably instead of a dead button.
+    }
     if (ctx.body.authenticated) {
       showConfirm();
     } else {
@@ -206,6 +363,15 @@
   $("confirm-cancel").addEventListener("click", function () { fail("cancelled"); });
   $("login-cancel").addEventListener("click", function () { fail("cancelled"); });
   $("verify-cancel").addEventListener("click", function () { fail("cancelled"); });
+  $("bridge-cancel").addEventListener("click", function () { fail("cancelled"); });
+  $("bridge-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    runBridge();
+  });
+  $("fatal-close").addEventListener("click", function () {
+    if (fatalReason) { fail(fatalReason); return; }
+    try { window.close(); } catch (e) {}
+  });
 
   $("verify-form").addEventListener("submit", function (e) {
     e.preventDefault();
@@ -238,6 +404,12 @@
       .then(function (res) {
         if (!res.ok || !res.body.success) {
           throw new Error(res.body.reason || "sign-in failed");
+        }
+        if (afterLogin) {
+          var next = afterLogin;
+          afterLogin = null;
+          next();
+          return;
         }
         return issueAndDeliver();
       })
