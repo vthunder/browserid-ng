@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-08-29T20:49:11Z
-updated_at: 2026-08-29T23:50:42Z
+updated_at: 2026-08-30T00:02:05Z
 parent: browserid-ng-9yyk
 blocking:
     - browserid-ng-71vt
@@ -60,3 +60,12 @@ Each op re-justifies self-issued acceptance individually; inbox consent is the g
 | Q5 | transfer_email moves ONE row; derived agent children stay behind, operational by the loser | store transfer_email + callers | OPEN — shipped behavior is arguably a bug (filed a93p, high); recommend revoke-and-drop children on transfer-out | shipped gap either way |
 
 **Also resolved by Dan 2026-08-30:** Q4 merge deferred indefinitely (one-at-a-time transfer re-proves at the issuer anyway; bulk gains little). Q6: the account page UI invokes the WALLET, which talks to the registry — recorded in registry-api-v1 §10.8. **Merged:** the draft is now registry-api-v1 §5.6 (+ §5.1 kinds, §7.1 reasons, §10.8); the standalone draft file is deleted.
+
+## Final rulings (Dan, 2026-08-30) — all questions closed
+
+- Q1 = option A (self-approval): the anchor device signs its own membership record. Dan challenged the 'big risk'; honest answer recorded: the marginal risk over today is registry-scoped persistence (post-revocation account management, visible + detachable), EXCEPT for one escalation that exists in the shipped model too — a planted E3 address doubles as a PASSWORD-RESET channel (complete_signin_code on an owned address resets the owning account), turning registry/session access into root recovery. Mitigation is not a second device but severing membership from recovery eligibility: §5.6.2 deployment note added (shared-table registries MUST NOT let registry-attached addresses become reset channels without the issuer's own ceremony).
+- Q2/Q3 dissolved: with self-approval there is NO inbox round-trip at all — attach and detach are SYNCHRONOUS calls carrying the record inline (record: iat/exp ≤300s + jti replay guard replaces pending codes/TTL/status polling). Matches Dan's 'no extra question' requirement and cookie parity exactly.
+- Q5 = revoke-and-drop: on transfer AND detach, the loser's derived agent children of the departed parent are revoked and dropped, never transferred (winner provisions its own agents). Shipped leave-behind behavior confirmed a bug (a93p).
+- Q4 merge deferred indefinitely; Q6 account-page-UI-invokes-wallet — both recorded earlier.
+
+§5.6 rewritten synchronous in registry-api-v1.md; inbox keeps only the actionless transfer notice; §7.1 pared to record_mismatch/expired/replayed + last_identity. SPEC SETTLED — remaining work is implementation (registrar endpoints + wallet/dialog consumers + a93p fix), to sequence with 71vt/1sb3 build planning.
