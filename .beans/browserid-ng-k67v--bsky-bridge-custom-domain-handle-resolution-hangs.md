@@ -1,11 +1,11 @@
 ---
 # browserid-ng-k67v
 title: 'bsky bridge: custom-domain handle resolution hangs 15s on the well-known probe — breaks DNS-verified handles end to end'
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-08-30T18:01:42Z
+updated_at: 2026-08-30T18:18:01Z
 ---
 
 Reported by Dan's friend Chris (2026-08-30): me@chris.toshokelectric.com 'didn't work' while a .bsky.social handle did. Full causal chain, verified live:
@@ -18,3 +18,7 @@ Reported by Dan's friend Chris (2026-08-30): me@chris.toshokelectric.com 'didn't
 .bsky.social handles work only because bsky.social's web infra answers the well-known probe fast.
 
 FIX (bridge repo ~/src/browserid-bsky — read HANDOFF first per convention): don't let the losing verification method gate the winning one. Await DNS first; when DNS yields a valid DID, give well-known only a short grace (~2s) purely for the conflict-detection warn ('DNS wins on conflict' — waiting 15s to maybe log a warning is the bug), then proceed; when DNS misses, await well-known fully. Also lower the well-known leg's effective timeout (15s > the broker's whole 10s probe budget — any single leg must fit comfortably inside it, e.g. 5s). Any DNS-TXT-verified handle whose domain lacks a fast HTTPS responder hits this today — a large, legitimate slice of custom-domain handles.
+
+## Summary of Changes
+
+resolve_handle (browserid-bsky pds-bridge/src/idp/resolve.rs): the well-known leg is spawned with its own 8s cap; DNS is awaited first and, when it yields a DID, well-known gets a 2s grace purely for the conflict warning (then aborted) — the losing method never gates the winner. On a DNS miss, well-known still decides, capped inside the broker's 10s probe budget. Bridge tests green (178). Deployed + prod-verified: /idp/resolve for chris.toshokelectric.com went 15.4s → 3.0s, and browserid.me address_info now returns proof=atproto + the claim URL for me@chris.toshokelectric.com — Chris's address works end to end with no action on his side.
