@@ -738,11 +738,18 @@ it, so inbox control alone cannot produce the pair this flow needs —
 entry into a password-backed account remains its reset ceremony.
 
 **Deployment note (shared-table registries).** Registry membership is
-not recovery eligibility. A deployment whose registry and fallback-IdP
-roles share an account table (the reference broker) MUST NOT let an
-address added through this API become a password-reset channel without
-the issuer's own ceremony blessing it — otherwise attaching a planted
-address converts registry-scope access into root-credential recovery.
+not recovery eligibility. In a deployment whose registry and
+fallback-IdP roles share an account table (the reference broker), an
+address added through this API becomes a candidate password-reset
+channel at the issuer — which converts registry-scope access into
+control of the account shell. The blast radius is bounded (the reset
+fence unverifies sibling mailbox addresses; primaries and bridges need
+proofs the attacker lacks), so this is a recoverable
+denial-of-service, not identity takeover — but deployments SHOULD
+fence it, e.g. by excluding newly added addresses from reset
+eligibility until the issuer's own ceremony blesses them. Mitigation
+design is tracked in bean dksx; note a compromised *existing* address
+is the same channel, so new-address fencing alone is not sufficient.
 
 #### 5.6.3 Detach — `POST /api/v1/account/detach`
 
@@ -1014,10 +1021,10 @@ Deferred elsewhere:
    itself, no inbox round-trip, no extra user question (parity with
    the cookie lane, where session + mailbox code adds the address
    outright; a second-device rule was considered and declined — the
-   marginal risk over today is registry-scoped persistence, visible
-   and detachable on the account page, PROVIDED registry membership
-   never confers issuer-side recovery eligibility, the §5.6.2
-   deployment note). **Derived agent identities travel nowhere**: on
+   marginal risk over today is registry-scoped persistence plus, on
+   shared-table deployments, the reset-channel exposure Dan graded a
+   recoverable DoS rather than takeover — §5.6.2 deployment note,
+   mitigations bean dksx). **Derived agent identities travel nowhere**: on
    transfer or detach the loser's children of the departed parent are
    revoked and dropped (the reference implementation's
    leave-them-operational behavior is a bug, bean a93p).

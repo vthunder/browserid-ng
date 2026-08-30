@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-08-29T20:49:11Z
-updated_at: 2026-08-30T00:02:05Z
+updated_at: 2026-08-30T00:13:13Z
 parent: browserid-ng-9yyk
 blocking:
     - browserid-ng-71vt
@@ -69,3 +69,5 @@ Each op re-justifies self-issued acceptance individually; inbox consent is the g
 - Q4 merge deferred indefinitely; Q6 account-page-UI-invokes-wallet — both recorded earlier.
 
 §5.6 rewritten synchronous in registry-api-v1.md; inbox keeps only the actionless transfer notice; §7.1 pared to record_mismatch/expired/replayed + last_identity. SPEC SETTLED — remaining work is implementation (registrar endpoints + wallet/dialog consumers + a93p fix), to sequence with 71vt/1sb3 build planning.
+
+**Severity correction (Dan, 2026-08-30):** the planted-address reset is account-shell control + recoverable DoS, NOT takeover (kgb9 unverifies E3 siblings; primaries/bridges need proofs the attacker lacks; owner resets back via their own mailbox and cuts off the attacker's address). §5.6.2 deployment note softened from MUST to SHOULD-fence accordingly; mitigation exploration filed as bean dksx (recovery-eligibility delay for new addresses, reset-origin visibility to all addresses, the kgb9 agent-row gap — Agent rows stay verified so a post-reset attacker can mint the account's agent identities — and reset-war dampening; existing-address compromise means new-address fencing alone is insufficient).
