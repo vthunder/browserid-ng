@@ -33,6 +33,11 @@ use crate::dns_fetcher::DnsFetcher;
 /// bridge's resolve-cache bound so no claim decision rests on a binding
 /// older than the atproto side would itself accept.
 pub const AUTHORITY_CACHE_SECONDS: u64 = 600;
+/// Cache TTL for answers a probe failure degraded (bridge unreachable, MX
+/// lookup error): long enough to shield the keystroke-debounced
+/// `address_info` path from hammering a struggling probe, short enough that
+/// a transient outage doesn't condemn a valid domain for ten minutes (lej3).
+pub const AUTHORITY_FAILURE_CACHE_SECONDS: u64 = 30;
 
 /// Timeout for one probe of the bridge's resolve endpoint. The bridge does
 /// real resolution work (DoH + a well-known fetch) on a cold domain, so this
@@ -81,10 +86,13 @@ pub enum MxProbe {
 }
 
 /// One MX probe answer: does the domain accept mail, and through which host.
+/// `definitive` is false when the lookup errored and the answer is the
+/// fail-open default rather than knowledge (short-cached, lej3).
 #[derive(Debug, Clone)]
 struct MxAnswer {
     accepts_mail: bool,
     host: Option<String>,
+    definitive: bool,
 }
 
 /// Runs steps 2–4 of the hierarchy (step 1, the DNSSEC `_browserid` check,
@@ -98,7 +106,21 @@ pub struct AuthorityChecker {
     /// Where the dialog sends the user to claim a handle identity, when the
     /// atproto lane is live (the bridge's claim page).
     claim_url: Option<String>,
-    cache: RwLock<HashMap<String, (SecondaryAuthority, Option<String>, Instant)>>,
+    /// Per-domain answer cache. The final `u64` is the entry's own TTL:
+    /// definitive answers keep [`AUTHORITY_CACHE_SECONDS`]; answers derived
+    /// from a probe that couldn't tell (bridge unreachable/timed out, MX
+    /// lookup error) get [`AUTHORITY_FAILURE_CACHE_SECONDS`] so a transient
+    /// outage doesn't condemn a valid domain for ten minutes (lej3).
+    cache: RwLock<HashMap<String, (SecondaryAuthority, Option<String>, Instant, u64)>>,
+}
+
+/// How the handle probe answered — a definitive "not a handle" and a
+/// "cannot tell right now" both fall through to MX, but only the former
+/// deserves the long cache (lej3).
+enum HandleAnswer {
+    Handle(String),
+    NotHandle,
+    Unavailable,
 }
 
 impl AuthorityChecker {
@@ -188,57 +210,77 @@ impl AuthorityChecker {
             return (SecondaryAuthority::Smtp, None);
         }
 
-        if let Some((authority, mx_host, at)) = self.cache.read().unwrap().get(&domain).cloned() {
-            if at.elapsed() < Duration::from_secs(AUTHORITY_CACHE_SECONDS) {
+        if let Some((authority, mx_host, at, ttl)) = self.cache.read().unwrap().get(&domain).cloned()
+        {
+            if at.elapsed() < Duration::from_secs(ttl) {
                 return (authority, mx_host);
             }
         }
 
-        let (authority, mx_host) = if let Some(did) = self.handle_did(&domain).await {
-            (SecondaryAuthority::Atproto { did }, None)
-        } else {
-            let mx = self.mx(&domain).await;
-            if mx.accepts_mail {
-                (SecondaryAuthority::Smtp, mx.host)
-            } else {
-                (SecondaryAuthority::Unprovable, None)
+        let (authority, mx_host, definitive) = match self.handle_answer(&domain).await {
+            HandleAnswer::Handle(did) => (SecondaryAuthority::Atproto { did }, None, true),
+            probe => {
+                let handle_definitive = matches!(probe, HandleAnswer::NotHandle);
+                let mx = self.mx(&domain).await;
+                let authority = if mx.accepts_mail {
+                    (SecondaryAuthority::Smtp, mx.host)
+                } else {
+                    (SecondaryAuthority::Unprovable, None)
+                };
+                (authority.0, authority.1, handle_definitive && mx.definitive)
             }
         };
 
+        let ttl = if definitive { AUTHORITY_CACHE_SECONDS } else { AUTHORITY_FAILURE_CACHE_SECONDS };
         self.cache
             .write()
             .unwrap()
-            .insert(domain, (authority.clone(), mx_host.clone(), Instant::now()));
+            .insert(domain, (authority.clone(), mx_host.clone(), Instant::now(), ttl));
         (authority, mx_host)
     }
 
     /// Step 2: a binding that *resolves* — both atproto resolution methods,
     /// DNS wins on conflict, mandatory bidirectional `alsoKnownAs` check.
-    /// All of that lives in the bridge; here it is one HTTP question. `None`
-    /// covers "not a handle", "cannot tell right now", and "lane disabled"
-    /// alike: a binding we cannot resolve is not one we may rely on, and the
-    /// hierarchy falls through to MX.
-    async fn handle_did(&self, domain: &str) -> Option<String> {
+    /// All of that lives in the bridge; here it is one HTTP question. A
+    /// binding we cannot resolve is never relied on either way — the
+    /// hierarchy falls through to MX — but the caller caches "the bridge
+    /// said no" and "the bridge couldn't answer" very differently (lej3).
+    async fn handle_answer(&self, domain: &str) -> HandleAnswer {
         match &self.handles {
-            HandleProbe::Disabled => None,
-            HandleProbe::Static(map) => map.get(domain).cloned(),
+            HandleProbe::Disabled => HandleAnswer::NotHandle,
+            HandleProbe::Static(map) => match map.get(domain) {
+                Some(did) => HandleAnswer::Handle(did.clone()),
+                None => HandleAnswer::NotHandle,
+            },
             HandleProbe::Bridge { url, http } => {
-                let resp = http
+                let resp = match http
                     .get(format!("{}/idp/resolve", url.trim_end_matches('/')))
                     .query(&[("domain", domain)])
                     .timeout(BRIDGE_PROBE_TIMEOUT)
                     .send()
                     .await
                     .and_then(|r| r.error_for_status())
-                    .map_err(|e| {
+                {
+                    Ok(r) => r,
+                    Err(e) => {
                         tracing::warn!(%domain, "bridge resolve probe failed: {e}");
-                    })
-                    .ok()?;
-                let body: serde_json::Value = resp.json().await.ok()?;
+                        return HandleAnswer::Unavailable;
+                    }
+                };
+                let body: serde_json::Value = match resp.json().await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(%domain, "bridge resolve probe unparseable: {e}");
+                        return HandleAnswer::Unavailable;
+                    }
+                };
                 if body.get("valid").and_then(|v| v.as_bool()) != Some(true) {
-                    return None;
+                    return HandleAnswer::NotHandle;
                 }
-                body.get("did").and_then(|d| d.as_str()).map(str::to_string)
+                match body.get("did").and_then(|d| d.as_str()) {
+                    Some(did) => HandleAnswer::Handle(did.to_string()),
+                    None => HandleAnswer::Unavailable, // valid:true with no did — malformed
+                }
             }
         }
     }
@@ -248,18 +290,20 @@ impl AuthorityChecker {
     /// implicit-MX fallback is deliberately not honored as a proof route.
     async fn mx(&self, domain: &str) -> MxAnswer {
         match &self.mx {
-            MxProbe::Off => MxAnswer { accepts_mail: true, host: None },
+            MxProbe::Off => MxAnswer { accepts_mail: true, host: None, definitive: true },
             MxProbe::Static(map) => MxAnswer {
                 accepts_mail: map.contains_key(domain),
                 host: map.get(domain).cloned().flatten(),
+                definitive: true,
             },
             MxProbe::Dns(fetcher) => match fetcher.lookup_mx(domain).await {
-                Ok(host) => MxAnswer { accepts_mail: host.is_some(), host },
+                Ok(host) => MxAnswer { accepts_mail: host.is_some(), host, definitive: true },
                 Err(e) => {
                     tracing::warn!(%domain, "MX probe failed ({e}); failing open");
                     // Fail open on mail, but with no known host: an outage
-                    // must not invent a Google-OIDC eligibility.
-                    MxAnswer { accepts_mail: true, host: None }
+                    // must not invent a Google-OIDC eligibility. Not a
+                    // definitive answer — cache it briefly (lej3).
+                    MxAnswer { accepts_mail: true, host: None, definitive: false }
                 }
             },
         }
@@ -396,5 +440,39 @@ mod tests {
             c.no_primary_authority("d.example").await,
             SecondaryAuthority::Atproto { .. }
         ));
+    }
+
+    /// lej3: a probe FAILURE must not be condemned to the long cache. A dead
+    /// bridge degrades to the MX answer as before, but the entry carries the
+    /// short failure TTL — a definitive answer keeps the long one.
+    #[tokio::test]
+    async fn probe_failures_are_cached_briefly() {
+        let dead_bridge = AuthorityChecker::new(
+            HandleProbe::Bridge {
+                // Nothing listens here: the probe fails fast (refused), which
+                // must read as "cannot tell", not "not a handle".
+                url: "http://127.0.0.1:1".into(),
+                http: reqwest::Client::new(),
+            },
+            MxProbe::Static([("mail.example".to_string(), None)].into_iter().collect()),
+        );
+        // Degrades to the MX answer…
+        assert_eq!(
+            dead_bridge.no_primary_authority("mail.example").await,
+            SecondaryAuthority::Smtp
+        );
+        // …but with the short TTL, so a recovered bridge is consulted again
+        // in seconds, not ten minutes.
+        let ttl = dead_bridge.cache.read().unwrap().get("mail.example").unwrap().3;
+        assert_eq!(ttl, AUTHORITY_FAILURE_CACHE_SECONDS);
+
+        // Definitive answers (static probes) keep the long cache.
+        let c = checker(&[("d.example", "did:plc:d")], &["mail.example"]);
+        c.no_primary_authority("d.example").await;
+        c.no_primary_authority("mail.example").await;
+        for domain in ["d.example", "mail.example"] {
+            let ttl = c.cache.read().unwrap().get(domain).unwrap().3;
+            assert_eq!(ttl, AUTHORITY_CACHE_SECONDS, "{domain}");
+        }
     }
 }
