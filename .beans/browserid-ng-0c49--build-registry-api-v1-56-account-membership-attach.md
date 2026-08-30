@@ -5,10 +5,8 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-08-30T18:01:50Z
+updated_at: 2026-08-30T18:02:09Z
 parent: browserid-ng-9yyk
-blocked_by:
-    - browserid-ng-a93p
 ---
 
 THE RESUME POINTER for the account-membership thread (Dan asked 2026-08-30). Spec is SETTLED — registry-api-v1 §5.6 (synchronous attach/detach with inline browserid-membership-v1 records, transfer-on-proof with loser notification, revoke-and-drop of derived agent children) + §7.1 reasons + §10.8 decision log; design history and parity table live on bean 1sb3; reset-channel mitigations are bean dksx (explore separately).
