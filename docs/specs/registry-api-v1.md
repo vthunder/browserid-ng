@@ -4,57 +4,41 @@
 
 # Registry API v1
 
-> **Status: draft skeleton.** This document specifies the wire API of the
-> **registry** role: the service that records a user's devices, holders,
-> warrants, and pending consent requests, and operates their revocation
-> status list (core §6.3). It exists so that a native wallet is a
-> first-class registry client, and so that an independent registry can be
-> implemented from this document alone — without reverse-engineering the
-> hosted broker, which is merely this API's first host. Out of scope:
-> identity issuance (fallback-IdP API, specified separately in the same
-> family), the browser cookie/session lane (which remains as today), the
-> agent-facing consent request/poll lanes (already specified in core §7.5),
-> and hosted conveniences (/verify, hosted wallet UI).
+> **Status: draft.** The wire API of the **registry** role: the service
+> that records a user's devices, holders, and warrants, carries pending
+> consent requests, and operates their revocation status list (core
+> §6.3). An independent registry can be implemented from this document
+> alone; the hosted broker is merely its first host. Out of scope:
+> issuance (fallback-IdP API), the browser cookie lane, the agent-facing
+> request/poll lanes (core §7.5), and hosted conveniences.
 
 Cross-references written as `core §N` refer to `browserid-ng-protocol.md`.
 
 ## 1. Overview
 
-The hosted broker is four roles in a trenchcoat: user-agent half, fallback
-IdP, registry, and hosted conveniences. This spec gives the **registry**
-role a self-contained API so the user-agent half can live anywhere —
-a hosted dialog, a menubar wallet, a headless agent runtime. Principle 7
-(openness lives in the ability to leave) is the design driver: a
-conformant registry is replaceable, and this document is the contract.
+A self-contained API for the registry role, so the user-agent half can
+live anywhere. Principle 7 (openness lives in the ability to leave) is
+the driver: a conformant registry is replaceable.
 
-Design summary:
-
-- **Authentication** is a two-step: the client exchanges a presentation
-  bundle (core §5) addressed to the registry's own origin for a
-  short-lived, sender-constrained access token (§3). Every subsequent
-  call carries the token plus a proof-of-possession signature made with
-  the same device key the presentation proved. There are no refresh
-  tokens: re-exchanging a fresh presentation IS the refresh.
-- **Revocation rides the device cert.** A token is bound to the config
-  cert it was exchanged with; revoking that cert (its status bit,
-  core §6.3) kills the token on its next use, fail-closed.
-- **Consent is API-complete.** Approving a warrant request through this
-  API carries the same client-signed warrants as the browser consent
-  page — approval is a signing ceremony, not a flag flip (§5.1). The
-  human-in-the-loop obligation belongs to the user agent (principle 8);
-  the registry's checks are identical in both lanes.
-- **No CSRF machinery.** Authentication is header-borne and
-  proof-of-possession-bound, never ambient, so the cookie lane's
-  `csrf` body field does not exist here.
+- **Auth**: exchange a presentation (core §5) for a short-lived,
+  sender-constrained token (§3); every call adds a proof signed with
+  the same device key. No refresh tokens — re-exchanging IS the
+  refresh. Exception: §5.6 membership is cert-authenticated, so it can
+  bootstrap the account a token requires.
+- **Revocation rides the device cert**: revoking the bound config cert
+  kills the token on next use, fail-closed.
+- **Consent is API-complete**: approval carries the same client-signed
+  warrants as the browser consent page (§5.1, §10 decision 0).
+- **No CSRF** — auth is header-borne, never ambient.
 
 ## 2. Actors and terminology
 
 | Term | Meaning |
 |---|---|
-| **Registry** | The service implementing this API. The hosted broker's registry role is the reference deployment. |
-| **User agent / wallet** | The client: holds the account's device keys, builds presentations, renders consent UI. Its loyalty runs to the user (principle 8). |
-| **Account** | The registry-side record a token authenticates as. Established by the first successful token exchange (or the legacy cookie lane); identified by the verified identities presented to it. |
-| **Config cert** | The `purpose: authorization` device cert (core §4.3) whose key signs warrants and, in this API, request proofs. |
+| **Registry** | The service implementing this API. |
+| **User agent / wallet** | The client: holds the account's device keys, builds presentations, renders consent UI. Loyal to the user (principle 8). |
+| **Account** | The registry-side record owning identities, devices, and warrants. Created and changed only by §5.6 `attach`; authenticated by §3.1 (or the legacy cookie lane). All of an account's identities are equals — "which identity authenticated" is a per-call fact, never a rank. |
+| **Auth cert / config cert** | The two flavors of device cert (core §4.1): `purpose: authentication` mints access certs; `purpose: authorization` signs warrants and proofs. |
 | **Presentation bundle** | `access_cert~assertion~warrant~config_cert` (core §5). |
 | **Status list / status ref** | The registry's signed revocation bitfield and `{uri, idx}` pointers into it (core §6.3). |
 
@@ -62,759 +46,412 @@ Design summary:
 
 ### 3.1 Token exchange — `POST /api/v1/token`
 
-Request:
-
 ```json
-{
-  "presentation": "<access_cert~assertion~warrant~config_cert>",
-  "scope": "registry"
-}
+{ "presentation": "<access_cert~assertion~warrant~config_cert>", "scope": "registry" }
 ```
 
-| Field | Meaning |
-|---|---|
-| `presentation` | REQUIRED. A presentation bundle whose `audience` is the registry's own public origin. |
-| `scope` | OPTIONAL. Space-separated scope list. v1 defines the single scope `registry` (the default). The field exists so later versions can narrow tokens without a breaking change. |
+`presentation` (REQUIRED): a bundle whose `audience` is the registry's
+public origin. `scope` (OPTIONAL): space-separated; v1 defines only
+`registry` (the default).
 
-The registry MUST verify the presentation exactly as core §6 requires for
-its own origin as audience — DNSSEC-rooted key resolution for both the
-access cert's and config cert's issuers, full signature joins, expiry,
-and fail-closed status checks on every status ref the
-objects carry (core §6.1). Verification here
-MUST NOT be weaker in any respect than the cookie-lane sibling
-`/wsapi/auth_with_presentation`; this exchange is that endpoint's
-API-shaped twin (one mints a cookie session, this mints a token).
+Verification MUST equal core §6 for the registry's own origin as
+audience — DNSSEC key resolution for both issuers, signature joins,
+expiry, fail-closed status checks — and MUST NOT be weaker in any
+respect than the cookie sibling `/wsapi/auth_with_presentation`.
+Additionally:
 
-In addition to the core §6 checks, the warrant in the presentation MUST
-carry scopes covering every scope requested for the token (v1: the
-single scope `registry`). A plain login warrant — no scopes — for the
-registry's origin therefore authenticates the cookie lane but does NOT
-mint a registry-management token. This is deliberately stricter than
-the cookie sibling (invariant 1 permits stricter, never weaker):
-warrants are delegation instruments, and a warrant granted to a third
-party whose audience happens to be the registry's origin must not
-silently confer device-revocation powers. There is no bootstrap cost:
-warrants are signed by the wallet's own config-cert key with no
-registry involvement, and the exchange accepts a `browserid-warrant-v1`
-warrant, on which `status` is OPTIONAL per core §5's v1 compatibility —
-so a wallet's first exchange works before it has ever called
-`warrants/allocate_status`. (A v2 warrant presented here is verified to
-the full v2 bar, `status` REQUIRED, per core §6.1 — the v1 allowance is
-not a status-check bypass for v2 records.) Wallets SHOULD move to v2
-warrants with allocated refs once they hold a token.
+- The warrant MUST carry every requested scope (`scope_missing`); a
+  plain login warrant does not mint a management token (§10 decision
+  5). A v1 warrant is accepted with `status` OPTIONAL (core §5), so a
+  first exchange precedes `allocate_status`; a v2 warrant gets the full
+  v2 bar. Unrecognized scope: `400 invalid_scope`.
+- Self-presentation REQUIRED: `grantor == grantee`
+  (`delegated_presentation`); the token binds to the grantor's config
+  key.
+- Registry-rooted ("secondary") identities ARE accepted, unlike the
+  cookie sibling: the token's authority excludes every root op. Any
+  future scope MUST re-justify self-issued acceptance (§10 decision 7).
+- The token authenticates as the account owning the verified identity;
+  a never-seen identity is refused (`no_account`) — the exchange never
+  creates or alters accounts; bootstrap attaches first (§5.6).
 
-The exchange additionally requires a **self-presentation**:
-`grantor == grantee`. A delegated presentation is rejected (`400`,
-`invalid_grant`, reason `delegated_presentation`) — the token binds to
-the config-cert key, which is the *grantor's* key, so a delegated
-presenter could never produce request proofs anyway; delegated registry
-management is deliberately not a v1 capability.
-
-A presentation whose identity issuer is the registry's own domain (a
-registry-rooted, "secondary" identity) IS accepted at this exchange —
-a deliberate, principled divergence from the cookie sibling, which
-rejects those (§10 decision 7). The cookie rejection is right where it
-is: for a registry-rooted identity the password is the root credential
-and device certs are derived from it, and a cookie session is full
-account control *including* the root (password and email operations) —
-a derived credential must not mint root control. This token is
-different in kind: its authority is bounded to §5's registry
-operations, which exclude every root op, so a self-issued presentation
-mints strictly narrower authority than the session the cookie lane
-refuses. This acceptance is **per-scope**: it is justified here for
-`registry` only, and any future scope in this token family MUST
-re-justify accepting self-issued presentations before honoring them
-(the mint-authorization chokepoint and account root ops in particular
-MUST NOT become reachable this way — see the fallback-IdP spec).
-
-On success the registry resolves the account: if an existing account
-owns the verified identity, the token authenticates as that account;
-otherwise a new account containing exactly that identity is created.
-The exchange itself never links, merges, or transfers accounts —
-identity membership changes are explicit operations (§5.6), never a
-side effect of authentication. The response:
+Response:
 
 ```json
-{
-  "access_token": "<opaque>",
-  "token_type": "DPoP",
-  "expires_in": 3600,
-  "scope": "registry"
-}
+{ "access_token": "<opaque>", "token_type": "DPoP", "expires_in": 3600, "scope": "registry" }
 ```
 
-Token properties:
+Token properties: opaque and server-side (account id, bound config-cert
+public key, its status ref and `exp`, scope, expiry); ≥128 bits
+entropy; `expires_in` ≤ 3600 and never past the config cert's `exp`; no
+refresh tokens; every authorized call re-checks the bound cert's status
+ref fail-closed (registries MAY also revoke tokens server-side).
 
-- **Opaque, server-side.** The token is an opaque string backed by a
-  registry-side record: account id, the config cert's public key (the
-  proof key), the config cert's status ref and `exp`, scope, expiry.
-  It is not a JWT; nothing about its internal structure is specified.
-- **Short-lived.** `expires_in` SHOULD be at most 3600 seconds, and the
-  token MUST NOT outlive the config cert it is bound to
-  (`min(now + ttl, config_cert.exp)`).
-- **No refresh tokens.** A client that wants a new token exchanges a
-  fresh presentation. (Rationale: the wallet can always mint a
-  presentation, so a refresh token would only add a second long-lived
-  credential to steal and revoke.)
-- **Revocation follows the cert.** On every authorized call the registry
-  MUST check the bound config cert's status ref, fail-closed (an
-  uncheckable ref is revoked, core §6.3). A revoked device's tokens are
-  therefore dead without any token-level bookkeeping. Registries MAY
-  additionally revoke individual tokens server-side.
-- **Entropy.** Tokens MUST carry at least 128 bits of entropy.
-
-Abuse controls — the exchange is necessarily anonymous and its
-verification work is expensive (DNSSEC resolutions, status fetches):
-the registry SHOULD rate-limit it per source address and per presented
-identity (`429`, with `Retry-After`), MUST bound request body sizes
-(RECOMMENDED cap 64 KiB, here and API-wide), and SHOULD track the
-assertion's `jti` and reject reuse within its validity window, making
-the exchange single-use per assertion. A requested scope the registry
-does not recognize, or that the warrant does not cover, is `400`
-`invalid_scope` / `invalid_grant` reason `scope_missing` respectively.
+Abuse controls (the exchange is anonymous and verification expensive):
+rate-limit per source address and presented identity (`429` +
+`Retry-After`); bound body sizes (RECOMMENDED 64 KiB, API-wide); track
+the assertion's `jti` and reject reuse within its validity window.
 
 ### 3.2 Request proof — `browserid-registry-proof-v1`
 
-Every call to a token-authed endpoint carries two HTTP headers:
+Token-authed calls carry two headers:
 
 ```
 Authorization: DPoP <access_token>
 DPoP: <proof JWS>
 ```
 
-The proof is a JWS signed by the config cert's key (the same key that
-signed the warrant in the exchanged presentation), with header
-`{"alg": "EdDSA", "typ": "browserid-registry-proof-v1"}` and claims:
+The proof is signed by the token's config-cert key, header
+`{"alg": "EdDSA", "typ": "browserid-registry-proof-v1"}` (both values
+MUST be exact; agility is deferred to a future `typ`), claims:
 
 | Claim | Meaning |
 |---|---|
-| `htm` | REQUIRED. Uppercase HTTP method of this request. |
-| `htu` | REQUIRED. The request URI: scheme, host, path — no query, no fragment. |
-| `iat` | REQUIRED. Issued-at, seconds. The registry MUST reject proofs outside a small acceptance window (RECOMMENDED ±300s). |
-| `jti` | REQUIRED. Unique random string. The registry MUST reject a replayed `jti` within the acceptance window (replay cache keyed at least by proof key, retained at least as long as the window). |
-| `ath` | REQUIRED. base64url(SHA-256(access_token)) — binds the proof to the token. |
+| `htm` | REQUIRED. Uppercase HTTP method. |
+| `htu` | REQUIRED. Request URI: scheme, host, path — no query or fragment. |
+| `iat` | REQUIRED. Seconds; MUST be within a small window (RECOMMENDED ±300s). |
+| `jti` | REQUIRED. Unique random string; replays rejected within the window (cache keyed at least by proof key). |
+| `ath` | REQUIRED on token-authed calls; absent on cert-authenticated ones (§5.6). base64url(SHA-256(access_token)). |
+| `bh` | REQUIRED on requests with a body; absent otherwise. base64url(SHA-256(body bytes)) — the mutation is client-signed down to its payload, which is what lets §5.6 need no separate consent artifact. |
 
-Example proof claims:
+`htu` and the exchange audience build on the registry's advertised
+**public origin** (§5.5 `token_endpoint`'s origin): lowercase scheme
+and host, default ports omitted; `htu` appends the exact §5 route path;
+behind a proxy, compare against the public origin, never the observed
+URI. Semantics mirror RFC 9449, minus `jkt` — binding came from the
+exchange. Verification order: token valid → signature against bound
+key → all claims → bound cert status fail-closed → scope. Any failure
+⇒ reject.
 
-```json
-{
-  "htm": "POST",
-  "htu": "https://registry.example/api/v1/warrants/revoke",
-  "iat": 1756400000,
-  "jti": "N6b2mB4kq3xw",
-  "ath": "fUHyO2r2Z3DZ53EsNrWBb0xWXoaNy59IiKCAqksmQEo"
-}
-```
-
-Canonicalization: `htu` and the §3.1 exchange audience both build on
-the registry's advertised **public origin** — the origin of §5.5's
-`token_endpoint`: lowercase scheme and host, default ports omitted, no
-path or trailing slash on the origin itself. `htu` appends the exact
-route path as written in §5, with no query, fragment, or
-percent-encoding changes. A registry deployed behind a proxy MUST
-compare against its public origin, never the server-observed URI.
-
-v1 pins the proof algorithm: `alg` MUST be `EdDSA` (Ed25519), matching
-the device-key suite; any other value MUST be rejected. Algorithm
-agility (including post-quantum migration) is deliberately deferred to
-a future proof `typ` version, coordinated with the protocol-wide
-signature-suite review.
-
-The semantics deliberately mirror RFC 9449 (DPoP), with one difference:
-the proof key is not an ephemeral DPoP key but the config cert's device
-key, so no separate key registration or `jkt` binding step exists — the
-binding was established cryptographically by the token exchange. The
-`typ` value provides domain separation from every other JWS in the
-protocol (core §4's `typ` rule); a proof whose `typ` is anything else
-MUST be rejected.
-
-Verification order per call: token exists and is unexpired → proof
-signature verifies against the token's bound public key → `typ`, `htm`,
-`htu`, `iat` window, `jti` replay, `ath` all check → bound config cert
-status ref checked fail-closed → scope covers the endpoint. Any failure
-⇒ reject — fail-closed; §7 gives the error shapes.
+The same shape serves as **possession proof**: where §5.6 requires
+proof that the caller holds a cert's key, the proof is this exact JWS —
+same `typ`, no `ath` — signed by that cert's key. Possession proofs
+travel in the body, so they cannot carry `bh`; instead every proof in a
+request MUST carry the header proof's `jti`, binding the set to one
+envelope; the per-key replay cache makes each single-use.
 
 ### 3.3 Relationship to the cookie lane
 
-The existing browser surface (`/wsapi/*` with session cookie + `csrf`
-body field) remains, unchanged, as a second consumer of the same
-registry role. `POST /wsapi/auth_with_presentation` and
-`POST /api/v1/token` are siblings: same input credential, same
-validation bar, different session shape. Nothing in this spec retires
-the cookie lane; §9 maps its endpoints onto this API so the two stay
-semantically identical.
-
-One planned alignment runs the other way: the cookie lane will adopt
-this spec's §3.1 scope requirement — `auth_with_presentation` demanding
-the `registry` scope on broker-audience warrants before minting a
-session — so the two lanes converge on an identical bar rather than
-"token lane stricter". Migration is tracked in bean `ig9p`; until it
-completes, the cookie lane accepting scopeless presentations is a
-documented legacy allowance, not a conformance target.
+The `/wsapi/*` cookie+csrf surface remains a second consumer of the
+same registry role; §9 maps it. Planned convergence: the cookie lane
+adopts §3.1's scope requirement (bean `ig9p`); until then its accepting
+scopeless presentations is a documented legacy allowance.
 
 ## 4. Common conventions
 
-- All bodies are JSON, UTF-8, `Content-Type: application/json`.
-- Success responses use the field shapes given per endpoint. The legacy
-  `success: true` boolean is dropped in this API: HTTP status codes carry
-  success/failure, errors use the §7 envelope, and a redundant boolean
-  invites drift between the two signals.
-- Mutations whose success carries no data return `204 No Content`.
-  Mutations with response fields return `200` with a JSON body; fields
-  marked OPTIONAL may be absent entirely (never `null`).
-- Unknown fields in requests MUST be rejected; unknown fields in
-  responses MUST be ignored by clients (additive evolution, §8).
-- GET endpoints are pure — no state changes, not even bookkeeping. Where
-  the legacy lane hid mutations inside a GET (§9 notes), this API moves
-  them to explicit POSTs.
-- Timestamps are RFC 3339 UTC strings; the JWS claims keep their core
-  epoch-seconds convention.
-- No pagination in v1 (registry collections are small); the response
-  shapes leave room to add it additively.
+- Bodies are JSON, UTF-8. No `success: true` — status codes carry
+  success, §7 the errors.
+- Data-free mutations return `204`; others `200` + JSON. OPTIONAL
+  fields are absent, never `null`.
+- Unknown request fields MUST be rejected; unknown response fields MUST
+  be ignored (additive evolution, §8).
+- GETs are pure — legacy hidden-GET mutations became explicit POSTs (§9).
+- Timestamps: RFC 3339 UTC; JWS claims keep epoch seconds.
+- No pagination in v1; response shapes leave room to add it.
 
 ## 5. Endpoints
 
-All endpoints in this section require §3 authentication with scope
-`registry` unless stated. Field tables and wire examples below are
-normative for shape; example values are illustrative.
+Everything here requires §3 token auth with scope `registry`, except
+§5.6 (cert-authenticated) and where stated. Field lists are normative;
+example values illustrative.
 
 ### 5.1 Consent inbox
 
-**`GET /api/v1/requests`** — the account's open consent requests.
-Replaces `GET /wsapi/warrant_requests`, minus that endpoint's hidden
-side effect (claiming a code-named record request and allocating its
-status indexes) — that claim step is a distinct POST, below.
-
-Response: `{ "status_uri": "...", "requests": [PendingRequest, ...] }`.
-`status_uri` is this registry's status-list URI — the `uri` half of the
-status refs the client embeds in the warrants it signs (each grant's
-`status_idx` supplies the `idx` half). `PendingRequest` carries the
-same fields as today's
-`PendingRequestInfo`: `code`, `delegator_email`, `agent_email`,
-`holder`, `label`, `grantor` (`"*"` = approver chooses), `message?`,
-`display_name?`, `agent_created_at?`, `known`, `grants` (each
-`{audience, scopes, status_idx?, grantee?}`), `external`, `kind`
-(`"agent" | "connection" | "authoring"`), `client_host?`,
+**`GET /api/v1/requests`** — open consent requests. Response:
+`{ "status_uri": …, "requests": [ … ] }`. `status_uri` is the registry's
+status-list URI — the `uri` half of the refs the client embeds in
+warrants it signs (each grant's `status_idx` is the `idx` half).
+Request items carry `code`, `delegator_email`, `agent_email`, `holder`,
+`label`, `grantor` (`"*"` = approver chooses), `message?`,
+`display_name?`, `agent_created_at?`, `known`, `grants`
+(`{audience, scopes, status_idx?, grantee?}`), `external`, `kind`
+(`"agent" | "connection" | "authoring" | "notice"`), `client_host?`,
 `client_name?`, `binding_id?`, `created_at`, `expires_at`.
 
-```json
-{
-  "status_uri": "https://registry.example/.well-known/browserid-status",
-  "requests": [
-    {
-      "code": "wr_7f2c…",
-      "delegator_email": "dan@example.com",
-      "agent_email": "cal-agent@agents.example",
-      "holder": "agents-9x1k…",
-      "label": "Calendar agent",
-      "grantor": "*",
-      "known": true,
-      "grants": [
-        { "audience": "https://cal.example", "scopes": ["events:read"], "status_idx": 168 }
-      ],
-      "external": false,
-      "kind": "agent",
-      "created_at": "2026-08-28T17:02:11Z",
-      "expires_at": "2026-08-28T17:17:11Z"
-    }
-  ]
-}
-```
+External requests (`external: true`) are returned only when their
+`code` is passed (`?code=`) — visibility rides the 15-minute capability
+code the redirect delivered; keep query strings out of logs. OPTIONAL
+long-poll hint `?wait=<seconds>` (cap 60); answering immediately is
+conformant. `kind: "notice"` items (§5.6.3) are informational: no
+respond action, they expire on their own.
 
-External requests (`external: true`) are only returned when the request
-`code` is passed explicitly (`?code=`) — visibility is tied to holding
-the code the redirect delivered. Request codes are short-lived
-(15-minute) capability strings; deployments SHOULD keep query strings
-out of access logs.
+**`POST /api/v1/requests/claim`** — `{ "code": … }`. Claims a pending
+record request and allocates status indexes into its grants (the legacy
+GET's hidden side effect, made explicit). Returns the claimed request.
+Precondition: the request's core §7.5 audience proof MUST validate at
+claim time (fresh fetch RECOMMENDED; else `422 audience_unproven`).
+Idempotent per account; claimed by another account ⇒ `404`.
 
-The endpoint supports long-polling as an OPTIONAL hint: `?wait=<seconds>`
-asks the server to hold the request until the inbox changes or the wait
-expires (servers SHOULD cap it; RECOMMENDED cap 60), then respond
-normally. A server that answers immediately, ignoring `wait`, is
-conformant; clients MUST treat an immediate response as valid and
-SHOULD back off between polls either way.
-
-**`POST /api/v1/requests/claim`** — `{ "code": "..." }`. Claims a
-pending record request for this account and allocates status indexes
-into its grants (the legacy GET's side effect, made explicit). Returns
-`200` with the claimed request in the §5.1 item shape. Precondition,
-carried over from the legacy lane: the request's audience proof
-(core §7.5 — the document at
-`https://<audience-origin>/.well-known/browserid-audience-proof/<request_id>`)
-MUST validate at claim time — a fresh fetch is RECOMMENDED; an
-unproven request is not claimable (`422`, machine reason
-`audience_unproven`). Claiming is idempotent for the same account; a
-request already claimed by another account is `404`.
-
-**`POST /api/v1/requests/respond`** — approve or deny. Replaces
-`POST /wsapi/warrant_respond`; identical semantics minus `csrf`.
+**`POST /api/v1/requests/respond`** — approve or deny:
 
 ```json
-{
-  "code": "...",
-  "approve": true,
-  "warrants": ["<warrant JWS>", "..."],
-  "config_cert": "<config cert JWS>",
-  "grantor": "dan@example.com"
-}
+{ "code": "…", "approve": true, "warrants": ["<JWS>", …],
+  "config_cert": "<JWS>", "grantor": "dan@example.com" }
 ```
 
-| Field | Meaning |
-|---|---|
-| `code` | REQUIRED. The pending request. Must belong to this account. |
-| `approve` | REQUIRED. `false` = deny (all other fields absent). |
-| `warrants` | REQUIRED on approve. One client-signed warrant JWS per grant, in grant order — all-or-nothing. |
-| `config_cert` | REQUIRED on approve. The config cert whose key signed the warrants. |
-| `grantor` | OPTIONAL. Defaults to the agent itself; a named grantor must be an identity this account owns, and must equal the request's pinned grantor when one is set. |
+Deny: just `code` + `approve: false`. Approve: one client-signed
+warrant per grant, in order, all-or-nothing; `config_cert` signed them;
+`grantor` (OPTIONAL, default the agent itself) must be an account
+identity matching the request's pin if set.
 
-The registry MUST validate exactly as the browser lane does (the
-`validate_grant_warrants` bar): count matches grants; config cert parses,
-is `purpose: authorization`, unexpired, and authorizes the grantor; each
-warrant verifies against the config cert key, matches its grant's
-`audience`, `grantor`, `grantee`, is holder-bound (connection-bound
-records rejected) with a non-wildcard matcher matching the agent's
-holder, and — when the grant carries a `status_idx` — embeds exactly the
-registry's `{uri, idx}` status ref. On approve, per grant: the registry stores the delivery string
-`{warrant}~{config_cert}` for single pickup by the requester's core
-§7.5 poll, and upserts one warrant record into the §5.2 registry.
-Validation failures are `422` with a §7.1 machine reason.
+Validation MUST equal the browser lane's bar; §7.1's `invalid_warrant`
+reasons, in order, ARE the checks. On approve, per grant: store the
+delivery string `{warrant}~{config_cert}` for single pickup by the
+requester's core §7.5 poll, and upsert a §5.2 warrant record.
 
-The inbox also carries actionless `kind: "notice"` items (§5.6.2 — an
-identity claimed away by its current owner): informational, no respond
-action, expiring on their own.
+That bar covers `kind: "agent"`. The other kinds carry **admission
+records** (core §6.4) per core §7.5: `"connection"` — each record a
+connection-bound self-grant (`grantor == grantee`, the approver)
+embedding the request's broker-minted `binding.id`; `"authoring"` —
+each record matching its grant's `grantee` matcher, audience, and
+scopes, approver as grantor. All are client-signed with the account's
+config-cert key; the registry records consent, it cannot manufacture it.
 
-The bar above applies to `kind: "agent"` requests, whose approval signs
-presentation warrants. The other kinds carry **admission records**
-(core §6.4), and their per-kind bar follows core §7.5: for
-`"connection"`, each signed record MUST be a connection-bound
-self-grant — `grantor == grantee`, the approver's identity — embedding
-exactly the request's broker-minted `binding.id` (core §6.6
-invariant 5); for `"authoring"`, each record MUST match its requested
-grant's `grantee` matcher, audience, and scopes, with the approver as
-grantor. In every kind the records are signed client-side with the
-account's config-cert key and validated against the pending request;
-the §7.1 machine reasons apply across kinds.
-
-Response: always `200` with a JSON body — `{ "return_url":
-"https://cal.example/connected" }` when the original request carried a
-return URL, `{}` otherwise (including every deny).
-
-This endpoint is the consent invariant, restated: approval requires
-warrants signed by the account's own config-cert key — the registry
-records consent, it cannot manufacture it. Whether a human was actually
-in the loop is the user agent's obligation (principle 8); that was
-equally true of the browser page, which held the same keys.
+Response: `200`, `{ "return_url": … }` when the request carried one,
+else `{}` (including every deny).
 
 ### 5.2 Warrant registry
 
-**`GET /api/v1/warrants`** — the account's registered warrants.
-Replaces `GET /wsapi/warrants`. Response items carry today's
-`WarrantInfo` fields: `id`, `delegator_email`, `agent_email`,
-`audience`, `scopes`, `warrant` (JWS), `status_idx?`, `revoked`
-(computed live from the status bit), `holder?`, `config_cert?`,
-`binding_id?`, `client_host?`, `client_name?`, `requester_origin?`,
-`signed_at`, `expires_at`.
+**`GET /api/v1/warrants`** — registered warrants. Items carry `id`,
+`delegator_email`, `agent_email`, `audience`, `scopes`, `warrant`
+(JWS), `status_idx?`, `revoked` (computed live from the bit),
+`holder?`, `config_cert?`, `binding_id?`, `client_host?`,
+`client_name?`, `requester_origin?`, `signed_at`, `expires_at`.
 
-```json
-{
-  "warrants": [
-    {
-      "id": 42,
-      "delegator_email": "dan@example.com",
-      "agent_email": "cal-agent@agents.example",
-      "audience": "https://cal.example",
-      "scopes": ["events:read"],
-      "warrant": "eyJhbGciOiJFZERTQSIsInR5cCI6ImJyb3dzZXJpZC13YXJyYW50LXYyIn0…",
-      "status_idx": 168,
-      "revoked": false,
-      "holder": "agents-9x1k…",
-      "signed_at": "2026-08-28T17:05:40Z",
-      "expires_at": "2026-09-27T17:05:40Z"
-    }
-  ]
-}
-```
-
-**`POST /api/v1/warrants/register`** — record an externally-minted
-warrant `{ "warrant": "<JWS>", "config_cert": "<JWS>" }` → `204`. The
-warrant MUST verify against the config-cert key, the config cert MUST
-be `purpose: authorization` and authorize the warrant's `grantor`, and
-the grantor MUST be an identity this account owns. Status-ref
-reconciliation: a ref naming this registry's own list is re-derived
-from the grant identity — on match the bit is reactivated, on mismatch
-the row is recorded with no index (and the discrepancy SHOULD be
-logged); a ref naming a foreign list is recorded with no index (this
-registry cannot flip foreign bits). Validation failures are `422` with
-a §7.1 machine reason.
+**`POST /api/v1/warrants/register`** —
+`{ "warrant": "<JWS>", "config_cert": "<JWS>" }` → `204`. The warrant
+MUST verify against the config-cert key; the cert MUST be
+`purpose: authorization` and authorize the grantor; the grantor MUST be
+an account identity. Status-ref reconciliation: a ref on this
+registry's own list is re-derived from the grant identity — match ⇒
+bit reactivated; mismatch ⇒ recorded with no index (log the
+discrepancy); foreign ref ⇒ recorded with no index.
 
 **`POST /api/v1/warrants/revoke`** — `{ "id": 42 }` → `204`. Flips the
-warrant's status bit (sticky; revocation is never undone by this API —
-re-registering a warrant is the reactivation path). A warrant without a
-status ref cannot be revoked: `409`, machine reason `no_status_ref`
-(the remedy is reissuing the warrant with an allocated ref).
+status bit, sticky (re-registering is the reactivation path). No status
+ref ⇒ `409 no_status_ref` (remedy: reissue with an allocated ref).
 
-**`POST /api/v1/warrants/forget`** — `{ "id": 123 }`. Deletes the
-registry row **without revoking** — the signed warrant remains valid to
-expiry. Legitimate uses exist (expired rows; warrants with no status
-ref; warrants whose revocation authority is foreign and unreachable);
-whether the destructive case — unexpired *and* revocable — should be
-server-guarded is tracked in bean `d51o`. Returns `204`.
+**`POST /api/v1/warrants/forget`** — `{ "id": 123 }` → `204`. Deletes
+the row **without revoking** — the signed warrant stays valid to
+expiry. Legitimate for expired/ref-less/foreign-authority rows;
+guard-rails for the destructive case: bean `d51o`.
 
-**`POST /api/v1/warrants/allocate_status`** — allocate (idempotently)
-the stable status ref for a grant before signing it. Replaces
-`/wsapi/allocate_warrant_status`; this is what lets a wallet mint login
-warrants **with** per-site revocation bits (closing the prototype gap).
-The allocation is stable per `(account, agent_email, audience, scopes)`
-— repeated calls return the same ref, and `scopes` is an
-order-insensitive set for allocation identity. `audience` MUST be non-empty,
-contain no `*`, no whitespace or control characters, and be at most 512
-bytes.
-
-```json
-{ "agent_email": "dan@example.com", "audience": "https://cal.example", "scopes": [] }
-```
-
-→ `200`:
-
-```json
-{ "uri": "https://registry.example/.well-known/browserid-status", "idx": 171 }
-```
+**`POST /api/v1/warrants/allocate_status`** —
+`{ "agent_email", "audience", "scopes" }` →
+`{ "uri", "idx" }`. Idempotent and stable per
+`(account, agent_email, audience, scopes-as-set)` — this is what lets a
+wallet mint login warrants *with* per-site revocation bits. `audience`:
+non-empty, no `*`, no whitespace/control characters, ≤512 bytes.
 
 ### 5.3 Devices
 
-**`GET /api/v1/devices`** — the account's device certs
-(`/wsapi/device_certs`): `id`, `identities`, `purpose`, `holder`,
-`pubkey`, `iss`, `issued_at`, `expires_at`, `revoked`.
+**`GET /api/v1/devices`** — the account's device certs: `id`,
+`identities`, `purpose`, `holder`, `pubkey`, `iss`, `issued_at`,
+`expires_at`, `revoked`.
 
-```json
-{
-  "certs": [
-    {
-      "id": 7,
-      "identities": ["dan@example.com"],
-      "purpose": "authorization",
-      "holder": "browsers-t5da…",
-      "pubkey": "4c1Yl0…",
-      "iss": "example.com",
-      "issued_at": "2026-08-01T09:12:00Z",
-      "expires_at": "2026-11-01T09:12:00Z",
-      "revoked": false
-    }
-  ]
-}
-```
+Recording certs is not a separate endpoint: wallets record newly issued
+certs with §5.6 `attach`, whether the identity is new to the account or
+already on it. Issuer-side recording is an internal convenience wallets
+MUST NOT rely on.
 
-**`POST /api/v1/devices/register`** — record a newly issued device pair:
+**`POST /api/v1/devices/revoke`** — `{ "id": 7 }` → `200`
+`{ "revoked": bool }`. Owner-scoped. When this registry is the cert's
+revocation authority (`iss` is its domain) it flips the bit — sticky.
+For a foreign issuer it hides the cert but MUST answer
+`{ "revoked": false }` so the client routes revocation to the issuing
+authority. Self-revocation is allowed, not special-cased.
 
-```json
-{ "device_cert": "<JWS>", "config_cert": "<JWS>" }
-```
-
-→ `204`. The registration half of issuance (fallback-IdP spec §4):
-issuance yields certs, and the wallet records them here at its configured
-registry. This is the token lane's only device-adding write — the §3.1
-exchange itself records nothing, and issuer-side recording is an internal
-convenience wallets MUST NOT rely on. The registry MUST verify, and
-reject otherwise:
-
-- Both certs parse as device certs (core §4.3); `device_cert` is
-  `purpose: authentication`, `config_cert` is `purpose: authorization`;
-  both are unexpired; and every status ref either carries checks
-  unrevoked, fail-closed (core §6.3 — uncheckable ⇒ revoked).
-- Both verify against an issuer the registry accepts for their identity:
-  for a domain that publishes an IdP, the domain's own DNSSEC-resolved
-  key (core §3); for a domain that does not, a fallback issuer in the
-  **registry operator's configured accepted-fallback set** — the
-  registry-side mirror of the RP-side acceptance rule (core §8.1). The
-  reference registry's default set is its own domain. A cert whose
-  signature verifies but whose issuer is outside the accepted set is
-  refused, not recorded.
-- Every concrete (non-wildcard) identity on the pair is an identity the
-  token's account owns (§3.1 resolution).
-- Both certs name the same holder, and the config cert is the one the
-  token is bound to (public-key match) — so registration is covered by
-  the exchange's verification of that cert, and this endpoint's explicit
-  verification covers the sibling `device_cert` the exchange never
-  parses.
-- The named holder has not been moved (§5.4 `holders/move`): registering
-  onto a moved holder is refused (`409`, reason `holder_moved`) rather
-  than resurrecting the old row — the client consults
-  `holders/assignment` and re-issues under the new holder.
-
-Validation failures are `422` with a §7.1 machine reason. Idempotent:
-matched on cert public key, re-registering an already-recorded device is
-a no-op success. The registry MAY derive a default label for a
-newly seen holder from observable client metadata (e.g. `User-Agent`),
-as the cookie lane does.
-
-**`POST /api/v1/devices/revoke`** — `{ "id": 7 }` → `200` with
-`{ "revoked": true }`. Owner-scoped. When this registry is the cert's
-revocation authority (the cert's `iss` is this registry's domain), it
-flips the status bit — sticky, never un-set. When the issuer is
-foreign, the registry hides the cert from its listings but **cannot
-revoke it**, and MUST say so: `{ "revoked": false }`, so the client can
-route revocation to the issuing authority instead of believing the
-cert dead. A device MAY revoke itself; the registry MUST NOT
-special-case that (the token dies with the cert on its next check).
-
-**`GET /api/v1/devices/status?id=7`** — `{ "state": "revoked" |
-"active" | "unknown" }`, owner-scoped (`/wsapi/cert_revocation_status`).
-`unknown` means the cert carries no status ref. For foreign-issued
-certs this performs a fresh fetch of the issuer's signed list — a
-network side effect, but not a state change (§4's pure-GET rule refers
-to registry state).
+**`GET /api/v1/devices/status?id=7`** —
+`{ "state": "revoked" | "active" | "unknown" }` (`unknown` = no status
+ref). Foreign certs get a fresh fetch of the issuer's list — a network
+side effect, not a state change.
 
 ### 5.4 Holders and namespaces
 
-Same shapes as the legacy lane minus `csrf`:
+| Endpoint | Request → response |
+|---|---|
+| `GET /api/v1/holders` | → `{ namespaces: […], holders_without_namespace: […] }`. Namespace: `name`, `prefix`, `label`, `holders`. Holder: `holder_id`, `label`, `trust` (`"trusted" | "login-only"`), `cert_count`, `issued_at?`, `warrant_count`, `revoked`, `external`, `identities`, `moving_to?`. |
+| `POST /api/v1/holders/rename` | `{ holder_id, label }` |
+| `POST /api/v1/holders/move` | `{ holder_id, namespace }` → `{ new_holder }`. Destructive up-front: revokes every cert on the old holder (bits flipped), records old → new for `holders/assignment`, carries the label. |
+| `POST /api/v1/holders/forget` | `{ holder_id }` → `{ unrevocable: [issuer, …] }`. Revokes-then-deletes; lists issuers it couldn't revoke at. |
+| `GET /api/v1/holders/assignment?holder=` | → `{ status: "current" | "moved", new_holder? }` |
+| `POST /api/v1/namespaces/create` | `{ name, label? }` |
+| `POST /api/v1/namespaces/rename` | `{ name, label }` |
+| `POST /api/v1/namespaces/delete` | `{ name }`. Refused while it has holders (`409 namespace_not_empty`). |
 
-| Endpoint | Replaces | Request → response |
-|---|---|---|
-| `GET /api/v1/holders` | `/wsapi/holders` | → `{ namespaces: [...], holders_without_namespace: [...] }` (today's `NamespaceView` / `HolderView` fields) |
-| `POST /api/v1/holders/rename` | `/wsapi/rename_holder` | `{ holder_id, label }` |
-| `POST /api/v1/holders/move` | `/wsapi/move_holder` | `{ holder_id, namespace }` → `{ new_holder }`. Destructive and up-front: revokes every cert on the old holder and flips each status bit, records the move (old → new) for `holders/assignment` resolution, and carries the label to the new holder. |
-| `POST /api/v1/holders/forget` | `/wsapi/forget_holder` | `{ holder_id }` → `{ unrevocable: [issuer, ...] }`. Revokes-then-deletes; lists issuers it couldn't revoke at. |
-| `GET /api/v1/holders/assignment?holder=` | `/wsapi/holder_assignment` | → `{ status, new_holder? }`; `status` is `"current"` or `"moved"`, `new_holder` present only when moved. |
-| `POST /api/v1/namespaces/create` | `/wsapi/create_namespace` | `{ name, label? }` |
-| `POST /api/v1/namespaces/rename` | `/wsapi/rename_namespace` | `{ name, label }` |
-| `POST /api/v1/namespaces/delete` | `/wsapi/delete_namespace` | `{ name }`. Refused while the namespace has holders. |
-
-`GET /api/v1/holders` response example. Namespace fields: `name`,
-`prefix`, `label`, `holders`. Holder fields: `holder_id`, `label`,
-`trust` (`"trusted" | "login-only"`), `cert_count`, `issued_at?`,
-`warrant_count`, `revoked`, `external`, `identities`, `moving_to?`:
-
-```json
-{
-  "namespaces": [
-    {
-      "name": "browsers",
-      "prefix": "browsers-",
-      "label": "Browsers",
-      "holders": [
-        {
-          "holder_id": "browsers-t5da…",
-          "label": "Menubar Wallet",
-          "trust": "trusted",
-          "cert_count": 2,
-          "issued_at": "2026-08-01T09:12:00Z",
-          "warrant_count": 3,
-          "revoked": false,
-          "external": false,
-          "identities": ["dan@example.com"]
-        }
-      ]
-    }
-  ],
-  "holders_without_namespace": []
-}
-```
-
-Normative validation rules (unified from the legacy lane's two slightly
-divergent grammars — implementations SHOULD additionally accept legacy
-names that predate this spec):
-
-- **Namespace name**: lowercased and trimmed, then MUST match
-  `^[a-z][a-z0-9_-]{0,31}$`.
-- **Label** (holder, namespace): 1–64 Unicode characters, single line
-  (no CR, LF, or other control characters).
-- **Ownership scoping**: a holder is addressable only if it appears on
-  one of the account's device certs; a namespace only if the account
-  owns it. Violations are `404` (§7, no existence leaks).
-- **`move_holder` preconditions**: the holder MUST NOT be external
-  (empty `pubkey`) and MUST NOT already be in the target namespace
-  (`409`, machine reasons `external_holder` / `already_in_namespace`).
+Validation: namespace `name` lowercased/trimmed, then
+`^[a-z][a-z0-9_-]{0,31}$`; labels 1–64 Unicode chars, single line;
+holders/namespaces addressable only when on the account (`404`, no
+existence leaks); `move` refuses external holders and same-namespace
+moves (`409`: `external_holder` / `already_in_namespace`).
+Implementations SHOULD also accept legacy names predating this spec.
 
 ### 5.5 Discovery
 
-Registry discovery rides the existing support document — **`GET
-/.well-known/browserid`** (core §3.1) — as a new top-level `registry`
-object. There is exactly one discovery document per origin: a service
-sets the keys for the roles it serves and omits the rest. An IdP that
-is not a registry has no `registry` key; a standalone registry serves
-the document with *only* the `registry` key; the hosted broker serves
-both. Clients MUST treat a missing `registry` key as "this origin does
-not serve the registry API" and MUST ignore keys they don't recognize.
-
-```json
-{
-  "authentication": "/auth",
-  "provisioning": "/provision",
-  "registry": {
-    "version": "v1",
-    "token_endpoint": "https://registry.example/api/v1/token",
-    "status_list": "https://registry.example/.well-known/browserid-status",
-    "browser": {}
-  }
-}
-```
+A new top-level `registry` object in the existing support document,
+**`GET /.well-known/browserid`** (core §3.1). One document per origin;
+serve the keys for the roles you play. A missing `registry` key means
+"no registry API here"; unknown keys MUST be ignored (this rule is
+hereby explicit for the whole document).
 
 | Key (under `registry`) | Meaning |
 |---|---|
 | `version` | REQUIRED. Highest API version served. |
-| `token_endpoint` | REQUIRED. Absolute URL of §3.1. MUST be same-origin with the document that advertises it — a support document naming an off-origin token endpoint MUST be rejected (a rogue document must not be able to redirect presentation submission elsewhere). |
-| `status_list` | REQUIRED. This registry's signed status list (core §6.3), same-origin like `token_endpoint`. Advertisement only — verifiers reach the list through the `uri` inside each status ref, never through discovery; the list itself remains a separate signed artifact, not metadata. |
-| `browser` | REQUIRED (may be empty). Browser-ceremony URLs a native wallet opens for flows it cannot perform natively. Keys are defined by the fallback-IdP spec; v1 defines `account` (the account-management page). Issuer ceremonies (sign-in, password reset, recovery) live behind the issuer's `device-authorization` page, not here. |
+| `token_endpoint` | REQUIRED. Absolute URL of §3.1; MUST be same-origin with the advertising document. |
+| `status_list` | REQUIRED. The registry's signed status list (core §6.3), same-origin. Advertisement only — verifiers reach lists through each status ref's `uri`, never discovery. |
+| `browser` | REQUIRED (may be empty). Browser-ceremony URLs for flows a native wallet can't do natively; keys defined by the fallback-IdP spec (v1: `account`). |
 
-The support document carries no key material (core §3.1: an IdP's key
-comes solely from DNSSEC); the `registry` object follows the same rule.
-This section amends core §3.1 additively, and makes explicit a rule
-core §3.1 leaves unstated: clients MUST ignore support-document keys
-they do not recognize.
+No key material here (core §3.1: keys come solely from DNSSEC).
 
 ### 5.6 Account membership
 
-Which identities one account owns is registry business; the
-credentials that prove them (passwords, mailbox codes, bridge proofs)
-are the issuer's and never appear on this API. Two rules govern every
-operation here:
+Which identities an account owns is registry business; the credentials
+proving them (passwords, mailbox codes, bridge proofs) are the issuer's
+and never appear here. Two rules:
 
-1. **Membership changes are completed by a client-signed membership
-   record (§5.6.4), never by a token alone.** The registry records
-   consent, it never manufactures it — §5.1's invariant. The record is
-   signed by the wallet with an account config key and travels inline
-   with the call, so no extra user interaction exists: the user's
-   gesture was running the new identity's issuance ceremony in the
-   first place (matching the cookie lane, where session + mailbox code
-   adds the address with no further question).
-2. **Ownership follows the identity's voucher.** Fresh issuer-attested
-   certs for an identity are proof of *current* ownership; an account
-   that used to hold the identity is **notified, never asked** (Persona
-   per-email semantics, carried from the reference implementation).
+1. **Requests are self-authenticating.** No token: a call carries
+   device certs plus possession proofs (§3.2), proving both who asks
+   (the routing cert's account) and that the caller holds every cert it
+   names. The header proof's `bh` signs the exact payload — the call is
+   its own consent artifact.
+2. **Ownership follows the identity's voucher.** Freshly issued certs
+   prove *current* ownership; an account that used to hold the identity
+   is notified, never asked.
 
-#### 5.6.1 Attach — `POST /api/v1/account/attach`
+#### 5.6.1 The flows
 
-```json
-{ "device_cert": "<JWS>", "config_cert": "<JWS>", "record": "<JWS>" }
-```
+**A. Bootstrap.** Issuer ceremony for dan@example.com → auth + config
+cert. `attach` with both, proof signed by the new config key: no
+account owns the identity, a config cert for it is present → account
+created. Then §3.1 → token.
 
-→ `204`. Synchronous. The caller's token is the **anchor**: minted
-from a pair for an identity the account already owns. The submitted
-pair — obtained from the new identity's issuer via its
-device-authorization page — is verified to the full §5.3
-`devices/register` bar (`422 invalid_cert` otherwise); `record` is a
-§5.6.4 membership record with `action: "attach"`, signed by any of the
-account's config keys (the anchor's own key is fine — the same device
-that asks may consent, matching the cookie lane's bar). On success the
-identity joins the account and the pair is recorded with full §5.3
-semantics (healing, labels, idempotent). Re-attaching an identity the
-account already owns is a no-op success.
+**B. Add a device — including auth-only.** A second machine (say a
+shared computer deliberately issued only a short-lived auth cert)
+attaches its own cert, signed by its own key. Identity already on the
+account → recorded: on the device list, revocable later. Recording
+grants nothing (certs work at RPs regardless of registry rows), so
+auth-cert possession suffices.
 
-First-ever bootstrap is unchanged: the §3.1 exchange creates a fresh
-account for a never-seen identity. Attach exists to join an existing
-one.
+**C. Add or take an identity.** Ceremony for vthunder@gmail.com, then
+`attach` with the fresh certs, signed by a **config** cert of the
+destination account. If another account owns the identity, the §5.6.3
+transfer effects run first, atomically; the response is identical
+either way (no existence leak).
 
-#### 5.6.2 Transfer: attach of an identity owned elsewhere
+**D. Detach** (§5.6.4) — remove an identity; config-signed.
 
-Same call — the difference is in the effects. When the identity sits
-on another account (the prover holds fresh issuer certs, so they own
-the email *now*), the attach additionally runs, atomically, before the
-join:
-
-- The losing account's device certs naming the identity, where this
-  registry is their revocation authority, are revoked — status bits
-  flipped, scoped precisely to that (account, identity) pair — and its
-  warrants with that identity as grantor are revoked. Tokens bound to
-  the revoked certs die fail-closed on next use.
-- The losing account's **derived agent identities of the departed
-  parent are revoked and dropped** with it — sub-addresses of an
-  identity the account no longer owns must not remain operable (their
-  certs revoked, their warrants revoked, their rows removed). They are
-  NOT transferred: the winning account provisions its own agents.
-- The losing account receives a `kind: "notice"` inbox item naming the
-  identity, and the registry SHOULD notify its remaining addresses
-  out-of-band. The previous owner cannot prevent the transfer; the
-  registry's obligation is immediate visibility.
-- If that was the losing account's last identity, the account is
-  deleted (remaining devices and warrants revoked, then dropped).
-
-The response is identical whether or not another account held the
-identity — no existence leak; the caller cannot distinguish attach
-from transfer.
-
-Note the mailbox fence is upstream: the reference fallback issues
-certs for a mailbox-verified address only under a session that owns
-it, so inbox control alone cannot produce the pair this flow needs —
-entry into a password-backed account remains its reset ceremony.
-
-**Deployment note (shared-table registries).** Registry membership is
-not recovery eligibility. In a deployment whose registry and
-fallback-IdP roles share an account table (the reference broker), an
-address added through this API becomes a candidate password-reset
-channel at the issuer — which converts registry-scope access into
-control of the account shell. The blast radius is bounded (the reset
-fence unverifies sibling mailbox addresses; primaries and bridges need
-proofs the attacker lacks), so this is a recoverable
-denial-of-service, not identity takeover — but deployments SHOULD
-fence it, e.g. by excluding newly added addresses from reset
-eligibility until the issuer's own ceremony blesses them. Mitigation
-design is tracked in bean dksx; note a compromised *existing* address
-is the same channel, so new-address fencing alone is not sufficient.
-
-#### 5.6.3 Detach — `POST /api/v1/account/detach`
+#### 5.6.2 Attach — `POST /api/v1/account/attach`
 
 ```json
-{ "identity": "...", "record": "<JWS>" }
+{ "certs": [ { "cert": "<JWS>", "proof": "<JWS>" }, … ] }
 ```
 
-→ `204`. Synchronous; `record` carries `action: "detach"`. The
-registry revokes the identity's device certs it is authority for,
-revokes its grantor warrants, revokes-and-drops its derived agent
-identities, then removes it. Refusals (`409`): `last_identity` (detach
-has no destination; whole-account deletion is the issuer's
-`account_cancel` ceremony), `has_derived_identities` is NOT one —
-children go with the parent, mirroring §5.6.2.
+→ `204`. Cert-authenticated. The header proof (§3.2, no `ath`, `bh`
+REQUIRED) MUST verify against exactly one array cert — the **routing
+cert**; the call targets the account owning its identity. Each `proof`
+is a possession proof (§3.2: same shape, that cert's key, the header
+proof's `jti`).
 
-#### 5.6.4 The membership record
+Every cert MUST pass the **validity bar** — §7.1's `invalid_cert`
+reasons, in order, are its checks — and its holder must not be moved
+(§5.4; `409 holder_moved`). Then, per cert, by identity:
+
+- **Already owned by the target account** → recorded: idempotent on
+  pubkey, holder healing, default labels (§5.3).
+- **Not owned** (new, or owned elsewhere) → **membership change**: the
+  identity joins the account. Requires (i) the routing cert is a config
+  cert — membership is an authorization act; auth-signed requests only
+  record (`422 config_required`) — and (ii) joining certs freshly
+  issued, `iat` within 300s (`422 cert_not_fresh`): wallets attach
+  right after the ceremony; stolen-but-unexpired cert bytes fail.
+
+**Creation.** No account owns the routing identity → created, only if
+the array includes a config cert *for that identity* (a first cert must
+be a config cert or the account could never authorize anything); else
+`409 no_account`.
+
+Tokenless and expensive to verify, attach carries §3.1's abuse
+controls.
+
+#### 5.6.3 Transfer effects
+
+When a joining identity is owned by another account, atomically before
+the join:
+
+- The losing account's device certs naming the identity — where this
+  registry is their revocation authority — are revoked, scoped to that
+  (account, identity) pair; its warrants with the identity as grantor
+  are revoked. Tokens bound to revoked certs die fail-closed.
+- Its derived agent identities of the departed parent are **revoked and
+  dropped** — never transferred; the winner provisions its own agents.
+- It receives a `kind: "notice"` inbox item naming the identity; the
+  registry SHOULD notify its remaining addresses out-of-band. Notified,
+  never asked.
+- If that was its last identity, the account is deleted (remaining
+  devices and warrants revoked, then dropped).
+
+The mailbox fence is upstream: the reference fallback issues certs for
+a mailbox-verified address only under a session owning it, so inbox
+control alone cannot produce these certs.
+
+**Deployment note.** Where registry and fallback-IdP share an account
+table, an attached address becomes a candidate password-reset channel —
+a recoverable denial-of-service, not takeover. Deployments SHOULD
+exclude newly added addresses from reset eligibility until the issuer's
+own ceremony blesses them (bean dksx).
+
+#### 5.6.4 Detach — `POST /api/v1/account/detach`
 
 ```json
-{ "typ": "browserid-membership-v1",
-  "action": "attach" | "detach",
-  "iat": 0, "exp": 0, "jti": "<unique random>",
-  "grantor": "an identity the account owns",
-  "subject": "the identity being attached / detached",
-  "subject_config_key": "<attach: the new pair's config pubkey; detach: absent>" }
+{ "cert": "<JWS>", "identity": "…" }
 ```
 
-Validated exactly as §5.1 validates signers: the supplied config cert
-parses, is `purpose: authorization`, unexpired and unrevoked, and
-authorizes `grantor`; `grantor` is owned by the token's account;
-`subject` (and, on attach, `subject_config_key`) match the call's
-payload byte-for-byte. `exp - iat` at most 300 seconds; `jti` is
-tracked and a replayed record rejected (`422`, `record_replayed`) —
-one record, one mutation. Failures are `422 invalid_warrant` with the
-§7.1 reasons.
+→ `204`. Header proof signed by `cert`'s key; `cert` MUST be a config
+cert passing the validity bar whose identity the account owns. Revokes
+the identity's device certs this registry is authority for, its grantor
+warrants, revokes-and-drops its derived agent identities, then removes
+it. `409 last_identity`: detach has no destination — whole-account
+deletion is the issuer's `account_cancel` ceremony. Derived children
+are never a refusal; they go with the parent.
 
-Self-issued presentations and this section: the record requirement
-keeps completion client-signed, and nothing here reaches passwords or
-verification (issuer-side, untouched) — the §3.1 per-scope gate holds.
+#### 5.6.5 Warrant fetch — `POST /api/v1/warrants/fetch`
 
-## 6. Out of scope (and why)
+```json
+{ "cert": "<JWS>", "proof": "<JWS>" }
+```
 
-Explicitly **not** in this API:
+→ the registered warrants whose holder matcher covers the cert's
+holder, for the cert's identities, each alongside the config cert
+needed to present it. Possession-authenticated; auth certs accepted —
+the read that lets a device with no config cert use preexisting
+wildcard-holder warrants (e.g. the account's `browsers.*`) with no
+token. It serves only artifacts every RP sees at login. The registry
+SHOULD record a first-seen cert as §5.3 inventory, so any device that
+ever used the account is listed.
 
-- **Issuance** — `stage_email` / signin-code ceremonies, `/device/issue`,
-  `/auth/device_cert`, `/idp/device_cert`. That is the fallback-IdP role;
-  its API is specified separately in this family and shares §3 auth once
-  bootstrapped. The mint-authorization chokepoint is untouched by this
-  spec.
-- **Agent-facing consent lanes** — `/warrant/request`, `/warrant/poll`,
-  `/warrant/record-request`, `/agent-provision/*`: already
-  device-cert-authed or code-authed, already native-friendly, specified
-  in core §7.5. This API is the *approver's* side of the same flows.
-  (Their spec placement, `/api/v1/*` reparenting, and possible adoption
-  of §3-style proofs are under discussion — bean `9mfw`.)
-- **Public surfaces** — `/.well-known/browserid-status`, `/verify`,
-  `/status/check`: unauthenticated by design, specified in core §6.
-- **Credential ceremonies** — password ops, mailbox/bridge
-  verification, `account_cancel`, tenant management, `session_context`:
-  issuer (fallback-IdP) and broker-page concerns. Identity
-  *membership* — which account owns which identity — is in scope
-  (§5.6); the credentials that prove identities never are.
+#### 5.6.6 Auth-only devices
+
+| Capability | Auth-only device |
+|---|---|
+| Mint access certs; log into wildcard-warranted sites | yes — `warrants/fetch`, zero interaction |
+| Appear on the device list; be revoked from the account page later | yes — flow B (cert revocation is the issuer's status bit either way) |
+| Sign warrants; membership changes; token-authed operations | no — no config key: a compromised device cannot escalate |
+
+## 6. Out of scope
+
+- **Issuance** (fallback-IdP role, own spec) — the mint-authorization
+  chokepoint is untouched here.
+- **Agent-facing lanes** (`/warrant/*`, `/agent-provision/*`) — core
+  §7.5; this API is the approver's side. Reparenting: bean `9mfw`.
+- **Public surfaces** (status lists, `/verify`) — unauthenticated by
+  design, core §6.
+- **Credential ceremonies** (passwords, mailbox/bridge verification,
+  `account_cancel`, tenants) — issuer and broker-page concerns.
+  Membership is in scope (§5.6); credentials never are.
 
 ## 7. Errors
 
-Errors follow the core §9 precedent: OAuth-shaped JSON.
+OAuth-shaped JSON, per core §9:
 
 ```json
 { "error": "invalid_proof", "error_description": "jti replayed" }
@@ -823,208 +460,168 @@ Errors follow the core §9 precedent: OAuth-shaped JSON.
 | HTTP | `error` | When |
 |---|---|---|
 | 400 | `invalid_request` | Malformed JSON, missing/unknown fields, grammar violations. |
-| 400 | `invalid_grant` | Token exchange: presentation fails core §6 verification (wrong audience, bad chain, expired, revoked ref). |
-| 401 | `invalid_token` | Missing/expired/revoked token — including a revoked or expired bound config cert (fail-closed). Response carries `WWW-Authenticate: DPoP`. |
-| 401 | `invalid_proof` | Proof missing, wrong `typ`, bad signature, `htm`/`htu` mismatch, stale `iat`, replayed `jti`, `ath` mismatch. |
-| 403 | `insufficient_scope` | Token scope does not cover the endpoint (future-proofing; cannot occur with v1's single scope). |
-| 404 | `not_found` | Owner-scoped lookup misses — including "exists but isn't yours" (no existence leaks). |
-| 409 | `conflict` | State refusals, e.g. deleting a non-empty namespace. |
-| 422 | `invalid_warrant` | Respond, claim, and register: client-signed warrants (or the claim precondition) fail the §5.1/§5.2 validation bar. |
-| 422 | `invalid_cert` | `devices/register`: the submitted cert pair fails the §5.3 validation bar. |
-| 429 | `slow_down` | Rate limits. Responses SHOULD carry `Retry-After`. |
+| 400 | `invalid_grant` | Token exchange: presentation fails core §6 verification, or the identity has no account. |
+| 401 | `invalid_token` | Missing/expired/revoked token — including a revoked or expired bound config cert (fail-closed). Carries `WWW-Authenticate: DPoP`. |
+| 401 | `invalid_proof` | A request or possession proof fails: missing, wrong `typ`, bad signature, `htm`/`htu` mismatch, stale `iat`, replayed `jti`, `ath`/`bh` mismatch, or a §5.6 possession proof whose `jti` differs from the header proof's. |
+| 403 | `insufficient_scope` | Token scope does not cover the endpoint (cannot occur with v1's single scope). |
+| 404 | `not_found` | Owner-scoped lookup misses — including "exists but isn't yours". |
+| 409 | `conflict` | State refusals. |
+| 422 | `invalid_warrant` | Respond, claim, register: client-signed warrants (or the claim precondition) fail the §5.1/§5.2 bar. |
+| 422 | `invalid_cert` | §5.6: a submitted cert fails the validity bar or the membership rules. |
+| 429 | `slow_down` | Rate limits; SHOULD carry `Retry-After`. |
 
-`error_description` is a human-readable diagnostic and MUST NOT be
-parsed; machine-readable sub-reasons appear in an OPTIONAL `reason`
-field, enumerated below.
+`error_description` is diagnostic and MUST NOT be parsed; machine
+reasons ride the OPTIONAL `reason` field.
 
 ### 7.1 Machine reasons
 
-Reason strings are part of the API's stable surface: implementations
-MAY add reasons, and clients MUST treat an unrecognized reason as the
-bare `error` code. The agent-facing poll lanes (core §7.5) keep their
-own vocabulary (`unknown_agent`, `grants_denied`); this API's reasons
-are disjoint from it.
+Reasons are stable surface: implementations MAY add them; clients MUST
+treat unrecognized reasons as the bare `error`. The core §7.5 poll
+lanes keep their own vocabulary, disjoint from this.
 
-With `invalid_grant` (token exchange, §3.1):
+With `invalid_grant` (§3.1):
 
 | Reason | Meaning |
 |---|---|
-| `verification_failed` | The presentation fails core §6 verification (chain, signatures, expiry, audience, or a fail-closed status check). No finer distinction is surfaced: the endpoint is anonymous, and detailed failure reasons would turn it into a verification oracle. |
-| `delegated_presentation` | `grantor != grantee` — the exchange requires a self-presentation (§3.1). |
-| `scope_missing` | The warrant does not carry the scopes requested for the token. |
+| `verification_failed` | Presentation fails core §6 (no finer detail — the anonymous endpoint must not become a verification oracle). |
+| `delegated_presentation` | `grantor != grantee`. |
+| `scope_missing` | Warrant lacks a requested scope. |
+| `no_account` | No account owns the presented identity — attach first. |
 
-With `invalid_warrant` (`422`, §5.1 respond / claim and §5.2 register)
-— one reason per check of the §5.1 validation bar, in check order:
+With `invalid_warrant` (`422`, §5.1 respond/claim and §5.2 register),
+in check order:
 
 | Reason | Meaning |
 |---|---|
-| `warrant_count_mismatch` | `warrants` length ≠ number of grants (all-or-nothing). |
+| `warrant_count_mismatch` | `warrants` length ≠ grants (all-or-nothing). |
 | `config_cert_invalid` | Config cert fails to parse or verify. |
-| `config_cert_wrong_purpose` | `purpose` is not `authorization`. |
-| `config_cert_expired` | Config cert past `exp`. |
-| `grantor_not_authorized` | Config cert does not authorize the grantor identity. |
-| `grantor_not_owned` | Named grantor is not an identity this account owns. |
-| `grantor_pinned_mismatch` | Request pins a grantor and the supplied one differs. |
-| `warrant_invalid` | A warrant fails to parse or its signature does not verify against the config-cert key. |
-| `audience_mismatch` / `grantor_mismatch` / `grantee_mismatch` | Warrant claim differs from the grant / request. |
-| `not_holder_bound` | Warrant carries no holder matcher (connection-bound where holder-bound is required). |
-| `wildcard_holder` | Holder matcher is a bare `*`. |
+| `config_cert_wrong_purpose` | Not `purpose: authorization`. |
+| `config_cert_expired` | Past `exp`. |
+| `grantor_not_authorized` | Config cert does not authorize the grantor. |
+| `grantor_not_owned` | Grantor is not an account identity. |
+| `grantor_pinned_mismatch` | Differs from the request's pinned grantor. |
+| `warrant_invalid` | Warrant fails to parse or verify against the config-cert key. |
+| `audience_mismatch` / `grantor_mismatch` / `grantee_mismatch` | Warrant claim differs from grant/request. |
+| `not_holder_bound` | No holder matcher where one is required. |
+| `wildcard_holder` | Bare `*` matcher. |
 | `holder_mismatch` | Matcher does not match the agent's holder. |
-| `status_ref_missing` / `status_ref_mismatch` | Grant carries a `status_idx` but the warrant's `status` is absent, or differs from the registry's `{uri, idx}`. |
-| `audience_unproven` | Claim (§5.1): the request's core §7.5 audience proof does not validate. |
+| `status_ref_missing` / `status_ref_mismatch` | Grant has `status_idx` but the warrant's `status` is absent or differs from `{uri, idx}`. |
+| `audience_unproven` | Claim: the core §7.5 audience proof does not validate. |
 
-With `invalid_cert` (`422`, §5.3 `devices/register`) — in check order:
+With `invalid_cert` (`422`, §5.6), in check order:
 
 | Reason | Meaning |
 |---|---|
-| `cert_malformed` | Either cert fails to parse as a device cert. |
-| `wrong_purpose` | `device_cert` is not `purpose: authentication`, or `config_cert` is not `purpose: authorization`. |
-| `cert_expired` | Either cert is past `exp`. |
-| `issuer_not_accepted` | The cert's issuer is neither the identity domain's DNSSEC-published IdP nor in the registry's accepted-fallback set. |
-| `signature_invalid` | A cert's signature does not verify under the resolved issuer key. |
-| `cert_revoked` | A status ref on either cert checks revoked, or is uncheckable (fail-closed). |
-| `identity_not_owned` | A concrete identity on the pair is not owned by the token's account. |
-| `holder_mismatch` | The two certs name different holders. |
-| `config_cert_not_bound` | The config cert is not the one the token is bound to. |
+| `cert_malformed` | Fails to parse as a device cert. |
+| `wrong_purpose` | Purpose is neither `authentication` nor `authorization`. |
+| `cert_expired` | Past `exp`. |
+| `issuer_not_accepted` | Issuer is neither the identity domain's DNSSEC-published IdP nor in the registry operator's accepted-fallback set (mirror of core §8.1; reference default: the registry's own domain). |
+| `signature_invalid` | Does not verify under the resolved issuer key. |
+| `cert_revoked` | A status ref checks revoked or is uncheckable (fail-closed). |
+| `config_required` | Membership change with a non-config routing cert (§5.6.2). |
+| `cert_not_fresh` | Joining cert issued more than 300s ago (§5.6.2). |
 
 With `conflict` (`409`):
 
 | Reason | Meaning |
 |---|---|
-| `no_status_ref` | Revoking a warrant that has no status ref (§5.2). |
-| `namespace_not_empty` | Deleting a namespace that still has holders (§5.4). |
+| `no_status_ref` | Revoking a warrant with no status ref (§5.2). |
+| `namespace_not_empty` | Deleting a namespace with holders (§5.4). |
 | `external_holder` / `already_in_namespace` | `move_holder` preconditions (§5.4). |
-| `holder_moved` | `devices/register` onto a holder that has been moved (§5.3). |
-| `last_identity` | Detaching the account's only identity (§5.6.3). |
-
-With `invalid_warrant` (`422`, §5.6 membership record):
-
-| Reason | Meaning |
-|---|---|
-| `record_mismatch` | The membership record's `subject` or `subject_config_key` differs from the call's payload, or `grantor` is not owned by the token's account. |
-| `record_expired` | The membership record is outside its (≤300 s) validity window. |
-| `record_replayed` | The record's `jti` was already consumed. |
+| `holder_moved` | Attaching onto a moved holder (§5.4/§5.6). |
+| `last_identity` | Detaching the only identity (§5.6.4). |
+| `no_account` | Attach: no account owns the routing identity and no config cert for it is present (§5.6.2). |
 
 ## 8. Versioning and conformance
 
-- The path prefix `/api/v1/` is the compatibility contract: within v1,
-  changes are additive only (new endpoints, new OPTIONAL fields).
-  Breaking changes get `/api/v2/`.
-- The proof `typ` is versioned independently
-  (`browserid-registry-proof-v1`) and rejected fail-closed on mismatch,
-  per the core §4 domain-separation convention.
-- **Invariants** (conformance checklist, numbered):
-  1. Token-lane verification MUST be at least as strict as the
-     cookie-lane sibling for the same operation; no operation is
-     reachable with less proof than the browser lane requires.
-     (Strictness is measured per operation authorized: the §3.1
-     acceptance of self-issued presentations is not a weakening,
-     because the minted authority is a strict subset of the session
-     the cookie lane refuses to mint for them.)
-  2. No new anonymous surface: the API's only unauthenticated
-     endpoints are the §3.1 exchange (the API sibling of the existing
-     anonymous `auth_with_presentation`, with §3.1's abuse controls)
-     and §5.5 discovery (static, account-free); every §5 operation
-     requires §3 auth.
-  3. Every authorized call re-checks the bound config cert's status
-     ref, fail-closed (core §6.3: uncheckable ⇒ revoked).
-  4. Tokens MUST NOT outlive their bound config cert.
-  5. Approval MUST carry warrants signed by the account's config-cert
-     key and validated to the §5.1 bar; the registry never signs or
-     alters warrants on the client's behalf.
-  6. DNSSEC remains the sole root of trust (core §3); nothing in this
-     API introduces a Web-PKI trust path.
-  7. Owner-scoping: every read and mutation is scoped to the token's
-     account; cross-account existence is not observable.
+- `/api/v1/` is the compatibility contract: additive changes only;
+  breaking changes get `/api/v2/`. The proof `typ` is versioned
+  independently, rejected fail-closed on mismatch.
+- **Invariants**:
+  1. Token-lane verification is at least as strict as the cookie-lane
+     sibling per operation authorized.
+  2. No anonymous operations: tokenless endpoints are the §3.1
+     exchange, §5.5 discovery, and §5.6 (possession-proven down to its
+     body bytes, §3.1 abuse controls). All else requires token auth.
+  3. Every authorized call re-checks the bound cert's status ref,
+     fail-closed.
+  4. Tokens never outlive their bound config cert.
+  5. Approval carries warrants signed by the account's config-cert key;
+     the registry never signs or alters warrants.
+  6. DNSSEC is the sole root of trust; no Web-PKI path.
+  7. Owner-scoping: everything is scoped to the authenticated account
+     (token's, or §5.6's routing cert's); cross-account existence is
+     never observable, including attach vs transfer.
 
 ## 9. Legacy endpoint mapping (appendix)
 
 | Legacy (cookie + csrf) | This API | Notes |
 |---|---|---|
-| `POST /wsapi/auth_with_presentation` | `POST /api/v1/token` | Siblings; same credential, session vs token. Cookie lane stays. |
-| `GET /wsapi/warrant_requests` | `GET /api/v1/requests` (+ `POST /api/v1/requests/claim`) | Hidden GET mutation split out. |
-| `POST /wsapi/warrant_respond` | `POST /api/v1/requests/respond` | Same validation bar; consent now API-complete. |
+| `POST /wsapi/auth_with_presentation` | `POST /api/v1/token` | Siblings; session vs token. Cookie lane stays. |
+| `GET /wsapi/warrant_requests` | `GET /api/v1/requests` + `POST /api/v1/requests/claim` | Hidden GET mutation split out. |
+| `POST /wsapi/warrant_respond` | `POST /api/v1/requests/respond` | Same bar. |
 | `GET /wsapi/warrants` | `GET /api/v1/warrants` | |
 | `POST /wsapi/register_warrant` | `POST /api/v1/warrants/register` | |
 | `POST /wsapi/revoke_warrant` | `POST /api/v1/warrants/revoke` | |
-| `POST /wsapi/forget_warrant` | `POST /api/v1/warrants/forget` | Guard-rails discussion: bean `d51o` (§5.2). |
-| `POST /wsapi/allocate_warrant_status` | `POST /api/v1/warrants/allocate_status` | Closes the wallet's no-status-ref gap. |
+| `POST /wsapi/forget_warrant` | `POST /api/v1/warrants/forget` | Guard-rails: bean `d51o`. |
+| `POST /wsapi/allocate_warrant_status` | `POST /api/v1/warrants/allocate_status` | |
 | `GET /wsapi/device_certs` | `GET /api/v1/devices` | |
 | `POST /wsapi/revoke_device_cert` | `POST /api/v1/devices/revoke` | |
 | `GET /wsapi/cert_revocation_status` | `GET /api/v1/devices/status` | |
 | `GET /wsapi/holders` etc. | §5.4 table | |
-| `POST /wsapi/record_device_cert` | `POST /api/v1/devices/register` | Legacy lane records only the config cert (best-effort self-heal); `devices/register` verifies and records the pair. Cookie endpoint stays for the self-heal lane. |
-| `/warrant/request`, `/warrant/poll`, `/warrant/record-request`, `/agent-provision/*` | — (out of scope) | Agent side; core §7.5. |
-| `GET /wsapi/session_context` | — (not needed) | CSRF token has no token-lane equivalent. |
+| `POST /wsapi/record_device_cert` | `POST /api/v1/account/attach` | Legacy self-heal lane stays. |
+| — | `attach` / `detach` / `warrants/fetch` | Membership + auth-only reads; cookie-era transfer arms map onto §5.6.3. |
+| `/warrant/request`, `/warrant/poll`, `/agent-provision/*` | — | Agent side; core §7.5. |
+| `GET /wsapi/session_context` | — | CSRF has no token-lane equivalent. |
 
-## 10. Decision log and deferred items
+## 10. Decision log
 
-Resolved (2026-08-28 review):
+Resolved 2026-08-28:
 
-0. **Consent is API-complete** — a deliberate redesign of the earlier
-   "human-in-browser" invariant (design-handoff doc), decided with Dan:
-   approval was always a client-side signing ceremony (the browser
-   consent page signs with the same config-cert key the wallet holds),
-   so routing through a browser page added ceremony, not security — a
-   config-key holder could already mint a cookie session and approve.
-   The API adds no capability beyond what key possession grants;
-   human-in-the-loop is the user agent's obligation (principle 8).
-1. **Endpoint naming**: collections-as-GET + body-parameter POST verbs,
-   held throughout. Matches the house RPC idiom, keeps the legacy
-   mapping 1:1, avoids opaque ids/emails in URL paths (encoding
-   hygiene; the one capability string in a query, §5.1's `?code=`,
-   carries a log-hygiene caveat there), and keeps the proof `htu` set
-   small and fixed.
-2. **`success: true` dropped** (§4).
-3. **`warrants/forget`** stays, with its legitimate uses noted in §5.2;
-   guard-rail design deferred to bean `d51o`.
-4. **Proof alg pinned to `EdDSA`** (§3.2); agility/PQ deferred to bean
-   `hd63` as part of the protocol-wide signature-suite review.
-5. **Exchange warrant must carry the `registry` scope** (§3.1) —
-   confirmed, and extended: the cookie lane will adopt the same
-   requirement so both lanes share an identical bar (§3.3;
-   migration bean `ig9p`).
-6. **Inbox long-poll** included as an OPTIONAL `wait` hint (§5.1);
-   SSE/webpush deferred.
+0. **Consent is API-complete** — approval was always a client-side
+   signing ceremony; the browser page held the same keys, so the API
+   adds no capability. Human-in-the-loop is the user agent's job
+   (principle 8).
+1. **Naming**: collections-as-GET + body-parameter POST verbs; no
+   ids/emails in URL paths; small fixed `htu` set.
+2. `success: true` dropped (§4).
+3. `warrants/forget` stays; guard-rails deferred (bean `d51o`).
+4. Proof alg pinned `EdDSA`; agility/PQ deferred (bean `hd63`).
+5. Exchange warrant must carry the `registry` scope; cookie lane to
+   adopt the same bar (bean `ig9p`).
+6. Inbox long-poll as OPTIONAL `wait`; SSE/webpush deferred.
+7. **Secondary identities accepted at the exchange** (unlike the cookie
+   lane): the token's authority is a scope-bounded strict subset
+   excluding root ops. Every future scope re-justifies self-issued
+   acceptance (re-review logged on `d0xb`).
 
-Deferred elsewhere:
+Resolved 2026-08-30:
 
-- Agent-facing consent lanes: spec placement, `/api/v1/*` reparenting,
-  §3-style auth — bean `9mfw`.
-- Browser-ceremony discovery keys under the support document's
-  `registry.browser` object (password reset, account management,
-  recovery) — fallback-IdP spec (`d0xb`).
+8. **Account membership lives on this API** (§5.6), replacing "no
+   linking in the token lane". Transfer is on-proof: fresh issuer
+   attestation is current ownership; the previous holder is notified,
+   never asked. Merge deferred (identities move one at a time). Derived
+   agents are revoked and dropped with the departing parent (fixes bean
+   a93p). Attach is synchronous and self-approved; a second-device rule
+   was declined (residual risk: recoverable DoS — bean dksx).
 
-7. **Registry-rooted (secondary) identities at the token exchange:
-   accepted** (§3.1) — resolved with Dan 2026-08-28. The cookie lane
-   keeps rejecting (a session is full account control including the
-   password root that secondary certs derive from); the token lane
-   accepts because its authority is scope-bounded to registry
-   operations, a strict subset excluding every root op — so acceptance
-   here mints less than the session the cookie lane refuses.
-   Per-scope gate recorded: every future scope must re-justify
-   self-issued acceptance (re-review obligation logged on `d0xb`).
+Resolved 2026-09-01/02:
 
-8. **Account membership lives on this API** (§5.6) — resolved with Dan
-   2026-08-30, replacing the earlier "no linking in the token lane"
-   scoping: with the cookie lane reclassified broker-page-internal,
-   membership had to exist here or nowhere. Transfer is
-   **on-proof**: fresh issuer attestation is current ownership; the
-   previous holder is notified, never asked ("they don't own that
-   email anymore — the best we can do is make that visible"). Merge is
-   deferred indefinitely: identities move one at a time, and each move
-   re-proves at the issuer anyway, so bulk merge adds little. The
-   broker's own account-page email UI will route through the wallet →
-   this API once 71vt lands (one bar everywhere).
-   Follow-up rulings (same day): **attach is synchronous and
-   self-approved** — the anchor device signs the membership record
-   itself, no inbox round-trip, no extra user question (parity with
-   the cookie lane, where session + mailbox code adds the address
-   outright; a second-device rule was considered and declined — the
-   marginal risk over today is registry-scoped persistence plus, on
-   shared-table deployments, the reset-channel exposure Dan graded a
-   recoverable DoS rather than takeover — §5.6.2 deployment note,
-   mitigations bean dksx). **Derived agent identities travel nowhere**: on
-   transfer or detach the loser's children of the departed parent are
-   revoked and dropped (the reference implementation's
-   leave-them-operational behavior is a bug, bean a93p).
+9. **Membership is cert-authenticated and self-authenticating**,
+   superseding decision 8's membership record and the separate
+   `devices/register`. Certs travel with possession proofs; `bh` makes
+   the call its own consent artifact; one `attach` whether an identity
+   is new or already owned. Two-tier authority: auth-cert possession
+   records; membership changes and creation need a config-cert routing
+   proof — else a stolen auth cert could plant a foreign identity and
+   escalate to account-wide control. Joining certs must be fresh
+   (`iat` ≤ 300s): config certs are RP-visible, so unexpired bytes
+   alone must not move an identity. The exchange no longer auto-creates
+   accounts (kills the parallel-account trap). Auth-only devices are
+   supported policy (§5.6.6). Terminology per core §4.1: "device cert"
+   is the umbrella, auth/config its flavors; no identity outranks
+   another. Follow-up: the core §7.5 agent lanes should adopt the same
+   possession bar (bean 0c49).
+
+Deferred elsewhere: agent-lane reparenting (`9mfw`);
+browser-ceremony discovery keys (fallback-IdP spec, `d0xb`).
