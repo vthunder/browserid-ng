@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-08-27T15:10:47Z
-updated_at: 2026-08-27T18:01:43Z
+updated_at: 2026-09-02T16:33:46Z
 ---
 
 Decided with Dan 2026-08-28 (registry-api-v1 §3.1/§10 item 5): the token exchange requires the exchanged warrant to carry the registry scope. Align the cookie sibling so the bar is identical, not merely 'token lane stricter': POST /wsapi/auth_with_presentation should demand the same scope on broker-audience warrants before minting a session.
@@ -19,3 +19,7 @@ Migration:
 - [x] broker accepts both, logs scopeless presentations (deprecation window) — auth_with_presentation logs since 2026-08-27
 - [ ] enforce: reject scopeless with a clear machine reason
 - [ ] update spec invariant 1 wording from 'at least as strict' symmetry note once both lanes match
+
+## 2026-09-02 note (registry-api-v1 decision 10)
+
+The token exchange this bean mirrored was DELETED: the registry API is now cert-authenticated on every call, with no warrant and no scope in the picture. The cookie lane's delegated-authority concern still stands on its own merits (a third-party warrant with audience = broker origin must not mint a full session), but there is no longer a token-lane bar to align with. Re-decide: keep as a standalone cookie-lane hardening, or scrap.

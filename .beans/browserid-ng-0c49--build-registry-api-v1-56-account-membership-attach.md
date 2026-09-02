@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-09-02T16:03:27Z
+updated_at: 2026-09-02T16:33:46Z
 parent: browserid-ng-9yyk
 ---
 
@@ -57,3 +57,5 @@ Agreed, pending the r3 spec patch:
 13. no_account on attach DELETED as unreachable: the routing cert is always in the array and names the routing identity, so creation with a config routing cert succeeds and with an auth routing cert hits the membership rule's config_required first. no_account keeps its single §3.1 meaning (attach first). Dan's framing kept: same cause in both places, only the remedy differed.
 
 14. §3 gained a lead-in table: token mode (§5.1–5.5) vs cert mode (§5.6), and why the token exists. Dan: unclear what §3.1 tokens were for since attach doesn't use one.
+
+15. CERT AUTH EVERYWHERE (Dan 2026-09-02): token exchange deleted. Every call: Authorization: Cert <JWS> + Proof: <JWS> (§3/§3.1); routing cert's identity names the account; two-tier rule is API-wide (config = full, auth = recording tier: attach-of-self + warrants/fetch, else 403 config_required). attach body = further certs only (MAY be empty); detach body = {identity}; fetch body = {}. §5.5 token_endpoint → endpoint. Errors: invalid_grant/invalid_scope/invalid_token/insufficient_scope gone; 401 invalid_cert (routing) vs 422 invalid_cert (body); no_account is an invalid_cert reason. Decision 10 logged; decisions 5/7 amended. ig9p loses its anchor.
