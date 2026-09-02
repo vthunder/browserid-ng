@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-09-02T16:33:46Z
+updated_at: 2026-09-02T20:42:59Z
 parent: browserid-ng-9yyk
 ---
 
@@ -59,3 +59,9 @@ Agreed, pending the r3 spec patch:
 14. §3 gained a lead-in table: token mode (§5.1–5.5) vs cert mode (§5.6), and why the token exists. Dan: unclear what §3.1 tokens were for since attach doesn't use one.
 
 15. CERT AUTH EVERYWHERE (Dan 2026-09-02): token exchange deleted. Every call: Authorization: Cert <JWS> + Proof: <JWS> (§3/§3.1); routing cert's identity names the account; two-tier rule is API-wide (config = full, auth = recording tier: attach-of-self + warrants/fetch, else 403 config_required). attach body = further certs only (MAY be empty); detach body = {identity}; fetch body = {}. §5.5 token_endpoint → endpoint. Errors: invalid_grant/invalid_scope/invalid_token/insufficient_scope gone; 401 invalid_cert (routing) vs 422 invalid_cert (body); no_account is an invalid_cert reason. Decision 10 logged; decisions 5/7 amended. ig9p loses its anchor.
+
+16. Cert travels ONLY on attach (Authorization: Cert); every other call is Proof-only, kid = SHA-256 of the raw pubkey resolved against recorded certs; unrecorded key ⇒ 401 invalid_cert/unknown_key (attach first). Fetch's 'record first-seen cert' clause dropped — attach is the single door, so every acting key is on the device list. no_account reason gone entirely (attach creates; elsewhere unknown_key covers it).
+
+## OPEN QUESTION (Dan, 2026-09-02): IdP power over the account
+
+Any IdP of any identity on the account can mint a config cert and get account-wide authority (revoke/forge consent on other identities' warrants, read the whole site list, attach identities). Not new to r4 (token and cookie lanes had it) but r4 makes it legible. Minimum fix Dan floated: warrant mutations must be routed by a cert matching the warrant's grantor. Full per-identity authority (reads too) means the wallet queries once per config cert or sends several proofs — Dan considers both bad; at that point a token that exchanges a SET of proofs for combined access looks better, but he isn't sure he wants the token back. Also considered: dropping the account entirely (each identity its own principal; kills §5.6/transfer cascade). Legibility lever now in place: every actor is a recorded device (ruling 16); a per-device last-used / audit line would add pressure, not prevention. UNRESOLVED — Dan wants to think more. Do not implement §5.6 authority semantics beyond the current spec until ruled.

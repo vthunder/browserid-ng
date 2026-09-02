@@ -42,21 +42,27 @@ the driver: a conformant registry is replaceable.
 
 ## 3. Authentication
 
-Every call is **cert-authenticated**: no sessions, no tokens. Two
-headers:
+Every call is **cert-authenticated**: no sessions, no tokens. One
+header:
 
 ```
-Authorization: Cert <device cert JWS>
 Proof: <proof JWS>
 ```
 
-The **routing cert** in `Authorization` MUST pass the validity bar
-(§7.1's `invalid_cert` reasons, in order, are the checks —
-`401 invalid_cert/<reason>`, with `WWW-Authenticate: Cert`). The call
-then acts as the account owning the cert's identity; no account owns
-it ⇒ `401 invalid_cert/no_account` — except on `attach`, which is how
-accounts come to exist (§5.6.2). Every call re-checks the cert's status
-ref fail-closed; revoking the cert kills its access on next use.
+The proof (§3.1) is signed by a device-cert key and names it by `kid`.
+The **routing cert** is the recorded device cert (§5.3) with that key —
+`attach` is the only call that carries the cert itself, in
+`Authorization: Cert <JWS>`, and is how a key becomes recorded (and how
+accounts come to exist, §5.6.2). Elsewhere an unrecorded key ⇒
+`401 invalid_cert/unknown_key`: attach first. Consequence: every key
+that ever acts on an account is on its device list.
+
+The routing cert MUST pass the validity bar on every call (§7.1's
+`invalid_cert` reasons, in order, are the checks —
+`401 invalid_cert/<reason>`, with `WWW-Authenticate: Cert`); the call
+then acts as the account owning the cert's identity. Status is
+re-checked fail-closed each time; revoking the cert kills its access on
+next use.
 
 **Authority follows the cert's flavor.** A config cert
 (`purpose: authorization`) has the account's full authority. An auth
@@ -71,7 +77,7 @@ this API exposes no root op (issuance, passwords, `account_cancel` are
 the fallback-IdP API's), so a self-issued identity reaching the inbox
 reaches nothing it shouldn't (§10 decision 7).
 
-Abuse controls (calls are anonymous until the cert verifies, and
+Abuse controls (`attach` is anonymous until its cert verifies, and
 verification is expensive): check the proof signature against the
 cert's embedded key *before* resolving the issuer; rate-limit per
 source address and per cert public key (`429 slow_down` +
@@ -81,8 +87,9 @@ keys and status lists are cacheable within their validity.
 ### 3.1 Request proof — `browserid-registry-proof-v1`
 
 The `Proof` header is a JWS signed by the routing cert's key, header
-`{"alg": "EdDSA", "typ": "browserid-registry-proof-v1"}` (both values
-MUST be exact; agility is deferred to a future `typ`), claims:
+`{"alg": "EdDSA", "typ": "browserid-registry-proof-v1", "kid": …}`
+(`alg`/`typ` MUST be exact; agility is deferred to a future `typ`;
+`kid` = base64url(SHA-256(the key's raw public bytes))), claims:
 
 | Claim | Meaning |
 |---|---|
@@ -96,8 +103,8 @@ MUST be exact; agility is deferred to a future `typ`), claims:
 `endpoint`'s origin): lowercase scheme and host, default ports
 omitted, then the exact §5 route path; behind a proxy, compare against
 the public origin, never the observed URI. Verification order: cert
-validity bar → proof signature against the cert's key → all claims →
-authority tier. Any failure ⇒ reject (`401 invalid_proof` for the
+`kid` → recorded cert (or the `Cert` header on attach) → validity bar →
+proof signature against its key → all claims → authority tier. Any failure ⇒ reject (`401 invalid_proof` for the
 proof's own failures).
 
 The same shape serves as **possession proof**: where §5.6 requires
@@ -326,8 +333,9 @@ either way (no existence leak).
 { "certs": [ { "cert": "<JWS>", "proof": "<JWS>" }, … ] }
 ```
 
-→ `204`. Recording tier: the §3 routing cert is itself attached, and
-`certs` (MAY be empty) lists further certs to attach, each `proof` a
+→ `204`. Recording tier. Carries `Authorization: Cert <JWS>` — the
+routing cert, which is itself attached; `certs` (MAY be empty) lists
+further certs to attach, each `proof` a
 possession proof (§3.1: same shape, that cert's key, the header
 proof's `jti`).
 
@@ -396,9 +404,9 @@ are never a refusal; they go with the parent.
 cert's holder, for its identities, each alongside the config cert
 needed to present it. Recording tier — the read that lets a device
 with no config cert use preexisting wildcard-holder warrants (e.g. the
-account's `browsers.*`). It serves only artifacts every RP sees at login. The registry
-SHOULD record a first-seen cert as §5.3 inventory, so any device that
-ever used the account is listed.
+account's `browsers.*`). It serves only artifacts every RP sees at login. Like every
+call it needs a recorded key, so an auth-only device attaches first
+(flow B) — which is what puts it on the device list.
 
 #### 5.6.6 Auth-only devices
 
@@ -431,7 +439,7 @@ OAuth-shaped JSON, per core §9:
 | HTTP | `error` | When |
 |---|---|---|
 | 400 | `invalid_request` | Malformed JSON, missing/unknown fields, grammar violations. |
-| 401 | `invalid_cert` | The routing cert fails the §7.1 bar or owns no account. Carries `WWW-Authenticate: Cert`. |
+| 401 | `invalid_cert` | The proof's key is unrecorded, or the routing cert fails the §7.1 bar. Carries `WWW-Authenticate: Cert`. |
 | 401 | `invalid_proof` | A request or possession proof fails: missing, wrong `typ`, bad signature, `htm`/`htu` mismatch, stale `iat`, replayed `jti`, `bh` mismatch, or a §5.6 possession proof whose `jti` differs from the header proof's. |
 | 403 | `config_required` | The routing cert is an auth cert and the operation is outside the recording tier (§3). |
 | 404 | `not_found` | Owner-scoped lookup misses — including "exists but isn't yours". |
@@ -473,13 +481,13 @@ With `invalid_cert` (`401` routing cert, `422` body cert), in check order:
 
 | Reason | Meaning |
 |---|---|
+| `unknown_key` | Routing only: the proof's `kid` matches no recorded cert — attach first (§3). |
 | `cert_malformed` | Fails to parse as a device cert. |
 | `wrong_purpose` | Purpose is neither `authentication` nor `authorization`. |
 | `cert_expired` | Past `exp`. |
 | `issuer_not_accepted` | Issuer is neither the identity domain's DNSSEC-published IdP nor in the registry operator's accepted-fallback set (mirror of core §8.1; reference default: the registry's own domain). |
 | `signature_invalid` | Does not verify under the resolved issuer key. |
 | `cert_revoked` | A status ref checks revoked or is uncheckable (fail-closed). |
-| `no_account` | Routing cert only: no account owns its identity — attach first (§3). |
 | `cert_not_fresh` | Joining cert issued more than 300s ago (§5.6.2). |
 
 With `conflict` (`409`):
@@ -503,7 +511,8 @@ With `conflict` (`409`):
   2. No anonymous operations: §5.5 discovery is public; everything else
      is cert-authenticated (§3), mutations possession-proven down to
      their body bytes.
-  3. Every call re-checks the routing cert's status ref, fail-closed.
+  3. Every call re-checks the routing cert's status ref, fail-closed;
+     every acting key is a recorded device (§3).
   4. Auth certs never exceed the recording tier.
   5. Approval carries warrants signed by the account's config-cert key;
      the registry never signs or alters warrants.
@@ -591,9 +600,12 @@ Resolved 2026-09-02:
     cost a second auth mode plus a bootstrap exception. Now every call
     carries `Authorization: Cert` + `Proof`; the §5.6 two-tier rule
     became the whole authorization model (config cert = full, auth cert
-    = recording tier). Bean `ig9p` (cookie lane adopts the scope bar)
-    loses its anchor; the cookie lane's delegated-authority concern is
-    now stated directly in §3.2.
+    = recording tier). Only `attach` carries the cert; other calls
+    name a recorded key by `kid`, so every actor is on the device list
+    — the legibility hook for the open IdP-power question (bean
+    `0c49`). Bean `ig9p` (cookie lane adopts the scope bar) loses its
+    anchor; the cookie lane's delegated-authority concern is now stated
+    directly in §3.2.
 
 Deferred elsewhere: agent-lane reparenting (`9mfw`);
 browser-ceremony discovery keys (fallback-IdP spec, `d0xb`).
