@@ -44,6 +44,17 @@ the driver: a conformant registry is replaceable.
 
 ## 3. Authentication
 
+Two modes, both header-borne, both signed by a device key:
+
+| Mode | Used by | Proves |
+|---|---|---|
+| **Token** — §3.1 exchange, then §3.2 proof on every call | §5.1–§5.5: inbox, warrants, devices, holders, discovery | The caller is an account; the proof's key is the token's config cert. |
+| **Cert** — no token; §3.2 possession proofs in header and body | §5.6: attach, detach, warrants fetch | The caller holds each named cert's key; the header proof's cert routes the call. |
+
+The token exists so day-to-day management calls skip re-verifying a
+presentation each time; §5.6 goes without one because it must run
+before an account exists and from devices that hold no config cert.
+
 ### 3.1 Token exchange — `POST /api/v1/token`
 
 ```json

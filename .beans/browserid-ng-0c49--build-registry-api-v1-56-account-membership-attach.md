@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-09-02T08:24:22Z
+updated_at: 2026-09-02T16:03:27Z
 parent: browserid-ng-9yyk
 ---
 
@@ -55,3 +55,5 @@ Agreed, pending the r3 spec patch:
 12. Confirmed reading: §3.1 'every requested scope' = the warrant's scope claim must cover each entry of the token call's scope field.
 
 13. no_account on attach DELETED as unreachable: the routing cert is always in the array and names the routing identity, so creation with a config routing cert succeeds and with an auth routing cert hits the membership rule's config_required first. no_account keeps its single §3.1 meaning (attach first). Dan's framing kept: same cause in both places, only the remedy differed.
+
+14. §3 gained a lead-in table: token mode (§5.1–5.5) vs cert mode (§5.6), and why the token exists. Dan: unclear what §3.1 tokens were for since attach doesn't use one.
