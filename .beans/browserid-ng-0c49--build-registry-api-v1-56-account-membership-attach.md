@@ -5,11 +5,15 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-09-01T22:32:43Z
+updated_at: 2026-09-02T07:22:22Z
 parent: browserid-ng-9yyk
 ---
 
-THE RESUME POINTER for the account-membership thread (Dan asked 2026-08-30). Spec is SETTLED — registry-api-v1 §5.6 (synchronous attach/detach with inline browserid-membership-v1 records, transfer-on-proof with loser notification, revoke-and-drop of derived agent children) + §7.1 reasons + §10.8 decision log; design history and parity table live on bean 1sb3; reset-channel mitigations are bean dksx (explore separately).
+THE RESUME POINTER for the account-membership thread (Dan asked 2026-08-30).
+
+STATUS 2026-09-02: spec r3 WRITTEN and COMMITTED (96eac4a) — self-authenticating attach (possession proofs, no token, no membership record), condensed to 627 lines. Dan is reviewing. The CURRENT design is in the '## Spec-patch rulings' and '## Merged attach design' sections below + docs/specs/registry-api-v1.md itself (§5.6 and §3.2 are the new parts); the paragraph and checklist immediately below PREDATE r3 (r2 era: membership records, devices/register) and the checklist needs rewriting after review. Review aid: field-guide artifact https://claude.ai/code/artifact/fa54e6f5-6c81-4dad-9a46-efa5e3e6f6c4 (§02 flows).
+
+R2-ERA CONTEXT (superseded): Spec was SETTLED — registry-api-v1 §5.6 (synchronous attach/detach with inline browserid-membership-v1 records, transfer-on-proof with loser notification, revoke-and-drop of derived agent children) + §7.1 reasons + §10.8 decision log; design history and parity table live on bean 1sb3; reset-channel mitigations are bean dksx (explore separately).
 
 Implementation checklist:
 - [ ] Registrar: POST /api/v1/account/attach + /api/v1/account/detach; membership-record validation (config-cert bar, grantor ownership, subject match, ≤300s window, jti replay cache)
