@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-09-02T07:22:22Z
+updated_at: 2026-09-02T07:35:32Z
 parent: browserid-ng-9yyk
 ---
 
@@ -47,3 +47,9 @@ Agreed, pending the r3 spec patch:
 - detach: same cert-signed auth, config required.
 - Transfer cascade, freshness (~300s), no-existence-leak on transfer vs new: unchanged.
 - CONFIRMED by Dan 2026-09-02, with one amendment: the 'account' routing field is redundant — the header proof's signer (matched against the array's certs) routes the call; signer's cert must be in the array. r3 SPEC PATCH DRAFTED 2026-09-02 (registry-api-v1.md, uncommitted): §3.1 no-auto-create + no_account reason, §3.2 bh claim + possession-proof shape (shared jti rule), §5.3 register deleted, §5.6 rewritten flows-first (attach/transfer/detach/warrants-fetch/auth-only matrix), §7.1 reasons reworked, §8 invariants 2+7, §9 mapping, §10 decision 9. NOTE: the implementation checklist at the top of this bean predates r3 and needs rewriting after Dan reviews the spec patch (no membership record, no registrar attach-with-record endpoint; certs+proofs arrays instead). Condensation pass DONE 2026-09-02 (same working tree as the r3 semantic patch, uncommitted): 1030→627 lines, prose −42% while ADDING all decision-9 material; §7.1 reason tables now ARE the validation bars (§5.1/§5.6 point at them instead of restating). Field-guide artifact still shows the r2 attach design — update after Dan reviews.
+
+## Review rulings r3 (Dan, 2026-09-02, session 2)
+
+10. Error citations: every refusal in prose is now cited as `<status> <error>/<reason>` (convention stated in §4); §3.1 refusals became a condition→error table; `400 invalid_scope` added to §7. Dan: length-sensitive but clarity wins.
+11. v1 warrants: registry §3.1 no longer accepts them (allowance sentence deleted). Core-spec removal tracked as a separate bean (browserid-warrant-v1 compat paragraph, core §5).
+12. Confirmed reading: §3.1 'every requested scope' = the warrant's scope claim must cover each entry of the token call's scope field.

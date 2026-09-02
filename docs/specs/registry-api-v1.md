@@ -58,22 +58,19 @@ Verification MUST equal core §6 for the registry's own origin as
 audience — DNSSEC key resolution for both issuers, signature joins,
 expiry, fail-closed status checks — and MUST NOT be weaker in any
 respect than the cookie sibling `/wsapi/auth_with_presentation`.
-Additionally:
+Additionally, the exchange is refused when:
 
-- The warrant MUST carry every requested scope (`scope_missing`); a
-  plain login warrant does not mint a management token (§10 decision
-  5). A v1 warrant is accepted with `status` OPTIONAL (core §5), so a
-  first exchange precedes `allocate_status`; a v2 warrant gets the full
-  v2 bar. Unrecognized scope: `400 invalid_scope`.
-- Self-presentation REQUIRED: `grantor == grantee`
-  (`delegated_presentation`); the token binds to the grantor's config
-  key.
-- Registry-rooted ("secondary") identities ARE accepted, unlike the
-  cookie sibling: the token's authority excludes every root op. Any
-  future scope MUST re-justify self-issued acceptance (§10 decision 7).
-- The token authenticates as the account owning the verified identity;
-  a never-seen identity is refused (`no_account`) — the exchange never
-  creates or alters accounts; bootstrap attaches first (§5.6).
+| Condition | Error |
+|---|---|
+| The warrant's `scope` claim lacks a scope the request asked for — a plain login warrant does not mint a management token (§10 decision 5). | `400 invalid_grant/scope_missing` |
+| The request asks for a scope v1 does not define. | `400 invalid_scope` |
+| `grantor != grantee` — self-presentation is required; the token binds to the grantor's config key. | `400 invalid_grant/delegated_presentation` |
+| No account owns the verified identity — the exchange never creates or alters accounts; bootstrap attaches first (§5.6). | `400 invalid_grant/no_account` |
+
+Otherwise the token authenticates as the account owning the verified
+identity. Registry-rooted ("secondary") identities ARE accepted, unlike
+the cookie sibling: the token's authority excludes every root op. Any
+future scope MUST re-justify self-issued acceptance (§10 decision 7).
 
 Response:
 
@@ -88,8 +85,8 @@ refresh tokens; every authorized call re-checks the bound cert's status
 ref fail-closed (registries MAY also revoke tokens server-side).
 
 Abuse controls (the exchange is anonymous and verification expensive):
-rate-limit per source address and presented identity (`429` +
-`Retry-After`); bound body sizes (RECOMMENDED 64 KiB, API-wide); track
+rate-limit per source address and presented identity (`429
+slow_down` + `Retry-After`); bound body sizes (RECOMMENDED 64 KiB, API-wide); track
 the assertion's `jti` and reject reuse within its validity window.
 
 ### 3.2 Request proof — `browserid-registry-proof-v1`
@@ -140,7 +137,9 @@ scopeless presentations is a documented legacy allowance.
 ## 4. Common conventions
 
 - Bodies are JSON, UTF-8. No `success: true` — status codes carry
-  success, §7 the errors.
+  success, §7 the errors. Refusals are cited as `<status>
+  <error>/<reason>`, e.g. `422 invalid_cert/config_required`: §7
+  defines every `error`, §7.1 every `reason`.
 - Data-free mutations return `204`; others `200` + JSON. OPTIONAL
   fields are absent, never `null`.
 - Unknown request fields MUST be rejected; unknown response fields MUST
@@ -179,8 +178,8 @@ respond action, they expire on their own.
 record request and allocates status indexes into its grants (the legacy
 GET's hidden side effect, made explicit). Returns the claimed request.
 Precondition: the request's core §7.5 audience proof MUST validate at
-claim time (fresh fetch RECOMMENDED; else `422 audience_unproven`).
-Idempotent per account; claimed by another account ⇒ `404`.
+claim time (fresh fetch RECOMMENDED; else `422 invalid_warrant/audience_unproven`).
+Idempotent per account; claimed by another account ⇒ `404 not_found`.
 
 **`POST /api/v1/requests/respond`** — approve or deny:
 
@@ -195,7 +194,7 @@ warrant per grant, in order, all-or-nothing; `config_cert` signed them;
 identity matching the request's pin if set.
 
 Validation MUST equal the browser lane's bar; §7.1's `invalid_warrant`
-reasons, in order, ARE the checks. On approve, per grant: store the
+reasons, in order, ARE the checks (`422 invalid_warrant/<reason>`). On approve, per grant: store the
 delivery string `{warrant}~{config_cert}` for single pickup by the
 requester's core §7.5 poll, and upsert a §5.2 warrant record.
 
@@ -222,14 +221,15 @@ else `{}` (including every deny).
 `{ "warrant": "<JWS>", "config_cert": "<JWS>" }` → `204`. The warrant
 MUST verify against the config-cert key; the cert MUST be
 `purpose: authorization` and authorize the grantor; the grantor MUST be
-an account identity. Status-ref reconciliation: a ref on this
+an account identity — the §5.1 bar again, `422 invalid_warrant/<reason>`
+per §7.1. Status-ref reconciliation: a ref on this
 registry's own list is re-derived from the grant identity — match ⇒
 bit reactivated; mismatch ⇒ recorded with no index (log the
 discrepancy); foreign ref ⇒ recorded with no index.
 
 **`POST /api/v1/warrants/revoke`** — `{ "id": 42 }` → `204`. Flips the
 status bit, sticky (re-registering is the reactivation path). No status
-ref ⇒ `409 no_status_ref` (remedy: reissue with an allocated ref).
+ref ⇒ `409 conflict/no_status_ref` (remedy: reissue with an allocated ref).
 
 **`POST /api/v1/warrants/forget`** — `{ "id": 123 }` → `204`. Deletes
 the row **without revoking** — the signed warrant stays valid to
@@ -277,13 +277,14 @@ side effect, not a state change.
 | `GET /api/v1/holders/assignment?holder=` | → `{ status: "current" | "moved", new_holder? }` |
 | `POST /api/v1/namespaces/create` | `{ name, label? }` |
 | `POST /api/v1/namespaces/rename` | `{ name, label }` |
-| `POST /api/v1/namespaces/delete` | `{ name }`. Refused while it has holders (`409 namespace_not_empty`). |
+| `POST /api/v1/namespaces/delete` | `{ name }`. Refused while it has holders (`409 conflict/namespace_not_empty`). |
 
 Validation: namespace `name` lowercased/trimmed, then
 `^[a-z][a-z0-9_-]{0,31}$`; labels 1–64 Unicode chars, single line;
-holders/namespaces addressable only when on the account (`404`, no
-existence leaks); `move` refuses external holders and same-namespace
-moves (`409`: `external_holder` / `already_in_namespace`).
+holders/namespaces addressable only when on the account (`404
+not_found`, no existence leaks); `move` refuses external holders
+(`409 conflict/external_holder`) and same-namespace moves
+(`409 conflict/already_in_namespace`).
 Implementations SHOULD also accept legacy names predating this spec.
 
 ### 5.5 Discovery
@@ -353,22 +354,22 @@ is a possession proof (§3.2: same shape, that cert's key, the header
 proof's `jti`).
 
 Every cert MUST pass the **validity bar** — §7.1's `invalid_cert`
-reasons, in order, are its checks — and its holder must not be moved
-(§5.4; `409 holder_moved`). Then, per cert, by identity:
+reasons, in order, are its checks (`422 invalid_cert/<reason>`) — and its holder must not be moved
+(§5.4; `409 conflict/holder_moved`). Then, per cert, by identity:
 
 - **Already owned by the target account** → recorded: idempotent on
   pubkey, holder healing, default labels (§5.3).
 - **Not owned** (new, or owned elsewhere) → **membership change**: the
   identity joins the account. Requires (i) the routing cert is a config
   cert — membership is an authorization act; auth-signed requests only
-  record (`422 config_required`) — and (ii) joining certs freshly
-  issued, `iat` within 300s (`422 cert_not_fresh`): wallets attach
+  record (`422 invalid_cert/config_required`) — and (ii) joining certs freshly
+  issued, `iat` within 300s (`422 invalid_cert/cert_not_fresh`): wallets attach
   right after the ceremony; stolen-but-unexpired cert bytes fail.
 
 **Creation.** No account owns the routing identity → created, only if
 the array includes a config cert *for that identity* (a first cert must
 be a config cert or the account could never authorize anything); else
-`409 no_account`.
+`409 conflict/no_account`.
 
 Tokenless and expensive to verify, attach carries §3.1's abuse
 controls.
@@ -410,7 +411,7 @@ own ceremony blesses them (bean dksx).
 cert passing the validity bar whose identity the account owns. Revokes
 the identity's device certs this registry is authority for, its grantor
 warrants, revokes-and-drops its derived agent identities, then removes
-it. `409 last_identity`: detach has no destination — whole-account
+it. `409 conflict/last_identity`: detach has no destination — whole-account
 deletion is the issuer's `account_cancel` ceremony. Derived children
 are never a refusal; they go with the parent.
 
@@ -461,6 +462,7 @@ OAuth-shaped JSON, per core §9:
 |---|---|---|
 | 400 | `invalid_request` | Malformed JSON, missing/unknown fields, grammar violations. |
 | 400 | `invalid_grant` | Token exchange: presentation fails core §6 verification, or the identity has no account. |
+| 400 | `invalid_scope` | Token exchange: a scope v1 does not define. |
 | 401 | `invalid_token` | Missing/expired/revoked token — including a revoked or expired bound config cert (fail-closed). Carries `WWW-Authenticate: DPoP`. |
 | 401 | `invalid_proof` | A request or possession proof fails: missing, wrong `typ`, bad signature, `htm`/`htu` mismatch, stale `iat`, replayed `jti`, `ath`/`bh` mismatch, or a §5.6 possession proof whose `jti` differs from the header proof's. |
 | 403 | `insufficient_scope` | Token scope does not cover the endpoint (cannot occur with v1's single scope). |
