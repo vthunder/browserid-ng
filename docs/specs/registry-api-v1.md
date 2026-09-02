@@ -366,10 +366,11 @@ reasons, in order, are its checks (`422 invalid_cert/<reason>`) — and its hold
   issued, `iat` within 300s (`422 invalid_cert/cert_not_fresh`): wallets attach
   right after the ceremony; stolen-but-unexpired cert bytes fail.
 
-**Creation.** No account owns the routing identity → created, only if
-the array includes a config cert *for that identity* (a first cert must
-be a config cert or the account could never authorize anything); else
-`409 conflict/no_account`.
+**Creation.** No account owns the routing identity → the identity is
+"not owned" above, so the routing cert must be a config cert (else
+`422 invalid_cert/config_required`); with one, the account is created
+around it — a first cert must be a config cert or the account could
+never authorize anything.
 
 Tokenless and expensive to verify, attach carries §3.1's abuse
 controls.
@@ -532,7 +533,6 @@ With `conflict` (`409`):
 | `external_holder` / `already_in_namespace` | `move_holder` preconditions (§5.4). |
 | `holder_moved` | Attaching onto a moved holder (§5.4/§5.6). |
 | `last_identity` | Detaching the only identity (§5.6.4). |
-| `no_account` | Attach: no account owns the routing identity and no config cert for it is present (§5.6.2). |
 
 ## 8. Versioning and conformance
 

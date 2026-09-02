@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-09-02T07:35:32Z
+updated_at: 2026-09-02T08:24:22Z
 parent: browserid-ng-9yyk
 ---
 
@@ -53,3 +53,5 @@ Agreed, pending the r3 spec patch:
 10. Error citations: every refusal in prose is now cited as `<status> <error>/<reason>` (convention stated in §4); §3.1 refusals became a condition→error table; `400 invalid_scope` added to §7. Dan: length-sensitive but clarity wins.
 11. v1 warrants: registry §3.1 no longer accepts them (allowance sentence deleted). Core-spec removal tracked as a separate bean (browserid-warrant-v1 compat paragraph, core §5).
 12. Confirmed reading: §3.1 'every requested scope' = the warrant's scope claim must cover each entry of the token call's scope field.
+
+13. no_account on attach DELETED as unreachable: the routing cert is always in the array and names the routing identity, so creation with a config routing cert succeeds and with an auth routing cert hits the membership rule's config_required first. no_account keeps its single §3.1 meaning (attach first). Dan's framing kept: same cause in both places, only the remedy differed.
