@@ -75,6 +75,13 @@ pub struct SupportDocument {
     #[serde(rename = "device-revoke", skip_serializing_if = "Option::is_none")]
     pub device_revocation: Option<String>,
 
+    /// The http(s) `return_origin` values this issuer's ceremony page will
+    /// deliver certs to (fallback-idp-api-v1 §3.1). Advisory: lets a web
+    /// wallet fail before the user signs in. Loopback and custom-scheme
+    /// origins are always accepted and are never listed here.
+    #[serde(rename = "wallet-origins", skip_serializing_if = "Option::is_none")]
+    pub wallet_origins: Option<Vec<String>>,
+
     /// Path to the admission-record request API (spec §7.5): connection
     /// grant requests + grant-authoring ceremonies. Its presence is the
     /// support advertisement resources capability-detect before attempting
@@ -127,6 +134,7 @@ impl SupportDocument {
             device_authorization: None,
             agent_device_authorization: None,
             device_revocation: None,
+            wallet_origins: None,
             record_grants: None,
             registry: None,
         }
@@ -161,6 +169,12 @@ impl SupportDocument {
     /// Set the headless access-cert mint API path
     pub fn with_access_cert(mut self, path: impl Into<String>) -> Self {
         self.access_cert = Some(path.into());
+        self
+    }
+
+    /// Advertise the accepted http(s) wallet return origins (§3.1).
+    pub fn with_wallet_origins(mut self, origins: Vec<String>) -> Self {
+        self.wallet_origins = Some(origins);
         self
     }
 
@@ -206,6 +220,7 @@ impl SupportDocument {
             device_authorization: None,
             agent_device_authorization: None,
             device_revocation: None,
+            wallet_origins: None,
             record_grants: None,
             registry: None,
         }

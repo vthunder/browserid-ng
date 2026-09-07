@@ -613,3 +613,66 @@ async fn revoked_device_cert_cannot_mint() {
         .await;
     assert_eq!(post.status_code(), 403, "revoked device cert must not mint");
 }
+
+// --- Accepted return origins (fallback-idp-api-v1 §3.1, bean qze7) ---------
+
+async fn issue_with_origin(server: &TestServer, session: &str, email: &str, origin: &str) -> (u16, Value) {
+    let c = csrf(server, session).await;
+    let r = server
+        .post("/device/issue")
+        .add_cookie(cookie::Cookie::new("browserid_session", session.to_string()))
+        .json(&json!({
+            "csrf": c, "email": email,
+            "device_pubkey": KeyPair::generate().public_key().to_base64(),
+            "config_pubkey": KeyPair::generate().public_key().to_base64(),
+            "return_origin": origin,
+        }))
+        .await;
+    (r.status_code().as_u16(), r.json::<Value>())
+}
+
+#[tokio::test]
+async fn device_issue_refuses_untrusted_web_return_origin() {
+    let (server, sender) = make_server();
+    let email = "human@localhost:3000";
+    let session = create_user(&server, &sender, email, "testpassword").await;
+
+    let (status, body) = issue_with_origin(&server, &session, email, "https://evil.example").await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["reason"], "return_origin_not_allowed");
+    assert!(body.get("device_cert").is_none());
+
+    // Lookalikes of the default trusted wallet.
+    for o in ["https://browserid.me.evil.example", "https://evil.example/https://browserid.me"] {
+        let (status, body) = issue_with_origin(&server, &session, email, o).await;
+        assert_eq!(status, 403, "{o}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn device_issue_accepts_native_trusted_and_own_origins() {
+    let (server, sender) = make_server();
+    let email = "human@localhost:3000";
+    let session = create_user(&server, &sender, email, "testpassword").await;
+
+    for o in [
+        "http://127.0.0.1:4321",   // loopback
+        "http://[::1]:9",          // loopback v6
+        "mingo://wallet",          // custom scheme
+        "https://browserid.me",    // default trusted list
+        "http://localhost:3000",   // own origin
+    ] {
+        let (status, body) = issue_with_origin(&server, &session, email, o).await;
+        assert_eq!(status, 200, "{o}: {body}");
+        assert!(body["device_cert"].as_str().is_some(), "{o}");
+    }
+}
+
+#[tokio::test]
+async fn support_document_advertises_wallet_origins() {
+    let (server, _) = make_server();
+    let doc = server.get("/.well-known/browserid").await.json::<Value>();
+    let list = doc["wallet-origins"].as_array().expect("wallet-origins").clone();
+    assert!(list.iter().any(|o| o == "http://localhost:3000"), "{list:?}");
+    assert!(list.iter().any(|o| o == "https://browserid.me"), "{list:?}");
+}

@@ -140,6 +140,13 @@ pub struct DeviceIssueRequest {
     /// backward-compat: absent → the broker assigns a fresh one.
     #[serde(default)]
     pub holder: Option<String>,
+    /// The wallet's `return_origin` when the caller is the ceremony page
+    /// (fallback-idp-api-v1 §3.1). Absent = the issuer's own first-party
+    /// dialog (a same-origin, CSRF-bound call). Enforced here, not only in
+    /// the page: anything but loopback, a custom scheme, our own origin, or
+    /// a configured trusted wallet is refused.
+    #[serde(default)]
+    pub return_origin: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -191,6 +198,11 @@ where
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
     let (email, ttl, prov) = owned_mintable_email(&state, &cookies, &req.csrf, &req.email)?;
+    if let Some(ro) = req.return_origin.as_deref().filter(|s| !s.trim().is_empty()) {
+        if !state.return_origin_accepted(ro, &state.domain) {
+            return Err(BrokerError::PolicyRefused(crate::return_origin::REFUSAL.into()));
+        }
+    }
     let device_pub = parse_pub(&req.device_pubkey)?;
     let config_pub = parse_pub(&req.config_pubkey)?;
     let device_ref = device_status(&state, &device_pub)?;

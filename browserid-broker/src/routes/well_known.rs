@@ -36,7 +36,7 @@ where
     if !state.idp_host.eq_ignore_ascii_case(&state.domain)
         && host.eq_ignore_ascii_case(&state.idp_host)
     {
-        return Json(super::hosted_idp::tenant_support_document());
+        return Json(super::hosted_idp::tenant_support_document(state.wallet_origins(&state.idp_host)));
     }
 
     let mut doc = SupportDocument::new()
@@ -48,7 +48,10 @@ where
         // /auth/device_cert lane (bean 2jfh) — issuance is ceremony-page-
         // internal, through the /device/issue core.
         .with_device_authorization("/device-authorize")
-        .with_access_cert("/access/mint");
+        .with_access_cert("/access/mint")
+        // Accepted http(s) wallet return origins (fallback-idp-api-v1 §3.1),
+        // so a web wallet can fail before the user signs in.
+        .with_wallet_origins(state.wallet_origins(&state.domain));
     // Admission-record flows (spec §7.5): the support advertisement resources
     // capability-detect before using the credential-less connection lane.
     // Advertised only when the consent surface is on.

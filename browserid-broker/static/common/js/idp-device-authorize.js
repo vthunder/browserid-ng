@@ -24,28 +24,64 @@
   var hold = params.get("hold") === "1";
   var returnUrl = params.get("return_url") || "";
   var returnOriginRaw = params.get("return_origin") || "";
-  var returnOrigin = null;
-  try {
-    if (returnOriginRaw) {
-      var u = new URL(returnOriginRaw);
-      if (u.protocol === "https:" || u.protocol === "http:") returnOrigin = u.origin;
+  // Accepted return origins (fallback-idp-api-v1 §3.1): loopback and
+  // custom-scheme origins always (only code on the user's machine can
+  // receive them); http(s) only if the issuer lists it in `wallet-origins`
+  // (own origin included). The issuance endpoint enforces the same rule —
+  // this check exists so a refused wallet fails BEFORE the user signs in.
+  var returnOrigin = null;      // normalized origin string
+  var returnIsWeb = false;      // http(s): needs the issuer's list
+  (function () {
+    var m = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^\/?#]+)$/.exec(returnOriginRaw.trim());
+    if (!m) return;
+    var scheme = m[1].toLowerCase(), rest = m[2];
+    if (scheme !== "http" && scheme !== "https") {
+      returnOrigin = scheme + "://" + rest;  // custom scheme: return_url lane only
+      return;
     }
-  } catch (e) { /* invalid */ }
+    if (rest.indexOf("@") !== -1) return;
+    try {
+      var u = new URL(scheme + "://" + rest);
+      returnOrigin = u.origin;
+      var h = u.hostname.toLowerCase();
+      returnIsWeb = !(h === "127.0.0.1" || h === "[::1]" || h === "localhost");
+    } catch (e) { returnOrigin = null; }
+  })();
+  function sameOrigin(url) {
+    if (!returnOrigin) return false;
+    var m = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^\/?#]+)/.exec(url);
+    if (!m) return false;
+    var scheme = m[1].toLowerCase();
+    if (scheme !== "http" && scheme !== "https") return (scheme + "://" + m[2]) === returnOrigin;
+    try { return new URL(url).origin === returnOrigin; } catch (e) { return false; }
+  }
+  // Resolves true when a web return origin is on the issuer's list.
+  function originAccepted() {
+    if (!returnOrigin) return Promise.resolve(false);
+    if (!returnIsWeb) return Promise.resolve(true);
+    if (returnOrigin === window.location.origin) return Promise.resolve(true);
+    return fetch("/.well-known/browserid", { headers: { accept: "application/json" } })
+      .then(function (r) { return r.json(); })
+      .then(function (doc) {
+        var list = (doc && doc["wallet-origins"]) || [];
+        return list.some(function (o) {
+          return String(o).replace(/\/+$/, "").toLowerCase() === returnOrigin.toLowerCase();
+        });
+      }).catch(function () { return false; });
+  }
   // The certs certify the fragment's pubkeys, so the return_url delivery
   // lane must never navigate to a foreign origin: honor return_url only
   // when it is same-origin with the validated return_origin (bean 9it0).
-  if (returnUrl) {
-    try {
-      if (!returnOrigin || new URL(returnUrl).origin !== returnOrigin) returnUrl = "";
-    } catch (e) { returnUrl = ""; }
-  }
+  if (returnUrl && !sameOrigin(returnUrl)) returnUrl = "";
   // Drop the fragment from the address bar (defense in depth).
   try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
 
   $("subtitle").textContent = email ? "Signing in as " + email : "Continue to your account";
 
   function post(type, extra) {
-    if (!returnOrigin || !window.opener) return;
+    // postMessage needs an http(s) target; a custom-scheme wallet only has
+    // the return_url lane.
+    if (!returnOrigin || !/^https?:/.test(returnOrigin) || !window.opener) return;
     var msg = { type: type };
     if (extra) for (var k in extra) msg[k] = extra[k];
     window.opener.postMessage(msg, returnOrigin);
@@ -83,6 +119,7 @@
       device_pubkey: devicePubkey,
       config_pubkey: configPubkey,
       holder: holder || undefined,
+      return_origin: returnOriginRaw,
     }).then(function (res) {
       if (!res.ok || !res.body.success) {
         throw new Error(res.body.reason || "issuance failed");
@@ -144,15 +181,27 @@
     return;
   }
 
-  // If a session already exists (revisit within the window), skip the prompt.
-  fetch("/idp/whoami", { credentials: "same-origin" })
-    .then(function (r) { return r.json(); })
-    .then(function (j) {
-      if (j && j.email && j.email.toLowerCase() === email.toLowerCase()) {
-        proceed(!!j.must_change_password);
-      }
-    })
-    .catch(function () {});
+  // A wallet this issuer does not deliver to is told so BEFORE any password
+  // is typed (fallback-idp-api-v1 §3.1). There is no accepted origin to
+  // return the error to, so it is shown here and nowhere else.
+  originAccepted().then(function (ok) {
+    if (ok) {
+      // If a session already exists (revisit within the window), skip the prompt.
+      return fetch("/idp/whoami", { credentials: "same-origin" })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (j && j.email && j.email.toLowerCase() === email.toLowerCase()) {
+            proceed(!!j.must_change_password);
+          }
+        })
+        .catch(function () {});
+    }
+    $("login-form").classList.add("hidden");
+    $("subtitle").textContent = "This identity provider does not deliver sign-ins to " + returnOrigin + ".";
+    $("login-err").textContent = "return_origin_not_allowed";
+    returnOrigin = null;  // no delivery lane at all
+    returnUrl = "";
+  });
 
   // --- Login ---------------------------------------------------------------
   $("login-form").addEventListener("submit", function (e) {

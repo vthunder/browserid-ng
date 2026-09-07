@@ -14,6 +14,7 @@ pub mod fallback_fetcher;
 pub mod mint;
 pub mod proof_fetch;
 pub mod registrar_glue;
+pub mod return_origin;
 pub mod routes;
 pub mod oidc;
 pub mod state;

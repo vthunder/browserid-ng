@@ -78,6 +78,60 @@ test.describe('device-authorize return_url validation', () => {
     expect(new URL(page.url()).pathname).toBe(PAGE);
   });
 
+  test('refuses an untrusted web return_origin before any sign-in (qze7)', async ({ page }) => {
+    // The ceremony authenticates the user, never the wallet: an http(s)
+    // return_origin the issuer does not list in `wallet-origins` gets no
+    // password form, no delivery lane, and no navigation — the refusal is
+    // shown in-page (fallback-idp-api-v1 §3.1).
+    await stubIdpBackend(page);
+    let evilHit = false;
+    await page.route('https://evil.example/**', (route) => {
+      evilHit = true;
+      return route.fulfill({ contentType: 'text/html', body: '<html></html>' });
+    });
+    await page.goto(PAGE + frag({
+      email: 'user@tenant.example',
+      device_pubkey: 'devpub',
+      config_pubkey: 'cfgpub',
+      return_origin: 'https://evil.example',
+      return_url: 'https://evil.example/collect',
+    }));
+    await expect(page.locator('#login-err')).toHaveText('return_origin_not_allowed');
+    await expect(page.locator('#login-form')).toBeHidden();
+    await page.waitForTimeout(1500);
+    expect(evilHit).toBe(false);
+    expect(new URL(page.url()).pathname).toBe(PAGE);
+  });
+
+  test('accepts a loopback and a custom-scheme return_origin by construction (qze7)', async ({ page }) => {
+    // Loopback: the return_url lane delivers as usual.
+    await stubIdpBackend(page);
+    await page.route('http://127.0.0.1:4321/**', (route) =>
+      route.fulfill({ contentType: 'text/html', body: '<html><body>wallet</body></html>' }));
+    await page.goto(PAGE + frag({
+      email: 'user@tenant.example',
+      device_pubkey: 'devpub',
+      config_pubkey: 'cfgpub',
+      return_origin: 'http://127.0.0.1:4321',
+      return_url: 'http://127.0.0.1:4321/return',
+    }));
+    await page.waitForURL(/^http:\/\/127\.0\.0\.1:4321\/return#/);
+    expect(new URL(page.url()).hash).toContain('device_cert=dev.cert.sig');
+
+    // Custom scheme: the page must not refuse it. The browser cannot
+    // navigate to the scheme here, so assert only that the sign-in path
+    // is offered (no refusal shown) rather than delivery.
+    await page.goto(PAGE + frag({
+      email: 'user@tenant.example',
+      device_pubkey: 'devpub',
+      config_pubkey: 'cfgpub',
+      return_origin: 'mingo://wallet',
+      return_url: 'mingo://wallet/return',
+    }));
+    await page.waitForTimeout(1000);
+    await expect(page.locator('#login-err')).not.toHaveText('return_origin_not_allowed');
+  });
+
   test('rejects a return_url that mismatches a foreign return_origin', async ({ page }) => {
     // Both parameters attacker-supplied but inconsistent with each other:
     // the same-origin rule strips return_url, and with no window.opener the

@@ -163,12 +163,13 @@ fn idp_session<U: UserStore, S: SessionStore, E: EmailSender>(
 // the tenant's key lives only in its own DNSSEC record.
 // ---------------------------------------------------------------------------
 
-pub fn tenant_support_document() -> browserid_core::discovery::SupportDocument {
+pub fn tenant_support_document(wallet_origins: Vec<String>) -> browserid_core::discovery::SupportDocument {
     let mut doc = browserid_core::discovery::SupportDocument::delegate("unused");
     doc.authority = None;
     doc.device_cert = Some("/idp/device_cert".into());
     doc.access_cert = Some("/idp/access_cert".into());
     doc.device_authorization = Some("/idp/device-authorize".into());
+    doc.wallet_origins = Some(wallet_origins);
     doc
 }
 
@@ -336,6 +337,10 @@ pub struct IdpDeviceCertRequest {
     /// Passthrough holder from the dialog; absent = cold login, self-assign.
     #[serde(default)]
     pub holder: Option<String>,
+    /// The wallet's `return_origin` (fallback-idp-api-v1 §3.1); see
+    /// `DeviceIssueRequest::return_origin`.
+    #[serde(default)]
+    pub return_origin: Option<String>,
 }
 
 pub async fn idp_device_cert<U, S, E>(
@@ -362,6 +367,11 @@ where
     let email = format!("{local}@{domain}");
     if email != session_email {
         return err(StatusCode::FORBIDDEN, "signed-in identity does not match".into());
+    }
+    if let Some(ro) = req.return_origin.as_deref().filter(|s| !s.trim().is_empty()) {
+        if !state.return_origin_accepted(ro, &state.idp_host) {
+            return err(StatusCode::FORBIDDEN, crate::return_origin::REFUSAL.into());
+        }
     }
     let tenant = match active_tenant(state.user_store.as_ref(), &domain) {
         Ok(t) => t,

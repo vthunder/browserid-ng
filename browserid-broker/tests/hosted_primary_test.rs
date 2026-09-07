@@ -1161,3 +1161,55 @@ async fn list_emails_flags_managed_addresses() {
     assert_eq!(managed[0]["email"], email.as_str(), "{resp}");
     assert_eq!(managed[0]["domain"], TENANT, "{resp}");
 }
+
+/// fallback-idp-api-v1 §3.1 (bean qze7): the tenant issuance endpoint
+/// refuses an untrusted http(s) `return_origin` and accepts native ones.
+#[tokio::test]
+async fn idp_device_cert_enforces_accepted_return_origins() {
+    let (server, store) = make_server();
+    seed_active_tenant(&store);
+    let tenant = store.get_tenant(TENANT).unwrap().unwrap();
+    store
+        .create_roster_entry(tenant.id, "dana", &bcrypt_hash("chosenbyadmin1"), false, "admin@example.org")
+        .unwrap();
+    let email = format!("dana@{TENANT}");
+    let (cookie, _) = idp_login(&server, &email, "chosenbyadmin1").await;
+
+    let issue = |origin: &'static str| {
+        let cookie = cookie.clone();
+        let email = email.clone();
+        let server = &server;
+        async move {
+            let r = server
+                .post("/idp/device_cert")
+                .add_cookie(cookie::Cookie::new("idp_session", cookie))
+                .json(&json!({
+                    "email": email,
+                    "device_pubkey": KeyPair::generate().public_key().to_base64(),
+                    "config_pubkey": KeyPair::generate().public_key().to_base64(),
+                    "return_origin": origin,
+                }))
+                .await;
+            (r.status_code().as_u16(), r.json::<Value>())
+        }
+    };
+
+    let (status, body) = issue("https://evil.example").await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["reason"], "return_origin_not_allowed");
+
+    for o in ["http://127.0.0.1:5555", "mingo://wallet", "https://browserid.me", "http://idp.localhost:3000"] {
+        let (status, body) = issue(o).await;
+        assert_eq!(status, 200, "{o}: {body}");
+        assert_eq!(body["success"], true, "{o}");
+    }
+
+    // The tenant support document advertises the list too.
+    let doc: Value = server
+        .get("/.well-known/browserid")
+        .add_header("host", IDP_HOST)
+        .await
+        .json();
+    let list = doc["wallet-origins"].as_array().expect("wallet-origins").clone();
+    assert!(list.iter().any(|o| o.as_str().map_or(false, |s| s.ends_with("://idp.localhost:3000"))), "{list:?}");
+}

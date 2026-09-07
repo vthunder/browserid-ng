@@ -119,6 +119,23 @@ test.describe('fallback device-authorize ceremony', () => {
     expect(new URL(page.url()).hash).toContain('device_error=cancelled');
   });
 
+  test('refuses an untrusted web return_origin before any sign-in (qze7)', async ({ page, baseURL }) => {
+    let evilHit = false;
+    await page.route('https://evil.example/**', (route) => {
+      evilHit = true;
+      return route.fulfill({ contentType: 'text/html', body: '<html></html>' });
+    });
+    const url = pageUrl(baseURL!, uniqueEmail('evil'), { returnUrl: 'https://evil.example/collect' })
+      .replace(`return_origin=${encodeURIComponent(baseURL!)}`, `return_origin=${encodeURIComponent('https://evil.example')}`);
+    await page.goto(url);
+    await expect(page.locator('#fatal')).toBeVisible();
+    await expect(page.locator('#fatal-msg')).toContainText('return_origin_not_allowed');
+    await expect(page.locator('#login-form')).toBeHidden();
+    await page.waitForTimeout(1500);
+    expect(evilHit).toBe(false);
+    expect(new URL(page.url()).pathname).toBe('/device-authorize');
+  });
+
   test('never navigates to a cross-origin return_url', async ({ context, page, baseURL }) => {
     const email = uniqueEmail('evil');
     await createAccount(context, baseURL!, email);

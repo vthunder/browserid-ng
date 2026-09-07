@@ -118,6 +118,10 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// host locally). Used to build the tenant support doc's absolute
     /// status URIs and the generated DNS record text.
     pub idp_host: String,
+    /// http(s) wallet origins the ceremony pages may deliver certs to,
+    /// beyond the issuer's own origin (fallback-idp-api-v1 §3.1). Loopback
+    /// and custom-scheme origins are accepted regardless.
+    pub trusted_wallet_origins: Vec<String>,
     /// OIDC claim ceremony (browserid-ng-qer8): claim a Google-hosted
     /// mailbox by signing in with Google instead of a mailed code. `None`
     /// (no `OIDC_GOOGLE_CLIENT_ID/SECRET`) keeps the whole bridge inert —
@@ -191,6 +195,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             signin_code_attempts: std::sync::RwLock::new(HashMap::new()),
             tenant_keystore: None,
             idp_host: domain_for_idp,
+            trusted_wallet_origins: crate::return_origin::DEFAULT_TRUSTED.iter().map(|s| s.to_string()).collect(),
             oidc: None,
             bridge_mint_grants: std::sync::RwLock::new(HashMap::new()),
         }
@@ -230,6 +235,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             signin_code_attempts: std::sync::RwLock::new(HashMap::new()),
             tenant_keystore: None,
             idp_host: domain_for_idp,
+            trusted_wallet_origins: crate::return_origin::DEFAULT_TRUSTED.iter().map(|s| s.to_string()).collect(),
             oidc: None,
             bridge_mint_grants: std::sync::RwLock::new(HashMap::new()),
         }
@@ -270,6 +276,29 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
     }
 
     /// Register a mock primary IdP for testing
+    /// The issuer's own origin for host `domain` (its first-party dialog),
+    /// used as an always-accepted `return_origin`.
+    pub fn own_origin(domain: &str) -> String {
+        browserid_registrar::consent::public_origin(domain)
+    }
+
+    /// Accepted-origin check for the ceremony's `return_origin`, for the
+    /// issuer reached at `domain` (the broker's own or the hosted-IdP host).
+    pub fn return_origin_accepted(&self, raw: &str, domain: &str) -> bool {
+        crate::return_origin::is_accepted(raw, &Self::own_origin(domain), &self.trusted_wallet_origins)
+    }
+
+    /// The advertised `wallet-origins` list: own origin + configured.
+    pub fn wallet_origins(&self, domain: &str) -> Vec<String> {
+        let mut v = vec![Self::own_origin(domain)];
+        for o in &self.trusted_wallet_origins {
+            if !v.iter().any(|x| x.eq_ignore_ascii_case(o)) {
+                v.push(o.clone());
+            }
+        }
+        v
+    }
+
     pub async fn register_mock_primary_idp(&self, domain: String, config: MockPrimaryIdp) {
         self.mock_primary_idps.write().await.insert(domain, config);
     }

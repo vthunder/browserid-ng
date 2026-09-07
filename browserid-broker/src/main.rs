@@ -106,6 +106,10 @@ async fn main() -> Result<()> {
     // defaults to the broker's own domain when unset (shared origin — fine for
     // local/test). `TENANT_KEYSTORE_KEY` (64 hex chars) seals custodial tenant
     // private keys at rest; absent → tenant onboarding is refused.
+    // Trusted web wallets (fallback-idp-api-v1 §3.1): the http(s) return
+    // origins the ceremony pages deliver certs to, beyond our own origin.
+    state.trusted_wallet_origins = browserid_broker::return_origin::from_env();
+    tracing::info!(origins = ?state.trusted_wallet_origins, "Trusted wallet origins");
     if let Some(h) = std::env::var("IDP_HOST").ok().filter(|s| !s.trim().is_empty()) {
         state.idp_host = h.trim().to_string();
     }
