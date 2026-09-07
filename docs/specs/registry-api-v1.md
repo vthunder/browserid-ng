@@ -35,8 +35,8 @@ The flows, at a glance (the wallet's side; RP login itself is core
 
 | Flow | What the wallet does |
 |---|---|
-| First use | Issuer sign-in → auth + config cert → `attach` naming no account (§5.2.1): account created, its id and a session returned. Registries SHOULD prompt the user to set up a guard kind a lone device can pass (§4.2). |
-| New device | Issuer sign-in → certs → `attach`; pass the guard (§4.2): approval from an existing device, a password, further identities, or a page the registry runs. A shared computer is a new device like any other. |
+| First use | Issuer sign-in → auth + config cert → `attach` naming no account (§5.2.1): account created, its id and a session returned. Registries SHOULD prompt the user to set up a way a lone device can later pass the guard (§4.2). |
+| New device | Issuer sign-in → certs → `attach`; pass the guard (§4.2): a page the registry runs, which checks whatever the registry chooses. A shared computer is a new device like any other. |
 | Sign in at an RP | `warrants/lookup` (§5.4) for the site if the device lacks the warrant, `allocate_status` (§5.4) when minting one; then present. |
 | Approve an agent | `GET requests` → `respond` with client-signed warrants (§5.3). |
 | Add an identity | Issuer sign-in for it → `attach` naming the account under a write session (§5.2.1). |
@@ -145,7 +145,7 @@ A suspended identity shows in the roster with `state: "suspended"`
 and is not an account identity for any other purpose: a call naming
 it is refused as it would be for a stranger's identity. The hold
 protects against issuer mistakes and races over a mailbox, not
-against losing the address: an owner who can pass no guard kind
+against losing the address: an owner who cannot pass the guard
 cannot return. A registry that also runs an issuer MUST NOT let a
 newly joined address reset the issuer's password until the issuer
 has verified it itself.
@@ -158,11 +158,11 @@ The guard is the registry's check for that. A device passes it when
 it first joins an account (§5.2.1). To make an existing device pass
 it again, a registry ends its session (§4.5) and answers the next
 `session` `403 forbidden/guard_required`; it SHOULD NOT do so unless
-another device on the account still holds a session or a kind is
-offered that needs no other device. No other call is refused for the
+another device on the account still holds a session or its page
+offers a way through that needs no other device. No other call is refused for the
 guard alone.
 
-**Token.** Every kind of guard ends as a guard token: opaque,
+**Token.** Passing the guard ends as a guard token: opaque,
 single-use, valid for the registry's window (RECOMMENDED 1 h from
 mint), bound to the account that held `identity` at mint and to the
 set of certs it was requested for. It is spent through the `guard`
@@ -179,62 +179,28 @@ identities:
 
 ```json
 { "error": "forbidden", "reason": "guard_required",
-  "guard_kinds": [
-    { "kind": "device_approval" },
-    { "kind": "password" },
-    { "kind": "additional_identities", "min": 1, "distinct_issuer": true },
-    { "kind": "page", "url": "https://…" } ] }
+  "guard_kinds": [ { "kind": "page", "url": "https://…" } ] }
 ```
 
-**`POST /api/v1/guard`** — Obtains a token. Carries a `Proof` header
-and the device's certs (1–2, one holder) with possession proofs
-(§4.4), so the token binds to what `attach` will carry. Body:
-`{ "kind", "identity", "account"?, "certs": [ { "cert", "proof" } ], … }`
-plus the kind's own fields; `account` names the account when the
-wallet has one (an identity may be active on one and suspended on
-another, §4.1; otherwise the active one is meant). Response
-`200 { "guard": "<token>" }`. Any failure — wrong secret, unknown
-identity, policy not met — answers `403 forbidden/guard_rejected`; the
-endpoint never reveals whether an address is in use. Cert failures
-answer `422 invalid_cert/<reason>`.
+**Kinds.** v1 defines one, and every registry offers it. A registry
+MAY add kinds of its own; a wallet ignores kinds it does not
+recognise.
 
-Kinds (every registry offers the first; the rest are OPTIONAL and
-advertised in `guard_kinds`, §5.1, the same list the refusal carries;
-registries SHOULD offer one a user with no other device can pass):
-
-- **`device_approval`** — approval from a device already on the
-  account. The call files a `kind: "device"` request (§5.3), valid for
-  the window, and answers `202 { "guard": "<request code>" }`: the
-  code is the token, usable once approved. At most one open request
-  per set of keys and 3 per (identity, source); a further one evicts
-  the oldest from that source. An existing device shows it (identity,
-  issuer, holder label, every key fingerprint) and answers
-  `requests/respond` `{ "code", "approve" }`. The new
-  device retries its call with `guard` set to the code, MAY long-poll
-  the retry with `?wait=<seconds>` (cap 60), and gets
-  `403 forbidden/guard_required` again while pending,
-  `403 forbidden/guard_rejected` once denied or expired, and success
-  once approved. Wallets SHOULD show the fingerprints on the new
-  device for comparison.
-- **`password`** — a secret the registry holds for the account, sent
-  as `"secret"`. Wrong secrets are rate-limited per source and per
-  account with backoff, never reported as a lockout. The secret SHOULD
-  NOT be resettable using only the address being joined: whoever
-  controls that address is who the guard exists to stop.
-- **`additional_identities`** — fresh certs for further identities on
-  the account, sent as `"extra": [ { "cert", "proof" }, … ]`, not
-  recorded by this call. They MUST be distinct from `identity` and
-  from each other's root (core §4.6) and active on the account; the
-  policy is the advertised `min` and `distinct_issuer`.
-- **`page`** — any check the registry runs in a browser. The wallet
+- **`page`** — a check the registry runs in a browser. The wallet
   opens `url#certs=…&identity=…&return_url=…&return_origin=…` (the
   fragment and return convention of the issuer sign-in page,
   fallback-IdP API §3.1) and the page ends with
-  `return_url#guard=<token>`. The page MUST show the identity and key
-  fingerprints, MUST require an explicit user action, MUST NOT complete
-  on ambient credentials alone, and MUST validate `return_origin`.
-
-A wallet ignores kinds it does not recognise.
+  `return_url#guard=<token>` or `return_url#guard_error=<reason>`.
+  The token binds to `identity` and to the certs in the fragment. The
+  page MUST show the identity and key fingerprints, MUST require an
+  explicit user action, MUST NOT complete on ambient credentials
+  alone, and MUST validate `return_origin`. What it checks is the
+  registry's business: a password, a code the user confirms on a
+  device already on the account, or proof of another identity on the
+  account, which the page obtains as any site does — through the
+  login mediator (core §7.3), which every wallet exposes to the pages
+  it opens. A page SHOULD offer a way through for a user with no other
+  device.
 
 ### 4.3 Authority
 
@@ -378,7 +344,7 @@ ignored.
 | `endpoint` | REQUIRED. Absolute URL prefix of this API (`…/api/v1`, no trailing slash); MUST be same-origin with the advertising document. Its origin is the public origin §4.4 `htu` builds on. |
 | `status_list` | REQUIRED. The registry's signed status list (core §6.3), same-origin. Advertisement only — verifiers reach lists through each status ref's `uri`, never discovery. |
 | `browser` | REQUIRED (may be empty). Browser-ceremony URLs for flows a native wallet can't do natively; keys defined by the fallback-IdP spec (v1: `account`). |
-| `guard_kinds` | REQUIRED. Every guard kind the registry offers (§4.2), as the `guard_required` body lists them, `device_approval` included. |
+| `guard_kinds` | REQUIRED. Every guard kind the registry offers (§4.2), as the `guard_required` body lists them, `page` included. |
 
 No key material here (core §3.1: keys come solely from DNSSEC).
 
@@ -495,29 +461,27 @@ Every item has a `kind`, which says who is asking for what:
   (core §7.5);
 - `"authoring"` — a site asks the user to admit an agent as an
   author on it (core §7.5);
-- `"device"` — a new device asks to join the account (§4.2);
 - `"notice"` — the registry tells the user an identity changed
   hands (§4.1); nothing to answer.
 
 Which fields an item carries depends on its kind; a ✓ below means
 present:
 
-| Field | agent | connection | authoring | device | notice |
-|---|---|---|---|---|---|
-| `code` — the capability code | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `grantor` — the identity to sign as; `"*"` lets the approver choose | ✓ | ✓ | ✓ | | |
-| `grantee` — the agent identity asking | ✓ | | ✓ | | |
-| `holder` — the holder id the grant binds to | ✓ | | ✓ | | |
-| `grants` — `[{ audience, scopes, status_idx?, grantee? }]`, one warrant per entry, in order; `grantee` absent means the request's | ✓ | ✓ | ✓ | | |
-| `label`, `display_name?`, `message?`, `client_host?`, `client_name?`, `agent_created_at?`, `known` (the grantee already holds a warrant here) | ✓ | ✓ | ✓ | | |
-| `binding_id` — the connection's broker-minted binding (core §7.5) | | ✓ | | | |
-| `devices` — `[{ identity, iss, holder, label?, fingerprint, purpose, issued_at }]`, every cert shown; answered with `approve` alone | | | | ✓ | |
-| `notice` — `{ identity, reason, at }`; `reason` `"left"` (transferred, taken over, or detached) or `"returned"`; no response, expires after the hold | | | | | ✓ |
-| `external`, `created_at`, `expires_at` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Field | agent | connection | authoring | notice |
+|---|---|---|---|---|
+| `code` — the capability code | ✓ | ✓ | ✓ | ✓ |
+| `grantor` — the identity to sign as; `"*"` lets the approver choose | ✓ | ✓ | ✓ | |
+| `grantee` — the agent identity asking | ✓ | | ✓ | |
+| `holder` — the holder id the grant binds to | ✓ | | ✓ | |
+| `grants` — `[{ audience, scopes, status_idx?, grantee? }]`, one warrant per entry, in order; `grantee` absent means the request's | ✓ | ✓ | ✓ | |
+| `label`, `display_name?`, `message?`, `client_host?`, `client_name?`, `agent_created_at?`, `known` (the grantee already holds a warrant here) | ✓ | ✓ | ✓ | |
+| `binding_id` — the connection's broker-minted binding (core §7.5) | | ✓ | | |
+| `notice` — `{ identity, reason, at }`; `reason` `"left"` (transferred, taken over, or detached) or `"returned"`; no response, expires after the hold | | | | ✓ |
+| `external`, `created_at`, `expires_at` | ✓ | ✓ | ✓ | ✓ |
 
-`expires_at` mirrors the filing lane's `expires_in` (core §7.5);
-device requests use the §4.2 window. A wallet SHOULD render a request
-from a grantee it has never met deny-first.
+`expires_at` mirrors the filing lane's `expires_in` (core §7.5). A
+wallet SHOULD render a request from a grantee it has never met
+deny-first.
 
 **`POST /api/v1/requests/claim`** — Claims a pending agent,
 connection, or authoring request and allocates a status index into
@@ -534,7 +498,7 @@ another account answers `404 not_found`.
 | Field | Meaning |
 |---|---|
 | `code` | REQUIRED. Unknown, expired, already answered, or a notice ⇒ `404 not_found`. |
-| `approve` | REQUIRED. When `false`, the other fields are ignored. For `kind: "device"`, `true` needs nothing else either. |
+| `approve` | REQUIRED. When `false`, the other fields are ignored. |
 | `warrants` | On approve: `["<JWS>", …]`, one client-signed warrant per grant, in order; all or nothing (`422 invalid_warrant/warrant_count_mismatch`). |
 | `config_cert` | On approve: the config cert whose key signed them. MUST be an unretired cert of the account (`422 invalid_warrant/config_cert_not_recorded`). |
 | `grantor` | OPTIONAL, default the request's `grantor`. Must equal it when pinned (`grantor_pinned_mismatch`); when the pin is `"*"`, any active identity on the account the `config_cert` authorizes. |
@@ -746,8 +710,8 @@ With `forbidden` (`403`):
 | Reason | Meaning |
 |---|---|
 | `config_cert_required` | The call needs a config-cert member and the session has none (§4.3). |
-| `guard_required` | The guard was not passed (§4.2): on `attach`, `detach`, `delete`, or `session` when the registry asks; a device-approval retry still pending; body carries `guard_kinds`. |
-| `guard_rejected` | `guard`: wrong secret, unknown identity, denied or expired approval, or a policy the extra identities do not meet (§4.2). |
+| `guard_required` | The guard was not passed (§4.2): on `attach`, `detach`, `delete`, or `session` when the registry asks; body carries `guard_kinds`. |
+| `guard_rejected` | The `guard` token is unknown, spent, expired, or bound to other certs or another account (§4.2). |
 
 With `invalid_cert` — the **validity bar** (`401` on `session`, `422`
 on `attach` and `guard`), in check order:
