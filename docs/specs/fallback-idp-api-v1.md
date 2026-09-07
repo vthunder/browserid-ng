@@ -60,7 +60,7 @@ the web dialog, which cannot run discovery itself.)
 The reference fallback IdP advertises both: its ceremony page is
 mounted at `/device-authorize` over the broker-session backend, and
 its one issuance core also serves the web dialog (the legacy
-`/auth/device_cert` batch lane is retired; bean 2jfh).
+`/auth/device_cert` batch lane is retired).
 
 ## 3. The ceremony page
 
@@ -80,26 +80,27 @@ they chose — a warrant-signing takeover. The ceremony authenticates
 the user; `return_origin` is the only thing that says which wallet is
 asking. The issuer therefore MUST deliver only to an **accepted
 return origin**, and MUST reject unless `return_url` is same-origin
-with it. Accepted by construction, at every issuer:
+with that `return_origin`. Accepted return origins are:
 
 - a loopback origin (`http://127.0.0.1:*`, `http://[::1]:*`,
-  `http://localhost:*`);
-- a custom-scheme origin (`scheme://…`, any non-http(s) scheme).
+  `http://localhost:*`) — always accepted;
+- a custom-scheme origin (any non-http(s) scheme) — always accepted;
+- a trusted web wallet: an http(s) origin on the issuer's configured
+  list.
 
-Both can only be received by code already running on the user's
-machine, so a web page cannot claim them. An http(s) origin is
-accepted ONLY if it is on the issuer's configured list of trusted
-web wallets. The list is issuer policy, not protocol: the
-reference IdP ships with `https://browserid.me` and its own origin,
-and other deployments are recommended but not required to include
-it. Anything else is refused with `return_origin_not_allowed` (§6).
-The check MUST be enforced on the issuance endpoint, not only in the
-page, so a page regression cannot reopen it.
+The first two can only be received by code already running on the
+user's machine, so a web page cannot claim them; no issuer may
+refuse them. The third is issuer policy, not protocol: which web
+wallets to trust is a deployment decision, and an issuer MAY trust
+none. Any other origin is refused with `return_origin_not_allowed`
+(§6). The check MUST be enforced on the issuance endpoint, not only
+in the page, so a page regression cannot reopen it.
 
 This closes the drive-by case (a page that opens the ceremony with
-its own keys) but not a local attacker who squats a loopback port
-or a custom scheme, nor consent phishing through a trusted wallet;
-those are bean i63t (existing-device approval of a new device).
+its own keys). It does not cover a local attacker who squats a
+loopback port or a custom scheme, nor consent phishing through a
+trusted wallet; those require the issuer to have an existing device
+approve a new one, which this version does not specify.
 
 The page may be rendered in an embedded window or the system
 browser; the contract is the same. Embedded with a persistent
@@ -122,7 +123,7 @@ satisfy:
   last forever; when the issuer considers it stale (age, password
   reset), the page re-runs the mailbox ceremony before returning
   certs. (Not yet enforced by the broker: `verified_at` is currently
-  write-only; bean uboq.)
+  write-only.)
 - **A fresh holder.** The certs bind the fragment's keys to a holder
   the issuer assigns fresh — never taken from the page's own browser
   session. The resulting device is the wallet, not the browser the
@@ -204,12 +205,11 @@ Resolved (2026-08-28 review):
 1. **No native credential lane.** Passwords, codes, and proofs stay
    inside the ceremony page. Password-over-API is scriptable attack
    surface; client-side digests defeat nothing against bcrypt
-   storage; PAKE/passkeys are protocol-wide successors (bean n0ut).
+   storage; PAKE/passkeys are protocol-wide successors.
 2. **The fallback presents as a primary**; `address_info` is not
    part of the native contract.
 3. **Issuance bar unchanged** (the session lane's bar). Verification
-   max-age is issuer policy, not spec: browserid.me uses 90 days
-   (bean uboq).
+   max-age is issuer policy, not spec: browserid.me uses 90 days.
 4. **Holder matches the primary lane** — issuer-assigned, fresh,
    never the ceremony page's session state.
 5. **Registration is always wallet-driven** through the registry
@@ -217,12 +217,12 @@ Resolved (2026-08-28 review):
    depend on. Requires `devices/register` in registry-api-v1 §5.3.
 6. **Fallback choice is bounded by RP acceptance** (core §8.1),
    enforced at verification. Gap: the native wallet lane does not
-   yet forward the RP's `acceptedFallbacks` (bean u6jq).
+   yet forward the RP's `acceptedFallbacks`.
 7. **Config-cert coverage tracks the authentication bar** (§3.2):
    the `local+*@domain` wildcard is allowed only when the ceremony
    reached the password/session bar; a weaker bar issues exact-only
    (the 7ww7 rule). Consolidation of the broker's three issuance
-   lanes onto one core is bean 2jfh.
+   lanes onto one core is a broker implementation task.
 8. **Return origins are issuer-accepted, native by construction**
    (§3.1). The ceremony authenticates the user, never the wallet, so
    any web page could otherwise obtain a victim-identity config cert
@@ -230,6 +230,5 @@ Resolved (2026-08-28 review):
    always accepted; http(s) origins only from the issuer's trusted
    list. The list is deployment policy so no wallet vendor is
    privileged by the protocol, while native wallets can never be
-   locked out. Existing-device approval of new devices (i63t)
-   remains the structural fix for local attackers and consent
-   phishing.
+   locked out. Existing-device approval of new devices remains the
+   structural fix for local attackers and consent phishing.
