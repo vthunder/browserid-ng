@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-09-07T19:14:20Z
+updated_at: 2026-09-07T20:16:58Z
 parent: browserid-ng-9yyk
 ---
 
@@ -169,3 +169,16 @@ Order follows the implementability review (riskiest first). Each step lands with
 - [ ] **14. Tests**: table-driven per-endpoint tier tests; attach case-list tests (all 9 cases); guard kinds; hold/restore incl. contested flip; SqliteStore cascade test; e2e (warm broker on :3000 first).
 
 Blocked-by: nothing hard. Related: zpbh (cookie lane, after step 13), wuoc (sibling drift, after spec is final), 7wj3 (foreign-cert revocation), dksx (broker guard/reset policy), d51o (unlist guard-rails — now `live_warrant`, may close).
+
+## Simplification round (Dan 2026-09-07, evening) — APPLIED to working tree, uncommitted
+
+Dan: "I resisted it but I relent." Rulings + edits:
+- (1) LOOKUP TIER DROPPED, and tier vocabulary with it. Shared computer = a new device (device approval or password). §4.3 is now one rule: calls that change or sign for the account need a **config-cert member** (403 forbidden/config_cert_required); §5 marks them **Config**. read_required/write_required/identity_suspended/lookup_tier/guarded flag/Session-Members/'joined' notice all gone. Session body: no tier; members carry purpose.
+- (2) GUARD: OPEN. Dan asked whether the page could run issuer sign-in for additional identities; my answer: mechanically yes, but that normalizes the exact phishing shape (any page can already open the issuer ceremony with its own keys; only issuer UX defends). Proposal on the table: page = required kind (covers password + device approval), additional_identities DEFERRED from v1, registries MAY add kinds. §4.2 kinds untouched pending ruling.
+- (3) create/attach split DROPPED (2nd device doesn't know the account id).
+- (4) Re-guard = session invalidation: registry ends the session, next `session` may answer guard_required; SHOULD NOT strand an account. Applied §4.2 + §4.5.
+- (5) HOLD kept (undo of warrant loss), decoration stripped: identity_suspended reason, 'held at the door' sentence, `suspended` warrant field (listed revoked:true), quarantine-vs-delete unified, delete `immediate` dropped, notice reasons → left/returned, hold_until dropped.
+- (6) UNINDEXED WARRANTS GONE: register requires the ref allocate_status holds for the record key (status_ref_mismatch); unlist/confirm_unrevoked/live_warrant/no_status_ref/indexing deleted; registry MAY drop expired records. holders/move deleted (+holder_moved, moving_to, already_in_namespace). GET sessions + end-other deleted (holders/forget = 'remove this device'; retiring a cert ends sessions). Idempotency-Key deleted.
+Spec 856 → 800 lines. NEXT: Dan rules on (2); then field guide + status artifact refresh; commit.
+
+Filed 2026-09-07: i63t (core wallet-to-IdP authentication gap found via item 2 — guard kinds stay as-is until it lands) and fp66 (§5.4 warrant-registry mechanics review). Both blocked-by this bean.
