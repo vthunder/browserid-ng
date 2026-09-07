@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-09-07T20:16:58Z
+updated_at: 2026-09-07T21:25:31Z
 parent: browserid-ng-9yyk
 ---
 
@@ -182,3 +182,5 @@ Dan: "I resisted it but I relent." Rulings + edits:
 Spec 856 → 800 lines. NEXT: Dan rules on (2); then field guide + status artifact refresh; commit.
 
 Filed 2026-09-07: i63t (core wallet-to-IdP authentication gap found via item 2 — guard kinds stay as-is until it lands) and fp66 (§5.4 warrant-registry mechanics review). Both blocked-by this bean.
+
+Update 2026-09-07: i63t shelved (deferred). The live attack was closed by qze7 (accepted return origins, deployed). Guard kinds are no longer waiting on i63t; the page-only guard simplification in item 2 can proceed on its own merits.

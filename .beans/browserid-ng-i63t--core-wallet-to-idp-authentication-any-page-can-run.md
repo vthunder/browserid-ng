@@ -3,9 +3,9 @@
 title: 'Core: wallet-to-IdP authentication — any page can run the issuer sign-in ceremony with its own keys'
 status: todo
 type: feature
-priority: high
+priority: deferred
 created_at: 2026-09-07T20:16:28Z
-updated_at: 2026-09-07T20:45:59Z
+updated_at: 2026-09-07T21:25:22Z
 blocked_by:
     - browserid-ng-0c49
 ---
@@ -42,3 +42,9 @@ Split into two layers:
 2. **This bean stays open for the structural fix**: existing-device approval of a new device, IdP-side, first enrollment excepted. Covers what the allowlist cannot: local attackers squatting loopback/custom schemes, and consent phishing through a trusted wallet. Design question to settle: what the approval prompt looks like on an existing device for a native wallet vs the browser dialog.
 
 Dropped from the directions list: "wallet pulls certs via an authenticated channel" does not authenticate the wallet (the attacker holds the keys too; it only prevents the 9it0 leak), and "wallet-held secret from first enrollment" is equivalent to an existing device cert.
+
+## Shelved 2026-09-07
+
+Dan: the existing-device approval design (pending request, second-device prompt, polling, recovery path with delay) is too much machinery for the residual it covers. The accepted-return-origin rule (qze7, deployed) closes the drive-by web case, which was the live attack. Revisit only if a concrete need appears: a local-attacker incident, or a trusted web wallet being used for consent phishing.
+
+0c49 should not wait on this bean; the registry guard's device_approval kind can be simplified independently.
