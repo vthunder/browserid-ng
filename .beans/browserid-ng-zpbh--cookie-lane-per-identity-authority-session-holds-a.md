@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-09-04T23:32:18Z
-updated_at: 2026-09-04T23:32:18Z
+updated_at: 2026-09-07T19:14:28Z
 parent: browserid-ng-71vt
 blocked_by:
     - browserid-ng-0c49
@@ -19,3 +19,5 @@ Ruled by Dan 2026-09-05: real gap, tackle separately once the token lane is full
 - [ ] Every /wsapi handler resolves its subject identity and checks it against the session's set + tier (same §3.3 subject table as the API)
 - [ ] /account page UI: show which identities the session has proven; prompt to sign in as another to act on it
 - [ ] §3.4 / invariant 1 in registry-api-v1: restate parity as 'same subject rule' and close the gap note
+
+2026-09-07: spec committed at 45b8f0c. Cookie lane work starts after 0c49 step 13 (token shim removed). Note the target moved: per-identity authority was replaced by account tiers + the guard; the cookie session should become a session on an explicit account at a tier, minted from a presentation, with the same guard at first sign-in from a new browser.

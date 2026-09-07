@@ -1,11 +1,11 @@
 ---
 # browserid-ng-0c49
 title: Build registry-api-v1 §5.6 account membership (attach/detach/transfer cascade)
-status: todo
+status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-09-07T18:34:27Z
+updated_at: 2026-09-07T19:14:20Z
 parent: browserid-ng-9yyk
 ---
 
@@ -15,7 +15,7 @@ STATUS 2026-09-02: spec r3 WRITTEN and COMMITTED (96eac4a) — self-authenticati
 
 R2-ERA CONTEXT (superseded): Spec was SETTLED — registry-api-v1 §5.6 (synchronous attach/detach with inline browserid-membership-v1 records, transfer-on-proof with loser notification, revoke-and-drop of derived agent children) + §7.1 reasons + §10.8 decision log; design history and parity table live on bean 1sb3; reset-channel mitigations are bean dksx (explore separately).
 
-Implementation checklist:
+Implementation checklist (R2-ERA, SUPERSEDED — see '## r5 implementation checklist' at the end of this bean):
 - [ ] Registrar: POST /api/v1/account/attach + /api/v1/account/detach; membership-record validation (config-cert bar, grantor ownership, subject match, ≤300s window, jti replay cache)
 - [ ] Transfer cascade (shared core): hg2j-scoped cert revocation at the loser + grantor-warrant revocation + derived-agent revoke-and-drop (this also FIXES a93p for the shipped cookie transfer arms — wire them through the same core) + kind:'notice' inbox item + out-of-band notify SHOULD + emptied-account deletion
 - [ ] Host/store capabilities: identity ownership moves, agent-children enumeration, notice items in the inbox shape (§5.1)
@@ -146,3 +146,26 @@ ADVERSARIAL REVIEW ROUND 3 (2026-09-07, six fresh reviewers, reports scratchpad 
 ROUND 3 APPLIED 2026-09-07 (Dan's rulings). Spec rewritten again with the new ORDER: §4.1 identities/accounts (model) → §4.2 guard → §4.3 tiers → §4.4 proof → §4.5 sessions; §5.1 discovery → §5.2 membership (attach/detach/delete) → §5.3 inbox → §5.4 warrants → §5.5 certs → §5.6 holders. A1+D1: the device-approval request CODE is the token; the retry of the guarded call is the poll (403 guard_required while pending, guard_rejected when denied/expired). A2: guard call carries the full cert set; token bound to (account at mint, cert set); attach must carry exactly that set. A3: 'certs retired on leaving' clause DELETED. A4: freshness on every account-changing case incl. restore; guard row needs none; token clock from mint, window 1 h. A5: page MUST show fingerprints, explicit action, no ambient completion, validate return_origin. A6: revoke ⇒ fresh index next allocation; register never clears a set bit; restore clears only suspension bits. A7/A8: attach as ordered case lists (no account / account named), tier fixed at open, unknown account ⇒ guard_required, held-by = active account, read→write by design stated, retired never revived, identity normalization, records key, bh on every POST, device requests omitted at read, lookup skips suspended, error ordering. A9: request fields per kind (columns); grantor/grantee names (D7); admission reasons not_self_grant/binding_mismatch; deny-first as wallet SHOULD. A10: caps per (identity, source) w/ eviction; guard_kinds registry-wide; status.uri host MUST equal iss; replay entries live to window; recorded identities everywhere; guard SHOULD on delete immediate / other-device revoke / move / forget. A11: wallet MUST revoke at issuer before reporting; joined notice carries cert_id + holder_label (bean 7wj3 noted). D2 WITHDRAWN (no purpose binding — Dan). D3 confirm_takeover on the transfer row; §8 'inherits nothing'. D4 holders/assignment DROPPED; 409 holder_moved carries new_holder. D5 re-guard MUST NOT strand an account. D6 reorder done. D8 GET sessions, session/end {id}, Idempotency-Key header, guard 'account' named by the wallet when it has one. D9 NOT applied (behavior change: no device-list row / no joined notice for shared-computer certs — awaiting Dan). Editorial D applied. Bean-free; no 'row' (records).
 
 D9 DECLINED (Dan 2026-09-07): keep the lookup tier as a recorded row — revoking a shared-computer auth cert from /account matters more than the spec simplification. Recorded as a settled re-litigation; do not raise again unless the revoke-from-account property can be preserved.
+
+COMMITTED 2026-09-07: 45b8f0c 'registry-api-v1 r5: explicit account, guarded entry, account-tier authority' — spec (856 lines), design note, and bean files. Working tree clean. NEXT: rewrite this bean's implementation checklist for r5 (session endpoint, guard kinds, attach case lists, hold/suspend, certs rename, sessions list, idempotency); optional round-4 review against the committed text; then implementation per the implementability plan (cascade → session → tiers → attach → wallet → detach/lookup → guards → shim removal).
+
+## r5 implementation checklist (2026-09-07, supersedes the r2 checklist at the top; spec = registry-api-v1.md @ 45b8f0c)
+
+Order follows the implementability review (riskiest first). Each step lands with a SqliteStore test (memory-store tests miss FK/sentinel bugs) and a registry_api_test.
+
+- [ ] **1. Leaving cascade as one transaction** (§4.1 rule 3): new RegistrarHost method `identity_leaves(account, identity, reason)` — suspend warrants (set bits, mark suspended), suspend derived agents, file `notice`, keep certs/sessions; hold expiry sweeper drops records + accounts with no live cert; restore path clears suspension bits only. Route the cookie lane's transfer arm and `remove_email` through it (fixes a93p).
+- [ ] **2. Session-of-proofs** (§4.4–4.5): `POST /session {account, proofs, guard?}` → token bound to member set; `kid` column on cert rows; `Proof` header with `bh` on every POST; per-call member re-check (exp + status via cached lists, no signature re-run); drop failing/retired members; `Session-Members` header; `GET /sessions`, `POST /session/end {id?}`; `Idempotency-Key`. Keep `POST /api/v1/token` as a shim minting the new shape for one release.
+- [ ] **3. Tiers** (§4.3): `guarded` flag on cert rows; tier fixed at session open; `read_required` / `write_required` / `identity_suspended` across ~20 handlers; lookup tier reaches only `warrants/lookup` + own `certs/revoke` + `session/end`.
+- [ ] **4. Attach** (§5.2.1) replacing `devices/register`: identity + 1–2 certs + possession proofs; holder rule; retired-never-revived; ordered cases (no account / account named); freshness on account-changing cases; `confirm_takeover`; account creation via host; `409 holder_moved` carries `new_holder`.
+- [ ] **5. Guard** (§4.2): `POST /guard {kind, identity, account?, certs}`; guard_tokens table (account, cert set, expiry, used); `device_approval` = `kind:"device"` inbox request whose code is the token, retry-as-poll with `?wait`; caps per (identity, source); `password` kind + backoff; `additional_identities` policy hook; `page` kind + discovery `guard_kinds`; re-guard on `session` with the no-strand rule.
+- [ ] **6. Inbox** (§5.3): `device` + `notice` kinds; per-kind fields; `grantor`/`grantee` names; respond `approve` alone for device; admission reasons `not_self_grant`/`binding_mismatch`; claim allocates refs for agent kinds; write tier on claim.
+- [ ] **7. Warrants** (§5.4): record key (account, grantor, grantee, audience, scopes); `lookup` (per-identity + per-account rate limit, per-audience miss lock); `register` never clears a set bit, returns `indexing`; revoke ⇒ fresh index on next allocation; `unlist` + `live_warrant`; `suspended` field.
+- [ ] **8. Certs** (§5.5) rename from devices: `/api/v1/certs`, `certs/revoke {id|kid}`, retired rows listed with `revoked:true`; wallet routes foreign revoke to the issuer.
+- [ ] **9. Holders** (§5.6): three fixed namespaces (rename only); `move` returns `new_holder`, retires old certs; `forget` returns `unrevocable`; drop `holders/assignment`, `certs/status`, namespaces create/delete.
+- [ ] **10. Delete** (§5.2.3): `{immediate?, guard?}`; hold then drop; SHOULD guard on immediate.
+- [ ] **11. Discovery** (§5.1): `version`, `endpoint`, `status_list`, `browser`, `guard_kinds`, `lookup_tier`; emit alongside the old keys for one release.
+- [ ] **12. Wallet** (wallet/src/registry.js, bootstrap.js): session management + re-session on 401; bare attach; guard flows (approval retry loop, password, page, additional identities as a second I1 ceremony); approver UI for device requests showing all fingerprints; `warrants/lookup` before RP login; `confirm_takeover` only on an explicit user act; foreign-cert revoke → issuer before reporting.
+- [ ] **13. Migration**: cert rows `guarded=1` for existing rows; expose account ids; `DPoP` + `Bearer` accepted one release; delete the token shim, api_tokens table, and old discovery keys afterwards.
+- [ ] **14. Tests**: table-driven per-endpoint tier tests; attach case-list tests (all 9 cases); guard kinds; hold/restore incl. contested flip; SqliteStore cascade test; e2e (warm broker on :3000 first).
+
+Blocked-by: nothing hard. Related: zpbh (cookie lane, after step 13), wuoc (sibling drift, after spec is final), 7wj3 (foreign-cert revocation), dksx (broker guard/reset policy), d51o (unlist guard-rails — now `live_warrant`, may close).
