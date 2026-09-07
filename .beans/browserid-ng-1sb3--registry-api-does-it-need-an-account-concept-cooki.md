@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-08-29T20:49:11Z
-updated_at: 2026-08-30T00:13:13Z
+updated_at: 2026-09-07T12:42:09Z
 parent: browserid-ng-9yyk
 blocking:
     - browserid-ng-71vt
@@ -71,3 +71,133 @@ Each op re-justifies self-issued acceptance individually; inbox consent is the g
 §5.6 rewritten synchronous in registry-api-v1.md; inbox keeps only the actionless transfer notice; §7.1 pared to record_mismatch/expired/replayed + last_identity. SPEC SETTLED — remaining work is implementation (registrar endpoints + wallet/dialog consumers + a93p fix), to sequence with 71vt/1sb3 build planning.
 
 **Severity correction (Dan, 2026-08-30):** the planted-address reset is account-shell control + recoverable DoS, NOT takeover (kgb9 unverifies E3 siblings; primaries/bridges need proofs the attacker lacks; owner resets back via their own mailbox and cuts off the attacker's address). §5.6.2 deployment note softened from MUST to SHOULD-fence accordingly; mitigation exploration filed as bean dksx (recovery-eligibility delay for new addresses, reset-origin visibility to all addresses, the kgb9 agent-row gap — Agent rows stay verified so a post-reset attacker can mint the account's agent identities — and reset-war dampening; existing-address compromise means new-address fencing alone is insufficient).
+
+## registry-api-v1 decision log (moved out of the spec 2026-09-05; the spec §10 points here)
+
+
+Resolved 2026-08-28:
+
+0. **Consent is API-complete** — approval was always a client-side
+   signing ceremony; the browser page held the same keys, so the API
+   adds no capability. Human-in-the-loop is the user agent's job
+   (principle 8).
+1. **Naming**: collections-as-GET + body-parameter POST verbs; no
+   ids/emails in URL paths; small fixed `htu` set.
+2. `success: true` dropped (§4).
+3. `warrants/forget` stays; guard-rails deferred (bean `d51o`).
+4. Proof alg pinned `EdDSA`; agility/PQ deferred (bean `hd63`).
+5. *(superseded by 10, then 11)* Exchange warrant must carry the
+   `registry` scope.
+6. Inbox long-poll as OPTIONAL `wait`; SSE/webpush deferred.
+7. **Secondary identities accepted** (unlike the cookie lane): this
+   API's authority is a strict subset excluding root ops. Any future
+   surface reachable with the same cert re-justifies self-issued
+   acceptance (re-review logged on `d0xb`).
+
+Resolved 2026-08-30:
+
+8. **Account membership lives on this API** (§5.6), replacing "no
+   linking in the token lane". Transfer is on-proof: fresh issuer
+   attestation is current ownership; the previous holder is notified,
+   never asked. Merge deferred (identities move one at a time). Derived
+   agents are revoked and dropped with the departing parent (fixes bean
+   a93p). Attach is synchronous and self-approved; a second-device rule
+   was declined (residual risk: recoverable DoS — bean dksx).
+
+Resolved 2026-09-01/02:
+
+9. **Membership is cert-authenticated and self-authenticating**,
+   superseding decision 8's membership record and the separate
+   `devices/register`. Certs travel with possession proofs; `bh` makes
+   the call its own consent artifact; one `attach` whether an identity
+   is new or already owned. Two-tier authority: auth-cert possession
+   records; membership changes and creation need a config-cert routing
+   proof — else a stolen auth cert could plant a foreign identity and
+   escalate to account-wide control. Joining certs must be fresh
+   (`iat` ≤ 300s): config certs are RP-visible, so unexpired bytes
+   alone must not move an identity. The exchange no longer auto-creates
+   accounts (kills the parallel-account trap). Auth-only devices are
+   supported policy (§5.6.6). Terminology per core §4.1: "device cert"
+   is the umbrella, auth/config its flavors; no identity outranks
+   another. Follow-up: the core §7.5 agent lanes should adopt the same
+   possession bar (bean 0c49).
+
+Resolved 2026-09-02:
+
+10. *(amended by 11)* **Cert auth everywhere; the token exchange is deleted.** The
+    exchanged warrant was self-issued by the very config key the token
+    bound to, so its scope proved nothing beyond key possession; the
+    token cached little (status was re-checked per call anyway) and
+    cost a second auth mode plus a bootstrap exception. Now every call
+    carries `Authorization: Cert` + `Proof`; the §5.6 two-tier rule
+    became the whole authorization model (config cert = full, auth cert
+    = recording tier). Only `attach` carries the cert; other calls
+    name a recorded key by `kid`, so every actor is on the device list
+    — the legibility hook for the open IdP-power question (bean
+    `0c49`). Bean `ig9p` (cookie lane adopts the scope bar) loses its
+    anchor; the cookie lane's delegated-authority concern is now stated
+    directly in §3.4.
+
+Resolved 2026-09-05:
+
+11. **Per-identity authority; the session returns as a set; entry is
+    guarded.** Decision 10 left any issuer of any roster identity with
+    account-wide power (mint a config cert, read and revoke every other
+    identity's warrants). Fix: the account is a roster, not a boundary.
+    A session (§3.2) is minted from a *set* of proofs and carries each
+    proven identity at its tier; every operation has a subject identity
+    (§3.3). Unlike the deleted exchange, this token proves what one
+    proof cannot — the union of several possessions — and stays
+    sender-constrained (a member-key `Proof` per call keeps `bh` and
+    defeats bearer theft). Holder mutations need write on every
+    identity on the holder. Review then found the older hole: flow B
+    (record a fresh cert for an owned identity, no session) let a new
+    owner of an address, or its issuer, walk into the previous holder's
+    account — the cookie lane always had the same shape, and the
+    old "wipe on transfer" intent never covered it. Ownership epochs
+    on certs were rejected (useless against a lazy or dishonest issuer
+    or a taken-over mailbox). Ruling: entry is guarded (§5.6.7) — a
+    registry-defined check delivered as one token, page or native; an
+    unguarded fresh config cert is a change of ownership (the wallet
+    must offer the guard and make "start fresh" explicit); an unguarded
+    auth cert is recorded unblessed and reaches only per-audience
+    warrant lookup (rate-limited), which keeps the shared-computer
+    flow while a stranger must guess sites one by one. Guard kinds
+    registered: `password` and `identity` (the page cannot obtain
+    proofs from the wallet's keys, so the native kind stays). Blessing is per key and transitive
+    through sessions, so the roster needs no separate gate. Detach
+    stays destructive (a split would have let a new holder inherit);
+    a non-owner may detach only through the guard. Guard reset and
+    recovery policy is the registry's (reference broker: dksx; must
+    not run through the address being attached). Bare `attach` keeps
+    the shared-computer flow. The cookie lane keeps account-wide
+    authority until bean `zpbh`. `attach` answers with a session.
+
+Deferred elsewhere: agent-lane reparenting (`9mfw`);
+browser-ceremony discovery keys (fallback-IdP spec, `d0xb`).
+
+
+Resolved 2026-09-07:
+
+12. **Explicit account, one identity at the door, account data.**
+    Supersedes the per-identity partition of decision 11 (its guard
+    and hold parts stand). Review of r5 showed every membership rule
+    was inferring the account and that the per-identity partition
+    was doing little once the guard existed. Now: an account has an
+    opaque id, not a secret, given only to members (session/attach
+    responses; named in `session` and optionally in `attach`); no
+    oracle, first use unchanged. A bare `attach` concerns one identity
+    (`mixed_accounts` deleted; `additional_identities` moved to the
+    guard endpoint). Data belongs to the account: tiers lookup / read
+    / write on the session; the subject rule, `not_in_session`,
+    per-identity tiers, the holder authority rule, and the
+    dead-issuer detach exception are gone. What keeps an issuer that
+    can mint certs for an address out of the account is the guard at
+    the door; a takeover lands it in an empty account; a co-member
+    sees everything ("shared address = shared account"). Restore is an
+    ordinary join: name the account, pass its guard or use a session;
+    no revoked key is ever used as proof (the `recorded` proof kind
+    and a 'secret id' variant were both considered and rejected). A
+    holder with no other device and no other guard kind cannot
+    restore — the same limit as a lost only device. Design note:
+    docs/specs/registry-explicit-account-note.md (rev 2c).

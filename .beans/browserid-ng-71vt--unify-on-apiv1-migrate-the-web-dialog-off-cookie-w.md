@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-28T21:00:26Z
-updated_at: 2026-08-29T20:49:19Z
+updated_at: 2026-09-07T14:45:30Z
 parent: browserid-ng-9yyk
 blocked_by:
     - browserid-ng-d0xb
@@ -66,3 +66,38 @@ So a clean wallet has ZERO broker-private endpoints — it uses only surface 1. 
 **Also remaining:** the option-a role split (dialog as pure wallet driving /device-authorize instead of calling /device/issue directly) — sequenced last per the bean.
 
 **Blocked (2026-08-29):** the account/consent-page migration + /wsapi retirements now wait on bean 1sb3 — Dan's account-concept analysis (the cookie authenticates to the ACCOUNT; pair-derived tokens authenticate resources and only resolve an account implicitly; the chooser UX depends on account-level reads the token lane doesn't offer).
+
+## Moved out of registry-api-v1 (2026-09-07, Dan: internal notes do not belong in a public spec)
+
+The cookie-lane relationship paragraph (was §4.6) and the legacy endpoint mapping (was §9) are preserved here for the migration work:
+
+### 4.6 Relationship to the cookie lane
+
+The `/wsapi/*` cookie+csrf surface remains a second consumer of the
+same registry role; §9 maps it. A cookie session minted from a
+presentation carries delegated authority and MUST NOT be weaker than
+this lane per operation (§8 invariant 1, which binds only registries
+that also serve `/wsapi`).
+
+
+## 9. Legacy endpoint mapping (appendix)
+
+| Legacy (cookie + csrf) | This API | Notes |
+|---|---|---|
+| `POST /wsapi/auth_with_presentation` | `POST /api/v1/session` | One presentation ⇒ cookie; a set of proofs on a named account ⇒ session at a tier (§4.3). Cookie lane stays. |
+| `GET /wsapi/warrant_requests` | `GET /api/v1/requests` + `POST /api/v1/requests/claim` | Hidden GET mutation split out. |
+| `POST /wsapi/warrant_respond` | `POST /api/v1/requests/respond` | Same bar. |
+| `GET /wsapi/warrants` | `GET /api/v1/warrants` | |
+| `POST /wsapi/register_warrant` | `POST /api/v1/warrants/register` | |
+| `POST /wsapi/revoke_warrant` | `POST /api/v1/warrants/revoke` | |
+| `POST /wsapi/forget_warrant` | `POST /api/v1/warrants/unlist` | Refuses live indexed rows without confirmation. |
+| `POST /wsapi/allocate_warrant_status` | `POST /api/v1/warrants/allocate_status` | |
+| `GET /wsapi/device_certs` | `GET /api/v1/devices` | |
+| `POST /wsapi/revoke_device_cert` | `POST /api/v1/devices/revoke` | |
+| `GET /wsapi/cert_revocation_status` | `GET /api/v1/devices/status` | |
+| `GET /wsapi/holders` etc. | §5.5 table | |
+| `POST /wsapi/record_device_cert` | `POST /api/v1/account/attach` | Legacy self-heal lane stays. |
+| cookie-era transfer / link arms | `attach` (§5.6.1) + §4.5 | Same leaving effects, now with a hold. |
+| — | `detach` / `delete` / `warrants/lookup` / `guard` | New. |
+| `/warrant/request`, `/warrant/poll`, `/agent-provision/*` | — | Agent side; core §7.5. |
+| `GET /wsapi/session_context` | — | CSRF has no equivalent here. |
