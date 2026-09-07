@@ -51,6 +51,7 @@ The issuer's support document (`/.well-known/browserid`) supplies:
 |---|---|
 | `device-authorization` | The ceremony page (§3). |
 | `access-cert` | The access-cert mint (core §5). |
+| `wallet-origins` | OPTIONAL. The http(s) return origins this issuer accepts (§3.1). Advisory: lets a web wallet fail before the user signs in. Loopback and custom-scheme origins are always accepted and are not listed. |
 
 A fallback IdP MUST advertise both — the same keys as a primary.
 (`/wsapi/address_info` is not part of this contract; it exists for
@@ -73,15 +74,32 @@ intercepts the navigation to `return_url`:
     return_url#device_cert=…&config_cert=…      success
     return_url#device_error=…                   refusal
 
-The page MUST validate `return_origin` (a well-formed http(s)
-origin, or the wallet's registered loopback/custom-scheme origin)
-and MUST reject unless `return_url` is same-origin with it, before
-delivering anything. The certs bind the fragment's public keys, so a
-page that navigates to an unvalidated `return_url` hands a
-victim-identity config cert to whoever supplied the URL and the keys
-— a warrant-signing takeover. (The current shared page validates
-`return_origin` for its postMessage lane but not the `return_url`
-lane; bean 9it0.)
+The certs bind the fragment's public keys, so whoever receives the
+return receives a config cert for the user's identity bound to keys
+they chose — a warrant-signing takeover. The ceremony authenticates
+the user; `return_origin` is the only thing that says which wallet is
+asking. The issuer therefore MUST deliver only to an **accepted
+return origin**, and MUST reject unless `return_url` is same-origin
+with it. Accepted by construction, at every issuer:
+
+- a loopback origin (`http://127.0.0.1:*`, `http://[::1]:*`,
+  `http://localhost:*`);
+- a custom-scheme origin (`scheme://…`, any non-http(s) scheme).
+
+Both can only be received by code already running on the user's
+machine, so a web page cannot claim them. An http(s) origin is
+accepted ONLY if it is on the issuer's configured list of trusted
+web wallets. The list is issuer policy, not protocol: the
+reference IdP ships with `https://browserid.me` and its own origin,
+and other deployments are recommended but not required to include
+it. Anything else is refused with `return_origin_not_allowed` (§6).
+The check MUST be enforced on the issuance endpoint, not only in the
+page, so a page regression cannot reopen it.
+
+This closes the drive-by case (a page that opens the ceremony with
+its own keys) but not a local attacker who squats a loopback port
+or a custom scheme, nor consent phishing through a trusted wallet;
+those are bean i63t (existing-device approval of a new device).
 
 The page may be rendered in an embedded window or the system
 browser; the contract is the same. Embedded with a persistent
@@ -172,7 +190,9 @@ keys here — they live behind `device_authorization` (§3).
 ## 6. Errors
 
 `device_error` carries a short reason. Recognized values are
-`cancelled`, `email_mismatch`, `policy_refused`, `unsupported_key`;
+`cancelled`, `email_mismatch`, `policy_refused`, `unsupported_key`,
+`return_origin_not_allowed` (§3.1; delivered to no one — the page
+shows it, since there is no accepted origin to return to);
 the set is open, and a wallet MUST treat any unrecognized value as a
 generic refusal. Discovery errors are core §3; registration errors
 are registry-api-v1 §7.
@@ -203,3 +223,13 @@ Resolved (2026-08-28 review):
    reached the password/session bar; a weaker bar issues exact-only
    (the 7ww7 rule). Consolidation of the broker's three issuance
    lanes onto one core is bean 2jfh.
+8. **Return origins are issuer-accepted, native by construction**
+   (§3.1). The ceremony authenticates the user, never the wallet, so
+   any web page could otherwise obtain a victim-identity config cert
+   bound to its own keys. Loopback and custom-scheme origins are
+   always accepted; http(s) origins only from the issuer's trusted
+   list. The list is deployment policy so no wallet vendor is
+   privileged by the protocol, while native wallets can never be
+   locked out. Existing-device approval of new devices (i63t)
+   remains the structural fix for local attackers and consent
+   phishing.

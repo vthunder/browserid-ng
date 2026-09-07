@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-09-07T20:16:28Z
-updated_at: 2026-09-07T20:16:58Z
+updated_at: 2026-09-07T20:45:59Z
 blocked_by:
     - browserid-ng-0c49
 ---
@@ -30,3 +30,15 @@ Give the user's wallet a way to authenticate itself to the IdP during issuance, 
 - 0c49 registry guard: kinds left as-is (device_approval / password / additional_identities / page) pending this; the "page-only guard" simplification is blocked on it.
 - 9it0 (shared page validates return_origin for postMessage but not return_url).
 - core §4.1 issuance, fallback-IdP API §3.1–3.2.
+
+## Decision 2026-09-07 (discussed with Dan)
+
+Confirmed the attack is live on the primary lane too: the dialog obtains certs by opening the same sign-in page the fallback ceremony uses, and that page (`idp-device-authorize.js`, `fb-device-authorize.js`) accepts any well-formed http(s) `return_origin`. Core §7.3's first-party model is not what is built.
+
+Split into two layers:
+
+1. **Accepted return origins** (spec landed in fallback-idp-api-v1 §3.1, §2 `wallet-origins`, §6 `return_origin_not_allowed`, §7 decision 8; implementation is bean qze7). Loopback and custom-scheme origins always accepted (native by construction); http(s) only from the issuer's trusted-wallet list, which is deployment policy with `browserid.me` as the reference default and an off-spec recommendation. Enforced server-side as well as in the page. Closes the drive-by web-page case.
+
+2. **This bean stays open for the structural fix**: existing-device approval of a new device, IdP-side, first enrollment excepted. Covers what the allowlist cannot: local attackers squatting loopback/custom schemes, and consent phishing through a trusted wallet. Design question to settle: what the approval prompt looks like on an existing device for a native wallet vs the browser dialog.
+
+Dropped from the directions list: "wallet pulls certs via an authenticated channel" does not authenticate the wallet (the attacker holds the keys too; it only prevents the 9it0 leak), and "wallet-held secret from first enrollment" is equivalent to an existing device cert.
