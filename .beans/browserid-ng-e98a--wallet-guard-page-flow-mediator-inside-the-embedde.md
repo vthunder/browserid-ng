@@ -1,11 +1,11 @@
 ---
 # browserid-ng-e98a
-title: 'Wallet: guard page flow — mediator inside the embedded browser, deferred attach, re-entrancy, identity choice'
+title: 'Wallet: mediator inside the embedded browser, deferred attach, re-entrancy, identity choice (for the login page''s later methods)'
 status: todo
 type: feature
 priority: high
 created_at: 2026-09-07T22:06:11Z
-updated_at: 2026-09-07T22:06:38Z
+updated_at: 2026-09-08T22:13:24Z
 parent: browserid-ng-9yyk
 blocked_by:
     - browserid-ng-0c49
@@ -24,3 +24,5 @@ From the 0c49 guard ruling (Dan, 2026-09-08): registry-api-v1 §4.2 now has ONE 
 
 ## Related
 0c49 (registry spec + r5 checklist step 12), 2026-08-28 native wallet design handoff (add the mediator-in-webview requirement there), qze7 (why the page can rely on native wallets by construction).
+
+2026-09-09: the guard became login (registry-api-v1 §4.2; bean r9jo). Everything here still applies, now to the registry's login page and its later methods (approval by another device, proof of another identity through the mediator). The password baseline is shipped; the wallet runs the login page in its own window today.
