@@ -141,8 +141,10 @@ fn host_err(e: crate::error::RegistrarError) -> ApiError {
     ApiError::Internal(format!("membership: {e}"))
 }
 
-/// Record carried certs on `user_id` with the holder healing the cookie
-/// lane does; returns the recorded row ids.
+/// Record carried certs on `user_id`; returns the recorded row ids. A
+/// first device's self-assigned holder prefix becomes the account's
+/// `browsers` namespace while that is still unused; otherwise the holder
+/// keeps its own prefix and lists outside the namespaces (§5.6).
 async fn record(
     state: &RegistrarState,
     headers: &axum::http::HeaderMap,
@@ -151,25 +153,9 @@ async fn record(
     carried: &[Carried],
 ) -> Result<Vec<u64>, ApiError> {
     let holder_id = carried[0].holder.clone();
-    if state
-        .store
-        .resolve_holder_move(user_id, &holder_id)
-        .map_err(|e| ApiError::Internal(format!("holder-move lookup: {e}")))?
-        .is_some()
-    {
-        return Err(ApiError::Conflict {
-            reason: "holder_moved",
-            description: "this holder was moved; re-issue under the new holder".into(),
-        });
-    }
-    let mut move_target = None;
     if let Some((prefix, _)) = holder_id.split_once('.') {
-        match state.store.adopt_namespace_prefix(user_id, "browsers", prefix) {
-            Ok(true) => {}
-            Ok(false) => {
-                move_target = crate::holders::register_orphan_browser_move(&*state.store, user_id, &holder_id);
-            }
-            Err(e) => tracing::warn!("browsers prefix adoption failed: {e}"),
+        if let Err(e) = state.store.adopt_namespace_prefix(user_id, "browsers", prefix) {
+            tracing::warn!("browsers prefix adoption failed: {e}");
         }
     }
     let mut ids = Vec::new();
@@ -204,10 +190,6 @@ async fn record(
     }
     let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
     crate::holders::maybe_label_holder_from_ua(&*state.store, user_id, &holder_id, ua);
-    if let Some(target) = &move_target {
-        crate::holders::maybe_label_holder_from_ua(&*state.store, user_id, target, ua);
-    }
-    crate::holders::finish_holder_move(&*state.store, user_id, &holder_id);
     Ok(ids)
 }
 

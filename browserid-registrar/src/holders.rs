@@ -186,11 +186,6 @@ pub struct HolderView {
     pub external: bool,
     /// The identities (emails) this holder's certs act for, deduped.
     pub identities: Vec<String>,
-    /// Set while an account-driven namespace move is pending: the label of
-    /// the target namespace. The device's certs were revoked at move time; it
-    /// re-registers under the target next time it's online.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub moving_to: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -278,23 +273,6 @@ pub fn holders_view_core(store: &dyn RegistrarStore, user_id: u64) -> Result<Hol
         }
     };
 
-    // Pending namespace moves: old holder → target-namespace label (for the
-    // "moving to X" badge; rows disappear from here once the device re-issues).
-    let moves = store.list_holder_moves(user_id)?;
-    let ns_label_of_prefix = |prefix: &str| -> String {
-        namespaces
-            .iter()
-            .find(|n| n.prefix == prefix)
-            .map(|n| n.label.clone())
-            .unwrap_or_else(|| prefix.to_string())
-    };
-    let moving_to = |holder_id: &str| -> Option<String> {
-        moves
-            .iter()
-            .find(|(old, _)| old == holder_id)
-            .map(|(_, new)| ns_label_of_prefix(holder_prefix(new)))
-    };
-
     let make_view = |holder_id: &str, acc: &HolderAcc| HolderView {
         holder_id: holder_id.to_string(),
         label: labels
@@ -308,27 +286,15 @@ pub fn holders_view_core(store: &dyn RegistrarStore, user_id: u64) -> Result<Hol
         revoked: acc.any_cert && acc.all_revoked,
         external: acc.external,
         identities: acc.identities.iter().cloned().collect(),
-        moving_to: moving_to(holder_id),
     };
 
-    // Bucket each holder under the namespace whose prefix it carries — except
-    // a pending-moved holder, which is shown under its TARGET namespace
-    // immediately (the user already decided where it lives; the device just
-    // hasn't re-registered yet — the badge says so).
-    let effective_prefix = |holder_id: &str| -> String {
-        let target = moves
-            .iter()
-            .find(|(old, _)| old == holder_id)
-            .map(|(_, new)| new.as_str())
-            .unwrap_or(holder_id);
-        holder_prefix(target).to_string()
-    };
+    // Bucket each holder under the namespace whose prefix it carries.
     let mut ns_views: Vec<NamespaceView> = Vec::new();
     let mut placed: HashSet<String> = HashSet::new();
     for ns in &namespaces {
         let mut holders = Vec::new();
         for (holder_id, acc) in &by_holder {
-            if effective_prefix(holder_id) == ns.prefix {
+            if holder_prefix(holder_id) == ns.prefix {
                 holders.push(make_view(holder_id, acc));
                 placed.insert(holder_id.clone());
             }
@@ -428,71 +394,6 @@ pub fn rename_holder_core(
     let label = validate_label(label)?;
     owned_certs(store, user_id, holder_id)?;
     store.set_holder_label(user_id, holder_id, &label)
-}
-
-/// Move a device to another namespace, FORCEFULLY: the old holder's certs are
-/// revoked up front — each at its revocation authority, so the old
-/// namespace's warrants stop applying within a status-cache window, not when
-/// the device happens to come back online — and a PERMANENT redirect
-/// `old → registry-assigned new holder` is recorded. The device completes the
-/// move next time it's online: its next sign-in re-issues the same keys under
-/// the target (clients check `holders/assignment`; a stale client supplying
-/// the old holder at issuance is silently redirected). Returns the new holder.
-///
-/// Caveat (tracked): primary-issued certs carry no status ref today, so the
-/// up-front revocation only bites certs with one; for primary-rooted devices
-/// immediacy is bounded by the primary's own revocation story.
-pub fn move_holder_core(
-    store: &dyn RegistrarStore,
-    host: &dyn RegistrarHost,
-    own_domain: &str,
-    user_id: u64,
-    holder_id: &str,
-    namespace: &str,
-) -> Result<String> {
-    let ns = validate_namespace_name(namespace)?;
-    let certs = owned_certs(store, user_id, holder_id)?;
-    // A foreign service holds its own cert; its holder is bound to the warrant,
-    // so a move would revoke the grant with nothing to re-issue. Refuse — the
-    // service must be re-authorized from the app if you want to relocate it.
-    if certs.iter().any(|c| c.pubkey.is_empty()) {
-        return Err(RegistrarError::Conflict {
-            reason: "external_holder",
-            message: "an external service can't be moved — re-authorize it from the app instead"
-                .into(),
-        });
-    }
-    let prefix = store.get_or_create_namespace(user_id, &ns)?;
-    if holder_prefix(holder_id) == prefix {
-        return Err(RegistrarError::Conflict {
-            reason: "already_in_namespace",
-            message: "holder is already in that namespace".into(),
-        });
-    }
-    let new_holder = assign_holder_id(&prefix);
-
-    // Revoke up front: the old namespace's warrants must stop applying to
-    // this device NOW, not when it happens to come back online.
-    for cert in &certs {
-        store.revoke_device_cert(user_id, cert.id)?;
-        revoke_at_authority(store, host, own_domain, cert)?;
-    }
-    store.set_holder_move(user_id, holder_id, &new_holder)?;
-    // Carry the friendly label over so the device keeps its name in the UI.
-    if let Some(label) = store.get_holder_labels(user_id)?.get(holder_id).cloned() {
-        store.set_holder_label(user_id, &new_holder, &label)?;
-    }
-    Ok(new_holder)
-}
-
-/// Is `holder` still current, or has the account moved it? Clients check at
-/// sign-in and re-issue the device's certs under the target when moved.
-pub fn holder_assignment_core(
-    store: &dyn RegistrarStore,
-    user_id: u64,
-    holder: &str,
-) -> Result<Option<String>> {
-    store.resolve_holder_move(user_id, holder)
 }
 
 /// Revoke + drop the warrants ISOLATED to `holder` (exact `<id>` matcher):
@@ -711,91 +612,6 @@ fn product_token_label(ua: &str) -> Option<String> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '+'));
     ok.then(|| name.to_string())
-}
-
-/// Registrar-store twin of the broker's cold-login orphan repair
-/// (`routes::holders::register_orphan_browser_move`, browserid-ng-i8a2),
-/// for the token lane's `devices/register`: a holder whose prefix matches
-/// none of the account's namespaces would read as an agent in the account
-/// view, so schedule a move into `browsers`. NOT a revoking move — the
-/// device is mid-registration with these very certs. Best-effort; returns
-/// the target holder when a move was recorded.
-pub fn register_orphan_browser_move(
-    store: &dyn RegistrarStore,
-    user_id: u64,
-    holder: &str,
-) -> Option<String> {
-    let (prefix, _) = holder.split_once('.')?;
-    // Only a TRUE orphan is repaired: a holder under any namespace the user
-    // owns is categorized as its owner intended.
-    match store.list_namespaces(user_id) {
-        Ok(namespaces) => {
-            if namespaces.iter().any(|n| n.prefix == prefix) {
-                return None;
-            }
-        }
-        Err(e) => {
-            tracing::warn!("orphan-holder repair skipped (namespaces: {e})");
-            return None;
-        }
-    }
-    // A foreign service's holder (empty-pubkey cert rows) has nothing to
-    // re-issue — never auto-move it.
-    match store.list_device_certs(user_id) {
-        Ok(certs) => {
-            if certs.iter().any(|c| c.holder == holder && c.pubkey.is_empty()) {
-                return None;
-            }
-        }
-        Err(e) => {
-            tracing::warn!("orphan-holder repair skipped (device certs: {e})");
-            return None;
-        }
-    }
-    // Already scheduled by an earlier registration the device hasn't
-    // completed yet.
-    match store.resolve_holder_move(user_id, holder) {
-        Ok(Some(_)) => return None,
-        Ok(None) => {}
-        Err(e) => {
-            tracing::warn!("orphan-holder repair skipped (move lookup: {e})");
-            return None;
-        }
-    }
-    let target = match store.get_or_create_namespace(user_id, "browsers") {
-        Ok(prefix) => assign_holder_id(&prefix),
-        Err(e) => {
-            tracing::warn!("orphan-holder repair skipped (browsers namespace: {e})");
-            return None;
-        }
-    };
-    if let Err(e) = store.set_holder_move(user_id, holder, &target) {
-        tracing::warn!("orphan-holder repair failed: {e}");
-        return None;
-    }
-    tracing::info!("registered holder '{holder}' orphaned; scheduled move to '{target}'");
-    Some(target)
-}
-
-/// Registrar-store twin of the broker's move-completion hook
-/// (`routes::holders::finish_holder_move`): when certs land under the
-/// TARGET of a pending move, the old holder's rows (revoked at move time)
-/// are deleted so the device appears exactly once.
-pub fn finish_holder_move(store: &dyn RegistrarStore, user_id: u64, holder: &str) {
-    let moved_from: Vec<String> = match store.list_holder_moves(user_id) {
-        Ok(moves) => moves
-            .into_iter()
-            .filter(|(_, new)| new == holder)
-            .map(|(old, _)| old)
-            .collect(),
-        Err(_) => return,
-    };
-    for old in moved_from {
-        cleanup_holder_warrants(store, user_id, &old);
-        if let Err(e) = store.forget_holder(user_id, &old) {
-            tracing::warn!("holder move cleanup for '{old}' failed: {e}");
-        }
-    }
 }
 
 /// Best-effort: give `holder_id` a UA-derived default label if the user

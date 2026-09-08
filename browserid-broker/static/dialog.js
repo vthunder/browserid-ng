@@ -1057,18 +1057,14 @@
     try {
       const issued = certHolder(pair.device.cert);
       const prefixOf = (h) => (h && h.includes('.') ? h.slice(0, h.indexOf('.')) : null);
-      // The server's explicit assignment wins. Re-issuing under any OTHER
-      // holder would leave that pending move — and its orphan row — dangling,
-      // so the browser would still show up uncategorized.
-      let target = await pendingHolderMove(issued);
-      if (!target) {
-        const canonical = await browserHolder(); // session exists after the join
-        if (!prefixOf(canonical) || !prefixOf(issued) || prefixOf(canonical) === prefixOf(issued)) {
-          release();
-          return pair;
-        }
-        target = canonical;
+      // Re-issue under the account's canonical browsers prefix when the
+      // cold-issued holder landed outside it.
+      const canonical = await browserHolder(); // session exists after the join
+      if (!prefixOf(canonical) || !prefixOf(issued) || prefixOf(canonical) === prefixOf(issued)) {
+        release();
+        return pair;
       }
+      const target = canonical;
       let fresh;
       try {
         if (!certs.reissue) throw new Error('no window left to re-issue through');
@@ -1168,58 +1164,7 @@
     } catch (e) { /* best-effort */ }
   }
 
-  // Account-driven namespace move: is this device's holder still current, or
-  // has the account reassigned it? (The move revoked the old certs up front;
-  // this check is how the device heals.)
-  async function pendingHolderMove(holder) {
-    if (!holder) return null;
-    try {
-      const r = await apiCall('/wsapi/holder_assignment?holder=' + encodeURIComponent(holder), 'GET');
-      return (r && r.status === 'moved' && r.new_holder) ? r.new_holder : null;
-    } catch (e) { return null; } // no session / hiccup → check again next login
-  }
 
-  // Complete a pending move: re-issue the SAME keys under the broker-assigned
-  // target holder — /device/issue for broker-rooted identities, the
-  // device-authorize popup (explicit holder passthrough) for primary ones —
-  // store the new pair, follow the move in the browser-holder cache, and
-  // (primary) re-join so the broker records the corrected cert and cleans up
-  // the old rows. Best-effort: on failure the old pair is returned (its certs
-  // were revoked at move time, so sign-in may fail until a later attempt
-  // completes the move).
-  async function maybeCompleteHolderMove(email, issuer, pair, mintUrl, deviceAuthUrl) {
-    try {
-      const holder = certHolder(pair.device.cert);
-      const target = await pendingHolderMove(holder);
-      if (!target) return pair;
-      if (issuer === (state.brokerDomain || location.hostname)) {
-        const certs = await apiCall(API.deviceIssue, 'POST', {
-          email,
-          device_pubkey: pair.device.publicKeyX,
-          config_pubkey: pair.config.publicKeyX,
-          holder: target
-        });
-        if (!certs.device_cert || !certs.config_cert) {
-          throw new Error(certs.reason || 'device issuance failed');
-        }
-        await storeDevicePair(issuer, email, pair, certs);
-      } else {
-        if (!deviceAuthUrl) return pair;
-        const certs = await primaryPopupFlow(email, deviceAuthUrl, pair, target);
-        await storeDevicePair(issuer, email, pair, certs);
-        // Re-join so the broker records the corrected cert (which also
-        // deletes the old holder's rows server-side).
-        const moved = await storedDevicePair(issuer, email);
-        await rejoinBroker(email, moved, issuer, mintUrl);
-      }
-      // This browser's holder cache follows the move.
-      await followHolderCache(target, null);
-      return (await storedDevicePair(issuer, email)) || pair;
-    } catch (e) {
-      console.warn('holder move completion failed (non-fatal):', e.message || e);
-      return pair;
-    }
-  }
 
   // Handle primary IdP flow: reuse a stored pair, else run the popup.
   async function handlePrimaryIdP(email, addressInfo) {
@@ -1237,8 +1182,7 @@
       if (stored) {
         try {
           await ensureBrokerSession(email, stored, domain, mintUrl);
-          const current = await maybeCompleteHolderMove(email, domain, stored, mintUrl, addressInfo.device_auth);
-          return await finishSignIn(email, current, domain, mintUrl);
+          return await finishSignIn(email, stored, domain, mintUrl);
         } catch (e) {
           // Mint refused (revoked / IdP policy) — drop the pair and re-authorize.
           await Keystore.delDevice(domain, email, 'device');
@@ -1416,34 +1360,6 @@
     });
   }
 
-  // Redirect-lane holder repair: the same second hop the popup lane performs,
-  // minus the window juggling — THIS tab goes back to the provider with the
-  // account's holder pinned and returns here. The provider session is warm, so
-  // it auto-issues and bounces straight back. Returns true when it is
-  // navigating away (the caller must stop). Best-effort: on any doubt we keep
-  // the working pair and let the server-side move repair the next sign-in.
-  async function reissueViaRedirectHop(pending, pair) {
-    if (pending.holderHop) return false;   // one repair attempt per sign-in
-    if (!pending.deviceAuth) return false;
-    let target = null;
-    try { target = await pendingHolderMove(certHolder(pair.device.cert)); } catch (e) { return false; }
-    if (!target) return false;
-    try {
-      await Keystore.putPending(Object.assign({}, pending, { holderHop: true }));
-    } catch (e) {
-      return false;
-    }
-    window.location.assign(
-      pending.deviceAuth +
-      '#email=' + encodeURIComponent(pending.email) +
-      '&device_pubkey=' + encodeURIComponent(pending.devicePubX) +
-      '&config_pubkey=' + encodeURIComponent(pending.configPubX) +
-      '&holder=' + encodeURIComponent(target) +
-      '&return_origin=' + encodeURIComponent(window.location.origin) +
-      '&return_url=' + encodeURIComponent(window.location.origin + RESUME_PATH)
-    );
-    return true;
-  }
 
   // Returning from the same-tab hop: certs (or an error) ride the fragment;
   // the keys + dialog state come back out of the pending store.
@@ -1510,7 +1426,6 @@
         const issued = certHolder(pair.device.cert);
         pending.orphanPrefix = issued && issued.includes('.')
           ? issued.slice(0, issued.indexOf('.')) : null;
-        if (await reissueViaRedirectHop(pending, pair)) return; // navigating away
       }
       await finishSignIn(pending.email, pair, pending.domain, pending.mintUrl);
     } catch (e) {
@@ -2113,7 +2028,6 @@
       if (!pair) {
         pair = await issueDevicePair(email);
       }
-      pair = await maybeCompleteHolderMove(email, issuer, pair, API.accessMint, null);
       await finishSignIn(email, pair, issuer, API.accessMint);
     } catch (e) {
       // Step-up from the mint chokepoint (u4xz): an SMTP-proven (E3) address

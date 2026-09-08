@@ -204,36 +204,12 @@ where
     // still unused, so the holder lands in Browsers instead of orphaning.
     if let Ok(pres) = browserid_core::device::AccessPresentation::parse(&req.presentation) {
         let cc = pres.config_cert.claims();
-        // Account-driven namespace move: a stale device presenting its OLD
-        // (moved-away, revoked-at-move) holder must not resurrect the old
-        // registry row — skip recording; the dialog's holder_assignment check
-        // re-issues it. A presentation under the move TARGET completes the
-        // move (old rows deleted).
-        if let Ok(Some(_)) = state.user_store.resolve_holder_move(user_id, cc.holder.as_str()) {
-            tracing::debug!("presented holder was moved; not re-recording the old row");
-            return Ok(Json(AuthWithPresentationResponse { success: true, email }));
-        }
-        super::holders::finish_holder_move(state.user_store.as_ref(), user_id, cc.holder.as_str());
-        //
-        // When adoption is refused the holder belongs to NO namespace, and an
-        // uncategorized holder reads as an agent in the account view. Schedule a
-        // move into `browsers` so it is categorized correctly from this moment,
-        // whether or not any client-side repair lane survives (browserid-ng-i8a2).
-        let mut move_target = None;
+        // When adoption is refused the holder keeps its own prefix and lists
+        // outside the namespaces; the dialog re-issues under the account's
+        // browsers prefix itself (reconcileBrowserHolder).
         if let Some((prefix, _)) = cc.holder.as_str().split_once('.') {
-            match state.user_store.adopt_namespace_prefix(user_id, "browsers", prefix) {
-                Ok(false) => {
-                    tracing::debug!(
-                        "browsers namespace already in use; cert holder keeps its own prefix"
-                    );
-                    move_target = super::holders::register_orphan_browser_move(
-                        state.user_store.as_ref(),
-                        user_id,
-                        cc.holder.as_str(),
-                    );
-                }
-                Ok(true) => {}
-                Err(e) => tracing::warn!("browsers prefix adoption failed: {e}"),
+            if let Err(e) = state.user_store.adopt_namespace_prefix(user_id, "browsers", prefix) {
+                tracing::warn!("browsers prefix adoption failed: {e}");
             }
         }
         let rec = DeviceCertRecord {
@@ -260,13 +236,6 @@ where
         super::holders::maybe_label_holder_from_ua(
             state.user_store.as_ref(), user_id, cc.holder.as_str(), &headers,
         );
-        // A scheduled move takes the same label along, so the device keeps its
-        // name once it re-issues (completion deletes the old holder's rows).
-        if let Some(target) = move_target {
-            super::holders::maybe_label_holder_from_ua(
-                state.user_store.as_ref(), user_id, &target, &headers,
-            );
-        }
     }
 
     Ok(Json(AuthWithPresentationResponse { success: true, email }))
@@ -375,12 +344,6 @@ where
         if revoked {
             return refuse("cert is revoked");
         }
-    }
-
-    // A holder mid-move must not resurrect its old row (same guard as the
-    // session-join recording path).
-    if let Ok(Some(_)) = state.user_store.resolve_holder_move(user_id, cc.holder.as_str()) {
-        return refuse("holder was moved; re-issue pending");
     }
 
     let rec = crate::store::DeviceCertRecord {

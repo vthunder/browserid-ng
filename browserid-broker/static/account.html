@@ -631,10 +631,13 @@ function buildActors() {
   const perms = allPerms();
   const actors = [];
   const fold = (h, ns) => {
+    // A holder outside the three namespaces is a wallet that kept its own
+    // prefix (the registry provisions agents under `agents` itself).
     const kind = h.external ? 'service'
       : (ns && ns.name === 'browsers') ? 'browser'
       : (ns && ns.name === 'services') ? 'service'
-      : 'agent';
+      : (ns && ns.name === 'agents') ? 'agent'
+      : 'browser';
     const certs = account.deviceCerts.filter(c => c.holder === h.holder_id && !c.revoked);
     const emails = [...new Set(certs.flatMap(c => c.identities.filter(i => !i.includes('*'))))].sort();
     const ids = emails.map(email => ({
@@ -653,8 +656,7 @@ function buildActors() {
       id: h.holder_id, kind, label: h.label, ids, addr,
       publicName: addr ? (account.publicNames[addr] || '') : '',
       here: here.has(h.holder_id),
-      inactive: !!h.revoked && !h.moving_to,
-      moving: !!h.moving_to,
+      inactive: !!h.revoked,
       since: h.issued_at || '',
       external: !!h.external,
     });
@@ -774,7 +776,6 @@ function actorRowHtml(actor, perms) {
   const trusted = actor.ids.filter(i => i.trusted).map(i => i.email);
   const loginOnly = actor.ids.filter(i => !i.trusted).map(i => i.email);
   if (actor.kind === 'browser' && !trusted.length) badges.push('<span class="badge b-gray">sign-in only</span>');
-  if (actor.moving) badges.push('<span class="badge b-gray">arrives on next sign-in</span>');
   const pub = actor.kind === 'agent' && actor.publicName
     ? ` <span class="apub">· appears publicly as “${escapeHtml(actor.publicName)}”</span>` : '';
   let sub;

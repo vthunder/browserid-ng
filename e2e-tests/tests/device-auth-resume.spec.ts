@@ -320,13 +320,10 @@ test.describe('device-auth resume handback: holder repair', () => {
 
   test('sends the resumed window back to the provider with the holder pinned, opening nothing', async ({ context }) => {
     const a = await openWaitingDialog(context, 'alice@idp.example');
-    // The broker reports that this cold holder has been reassigned into the
-    // account's `browsers` namespace.
-    await a.page.route('**/wsapi/holder_assignment*', (route: any) =>
-      route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({ success: true, status: 'moved', new_holder: 'brcanon.deadbeef01' })
-      }));
+    // The account's browsers namespace has a different prefix from the cold
+    // holder the IdP assigned: the dialog re-issues under the canonical one.
+    await a.page.route('**/wsapi/browser_holder*', (route: any) =>
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({ prefix: 'brcanon' }) }));
     let popupsOpened = 0;
     a.page.on('popup', () => { popupsOpened++; });
 
@@ -335,7 +332,7 @@ test.describe('device-auth resume handback: holder repair', () => {
 
     await expect.poll(() => resumed.url(), { timeout: 20000 }).toContain('e2e-stub-idp.html');
     const frag = new URLSearchParams(new URL(resumed.url()).hash.slice(1));
-    expect(frag.get('holder')).toBe('brcanon.deadbeef01');
+    expect(frag.get('holder')).toMatch(/^brcanon\./);
     // The SAME keys are re-certified — a repair, not a new device slot.
     expect(frag.get('device_pubkey')).toBe(a.pubX);
     expect(frag.get('return_url')).toContain('resume=device_auth');
@@ -345,12 +342,8 @@ test.describe('device-auth resume handback: holder repair', () => {
 
   test('closes the resumed window when no repair is needed', async ({ context }) => {
     const a = await openWaitingDialog(context, 'alice@idp.example');
-    // Holder is current — nothing to re-issue, so the held window is released.
-    await a.page.route('**/wsapi/holder_assignment*', (route: any) =>
-      route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({ success: true, status: 'current' })
-      }));
+    // Holder is already under the account's browsers prefix — nothing to
+    // re-issue, so the held window is released.
     await a.page.route('**/wsapi/browser_holder*', (route: any) =>
       route.fulfill({ contentType: 'application/json', body: JSON.stringify({ prefix: 'brcold' }) }));
 
