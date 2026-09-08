@@ -46,15 +46,20 @@ pub fn b64url_sha256_pub(data: &[u8]) -> String {
 pub struct BodyHash(pub String);
 
 /// Buffers the request body (bounded), records its hash in the request
-/// extensions, and hands the body back to the handler untouched.
+/// extensions, hands the body back to the handler untouched, and logs the
+/// call (method, path, status) — the operator's view of the wire.
 pub async fn buffer_body(req: Request, next: Next) -> Response {
     let (mut parts, body) = req.into_parts();
+    let method = parts.method.clone();
+    let path = parts.uri.path().to_string();
     let bytes = match axum::body::to_bytes(body, crate::api::API_BODY_LIMIT).await {
         Ok(b) => b,
         Err(_) => return ApiError::InvalidRequest("request body too large".into()).into_response(),
     };
     parts.extensions.insert(BodyHash(b64url_sha256(&bytes)));
-    next.run(Request::from_parts(parts, Body::from(bytes))).await
+    let resp = next.run(Request::from_parts(parts, Body::from(bytes))).await;
+    tracing::info!(%method, %path, status = resp.status().as_u16(), "registry api");
+    resp
 }
 
 // ---------------------------------------------------------------------------

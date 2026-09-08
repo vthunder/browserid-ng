@@ -176,19 +176,16 @@
     if (!(r.status === 403 && r.data.reason === "login_required" && r.data.url)) throw error(r, path);
     var url = new URL(r.data.url, window.location.origin);
     var pageToken;
-    if (url.origin === window.location.origin) {
+    if (url.origin === window.location.origin && password) {
       // This registry's own page: its check is the account password, which
       // the dialog has just collected — post it straight to the page's
       // backend rather than rendering the page.
-      if (!password) {
-        var e = new Error("a login is needed but no password is at hand");
-        e.reason = "login_needed";
-        throw e;
-      }
       var lr = await postRaw("/wsapi/registry_login", JSON.stringify({ account: acct, password: password }), {});
       if (!(lr.ok && lr.data.login)) throw error(lr, "/wsapi/registry_login");
       pageToken = lr.data.login;
     } else {
+      // No password at hand (a remembered session), or a foreign registry:
+      // the page itself asks.
       pageToken = await loginPopup(url, acct);
     }
     var r2 = await postRaw(path, JSON.stringify({ account: acct, method: "login_page", token: pageToken }), {});
