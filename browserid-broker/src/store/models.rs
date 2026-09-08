@@ -179,8 +179,10 @@ pub struct RegistrySession {
     /// base64url(SHA-256(token)) — the lookup key.
     pub token_hash: String,
     pub user_id: UserId,
-    /// Device-cert row ids the session was opened with.
+    /// Device-cert row ids proven under the session.
     pub member_cert_ids: Vec<u64>,
+    /// The login cert (§4.2) whose key opened the session, if any.
+    pub login_key_id: Option<u64>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -191,17 +193,28 @@ impl RegistrySession {
     }
 }
 
-/// A guard token (registry-api-v1 §4.2): single-use, bound to the account
-/// that held `identity` at mint and to the certs it was requested for
-/// (by kid), spent by `attach` / `detach` / `delete` / `session`.
+/// A login cert (registry-api-v1 §4.2): the registry's own signed
+/// credential over a wallet's login key, so later logins need no human.
 #[derive(Debug, Clone)]
-pub struct GuardToken {
+pub struct LoginCert {
+    pub id: u64,
+    pub user_id: UserId,
+    pub kid: String,
+    pub pubkey: String,
+    pub label: Option<String>,
+    /// The signed JWS.
+    pub cert: String,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub status_idx: Option<u64>,
+}
+
+/// A one-time token the registry's login page hands a wallet (§4.2).
+#[derive(Debug, Clone)]
+pub struct LoginToken {
     pub token_hash: String,
     pub user_id: UserId,
-    pub identity: String,
-    /// Sorted kids of the certs the token binds to.
-    pub kids: Vec<String>,
-    pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
 

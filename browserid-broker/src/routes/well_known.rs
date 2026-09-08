@@ -69,11 +69,11 @@ where
             status_list: browserid_registrar::consent::status_list_uri(&state.domain),
             browser: [
                 ("account".to_string(), format!("{origin}/account")),
-                ("guard".to_string(), format!("{origin}/guard")),
+                ("login".to_string(), format!("{origin}/registry-login")),
             ]
             .into_iter()
             .collect(),
-            guard_kinds: vec![serde_json::json!({ "kind": "page", "url": format!("{origin}/guard") })],
+            login_methods: vec!["login_page".to_string(), "stored_key".to_string()],
         });
     }
 

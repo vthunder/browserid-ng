@@ -208,6 +208,7 @@
     return allDevice().then(function (recs) {
       var drops = [];
       (recs || []).forEach(function (r) {
+        if (r && r.kind === "login") return; // a registry login key, not an identity cert
         var c = r && r.cert ? certClaims(r.cert) : null;
         if (!c) return; // healthLocal's job
         var dead = false;

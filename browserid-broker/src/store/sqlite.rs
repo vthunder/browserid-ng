@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    GuardToken, RegistrySession, SuspendedIdentity,
+    LoginCert, LoginToken, RegistrySession, SuspendedIdentity,
     DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, SessionStore, StoreResult, Tenant, TenantStatus, User, UserId,
     UserStore, VerificationType, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
@@ -16,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 38;
+const SCHEMA_VERSION: i32 = 39;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -177,6 +177,9 @@ impl SqliteStore {
             }
             if current_version < 38 {
                 Self::migrate_v38(conn)?;
+            }
+            if current_version < 39 {
+                Self::migrate_v39(conn)?;
             }
 
             // Update schema version
@@ -951,14 +954,35 @@ impl SqliteStore {
 fn registry_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistrySession> {
     let user_id: i64 = row.get(1)?;
     let members: String = row.get(2)?;
+    let login_key_id: Option<i64> = row.get(5)?;
     Ok(RegistrySession {
         token_hash: row.get(0)?,
         user_id: UserId(user_id as u64),
         member_cert_ids: serde_json::from_str(&members).unwrap_or_default(),
         created_at: parse_ts_opt(row.get(3)?).unwrap_or_else(Utc::now),
         expires_at: parse_ts_opt(row.get(4)?).unwrap_or_else(Utc::now),
+        login_key_id: login_key_id.map(|i| i as u64),
     })
 }
+
+fn login_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoginCert> {
+    let id: i64 = row.get(0)?;
+    let user_id: i64 = row.get(1)?;
+    let status_idx: Option<i64> = row.get(9)?;
+    Ok(LoginCert {
+        id: id as u64,
+        user_id: UserId(user_id as u64),
+        kid: row.get(2)?,
+        pubkey: row.get(3)?,
+        label: row.get(4)?,
+        cert: row.get(5)?,
+        issued_at: parse_ts_opt(row.get(6)?).unwrap_or_else(Utc::now),
+        expires_at: parse_ts_opt(row.get(7)?).unwrap_or_else(Utc::now),
+        revoked_at: parse_ts_opt(row.get(8)?),
+        status_idx: status_idx.map(|i| i as u64),
+    })
+}
+const LOGIN_CERT_COLUMNS: &str = "id, user_id, kid, pubkey, label, cert, issued_at, expires_at, revoked_at, status_idx";
 
 impl SqliteStore {
     fn migrate_v36(conn: &Connection) -> Result<(), BrokerError> {
@@ -995,6 +1019,38 @@ impl SqliteStore {
 }
 
 impl SqliteStore {
+    fn migrate_v39(conn: &Connection) -> Result<(), BrokerError> {
+        // Login certs and login-page tokens replace guard tokens
+        // (registry-api-v1 §4.2, the login model); sessions remember the
+        // login key that opened them.
+        conn.execute_batch(
+            r#"
+            DROP TABLE IF EXISTS guard_tokens;
+            CREATE TABLE IF NOT EXISTS login_certs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                kid TEXT NOT NULL UNIQUE,
+                pubkey TEXT NOT NULL,
+                label TEXT,
+                cert TEXT NOT NULL,
+                issued_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT,
+                status_idx INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_login_certs_user ON login_certs(user_id);
+            CREATE TABLE IF NOT EXISTS login_tokens (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                expires_at TEXT NOT NULL
+            );
+            ALTER TABLE registry_sessions ADD COLUMN login_key_id INTEGER;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
     fn migrate_v38(conn: &Connection) -> Result<(), BrokerError> {
         // The presentation→token exchange is gone (registry-api-v1 sessions
         // replaced it, bean 0c49 step 13); its rows with it.
@@ -1002,19 +1058,6 @@ impl SqliteStore {
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
-}
-
-fn guard_token_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<GuardToken> {
-    let user_id: i64 = row.get(1)?;
-    let kids: String = row.get(3)?;
-    Ok(GuardToken {
-        token_hash: row.get(0)?,
-        user_id: UserId(user_id as u64),
-        identity: row.get(2)?,
-        kids: serde_json::from_str(&kids).unwrap_or_default(),
-        created_at: parse_ts_opt(row.get(4)?).unwrap_or_else(Utc::now),
-        expires_at: parse_ts_opt(row.get(5)?).unwrap_or_else(Utc::now),
-    })
 }
 
 fn parse_ts_opt(s: Option<String>) -> Option<DateTime<Utc>> {
@@ -1987,13 +2030,14 @@ impl UserStore for SqliteStore {
     fn create_registry_session(&self, rec: RegistrySession) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO registry_sessions (token_hash, user_id, members, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR REPLACE INTO registry_sessions (token_hash, user_id, members, created_at, expires_at, login_key_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 rec.token_hash,
                 rec.user_id.0 as i64,
                 serde_json::to_string(&rec.member_cert_ids).unwrap_or_else(|_| "[]".into()),
                 rec.created_at.to_rfc3339(),
                 rec.expires_at.to_rfc3339(),
+                rec.login_key_id.map(|i| i as i64),
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2003,7 +2047,7 @@ impl UserStore for SqliteStore {
     fn get_registry_session(&self, token_hash: &str) -> StoreResult<Option<RegistrySession>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT token_hash, user_id, members, created_at, expires_at FROM registry_sessions WHERE token_hash = ?1",
+            "SELECT token_hash, user_id, members, created_at, expires_at, login_key_id FROM registry_sessions WHERE token_hash = ?1",
             params![token_hash],
             registry_session_from_row,
         )
@@ -2034,52 +2078,110 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .execute(
-                "DELETE FROM registry_sessions WHERE user_id = ?1 AND members = ?2",
+                "DELETE FROM registry_sessions WHERE user_id = ?1 AND members = ?2 AND login_key_id IS NULL",
                 params![user_id.0 as i64, format!("[{cert_id}]")],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(rows as u64)
     }
 
-    fn create_guard_token(&self, rec: GuardToken) -> StoreResult<()> {
+    fn insert_login_cert(&self, rec: LoginCert) -> StoreResult<u64> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO guard_tokens (token_hash, user_id, identity, kids, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO login_certs (user_id, kid, pubkey, label, cert, issued_at, expires_at, revoked_at, status_idx)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(kid) DO UPDATE SET
+               user_id = excluded.user_id, pubkey = excluded.pubkey, label = excluded.label,
+               cert = excluded.cert, issued_at = excluded.issued_at, expires_at = excluded.expires_at,
+               revoked_at = excluded.revoked_at, status_idx = excluded.status_idx",
             params![
-                rec.token_hash,
-                rec.user_id.0 as i64,
-                rec.identity.to_lowercase(),
-                serde_json::to_string(&rec.kids).unwrap_or_else(|_| "[]".into()),
-                rec.created_at.to_rfc3339(),
-                rec.expires_at.to_rfc3339(),
+                rec.user_id.0 as i64, rec.kid, rec.pubkey, rec.label, rec.cert,
+                rec.issued_at.to_rfc3339(), rec.expires_at.to_rfc3339(),
+                rec.revoked_at.map(|t| t.to_rfc3339()), rec.status_idx.map(|i| i as i64),
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        conn.execute(
-            "DELETE FROM guard_tokens WHERE expires_at < ?1",
-            params![Utc::now().to_rfc3339()],
-        )
-        .ok();
-        Ok(())
+        let id: i64 = conn
+            .query_row("SELECT id FROM login_certs WHERE kid = ?1", params![rec.kid], |r| r.get(0))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(id as u64)
     }
 
-    fn get_guard_token(&self, token_hash: &str) -> StoreResult<Option<GuardToken>> {
+    fn list_login_certs(&self, user_id: UserId) -> StoreResult<Vec<LoginCert>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!("SELECT {LOGIN_CERT_COLUMNS} FROM login_certs WHERE user_id = ?1 ORDER BY id"))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![user_id.0 as i64], login_cert_from_row)
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows)
+    }
+
+    fn get_login_cert_by_kid(&self, kid: &str) -> StoreResult<Option<LoginCert>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT token_hash, user_id, identity, kids, created_at, expires_at FROM guard_tokens WHERE token_hash = ?1",
-            params![token_hash],
-            guard_token_from_row,
+            &format!("SELECT {LOGIN_CERT_COLUMNS} FROM login_certs WHERE kid = ?1"),
+            params![kid],
+            login_cert_from_row,
         )
         .optional()
         .map_err(|e| BrokerError::Internal(e.to_string()))
     }
 
-    fn delete_guard_token(&self, token_hash: &str) -> StoreResult<bool> {
+    fn revoke_login_cert(&self, user_id: UserId, id: u64) -> StoreResult<bool> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
-            .execute("DELETE FROM guard_tokens WHERE token_hash = ?1", params![token_hash])
+            .execute(
+                "UPDATE login_certs SET revoked_at = COALESCE(revoked_at, ?1) WHERE id = ?2 AND user_id = ?3",
+                params![Utc::now().to_rfc3339(), id as i64, user_id.0 as i64],
+            )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(rows > 0)
+    }
+
+    fn end_sessions_solely_on_login_key(&self, user_id: UserId, id: u64) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "DELETE FROM registry_sessions WHERE user_id = ?1 AND login_key_id = ?2 AND members = '[]'",
+                params![user_id.0 as i64, id as i64],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows as u64)
+    }
+
+    fn create_login_token(&self, rec: LoginToken) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO login_tokens (token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)",
+            params![rec.token_hash, rec.user_id.0 as i64, rec.expires_at.to_rfc3339()],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        conn.execute("DELETE FROM login_tokens WHERE expires_at < ?1", params![Utc::now().to_rfc3339()]).ok();
+        Ok(())
+    }
+
+    fn take_login_token(&self, token_hash: &str) -> StoreResult<Option<LoginToken>> {
+        let conn = self.conn.lock().unwrap();
+        let rec = conn
+            .query_row(
+                "SELECT token_hash, user_id, expires_at FROM login_tokens WHERE token_hash = ?1",
+                params![token_hash],
+                |r| {
+                    let uid: i64 = r.get(1)?;
+                    Ok(LoginToken { token_hash: r.get(0)?, user_id: UserId(uid as u64), expires_at: parse_ts_opt(r.get(2)?).unwrap_or_else(Utc::now) })
+                },
+            )
+            .optional()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rec.is_some() {
+            conn.execute("DELETE FROM login_tokens WHERE token_hash = ?1", params![token_hash])
+                .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        }
+        Ok(rec)
     }
 
     fn account_public_id(&self, user_id: UserId) -> StoreResult<String> {
@@ -3560,14 +3662,26 @@ impl UserStore for std::sync::Arc<SqliteStore> {
     fn end_sessions_solely_on_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<u64> {
         (**self).end_sessions_solely_on_cert(user_id, cert_id)
     }
-    fn create_guard_token(&self, rec: GuardToken) -> StoreResult<()> {
-        (**self).create_guard_token(rec)
+    fn insert_login_cert(&self, rec: LoginCert) -> StoreResult<u64> {
+        (**self).insert_login_cert(rec)
     }
-    fn get_guard_token(&self, token_hash: &str) -> StoreResult<Option<GuardToken>> {
-        (**self).get_guard_token(token_hash)
+    fn list_login_certs(&self, user_id: UserId) -> StoreResult<Vec<LoginCert>> {
+        (**self).list_login_certs(user_id)
     }
-    fn delete_guard_token(&self, token_hash: &str) -> StoreResult<bool> {
-        (**self).delete_guard_token(token_hash)
+    fn get_login_cert_by_kid(&self, kid: &str) -> StoreResult<Option<LoginCert>> {
+        (**self).get_login_cert_by_kid(kid)
+    }
+    fn revoke_login_cert(&self, user_id: UserId, id: u64) -> StoreResult<bool> {
+        (**self).revoke_login_cert(user_id, id)
+    }
+    fn end_sessions_solely_on_login_key(&self, user_id: UserId, id: u64) -> StoreResult<u64> {
+        (**self).end_sessions_solely_on_login_key(user_id, id)
+    }
+    fn create_login_token(&self, rec: LoginToken) -> StoreResult<()> {
+        (**self).create_login_token(rec)
+    }
+    fn take_login_token(&self, token_hash: &str) -> StoreResult<Option<LoginToken>> {
+        (**self).take_login_token(token_hash)
     }
     fn account_public_id(&self, user_id: UserId) -> StoreResult<String> {
         (**self).account_public_id(user_id)

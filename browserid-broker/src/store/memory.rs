@@ -8,7 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    GuardToken, RegistrySession, SuspendedIdentity,
+    LoginCert, LoginToken, RegistrySession, SuspendedIdentity,
     DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, Tenant, TenantStatus, User, UserId, UserStore, VerificationType,
@@ -53,7 +53,9 @@ pub struct InMemoryUserStore {
     registry_sessions: RwLock<HashMap<String, RegistrySession>>,
     /// user -> public account id
     account_ids: RwLock<HashMap<UserId, String>>,
-    guard_tokens: RwLock<HashMap<String, GuardToken>>,
+    login_certs: RwLock<HashMap<u64, LoginCert>>,
+    next_login_cert_id: AtomicU64,
+    login_tokens: RwLock<HashMap<String, LoginToken>>,
 }
 
 impl InMemoryUserStore {
@@ -83,7 +85,9 @@ impl InMemoryUserStore {
             interactive_proofs: RwLock::new(HashMap::new()),
             registry_sessions: RwLock::new(HashMap::new()),
             account_ids: RwLock::new(HashMap::new()),
-            guard_tokens: RwLock::new(HashMap::new()),
+            login_certs: RwLock::new(HashMap::new()),
+            next_login_cert_id: AtomicU64::new(1),
+            login_tokens: RwLock::new(HashMap::new()),
         }
     }
 
@@ -586,17 +590,52 @@ impl UserStore for InMemoryUserStore {
         Ok((before - s.len()) as u64)
     }
 
-    fn create_guard_token(&self, rec: GuardToken) -> StoreResult<()> {
-        self.guard_tokens.write().unwrap().insert(rec.token_hash.clone(), rec);
+    fn insert_login_cert(&self, mut rec: LoginCert) -> StoreResult<u64> {
+        let mut certs = self.login_certs.write().unwrap();
+        if let Some(id) = certs.values().find(|c| c.kid == rec.kid).map(|c| c.id) {
+            rec.id = id;
+        } else {
+            rec.id = self.next_login_cert_id.fetch_add(1, Ordering::SeqCst);
+        }
+        certs.insert(rec.id, rec.clone());
+        Ok(rec.id)
+    }
+
+    fn list_login_certs(&self, user_id: UserId) -> StoreResult<Vec<LoginCert>> {
+        let mut v: Vec<LoginCert> = self.login_certs.read().unwrap().values().filter(|c| c.user_id == user_id).cloned().collect();
+        v.sort_by_key(|c| c.id);
+        Ok(v)
+    }
+
+    fn get_login_cert_by_kid(&self, kid: &str) -> StoreResult<Option<LoginCert>> {
+        Ok(self.login_certs.read().unwrap().values().find(|c| c.kid == kid).cloned())
+    }
+
+    fn revoke_login_cert(&self, user_id: UserId, id: u64) -> StoreResult<bool> {
+        let mut certs = self.login_certs.write().unwrap();
+        match certs.get_mut(&id) {
+            Some(c) if c.user_id == user_id => {
+                if c.revoked_at.is_none() { c.revoked_at = Some(Utc::now()); }
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn end_sessions_solely_on_login_key(&self, user_id: UserId, id: u64) -> StoreResult<u64> {
+        let mut s = self.registry_sessions.write().unwrap();
+        let before = s.len();
+        s.retain(|_, r| !(r.user_id == user_id && r.login_key_id == Some(id) && r.member_cert_ids.is_empty()));
+        Ok((before - s.len()) as u64)
+    }
+
+    fn create_login_token(&self, rec: LoginToken) -> StoreResult<()> {
+        self.login_tokens.write().unwrap().insert(rec.token_hash.clone(), rec);
         Ok(())
     }
 
-    fn get_guard_token(&self, token_hash: &str) -> StoreResult<Option<GuardToken>> {
-        Ok(self.guard_tokens.read().unwrap().get(token_hash).cloned())
-    }
-
-    fn delete_guard_token(&self, token_hash: &str) -> StoreResult<bool> {
-        Ok(self.guard_tokens.write().unwrap().remove(token_hash).is_some())
+    fn take_login_token(&self, token_hash: &str) -> StoreResult<Option<LoginToken>> {
+        Ok(self.login_tokens.write().unwrap().remove(token_hash))
     }
 
     fn account_public_id(&self, user_id: UserId) -> StoreResult<String> {

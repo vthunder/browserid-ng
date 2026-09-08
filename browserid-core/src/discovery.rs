@@ -116,10 +116,10 @@ pub struct RegistrySupport {
     /// on the wire (may be empty).
     #[serde(default)]
     pub browser: std::collections::BTreeMap<String, String>,
-    /// Every guard kind the registry offers (registry-api-v1 §4.2), as the
-    /// `guard_required` refusal lists them. REQUIRED on the wire.
+    /// The §4.2 login methods this registry offers (v1: `login_page`,
+    /// `stored_key`). REQUIRED on the wire.
     #[serde(default)]
-    pub guard_kinds: Vec<serde_json::Value>,
+    pub login_methods: Vec<String>,
 }
 
 impl SupportDocument {

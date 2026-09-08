@@ -206,11 +206,19 @@ pub trait UserStore: Send + Sync {
     /// of). Returns how many.
     fn end_sessions_solely_on_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<u64>;
 
-    // --- Guard tokens (registry-api-v1 §4.2) ---
+    // --- Login certs + login-page tokens (registry-api-v1 §4.2) ---
 
-    fn create_guard_token(&self, rec: GuardToken) -> StoreResult<()>;
-    fn get_guard_token(&self, token_hash: &str) -> StoreResult<Option<GuardToken>>;
-    fn delete_guard_token(&self, token_hash: &str) -> StoreResult<bool>;
+    /// Upsert on kid; returns the row id.
+    fn insert_login_cert(&self, rec: LoginCert) -> StoreResult<u64>;
+    fn list_login_certs(&self, user_id: UserId) -> StoreResult<Vec<LoginCert>>;
+    fn get_login_cert_by_kid(&self, kid: &str) -> StoreResult<Option<LoginCert>>;
+    /// Sticky. `false` when no such row on the account.
+    fn revoke_login_cert(&self, user_id: UserId, id: u64) -> StoreResult<bool>;
+    /// Delete the account's sessions whose only member is this login key.
+    fn end_sessions_solely_on_login_key(&self, user_id: UserId, id: u64) -> StoreResult<u64>;
+    fn create_login_token(&self, rec: LoginToken) -> StoreResult<()>;
+    /// Take (delete) a login token; `None` when unknown.
+    fn take_login_token(&self, token_hash: &str) -> StoreResult<Option<LoginToken>>;
 
     // --- Public account ids (registry-api-v1 §3: opaque, ≥128 bits) ---
 

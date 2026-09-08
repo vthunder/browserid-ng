@@ -1,19 +1,20 @@
-//! Sessions and request proofs (registry-api-v1 §4.4–§4.5; bean 0c49
-//! step 2). A session is an opaque token naming a SET of the account's
-//! recorded certs — its members. Every call carries `Authorization:
-//! Bearer <token>` and a `Proof` JWS signed by one member's key, whose
-//! `kid` says which; POST proofs bind the body by `bh`. Members are
-//! re-checked on every call (expiry, retirement, status) and dropped as
-//! they fail; a session with none left is `401 invalid_session`.
+//! Sessions and request proofs (registry-api-v1 §4.4–§4.5). A session is
+//! an opaque token on one account, opened by a login (§4.2) or by
+//! `accounts` (§5.2.1). Its members are the keys that may sign its
+//! proofs: the login key that opened it and the identity certs proven
+//! under it. Every call carries `Authorization: Bearer <token>` and a
+//! `Proof` JWS signed by one member, whose `kid` says which; POST proofs
+//! bind the body by `bh`. Members are re-checked on every call and
+//! dropped as they fail; a session with none left is `401 invalid_session`.
 
 use std::sync::Arc;
 
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
+
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{Duration, Utc};
@@ -27,8 +28,6 @@ use crate::RegistrarState;
 
 /// Session lifetime (§4.5: RECOMMENDED ≤ 24 h).
 pub const SESSION_TTL_SECONDS: i64 = 24 * 3600;
-/// Possession proofs per `session` call (§4.5).
-const MAX_PROOFS: usize = 8;
 
 pub(crate) fn b64url_sha256(data: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(data))
@@ -192,45 +191,74 @@ pub(crate) fn kid_of(pubkey_b64: &str) -> Option<String> {
 // Members
 // ---------------------------------------------------------------------------
 
-/// A session member that passed the per-call re-check.
+/// A session member that passed the per-call re-check: an identity cert
+/// proven under the session, or the login key that opened it.
 #[derive(Clone, Debug)]
-pub struct Member {
-    pub cert: DeviceCertRecord,
-    pub kid: String,
+pub enum Member {
+    Cert { cert: DeviceCertRecord, kid: String },
+    Login { rec: crate::models::LoginCertRecord },
 }
 
 impl Member {
+    pub fn kid(&self) -> &str {
+        match self {
+            Member::Cert { kid, .. } => kid,
+            Member::Login { rec } => &rec.kid,
+        }
+    }
+    pub fn pubkey(&self) -> &str {
+        match self {
+            Member::Cert { cert, .. } => &cert.pubkey,
+            Member::Login { rec } => &rec.pubkey,
+        }
+    }
     pub fn is_config(&self) -> bool {
-        self.cert.purpose == "authorization"
+        matches!(self, Member::Cert { cert, .. } if cert.purpose == "authorization")
     }
 }
 
 /// The member set of a session as of now: each recorded cert re-checked
-/// for retirement, expiry and status (fail-closed); failing ones dropped.
+/// for retirement, expiry and status (fail-closed), failing ones dropped;
+/// the login key while its cert is live.
 pub(crate) async fn resolve_members(
     state: &RegistrarState,
     user_id: u64,
     cert_ids: &[u64],
+    login_key_id: Option<u64>,
 ) -> Result<Vec<Member>, ApiError> {
+    let mut out = Vec::new();
+    if let Some(id) = login_key_id {
+        let live = state
+            .store
+            .list_login_certs(user_id)
+            .map_err(|e| ApiError::Internal(format!("login certs: {e}")))?
+            .into_iter()
+            .find(|c| c.id == id)
+            .filter(|c| c.is_live());
+        if let Some(rec) = live {
+            if !rec.status_idx.map_or(false, |i| state.store.is_status_revoked_idx(i).unwrap_or(true)) {
+                out.push(Member::Login { rec });
+            }
+        }
+    }
     let certs = state
         .store
         .list_device_certs(user_id)
         .map_err(|e| ApiError::Internal(format!("certs: {e}")))?;
-    let mut out = Vec::new();
     for id in cert_ids {
         let Some(cert) = certs.iter().find(|c| c.id == *id) else { continue };
         if !passes_bar(state, cert).await {
             continue;
         }
         let Some(kid) = kid_of(&cert.pubkey) else { continue };
-        out.push(Member { cert: cert.clone(), kid });
+        out.push(Member::Cert { cert: cert.clone(), kid });
     }
     Ok(out)
 }
 
 /// Unretired, unexpired, and not revoked at its status ref (uncheckable =
 /// revoked). Re-checks are refreshed within the host's list cache lifetime.
-async fn passes_bar(state: &RegistrarState, cert: &DeviceCertRecord) -> bool {
+pub(crate) async fn passes_bar(state: &RegistrarState, cert: &DeviceCertRecord) -> bool {
     if !cert.is_active() || cert.expires_at <= Utc::now() {
         return false;
     }
@@ -243,97 +271,42 @@ async fn passes_bar(state: &RegistrarState, cert: &DeviceCertRecord) -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// POST /api/v1/session, POST /api/v1/session/end (§4.5)
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SessionRequest {
-    account: String,
-    proofs: Vec<String>,
-    #[serde(default)]
-    guard: Option<String>,
-}
-
-fn unknown_key(d: &str) -> ApiError {
-    ApiError::InvalidCertUnauthorized { reason: "unknown_key", description: d.to_string() }
-}
-
-/// Opens a session from possession proofs by certs recorded on `account`.
-pub async fn open_session(
-    State(state): State<Arc<RegistrarState>>,
-    headers: axum::http::HeaderMap,
-    axum::Extension(BodyHash(bh)): axum::Extension<BodyHash>,
-    body: Bytes,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    if !state.enabled {
-        return Err(ApiError::NotFound);
-    }
-    let path = "/api/v1/session";
-    let hp = header_proof(&headers)?;
-    let req: SessionRequest = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
-    if req.proofs.is_empty() || req.proofs.len() > MAX_PROOFS {
-        return Err(ApiError::InvalidRequest(format!("proofs must carry 1–{MAX_PROOFS} entries")));
-    }
-
-    // The account and its recorded, unretired certs — the only keys a
-    // session may be opened with (§4.4 step 2).
-    let user_id = state
-        .host
-        .account_for_public_id(&req.account)
-        .map_err(|e| ApiError::Internal(format!("account lookup: {e}")))?
-        .ok_or_else(|| unknown_key("no recorded cert matches; attach first"))?;
-    let certs = state
-        .store
-        .list_device_certs(user_id)
-        .map_err(|e| ApiError::Internal(format!("certs: {e}")))?;
-    let find = |kid: &str| {
-        certs
-            .iter()
-            .filter(|c| c.is_active())
-            .find(|c| kid_of(&c.pubkey).as_deref() == Some(kid))
-            .cloned()
+/// The session behind `Authorization: Bearer`, with its live members —
+/// possibly none: a page login proves no key until the first `attach`
+/// (§4.5), which is why `attach` resolves its own signer.
+pub(crate) async fn bearer_session(
+    state: &RegistrarState,
+    headers: &axum::http::HeaderMap,
+) -> Result<(SessionRecord, Vec<Member>), ApiError> {
+    let auth = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ApiError::InvalidSession("missing Authorization header".into()))?;
+    let Some((scheme, token)) = auth.split_once(' ') else {
+        return Err(ApiError::InvalidSession("malformed Authorization header".into()));
     };
-
-    // Header proof: a recorded key, signature before anything that costs,
-    // then the claims and the body binding.
-    let signer = find(&hp.kid).ok_or_else(|| unknown_key("the Proof key is not recorded on this account"))?;
-    hp.verify(&signer.pubkey)?;
-    hp.check_claims(&state, "POST", path, Some(&bh))?;
-    replay_check(&state, &hp.kid, &hp.jti)?;
-
-    // Possession proofs: one per member, same jti, no bh.
-    let mut member_ids: Vec<u64> = Vec::new();
-    for raw in &req.proofs {
-        let p = Proof::parse(raw)?;
-        if p.jti != hp.jti {
-            return Err(ApiError::InvalidProof("proofs in one request must share a jti".into()));
-        }
-        let cert = find(&p.kid).ok_or_else(|| unknown_key("a possession proof names a key not recorded on this account"))?;
-        p.verify(&cert.pubkey)?;
-        p.check_claims(&state, "POST", path, None)?;
-        if cert.expires_at <= Utc::now() {
-            return Err(ApiError::InvalidCertUnauthorized { reason: "cert_expired", description: "a member cert is expired".into() });
-        }
-        if !passes_bar(&state, &cert).await {
-            return Err(ApiError::InvalidCertUnauthorized { reason: "cert_revoked", description: "a member cert is revoked or its status is unavailable".into() });
-        }
-        if !member_ids.contains(&cert.id) {
-            member_ids.push(cert.id);
-        }
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return Err(ApiError::InvalidSession("Authorization scheme must be Bearer".into()));
     }
-
-    // The guard is asked of a session only when the registry has ended one
-    // for it (§4.2); nothing asks yet, so a token here is never valid.
-    if req.guard.is_some() {
-        return Err(ApiError::Forbidden {
-            reason: "guard_rejected",
-            description: "no guard was asked of this device".into(),
-        });
+    let rec = state
+        .store
+        .get_session(&b64url_sha256(token.trim().as_bytes()))
+        .map_err(|e| ApiError::Internal(format!("session lookup: {e}")))?
+        .ok_or_else(|| ApiError::InvalidSession("unknown session".into()))?;
+    if rec.is_expired() {
+        return Err(ApiError::InvalidSession("session expired".into()));
     }
+    let members = resolve_members(state, rec.user_id, &rec.member_cert_ids, rec.login_key_id).await?;
+    Ok((rec, members))
+}
 
+/// Mint a session and answer its §4.5 body.
+pub(crate) async fn open(
+    state: &RegistrarState,
+    user_id: u64,
+    member_ids: Vec<u64>,
+    login_key_id: Option<u64>,
+) -> Result<serde_json::Value, ApiError> {
     let now = Utc::now();
     let expires_at = now + Duration::seconds(SESSION_TTL_SECONDS);
     let token = crate::api::new_token();
@@ -343,24 +316,25 @@ pub async fn open_session(
             token_hash: b64url_sha256(token.as_bytes()),
             user_id,
             member_cert_ids: member_ids.clone(),
+            login_key_id,
             created_at: now,
             expires_at,
         })
         .map_err(|e| ApiError::Internal(format!("session store: {e}")))?;
     state.store.cleanup_expired_sessions().ok();
-
-    Ok(Json(session_body(&state, user_id, &token, expires_at, &member_ids).await?))
+    session_body(state, user_id, &token, expires_at, &member_ids, login_key_id).await
 }
 
-/// The §4.5 session body, shared with `attach`.
+/// The §4.5 session body.
 pub(crate) async fn session_body(
     state: &RegistrarState,
     user_id: u64,
     token: &str,
     expires_at: chrono::DateTime<Utc>,
     member_ids: &[u64],
+    login_key_id: Option<u64>,
 ) -> Result<serde_json::Value, ApiError> {
-    let members = resolve_members(state, user_id, member_ids).await?;
+    let members = resolve_members(state, user_id, member_ids, login_key_id).await?;
     let roster = state
         .host
         .roster(user_id)
@@ -373,9 +347,10 @@ pub(crate) async fn session_body(
         "token": token,
         "expires_at": expires_at.to_rfc3339(),
         "account": account,
-        "members": members.iter().map(|m| serde_json::json!({
-            "id": m.cert.id, "kid": m.kid, "purpose": m.cert.purpose,
-        })).collect::<Vec<_>>(),
+        "members": members.iter().map(|m| match m {
+            Member::Login { rec } => serde_json::json!({ "kid": rec.kid, "kind": "login" }),
+            Member::Cert { cert, kid } => serde_json::json!({ "id": cert.id, "kid": kid, "kind": "cert", "purpose": cert.purpose }),
+        }).collect::<Vec<_>>(),
         "roster": roster.iter().map(|(identity, state)| serde_json::json!({
             "identity": identity, "state": state,
         })).collect::<Vec<_>>(),

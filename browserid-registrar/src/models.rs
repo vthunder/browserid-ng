@@ -216,15 +216,26 @@ impl DeviceCertRecord {
     }
 }
 
-/// A guard token (registry-api-v1 §4.2), as the host stores it.
+/// A login cert (registry-api-v1 §4.2): the registry's signed credential
+/// over a wallet's login key.
 #[derive(Debug, Clone)]
-pub struct GuardTokenRecord {
-    pub token_hash: String,
+pub struct LoginCertRecord {
+    pub id: u64,
     pub user_id: u64,
-    pub identity: String,
-    /// Sorted kids of the certs it was minted for.
-    pub kids: Vec<String>,
+    pub kid: String,
+    pub pubkey: String,
+    pub label: Option<String>,
+    pub cert: String,
+    pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub status_idx: Option<u64>,
+}
+
+impl LoginCertRecord {
+    pub fn is_live(&self) -> bool {
+        self.revoked_at.is_none() && self.expires_at > Utc::now()
+    }
 }
 
 /// A registry session (registry-api-v1 §4.5): a token naming a SET of
@@ -234,6 +245,8 @@ pub struct SessionRecord {
     pub token_hash: String,
     pub user_id: u64,
     pub member_cert_ids: Vec<u64>,
+    /// The login cert whose key opened the session, if any.
+    pub login_key_id: Option<u64>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }

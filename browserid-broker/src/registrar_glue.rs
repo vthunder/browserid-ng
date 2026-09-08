@@ -145,6 +145,21 @@ fn from_reg_warrant(w: reg::WarrantRecord) -> crate::store::WarrantRecord {
     }
 }
 
+fn to_reg_login_cert(c: crate::store::LoginCert) -> reg::LoginCertRecord {
+    reg::LoginCertRecord {
+        id: c.id,
+        user_id: c.user_id.0,
+        kid: c.kid,
+        pubkey: c.pubkey,
+        label: c.label,
+        cert: c.cert,
+        issued_at: c.issued_at,
+        expires_at: c.expires_at,
+        revoked_at: c.revoked_at,
+        status_idx: c.status_idx,
+    }
+}
+
 fn to_reg_device_cert(c: crate::store::DeviceCertRecord) -> reg::DeviceCertRecord {
     reg::DeviceCertRecord {
         id: c.id,
@@ -262,6 +277,7 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
                 token_hash: rec.token_hash,
                 user_id: UserId(rec.user_id),
                 member_cert_ids: rec.member_cert_ids,
+                login_key_id: rec.login_key_id,
                 created_at: rec.created_at,
                 expires_at: rec.expires_at,
             })
@@ -277,6 +293,7 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
                 token_hash: r.token_hash,
                 user_id: r.user_id.0,
                 member_cert_ids: r.member_cert_ids,
+                login_key_id: r.login_key_id,
                 created_at: r.created_at,
                 expires_at: r.expires_at,
             }))
@@ -296,22 +313,52 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
             .map_err(to_reg_err)
     }
 
-    fn get_guard_token(&self, token_hash: &str) -> Result<Option<reg::GuardTokenRecord>, RegistrarError> {
-        Ok(self
-            .user_store
-            .get_guard_token(token_hash)
-            .map_err(to_reg_err)?
-            .map(|g| reg::GuardTokenRecord {
-                token_hash: g.token_hash,
-                user_id: g.user_id.0,
-                identity: g.identity,
-                kids: g.kids,
-                expires_at: g.expires_at,
-            }))
+    fn insert_login_cert(&self, rec: reg::LoginCertRecord) -> Result<u64, RegistrarError> {
+        self.user_store
+            .insert_login_cert(crate::store::LoginCert {
+                id: rec.id,
+                user_id: UserId(rec.user_id),
+                kid: rec.kid,
+                pubkey: rec.pubkey,
+                label: rec.label,
+                cert: rec.cert,
+                issued_at: rec.issued_at,
+                expires_at: rec.expires_at,
+                revoked_at: rec.revoked_at,
+                status_idx: rec.status_idx,
+            })
+            .map_err(to_reg_err)
     }
 
-    fn delete_guard_token(&self, token_hash: &str) -> Result<bool, RegistrarError> {
-        self.user_store.delete_guard_token(token_hash).map_err(to_reg_err)
+    fn list_login_certs(&self, user_id: u64) -> Result<Vec<reg::LoginCertRecord>, RegistrarError> {
+        Ok(self
+            .user_store
+            .list_login_certs(UserId(user_id))
+            .map_err(to_reg_err)?
+            .into_iter()
+            .map(to_reg_login_cert)
+            .collect())
+    }
+
+    fn get_login_cert_by_kid(&self, kid: &str) -> Result<Option<reg::LoginCertRecord>, RegistrarError> {
+        Ok(self.user_store.get_login_cert_by_kid(kid).map_err(to_reg_err)?.map(to_reg_login_cert))
+    }
+
+    fn revoke_login_cert(&self, user_id: u64, id: u64) -> Result<bool, RegistrarError> {
+        self.user_store.revoke_login_cert(UserId(user_id), id).map_err(to_reg_err)
+    }
+
+    fn end_sessions_solely_on_login_key(&self, user_id: u64, id: u64) -> Result<u64, RegistrarError> {
+        self.user_store.end_sessions_solely_on_login_key(UserId(user_id), id).map_err(to_reg_err)
+    }
+
+    fn take_login_token(&self, token_hash: &str) -> Result<Option<u64>, RegistrarError> {
+        Ok(self
+            .user_store
+            .take_login_token(token_hash)
+            .map_err(to_reg_err)?
+            .filter(|t| t.expires_at > chrono::Utc::now())
+            .map(|t| t.user_id.0))
     }
 
     fn get_or_allocate_status(&self, kind: &str, subject: &str) -> Result<u64, RegistrarError> {

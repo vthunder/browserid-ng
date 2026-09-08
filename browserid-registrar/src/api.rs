@@ -157,8 +157,8 @@ pub enum ApiError {
     /// 403 — `forbidden`: the session lacks a config-cert member the call
     /// needs, or a guard is needed or rejected (§7.1).
     Forbidden { reason: &'static str, description: String },
-    /// 403 — `forbidden/guard_required`, carrying the kinds (§4.2).
-    GuardRequired { kinds: Vec<serde_json::Value> },
+    /// 403 — `forbidden/login_required`, carrying the login page (§4.2).
+    LoginRequired { url: String },
     /// 409 — a state refusal (e.g. revoking a refless warrant).
     Conflict { reason: &'static str, description: String },
     /// 422 — a client-signed warrant / admission record (or the claim
@@ -174,11 +174,11 @@ pub enum ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        if let ApiError::GuardRequired { kinds } = self {
+        if let ApiError::LoginRequired { url } = self {
             let body = serde_json::json!({
-                "error": "forbidden", "reason": "guard_required",
-                "error_description": "the guard was not passed",
-                "guard_kinds": kinds,
+                "error": "forbidden", "reason": "login_required",
+                "error_description": "open the login page and retry with its token",
+                "url": url,
             });
             return (StatusCode::FORBIDDEN, Json(body)).into_response();
         }
@@ -193,7 +193,7 @@ impl IntoResponse for ApiError {
                 (StatusCode::FORBIDDEN, "forbidden", description, Some(reason))
             }
             // Handled above with its structured body.
-            ApiError::GuardRequired { .. } => unreachable!("guard_required is answered above"),
+            ApiError::LoginRequired { .. } => unreachable!("login_required is answered above"),
             ApiError::Conflict { reason, description } => {
                 (StatusCode::CONFLICT, "conflict", description, Some(reason))
             }
@@ -306,9 +306,10 @@ pub struct ApiUser {
     /// The identities the members were recorded for (§4.3), deduplicated.
     /// Empty for a legacy token (whole-account authority).
     pub member_identities: Vec<String>,
-    /// The session's token hash, so `session/end` can end it. `None` for a
-    /// legacy token.
+    /// The session's token hash, so `session/end` can end it.
     pub session_token_hash: Option<String>,
+    /// The login cert whose key opened the session, if any.
+    pub login_key_id: Option<u64>,
 }
 
 impl ApiUser {
@@ -373,15 +374,15 @@ async fn session_user(
         return Err(ApiError::InvalidSession("session expired".into()));
     }
     let proof = header_proof(&parts.headers)?;
-    let members = resolve_members(state, rec.user_id, &rec.member_cert_ids).await?;
+    let members = resolve_members(state, rec.user_id, &rec.member_cert_ids, rec.login_key_id).await?;
     if members.is_empty() {
         return Err(ApiError::InvalidSession("no member of this session is still valid".into()));
     }
     let signer = members
         .iter()
-        .find(|m| m.kid == proof.kid)
+        .find(|m| m.kid() == proof.kid)
         .ok_or_else(|| ApiError::InvalidSession("the Proof key is not a member of this session".into()))?;
-    proof.verify(&signer.cert.pubkey)?;
+    proof.verify(signer.pubkey())?;
     let expect_bh = if parts.method == axum::http::Method::GET {
         None
     } else {
@@ -397,20 +398,29 @@ async fn session_user(
     replay_check(state, &proof.kid, &proof.jti)?;
 
     let mut identities: Vec<String> = Vec::new();
+    let mut cert_ids = Vec::new();
     for m in &members {
-        for i in &m.cert.identities {
-            if !identities.iter().any(|x| x.eq_ignore_ascii_case(i)) {
-                identities.push(i.clone());
+        if let crate::session::Member::Cert { cert, .. } = m {
+            cert_ids.push(cert.id);
+            for i in &cert.identities {
+                if !identities.iter().any(|x| x.eq_ignore_ascii_case(i)) {
+                    identities.push(i.clone());
+                }
             }
         }
     }
+    let login_key_id = members.iter().find_map(|m| match m {
+        crate::session::Member::Login { rec } => Some(rec.id),
+        _ => None,
+    });
     Ok(ApiUser {
         user_id: rec.user_id,
-        proof_key: signer.cert.pubkey.clone(),
+        proof_key: signer.pubkey().to_string(),
         has_config: members.iter().any(|m| m.is_config()),
-        member_cert_ids: members.iter().map(|m| m.cert.id).collect(),
+        member_cert_ids: cert_ids,
         member_identities: identities,
         session_token_hash: Some(hash),
+        login_key_id,
     })
 }
 

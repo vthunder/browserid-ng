@@ -81,7 +81,6 @@
     managedConsent: document.getElementById('managed-consent-screen'),
     sboConsent: document.getElementById('sbo-consent-screen'),
     success: document.getElementById('success-screen'),
-    guard: document.getElementById('guard-screen'),
     error: document.getElementById('error-screen')
   };
 
@@ -124,51 +123,6 @@
   }
 
   // Screen management
-  // The registry guard (registry-api-v1 §4.2), answered in this dialog when
-  // the registry is this broker: a fresh password session passes on its
-  // own (the password kind, just fulfilled); otherwise the guard screen
-  // shows the identity and key fingerprints and the user's Approve is the
-  // explicit action. Resolves with the guard token; rejects when declined.
-  Registry.onGuard(function (info) {
-    const post = (confirm) => postJson('/wsapi/guard', {
-      identity: info.identity, certs: info.certs, confirm
-    }).then(r => r && r.guard ? r.guard : null).catch(() => null);
-    return post(false).then(g => {
-      if (g) return g;
-      return new Promise((resolve, reject) => {
-        const list = document.getElementById('guard-fingerprints');
-        list.innerHTML = '';
-        for (const k of [info.kids.device, info.kids.config]) {
-          const li = document.createElement('li');
-          li.textContent = k;
-          list.appendChild(li);
-        }
-        document.getElementById('guard-text').textContent =
-          `This browser is asking to join your account as ${info.identity}.`;
-        const err = document.getElementById('guard-error');
-        err.hidden = true;
-        const previous = Object.keys(screens).find(k => screens[k].classList.contains('active')) || 'loading';
-        const approve = document.getElementById('guard-approve');
-        const skip = document.getElementById('guard-skip');
-        function done(fn, v) {
-          approve.onclick = null; skip.onclick = null;
-          showScreen(previous === 'guard' ? 'loading' : previous, 'Signing in...');
-          fn(v);
-        }
-        approve.onclick = () => {
-          approve.disabled = true;
-          post(true).then(g2 => {
-            approve.disabled = false;
-            if (g2) done(resolve, g2);
-            else { err.textContent = 'Approval was refused.'; err.hidden = false; }
-          }).catch(e => { approve.disabled = false; err.textContent = e.message || 'Approval failed.'; err.hidden = false; });
-        };
-        skip.onclick = () => done(reject, new Error('device approval declined'));
-        showScreen('guard');
-      });
-    });
-  });
-
   function showScreen(screenId, loadingText) {
     Object.values(screens).forEach(s => s.classList.remove('active'));
     screens[screenId].classList.add('active');
@@ -537,18 +491,17 @@
       // where the active pair is known; the noRegister (token-mint) path
       // never re-enters this branch, so token acquisition cannot recurse.
       // Wallet-role registry calls ride the standard /api/v1 session lane
-      // (registry-api-v1 §4.5): a session on the account this pair is
-      // attached to — attaching it first when it is not, which on a new
-      // browser means the account's guard (§4.2). Best-effort: a login
-      // must not fail because the registry could not be reached, and a
-      // guard the user declines just leaves this login's warrant
-      // unregistered.
+      // (registry-api-v1 §4.2, §4.5): a session on the account this pair
+      // is attached to — by this browser's login cert, or by the login
+      // page answered with the password the user just typed. Best-effort:
+      // a login must not fail because the registry could not be reached.
       await Registry.configure({
         pair: {
           deviceCert: pair.device.cert, devicePrivateKey: pair.device.privateKey,
           configCert: pair.config.cert, configPrivateKey: pair.config.privateKey
         },
-        identity: email
+        identity: email,
+        password: state.typedPassword || null
       });
       let registry = false;
       try {
@@ -2511,6 +2464,9 @@
           pass: password,
           ephemeral: false
         });
+        // The registry login page's check is this same password: keep it
+        // for the session lane (registry-api-v1 §4.2) this run only.
+        state.typedPassword = password;
 
         // A bridge claim that was waiting on this password confirm (kts0):
         // re-run it under the fresh session — the attach leg links/upgrades
@@ -2602,6 +2558,7 @@
           state.pendingCreatePass = null;
           try {
             await apiCall(API.authenticate, 'POST', { email: state.email, pass, ephemeral: false });
+            state.typedPassword = pass;
           } catch (e2) { /* step-up covers it */ }
         }
         await completeSignIn(state.email);

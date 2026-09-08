@@ -1,17 +1,15 @@
 // Registry API client (docs/specs/registry-api-v1.md §4–§5): the wallet as
-// a first-class registry client. A SESSION (§4.5) is opened from possession
-// proofs by this device's own keys against the account they were attached
-// to; every call carries the session token plus a request proof signed
-// with the config key (`kid` in the header, `bh` binding POST bodies). No
-// cookies, no presentation exchange — the keys themselves authenticate.
+// a first-class registry client. A SESSION (§4.5) comes from a LOGIN
+// (§4.2): headlessly by this wallet's login cert (`stored_key`), or through
+// the registry's login page at setup. Every call carries the session token
+// plus a request proof signed by a member key (`kid` in the header, `bh`
+// binding POST bodies). No cookies — the keys themselves authenticate.
 const store = require('./store');
 const broker = require('./broker');
 const { proof, kidOf, nowS, randHex } = require('./crypto');
 
 let token = null;
 let tokenExp = 0;
-
-function keyX(privJwk) { return privJwk.x; }
 
 async function postRaw(path, bodyStr, headers = {}) {
   const res = await fetch(broker.BROKER + path, {
@@ -29,73 +27,142 @@ function took(body) {
   if (body.account && body.account !== store.state().account) store.set({ account: body.account });
 }
 
-// §4.5: a session on the account this wallet was attached to.
-async function openSession() {
+// The key a session call is signed with: the login key when the session
+// holds it, else the config cert (a member once attached).
+let memberKids = [];
+function signer() {
   const s = store.state();
-  if (!s.account || !s.deviceCert) return false;
-  const path = '/api/v1/session';
-  const htu = broker.ORIGIN + path;
-  const jti = randHex(12);
-  const proofs = [
-    await proof(s.deviceKey, 'POST', htu, { jti, x: keyX(s.deviceKey) }),
-    await proof(s.configKey, 'POST', htu, { jti, x: keyX(s.configKey) }),
-  ];
-  const bodyStr = JSON.stringify({ account: s.account, proofs });
-  const r = await postRaw(path, bodyStr, { proof: await proof(s.configKey, 'POST', htu, { body: bodyStr, jti, x: keyX(s.configKey) }) });
-  if (r.ok && r.data.token) { took(r.data); return true; }
-  return false;
+  if (s.loginKey && memberKids.includes(kidOf(s.loginKey.x))) return s.loginKey;
+  if (memberKids.includes(kidOf(s.configKey.x))) return s.configKey;
+  if (memberKids.includes(kidOf(s.deviceKey.x))) return s.deviceKey;
+  return null;
+}
+function took(body) {
+  token = body.token;
+  tokenExp = Math.floor(new Date(body.expires_at).getTime() / 1000) || (nowS() + 3600);
+  memberKids = (body.members || []).map((m) => m.kid);
+  if (body.account && body.account !== store.state().account) store.set({ account: body.account });
 }
 
-// §5.2.1: record this device's pair for its identity. `guard` is a token
-// from the registry's guard page (bootstrap.js runs that page); without
-// one, a held identity answers guard_required, which the caller handles.
-async function attach({ guard = null } = {}) {
+// Possession proofs for the pair (+ the header proof by `signerKey`).
+async function withCerts(path, extra, signerKey) {
   const s = store.state();
-  if (!s.deviceCert) throw new Error('wallet not bootstrapped');
-  const path = '/api/v1/account/attach';
   const htu = broker.ORIGIN + path;
   const jti = randHex(12);
   const body = {
     identity: s.identity,
     certs: [
-      { cert: s.deviceCert, proof: await proof(s.deviceKey, 'POST', htu, { jti, x: keyX(s.deviceKey) }) },
-      { cert: s.configCert, proof: await proof(s.configKey, 'POST', htu, { jti, x: keyX(s.configKey) }) },
+      { cert: s.deviceCert, proof: await proof(s.deviceKey, 'POST', htu, { jti, x: s.deviceKey.x }) },
+      { cert: s.configCert, proof: await proof(s.configKey, 'POST', htu, { jti, x: s.configKey.x }) },
     ],
+    ...(extra || {}),
   };
-  if (guard) body.guard = guard;
-  if (s.account && token) body.account = s.account;
   const bodyStr = JSON.stringify(body);
-  const headers = { proof: await proof(s.configKey, 'POST', htu, { body: bodyStr, jti, x: keyX(s.configKey) }) };
-  if (token && s.account) headers.authorization = `Bearer ${token}`;
-  const r = await postRaw(path, bodyStr, headers);
-  if (r.ok && r.data.token) { took(r.data); return { ok: true }; }
-  if (r.status === 403 && r.data.reason === 'guard_required') {
-    const page = (r.data.guard_kinds || []).find((k) => k.kind === 'page' && k.url);
-    return { ok: false, guardRequired: true, guardUrl: page ? page.url : null };
-  }
-  const e = new Error(`attach: ${r.status} ${r.data.error_description || r.data.error || ''}`);
-  e.status = r.status;
-  e.reason = r.data.reason;
-  throw e;
+  const key = signerKey || s.configKey;
+  return { bodyStr, header: await proof(key, 'POST', htu, { body: bodyStr, jti, x: key.x }) };
 }
 
-async function ensure() {
-  if (token && nowS() < tokenExp - 60) return token;
-  token = null;
-  if (await openSession()) return token;
-  const r = await attach();
-  if (!r.ok) {
-    const e = new Error('this device is not attached to the account yet: run setup');
-    e.reason = 'guard_required';
-    e.guardUrl = r.guardUrl;
-    throw e;
+// §5.2.1: the account holding this wallet's identity, or null.
+async function lookupAccount() {
+  const path = '/api/v1/accounts/lookup';
+  const w = await withCerts(path, {});
+  const r = await postRaw(path, w.bodyStr, { proof: w.header });
+  if (r.ok && r.data.account) return r.data.account;
+  if (r.status === 404) return null;
+  throw apiError('POST', path, r);
+}
+
+// §5.2.1: a new account around the identity (the pair recorded by creation).
+async function createAccount() {
+  const path = '/api/v1/accounts';
+  const w = await withCerts(path, {});
+  const r = await postRaw(path, w.bodyStr, { proof: w.header });
+  if (r.ok && r.data.token) { took(r.data); return; }
+  throw apiError('POST', path, r);
+}
+
+// §4.2 stored_key: this wallet's login cert. False when the registry
+// refuses (expired, revoked, or none minted yet).
+async function loginStored(account) {
+  const s = store.state();
+  if (!s.loginKey || !s.loginCert) return false;
+  const path = '/api/v1/login';
+  const htu = broker.ORIGIN + path;
+  const jti = randHex(12);
+  const pp = await proof(s.loginKey, 'POST', htu, { jti, x: s.loginKey.x });
+  const bodyStr = JSON.stringify({ account, method: 'stored_key', proof: pp });
+  const r = await postRaw(path, bodyStr, { proof: await proof(s.loginKey, 'POST', htu, { body: bodyStr, jti, x: s.loginKey.x }) });
+  if (r.ok && r.data.token) { took(r.data); return true; }
+  return false;
+}
+
+// §4.2 login_page: the registry's page, run by `openPage(url, account)`
+// (bootstrap.js: a BrowserWindow in the wallet's partition) → token.
+async function loginPage(account, openPage) {
+  const path = '/api/v1/login';
+  const r = await postRaw(path, JSON.stringify({ account, method: 'login_page' }), {});
+  if (!(r.status === 403 && r.data.reason === 'login_required' && r.data.url)) throw apiError('POST', path, r);
+  if (!openPage) { const e = new Error('a login is needed: run setup'); e.reason = 'login_needed'; throw e; }
+  const pageToken = await openPage(r.data.url, account);
+  const r2 = await postRaw(path, JSON.stringify({ account, method: 'login_page', token: pageToken }), {});
+  if (r2.ok && r2.data.token) { took(r2.data); return; }
+  throw apiError('POST', path, r2);
+}
+
+// §5.2.4: record the pair under the session (idempotent on pubkey).
+async function attach() {
+  const path = '/api/v1/account/attach';
+  const w = await withCerts(path, {}, signer() || store.state().configKey);
+  const r = await postRaw(path, w.bodyStr, { proof: w.header, authorization: `Bearer ${token}` });
+  if (r.ok && r.data.token) { took(r.data); return; }
+  throw apiError('POST', path, r);
+}
+
+// §5.2.3: a login cert for this wallet's own login key, for headless logins.
+async function ensureLoginKey() {
+  const s = store.state();
+  if (s.loginKey && s.loginCert) return;
+  const { generateKey } = require('./crypto');
+  const k = await generateKey();
+  const r = await apiCall('POST', '/api/v1/login-keys', { pubkey: k.x, label: 'BrowserID Wallet' });
+  await store.set({ loginKey: { ...k.privJwk, x: k.x }, loginCert: r.cert });
+}
+
+function apiError(method, path, r) {
+  const e = new Error(`${method} ${path}: ${r.status} ${r.data.error_description || r.data.error || ''}`);
+  e.status = r.status;
+  e.reason = r.data.reason;
+  return e;
+}
+
+// A live session with the pair attached. `openPage` is bootstrap's login
+// window; without it (the steady state) a needed page login surfaces as
+// an error and the wallet keeps working unattached until setup runs.
+async function ensure({ openPage } = {}) {
+  const s = store.state();
+  if (!s.deviceCert) throw new Error('wallet not bootstrapped');
+  if (token && nowS() < tokenExp - 60 && signer()) return token;
+  token = null; memberKids = [];
+  let account = s.account;
+  if (account && await loginStored(account)) {
+    if (!memberKids.includes(kidOf(s.configKey.x))) await attach();
+    return token;
   }
+  account = await lookupAccount();
+  if (!account) {
+    await createAccount();
+  } else {
+    await loginPage(account, openPage);
+    await attach();
+  }
+  try { await ensureLoginKey(); } catch (e) { console.warn('[wallet] login key not minted:', e.message || e); }
   return token;
 }
 
 async function apiCall(method, path, body, retried = false) {
   await ensure();
-  const s = store.state();
+  const key = signer();
+  if (!key) throw new Error('no session member to sign with');
   const htu = broker.ORIGIN + path.split('?')[0];
   const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
   const res = await fetch(broker.BROKER + path, {
@@ -105,7 +172,7 @@ async function apiCall(method, path, body, retried = false) {
       accept: 'application/json',
       'user-agent': broker.UA,
       authorization: `Bearer ${token}`,
-      proof: await proof(s.configKey, method, htu, { body: method === 'GET' ? null : (bodyStr || ''), x: keyX(s.configKey) }),
+      proof: await proof(key, method, htu, { body: method === 'GET' ? null : (bodyStr || ''), x: key.x }),
     },
     body: bodyStr,
   });
@@ -216,7 +283,6 @@ function startInboxWatch({ notify }) {
 
 module.exports = {
   ensure,
-  attach,
   apiCall,
   allocateStatus,
   registerWarrant,

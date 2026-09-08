@@ -40,8 +40,8 @@ use axum::Router;
 use browserid_core::KeyPair;
 
 pub mod agent_provision;
+pub mod account;
 pub mod api;
-pub mod attach;
 pub mod session;
 pub mod consent;
 pub mod error;
@@ -190,9 +190,9 @@ pub struct RegistrarState {
     /// Single-use tracking for the token lane: request-proof `jti`s and
     /// exchange assertions (registry-api-v1 §3.1/§3.2).
     pub api_replay: api::ReplayCache,
-    /// The guard page (registry-api-v1 §4.2 `page`), absolute URL. `None`
-    /// = no guard offered: joining a held identity is refused outright.
-    pub guard_page_url: Option<String>,
+    /// The login page (registry-api-v1 §4.2 `login_page`), absolute URL.
+    /// `None` = only `stored_key` logins are possible.
+    pub login_page_url: Option<String>,
 }
 
 /// The registrar's routes, ready to merge into a host router.
@@ -201,11 +201,15 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
     // capped API-wide (§3.1 abuse controls); auth is header-borne, so the
     // cookie surface's CSRF machinery does not exist here.
     let api_v1 = Router::new()
-        .route("/api/v1/session", post(session::open_session))
+        .route("/api/v1/accounts", post(account::create))
+        .route("/api/v1/accounts/lookup", post(account::lookup))
+        .route("/api/v1/login", post(account::login))
+        .route("/api/v1/login-keys", get(account::list_login_keys).post(account::create_login_key))
+        .route("/api/v1/login-keys/revoke", post(account::revoke_login_key))
         .route("/api/v1/session/end", post(session::end_session))
-        .route("/api/v1/account/attach", post(attach::attach))
-        .route("/api/v1/account/detach", post(attach::detach))
-        .route("/api/v1/account/delete", post(attach::delete))
+        .route("/api/v1/account/attach", post(account::attach))
+        .route("/api/v1/account/detach", post(account::detach))
+        .route("/api/v1/account/delete", post(account::delete))
         .route("/api/v1/requests", get(api::list_requests))
         .route("/api/v1/requests/claim", post(api::claim_request))
         .route("/api/v1/requests/respond", post(api::respond))

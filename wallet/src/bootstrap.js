@@ -172,55 +172,47 @@ async function persist({ email, issuer, mintUrl, device, config, certs }) {
     configKey: config.privJwk,
     configCert: certs.config_cert,
     account: null,      // the registry account this pair is attached to
+    loginKey: null,     // this wallet's registry login key (private JWK + x)
+    loginCert: null,    // the registry-signed login cert over it
     warrants: {},
     warrantRefs: {},
     bootstrappedAt: nowS(),
   });
 }
 
-// Step 4: attaching is the WALLET's act (registry-api-v1 §5.2.1): the new
-// pair is attached to the account holding the identity. On a held identity
-// the registry asks for its guard (§4.2): the registry's guard page runs in
-// the SAME persistent partition the issuer ceremony just used, so when the
-// issuer is also this registry the fresh password session passes on its
-// own; otherwise the page asks (password, or Approve). Guard tokens come
-// back over the return_url lane like certs do. Best-effort: the wallet
-// works unattached; the inbox watch retries on every launch.
+// Step 4: the registry (registry-api-v1 §5.2): look the account up by the
+// new identity certs, log in through the registry's login page — run in a
+// window in the wallet's own partition, the token coming back over the
+// return_url lane like certs do — attach the pair, and mint this wallet's
+// login cert so later logins are headless. Best-effort: the wallet works
+// unattached; the inbox watch retries on every launch.
 //
 // Gotchas tracked on bean e98a (deferred attach of a second identity's
 // fresh certs, the mediator inside this embedded browser) are not yet built.
 async function attachAtRegistry({ testPassword } = {}) {
-  const registry = require('./registry');
   try {
-    let r = await registry.attach();
-    if (r.ok) return true;
-    if (!r.guardUrl) throw new Error('the registry offers no guard page');
-    const guard = await guardHop({ guardUrl: r.guardUrl, testPassword });
-    r = await registry.attach({ guard });
-    if (r.ok) return true;
-    throw new Error('attach refused after the guard');
+    await require('./registry').ensure({ openPage: (url, account) => loginHop({ url, account, testPassword }) });
+    return true;
   } catch (e) {
     console.warn('[wallet] attaching at the registry failed (non-fatal):', e.message || e);
     return false;
   }
 }
 
-function guardHop({ guardUrl, testPassword }) {
+function loginHop({ url: loginUrl, account, testPassword }) {
   const { BrowserWindow } = require('electron');
-  const s = store.state();
-  const RETURN_URL = `${broker.BROKER}/wallet-guard-return`; // never actually loaded
+  const RETURN_URL = `${broker.BROKER}/wallet-login-return`; // never actually loaded
   return new Promise((resolve, reject) => {
     const win = new BrowserWindow({
-      width: 480, height: 640, title: 'Approve this device',
+      width: 480, height: 640, title: 'Sign in to your account',
       show: !testPassword,
       webPreferences: { partition: 'persist:browserid', nodeIntegration: false, contextIsolation: true },
     });
-    const url = guardUrl +
-      '#certs=' + encodeURIComponent([s.deviceCert, s.configCert].join(',')) +
-      '&identity=' + encodeURIComponent(s.identity) +
+    const url = loginUrl +
+      '#account=' + encodeURIComponent(account) +
       '&return_origin=' + encodeURIComponent(broker.ORIGIN) +
       '&return_url=' + encodeURIComponent(RETURN_URL);
-    const timeout = setTimeout(() => { win.close(); reject(new Error('device approval timed out')); }, 5 * 60 * 1000);
+    const timeout = setTimeout(() => { win.close(); reject(new Error('registry login timed out')); }, 5 * 60 * 1000);
     let settled = false;
     const finish = (fn, arg) => {
       if (!settled) { settled = true; clearTimeout(timeout); fn(arg); setImmediate(() => win.close()); }
@@ -229,10 +221,10 @@ function guardHop({ guardUrl, testPassword }) {
       if (!navUrl.startsWith(RETURN_URL)) return;
       event.preventDefault();
       const frag = new URLSearchParams(navUrl.slice(navUrl.indexOf('#') + 1));
-      if (frag.get('guard_error')) return finish(reject, new Error(`guard refused: ${frag.get('guard_error')}`));
-      const guard = frag.get('guard');
-      if (!guard) return finish(reject, new Error('guard return carried no token'));
-      finish(resolve, guard);
+      if (frag.get('login_error')) return finish(reject, new Error(`login refused: ${frag.get('login_error')}`));
+      const login = frag.get('login');
+      if (!login) return finish(reject, new Error('login return carried no token'));
+      finish(resolve, login);
     };
     win.webContents.on('will-navigate', onNav);
     win.webContents.on('will-redirect', onNav);
@@ -240,8 +232,6 @@ function guardHop({ guardUrl, testPassword }) {
     if (testPassword) {
       win.webContents.on('did-finish-load', () => {
         win.webContents.executeJavaScript(`(function retry(n) {
-          var a = document.getElementById('approve-form');
-          if (a && !a.classList.contains('hidden')) { a.requestSubmit(); return; }
           var f = document.getElementById('password-form');
           if (f && !f.classList.contains('hidden')) {
             document.getElementById('password').value = ${JSON.stringify(testPassword)};

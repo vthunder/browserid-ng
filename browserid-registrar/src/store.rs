@@ -3,7 +3,7 @@
 
 use crate::error::RegistrarError;
 use crate::models::{
-    DeviceCertRecord, NamespaceRecord, WarrantRecord, WarrantRequestRecord, SessionRecord, GuardTokenRecord,
+    DeviceCertRecord, NamespaceRecord, WarrantRecord, WarrantRequestRecord, SessionRecord, LoginCertRecord,
 };
 
 pub type StoreResult<T> = Result<T, RegistrarError>;
@@ -131,13 +131,26 @@ pub trait RegistrarStore: Send + Sync {
         Ok(0)
     }
 
-    // --- Guard tokens (registry-api-v1 §4.2) ---
+    // --- Login certs + login-page tokens (registry-api-v1 §4.2) ---
 
-    fn get_guard_token(&self, _token_hash: &str) -> StoreResult<Option<GuardTokenRecord>> {
-        Err(RegistrarError::Internal("guard tokens not supported by this host".into()))
+    fn insert_login_cert(&self, _rec: LoginCertRecord) -> StoreResult<u64> {
+        Err(RegistrarError::Internal("login certs not supported by this host".into()))
     }
-    fn delete_guard_token(&self, _token_hash: &str) -> StoreResult<bool> {
-        Err(RegistrarError::Internal("guard tokens not supported by this host".into()))
+    fn list_login_certs(&self, _user_id: u64) -> StoreResult<Vec<LoginCertRecord>> {
+        Err(RegistrarError::Internal("login certs not supported by this host".into()))
+    }
+    fn get_login_cert_by_kid(&self, _kid: &str) -> StoreResult<Option<LoginCertRecord>> {
+        Err(RegistrarError::Internal("login certs not supported by this host".into()))
+    }
+    fn revoke_login_cert(&self, _user_id: u64, _id: u64) -> StoreResult<bool> {
+        Err(RegistrarError::Internal("login certs not supported by this host".into()))
+    }
+    fn end_sessions_solely_on_login_key(&self, _user_id: u64, _id: u64) -> StoreResult<u64> {
+        Ok(0)
+    }
+    /// Take (spend) a login-page token: the account it was minted for.
+    fn take_login_token(&self, _token_hash: &str) -> StoreResult<Option<u64>> {
+        Err(RegistrarError::Internal("login tokens not supported by this host".into()))
     }
 
     // --- Device certs (DC Phase 3/4): durable, revocable IdP-signed certs ---
