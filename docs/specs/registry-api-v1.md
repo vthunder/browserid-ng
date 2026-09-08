@@ -18,12 +18,12 @@ Cross-references written as `core §N` refer to `browserid-ng-protocol.md`.
 ## 1. Overview
 
 This API lets any wallet talk to any registry, and lets a user move
-their account to another registry (§5.2.3).
+their account to another registry (§5.2.6).
 
 - **Auth**: a wallet opens a session on an account by proving it holds
   one or more device-cert keys, then signs every request with one of
   those keys (§4). A cert alone never admits a device to an existing
-  account; the account's guard (§4.2) does.
+  account; the account's login (§4.2) does.
 - **Revocation rides the device cert**: revoking a cert kills its
   access on next use, fail-closed.
 - **Consent is API-complete**: approval carries the same client-signed
@@ -35,13 +35,13 @@ The flows, at a glance (the wallet's side; RP login itself is core
 
 | Flow | What the wallet does |
 |---|---|
-| First use | Issuer sign-in → auth + config cert → `attach` naming no account (§5.2.1): account created, its id and a session returned. Registries SHOULD prompt the user to set up a way a lone device can later pass the guard (§4.2). |
-| New device | Issuer sign-in → certs → `attach`; pass the guard (§4.2): a page the registry runs, which checks whatever the registry chooses. A shared computer is a new device like any other. |
+| First use | Issuer sign-in → auth + config cert → `accounts` (§5.2.1): the account is created around the identity and a session returned. Then a login cert for this wallet (§4.2) and `attach`. |
+| New device | Issuer sign-in → certs → `accounts/lookup` for the account → `login` (§4.2): the registry's login page, or later a stored key; then a login cert and `attach`. A shared computer is a new device like any other. |
 | Sign in at an RP | `warrants/lookup` (§5.4) for the site if the device lacks the warrant, `allocate_status` (§5.4) when minting one; then present. |
 | Approve an agent | `GET requests` → `respond` with client-signed warrants (§5.3). |
-| Add an identity | Issuer sign-in for it → `attach` naming the account under a write session (§5.2.1). |
+| Add an identity | Issuer sign-in for it → `attach` under a config session (§5.2.4). |
 | Take an identity from another account | The same, with the user's confirmation; the previous account is notified and its rows go on hold (§4.1). |
-| Remove an identity; leave | `detach` (§5.2.2); `delete` (§5.2.3). |
+| Remove an identity; leave | `detach` (§5.2.5); `delete` (§5.2.6). |
 | Manage | Warrants (§5.4), certs (§5.5), holders (§5.6). |
 
 ## 2. Actors and terminology
@@ -56,13 +56,13 @@ The flows, at a glance (the wallet's side; RP login itself is core
 | **Warrant** | A grant the user's config cert signs for an audience, with scopes and a holder matcher, checked by relying parties against the registry's status list (core §5, §6.3). |
 | **Presentation** | What a login shows an RP: `access_cert~assertion~warrant~config_cert` (core §5). |
 | **Holder** | An opaque id the wallet chooses and the issuer stamps on a device's certs; warrants bind to holders, and namespaces group them (core §4.5). |
-| **Account** | The identities that share one set of warrants, certs, holders, and an inbox, named by an opaque id (§3). Created and changed only by §5.2 `attach` / `detach` / `delete`. All of an account's identities are equals: which one authenticated is a per-call fact, never a rank. |
-| **Session / member** | An opaque token on one account, bound to a set of recorded certs — its *members*, the certs whose proofs opened it (§4.5). |
-| **Recorded / retired** | A cert is *recorded* on an account by `attach`, always past the guard or under a session; *retired* when the account revokes it, its holder is forgotten, or it is dropped (§5.5). Retirement is permanent. |
+| **Account** | The identities that share one set of warrants, certs, holders, and an inbox, named by an opaque id (§3). Created by §5.2.1 `accounts`; changed only under a session. All of an account's identities are equals: which one authenticated is a per-call fact, never a rank. |
+| **Login / login cert** | A login (§4.2) is how a wallet authenticates to an account by a method the registry offers; it yields a session. A *login cert* is the registry's own signed credential over a wallet's login key, so later logins need no human (§4.2). |
+| **Session / member** | An opaque token on one account, opened by a login (§4.5). Its *members* are the keys that may sign its proofs: the login key that opened it and the identity certs proven under it. |
+| **Recorded / retired** | A cert is *recorded* on an account by `attach`, always under a session; *retired* when the account revokes it, its holder is forgotten, or it is dropped (§5.5). Retirement is permanent. |
 | **Validity bar** | The `invalid_cert` checks of §7.1, `cert_malformed` through `cert_revoked`; every cert passes it when recorded and every member on every call. |
-| **Guard** | The registry's check (§4.2) that a device belongs to the account's owner, not merely to whoever controls one of its addresses now. |
 | **Suspended** | The state of an identity that has left an account (§4.1): its records kept but inert for the **hold**, restorable if it returns. |
-| **Transfer / takeover** | An identity leaving one account for another: a *transfer* when the destination's session did it; a *takeover* when a fresh config cert with no session and no guard did. Both need the user's confirmation and land the identity with nothing inherited. |
+| **Transfer / takeover** | An identity leaving one account for another: a *transfer* when the destination's session did it (`attach`); a *takeover* when a fresh config cert created a new account around it (`accounts`). Both need the user's confirmation and land the identity with nothing inherited. |
 | **Capability code** | The opaque `code` that names a pending request (§5.3); the agent lanes (core §7.5) call it `request_id`. |
 | **Status list / status ref** | The registry's signed revocation bitfield and `{uri, idx}` pointers into it (core §6.3). A warrant record is *indexed* when its ref is on this registry's list. |
 
@@ -106,12 +106,11 @@ The flows, at a glance (the wallet's side; RP login itself is core
 
 ## 4. Authentication
 
-Two things authenticate here. A wallet proves it holds device-cert
-keys, on every call. And a device proves it belongs to the account's
-owner by passing the account's **guard** (§4.2): when it first joins,
-and again if the registry asks. The model comes first (§4.1), then
-the guard, then what a session may do (§4.3), then the proof (§4.4)
-and the session (§4.5) that carry it all.
+Two things authenticate here. A wallet **logs in** to an account by a
+method the registry offers (§4.2), which yields a session. And every
+call under that session is proven by a key the session holds (§4.4).
+The model comes first (§4.1), then login, then what a session may do
+(§4.3), then the proof (§4.4) and the session (§4.5) that carry it all.
 
 ### 4.1 Identities and accounts
 
@@ -125,11 +124,12 @@ an identity is the issuer's. Three rules:
    accounts — each flip notified, each reversible (rule 3) — until
    the issuer stops issuing to one side. The registry never picks a
    winner.
-2. **Joining an account needs the guard.** An identity, or a new key
-   for one, joins an existing account only under a session on it or
-   past its guard (§4.2). Without either, a fresh config cert is
-   refused until the user confirms a takeover, and an auth cert alone
-   is refused.
+2. **Joining an account needs a session on it.** An identity, or a new
+   key for one, joins an existing account only under a session on it
+   (§4.5), which only a login opens (§4.2). Outside any account a
+   fresh config cert may create a new one (§5.2.1), taking a held
+   identity only when the user confirms; an auth cert alone creates
+   nothing.
 3. **Leaving puts the identity on hold.** When an identity leaves an
    account — transferred, taken over, or detached — it is marked
    **suspended** there: its warrants' bits set, its derived agents
@@ -145,62 +145,60 @@ A suspended identity shows in the roster with `state: "suspended"`
 and is not an account identity for any other purpose: a call naming
 it is refused as it would be for a stranger's identity. The hold
 protects against issuer mistakes and races over a mailbox, not
-against losing the address: an owner who cannot pass the guard
-cannot return. A registry that also runs an issuer MUST NOT let a
+against losing the address: an owner who cannot log in cannot
+return. A registry that also runs an issuer MUST NOT let a
 newly joined address reset the issuer's password until the issuer
 has verified it itself.
 
-### 4.2 The guard
+### 4.2 Login
 
 A cert proves that its holder controls an address today. It cannot
 prove that the holder is the person whose account that address is on.
-The guard is the registry's check for that. A device passes it when
-it first joins an account (§5.2.1). To make an existing device pass
-it again, a registry ends its session (§4.5) and answers the next
-`session` `403 forbidden/guard_required`; it SHOULD NOT do so unless
-another device on the account still holds a session or its page
-offers a way through that needs no other device. No other call is refused for the
-guard alone.
+Login is the registry's check for that, and the only way a session is
+opened. Which methods a registry offers is its business; v1 defines
+two, and a registry MUST offer both:
 
-**Token.** Passing the guard ends as a guard token: opaque,
-single-use, valid for the registry's window (RECOMMENDED 1 h from
-mint), bound to the account that held `identity` at mint and to the
-set of certs it was requested for. It is spent through the `guard`
-field of `session`, `attach`, `detach`, or `delete` by a call whose
-header proof is signed by one of those certs' keys and which acts on
-that account; `attach` spending it MUST carry exactly that set. A
-refused call does not spend it. Approval says the device is part of
-the account, nothing narrower.
+- **`login_page`** — a page the registry runs. The wallet opens
+  `url#account=…&return_url=…&return_origin=…` (the fragment and return
+  convention of the issuer sign-in page, fallback-IdP API §3.1) and the
+  page ends with `return_url#login=<token>` or
+  `return_url#login_error=<reason>`. What the page checks is the
+  registry's business: a password, approval from a device already
+  logged in, proof of another identity on the account obtained through
+  the login mediator (core §7.3) as any site would. The page MUST
+  require an explicit user action, MUST NOT complete on ambient
+  credentials alone, and MUST validate `return_origin` (same-origin
+  with `return_url`; no allowlist — whoever holds the token still needs
+  the account, and the token is one-time, short-lived, and bound to it).
+- **`stored_key`** — possession of a login key whose **login cert** on
+  this account is unexpired and unrevoked; no human involved.
 
-**Refusal.** A call that needs a guard and carries none answers
-`403 forbidden/guard_required` with the kinds the registry accepts,
-one object each, the same list for every account, never naming
-identities:
+**Login certs.** Under a session, a wallet submits a login key of its
+own and the registry signs it into a login cert: a compact JWS,
+`typ: browserid-login-cert-v1`, `iss` the registry's domain, `sub` the
+account, `kid` the key (§4.4), `iat`/`exp`, and a status ref on the
+registry's own list. Lifetime is registry policy, RECOMMENDED 90 days.
+Login certs are listed and revoked at §5.2.3; revoking one ends its
+sessions. They are the registry's credential, independent of identity
+certs: a device stays able to log in to its account whatever happens
+to its identities at their issuers — which is what lets it see a
+notice and restore an identity within the hold (§4.1).
+
+**`POST /api/v1/login`** — Opens a session.
 
 ```json
-{ "error": "forbidden", "reason": "guard_required",
-  "guard_kinds": [ { "kind": "page", "url": "https://…" } ] }
+{ "account": "…", "method": "login_page", "token"?: "…" }
+{ "account": "…", "method": "stored_key", "proof": "<JWS>" }
 ```
 
-**Kinds.** v1 defines one, and every registry offers it. A registry
-MAY add kinds of its own; a wallet ignores kinds it does not
-recognise.
-
-- **`page`** — a check the registry runs in a browser. The wallet
-  opens `url#certs=…&identity=…&return_url=…&return_origin=…` (the
-  fragment and return convention of the issuer sign-in page,
-  fallback-IdP API §3.1) and the page ends with
-  `return_url#guard=<token>` or `return_url#guard_error=<reason>`.
-  The token binds to `identity` and to the certs in the fragment. The
-  page MUST show the identity and key fingerprints, MUST require an
-  explicit user action, MUST NOT complete on ambient credentials
-  alone, and MUST validate `return_origin`. What it checks is the
-  registry's business: a password, a code the user confirms on a
-  device already on the account, or proof of another identity on the
-  account, which the page obtains as any site does — through the
-  login mediator (core §7.3), which every wallet exposes to the pages
-  it opens. A page SHOULD offer a way through for a user with no other
-  device.
+`login_page` without a `token` answers `403 forbidden/login_required`
+with `{ "url": … }`, the page to open; with one, the token is spent.
+`stored_key` carries a §4.4 possession proof signed by the login key.
+Success answers the §4.5 session body. Any other outcome — unknown
+account, bad token, unknown or revoked key, page refused — is
+`403 forbidden/login_rejected`, one reason, so nothing here is an
+oracle for whether an account or key exists. Rate-limited per source
+and per account (§3).
 
 ### 4.3 Authority
 
@@ -254,66 +252,60 @@ Authorization: Bearer <session token>
 Proof: <proof JWS>
 ```
 
-except the three that a device makes before it has a session —
-`attach` (§5.2.1), `session` (§4.5), and `guard` (§4.2) — which carry
-the header proof alone. Verification runs in this order, and the
-first failure is the response:
+except the calls a device makes before it has a session — `accounts`
+and `accounts/lookup` (§5.2.1) and `login` (§4.2) — which carry the
+header proof alone. Verification runs in this order, and the first
+failure is the response:
 
 1. parse the proof (`401 invalid_proof`);
-2. resolve `kid` to a cert: on `attach` and `guard`, one carried in
-   the call; on `session`, one recorded and unretired on the named
-   account (`401 invalid_cert/unknown_key`); on any other call, a
-   session member (`401 invalid_session`);
-3. verify the signature under that cert's key (`401 invalid_proof`) —
-   before anything that costs a network fetch;
-4. the cert passes the validity bar (`401` on `session`, `422` on
-   `attach` and `guard`, both `invalid_cert/<reason>`); for a session
-   member, `exp` and status are re-checked, the signature is not;
+2. resolve `kid` to a key: on `accounts` and `accounts/lookup`, a cert
+   carried in the call; on `login`, a login cert of the named account
+   (`403 forbidden/login_rejected`); on any other call, a session
+   member (`401 invalid_session`);
+3. verify the signature under that key (`401 invalid_proof`) — before
+   anything that costs a network fetch;
+4. an identity cert passes the validity bar (`422 invalid_cert/<reason>`
+   where carried; for a member, `exp` and status are re-checked, the
+   signature is not); a login cert is unexpired and unrevoked;
 5. every claim checks (`401 invalid_proof`);
-6. the config-cert rule (§4.3) and, where the call needs it, the
-   guard (§4.2).
+6. the config-cert rule (§4.3) where the call needs it.
 
-Proofs also travel inside the bodies of `session`, `attach`, and
-`guard` as **possession proofs**: one per cert, signed by that cert's
-key, without `bh`, all sharing the header proof's `jti`. The replay
-cache is keyed by `kid` whether or not the key is recorded yet, and
-holds each entry until its `iat` window closes.
+Proofs also travel inside the bodies of `accounts`, `login`, and
+`attach` as **possession proofs**: one per cert or key, signed by it,
+without `bh`, all sharing the header proof's `jti`. The replay cache
+is keyed by `kid` whether or not the key is recorded yet, and holds
+each entry until its `iat` window closes.
 
 ### 4.5 Sessions
 
-**`POST /api/v1/session`** — Opens a session.
-
-```json
-{ "account": "…", "proofs": [ "<JWS>", … ], "guard"?: "<token>" }
-```
-
-`proofs`: 1–8 possession proofs, each naming by `kid` a cert recorded
-and unretired on `account` (`401 invalid_cert/unknown_key` otherwise —
-including an unknown account or a key recorded elsewhere); every cert
-passes the validity bar (`401 invalid_cert/<reason>`). `guard`: only
-when the registry has asked this device to pass the guard again
-(§4.2). Response `200`:
+A session is opened only by `login` (§4.2) or `accounts` (§5.2.1).
+Response `200`, the **session body**:
 
 ```json
 { "token": "…", "expires_at": "…", "account": "…",
-  "members": [ { "id": 7, "kid": "…", "purpose": "authorization" }, … ],
+  "members": [ { "kid": "…", "kind": "login" },
+               { "id": 7, "kid": "…", "kind": "cert", "purpose": "authorization" }, … ],
   "roster": [ { "identity": "dan@example.com", "state": "active" }, … ] }
 ```
 
-`members`: the certs the session holds. `roster`: the account's
-identities, each `state: "active" | "suspended"`. The token is opaque
-to the client; server-side it identifies the member set. Lifetime
-RECOMMENDED ≤ 24 h.
+`members`: the keys that may sign this session's proofs — the login
+key that opened it (`kind: "login"`), when any, and the identity certs
+proven under it (`kind: "cert"`): every cert carried in the `accounts`
+or `attach` call that opened or refreshed the session. `roster`: the
+account's identities, each `state: "active" | "suspended"`. The token
+is opaque to the client; server-side it identifies the member set.
+Lifetime RECOMMENDED ≤ 24 h.
 
-On every call the registry re-checks each member's `exp` and status —
-against a status list no older than its cache lifetime (§3) — and
-drops any that fails or has been retired. A session with no member
-left, or one the registry has ended for any reason of its own,
+On every call the registry re-checks each cert member's `exp` and
+status — against a status list no older than its cache lifetime (§3)
+— and drops any that fails or has been retired; a login-key member is
+dropped when its login cert expires or is revoked. A session with no
+member left, or one the registry has ended for any reason of its own,
 answers `401 invalid_session` (`WWW-Authenticate: Bearer`) and the
-wallet opens a new one — which is where the registry may ask for the
-guard again (§4.2). A wallet opens a new session whenever it gains a
-cert; two sessions may hold overlapping members. Retiring a cert
-(§5.5, §5.6) ends every session it is the last member of.
+wallet logs in again. `attach` under a session answers a fresh session
+body whose members are the union (§5.2.4). Retiring a cert (§5.5,
+§5.6) or revoking a login cert (§5.2.3) ends every session it is the
+last member of.
 
 **`POST /api/v1/session/end`** — Ends the session the call carries.
 Request `{}`. Response `204`.
@@ -321,14 +313,13 @@ Request `{}`. Response `204`.
 ## 5. Endpoints
 
 Everything here is §4 session-authenticated, except §5.1 discovery
-(public) and `attach`, `session`, and `guard` (§4.4); calls marked
-**config** need a config-cert member (§4.3). Each endpoint states
-what it does, its request, its response, and its refusals as
-`<status> <error>/<reason>` (§7). Field lists are normative; example
-values illustrative. Checks run in the order written; where a call
-names a record, an unknown or foreign id answers `404 not_found`
-before the config-cert check, except that an unknown `account` on
-`attach` answers `403 forbidden/guard_required` (§5.2.1).
+(public), `accounts` and `accounts/lookup` (§5.2.1), and `login`
+(§4.2); calls marked **config** need a config-cert member (§4.3). Each
+endpoint states what it does, its request, its response, and its
+refusals as `<status> <error>/<reason>` (§7). Field lists are
+normative; example values illustrative. Checks run in the order
+written; where a call names a record, an unknown or foreign id answers
+`404 not_found` before the config-cert check.
 
 ### 5.1 Discovery
 
@@ -343,96 +334,114 @@ ignored.
 | `version` | REQUIRED. Highest API version served (integer). |
 | `endpoint` | REQUIRED. Absolute URL prefix of this API (`…/api/v1`, no trailing slash); MUST be same-origin with the advertising document. Its origin is the public origin §4.4 `htu` builds on. |
 | `status_list` | REQUIRED. The registry's signed status list (core §6.3), same-origin. Advertisement only — verifiers reach lists through each status ref's `uri`, never discovery. |
-| `browser` | REQUIRED (may be empty). Browser-ceremony URLs for flows a native wallet can't do natively; keys defined by the fallback-IdP spec (v1: `account`). |
-| `guard_kinds` | REQUIRED. Every guard kind the registry offers (§4.2), as the `guard_required` body lists them, `page` included. |
+| `browser` | REQUIRED. Browser-ceremony URLs for flows a native wallet can't do natively; keys defined by the fallback-IdP spec (`account`) and this one (`login`, the §4.2 login page). |
+| `login_methods` | REQUIRED. The §4.2 methods this registry offers: `["login_page", "stored_key"]` in v1. |
 
 No key material here (core §3.1: keys come solely from DNSSEC).
 
-### 5.2 Account membership
+### 5.2 Accounts and membership
 
-Every call here concerns one identity. Rules in §4.1, guard in §4.2.
+Every call here concerns one account or one identity. Rules in §4.1,
+login in §4.2.
 
-#### 5.2.1 Attach — `POST /api/v1/account/attach`
+#### 5.2.1 Accounts — `POST /api/v1/accounts`, `POST /api/v1/accounts/lookup`
 
-Records device certs for one identity on an account. It is the only
-way a key becomes recorded and the only way an account is created.
+**`accounts`** creates an account around one identity. It is the only
+way an account is created.
 
 | Field | Meaning |
 |---|---|
 | `Proof` header | REQUIRED. A §4.4 proof with `bh`, signed by the key of one of the carried certs. |
-| `identity` | REQUIRED. The identity this call concerns. |
-| `certs` | REQUIRED, 1–2 entries. `[{ "cert": "<JWS>", "proof": "<JWS>" }]`: the identity's auth cert, config cert, or both, each with a possession proof (§4.4) signed by its own key; every cert MUST name `identity` and both MUST carry one holder (`422 invalid_cert/holder_mismatch`). A cert naming further identities is recorded for those only where they are already on the account and its issuer is accepted for them; glob identities are refused (`422 invalid_cert/glob_identity`). |
-| `account` | OPTIONAL. The account being joined. |
-| `guard` | OPTIONAL. A guard token (§4.2). |
+| `identity` | REQUIRED. |
+| `certs` | REQUIRED, 1–2 entries, `[{ "cert", "proof" }]` as in `attach` (§5.2.4); a config cert is required (`422 invalid_cert/config_required`), and every cert MUST be fresh (`422 invalid_cert/cert_not_fresh`). |
 | `confirm_takeover` | OPTIONAL, default `false`. The user's explicit choice to take the identity away from the account that holds it. A wallet MUST set it only on a user's own act. |
-| `Authorization: Bearer` | OPTIONAL. A session on `account`. |
 
 Checks, in order: the header proof (§4.4); every cert against the
-validity bar (`422 invalid_cert/<reason>`) and the holder rule; a
-key already retired here (`422 invalid_cert/cert_revoked` — a retired
-record is never revived); then the case below. Where a case needs
-them, freshness (`422 invalid_cert/cert_not_fresh`) is checked before
-the guard (`403 forbidden/guard_required`), and a valid `guard` is
-consumed before `confirm_takeover` is considered. "Held by *a*" means
-the account on which the identity is active; a suspended copy
-elsewhere does not count.
+validity bar, the holder rule, and the retired-key rule (§5.2.4); then:
+held by no account → created; held by an account and
+`confirm_takeover` unset → `409 conflict/identity_held`, nothing
+filed; held and confirmed → **takeover**: the identity leaves that
+account (§4.1) into the new one. Either way the certs are recorded
+on the new account and the response is its §4.5 session body — the
+creator's first session. Setting up a way to log in again (a password,
+a login cert) is the wallet's next move.
 
-**No account named.**
+**`accounts/lookup`** finds the account an identity is active on.
+Request: `{ "identity", "certs": [ { "cert", "proof" } ] }` with a
+`Proof` header by one of them — the same bar as `accounts`, freshness
+not required. Response `200 { "account": "…" }`, or `404 not_found`
+when no account holds it (a suspended copy does not count). Nothing
+else about the account is revealed.
 
-- *Held by no account* → a new account is created around the certs; a
-  config cert is required (`422 invalid_cert/config_required`).
-  Response names it.
-- *Held by *a*, with a guard token for *a** → recorded on *a*. The
-  owner's new device.
-- *Held by *a*, no guard, no `confirm_takeover`* →
-  `403 forbidden/guard_required`. Nothing is filed; the wallet obtains
-  a guard (§4.2) or, with a config cert, asks the user to confirm a
-  takeover.
-- *Held by *a*, config cert, `confirm_takeover`* → **takeover**: the
-  identity leaves *a* (§4.1) into a new account created around the
-  fresh certs. Without a config cert,
-  `422 invalid_cert/config_required`.
+#### 5.2.2 Login — `POST /api/v1/login`
 
-**Account named** — the caller must hold a session on it or a guard
-token for it; an unknown account, or one on which it holds neither,
-answers `403 forbidden/guard_required`.
+Defined in §4.2.
 
-- *On this account* → recorded. Idempotent on pubkey; a re-attached
-  cert keeps its record and holder label.
+#### 5.2.3 Login certs — `/api/v1/login-keys`
+
+**`POST /api/v1/login-keys`** — Request `{ "pubkey", "label"? }`
+(`pubkey` the base64url raw Ed25519 key, `label` per §3). Response
+`200 { "id", "kid", "cert", "expires_at" }`: a login cert (§4.2) for
+the session's account. At most one per key; repeating replaces it.
+
+**`GET /api/v1/login-keys`** — The account's login certs: `id`, `kid`,
+`label`, `issued_at`, `expires_at`, `revoked`. Retired ones stay
+listed.
+
+**`POST /api/v1/login-keys/revoke`** — Request `{ "id" }` or
+`{ "kid" }`. Sticky; a second revoke is a `204`. Any session for its
+own login key; otherwise **config**. Ends the sessions the key is the
+last member of. Response `204`.
+
+#### 5.2.4 Attach — `POST /api/v1/account/attach`
+
+Records device certs for one identity on the session's account, and
+is the only way a key becomes recorded.
+
+| Field | Meaning |
+|---|---|
+| `Proof` header | REQUIRED. Signed by a session member (§4.4). |
+| `identity` | REQUIRED. The identity this call concerns. |
+| `certs` | REQUIRED, 1–2 entries. `[{ "cert": "<JWS>", "proof": "<JWS>" }]`: the identity's auth cert, config cert, or both, each with a possession proof (§4.4) signed by its own key; every cert MUST name `identity` and both MUST carry one holder (`422 invalid_cert/holder_mismatch`). A cert naming further identities is recorded for those only where they are already on the account and its issuer is accepted for them; a bare `*` glob is refused (`422 invalid_cert/glob_identity`). |
+| `confirm_takeover` | OPTIONAL, default `false`. The user's explicit choice to take the identity away from the account that holds it. |
+
+Checks, in order: every cert against the validity bar
+(`422 invalid_cert/<reason>`) and the holder rule; a key already
+retired here (`422 invalid_cert/cert_revoked` — a retired record is
+never revived); then the case. Where a case needs them, freshness
+(`422 invalid_cert/cert_not_fresh`) is checked before anything is
+filed.
+
+- *Active on this account* → recorded. Idempotent on pubkey; a
+  re-attached cert keeps its record and holder label.
 - *Suspended on this account* → **restored** (§4.1): the identity
   leaves wherever it is active and returns. Fresh certs required.
 - *Held by no account* → joins; **config**. Fresh certs required.
 - *Held by another account* → **transferred**: leaves there (§4.1) and
-  joins here; **config**, with `confirm_takeover`. Fresh certs
-  required.
+  joins here; **config**, with `confirm_takeover`, else
+  `409 conflict/identity_held`. Fresh certs required.
 
-Freshness applies wherever an identity's account changes; recording a
-cert for an identity already here needs none. Response `200`: the
-§4.5 session body. Under an existing session, the new token's members
-are the union of the call's certs and the caller's members; the old
-token stays valid to expiry.
+Response `200`: the §4.5 session body — a new token whose members are
+the union of the call's certs and the caller's members; the old token
+stays valid to expiry.
 
-#### 5.2.2 Detach — `POST /api/v1/account/detach`
+#### 5.2.5 Detach — `POST /api/v1/account/detach`
 
-Removes an identity from the account. Request:
-`{ "identity": "…", "guard"?: "<token>" }`; `identity` MUST be active
-on the account (`404 not_found`). **Config**; a registry MAY require
-its guard as well (`403 forbidden/guard_required`). Effects: those of
-an identity leaving an account (§4.1). Response `204`. The last
-identity cannot be detached (`409 conflict/last_identity`): use
-`delete`. Derived agent identities go with their parent, never a
-refusal.
+Removes an identity from the account. Request: `{ "identity": "…" }`;
+`identity` MUST be active on the account (`404 not_found`).
+**Config**. Effects: those of an identity leaving an account (§4.1).
+Response `204`. The last identity cannot be detached
+(`409 conflict/last_identity`): use `delete`. Derived agent identities
+go with their parent, never a refusal.
 
-#### 5.2.3 Delete — `POST /api/v1/account/delete`
+#### 5.2.6 Delete — `POST /api/v1/account/delete`
 
 Deletes the account at this registry: every identity leaves (§4.1,
-records on hold), and the account is dropped after the hold. Request:
-`{ "guard"?: "<token>" }`. **Config**; a registry MAY require its
-guard as well. Response `204`. Status bits already set stay set
-forever; indexes are never reused (§8). This is the ability to leave
-a registry; it does not touch the identities at their issuers.
-Exporting warrants and holders for use at another registry is a v2
-concern.
+records on hold), and the account is dropped after the hold. Request
+`{}`. **Config**. Response `204`. Status bits already set stay set
+forever; indexes are never reused (§8). This is the ability to leave a
+registry; it does not touch the identities at their issuers. Exporting
+warrants and holders for use at another registry is a v2 concern.
 
 ### 5.3 Consent inbox
 
@@ -595,8 +604,7 @@ it), `status?` (`{ uri, idx }`).
 **`POST /api/v1/certs/revoke`** — Revokes a cert. Request:
 `{ "id": 7 }` or `{ "kid": "…" }` (not both). Response `200`:
 `{ "revoked": bool }`. Any session for a cert it itself holds;
-otherwise **config**, and a registry SHOULD require its guard (§4.2)
-for another device's cert. When this registry is the cert's
+otherwise **config**. When this registry is the cert's
 revocation authority (`iss` is its domain) it sets the bit, sticky,
 and answers `true`. Either way the cert is **retired** here: excluded
 from holder matching and from session membership, dropped from any
@@ -636,8 +644,7 @@ holders (`409 conflict/external_holder`).
 **`POST /api/v1/namespaces/rename`** — Relabels a namespace. Request:
 `{ "name", "label" }`. Response `204`.
 
-**Config** for every mutation; a registry SHOULD require its guard
-(§4.2) for `forget` of a holder the session does not itself hold.
+**Config** for every mutation.
 Labels per §3. Holders are addressable only when on the account
 (`404 not_found`, no existence leaks).
 
@@ -664,9 +671,9 @@ JSON in the shape of RFC 6749 §5.2:
 |---|---|---|
 | 400 | `invalid_request` | Malformed JSON, missing or unknown fields, grammar violations, bodies over the limit. |
 | 401 | `invalid_session` | Token missing, unknown, expired, or ended; no member left after the per-call re-check (§4.5); the `Proof` key is not a member. Carries `WWW-Authenticate: Bearer`. |
-| 401 / 422 | `invalid_cert` | A cert fails the validity bar or a membership rule: `401` on `session`, `422` on `attach` and `guard`. |
+| 422 | `invalid_cert` | A carried cert fails the validity bar or a membership rule (`accounts`, `accounts/lookup`, `attach`). |
 | 401 | `invalid_proof` | A request or possession proof fails, on any call: missing, wrong `typ`, bad signature, `htm`/`htu` mismatch, stale `iat`, replayed `jti`, `bh` mismatch, or proofs in one request with differing `jti`. |
-| 403 | `forbidden` | The session lacks a config-cert member the call needs, or a guard is needed or rejected (§7.1). |
+| 403 | `forbidden` | The session lacks a config-cert member the call needs, or a login is needed or rejected (§7.1). |
 | 404 | `not_found` | Owner-scoped lookup misses — including "exists but isn't yours" — and requests that are unknown, expired, or answered. |
 | 409 | `conflict` | State refusals. |
 | 422 | `invalid_warrant` | Respond, claim, register: client-signed warrants (or the claim precondition) fail the §5.3/§5.4 bar. |
@@ -674,7 +681,7 @@ JSON in the shape of RFC 6749 §5.2:
 
 `error_description` is diagnostic and MUST NOT be parsed; machine
 reasons ride the OPTIONAL `reason` field, and a reason MAY define
-further top-level fields (`guard_required` does, §4.2). When a token
+further top-level fields (`login_required` does, §4.2). When a token
 and a proof are both bad, the proof's error is reported.
 
 ### 7.1 Machine reasons
@@ -710,15 +717,13 @@ With `forbidden` (`403`):
 | Reason | Meaning |
 |---|---|
 | `config_cert_required` | The call needs a config-cert member and the session has none (§4.3). |
-| `guard_required` | The guard was not passed (§4.2): on `attach`, `detach`, `delete`, or `session` when the registry asks; body carries `guard_kinds`. |
-| `guard_rejected` | The `guard` token is unknown, spent, expired, or bound to other certs or another account (§4.2). |
+| `login_required` | `login` by `login_page` without a token (§4.2); body carries `url`. |
+| `login_rejected` | `login` failed: unknown account, bad or spent token, unknown, expired or revoked login key, or the page refused (§4.2). One reason for all of them. |
 
-With `invalid_cert` — the **validity bar** (`401` on `session`, `422`
-on `attach` and `guard`), in check order:
+With `invalid_cert` — the **validity bar** (`422`), in check order:
 
 | Reason | Meaning |
 |---|---|
-| `unknown_key` | `session` only: a proof's `kid` matches no unretired cert recorded on the named account, or the account is unknown — attach first (§4.4). |
 | `cert_malformed` | Fails to parse as a device cert. |
 | `wrong_purpose` | Purpose is neither `authentication` nor `authorization`. |
 | `cert_expired` | Past `exp`. |
@@ -726,21 +731,22 @@ on `attach` and `guard`), in check order:
 | `signature_invalid` | Does not verify under the resolved issuer key. |
 | `cert_revoked` | The cert carries a status ref and it checks revoked or cannot be fetched (fail-closed), or the key was retired here; a cert with no ref passes. |
 
-And the **membership rules** (`422`, `attach` and `guard` only):
+And the **membership rules** (`422`, `accounts` and `attach`):
 
 | Reason | Meaning |
 |---|---|
-| `cert_not_fresh` | A cert moving an identity was issued more than 300 s ago (§5.2.1). |
-| `config_required` | Creating an account, or confirming a takeover, with no config cert (§5.2.1). |
-| `glob_identity` | The cert's `identities` contain a glob (§5.2.1). |
-| `holder_mismatch` | The two certs carry different holders (§5.2.1). |
+| `cert_not_fresh` | A cert creating an account or moving an identity was issued more than 300 s ago (§5.2.1, §5.2.4). |
+| `config_required` | Creating an account, or moving an identity, with no config cert (§5.2.1, §5.2.4). |
+| `glob_identity` | The cert's `identities` contain a bare `*` (§5.2.4). |
+| `holder_mismatch` | The two certs carry different holders (§5.2.4). |
 
 With `conflict` (`409`):
 
 | Reason | Meaning |
 |---|---|
 | `external_holder` | `holders/forget` on another account's admitted holder (§5.6). |
-| `last_identity` | Detaching the only identity (§5.2.2). |
+| `identity_held` | `accounts` or a transferring `attach` for an identity another account holds, without `confirm_takeover` (§5.2.1, §5.2.4). |
+| `last_identity` | Detaching the only identity (§5.2.5). |
 
 ## 8. Versioning and conformance
 
@@ -752,10 +758,10 @@ independently, rejected fail-closed on mismatch. Beyond the rules of
 1. No anonymous operations. Discovery (§5.1) is public; every other
    call is proven by a device-cert key, mutations signed down to their
    body bytes.
-2. The guard is the account's boundary. A key joins an existing
-   account only past the guard or under a session on it; from outside
-   an account nothing is observable but that an address is in use.
-   Whoever takes an identity inherits nothing.
+2. Login is the account's boundary. A key joins an account only under
+   a session on it, and only a login opens one; from outside an account
+   nothing is observable but that an address is in use. Whoever takes
+   an identity inherits nothing.
 3. The registry never signs or alters warrants; approval carries
    warrants signed by the account's config-cert key.
 4. DNSSEC is the sole root of trust for identity keys; no Web-PKI path

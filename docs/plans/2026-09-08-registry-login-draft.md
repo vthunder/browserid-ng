@@ -113,9 +113,10 @@ an identity cert key. `kid` resolves against both.
 - The native wallet asks for a login cert at bootstrap; the guard window
   goes away. The broker's `/guard` page and `/wsapi/guard` are deleted.
 
-## Open questions for the ruling
+## Rulings (Dan, 2026-09-08)
 
-1. Login cert lifetime: 1 year, or revocation-only?
-2. Settled (Dan): creation refuses a held identity overridably
-   (`identity_held` + `confirm_takeover`); methods are `login_page` and
-   `stored_key`, with passwords and the later kinds inside the page.
+- Creation refuses a held identity overridably (`identity_held` +
+  `confirm_takeover`).
+- Methods are `login_page` and `stored_key`; passwords and the later
+  kinds live inside the page.
+- Login cert lifetime is registry policy, RECOMMENDED 90 days.
