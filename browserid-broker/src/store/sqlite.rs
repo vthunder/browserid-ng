@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use super::{
     GuardToken, RegistrySession, SuspendedIdentity,
-    ApiTokenRecord, DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
+    DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, SessionStore, StoreResult, Tenant, TenantStatus, User, UserId,
     UserStore, VerificationType, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
 };
@@ -16,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 37;
+const SCHEMA_VERSION: i32 = 38;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -174,6 +174,9 @@ impl SqliteStore {
             }
             if current_version < 37 {
                 Self::migrate_v37(conn)?;
+            }
+            if current_version < 38 {
+                Self::migrate_v38(conn)?;
             }
 
             // Update schema version
@@ -991,6 +994,16 @@ impl SqliteStore {
     }
 }
 
+impl SqliteStore {
+    fn migrate_v38(conn: &Connection) -> Result<(), BrokerError> {
+        // The presentation→token exchange is gone (registry-api-v1 sessions
+        // replaced it, bean 0c49 step 13); its rows with it.
+        conn.execute_batch("DROP TABLE IF EXISTS api_tokens;")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+}
+
 fn guard_token_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<GuardToken> {
     let user_id: i64 = row.get(1)?;
     let kids: String = row.get(3)?;
@@ -1020,26 +1033,6 @@ fn suspended_identity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Susp
 }
 
 // Row → DeviceCertRecord mapping (DC Phase 3/4)
-fn api_token_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiTokenRecord> {
-    let parse_ts = |s: String| {
-        DateTime::parse_from_rfc3339(&s)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now())
-    };
-    let user_id: i64 = row.get(1)?;
-    let cert_status_idx: Option<i64> = row.get(4)?;
-    Ok(ApiTokenRecord {
-        token_hash: row.get(0)?,
-        user_id: UserId(user_id as u64),
-        proof_key: row.get(2)?,
-        cert_status_uri: row.get(3)?,
-        cert_status_idx: cert_status_idx.map(|i| i as u64),
-        scope: row.get(5)?,
-        created_at: parse_ts(row.get(6)?),
-        expires_at: parse_ts(row.get(7)?),
-    })
-}
-
 fn device_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceCertRecord> {
     let parse_ts = |s: String| {
         DateTime::parse_from_rfc3339(&s)
@@ -1991,39 +1984,6 @@ impl UserStore for SqliteStore {
         Ok(idx as u64)
     }
 
-    fn create_api_token(&self, rec: ApiTokenRecord) -> StoreResult<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT OR REPLACE INTO api_tokens
-             (token_hash, user_id, proof_key, cert_status_uri, cert_status_idx, scope, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                rec.token_hash,
-                rec.user_id.0 as i64,
-                rec.proof_key,
-                rec.cert_status_uri,
-                rec.cert_status_idx.map(|i| i as i64),
-                rec.scope,
-                rec.created_at.to_rfc3339(),
-                rec.expires_at.to_rfc3339(),
-            ],
-        )
-        .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        Ok(())
-    }
-
-    fn get_api_token(&self, token_hash: &str) -> StoreResult<Option<ApiTokenRecord>> {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT token_hash, user_id, proof_key, cert_status_uri, cert_status_idx, scope, created_at, expires_at
-             FROM api_tokens WHERE token_hash = ?1",
-            params![token_hash],
-            api_token_from_row,
-        )
-        .optional()
-        .map_err(|e| BrokerError::Internal(e.to_string()))
-    }
-
     fn create_registry_session(&self, rec: RegistrySession) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -2307,29 +2267,10 @@ impl UserStore for SqliteStore {
         Ok(())
     }
 
-    fn delete_api_tokens_for_user(&self, user_id: UserId) -> StoreResult<u64> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn
-            .execute("DELETE FROM api_tokens WHERE user_id = ?1", params![user_id.0 as i64])
-            .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        Ok(rows as u64)
-    }
-
     fn delete_warrant_requests_for_user(&self, user_id: UserId) -> StoreResult<u64> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .execute("DELETE FROM warrant_requests WHERE user_id = ?1", params![user_id.0 as i64])
-            .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        Ok(rows as u64)
-    }
-
-    fn cleanup_expired_api_tokens(&self) -> StoreResult<u64> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn
-            .execute(
-                "DELETE FROM api_tokens WHERE expires_at < ?1",
-                params![Utc::now().to_rfc3339()],
-            )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(rows as u64)
     }
@@ -3604,18 +3545,6 @@ impl UserStore for std::sync::Arc<SqliteStore> {
         (**self).revoked_status_indices()
     }
 
-    fn create_api_token(&self, rec: ApiTokenRecord) -> StoreResult<()> {
-        (**self).create_api_token(rec)
-    }
-
-    fn get_api_token(&self, token_hash: &str) -> StoreResult<Option<ApiTokenRecord>> {
-        (**self).get_api_token(token_hash)
-    }
-
-    fn cleanup_expired_api_tokens(&self) -> StoreResult<u64> {
-        (**self).cleanup_expired_api_tokens()
-    }
-
     fn create_registry_session(&self, rec: RegistrySession) -> StoreResult<()> {
         (**self).create_registry_session(rec)
     }
@@ -3678,9 +3607,6 @@ impl UserStore for std::sync::Arc<SqliteStore> {
     }
     fn delete_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
         (**self).delete_device_cert(user_id, cert_id)
-    }
-    fn delete_api_tokens_for_user(&self, user_id: UserId) -> StoreResult<u64> {
-        (**self).delete_api_tokens_for_user(user_id)
     }
     fn delete_warrant_requests_for_user(&self, user_id: UserId) -> StoreResult<u64> {
         (**self).delete_warrant_requests_for_user(user_id)

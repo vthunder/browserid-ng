@@ -195,17 +195,6 @@ pub trait UserStore: Send + Sync {
     /// owning user; errors with `WarrantRequestNotFound` if absent.
     fn delete_warrant(&self, user_id: UserId, warrant_id: u64) -> StoreResult<()>;
 
-    // --- Registry API tokens (registry-api-v1 §3.1) ---
-
-    /// Persist a minted API token record (keyed by its token hash).
-    fn create_api_token(&self, rec: ApiTokenRecord) -> StoreResult<()>;
-
-    /// Look up an API token record by base64url(SHA-256(token)).
-    fn get_api_token(&self, token_hash: &str) -> StoreResult<Option<ApiTokenRecord>>;
-
-    /// Drop expired API token rows; returns the number removed.
-    fn cleanup_expired_api_tokens(&self) -> StoreResult<u64>;
-
     // --- Registry sessions (registry-api-v1 §4.5; bean 0c49 step 2) ---
 
     fn create_registry_session(&self, rec: RegistrySession) -> StoreResult<()>;
@@ -255,7 +244,6 @@ pub trait UserStore: Send + Sync {
     fn clear_status_suspended_by(&self, by: &str) -> StoreResult<u64>;
     fn delete_warrants_by_grantor(&self, user_id: UserId, grantor: &str) -> StoreResult<u64>;
     fn delete_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()>;
-    fn delete_api_tokens_for_user(&self, user_id: UserId) -> StoreResult<u64>;
     fn delete_warrant_requests_for_user(&self, user_id: UserId) -> StoreResult<u64>;
 
     // --- Status entries (egr7): the revocation bitmap's index space ---

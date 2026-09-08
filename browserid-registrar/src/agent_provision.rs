@@ -31,7 +31,7 @@ use browserid_core::{PublicKey, StatusRef};
 
 use crate::consent::{
     public_origin, status_list_uri, validate_grant_shape, validate_grant_warrants,
-    warrant_status_subject, warrant_to_record,
+    warrant_to_record,
 };
 use crate::error::RegistrarError;
 use crate::host::{require_csrf, AuthedUser};

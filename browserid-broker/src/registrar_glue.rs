@@ -181,32 +181,6 @@ fn from_reg_device_cert(c: reg::DeviceCertRecord) -> crate::store::DeviceCertRec
     }
 }
 
-fn to_reg_api_token(t: crate::store::ApiTokenRecord) -> reg::ApiTokenRecord {
-    reg::ApiTokenRecord {
-        token_hash: t.token_hash,
-        user_id: t.user_id.0,
-        proof_key: t.proof_key,
-        cert_status_uri: t.cert_status_uri,
-        cert_status_idx: t.cert_status_idx,
-        scope: t.scope,
-        created_at: t.created_at,
-        expires_at: t.expires_at,
-    }
-}
-
-fn from_reg_api_token(t: reg::ApiTokenRecord) -> crate::store::ApiTokenRecord {
-    crate::store::ApiTokenRecord {
-        token_hash: t.token_hash,
-        user_id: UserId(t.user_id),
-        proof_key: t.proof_key,
-        cert_status_uri: t.cert_status_uri,
-        cert_status_idx: t.cert_status_idx,
-        scope: t.scope,
-        created_at: t.created_at,
-        expires_at: t.expires_at,
-    }
-}
-
 /// Adapts any broker `UserStore` into the registrar's store.
 pub struct BrokerRegistrarStore<U> {
     pub user_store: Arc<U>,
@@ -338,21 +312,6 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
 
     fn delete_guard_token(&self, token_hash: &str) -> Result<bool, RegistrarError> {
         self.user_store.delete_guard_token(token_hash).map_err(to_reg_err)
-    }
-
-    fn create_api_token(&self, rec: reg::ApiTokenRecord) -> Result<(), RegistrarError> {
-        UserStore::create_api_token(self.user_store.as_ref(), from_reg_api_token(rec))
-            .map_err(to_reg_err)
-    }
-
-    fn get_api_token(&self, token_hash: &str) -> Result<Option<reg::ApiTokenRecord>, RegistrarError> {
-        UserStore::get_api_token(self.user_store.as_ref(), token_hash)
-            .map(|o| o.map(to_reg_api_token))
-            .map_err(to_reg_err)
-    }
-
-    fn cleanup_expired_api_tokens(&self) -> Result<u64, RegistrarError> {
-        UserStore::cleanup_expired_api_tokens(self.user_store.as_ref()).map_err(to_reg_err)
     }
 
     fn get_or_allocate_status(&self, kind: &str, subject: &str) -> Result<u64, RegistrarError> {
@@ -942,53 +901,6 @@ where
     S: SessionStore + 'static,
     E: crate::email::EmailSender + 'static,
 {
-    fn verify_presentation<'a>(
-        &'a self,
-        presentation: &'a str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<browserid_registrar::api::VerifiedPresentation, String>,
-                > + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            let state = &self.state;
-            let fetcher = state
-                .fallback_fetcher()
-                .await
-                .map_err(|e| format!("DNS discovery not configured: {e}"))?;
-            let audience = browserid_registrar::consent::public_origin(&state.domain);
-            let accepted = vec![state.domain.clone()];
-            let is_own_revoked =
-                |idx: u64| state.user_store.is_status_revoked_idx(idx).map_err(|e| e.to_string());
-            let status = crate::verifier::StatusCtx {
-                own_uri: browserid_registrar::consent::status_list_uri(&state.domain),
-                is_own_revoked: &is_own_revoked,
-                cache: &state.foreign_status_lists,
-                allow_private_hosts: !crate::routes::session::cookie_secure(&state.domain),
-            };
-            let result = crate::verifier::verify_access_with_dns(
-                presentation,
-                &audience,
-                fetcher.as_ref(),
-                &accepted,
-                status,
-            )
-            .await;
-            if result.status != "okay" {
-                return Err(result.reason.unwrap_or_else(|| "verification failed".into()));
-            }
-            Ok(browserid_registrar::api::VerifiedPresentation {
-                email: result.email.ok_or("no email in presentation")?,
-                grantee: result.grantee.ok_or("no grantee in presentation")?,
-                issuer: result.issuer.ok_or("no issuer in presentation")?,
-                holder: result.holder.unwrap_or_default(),
-                scopes: result.scopes.unwrap_or_default(),
-            })
-        })
-    }
 
     fn check_status_ref<'a>(
         &'a self,

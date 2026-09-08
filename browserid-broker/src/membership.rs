@@ -250,7 +250,6 @@ pub fn sweep_holds<U: UserStore>(store: &U, now: DateTime<Utc>) -> StoreResult<S
             && store.list_suspended_identities(user_id)?.is_empty();
         if nothing_left {
             store.delete_warrant_requests_for_user(user_id)?;
-            store.delete_api_tokens_for_user(user_id)?;
             store.delete_user(user_id)?;
             report.accounts_dropped += 1;
         }

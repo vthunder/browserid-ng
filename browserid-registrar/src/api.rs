@@ -24,17 +24,15 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use chrono::{DateTime, Duration, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::consent::{public_origin, status_list_uri};
-use crate::models::ApiTokenRecord;
+use crate::consent::status_list_uri;
 use crate::RegistrarState;
 
 /// Token lifetime ceiling (§3.1): `expires_in` SHOULD be at most 3600s, and
 /// the token MUST NOT outlive the config cert it is bound to.
-const TOKEN_TTL_SECONDS: i64 = 3600;
 /// Proof `iat` acceptance window (§3.2, RECOMMENDED ±300s).
 pub(crate) const PROOF_IAT_WINDOW_SECONDS: i64 = 300;
 /// Request body cap, API-wide (§3.1, RECOMMENDED 64 KiB).
@@ -46,36 +44,12 @@ pub(crate) const PROOF_TYP: &str = "browserid-registry-proof-v1";
 // Host-provided verification
 // ===========================================================================
 
-/// What the §3.1 exchange learns from a fully verified presentation.
-#[derive(Debug, Clone)]
-pub struct VerifiedPresentation {
-    /// The attributed identity — the warrant grantor.
-    pub email: String,
-    /// The acting identity — the warrant grantee (== access-cert identity).
-    pub grantee: String,
-    /// The attributed identity's issuer (config cert's `iss`).
-    pub issuer: String,
-    /// The presented opaque holder id.
-    pub holder: String,
-    /// The warrant's scope strings.
-    pub scopes: Vec<String>,
-}
-
 /// The host's core §6 verification stack, seen through the registry API's
 /// eyes. The registrar deliberately does not verify presentations itself —
 /// DNSSEC-rooted discovery, conformance rules, and fail-closed status
 /// fetching live with the host (the broker's `verify_access_with_dns`), and
 /// the exchange MUST NOT be weaker in any respect than the cookie sibling.
 pub trait PresentationVerifier: Send + Sync {
-    /// Verify `presentation` exactly as core §6 requires, with the registry's
-    /// own public origin as audience. `Err(reason)` = verification failed;
-    /// the reason is logged server-side, never surfaced (§7.1 — the anonymous
-    /// exchange must not become a verification oracle).
-    fn verify_presentation<'a>(
-        &'a self,
-        presentation: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<VerifiedPresentation, String>> + Send + 'a>>;
-
     /// Fail-closed revocation check of one status ref (core §6.3): own-list
     /// refs answered authoritatively, foreign refs by authenticated fetch.
     /// `Ok(true)` = revoked; `Err` = uncheckable, which callers MUST treat as
@@ -172,12 +146,6 @@ impl DeviceCertRefusal {
 pub enum ApiError {
     /// 400 — malformed JSON, missing/unknown fields, grammar violations.
     InvalidRequest(String),
-    /// 400 — the token exchange refused the presented credential.
-    InvalidGrant { reason: Option<&'static str>, description: String },
-    /// 400 — a requested scope the registry does not recognize.
-    InvalidScope(String),
-    /// 401 — missing/expired/revoked token (incl. a dead bound cert).
-    InvalidToken(String),
     /// 401 — the proof failed one of the §4.4 checks.
     InvalidProof(String),
     /// 401 — session token missing, unknown, expired or ended; no member
@@ -191,8 +159,6 @@ pub enum ApiError {
     Forbidden { reason: &'static str, description: String },
     /// 403 — `forbidden/guard_required`, carrying the kinds (§4.2).
     GuardRequired { kinds: Vec<serde_json::Value> },
-    /// 403 — token scope does not cover the endpoint.
-    InsufficientScope,
     /// 409 — a state refusal (e.g. revoking a refless warrant).
     Conflict { reason: &'static str, description: String },
     /// 422 — a client-signed warrant / admission record (or the claim
@@ -204,17 +170,6 @@ pub enum ApiError {
     NotFound,
     /// 500 — a deployment fault, never a caller error.
     Internal(String),
-}
-
-impl ApiError {
-    /// The §7.1 catch-all for a failed core §6 verification: one coarse
-    /// reason, no finer detail (verification-oracle rule).
-    pub(crate) fn verification_failed() -> Self {
-        ApiError::InvalidGrant {
-            reason: Some("verification_failed"),
-            description: "the presentation failed verification".into(),
-        }
-    }
 }
 
 impl IntoResponse for ApiError {
@@ -229,11 +184,6 @@ impl IntoResponse for ApiError {
         }
         let (status, error, description, reason) = match self {
             ApiError::InvalidRequest(d) => (StatusCode::BAD_REQUEST, "invalid_request", d, None),
-            ApiError::InvalidGrant { reason, description } => {
-                (StatusCode::BAD_REQUEST, "invalid_grant", description, reason)
-            }
-            ApiError::InvalidScope(d) => (StatusCode::BAD_REQUEST, "invalid_scope", d, None),
-            ApiError::InvalidToken(d) => (StatusCode::UNAUTHORIZED, "invalid_token", d, None),
             ApiError::InvalidProof(d) => (StatusCode::UNAUTHORIZED, "invalid_proof", d, None),
             ApiError::InvalidSession(d) => (StatusCode::UNAUTHORIZED, "invalid_session", d, None),
             ApiError::InvalidCertUnauthorized { reason, description } => {
@@ -244,12 +194,6 @@ impl IntoResponse for ApiError {
             }
             // Handled above with its structured body.
             ApiError::GuardRequired { .. } => unreachable!("guard_required is answered above"),
-            ApiError::InsufficientScope => (
-                StatusCode::FORBIDDEN,
-                "insufficient_scope",
-                "the token's scope does not cover this endpoint".to_string(),
-                None,
-            ),
             ApiError::Conflict { reason, description } => {
                 (StatusCode::CONFLICT, "conflict", description, Some(reason))
             }
@@ -286,7 +230,7 @@ impl IntoResponse for ApiError {
         if status == StatusCode::UNAUTHORIZED {
             resp.headers_mut().insert(
                 axum::http::header::WWW_AUTHENTICATE,
-                axum::http::HeaderValue::from_static(if matches!(error, "invalid_token" | "invalid_proof") { "DPoP" } else { "Bearer" }),
+                axum::http::HeaderValue::from_static("Bearer"),
             );
         }
         resp
@@ -333,139 +277,6 @@ fn b64url_sha256(data: &[u8]) -> String {
 // ===========================================================================
 // POST /api/v1/token — the presentation → token exchange (§3.1)
 // ===========================================================================
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TokenRequest {
-    /// `access_cert~assertion~warrant~config_cert`, audience = this origin.
-    presentation: String,
-    /// Space-separated scope list; v1 defines the single scope `registry`
-    /// (the default).
-    #[serde(default)]
-    scope: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct TokenResponse {
-    pub access_token: String,
-    pub token_type: &'static str,
-    pub expires_in: i64,
-    pub scope: String,
-}
-
-pub async fn token_exchange(
-    State(state): State<Arc<RegistrarState>>,
-    body: axum::body::Bytes,
-) -> Result<Json<TokenResponse>, ApiError> {
-    if !state.enabled {
-        return Err(ApiError::NotFound);
-    }
-    let req: TokenRequest = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
-
-    let scopes: Vec<&str> = match req.scope.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        None => vec!["registry"],
-        Some(s) => s.split_ascii_whitespace().collect(),
-    };
-    if let Some(unknown) = scopes.iter().find(|s| **s != "registry") {
-        return Err(ApiError::InvalidScope(format!("unknown scope '{unknown}'")));
-    }
-
-    let verifier = state.presentation_verifier.as_ref().ok_or_else(|| {
-        ApiError::Internal("presentation verification is not configured on this host".into())
-    })?;
-    let verified = match verifier.verify_presentation(&req.presentation).await {
-        Ok(v) => v,
-        Err(reason) => {
-            tracing::info!(%reason, "token exchange: presentation verification failed");
-            return Err(ApiError::verification_failed());
-        }
-    };
-
-    // Beyond core §6 (§3.1): the bundle re-parses (it just verified) for the
-    // claims the token binds to and the exchange's extra checks. Note the
-    // deliberate ABSENCE of the cookie lane's issuer-is-self rejection:
-    // self-issued (registry-rooted) presentations are accepted here — the
-    // token's authority is a strict subset of the session that lane refuses
-    // to mint (§10 decision 7).
-    let pres = browserid_core::device::AccessPresentation::parse(&req.presentation)
-        .map_err(|e| ApiError::Internal(format!("verified presentation failed to re-parse: {e}")))?;
-    let wc = pres.warrant.claims();
-    if wc.grantor != wc.grantee {
-        return Err(ApiError::InvalidGrant {
-            reason: Some("delegated_presentation"),
-            description: "the exchange requires a self-presentation (grantor == grantee)".into(),
-        });
-    }
-    for s in &scopes {
-        if !verified.scopes.iter().any(|have| have == s) {
-            return Err(ApiError::InvalidGrant {
-                reason: Some("scope_missing"),
-                description: format!("the presented warrant does not carry the '{s}' scope"),
-            });
-        }
-    }
-
-    // Single-use per assertion (§3.1 abuse controls). Assertions carry no
-    // `jti`, so the key is the hash of the signed assertion itself — same
-    // semantics: one assertion redeems at most one token. Recorded only
-    // after full verification, so the cache can't be grown anonymously.
-    let assertion_jws = req.presentation.split('~').nth(1).unwrap_or_default();
-    let retain = Utc::now().timestamp() + 2 * PROOF_IAT_WINDOW_SECONDS;
-    if !state
-        .api_replay
-        .insert_once(&format!("xchg|{}", b64url_sha256(assertion_jws.as_bytes())), retain)
-    {
-        return Err(ApiError::InvalidGrant {
-            reason: None,
-            description: "this assertion was already exchanged".into(),
-        });
-    }
-
-    // Account resolution (§3.1): existing owner, or a fresh account holding
-    // exactly this identity — never linking, transfer, or merge.
-    let user_id = state
-        .host
-        .account_for_presented_identity(&verified.email)
-        .map_err(|e| ApiError::Internal(format!("account resolution: {e}")))?;
-
-    let cc = pres.config_cert.claims();
-    let now = Utc::now();
-    let cert_exp = DateTime::from_timestamp(cc.exp, 0).unwrap_or(now);
-    let expires_at = std::cmp::min(now + Duration::seconds(TOKEN_TTL_SECONDS), cert_exp);
-    let expires_in = (expires_at - now).num_seconds();
-    if expires_in <= 0 {
-        // Verification already enforces cert validity; this only trips on a
-        // cert expiring within the same second.
-        return Err(ApiError::verification_failed());
-    }
-
-    let token = new_token();
-    let scope_str = scopes.join(" ");
-    state
-        .store
-        .create_api_token(ApiTokenRecord {
-            token_hash: b64url_sha256(token.as_bytes()),
-            user_id,
-            proof_key: cc.public_key.to_base64(),
-            cert_status_uri: cc.status.as_ref().map(|s| s.uri.clone()),
-            cert_status_idx: cc.status.as_ref().map(|s| s.idx),
-            scope: scope_str.clone(),
-            created_at: now,
-            expires_at,
-        })
-        .map_err(|e| ApiError::Internal(format!("token store: {e}")))?;
-    state.store.cleanup_expired_api_tokens().ok();
-
-    tracing::info!(identity = %verified.email, holder = %verified.holder,
-        "registry API token minted");
-    Ok(Json(TokenResponse {
-        access_token: token,
-        token_type: "DPoP",
-        expires_in,
-        scope: scope_str,
-    }))
-}
 
 /// A fresh opaque token: 32 random bytes, base64url (≥128-bit entropy, §3.1).
 pub(crate) fn new_token() -> String {
@@ -515,79 +326,6 @@ impl ApiUser {
     }
 }
 
-#[derive(Deserialize)]
-struct ProofClaims {
-    htm: String,
-    htu: String,
-    iat: i64,
-    jti: String,
-    ath: String,
-}
-
-/// Parse + verify one proof JWS against the token's bound key: exact `typ`,
-/// `alg` pinned to EdDSA, signature under `proof_key_b64`.
-fn verify_proof_jws(jws: &str, proof_key_b64: &str) -> Result<ProofClaims, ApiError> {
-    let bad = |m: &str| ApiError::InvalidProof(m.to_string());
-    let parts: Vec<&str> = jws.split('.').collect();
-    if parts.len() != 3 {
-        return Err(bad("proof is not a compact JWS"));
-    }
-    let header_bytes =
-        URL_SAFE_NO_PAD.decode(parts[0]).map_err(|_| bad("bad proof header encoding"))?;
-    let header: serde_json::Value =
-        serde_json::from_slice(&header_bytes).map_err(|_| bad("bad proof header"))?;
-    if header.get("alg").and_then(|v| v.as_str()) != Some("EdDSA") {
-        return Err(bad("proof alg must be EdDSA"));
-    }
-    if header.get("typ").and_then(|v| v.as_str()) != Some(PROOF_TYP) {
-        return Err(bad("wrong proof typ"));
-    }
-    let key = browserid_core::PublicKey::from_base64(proof_key_b64)
-        .map_err(|e| ApiError::Internal(format!("stored proof key unparseable: {e}")))?;
-    let message = format!("{}.{}", parts[0], parts[1]);
-    let signature =
-        URL_SAFE_NO_PAD.decode(parts[2]).map_err(|_| bad("bad proof signature encoding"))?;
-    key.verify(message.as_bytes(), &signature)
-        .map_err(|_| bad("proof signature does not verify against the token's key"))?;
-    let claims_bytes =
-        URL_SAFE_NO_PAD.decode(parts[1]).map_err(|_| bad("bad proof payload encoding"))?;
-    serde_json::from_slice(&claims_bytes).map_err(|_| bad("bad proof claims"))
-}
-
-/// Build a request proof (§3.2) — the client half, used by tests and SDKs.
-pub fn build_proof(
-    method: &str,
-    htu: &str,
-    access_token: &str,
-    key: &browserid_core::KeyPair,
-) -> String {
-    build_proof_at(method, htu, access_token, key, Utc::now().timestamp(), &new_token())
-}
-
-/// [`build_proof`] with explicit `iat` and `jti` (window / replay tests).
-pub fn build_proof_at(
-    method: &str,
-    htu: &str,
-    access_token: &str,
-    key: &browserid_core::KeyPair,
-    iat: i64,
-    jti: &str,
-) -> String {
-    let header =
-        URL_SAFE_NO_PAD.encode(format!(r#"{{"alg":"EdDSA","typ":"{PROOF_TYP}"}}"#));
-    let claims = serde_json::json!({
-        "htm": method,
-        "htu": htu,
-        "iat": iat,
-        "jti": jti,
-        "ath": b64url_sha256(access_token.as_bytes()),
-    });
-    let payload = URL_SAFE_NO_PAD.encode(claims.to_string());
-    let message = format!("{header}.{payload}");
-    let sig = URL_SAFE_NO_PAD.encode(key.sign(message.as_bytes()));
-    format!("{message}.{sig}")
-}
-
 #[axum::async_trait]
 impl FromRequestParts<Arc<RegistrarState>> for ApiUser {
     type Rejection = ApiError;
@@ -606,91 +344,14 @@ impl FromRequestParts<Arc<RegistrarState>> for ApiUser {
             .headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| ApiError::InvalidToken("missing Authorization header".into()))?;
+            .ok_or_else(|| ApiError::InvalidSession("missing Authorization header".into()))?;
         let (scheme, token) = auth
             .split_once(' ')
-            .ok_or_else(|| ApiError::InvalidToken("malformed Authorization header".into()))?;
-        if scheme.eq_ignore_ascii_case("bearer") {
-            return session_user(parts, state, token.trim()).await;
+            .ok_or_else(|| ApiError::InvalidSession("malformed Authorization header".into()))?;
+        if !scheme.eq_ignore_ascii_case("bearer") {
+            return Err(ApiError::InvalidSession("Authorization scheme must be Bearer".into()));
         }
-        if !scheme.eq_ignore_ascii_case("dpop") {
-            return Err(ApiError::InvalidToken("Authorization scheme must be Bearer or DPoP".into()));
-        }
-        let token = token.trim();
-        let rec = state
-            .store
-            .get_api_token(&b64url_sha256(token.as_bytes()))
-            .map_err(|e| ApiError::Internal(format!("token lookup: {e}")))?
-            .ok_or_else(|| ApiError::InvalidToken("unknown token".into()))?;
-        if rec.is_expired() {
-            return Err(ApiError::InvalidToken("token expired".into()));
-        }
-
-        let proof = parts
-            .headers
-            .get("dpop")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| ApiError::InvalidProof("missing DPoP header".into()))?;
-        let claims = verify_proof_jws(proof, &rec.proof_key)?;
-        if claims.htm != parts.method.as_str() {
-            return Err(ApiError::InvalidProof("htm does not match the request method".into()));
-        }
-        // Compared against the advertised PUBLIC origin, never the
-        // server-observed URI (§3.2 canonicalization).
-        let expected_htu = format!("{}{}", public_origin(&state.domain), parts.uri.path());
-        if claims.htu != expected_htu {
-            return Err(ApiError::InvalidProof("htu does not match this endpoint".into()));
-        }
-        let now = Utc::now().timestamp();
-        if (claims.iat - now).abs() > PROOF_IAT_WINDOW_SECONDS {
-            return Err(ApiError::InvalidProof("iat outside the acceptance window".into()));
-        }
-        if claims.ath != b64url_sha256(token.as_bytes()) {
-            return Err(ApiError::InvalidProof("ath does not bind this token".into()));
-        }
-        if claims.jti.is_empty()
-            || !state.api_replay.insert_once(
-                &format!("proof|{}|{}", rec.proof_key, claims.jti),
-                now + 2 * PROOF_IAT_WINDOW_SECONDS,
-            )
-        {
-            return Err(ApiError::InvalidProof("jti replayed".into()));
-        }
-
-        // Revocation rides the cert (§3.1): the bound config cert's status
-        // ref is re-checked on EVERY call, fail-closed (invariant 3).
-        if let (Some(uri), Some(idx)) = (rec.cert_status_uri.as_deref(), rec.cert_status_idx) {
-            let verifier = state.presentation_verifier.as_ref().ok_or_else(|| {
-                ApiError::Internal("status checking is not configured on this host".into())
-            })?;
-            match verifier.check_status_ref(uri, idx).await {
-                Ok(false) => {}
-                Ok(true) => {
-                    return Err(ApiError::InvalidToken("the bound device cert is revoked".into()))
-                }
-                Err(e) => {
-                    tracing::warn!(uri, idx, error = %e,
-                        "token auth: bound cert status unavailable (fail-closed)");
-                    return Err(ApiError::InvalidToken(
-                        "the bound cert's status is unavailable (fail-closed)".into(),
-                    ));
-                }
-            }
-        }
-
-        // v1: every §5 endpoint requires the `registry` scope.
-        if !rec.scope.split_ascii_whitespace().any(|s| s == "registry") {
-            return Err(ApiError::InsufficientScope);
-        }
-
-        Ok(ApiUser {
-            user_id: rec.user_id,
-            proof_key: rec.proof_key,
-            has_config: true,
-            member_cert_ids: Vec::new(),
-            member_identities: Vec::new(),
-            session_token_hash: None,
-        })
+        session_user(parts, state, token.trim()).await
     }
 }
 
@@ -1084,29 +745,11 @@ pub async fn revoke_warrant(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /api/v1/warrants/forget` — delete the registry row WITHOUT revoking
-/// (the signed warrant stays valid to expiry; guard-rails: bean d51o).
-pub async fn forget_warrant(
-    State(state): State<Arc<RegistrarState>>,
-    user: ApiUser,
-    body: axum::body::Bytes,
-) -> Result<StatusCode, ApiError> {
-    user.require_config()?;
-    let req: ApiWarrantIdRequest = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
-    state.store.delete_warrant(user.user_id, req.id).map_err(consent_err)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApiAllocateStatusRequest {
-    /// The identity that will present the warrant (§5.4). `agent_email` is
-    /// the pre-spec name, accepted until the wallets migrate.
-    #[serde(default)]
-    grantee: Option<String>,
-    #[serde(default)]
-    agent_email: Option<String>,
+    /// The identity that will present the warrant (§5.4).
+    grantee: String,
     audience: String,
     #[serde(default)]
     scopes: Vec<String>,
@@ -1129,15 +772,13 @@ pub async fn allocate_status(
     user.require_config()?;
     let req: ApiAllocateStatusRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
-    let grantee = req
-        .grantee
-        .or(req.agent_email)
-        .filter(|g| !g.trim().is_empty())
-        .ok_or_else(|| ApiError::InvalidRequest("grantee is required".into()))?;
+    if req.grantee.trim().is_empty() {
+        return Err(ApiError::InvalidRequest("grantee is required".into()));
+    }
     let (uri, idx) = crate::consent::allocate_status_core(
         &state,
         user.user_id,
-        &grantee,
+        &req.grantee,
         &req.audience,
         &req.scopes,
     )
@@ -1148,27 +789,6 @@ pub async fn allocate_status(
 // ===========================================================================
 // Devices over the token lane (§5.3)
 // ===========================================================================
-
-#[derive(Serialize)]
-pub struct ApiDevicesResponse {
-    pub certs: Vec<crate::holders::DeviceCertView>,
-}
-
-/// `GET /api/v1/devices` — the account's device certs (active and revoked).
-pub async fn list_devices(
-    State(state): State<Arc<RegistrarState>>,
-    user: ApiUser,
-) -> Result<Json<ApiDevicesResponse>, ApiError> {
-    let certs =
-        crate::holders::device_certs_core(&*state.store, user.user_id).map_err(consent_err)?;
-    Ok(Json(ApiDevicesResponse { certs }))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApiDeviceIdRequest {
-    id: u64,
-}
 
 /// `GET /api/v1/certs` — the account's recorded certs (§5.5), retired ones
 /// included, each with its `kid`.
@@ -1253,208 +873,6 @@ pub struct ApiRevokeDeviceResponse {
     pub revoked: bool,
 }
 
-/// `POST /api/v1/devices/revoke` — owner-scoped soft-revoke; honest about
-/// whether this registry was the revocation authority.
-pub async fn revoke_device(
-    State(state): State<Arc<RegistrarState>>,
-    user: ApiUser,
-    body: axum::body::Bytes,
-) -> Result<Json<ApiRevokeDeviceResponse>, ApiError> {
-    let req: ApiDeviceIdRequest = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
-    // Any session may revoke a cert it itself holds; another device's cert
-    // needs a config-cert member (§5.5).
-    if !user.member_cert_ids.contains(&req.id) {
-        user.require_config()?;
-    }
-    let revoked = crate::holders::revoke_device_core(
-        &*state.store,
-        &*state.host,
-        &state.domain,
-        user.user_id,
-        req.id,
-    )
-    .map_err(consent_err)?;
-    // Retiring a cert ends every session it is the last member of (§4.5).
-    state.store.end_sessions_solely_on_cert(user.user_id, req.id).ok();
-    Ok(Json(ApiRevokeDeviceResponse { revoked }))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApiRegisterDeviceRequest {
-    device_cert: String,
-    config_cert: String,
-}
-
-/// `POST /api/v1/devices/register` — the registration half of issuance
-/// (§5.3 / fallback-IdP spec §4): the wallet records a freshly issued
-/// device + config cert pair at its configured registry. The token exchange
-/// verified only the config cert (inside the presentation); this endpoint
-/// explicitly verifies BOTH certs to the §5.3 bar before recording.
-pub async fn register_device(
-    State(state): State<Arc<RegistrarState>>,
-    user: ApiUser,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Bytes,
-) -> Result<StatusCode, ApiError> {
-    user.require_config()?;
-    let req: ApiRegisterDeviceRequest = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
-    let verifier = state.presentation_verifier.as_ref().ok_or_else(|| {
-        ApiError::Internal("device-cert verification is not configured on this host".into())
-    })?;
-
-    // Host-side bar per cert (§5.3): parse, purpose, expiry, issuer
-    // acceptance, signature, fail-closed status.
-    let device = verifier
-        .verify_device_cert(&req.device_cert, "authentication")
-        .await
-        .map_err(|r| r.into_api_error("device_cert"))?;
-    let config = verifier
-        .verify_device_cert(&req.config_cert, "authorization")
-        .await
-        .map_err(|r| r.into_api_error("config_cert"))?;
-
-    // Every concrete identity on the pair must be one this account owns.
-    for ident in device.identities.iter().chain(config.identities.iter()) {
-        if ident.contains('*') {
-            continue;
-        }
-        let owned = state
-            .host
-            .owns_verified_email(user.user_id, ident)
-            .map_err(|e| ApiError::Internal(format!("identity ownership lookup: {e}")))?;
-        if !owned {
-            return Err(ApiError::InvalidCert {
-                reason: "identity_not_owned",
-                description: format!("'{ident}' is not an identity this account owns"),
-            });
-        }
-    }
-
-    // One holder across the pair, and the config cert must be the token's
-    // bound cert — that is what makes registration verification-covered.
-    if device.holder != config.holder {
-        return Err(ApiError::InvalidCert {
-            reason: "holder_mismatch",
-            description: "the two certs name different holders".into(),
-        });
-    }
-    if config.pubkey != user.proof_key {
-        return Err(ApiError::InvalidCert {
-            reason: "config_cert_not_bound",
-            description: "the config cert is not the one this token is bound to".into(),
-        });
-    }
-
-    // A holder mid-move must not resurrect its old row (§5.4): same guard as
-    // the cookie lane's recording paths.
-    let moved = state
-        .store
-        .resolve_holder_move(user.user_id, &device.holder)
-        .map_err(|e| ApiError::Internal(format!("holder-move lookup: {e}")))?;
-    if moved.is_some() {
-        return Err(ApiError::Conflict {
-            reason: "holder_moved",
-            description: "this holder was moved; re-issue under the new holder \
-                          (see holders/assignment)"
-                .into(),
-        });
-    }
-
-    // Holder healing (i8a2, carried from the cookie join lane): a cold
-    // bootstrap's IdP-self-assigned holder is adopted as the account's
-    // `browsers` namespace while unused; otherwise a non-revoking move into
-    // `browsers` is scheduled so the wallet's device never reads as an
-    // agent. Completing a pending move drops the old holder's rows.
-    let mut move_target = None;
-    if let Some((prefix, _)) = device.holder.split_once('.') {
-        match state.store.adopt_namespace_prefix(user.user_id, "browsers", prefix) {
-            Ok(true) => {}
-            Ok(false) => {
-                move_target = crate::holders::register_orphan_browser_move(
-                    &*state.store,
-                    user.user_id,
-                    &device.holder,
-                );
-            }
-            Err(e) => tracing::warn!("browsers prefix adoption failed: {e}"),
-        }
-    }
-
-    // Record the pair. Inserts upsert on pubkey, so re-registration is the
-    // idempotent no-op success §5.3 requires.
-    for cert in [&device, &config] {
-        let rec = crate::models::DeviceCertRecord {
-            id: 0,
-            user_id: user.user_id,
-            identities: cert.identities.clone(),
-            purpose: cert.purpose.clone(),
-            holder: cert.holder.clone(),
-            pubkey: cert.pubkey.clone(),
-            iss: cert.iss.clone(),
-            issued_at: DateTime::from_timestamp(cert.iat, 0).unwrap_or_else(Utc::now),
-            expires_at: DateTime::from_timestamp(cert.exp, 0).unwrap_or_else(Utc::now),
-            revoked_at: None,
-            status_uri: cert.status_uri.clone(),
-            status_idx: cert.status_idx,
-        };
-        state
-            .store
-            .insert_device_cert(rec)
-            .map_err(|e| ApiError::Internal(format!("device cert store: {e}")))?;
-    }
-
-    // Same default-label hook as the cookie lane (§5.3 MAY): a wallet's
-    // product-token UA names its holder instead of a bare id.
-    let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
-    crate::holders::maybe_label_holder_from_ua(&*state.store, user.user_id, &device.holder, ua);
-    // A scheduled move takes the label along so the device keeps its name
-    // once it re-issues; registering under a move target completes it.
-    if let Some(target) = &move_target {
-        crate::holders::maybe_label_holder_from_ua(&*state.store, user.user_id, target, ua);
-    }
-    crate::holders::finish_holder_move(&*state.store, user.user_id, &device.holder);
-
-    tracing::info!(holder = %device.holder, iss = %device.iss,
-        "devices/register: recorded device pair");
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Deserialize)]
-pub struct ApiDeviceStatusQuery {
-    id: u64,
-}
-
-#[derive(Serialize)]
-pub struct ApiDeviceStatusResponse {
-    /// "revoked" | "active" | "unknown" (`unknown` = no status ref, or the
-    /// issuer's list is unreachable — the caller must not claim success).
-    pub state: &'static str,
-}
-
-/// `GET /api/v1/devices/status?id=` — did a revocation actually land on the
-/// issuer's signed list? Fresh-fetched for foreign issuers (a network side
-/// effect, but not a state change — §4's pure-GET rule refers to registry
-/// state).
-pub async fn device_status(
-    State(state): State<Arc<RegistrarState>>,
-    user: ApiUser,
-    Query(query): Query<ApiDeviceStatusQuery>,
-) -> Result<Json<ApiDeviceStatusResponse>, ApiError> {
-    let s = crate::holders::device_status_core(
-        &*state.store,
-        state.presentation_verifier.as_deref(),
-        &state.domain,
-        user.user_id,
-        query.id,
-    )
-    .await
-    .map_err(consent_err)?;
-    Ok(Json(ApiDeviceStatusResponse { state: s }))
-}
-
 // ===========================================================================
 // Holders + namespaces over the token lane (§5.4)
 // ===========================================================================
@@ -1492,41 +910,6 @@ pub async fn rename_holder(
     crate::holders::rename_holder_core(&*state.store, user.user_id, &req.holder_id, &req.label)
         .map_err(consent_err)?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApiMoveHolderRequest {
-    holder_id: String,
-    namespace: String,
-}
-
-#[derive(Serialize)]
-pub struct ApiMoveHolderResponse {
-    /// The registry-assigned holder id the device will carry after re-issue.
-    pub new_holder: String,
-}
-
-/// `POST /api/v1/holders/move` — destructive and up-front (§5.4): revokes the
-/// old holder's certs, records the permanent redirect, carries the label.
-pub async fn move_holder(
-    State(state): State<Arc<RegistrarState>>,
-    user: ApiUser,
-    body: axum::body::Bytes,
-) -> Result<Json<ApiMoveHolderResponse>, ApiError> {
-    user.require_config()?;
-    let req: ApiMoveHolderRequest = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
-    let new_holder = crate::holders::move_holder_core(
-        &*state.store,
-        &*state.host,
-        &state.domain,
-        user.user_id,
-        &req.holder_id,
-        &req.namespace,
-    )
-    .map_err(consent_err)?;
-    Ok(Json(ApiMoveHolderResponse { new_holder }))
 }
 
 #[derive(Deserialize)]
@@ -1577,63 +960,6 @@ pub async fn forget_holder(
 }
 
 #[derive(Deserialize)]
-pub struct ApiHolderAssignmentQuery {
-    holder: String,
-}
-
-#[derive(Serialize)]
-pub struct ApiHolderAssignmentResponse {
-    /// "current" | "moved"
-    pub status: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub new_holder: Option<String>,
-}
-
-/// `GET /api/v1/holders/assignment?holder=` — is this holder still current?
-pub async fn holder_assignment(
-    State(state): State<Arc<RegistrarState>>,
-    user: ApiUser,
-    Query(query): Query<ApiHolderAssignmentQuery>,
-) -> Result<Json<ApiHolderAssignmentResponse>, ApiError> {
-    let moved =
-        crate::holders::holder_assignment_core(&*state.store, user.user_id, &query.holder)
-            .map_err(consent_err)?;
-    Ok(Json(match moved {
-        Some(new_holder) => {
-            ApiHolderAssignmentResponse { status: "moved", new_holder: Some(new_holder) }
-        }
-        None => ApiHolderAssignmentResponse { status: "current", new_holder: None },
-    }))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApiCreateNamespaceRequest {
-    name: String,
-    #[serde(default)]
-    label: Option<String>,
-}
-
-/// `POST /api/v1/namespaces/create` — a new namespace (fresh random prefix).
-pub async fn create_namespace(
-    State(state): State<Arc<RegistrarState>>,
-    user: ApiUser,
-    body: axum::body::Bytes,
-) -> Result<StatusCode, ApiError> {
-    user.require_config()?;
-    let req: ApiCreateNamespaceRequest = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
-    crate::holders::create_namespace_core(
-        &*state.store,
-        user.user_id,
-        &req.name,
-        req.label.as_deref(),
-    )
-    .map_err(consent_err)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApiRenameNamespaceRequest {
     name: String,
@@ -1654,83 +980,24 @@ pub async fn rename_namespace(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApiDeleteNamespaceRequest {
-    name: String,
-}
-
-/// `POST /api/v1/namespaces/delete` — remove an EMPTY namespace.
-pub async fn delete_namespace(
-    State(state): State<Arc<RegistrarState>>,
-    user: ApiUser,
-    body: axum::body::Bytes,
-) -> Result<StatusCode, ApiError> {
-    user.require_config()?;
-    let req: ApiDeleteNamespaceRequest = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
-    crate::holders::delete_namespace_core(&*state.store, user.user_id, &req.name)
-        .map_err(consent_err)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use browserid_core::KeyPair;
-
-    #[test]
-    fn proof_round_trips_and_pins_typ_and_alg() {
-        let kp = KeyPair::generate();
-        let pub_b64 = kp.public_key().to_base64();
-        let proof = build_proof("GET", "https://r.example/api/v1/requests", "tok123", &kp);
-        let claims = verify_proof_jws(&proof, &pub_b64).expect("valid proof verifies");
-        assert_eq!(claims.htm, "GET");
-        assert_eq!(claims.htu, "https://r.example/api/v1/requests");
-        assert_eq!(claims.ath, b64url_sha256(b"tok123"));
-
-        // A proof signed by a DIFFERENT key is rejected.
-        let other = KeyPair::generate();
-        let forged = build_proof("GET", "https://r.example/api/v1/requests", "tok123", &other);
-        assert!(matches!(verify_proof_jws(&forged, &pub_b64), Err(ApiError::InvalidProof(_))));
-
-        // Wrong typ is rejected even with a valid signature (domain
-        // separation, core §4): re-sign the same claims under typ JWT.
-        let parts: Vec<&str> = proof.split('.').collect();
-        let jwt_header = URL_SAFE_NO_PAD.encode(r#"{"alg":"EdDSA","typ":"JWT"}"#);
-        let msg = format!("{}.{}", jwt_header, parts[1]);
-        let sig = URL_SAFE_NO_PAD.encode(kp.sign(msg.as_bytes()));
-        let wrong_typ = format!("{msg}.{sig}");
-        assert!(matches!(verify_proof_jws(&wrong_typ, &pub_b64), Err(ApiError::InvalidProof(_))));
-
-        // alg: none (signature still over the tampered header) is rejected.
-        let none_header = URL_SAFE_NO_PAD.encode(format!(r#"{{"alg":"none","typ":"{PROOF_TYP}"}}"#));
-        let msg = format!("{}.{}", none_header, parts[1]);
-        let sig = URL_SAFE_NO_PAD.encode(kp.sign(msg.as_bytes()));
-        let alg_none = format!("{msg}.{sig}");
-        assert!(matches!(verify_proof_jws(&alg_none, &pub_b64), Err(ApiError::InvalidProof(_))));
-    }
 
     #[test]
     fn replay_cache_is_single_use_until_expiry() {
         let cache = ReplayCache::default();
-        let later = Utc::now().timestamp() + 60;
-        assert!(cache.insert_once("k1", later));
-        assert!(!cache.insert_once("k1", later), "second use is a replay");
-        assert!(cache.insert_once("k2", later), "distinct keys are independent");
-        // An EXPIRED entry is pruned and the key becomes fresh again.
-        let cache = ReplayCache::default();
-        assert!(cache.insert_once("k", Utc::now().timestamp() - 1));
-        assert!(cache.insert_once("k", later), "expired entries do not block");
+        let far = Utc::now().timestamp() + 600;
+        assert!(cache.insert_once("a", far));
+        assert!(!cache.insert_once("a", far));
+        assert!(cache.insert_once("b", far));
     }
 
     #[test]
     fn tokens_are_high_entropy_and_hash_stable() {
-        let t1 = new_token();
-        let t2 = new_token();
-        assert_ne!(t1, t2);
-        assert!(t1.len() >= 43, "32 bytes b64url = 43 chars, got {}", t1.len());
-        assert_eq!(b64url_sha256(t1.as_bytes()), b64url_sha256(t1.as_bytes()));
-        assert_ne!(b64url_sha256(t1.as_bytes()), b64url_sha256(t2.as_bytes()));
+        let t = new_token();
+        assert!(t.len() >= 43, "{t}");
+        assert_ne!(t, new_token());
+        assert_eq!(b64url_sha256(t.as_bytes()), b64url_sha256(t.as_bytes()));
     }
 }

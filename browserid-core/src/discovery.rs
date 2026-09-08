@@ -100,18 +100,15 @@ pub struct SupportDocument {
 /// The `registry` object of a support document (registry-api-v1 §5.5).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RegistrySupport {
-    /// Highest registry API version served (e.g. "v1").
-    pub version: String,
-    /// Absolute URL of the token exchange (§3.1). MUST be same-origin with
-    /// the document advertising it — consumers reject an off-origin value.
-    pub token_endpoint: String,
+    /// Highest registry API version served (registry-api-v1 §5.1: an integer).
+    pub version: u32,
     /// Absolute URL prefix of the API (registry-api-v1 §5.1: `…/api/v1`,
-    /// no trailing slash), same-origin. Its origin is the public origin
-    /// request proofs build `htu` on.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<String>,
+    /// no trailing slash). MUST be same-origin with the document advertising
+    /// it — consumers reject an off-origin value. Its origin is the public
+    /// origin request proofs build `htu` on.
+    pub endpoint: String,
     /// This registry's signed status list (core §6.3), same-origin like
-    /// `token_endpoint`. Advertisement only — verifiers reach lists through
+    /// `endpoint`. Advertisement only — verifiers reach lists through
     /// the `uri` inside each status ref.
     pub status_list: String,
     /// Browser-ceremony URLs a native wallet opens for flows it cannot
