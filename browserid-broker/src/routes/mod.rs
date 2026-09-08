@@ -6,6 +6,7 @@ mod code_guard;
 mod device;
 mod email;
 mod fedcm;
+mod guard;
 mod guestbook;
 mod handle_claim;
 mod holders;
@@ -104,6 +105,12 @@ where
                 crate::registrar_glue::BrokerPresentationVerifier { state: state.clone() },
             )),
             api_replay: Default::default(),
+            // The guard page (registry-api-v1 §4.2 `page`): password, or a
+            // live broker session plus an explicit click.
+            guard_page_url: Some(format!(
+                "{}/guard",
+                browserid_registrar::consent::public_origin(&state.domain)
+            )),
         },
     ));
 
@@ -205,6 +212,8 @@ where
         // email delivery is flaky; not the public /wsapi/test route.
         .route("/admin/pending_code", get(account::admin_pending_code))
         .route("/wsapi/authenticate_user", post(auth::authenticate_user))
+        // The registry guard (registry-api-v1 §4.2, bean 0c49 step 5).
+        .route("/wsapi/guard", post(guard::mint))
         // Primary-IdP session join (device model): a presentation for the
         // broker's own audience links the identity into an account so the
         // chooser remembers it.
@@ -314,6 +323,7 @@ where
         // Broker account utilities (sign out / clear cached certs / agent keys),
         // moved off the root when the marketing landing page took `/`.
         .route_service("/account", ServeFile::new(format!("{}/account.html", static_path)))
+        .route_service("/guard", ServeFile::new(format!("{}/guard.html", static_path)))
         // Standalone authorization page: the agent provisioning/consent flow
         // (/authorize?code=…), moved off the /account dashboard. Old printed
         // /account?provision=… links still work — account.html redirects.

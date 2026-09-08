@@ -34,6 +34,12 @@ pub(crate) fn b64url_sha256(data: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(data))
 }
 
+/// base64url(SHA-256(data)) — the token-hash function, for hosts minting
+/// guard tokens the registry looks up.
+pub fn b64url_sha256_pub(data: &[u8]) -> String {
+    b64url_sha256(data)
+}
+
 /// base64url(SHA-256(body bytes)) of the request, computed once by
 /// [`buffer_body`] so the proof extractor can check `bh` without
 /// consuming the body the handler still needs.

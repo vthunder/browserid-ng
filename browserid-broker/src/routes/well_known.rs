@@ -67,9 +67,13 @@ where
             version: "v1".to_string(),
             token_endpoint: format!("{origin}/api/v1/token"),
             status_list: browserid_registrar::consent::status_list_uri(&state.domain),
-            browser: [("account".to_string(), format!("{origin}/account"))]
-                .into_iter()
-                .collect(),
+            browser: [
+                ("account".to_string(), format!("{origin}/account")),
+                ("guard".to_string(), format!("{origin}/guard")),
+            ]
+            .into_iter()
+            .collect(),
+            guard_kinds: vec![serde_json::json!({ "kind": "page", "url": format!("{origin}/guard") })],
         });
     }
 

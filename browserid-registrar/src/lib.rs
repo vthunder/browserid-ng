@@ -41,6 +41,7 @@ use browserid_core::KeyPair;
 
 pub mod agent_provision;
 pub mod api;
+pub mod attach;
 pub mod session;
 pub mod consent;
 pub mod error;
@@ -189,6 +190,9 @@ pub struct RegistrarState {
     /// Single-use tracking for the token lane: request-proof `jti`s and
     /// exchange assertions (registry-api-v1 §3.1/§3.2).
     pub api_replay: api::ReplayCache,
+    /// The guard page (registry-api-v1 §4.2 `page`), absolute URL. `None`
+    /// = no guard offered: joining a held identity is refused outright.
+    pub guard_page_url: Option<String>,
 }
 
 /// The registrar's routes, ready to merge into a host router.
@@ -200,6 +204,9 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         .route("/api/v1/token", post(api::token_exchange))
         .route("/api/v1/session", post(session::open_session))
         .route("/api/v1/session/end", post(session::end_session))
+        .route("/api/v1/account/attach", post(attach::attach))
+        .route("/api/v1/account/detach", post(attach::detach))
+        .route("/api/v1/account/delete", post(attach::delete))
         .route("/api/v1/requests", get(api::list_requests))
         .route("/api/v1/requests/claim", post(api::claim_request))
         .route("/api/v1/requests/respond", post(api::respond))

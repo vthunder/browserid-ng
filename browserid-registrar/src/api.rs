@@ -145,7 +145,7 @@ pub enum DeviceCertRefusal {
 impl DeviceCertRefusal {
     /// Map onto the §7.1 `invalid_cert` reason vocabulary; `which` names the
     /// offending request field in the human diagnostic.
-    fn into_api_error(self, which: &str) -> ApiError {
+    pub(crate) fn into_api_error(self, which: &str) -> ApiError {
         let (reason, description) = match self {
             DeviceCertRefusal::Malformed(d) => ("cert_malformed", format!("{which}: {d}")),
             DeviceCertRefusal::WrongPurpose(d) => ("wrong_purpose", format!("{which}: {d}")),
@@ -189,6 +189,8 @@ pub enum ApiError {
     /// 403 — `forbidden`: the session lacks a config-cert member the call
     /// needs, or a guard is needed or rejected (§7.1).
     Forbidden { reason: &'static str, description: String },
+    /// 403 — `forbidden/guard_required`, carrying the kinds (§4.2).
+    GuardRequired { kinds: Vec<serde_json::Value> },
     /// 403 — token scope does not cover the endpoint.
     InsufficientScope,
     /// 409 — a state refusal (e.g. revoking a refless warrant).
@@ -217,6 +219,14 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        if let ApiError::GuardRequired { kinds } = self {
+            let body = serde_json::json!({
+                "error": "forbidden", "reason": "guard_required",
+                "error_description": "the guard was not passed",
+                "guard_kinds": kinds,
+            });
+            return (StatusCode::FORBIDDEN, Json(body)).into_response();
+        }
         let (status, error, description, reason) = match self {
             ApiError::InvalidRequest(d) => (StatusCode::BAD_REQUEST, "invalid_request", d, None),
             ApiError::InvalidGrant { reason, description } => {
@@ -232,6 +242,8 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden { reason, description } => {
                 (StatusCode::FORBIDDEN, "forbidden", description, Some(reason))
             }
+            // Handled above with its structured body.
+            ApiError::GuardRequired { .. } => unreachable!("guard_required is answered above"),
             ApiError::InsufficientScope => (
                 StatusCode::FORBIDDEN,
                 "insufficient_scope",

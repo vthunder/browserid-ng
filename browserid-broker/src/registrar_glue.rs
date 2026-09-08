@@ -322,6 +322,24 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
             .map_err(to_reg_err)
     }
 
+    fn get_guard_token(&self, token_hash: &str) -> Result<Option<reg::GuardTokenRecord>, RegistrarError> {
+        Ok(self
+            .user_store
+            .get_guard_token(token_hash)
+            .map_err(to_reg_err)?
+            .map(|g| reg::GuardTokenRecord {
+                token_hash: g.token_hash,
+                user_id: g.user_id.0,
+                identity: g.identity,
+                kids: g.kids,
+                expires_at: g.expires_at,
+            }))
+    }
+
+    fn delete_guard_token(&self, token_hash: &str) -> Result<bool, RegistrarError> {
+        self.user_store.delete_guard_token(token_hash).map_err(to_reg_err)
+    }
+
     fn create_api_token(&self, rec: reg::ApiTokenRecord) -> Result<(), RegistrarError> {
         UserStore::create_api_token(self.user_store.as_ref(), from_reg_api_token(rec))
             .map_err(to_reg_err)
@@ -697,6 +715,82 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
             .user_for_public_id(public_id)
             .map_err(to_reg_err)?
             .map(|u| u.0))
+    }
+
+    fn identity_holder(&self, identity: &str) -> Result<Option<u64>, RegistrarError> {
+        Ok(self
+            .user_store
+            .get_email(identity)
+            .map_err(to_reg_err)?
+            .filter(|e| e.email_type != EmailType::Agent && !e.is_suspended())
+            .map(|e| e.user_id.0))
+    }
+
+    fn identity_suspended_on(&self, user_id: u64, identity: &str) -> Result<bool, RegistrarError> {
+        Ok(self
+            .user_store
+            .get_suspended_identity(UserId(user_id), identity)
+            .map_err(to_reg_err)?
+            .is_some())
+    }
+
+    fn create_empty_account(&self) -> Result<u64, RegistrarError> {
+        Ok(self.user_store.create_user_no_password().map_err(to_reg_err)?.0)
+    }
+
+    fn create_account_with_identity(&self, identity: &str, iss: &str) -> Result<u64, RegistrarError> {
+        let user_id = self.user_store.create_user_no_password().map_err(to_reg_err)?;
+        self.add_identity(user_id.0, identity, iss)?;
+        Ok(user_id.0)
+    }
+
+    fn add_identity(&self, user_id: u64, identity: &str, iss: &str) -> Result<(), RegistrarError> {
+        // The broker's own issuance keeps the row a Secondary (broker-vouched)
+        // identity; anything else is a primary-issued one.
+        let kind = if iss.eq_ignore_ascii_case(&self.domain) { EmailType::Secondary } else { EmailType::Primary };
+        self.user_store
+            .add_email_with_type(UserId(user_id), identity, true, kind)
+            .map_err(to_reg_err)
+    }
+
+    fn transfer_identity(&self, from: u64, to: u64, identity: &str, reason: &str) -> Result<(), RegistrarError> {
+        use crate::membership::LeaveReason as R;
+        let reason = match reason {
+            "transferred" => R::Transferred,
+            "taken_over" => R::TakenOver,
+            other => return Err(RegistrarError::Internal(format!("unknown transfer reason {other}"))),
+        };
+        // A change of holder at the issuer too, when we are it (hg2j).
+        self.user_store
+            .revoke_user_certs_for_email(UserId(from), identity)
+            .map_err(to_reg_err)?;
+        crate::membership::transfer_out(self.user_store.as_ref(), UserId(from), UserId(to), identity, reason)
+            .map(|_| ())
+            .map_err(to_reg_err)
+    }
+
+    fn restore_identity(&self, user_id: u64, identity: &str, iss: &str) -> Result<(), RegistrarError> {
+        self.add_identity(user_id, identity, iss)?;
+        crate::membership::identity_returns(self.user_store.as_ref(), UserId(user_id), identity)
+            .map(|_| ())
+            .map_err(to_reg_err)
+    }
+
+    fn detach_identity(&self, user_id: u64, identity: &str) -> Result<(), RegistrarError> {
+        crate::membership::detach(self.user_store.as_ref(), UserId(user_id), identity)
+            .map(|_| ())
+            .map_err(to_reg_err)
+    }
+
+    fn delete_account(&self, user_id: u64) -> Result<(), RegistrarError> {
+        let store = self.user_store.as_ref();
+        let emails = store.list_emails(UserId(user_id)).map_err(to_reg_err)?;
+        for e in emails.into_iter().filter(|e| e.email_type != EmailType::Agent && !e.is_suspended()) {
+            crate::membership::identity_leaves(store, UserId(user_id), &e.email, crate::membership::LeaveReason::Deleted)
+                .map_err(to_reg_err)?;
+            store.remove_email(UserId(user_id), &e.email).map_err(to_reg_err)?;
+        }
+        Ok(())
     }
 
     fn agent_identities(&self, user_id: u64) -> Result<Vec<AgentIdentity>, RegistrarError> {

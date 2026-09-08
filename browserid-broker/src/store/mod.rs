@@ -217,6 +217,12 @@ pub trait UserStore: Send + Sync {
     /// of). Returns how many.
     fn end_sessions_solely_on_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<u64>;
 
+    // --- Guard tokens (registry-api-v1 §4.2) ---
+
+    fn create_guard_token(&self, rec: GuardToken) -> StoreResult<()>;
+    fn get_guard_token(&self, token_hash: &str) -> StoreResult<Option<GuardToken>>;
+    fn delete_guard_token(&self, token_hash: &str) -> StoreResult<bool>;
+
     // --- Public account ids (registry-api-v1 §3: opaque, ≥128 bits) ---
 
     /// The account's public id, minted on first use.

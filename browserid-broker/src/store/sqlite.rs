@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    RegistrySession, SuspendedIdentity,
+    GuardToken, RegistrySession, SuspendedIdentity,
     ApiTokenRecord, DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, SessionStore, StoreResult, Tenant, TenantStatus, User, UserId,
     UserStore, VerificationType, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
@@ -16,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 35;
+const SCHEMA_VERSION: i32 = 36;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -168,6 +168,9 @@ impl SqliteStore {
             }
             if current_version < 35 {
                 Self::migrate_v35(conn)?;
+            }
+            if current_version < 36 {
+                Self::migrate_v36(conn)?;
             }
 
             // Update schema version
@@ -952,8 +955,37 @@ fn registry_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Regist
 }
 
 impl SqliteStore {
-    #[allow(dead_code)]
-    fn _v35_marker() {}
+    fn migrate_v36(conn: &Connection) -> Result<(), BrokerError> {
+        // Guard tokens (registry-api-v1 §4.2, bean 0c49 step 5).
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS guard_tokens (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                identity TEXT NOT NULL,
+                kids TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_guard_tokens_expires ON guard_tokens(expires_at);
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+}
+
+fn guard_token_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<GuardToken> {
+    let user_id: i64 = row.get(1)?;
+    let kids: String = row.get(3)?;
+    Ok(GuardToken {
+        token_hash: row.get(0)?,
+        user_id: UserId(user_id as u64),
+        identity: row.get(2)?,
+        kids: serde_json::from_str(&kids).unwrap_or_default(),
+        created_at: parse_ts_opt(row.get(4)?).unwrap_or_else(Utc::now),
+        expires_at: parse_ts_opt(row.get(5)?).unwrap_or_else(Utc::now),
+    })
 }
 
 fn parse_ts_opt(s: Option<String>) -> Option<DateTime<Utc>> {
@@ -2027,6 +2059,47 @@ impl UserStore for SqliteStore {
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(rows as u64)
+    }
+
+    fn create_guard_token(&self, rec: GuardToken) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO guard_tokens (token_hash, user_id, identity, kids, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                rec.token_hash,
+                rec.user_id.0 as i64,
+                rec.identity.to_lowercase(),
+                serde_json::to_string(&rec.kids).unwrap_or_else(|_| "[]".into()),
+                rec.created_at.to_rfc3339(),
+                rec.expires_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM guard_tokens WHERE expires_at < ?1",
+            params![Utc::now().to_rfc3339()],
+        )
+        .ok();
+        Ok(())
+    }
+
+    fn get_guard_token(&self, token_hash: &str) -> StoreResult<Option<GuardToken>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT token_hash, user_id, identity, kids, created_at, expires_at FROM guard_tokens WHERE token_hash = ?1",
+            params![token_hash],
+            guard_token_from_row,
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn delete_guard_token(&self, token_hash: &str) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute("DELETE FROM guard_tokens WHERE token_hash = ?1", params![token_hash])
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows > 0)
     }
 
     fn account_public_id(&self, user_id: UserId) -> StoreResult<String> {
@@ -3537,6 +3610,15 @@ impl UserStore for std::sync::Arc<SqliteStore> {
     }
     fn end_sessions_solely_on_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<u64> {
         (**self).end_sessions_solely_on_cert(user_id, cert_id)
+    }
+    fn create_guard_token(&self, rec: GuardToken) -> StoreResult<()> {
+        (**self).create_guard_token(rec)
+    }
+    fn get_guard_token(&self, token_hash: &str) -> StoreResult<Option<GuardToken>> {
+        (**self).get_guard_token(token_hash)
+    }
+    fn delete_guard_token(&self, token_hash: &str) -> StoreResult<bool> {
+        (**self).delete_guard_token(token_hash)
     }
     fn account_public_id(&self, user_id: UserId) -> StoreResult<String> {
         (**self).account_public_id(user_id)

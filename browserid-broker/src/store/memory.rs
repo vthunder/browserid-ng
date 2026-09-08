@@ -8,7 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    RegistrySession, SuspendedIdentity,
+    GuardToken, RegistrySession, SuspendedIdentity,
     ApiTokenRecord, DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, Tenant, TenantStatus, User, UserId, UserStore, VerificationType,
@@ -55,6 +55,7 @@ pub struct InMemoryUserStore {
     registry_sessions: RwLock<HashMap<String, RegistrySession>>,
     /// user -> public account id
     account_ids: RwLock<HashMap<UserId, String>>,
+    guard_tokens: RwLock<HashMap<String, GuardToken>>,
 }
 
 impl InMemoryUserStore {
@@ -85,6 +86,7 @@ impl InMemoryUserStore {
             api_tokens: RwLock::new(HashMap::new()),
             registry_sessions: RwLock::new(HashMap::new()),
             account_ids: RwLock::new(HashMap::new()),
+            guard_tokens: RwLock::new(HashMap::new()),
         }
     }
 
@@ -591,6 +593,19 @@ impl UserStore for InMemoryUserStore {
         let before = s.len();
         s.retain(|_, r| !(r.user_id == user_id && r.member_cert_ids == vec![cert_id]));
         Ok((before - s.len()) as u64)
+    }
+
+    fn create_guard_token(&self, rec: GuardToken) -> StoreResult<()> {
+        self.guard_tokens.write().unwrap().insert(rec.token_hash.clone(), rec);
+        Ok(())
+    }
+
+    fn get_guard_token(&self, token_hash: &str) -> StoreResult<Option<GuardToken>> {
+        Ok(self.guard_tokens.read().unwrap().get(token_hash).cloned())
+    }
+
+    fn delete_guard_token(&self, token_hash: &str) -> StoreResult<bool> {
+        Ok(self.guard_tokens.write().unwrap().remove(token_hash).is_some())
     }
 
     fn account_public_id(&self, user_id: UserId) -> StoreResult<String> {

@@ -216,6 +216,17 @@ impl DeviceCertRecord {
     }
 }
 
+/// A guard token (registry-api-v1 §4.2), as the host stores it.
+#[derive(Debug, Clone)]
+pub struct GuardTokenRecord {
+    pub token_hash: String,
+    pub user_id: u64,
+    pub identity: String,
+    /// Sorted kids of the certs it was minted for.
+    pub kids: Vec<String>,
+    pub expires_at: DateTime<Utc>,
+}
+
 /// A registry session (registry-api-v1 §4.5): a token naming a SET of
 /// the account's recorded certs. Members are re-checked on every call.
 #[derive(Debug, Clone)]

@@ -1548,3 +1548,164 @@ async fn sessions_of_proofs_and_the_config_cert_rule() {
     let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/requests", None).await;
     assert_eq!(status, 401, "{body}");
 }
+
+/// Issue a fresh device + config pair for `email` with known keys.
+async fn issue_keys(l: &Live, email: &str) -> (String, String, KeyPair, KeyPair) {
+    let post = |path: &str, body: Value| l.client.post(format!("{}{path}", l.base)).json(&body);
+    let r = post("/wsapi/authenticate_user", json!({"email": email, "pass": "password123"})).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let session = set_cookie(&r, "browserid_session");
+    let device_kp = KeyPair::generate();
+    let config_kp = KeyPair::generate();
+    let r = device_issue(l, &session, email, &device_kp, &config_kp).await;
+    assert_eq!(r.status(), 200, "device/issue");
+    let certs: Value = r.json().await.unwrap();
+    (
+        certs["device_cert"].as_str().unwrap().to_string(),
+        certs["config_cert"].as_str().unwrap().to_string(),
+        device_kp,
+        config_kp,
+    )
+}
+
+/// `POST /api/v1/account/attach` (§5.2.1): header proof by the first cert's
+/// key, one possession proof per cert, same jti.
+async fn attach_call(
+    l: &Live,
+    certs: &[(&str, &KeyPair)],
+    identity: &str,
+    account: Option<&str>,
+    guard: Option<&str>,
+    confirm_takeover: bool,
+    bearer: Option<&str>,
+) -> (reqwest::StatusCode, Value) {
+    let htu = format!("{}/api/v1/account/attach", l.base);
+    let jti = rand_suffix();
+    let now = chrono::Utc::now().timestamp();
+    let entries: Vec<Value> = certs
+        .iter()
+        .map(|(c, k)| json!({ "cert": c, "proof": browserid_registrar::session::build_proof("POST", &htu, None, k, now, &jti) }))
+        .collect();
+    let mut body = json!({ "identity": identity, "certs": entries });
+    if let Some(a) = account { body["account"] = json!(a); }
+    if let Some(g) = guard { body["guard"] = json!(g); }
+    if confirm_takeover { body["confirm_takeover"] = json!(true); }
+    let bytes = body.to_string().into_bytes();
+    let header = browserid_registrar::session::build_proof("POST", &htu, Some(&bytes), certs[0].1, now, &jti);
+    let mut req = l.client.post(&htu).header("proof", header).header("content-type", "application/json");
+    if let Some(t) = bearer { req = req.header("authorization", format!("Bearer {t}")); }
+    let r = req.body(bytes).send().await.unwrap();
+    let status = r.status();
+    (status, r.json().await.unwrap_or(json!(null)))
+}
+
+async fn guard_token(l: &Live, identity: &str, certs: &[&str], password: Option<&str>) -> (reqwest::StatusCode, Value) {
+    let mut body = json!({ "identity": identity, "certs": certs });
+    if let Some(p) = password { body["password"] = json!(p); }
+    let r = l.client.post(format!("{}/wsapi/guard", l.base)).json(&body).send().await.unwrap();
+    let status = r.status();
+    (status, r.json().await.unwrap_or(json!(null)))
+}
+
+/// registry-api-v1 §5.2 + §4.2 (bean 0c49 steps 4+5): attach's case list,
+/// the guard page's token, takeover with the hold, detach and delete.
+#[tokio::test]
+async fn attach_cases_the_guard_takeover_detach_and_delete() {
+    use browserid_broker::store::UserStore;
+    let l = live_broker().await;
+    let email = "attach-owner@gmail.com";
+    let (_pres, config_kp, _dc, config_cert) = broker_presentation(&l, email, vec!["registry".into()]).await;
+
+    // Held by an account (the signup made one), no guard: 403 guard_required
+    // naming the page.
+    let (status, body) = attach_call(&l, &[(&config_cert, &config_kp)], email, None, None, false, None).await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["error"], "forbidden");
+    assert_eq!(body["reason"], "guard_required");
+    assert_eq!(body["guard_kinds"][0]["kind"], "page");
+    assert!(body["guard_kinds"][0]["url"].as_str().unwrap().ends_with("/guard"), "{body}");
+
+    // The guard page mints a token for these certs: wrong password refused,
+    // unknown identity indistinguishable from it.
+    let (status, body) = guard_token(&l, email, &[&config_cert], Some("nope")).await;
+    assert_eq!(status, 403, "{body}");
+    let (status, _) = guard_token(&l, "nobody@gmail.com", &[&config_cert], Some("password123")).await;
+    assert_eq!(status, 403);
+    let (status, body) = guard_token(&l, email, &[&config_cert], Some("password123")).await;
+    assert_eq!(status, 200, "{body}");
+    let guard = body["guard"].as_str().unwrap().to_string();
+
+    // Past the guard: recorded, a session on the account.
+    let (status, body) = attach_call(&l, &[(&config_cert, &config_kp)], email, None, Some(&guard), false, None).await;
+    assert_eq!(status, 200, "{body}");
+    let token = body["token"].as_str().unwrap().to_string();
+    let account = body["account"].as_str().unwrap().to_string();
+    assert_eq!(body["members"].as_array().unwrap().len(), 1);
+    assert_eq!(body["members"][0]["purpose"], "authorization");
+    assert_eq!(body["roster"], json!([{ "identity": email, "state": "active" }]));
+    // The token is spent.
+    let (status, body) = attach_call(&l, &[(&config_cert, &config_kp)], email, None, Some(&guard), false, None).await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["reason"], "guard_rejected");
+    // Re-attaching under the session is idempotent on pubkey.
+    let (status, body) = attach_call(&l, &[(&config_cert, &config_kp)], email, Some(&account), None, false, Some(&token)).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["members"].as_array().unwrap().len(), 1);
+
+    // A second device: both certs, guard bound to the pair.
+    let (dc2, cc2, dkp2, ckp2) = issue_keys(&l, email).await;
+    let (status, body) = attach_call(&l, &[(&dc2, &dkp2), (&cc2, &ckp2)], email, None, None, false, None).await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["reason"], "guard_required");
+    let (_, g1) = guard_token(&l, email, &[&cc2], Some("password123")).await;
+    let (status, body) = attach_call(&l, &[(&dc2, &dkp2), (&cc2, &ckp2)], email, None, g1["guard"].as_str(), false, None).await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["reason"], "guard_rejected", "a token for other certs");
+    let (_, g2) = guard_token(&l, email, &[&dc2, &cc2], Some("password123")).await;
+    let (status, body) = attach_call(&l, &[(&dc2, &dkp2), (&cc2, &ckp2)], email, None, g2["guard"].as_str(), false, None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["account"], account);
+    assert_eq!(body["members"].as_array().unwrap().len(), 2);
+    let token2 = body["token"].as_str().unwrap().to_string();
+
+    // Takeover: fresh certs, the user's explicit choice, no guard. The
+    // identity leaves into a new account; the old account keeps it on hold
+    // and its certs for it die at the issuer (this broker).
+    let (dc3, cc3, dkp3, ckp3) = issue_keys(&l, email).await;
+    let (status, body) = attach_call(&l, &[(&dc3, &dkp3), (&cc3, &ckp3)], email, None, None, true, None).await;
+    assert_eq!(status, 200, "{body}");
+    let account3 = body["account"].as_str().unwrap().to_string();
+    assert_ne!(account3, account);
+    assert_eq!(body["roster"], json!([{ "identity": email, "state": "active" }]));
+    let token3 = body["token"].as_str().unwrap().to_string();
+    let old_user = l.user_store.user_for_public_id(&account).unwrap().unwrap();
+    assert_eq!(l.user_store.get_suspended_identity(old_user, email).unwrap().unwrap().reason, "taken_over");
+    let old_roster = browserid_broker::membership::roster(l.user_store.as_ref(), old_user).unwrap();
+    assert_eq!(old_roster, vec![(email.to_string(), "suspended")]);
+    let (status, body, _) = session_call(&l, &ckp2, &token2, "GET", "/api/v1/requests", None).await;
+    assert_eq!(status, 401, "the old device's cert was revoked by the issuer: {body}");
+
+    // Detach and delete on the new account.
+    let new_user = l.user_store.user_for_public_id(&account3).unwrap().unwrap();
+    let (status, body, _) = session_call(&l, &ckp3, &token3, "POST", "/api/v1/account/detach", Some(json!({"identity": email}))).await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["reason"], "last_identity");
+    l.user_store.add_email(new_user, "second@example.org", true).unwrap();
+    let (status, body, _) = session_call(&l, &ckp3, &token3, "POST", "/api/v1/account/detach", Some(json!({"identity": "second@example.org"}))).await;
+    assert_eq!(status, 204, "{body}");
+    assert!(l.user_store.get_email("second@example.org").unwrap().is_none());
+    assert!(l.user_store.get_suspended_identity(new_user, "second@example.org").unwrap().is_some());
+    let (status, body, _) = session_call(&l, &ckp3, &token3, "POST", "/api/v1/account/detach", Some(json!({"identity": "stranger@example.org"}))).await;
+    assert_eq!(status, 404, "{body}");
+    let (status, body, _) = session_call(&l, &ckp3, &token3, "POST", "/api/v1/account/delete", Some(json!({}))).await;
+    assert_eq!(status, 204, "{body}");
+    assert!(l.user_store.get_email(email).unwrap().is_none(), "every identity left");
+    assert_eq!(l.user_store.get_suspended_identity(new_user, email).unwrap().unwrap().reason, "deleted");
+    let (status, _, _) = session_call(&l, &ckp3, &token3, "GET", "/api/v1/requests", None).await;
+    assert_eq!(status, 401);
+
+    // Discovery advertises the guard.
+    let doc: Value = l.client.get(format!("{}/.well-known/browserid", l.base)).send().await.unwrap().json().await.unwrap();
+    assert_eq!(doc["registry"]["guard_kinds"][0]["kind"], "page");
+    assert!(doc["registry"]["browser"]["guard"].as_str().unwrap().ends_with("/guard"));
+}

@@ -3,7 +3,7 @@
 
 use crate::error::RegistrarError;
 use crate::models::{
-    ApiTokenRecord, DeviceCertRecord, NamespaceRecord, WarrantRecord, WarrantRequestRecord, SessionRecord,
+    ApiTokenRecord, DeviceCertRecord, NamespaceRecord, WarrantRecord, WarrantRequestRecord, SessionRecord, GuardTokenRecord,
 };
 
 pub type StoreResult<T> = Result<T, RegistrarError>;
@@ -149,6 +149,15 @@ pub trait RegistrarStore: Send + Sync {
     /// End the sessions `cert_id` is the last member of (§4.5).
     fn end_sessions_solely_on_cert(&self, _user_id: u64, _cert_id: u64) -> StoreResult<u64> {
         Ok(0)
+    }
+
+    // --- Guard tokens (registry-api-v1 §4.2) ---
+
+    fn get_guard_token(&self, _token_hash: &str) -> StoreResult<Option<GuardTokenRecord>> {
+        Err(RegistrarError::Internal("guard tokens not supported by this host".into()))
+    }
+    fn delete_guard_token(&self, _token_hash: &str) -> StoreResult<bool> {
+        Err(RegistrarError::Internal("guard tokens not supported by this host".into()))
     }
 
     // --- Device certs (DC Phase 3/4): durable, revocable IdP-signed certs ---

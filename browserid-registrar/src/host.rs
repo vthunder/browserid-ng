@@ -165,6 +165,58 @@ pub trait RegistrarHost: Send + Sync {
     fn account_for_public_id(&self, _public_id: &str) -> Result<Option<u64>, RegistrarError> {
         Err(RegistrarError::Internal("account ids not supported by this host".into()))
     }
+
+    // --- Attach (registry-api-v1 §5.2.1) ---
+
+    /// The account on which `identity` is ACTIVE, if any (a suspended copy
+    /// elsewhere does not count).
+    fn identity_holder(&self, _identity: &str) -> Result<Option<u64>, RegistrarError> {
+        Err(RegistrarError::Internal("membership not supported by this host".into()))
+    }
+
+    /// Whether `identity` is on hold on `user_id`'s account.
+    fn identity_suspended_on(&self, _user_id: u64, _identity: &str) -> Result<bool, RegistrarError> {
+        Err(RegistrarError::Internal("membership not supported by this host".into()))
+    }
+
+    /// A new, empty account (a takeover's destination; the identity moves
+    /// in right after).
+    fn create_empty_account(&self) -> Result<u64, RegistrarError> {
+        Err(RegistrarError::Internal("membership not supported by this host".into()))
+    }
+
+    /// A new account holding exactly `identity` (issued by `iss`).
+    fn create_account_with_identity(&self, _identity: &str, _iss: &str) -> Result<u64, RegistrarError> {
+        Err(RegistrarError::Internal("membership not supported by this host".into()))
+    }
+
+    /// `identity`, held by no account, joins `user_id`'s.
+    fn add_identity(&self, _user_id: u64, _identity: &str, _iss: &str) -> Result<(), RegistrarError> {
+        Err(RegistrarError::Internal("membership not supported by this host".into()))
+    }
+
+    /// `identity` leaves `from` (§4.1 rule 3) and joins `to`; a hold on
+    /// `to` becomes a return.
+    fn transfer_identity(&self, _from: u64, _to: u64, _identity: &str, _reason: &str) -> Result<(), RegistrarError> {
+        Err(RegistrarError::Internal("membership not supported by this host".into()))
+    }
+
+    /// `identity`, on hold on `user_id`'s account and active nowhere,
+    /// returns there.
+    fn restore_identity(&self, _user_id: u64, _identity: &str, _iss: &str) -> Result<(), RegistrarError> {
+        Err(RegistrarError::Internal("membership not supported by this host".into()))
+    }
+
+    /// Detach (§5.2.2): `identity` leaves and nobody holds it.
+    fn detach_identity(&self, _user_id: u64, _identity: &str) -> Result<(), RegistrarError> {
+        Err(RegistrarError::Internal("membership not supported by this host".into()))
+    }
+
+    /// Delete (§5.2.3): every identity leaves; the account is dropped after
+    /// the hold.
+    fn delete_account(&self, _user_id: u64) -> Result<(), RegistrarError> {
+        Err(RegistrarError::Internal("membership not supported by this host".into()))
+    }
 }
 
 /// Require that the caller presented the session's CSRF token.

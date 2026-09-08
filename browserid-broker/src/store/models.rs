@@ -191,6 +191,20 @@ impl RegistrySession {
     }
 }
 
+/// A guard token (registry-api-v1 §4.2): single-use, bound to the account
+/// that held `identity` at mint and to the certs it was requested for
+/// (by kid), spent by `attach` / `detach` / `delete` / `session`.
+#[derive(Debug, Clone)]
+pub struct GuardToken {
+    pub token_hash: String,
+    pub user_id: UserId,
+    pub identity: String,
+    /// Sorted kids of the certs the token binds to.
+    pub kids: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
 /// A pending email verification
 #[derive(Debug, Clone)]
 pub struct PendingVerification {
