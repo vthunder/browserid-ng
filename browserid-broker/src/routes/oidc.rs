@@ -388,7 +388,15 @@ where
         // former holder's certs for the address die with the transfer (hg2j).
         (Some(s), Some(rec)) => {
             state.user_store.revoke_user_certs_for_email(rec.user_id, email)?;
-            state.user_store.transfer_email(email, s.user_id)?;
+            // The identity leaves the former account (registry-api-v1 §4.1
+            // rule 3): suspended there for the hold, agents with it.
+            crate::membership::transfer_out(
+                state.user_store.as_ref(),
+                rec.user_id,
+                s.user_id,
+                email,
+                crate::membership::LeaveReason::Transferred,
+            )?;
             s.user_id
         }
         (Some(s), None) => {
@@ -431,7 +439,13 @@ where
                 // Change of holder: the old account's certs for the departed
                 // address must stop working (hg2j).
                 state.user_store.revoke_user_certs_for_email(rec.user_id, email)?;
-                state.user_store.transfer_email(email, fresh)?;
+                crate::membership::transfer_out(
+                    state.user_store.as_ref(),
+                    rec.user_id,
+                    fresh,
+                    email,
+                    crate::membership::LeaveReason::TakenOver,
+                )?;
                 fresh
             }
         }

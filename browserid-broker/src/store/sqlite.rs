@@ -7,6 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
+    SuspendedIdentity,
     ApiTokenRecord, DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, SessionStore, StoreResult, Tenant, TenantStatus, User, UserId,
     UserStore, VerificationType, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
@@ -15,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 33;
+const SCHEMA_VERSION: i32 = 34;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -161,6 +162,9 @@ impl SqliteStore {
             }
             if current_version < 33 {
                 Self::migrate_v33(conn)?;
+            }
+            if current_version < 34 {
+                Self::migrate_v34(conn)?;
             }
 
             // Update schema version
@@ -879,6 +883,47 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v34(conn: &Connection) -> Result<(), BrokerError> {
+        // Membership hold (registry-api-v1 §4.1 rule 3, bean 0c49 step 1).
+        // An identity that leaves an account is remembered there for the
+        // hold; derived agent rows stay put, marked suspended; status bits
+        // set by a suspension are stamped so a return clears only those.
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS suspended_identities (
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                email TEXT NOT NULL,
+                suspended_at TEXT NOT NULL,
+                hold_until TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                PRIMARY KEY (user_id, email)
+            );
+            CREATE INDEX IF NOT EXISTS idx_suspended_identities_email ON suspended_identities(email);
+            CREATE INDEX IF NOT EXISTS idx_suspended_identities_hold ON suspended_identities(hold_until);
+            ALTER TABLE emails ADD COLUMN suspended_at TEXT;
+            ALTER TABLE emails ADD COLUMN hold_until TEXT;
+            ALTER TABLE status_entries ADD COLUMN suspended_by TEXT;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+}
+
+fn parse_ts_opt(s: Option<String>) -> Option<DateTime<Utc>> {
+    s.and_then(|s| DateTime::parse_from_rfc3339(&s).map(|dt| dt.with_timezone(&Utc)).ok())
+}
+
+fn suspended_identity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SuspendedIdentity> {
+    let user_id: i64 = row.get(0)?;
+    Ok(SuspendedIdentity {
+        user_id: UserId(user_id as u64),
+        email: row.get(1)?,
+        suspended_at: parse_ts_opt(row.get(2)?).unwrap_or_else(Utc::now),
+        hold_until: parse_ts_opt(row.get(3)?).unwrap_or_else(Utc::now),
+        reason: row.get(4)?,
+    })
 }
 
 // Row → DeviceCertRecord mapping (DC Phase 3/4)
@@ -1150,7 +1195,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn
-            .prepare("SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name, public_name, proof, proof_subject FROM emails WHERE user_id = ?1")
+            .prepare("SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name, public_name, proof, proof_subject, suspended_at, hold_until FROM emails WHERE user_id = ?1")
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
 
         let emails = stmt
@@ -1180,6 +1225,8 @@ impl UserStore for SqliteStore {
                     proof: ProofMethod::from_str(&row.get::<_, String>(9)?)
                         .unwrap_or(ProofMethod::Smtp),
                     proof_subject: row.get::<_, Option<String>>(10)?,
+                    suspended_at: parse_ts_opt(row.get::<_, Option<String>>(11)?),
+                    hold_until: parse_ts_opt(row.get::<_, Option<String>>(12)?),
                 })
             })
             .map_err(|e| BrokerError::Internal(e.to_string()))?
@@ -1497,7 +1544,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         conn.query_row(
-            "SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name, public_name, proof, proof_subject FROM emails WHERE email = ?1",
+            "SELECT email, user_id, verified, verified_at, email_type, last_used_as, parent_email, display_name, public_name, proof, proof_subject, suspended_at, hold_until FROM emails WHERE email = ?1",
             params![normalized],
             |row| {
                 let email: String = row.get(0)?;
@@ -1525,6 +1572,8 @@ impl UserStore for SqliteStore {
                     proof: ProofMethod::from_str(&row.get::<_, String>(9)?)
                         .unwrap_or(ProofMethod::Smtp),
                     proof_subject: row.get::<_, Option<String>>(10)?,
+                    suspended_at: parse_ts_opt(row.get::<_, Option<String>>(11)?),
+                    hold_until: parse_ts_opt(row.get::<_, Option<String>>(12)?),
                 })
             },
         )
@@ -1878,6 +1927,168 @@ impl UserStore for SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))
     }
 
+    fn set_email_suspension(
+        &self,
+        email: &str,
+        until: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    ) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE emails SET suspended_at = ?1, hold_until = ?2 WHERE email = ?3",
+                params![
+                    until.map(|u| u.0.to_rfc3339()),
+                    until.map(|u| u.1.to_rfc3339()),
+                    email.to_lowercase()
+                ],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::EmailNotFound);
+        }
+        Ok(())
+    }
+
+    fn insert_suspended_identity(&self, rec: SuspendedIdentity) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO suspended_identities (user_id, email, suspended_at, hold_until, reason) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                rec.user_id.0 as i64,
+                rec.email.to_lowercase(),
+                rec.suspended_at.to_rfc3339(),
+                rec.hold_until.to_rfc3339(),
+                rec.reason
+            ],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn get_suspended_identity(&self, user_id: UserId, email: &str) -> StoreResult<Option<SuspendedIdentity>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT user_id, email, suspended_at, hold_until, reason FROM suspended_identities WHERE user_id = ?1 AND email = ?2",
+            params![user_id.0 as i64, email.to_lowercase()],
+            suspended_identity_from_row,
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn list_suspended_identities(&self, user_id: UserId) -> StoreResult<Vec<SuspendedIdentity>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT user_id, email, suspended_at, hold_until, reason FROM suspended_identities WHERE user_id = ?1")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![user_id.0 as i64], suspended_identity_from_row)
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows)
+    }
+
+    fn suspended_holders_of(&self, email: &str) -> StoreResult<Vec<SuspendedIdentity>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT user_id, email, suspended_at, hold_until, reason FROM suspended_identities WHERE email = ?1")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![email.to_lowercase()], suspended_identity_from_row)
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows)
+    }
+
+    fn delete_suspended_identity(&self, user_id: UserId, email: &str) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "DELETE FROM suspended_identities WHERE user_id = ?1 AND email = ?2",
+                params![user_id.0 as i64, email.to_lowercase()],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows > 0)
+    }
+
+    fn list_expired_holds(&self, now: DateTime<Utc>) -> StoreResult<Vec<SuspendedIdentity>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT user_id, email, suspended_at, hold_until, reason FROM suspended_identities WHERE hold_until < ?1")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![now.to_rfc3339()], suspended_identity_from_row)
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows)
+    }
+
+    fn mark_status_suspended_idx(&self, idx: u64, by: &str) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE status_entries SET revoked_at = ?1, suspended_by = ?2 WHERE idx = ?3 AND revoked_at IS NULL",
+                params![Utc::now().to_rfc3339(), by, idx as i64],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows > 0)
+    }
+
+    fn clear_status_suspended_by(&self, by: &str) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE status_entries SET revoked_at = NULL, suspended_by = NULL WHERE suspended_by = ?1",
+                params![by],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows as u64)
+    }
+
+    fn delete_warrants_by_grantor(&self, user_id: UserId, grantor: &str) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "DELETE FROM warrants WHERE user_id = ?1 AND LOWER(delegator_email) = ?2",
+                params![user_id.0 as i64, grantor.to_lowercase()],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows as u64)
+    }
+
+    fn delete_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "DELETE FROM device_certs WHERE id = ?1 AND user_id = ?2",
+                params![cert_id as i64, user_id.0 as i64],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if rows == 0 {
+            return Err(BrokerError::DeviceCertNotFound);
+        }
+        Ok(())
+    }
+
+    fn delete_api_tokens_for_user(&self, user_id: UserId) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute("DELETE FROM api_tokens WHERE user_id = ?1", params![user_id.0 as i64])
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows as u64)
+    }
+
+    fn delete_warrant_requests_for_user(&self, user_id: UserId) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute("DELETE FROM warrant_requests WHERE user_id = ?1", params![user_id.0 as i64])
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows as u64)
+    }
+
     fn cleanup_expired_api_tokens(&self) -> StoreResult<u64> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
@@ -1893,7 +2104,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .execute(
-                "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1) WHERE kind = ?2 AND subject = ?3",
+                "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1), suspended_by = NULL WHERE kind = ?2 AND subject = ?3",
                 params![Utc::now().to_rfc3339(), kind, subject],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -1904,7 +2115,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .execute(
-                "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1) WHERE idx = ?2",
+                "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1), suspended_by = NULL WHERE idx = ?2",
                 params![Utc::now().to_rfc3339(), idx as i64],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -1915,7 +2126,7 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .execute(
-                "UPDATE status_entries SET revoked_at = NULL WHERE idx = ?1",
+                "UPDATE status_entries SET revoked_at = NULL, suspended_by = NULL WHERE idx = ?1",
                 params![idx as i64],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2484,7 +2695,7 @@ impl UserStore for SqliteStore {
             }
             if let Some(idx) = status_idx {
                 conn.execute(
-                    "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1) WHERE idx = ?2",
+                    "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1), suspended_by = NULL WHERE idx = ?2",
                     params![now, idx],
                 )
                 .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2541,7 +2752,7 @@ impl UserStore for SqliteStore {
             }
             if let Some(idx) = status_idx {
                 conn.execute(
-                    "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1) WHERE idx = ?2",
+                    "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1), suspended_by = NULL WHERE idx = ?2",
                     params![now, idx],
                 )
                 .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2589,7 +2800,7 @@ impl UserStore for SqliteStore {
             }
             if let Some(idx) = status_idx {
                 conn.execute(
-                    "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1) WHERE idx = ?2",
+                    "UPDATE status_entries SET revoked_at = COALESCE(revoked_at, ?1), suspended_by = NULL WHERE idx = ?2",
                     params![now, idx],
                 )
                 .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -3169,6 +3380,46 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 
     fn cleanup_expired_api_tokens(&self) -> StoreResult<u64> {
         (**self).cleanup_expired_api_tokens()
+    }
+
+    fn set_email_suspension(&self, email: &str, until: Option<(DateTime<Utc>, DateTime<Utc>)>) -> StoreResult<()> {
+        (**self).set_email_suspension(email, until)
+    }
+    fn insert_suspended_identity(&self, rec: SuspendedIdentity) -> StoreResult<()> {
+        (**self).insert_suspended_identity(rec)
+    }
+    fn get_suspended_identity(&self, user_id: UserId, email: &str) -> StoreResult<Option<SuspendedIdentity>> {
+        (**self).get_suspended_identity(user_id, email)
+    }
+    fn list_suspended_identities(&self, user_id: UserId) -> StoreResult<Vec<SuspendedIdentity>> {
+        (**self).list_suspended_identities(user_id)
+    }
+    fn suspended_holders_of(&self, email: &str) -> StoreResult<Vec<SuspendedIdentity>> {
+        (**self).suspended_holders_of(email)
+    }
+    fn delete_suspended_identity(&self, user_id: UserId, email: &str) -> StoreResult<bool> {
+        (**self).delete_suspended_identity(user_id, email)
+    }
+    fn list_expired_holds(&self, now: DateTime<Utc>) -> StoreResult<Vec<SuspendedIdentity>> {
+        (**self).list_expired_holds(now)
+    }
+    fn mark_status_suspended_idx(&self, idx: u64, by: &str) -> StoreResult<bool> {
+        (**self).mark_status_suspended_idx(idx, by)
+    }
+    fn clear_status_suspended_by(&self, by: &str) -> StoreResult<u64> {
+        (**self).clear_status_suspended_by(by)
+    }
+    fn delete_warrants_by_grantor(&self, user_id: UserId, grantor: &str) -> StoreResult<u64> {
+        (**self).delete_warrants_by_grantor(user_id, grantor)
+    }
+    fn delete_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
+        (**self).delete_device_cert(user_id, cert_id)
+    }
+    fn delete_api_tokens_for_user(&self, user_id: UserId) -> StoreResult<u64> {
+        (**self).delete_api_tokens_for_user(user_id)
+    }
+    fn delete_warrant_requests_for_user(&self, user_id: UserId) -> StoreResult<u64> {
+        (**self).delete_warrant_requests_for_user(user_id)
     }
 
     fn insert_device_cert(&self, rec: DeviceCertRecord) -> StoreResult<u64> {

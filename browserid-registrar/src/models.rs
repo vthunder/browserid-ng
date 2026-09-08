@@ -90,6 +90,9 @@ pub enum RequestKind {
     Connection,
     /// Grantor-initiated authoring ceremony → v2 policy records.
     Authoring,
+    /// The registry telling the user an identity changed hands
+    /// (registry-api-v1 §5.3); nothing to answer.
+    Notice,
 }
 
 impl RequestKind {
@@ -98,6 +101,7 @@ impl RequestKind {
             RequestKind::Agent => "agent",
             RequestKind::Connection => "connection",
             RequestKind::Authoring => "authoring",
+            RequestKind::Notice => "notice",
         }
     }
     pub fn from_str(s: &str) -> Option<Self> {
@@ -105,6 +109,7 @@ impl RequestKind {
             "agent" => Some(RequestKind::Agent),
             "connection" => Some(RequestKind::Connection),
             "authoring" => Some(RequestKind::Authoring),
+            "notice" => Some(RequestKind::Notice),
             _ => None,
         }
     }
@@ -132,6 +137,18 @@ pub struct RecordRequestMeta {
     /// minted with the request and bound to the record signed at consent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding_id: Option<String>,
+    /// Notice only (registry-api-v1 §5.3): what changed hands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<NoticeMeta>,
+}
+
+/// The payload of a `kind: "notice"` inbox item (registry-api-v1 §5.3).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NoticeMeta {
+    pub identity: String,
+    /// `"left"` (transferred, taken over, or detached) or `"returned"`.
+    pub reason: String,
+    pub at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

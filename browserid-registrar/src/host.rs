@@ -127,6 +127,33 @@ pub trait RegistrarHost: Send + Sync {
     fn known_agent(&self, _user_id: u64, _agent_email: &str) -> Result<Option<KnownAgent>, RegistrarError> {
         Ok(None)
     }
+
+    // --- Account membership (registry-api-v1 §4.1; bean 0c49) ---
+    // Identities are host-owned, so the leave/return cascade is the host's;
+    // the registry calls it from attach/detach/delete. Defaults error so
+    // hosts without membership keep compiling.
+
+    /// `identity` leaves `user_id`'s account (§4.1 rule 3): suspended there
+    /// for the hold, records frozen, agents with it, notice filed. `reason`
+    /// is `transferred` | `taken_over` | `detached` | `deleted`.
+    fn identity_leaves(&self, _user_id: u64, _identity: &str, _reason: &str) -> Result<(), RegistrarError> {
+        Err(RegistrarError::Internal("membership not supported by this host".into()))
+    }
+
+    /// `identity` returns to `user_id`'s account within the hold.
+    fn identity_returns(&self, _user_id: u64, _identity: &str) -> Result<(), RegistrarError> {
+        Err(RegistrarError::Internal("membership not supported by this host".into()))
+    }
+
+    /// The account's roster (§4.5): `(identity, "active" | "suspended")`.
+    fn roster(&self, _user_id: u64) -> Result<Vec<(String, &'static str)>, RegistrarError> {
+        Err(RegistrarError::Internal("membership not supported by this host".into()))
+    }
+
+    /// Drop what expired holds kept; opportunistic, safe to call often.
+    fn sweep_holds(&self) -> Result<(), RegistrarError> {
+        Ok(())
+    }
 }
 
 /// Require that the caller presented the session's CSRF token.

@@ -152,6 +152,9 @@ pub struct PendingRequestInfo {
     /// must carry (§6.6 invariant 5).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binding_id: Option<String>,
+    /// Notice items (registry-api-v1 §5.3): `{ identity, reason, at }`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<crate::models::NoticeMeta>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -252,6 +255,7 @@ pub(crate) fn pending_info(
         client_host: meta.and_then(|m| m.client_host.clone()),
         client_name: meta.and_then(|m| m.client_name.clone()),
         binding_id: meta.and_then(|m| m.binding_id.clone()),
+        notice: meta.and_then(|m| m.notice.clone()),
         created_at: r.created_at,
         expires_at: r.expires_at,
     }
@@ -327,6 +331,7 @@ pub(crate) async fn claim_core(
         .get_warrant_request(code)?
         .ok_or(RegistrarError::WarrantRequestNotFound)?;
     if rec.kind == RequestKind::Agent
+        || rec.kind == RequestKind::Notice
         || rec.status != WarrantRequestStatus::Pending
         || rec.is_expired()
         || (rec.user_id != 0 && rec.user_id != user_id)
@@ -420,7 +425,8 @@ pub(crate) fn respond_core(
         .store
         .get_warrant_request(&req.code)?
         .ok_or(RegistrarError::WarrantRequestNotFound)?;
-    if rec.user_id != user_id {
+    // A notice has nothing to answer (registry-api-v1 §5.3).
+    if rec.user_id != user_id || rec.kind == RequestKind::Notice {
         return Err(RegistrarError::WarrantRequestNotFound);
     }
 
@@ -1669,6 +1675,7 @@ pub async fn record_request(
                     base64::engine::general_purpose::URL_SAFE_NO_PAD
                         .encode(rand::random::<[u8; 16]>())
                 )),
+                notice: None,
             };
             // Origin-validate the optional return_url against the audience
             // origin (there is no requester identity domain here).

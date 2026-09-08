@@ -142,6 +142,33 @@ pub struct Email {
     /// resolved to at claim time. What lets a cold re-claim distinguish
     /// "same holder signing in" from "the handle changed hands".
     pub proof_subject: Option<String>,
+    /// Derived (agent) rows only: set while the PARENT identity is on hold
+    /// after leaving this account (registry-api-v1 §4.1 rule 3). The row
+    /// stays where it is; the account's records for it are frozen until
+    /// the parent returns or the hold ends. `None` = active.
+    pub suspended_at: Option<DateTime<Utc>>,
+    pub hold_until: Option<DateTime<Utc>>,
+}
+
+impl Email {
+    pub fn is_suspended(&self) -> bool {
+        self.suspended_at.is_some()
+    }
+}
+
+/// An identity that has LEFT an account and is on hold there
+/// (registry-api-v1 §4.1 rule 3). The `emails` row, if any, lives on
+/// whichever account holds the identity now; this row is the old
+/// account's memory of it, kept for the hold so the identity can return
+/// with its records restored.
+#[derive(Debug, Clone)]
+pub struct SuspendedIdentity {
+    pub user_id: UserId,
+    pub email: String,
+    pub suspended_at: DateTime<Utc>,
+    pub hold_until: DateTime<Utc>,
+    /// `transferred` | `taken_over` | `detached` | `deleted`
+    pub reason: String,
 }
 
 /// A pending email verification

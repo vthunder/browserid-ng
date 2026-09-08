@@ -8,6 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
+    SuspendedIdentity,
     ApiTokenRecord, DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, Tenant, TenantStatus, User, UserId, UserStore, VerificationType,
@@ -24,6 +25,10 @@ pub struct InMemoryUserStore {
     next_warrant_id: AtomicU64,
     /// (kind, subject) -> (idx, revoked)
     status_entries: RwLock<HashMap<(String, String), (u64, bool)>>,
+    /// idx -> who suspended the bit (registry-api-v1 §4.1 rule 3)
+    status_suspended_by: RwLock<HashMap<u64, String>>,
+    /// (user_id, email) -> hold record
+    suspended_identities: RwLock<HashMap<(UserId, String), SuspendedIdentity>>,
     next_status_idx: AtomicU64,
     next_user_id: AtomicU64,
     device_certs: RwLock<HashMap<u64, DeviceCertRecord>>,
@@ -58,6 +63,8 @@ impl InMemoryUserStore {
             warrant_records: RwLock::new(HashMap::new()),
             next_warrant_id: AtomicU64::new(1),
             status_entries: RwLock::new(HashMap::new()),
+            status_suspended_by: RwLock::new(HashMap::new()),
+            suspended_identities: RwLock::new(HashMap::new()),
             next_status_idx: AtomicU64::new(1),
             next_user_id: AtomicU64::new(1),
             device_certs: RwLock::new(HashMap::new()),
@@ -160,6 +167,8 @@ impl UserStore for InMemoryUserStore {
                 public_name: None,
                 proof: ProofMethod::Smtp,
                 proof_subject: None,
+                suspended_at: None,
+                hold_until: None,
             },
         );
         Ok(())
@@ -551,6 +560,147 @@ impl UserStore for InMemoryUserStore {
         Ok(self.api_tokens.read().unwrap().get(token_hash).cloned())
     }
 
+    fn set_email_suspension(
+        &self,
+        email: &str,
+        until: Option<(chrono::DateTime<Utc>, chrono::DateTime<Utc>)>,
+    ) -> StoreResult<()> {
+        let mut emails = self.emails.write().unwrap();
+        match emails.get_mut(&email.to_lowercase()) {
+            Some(rec) => {
+                rec.suspended_at = until.map(|u| u.0);
+                rec.hold_until = until.map(|u| u.1);
+                Ok(())
+            }
+            None => Err(BrokerError::EmailNotFound),
+        }
+    }
+
+    fn insert_suspended_identity(&self, rec: SuspendedIdentity) -> StoreResult<()> {
+        let mut rec = rec;
+        rec.email = rec.email.to_lowercase();
+        self.suspended_identities
+            .write()
+            .unwrap()
+            .insert((rec.user_id, rec.email.clone()), rec);
+        Ok(())
+    }
+
+    fn get_suspended_identity(&self, user_id: UserId, email: &str) -> StoreResult<Option<SuspendedIdentity>> {
+        Ok(self
+            .suspended_identities
+            .read()
+            .unwrap()
+            .get(&(user_id, email.to_lowercase()))
+            .cloned())
+    }
+
+    fn list_suspended_identities(&self, user_id: UserId) -> StoreResult<Vec<SuspendedIdentity>> {
+        Ok(self
+            .suspended_identities
+            .read()
+            .unwrap()
+            .values()
+            .filter(|r| r.user_id == user_id)
+            .cloned()
+            .collect())
+    }
+
+    fn suspended_holders_of(&self, email: &str) -> StoreResult<Vec<SuspendedIdentity>> {
+        let e = email.to_lowercase();
+        Ok(self
+            .suspended_identities
+            .read()
+            .unwrap()
+            .values()
+            .filter(|r| r.email == e)
+            .cloned()
+            .collect())
+    }
+
+    fn delete_suspended_identity(&self, user_id: UserId, email: &str) -> StoreResult<bool> {
+        Ok(self
+            .suspended_identities
+            .write()
+            .unwrap()
+            .remove(&(user_id, email.to_lowercase()))
+            .is_some())
+    }
+
+    fn list_expired_holds(&self, now: chrono::DateTime<Utc>) -> StoreResult<Vec<SuspendedIdentity>> {
+        Ok(self
+            .suspended_identities
+            .read()
+            .unwrap()
+            .values()
+            .filter(|r| r.hold_until < now)
+            .cloned()
+            .collect())
+    }
+
+    fn mark_status_suspended_idx(&self, idx: u64, by: &str) -> StoreResult<bool> {
+        let mut entries = self.status_entries.write().unwrap();
+        for e in entries.values_mut() {
+            if e.0 == idx {
+                if e.1 {
+                    return Ok(false); // already set by an explicit revoke
+                }
+                e.1 = true;
+                self.status_suspended_by.write().unwrap().insert(idx, by.to_string());
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn clear_status_suspended_by(&self, by: &str) -> StoreResult<u64> {
+        let mut stamps = self.status_suspended_by.write().unwrap();
+        let idxs: Vec<u64> = stamps.iter().filter(|(_, b)| b.as_str() == by).map(|(i, _)| *i).collect();
+        let mut entries = self.status_entries.write().unwrap();
+        for idx in &idxs {
+            stamps.remove(idx);
+            for e in entries.values_mut() {
+                if e.0 == *idx {
+                    e.1 = false;
+                }
+            }
+        }
+        Ok(idxs.len() as u64)
+    }
+
+    fn delete_warrants_by_grantor(&self, user_id: UserId, grantor: &str) -> StoreResult<u64> {
+        let g = grantor.to_lowercase();
+        let mut records = self.warrant_records.write().unwrap();
+        let before = records.len();
+        records.retain(|_, r| !(r.user_id == user_id && r.delegator_email.eq_ignore_ascii_case(&g)));
+        Ok((before - records.len()) as u64)
+    }
+
+    fn delete_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()> {
+        let mut certs = self.device_certs.write().unwrap();
+        match certs.get(&cert_id) {
+            Some(c) if c.user_id == user_id => {
+                certs.remove(&cert_id);
+                Ok(())
+            }
+            _ => Err(BrokerError::DeviceCertNotFound),
+        }
+    }
+
+    fn delete_api_tokens_for_user(&self, user_id: UserId) -> StoreResult<u64> {
+        let mut tokens = self.api_tokens.write().unwrap();
+        let before = tokens.len();
+        tokens.retain(|_, t| t.user_id != user_id);
+        Ok((before - tokens.len()) as u64)
+    }
+
+    fn delete_warrant_requests_for_user(&self, user_id: UserId) -> StoreResult<u64> {
+        let mut reqs = self.warrant_requests.write().unwrap();
+        let before = reqs.len();
+        reqs.retain(|_, r| r.user_id != user_id);
+        Ok((before - reqs.len()) as u64)
+    }
+
     fn cleanup_expired_api_tokens(&self) -> StoreResult<u64> {
         let now = Utc::now();
         let mut tokens = self.api_tokens.write().unwrap();
@@ -575,6 +725,7 @@ impl UserStore for InMemoryUserStore {
         match entries.get_mut(&(kind.to_string(), subject.to_string())) {
             Some(e) => {
                 e.1 = true;
+                self.status_suspended_by.write().unwrap().remove(&e.0);
                 Ok(true)
             }
             None => Ok(false),
@@ -586,6 +737,7 @@ impl UserStore for InMemoryUserStore {
         for e in entries.values_mut() {
             if e.0 == idx {
                 e.1 = true;
+                self.status_suspended_by.write().unwrap().remove(&idx);
                 return Ok(true);
             }
         }

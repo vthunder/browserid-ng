@@ -617,6 +617,36 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
         }
     }
 
+    fn identity_leaves(&self, user_id: u64, identity: &str, reason: &str) -> Result<(), RegistrarError> {
+        use crate::membership::LeaveReason as R;
+        let reason = match reason {
+            "transferred" => R::Transferred,
+            "taken_over" => R::TakenOver,
+            "detached" => R::Detached,
+            "deleted" => R::Deleted,
+            other => return Err(RegistrarError::Internal(format!("unknown leave reason {other}"))),
+        };
+        crate::membership::identity_leaves(self.user_store.as_ref(), UserId(user_id), identity, reason)
+            .map(|_| ())
+            .map_err(to_reg_err)
+    }
+
+    fn identity_returns(&self, user_id: u64, identity: &str) -> Result<(), RegistrarError> {
+        crate::membership::identity_returns(self.user_store.as_ref(), UserId(user_id), identity)
+            .map(|_| ())
+            .map_err(to_reg_err)
+    }
+
+    fn roster(&self, user_id: u64) -> Result<Vec<(String, &'static str)>, RegistrarError> {
+        crate::membership::roster(self.user_store.as_ref(), UserId(user_id)).map_err(to_reg_err)
+    }
+
+    fn sweep_holds(&self) -> Result<(), RegistrarError> {
+        crate::membership::sweep_holds(self.user_store.as_ref(), chrono::Utc::now())
+            .map(|_| ())
+            .map_err(to_reg_err)
+    }
+
     fn agent_identities(&self, user_id: u64) -> Result<Vec<AgentIdentity>, RegistrarError> {
         Ok(self
             .user_store

@@ -86,6 +86,14 @@ fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
         .iter()
         .find(|e| e.email.to_lowercase() == normalized && e.verified)
         .ok_or(BrokerError::EmailNotFound)?;
+    // A derived agent whose parent identity has left the account is on hold
+    // (registry-api-v1 §4.1 rule 3): its records are frozen and it must not
+    // mint — the old account no longer controls the mailbox it derives from.
+    if rec.is_suspended() {
+        return Err(BrokerError::PolicyRefused(
+            "this identity is suspended: its parent identity has left the account".into(),
+        ));
+    }
     let prov = rec.proof.as_str();
     match crate::mint::authorize_mint(rec, session.level) {
         crate::mint::MintDecision::Allow => Ok((

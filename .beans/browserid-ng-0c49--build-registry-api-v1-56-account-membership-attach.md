@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-09-07T21:25:31Z
+updated_at: 2026-09-08T07:40:24Z
 parent: browserid-ng-9yyk
 ---
 
@@ -153,7 +153,7 @@ COMMITTED 2026-09-07: 45b8f0c 'registry-api-v1 r5: explicit account, guarded ent
 
 Order follows the implementability review (riskiest first). Each step lands with a SqliteStore test (memory-store tests miss FK/sentinel bugs) and a registry_api_test.
 
-- [ ] **1. Leaving cascade as one transaction** (§4.1 rule 3): new RegistrarHost method `identity_leaves(account, identity, reason)` — suspend warrants (set bits, mark suspended), suspend derived agents, file `notice`, keep certs/sessions; hold expiry sweeper drops records + accounts with no live cert; restore path clears suspension bits only. Route the cookie lane's transfer arm and `remove_email` through it (fixes a93p).
+- [x] **1. Leaving cascade as one transaction** (landed 2026-09-08: `browserid-broker/src/membership.rs`; host hooks identity_leaves/identity_returns/roster/sweep_holds; notice inbox kind; cookie transfer arms + remove_email routed through it; sweep runs on GET requests) (§4.1 rule 3): new RegistrarHost method `identity_leaves(account, identity, reason)` — suspend warrants (set bits, mark suspended), suspend derived agents, file `notice`, keep certs/sessions; hold expiry sweeper drops records + accounts with no live cert; restore path clears suspension bits only. Route the cookie lane's transfer arm and `remove_email` through it (fixes a93p).
 - [ ] **2. Session-of-proofs** (§4.4–4.5): `POST /session {account, proofs, guard?}` → token bound to member set; `kid` column on cert rows; `Proof` header with `bh` on every POST; per-call member re-check (exp + status via cached lists, no signature re-run); drop failing/retired members; `Session-Members` header; `GET /sessions`, `POST /session/end {id?}`; `Idempotency-Key`. Keep `POST /api/v1/token` as a shim minting the new shape for one release.
 - [ ] **3. Tiers** (§4.3): `guarded` flag on cert rows; tier fixed at session open; `read_required` / `write_required` / `identity_suspended` across ~20 handlers; lookup tier reaches only `warrants/lookup` + own `certs/revoke` + `session/end`.
 - [ ] **4. Attach** (§5.2.1) replacing `devices/register`: identity + 1–2 certs + possession proofs; holder rule; retired-never-revived; ordered cases (no account / account named); freshness on account-changing cases; `confirm_takeover`; account creation via host; `409 holder_moved` carries `new_holder`.
@@ -189,3 +189,12 @@ Update 2026-09-07: i63t shelved (deferred). The live attack was closed by qze7 (
 ## Guard ruling (Dan 2026-09-08) — item (2) CLOSED, applied to spec
 
 `page` is the ONE required guard kind; `device_approval`, `password`, `additional_identities` and `POST /api/v1/guard` are gone from v1 (registries MAY add kinds; wallets ignore unknown ones). The `device` inbox kind and its `respond` special case are gone. `guard_rejected` now means only a bad token. The page may obtain proof of another identity through the login mediator like any site — no protocol change; wallets expose the mediator inside their embedded browser. Wallet gotchas (deferred attach, re-entrancy, identity choice) tracked on bean e98a. Dan has guard-page-only ideas for helping the user choose an identity. Spec 800 → 764 lines. NEXT: field guide + review-status artifact refresh, then start checklist step 1.
+
+## Build plan (Dan 2026-09-08): all four phases, then Dan tests with no shims
+
+1. Broker implements r5 (checklist steps 1–11 + the guard page). Order: 1 (cascade, fixes a93p) → 2+3 (session-of-proofs + config-cert authority) → 4+5 (attach + guard page) → 6–11. Old surface kept working only while building.
+2. Web dialog migrates (71vt): session, attach, guard navigation via the resume pattern, deferred attach; delete duplicated cookie endpoints. Tracks the server step by step for steps 2–5.
+3. Native wallet migrates (wallet/): session + attach, plus e98a.
+4. Remove shims (step 13) and the cookie lane (zpbh).
+
+Dan tests the web dialog end to end only after ALL phases land, so nothing old is holding things up. Cookies remain only for the issuer role (sign-in page + issuance); the registry role is proof-authenticated everywhere.

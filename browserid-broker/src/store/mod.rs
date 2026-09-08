@@ -9,6 +9,7 @@ pub use models::*;
 pub use sqlite::SqliteStore;
 
 use crate::error::BrokerError;
+use chrono::Utc;
 use std::collections::HashMap;
 
 /// Result type for store operations
@@ -204,6 +205,35 @@ pub trait UserStore: Send + Sync {
 
     /// Drop expired API token rows; returns the number removed.
     fn cleanup_expired_api_tokens(&self) -> StoreResult<u64>;
+
+    // --- Membership hold (registry-api-v1 §4.1 rule 3; bean 0c49 step 1) ---
+    // Primitives only: the cascade itself is `crate::membership`.
+
+    /// Mark a derived (agent) email row suspended / active.
+    fn set_email_suspension(
+        &self,
+        email: &str,
+        until: Option<(chrono::DateTime<Utc>, chrono::DateTime<Utc>)>,
+    ) -> StoreResult<()>;
+    /// Record that `rec.email` left `rec.user_id` and is on hold there.
+    fn insert_suspended_identity(&self, rec: SuspendedIdentity) -> StoreResult<()>;
+    fn get_suspended_identity(&self, user_id: UserId, email: &str) -> StoreResult<Option<SuspendedIdentity>>;
+    fn list_suspended_identities(&self, user_id: UserId) -> StoreResult<Vec<SuspendedIdentity>>;
+    /// Which accounts hold `email` suspended (usually 0–1).
+    fn suspended_holders_of(&self, email: &str) -> StoreResult<Vec<SuspendedIdentity>>;
+    fn delete_suspended_identity(&self, user_id: UserId, email: &str) -> StoreResult<bool>;
+    /// Holds that ended before `now`.
+    fn list_expired_holds(&self, now: chrono::DateTime<Utc>) -> StoreResult<Vec<SuspendedIdentity>>;
+    /// Set a status bit BECAUSE OF a suspension, stamped `by` so a return
+    /// can clear it; a bit already set (an explicit revoke) is left alone
+    /// and not stamped. Returns whether this call set it.
+    fn mark_status_suspended_idx(&self, idx: u64, by: &str) -> StoreResult<bool>;
+    /// Clear every bit stamped `by`; returns how many.
+    fn clear_status_suspended_by(&self, by: &str) -> StoreResult<u64>;
+    fn delete_warrants_by_grantor(&self, user_id: UserId, grantor: &str) -> StoreResult<u64>;
+    fn delete_device_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<()>;
+    fn delete_api_tokens_for_user(&self, user_id: UserId) -> StoreResult<u64>;
+    fn delete_warrant_requests_for_user(&self, user_id: UserId) -> StoreResult<u64>;
 
     // --- Status entries (egr7): the revocation bitmap's index space ---
 

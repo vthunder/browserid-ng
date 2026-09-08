@@ -1347,3 +1347,49 @@ async fn devices_register_over_the_token_lane() {
     assert_eq!(body["error"], "conflict");
     assert_eq!(body["reason"], "holder_moved");
 }
+
+/// registry-api-v1 §5.3 `notice` items (bean 0c49 step 1): an identity
+/// leaving the account files one; it lists with the notice shape and no
+/// grants, and cannot be answered.
+#[tokio::test]
+async fn notices_list_in_the_inbox_and_cannot_be_answered() {
+    let l = live_broker().await;
+    let email = format!("notice-{}@example.com", rand_suffix());
+    let (presentation, config_kp, _dc, _cc) =
+        broker_presentation(&l, &email, vec!["login".into(), "registry".into()]).await;
+    let (status, body) = exchange(&l, json!({"presentation": presentation})).await;
+    assert_eq!(status, 200, "{body}");
+    let token = body["access_token"].as_str().unwrap().to_string();
+
+    // A second identity on the account leaves it (the cascade is a pure
+    // store operation; the HTTP triggers are the cookie lane + attach).
+    let user_id = l.user_store.get_email(&email).unwrap().unwrap().user_id;
+    l.user_store.add_email(user_id, "gone@example.com", true).unwrap();
+    browserid_broker::membership::detach(l.user_store.as_ref(), user_id, "gone@example.com").unwrap();
+
+    let (status, body) = api_call(&l, &config_kp, &token, "GET", "/api/v1/requests", None, None).await;
+    assert_eq!(status, 200, "{body}");
+    let items = body["requests"].as_array().unwrap();
+    let notice = items.iter().find(|i| i["kind"] == "notice").expect("a notice item");
+    assert_eq!(notice["notice"]["identity"], "gone@example.com");
+    assert_eq!(notice["notice"]["reason"], "left");
+    assert!(notice["notice"]["at"].is_string());
+    assert!(notice["code"].is_string());
+    assert!(notice["expires_at"].is_string());
+    assert!(notice.get("grants").map_or(true, |g| g.as_array().map_or(true, |a| a.is_empty())));
+    let code = notice["code"].as_str().unwrap().to_string();
+
+    // Nothing to answer: respond is a 404, claim is a 404.
+    let (status, body) = api_call(
+        &l, &config_kp, &token, "POST", "/api/v1/requests/respond", None,
+        Some(json!({"code": code, "approve": false})),
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    let (status, body) = api_call(
+        &l, &config_kp, &token, "POST", "/api/v1/requests/claim", None,
+        Some(json!({"code": code})),
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+}

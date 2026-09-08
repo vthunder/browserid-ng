@@ -131,6 +131,8 @@ mod tests {
             public_name: None,
             proof,
             proof_subject: None,
+            suspended_at: None,
+            hold_until: None,
         }
     }
 

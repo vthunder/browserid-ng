@@ -655,6 +655,10 @@ pub async fn list_requests(
     user: ApiUser,
     Query(query): Query<ApiRequestsQuery>,
 ) -> Result<Json<ApiRequestsResponse>, ApiError> {
+    // Expired holds are dropped opportunistically (registry-api-v1 §4.1).
+    if let Err(e) = state.host.sweep_holds() {
+        tracing::warn!(error = %e, "hold sweep failed");
+    }
     let requests = state
         .store
         .list_pending_warrant_requests(user.user_id)

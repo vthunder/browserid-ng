@@ -538,7 +538,9 @@ where
         ));
     }
 
-    state.user_store.remove_email(session.user_id, &req.email)?;
+    // Detach (registry-api-v1 §5.2.2): the identity leaves — on hold here,
+    // its derived agents suspended with it — and the row is removed.
+    crate::membership::detach(state.user_store.as_ref(), session.user_id, &req.email)?;
 
     Ok(Json(RemoveEmailResponse { success: true }))
 }

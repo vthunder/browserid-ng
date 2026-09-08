@@ -15,17 +15,23 @@ use serde_json::{json, Value};
 const DOMAIN: &str = "localhost:3000";
 
 fn make_server() -> (TestServer, MockEmailSender) {
+    let (server, sender, _store) = make_server_with_store();
+    (server, sender)
+}
+
+fn make_server_with_store() -> (TestServer, MockEmailSender, Arc<InMemoryUserStore>) {
     let keypair = KeyPair::generate();
     let email_sender = Arc::new(MockEmailSender::new());
+    let store = Arc::new(InMemoryUserStore::new());
     let state = AppState::new_with_arcs(
         keypair,
         DOMAIN.to_string(),
-        Arc::new(InMemoryUserStore::new()),
+        store.clone(),
         Arc::new(InMemorySessionStore::new()),
         email_sender.clone(),
     );
     let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
-    (server, MockEmailSender { sent: email_sender.sent.clone() })
+    (server, MockEmailSender { sent: email_sender.sent.clone() }, store)
 }
 
 async fn csrf(server: &TestServer, session: &str) -> String {
@@ -675,4 +681,30 @@ async fn support_document_advertises_wallet_origins() {
     let list = doc["wallet-origins"].as_array().expect("wallet-origins").clone();
     assert!(list.iter().any(|o| o == "http://localhost:3000"), "{list:?}");
     assert!(list.iter().any(|o| o == "https://browserid.me"), "{list:?}");
+}
+
+/// a93p, closed by the hold model (bean 0c49 step 1): after the parent
+/// identity leaves the account, the old account cannot mint fresh certs
+/// for the derived agent it left behind — the agent row is suspended.
+#[tokio::test]
+async fn suspended_agent_cannot_mint_on_the_old_account() {
+    use browserid_broker::membership::{identity_leaves, LeaveReason};
+    use browserid_broker::store::{EmailType, UserStore};
+    let (server, sender, store) = make_server_with_store();
+    let email = "parent@localhost:3000";
+    let agent = "parent+cal@localhost:3000";
+    let session = create_user(&server, &sender, email, "testpassword").await;
+    let user_id = store.get_email(email).unwrap().unwrap().user_id;
+    store.add_email_with_type(user_id, agent, true, EmailType::Agent).unwrap();
+    store.set_parent_email(agent, Some(email)).unwrap();
+
+    // Before: the agent mints.
+    let (status, body) = issue_with_origin(&server, &session, agent, "http://localhost:3000").await;
+    assert_eq!(status, 200, "{body}");
+
+    // The parent leaves. The agent row stays on the account, suspended.
+    identity_leaves(store.as_ref(), user_id, email, LeaveReason::Detached).unwrap();
+    let (status, body) = issue_with_origin(&server, &session, agent, "http://localhost:3000").await;
+    assert_eq!(status, 403, "{body}");
+    assert!(body["reason"].as_str().unwrap_or("").contains("suspended"), "{body}");
 }

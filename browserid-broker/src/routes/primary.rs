@@ -129,11 +129,16 @@ where
                     // Change of holder: the former account's certs for the
                     // departed address must stop working (hg2j).
                     state.user_store.revoke_user_certs_for_email(former, &email)?;
-                    state.user_store.transfer_email(&email, session.user_id)?;
-                    // Clean up the former account if it has no emails left.
-                    if state.user_store.list_emails(former)?.is_empty() {
-                        state.user_store.delete_user(former)?;
-                    }
+                    // The identity leaves the former account (registry-api-v1
+                    // §4.1 rule 3): on hold there, dropped with the account
+                    // by the sweeper once the hold ends and nothing is left.
+                    crate::membership::transfer_out(
+                        state.user_store.as_ref(),
+                        former,
+                        session.user_id,
+                        &email,
+                        crate::membership::LeaveReason::Transferred,
+                    )?;
                     session.user_id
                 }
                 // Same account, or no session → authenticate as the email's owner.
