@@ -34,9 +34,12 @@ validity like any other write.
 1. Wallet obtains identity certs (unchanged).
 2. `POST /api/v1/accounts/lookup` with proof of the identity → the
    account id (`404` when no account holds it; then it is first use).
-3. `POST /api/v1/login { account, method: "password", password }` →
-   session. (Later: `"device"` asks another device; `"identity"` asks
-   for proof of another identity; the list is the registry's.)
+3. `POST /api/v1/login { account, method: "login_page" }` answers
+   `403 forbidden/login_required` with the page URL. The wallet opens
+   `url#account=…&return_url=…&return_origin=…`; the page authenticates
+   the user however this registry chooses (the broker: the account
+   password) and ends with `return_url#login=<one-time token>`. The
+   wallet posts `{ account, method: "login_page", token }` → session.
 4. Under the session: a login cert for this wallet, then attach.
 
 **Session expiry.** Log in again by `stored_key`. A wallet with no login
@@ -60,9 +63,9 @@ restore within the hold. The guard token's one-shot binding is gone.
 
 | Call | Auth | What |
 |---|---|---|
-| `POST /api/v1/accounts` | proof by a fresh config cert (+ password if required) | Create an account around the identity. Freshness and `confirm_takeover` rules as in today's attach "no account" cases. Response: session body. |
+| `POST /api/v1/accounts` | proof by a fresh config cert | Create an account around the identity. If another account holds it: `409 conflict/identity_held`; the same call with `confirm_takeover: true` (config cert, fresh) creates the account and the identity leaves the old one (§4.1 rule 3). Response: session body. |
 | `POST /api/v1/accounts/lookup` | proof by a cert naming the identity | `{ "account" }` for the account on which the identity is active, else `404`. Never lists identities. |
-| `POST /api/v1/login` | method-specific | `{ "account", "method", … }` → session body. Rate-limited per source and per account. `403 forbidden/login_rejected` on any failure, one reason, no oracle. |
+| `POST /api/v1/login` | method-specific | `{ "account", "method", … }` → session body. `login_page` without a token answers `403 forbidden/login_required` + `{ "url" }`. Rate-limited per source and per account. `403 forbidden/login_rejected` on any failure, one reason, no oracle. |
 | `POST /api/v1/login-keys` | session | `{ "pubkey", "label"? }` → `{ "id", "kid", "cert" }`: a registry-signed login cert (JWS, `typ: browserid-login-cert-v1`, `iss` the registry, `sub` the account, `kid`, `exp`, status ref on the registry's list). |
 | `GET /api/v1/login-keys` | session | The account's login certs: `id, kid, label, issued_at, expires_at, revoked`. |
 | `POST /api/v1/login-keys/revoke` | session (own key, or config) | `{ id \| kid }`. Sticky. Ends its sessions. |
@@ -70,19 +73,20 @@ restore within the hold. The guard token's one-shot binding is gone.
 | `POST /api/v1/account/attach` | session, **config** for identity-changing cases | Records identity certs (validity bar, holder rule, retired-key rule, possession proofs — unchanged). Cases: identity already on this account → record; suspended here → restore (fresh); held by no account → join (fresh, config); held elsewhere → transfer (fresh, config, `confirm_takeover`). No `account`, no `guard` field. |
 | `POST /api/v1/account/detach`, `delete` | session, config | Unchanged minus the `guard` field. |
 
-**Login methods (v1 defines these; a registry offers any subset, at
-least one human method or `stored_key` for every account it creates):**
+**Login methods (v1 defines two; a registry offers both):**
 
-- `password` — `{ "password" }`. The registry's own secret for the
-  account. Set at creation or by the registry's own means.
+- `login_page` — a page the registry runs, opened by the wallet with the
+  fragment above. What it checks is the registry's business: a password,
+  approval from another logged-in device, proof of another identity
+  through the login mediator — and that is where those later kinds live,
+  with no API change. The page MUST require an explicit user action and
+  MUST validate `return_origin` (same-origin with `return_url`). The
+  token it returns is one-time, short-lived, bound to the account.
 - `stored_key` — `{ "proof" }`: a §4.4 proof signed by a login key whose
   login cert on this account is unexpired and unrevoked.
-- `device` (later) — approval by a device already logged in.
-- `identity` (later) — proof of another identity on the account through
-  the login mediator.
 
-Discovery: `login_methods: ["password", "stored_key"]` replaces
-`guard_kinds`; `browser.guard` goes.
+Discovery: `login_methods: ["login_page", "stored_key"]` and
+`browser.login` (the page URL) replace `guard_kinds` and `browser.guard`.
 
 ## Sessions (§4.5, amended)
 
@@ -103,16 +107,15 @@ an identity cert key. `kid` resolves against both.
 - Password = the broker account password. `accounts` for a broker-issued
   identity reuses the existing account (the sign-up created it).
 - The web dialog logs in by `stored_key` when it has a login cert for
-  this browser, else by password — which is the password the user just
-  typed into the dialog, so the dialog passes it through without a
-  second prompt. No approval screen.
+  this browser; otherwise it is on the registry's own origin, so it posts
+  the password the user just typed to the login page's backend directly
+  and never renders the page. No approval screen, no second prompt.
 - The native wallet asks for a login cert at bootstrap; the guard window
   goes away. The broker's `/guard` page and `/wsapi/guard` are deleted.
 
 ## Open questions for the ruling
 
-1. Login cert lifetime: 1 year, or tied to nothing and revocation-only?
-2. Should `accounts` accept a password in the create call, or is setting
-   one always the registry's own ceremony (for the broker: sign-up)?
-3. `device` and `identity` methods: leave as reserved names now, or
-   omit entirely from v1 until built?
+1. Login cert lifetime: 1 year, or revocation-only?
+2. Settled (Dan): creation refuses a held identity overridably
+   (`identity_held` + `confirm_takeover`); methods are `login_page` and
+   `stored_key`, with passwords and the later kinds inside the page.
