@@ -1,11 +1,11 @@
 ---
 # browserid-ng-0c49
 title: Build registry-api-v1 §5.6 account membership (attach/detach/transfer cascade)
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-09-08T08:46:08Z
+updated_at: 2026-09-08T08:48:09Z
 parent: browserid-ng-9yyk
 ---
 
@@ -198,3 +198,13 @@ Update 2026-09-07: i63t shelved (deferred). The live attack was closed by qze7 (
 4. Remove shims (step 13) and the cookie lane (zpbh).
 
 Dan tests the web dialog end to end only after ALL phases land, so nothing old is holding things up. Cookies remain only for the issuer role (sign-in page + issuance); the registry role is proof-authenticated everywhere.
+
+## Summary of Changes (2026-09-08)
+
+registry-api-v1 r5 is implemented and the wallets use it, with no shims left:
+
+- Broker/registrar: leaving cascade + 30-day hold (membership.rs, v34); sessions of possession proofs with Proof headers and body hashes (session.rs, v35); config-cert rule; attach/detach/delete with the full §5.2.1 case list and the guard page + `POST /wsapi/guard` (v36); warrant record key with grantor (v37), live status index, strict register, lookup; certs and holders per §5.5–§5.6; discovery per §5.1. Token lane, api_tokens (v38), devices/*, holders/move + assignment, namespace create/delete, warrants/forget deleted.
+- Web dialog: common/js/registry-session.js; guard answered in the dialog (fresh password session passes; otherwise the Approve screen). Native wallet: sessions + attach with the guard page in its partition.
+- Tests: full workspace green (64 suites), 121 e2e green against the migrated dialog.
+
+NOT done, tracked elsewhere: zpbh (the cookie /wsapi registry-role routes still serve account.html, consent.html, authorize.html and ~10 Rust tests + 4 e2e specs; migrating those pages to sessions and deleting the routes is that bean); e98a (wallet mediator in the embedded browser, deferred attach); lookup rate limits (§5.4 SHOULD). Production has NOT been deployed: migrations v34–v38 run on first start.
