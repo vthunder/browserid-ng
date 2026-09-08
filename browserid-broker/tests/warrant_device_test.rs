@@ -359,10 +359,11 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
         .json();
     assert_eq!(listed["warrants"][0]["revoked"], true, "{listed}");
 
-    // A fresh approval of the SAME subject reuses the index — and must
-    // reactivate it: the new warrant is NOT born revoked.
+    // A fresh approval of the SAME key allocates a FRESH index (registry-
+    // api-v1 §5.4: a later grant never revives revoked bytes); the new
+    // warrant is not born revoked.
     let idx2 = round("second").await;
-    assert_eq!(idx1, idx2, "the subject-stable index is reused");
+    assert_ne!(idx1, idx2, "a revoked key allocates a fresh index");
     let listed: Value = server
         .get("/wsapi/warrants")
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))

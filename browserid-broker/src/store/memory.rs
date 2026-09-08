@@ -524,6 +524,8 @@ impl UserStore for InMemoryUserStore {
         // only in scopes coexist (e85i).
         // Connection records fold their binding.id into the grant identity so
         // two connections to the same audience stay distinct rows.
+        // The record key is (account, grantor, grantee, audience, scopes)
+        // (registry-api-v1 §5.4), a binding id folded in.
         let key = |scopes: &[String], binding: &Option<String>| match binding {
             Some(id) => format!("{}:{id}", browserid_registrar::scope_fingerprint(scopes)),
             None => browserid_registrar::scope_fingerprint(scopes),
@@ -532,6 +534,7 @@ impl UserStore for InMemoryUserStore {
         records.retain(|_, r| {
             !(r.user_id == record.user_id
                 && r.agent_email == record.agent_email
+                && r.delegator_email.eq_ignore_ascii_case(&record.delegator_email)
                 && r.audience == record.audience
                 && key(&r.scopes, &r.binding_id) == fp)
         });

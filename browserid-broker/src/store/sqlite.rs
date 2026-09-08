@@ -16,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 36;
+const SCHEMA_VERSION: i32 = 37;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -171,6 +171,9 @@ impl SqliteStore {
             }
             if current_version < 36 {
                 Self::migrate_v36(conn)?;
+            }
+            if current_version < 37 {
+                Self::migrate_v37(conn)?;
             }
 
             // Update schema version
@@ -969,6 +972,19 @@ impl SqliteStore {
             );
             CREATE INDEX IF NOT EXISTS idx_guard_tokens_expires ON guard_tokens(expires_at);
             "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+}
+
+impl SqliteStore {
+    fn migrate_v37(conn: &Connection) -> Result<(), BrokerError> {
+        // Warrant records are keyed by (account, grantor, grantee, audience,
+        // scopes) (registry-api-v1 §5.4): fold the grantor into the upsert
+        // hash, as binding ids already are.
+        conn.execute_batch(
+            "UPDATE warrants SET scope_hash = scope_hash || ':g=' || LOWER(delegator_email);",
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
@@ -1909,10 +1925,14 @@ impl UserStore for SqliteStore {
                 // connection record folds its binding.id into the hash so two
                 // connections to the same audience stay distinct rows and a
                 // re-consent of the SAME connection replaces its row.
-                match &record.binding_id {
-                    Some(id) => format!("{}:{id}", browserid_registrar::scope_fingerprint(&record.scopes)),
-                    None => browserid_registrar::scope_fingerprint(&record.scopes),
-                },
+                format!(
+                    "{}:g={}",
+                    match &record.binding_id {
+                        Some(id) => format!("{}:{id}", browserid_registrar::scope_fingerprint(&record.scopes)),
+                        None => browserid_registrar::scope_fingerprint(&record.scopes),
+                    },
+                    record.delegator_email.to_lowercase()
+                ),
                 record.warrant,
                 record.signed_at.to_rfc3339(),
                 record.expires_at.to_rfc3339(),

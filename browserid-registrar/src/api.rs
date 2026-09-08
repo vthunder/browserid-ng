@@ -916,18 +916,153 @@ struct ApiRegisterWarrantRequest {
     config_cert: String,
 }
 
-/// `POST /api/v1/warrants/register` — record an externally-minted warrant.
+/// `POST /api/v1/warrants/register` — record a warrant the wallet signed
+/// outside the inbox flow (§5.4). Beyond the shared core's bar: the config
+/// cert must be an unretired cert of the account, the grantor an active
+/// identity, and the warrant's status ref exactly the one this registry
+/// holds for the record key.
 pub async fn register_warrant(
     State(state): State<Arc<RegistrarState>>,
     user: ApiUser,
     body: axum::body::Bytes,
-) -> Result<StatusCode, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_config()?;
     let req: ApiRegisterWarrantRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    let warrant = browserid_core::device::Warrant::parse(&req.warrant).map_err(|e| ApiError::InvalidWarrant {
+        reason: "warrant_invalid",
+        description: format!("bad warrant: {e}"),
+    })?;
+    let cc = browserid_core::device::DeviceCert::parse(&req.config_cert).map_err(|e| ApiError::InvalidWarrant {
+        reason: "config_cert_invalid",
+        description: format!("bad config cert: {e}"),
+    })?;
+    let recorded = state
+        .store
+        .get_device_cert_by_pubkey(&cc.claims().public_key.to_base64())
+        .map_err(|e| ApiError::Internal(format!("cert lookup: {e}")))?;
+    if !recorded.map_or(false, |r| r.user_id == user.user_id && r.is_active()) {
+        return Err(ApiError::InvalidWarrant {
+            reason: "config_cert_not_recorded",
+            description: "the config cert is not an unretired cert of this account".into(),
+        });
+    }
+    let claims = warrant.claims();
+    let grantor = crate::consent::delegator_of(&claims.grantor);
+    if state
+        .host
+        .identity_holder(&grantor)
+        .map_err(|e| ApiError::Internal(format!("membership: {e}")))?
+        != Some(user.user_id)
+    {
+        return Err(ApiError::InvalidWarrant {
+            reason: "grantor_not_owned",
+            description: "the grantor is not an active identity on this account".into(),
+        });
+    }
+    let live = crate::consent::live_status_index(
+        &*state.store,
+        user.user_id,
+        &claims.grantee,
+        &claims.audience,
+        &claims.scope_strings(),
+    )
+    .map_err(consent_err)?;
+    match &claims.status {
+        None => {
+            return Err(ApiError::InvalidWarrant {
+                reason: "status_ref_missing",
+                description: "the warrant carries no status ref; allocate one first".into(),
+            })
+        }
+        Some(st) if st.uri != status_list_uri(&state.domain) || st.idx != live => {
+            return Err(ApiError::InvalidWarrant {
+                reason: "status_ref_mismatch",
+                description: "the warrant's status ref is not the one allocated for this record".into(),
+            })
+        }
+        Some(_) => {}
+    }
     crate::consent::register_warrant_core(&state, user.user_id, &req.warrant, &req.config_cert)
         .map_err(consent_err)?;
-    Ok(StatusCode::NO_CONTENT)
+    let id = state
+        .store
+        .list_warrants(user.user_id)
+        .map_err(consent_err)?
+        .into_iter()
+        .find(|r| r.status_idx == Some(live) && r.audience == claims.audience && r.agent_email == claims.grantee)
+        .map(|r| r.id)
+        .ok_or_else(|| ApiError::Internal("registered warrant not found".into()))?;
+    Ok(Json(serde_json::json!({ "id": id })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiLookupRequest {
+    audience: String,
+}
+
+/// `POST /api/v1/warrants/lookup` — the unrevoked warrants for one
+/// audience that a member cert may present: grantor among the active
+/// identities the member was recorded for, holder matcher covering its
+/// holder (§5.4). An empty list when none.
+pub async fn lookup_warrants(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use browserid_core::device::{Holder, HolderMatcher};
+    let req: ApiLookupRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    let certs = state
+        .store
+        .list_device_certs(user.user_id)
+        .map_err(|e| ApiError::Internal(format!("certs: {e}")))?;
+    // Members; a legacy token speaks for every active cert.
+    let members: Vec<_> = certs
+        .into_iter()
+        .filter(|c| c.is_active() && (user.member_cert_ids.is_empty() || user.member_cert_ids.contains(&c.id)))
+        .collect();
+    let mut out = Vec::new();
+    for w in state.store.list_warrants(user.user_id).map_err(consent_err)? {
+        if w.audience != req.audience {
+            continue;
+        }
+        let Some(idx) = w.status_idx else { continue };
+        if state.store.is_status_revoked_idx(idx).map_err(consent_err)? {
+            continue;
+        }
+        if state
+            .host
+            .identity_holder(&w.delegator_email)
+            .map_err(|e| ApiError::Internal(format!("membership: {e}")))?
+            != Some(user.user_id)
+        {
+            continue;
+        }
+        let matcher = w.holder.as_deref().and_then(|m| HolderMatcher::new(m).ok());
+        let presentable = members.iter().any(|m| {
+            m.identities.iter().any(|i| i.eq_ignore_ascii_case(&w.delegator_email))
+                && match (&matcher, Holder::new(&m.holder)) {
+                    (Some(mm), Ok(h)) => mm.matches(&h),
+                    (None, _) => true,
+                    _ => false,
+                }
+        });
+        if !presentable {
+            continue;
+        }
+        let mut item = serde_json::json!({
+            "warrant": w.warrant,
+            "config_cert": w.config_cert,
+            "status": { "uri": status_list_uri(&state.domain), "idx": idx },
+        });
+        if let Some(h) = &w.holder {
+            item["holder"] = serde_json::Value::String(h.clone());
+        }
+        out.push(item);
+    }
+    Ok(Json(serde_json::json!({ "warrants": out })))
 }
 
 #[derive(Deserialize)]
@@ -966,7 +1101,12 @@ pub async fn forget_warrant(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApiAllocateStatusRequest {
-    agent_email: String,
+    /// The identity that will present the warrant (§5.4). `agent_email` is
+    /// the pre-spec name, accepted until the wallets migrate.
+    #[serde(default)]
+    grantee: Option<String>,
+    #[serde(default)]
+    agent_email: Option<String>,
     audience: String,
     #[serde(default)]
     scopes: Vec<String>,
@@ -989,10 +1129,15 @@ pub async fn allocate_status(
     user.require_config()?;
     let req: ApiAllocateStatusRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    let grantee = req
+        .grantee
+        .or(req.agent_email)
+        .filter(|g| !g.trim().is_empty())
+        .ok_or_else(|| ApiError::InvalidRequest("grantee is required".into()))?;
     let (uri, idx) = crate::consent::allocate_status_core(
         &state,
         user.user_id,
-        &req.agent_email,
+        &grantee,
         &req.audience,
         &req.scopes,
     )
@@ -1023,6 +1168,81 @@ pub async fn list_devices(
 #[serde(deny_unknown_fields)]
 struct ApiDeviceIdRequest {
     id: u64,
+}
+
+/// `GET /api/v1/certs` — the account's recorded certs (§5.5), retired ones
+/// included, each with its `kid`.
+pub async fn list_certs(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let certs = state
+        .store
+        .list_device_certs(user.user_id)
+        .map_err(|e| ApiError::Internal(format!("certs: {e}")))?;
+    let items: Vec<serde_json::Value> = certs
+        .into_iter()
+        .map(|c| {
+            let mut v = serde_json::json!({
+                "id": c.id,
+                "kid": crate::session::kid_of(&c.pubkey).unwrap_or_default(),
+                "identities": c.identities,
+                "purpose": c.purpose,
+                "holder": c.holder,
+                "pubkey": c.pubkey,
+                "iss": c.iss,
+                "issued_at": c.issued_at.to_rfc3339(),
+                "expires_at": c.expires_at.to_rfc3339(),
+                "revoked": c.revoked_at.is_some()
+                    || c.status_idx.map_or(false, |i| state.store.is_status_revoked_idx(i).unwrap_or(false)),
+            });
+            if let (Some(uri), Some(idx)) = (c.status_uri, c.status_idx) {
+                v["status"] = serde_json::json!({ "uri": uri, "idx": idx });
+            }
+            v
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "certs": items })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiCertRevokeRequest {
+    #[serde(default)]
+    id: Option<u64>,
+    #[serde(default)]
+    kid: Option<String>,
+}
+
+/// `POST /api/v1/certs/revoke` — `{ id }` or `{ kid }` (§5.5). Any session
+/// for a cert it itself holds; otherwise config. Retires the cert here and
+/// sets the bit where this registry is the authority.
+pub async fn revoke_cert(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: axum::body::Bytes,
+) -> Result<Json<ApiRevokeDeviceResponse>, ApiError> {
+    let req: ApiCertRevokeRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    let id = match (req.id, req.kid) {
+        (Some(id), None) => id,
+        (None, Some(kid)) => state
+            .store
+            .list_device_certs(user.user_id)
+            .map_err(|e| ApiError::Internal(format!("certs: {e}")))?
+            .into_iter()
+            .find(|c| crate::session::kid_of(&c.pubkey).as_deref() == Some(kid.as_str()))
+            .map(|c| c.id)
+            .ok_or(ApiError::NotFound)?,
+        _ => return Err(ApiError::InvalidRequest("exactly one of id or kid".into())),
+    };
+    if !user.member_cert_ids.contains(&id) {
+        user.require_config()?;
+    }
+    let revoked = crate::holders::revoke_device_core(&*state.store, &*state.host, &state.domain, user.user_id, id)
+        .map_err(consent_err)?;
+    state.store.end_sessions_solely_on_cert(user.user_id, id).ok();
+    Ok(Json(ApiRevokeDeviceResponse { revoked }))
 }
 
 #[derive(Serialize)]
@@ -1244,6 +1464,10 @@ pub async fn list_holders(
     State(state): State<Arc<RegistrarState>>,
     user: ApiUser,
 ) -> Result<Json<crate::holders::HoldersView>, ApiError> {
+    // The three namespaces core §4.5 defines always exist (§5.6).
+    for ns in ["browsers", "agents", "services"] {
+        state.store.get_or_create_namespace(user.user_id, ns).ok();
+    }
     let view =
         crate::holders::holders_view_core(&*state.store, user.user_id).map_err(consent_err)?;
     Ok(Json(view))
@@ -1328,6 +1552,19 @@ pub async fn forget_holder(
     user.require_config()?;
     let req: ApiForgetHolderRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    // An external holder (another account's admitted agent) is refused (§5.6).
+    let external = state
+        .store
+        .list_device_certs(user.user_id)
+        .map_err(|e| ApiError::Internal(format!("certs: {e}")))?
+        .iter()
+        .any(|c| c.holder == req.holder_id && c.pubkey.is_empty());
+    if external {
+        return Err(ApiError::Conflict {
+            reason: "external_holder",
+            description: "an admitted external holder cannot be forgotten here".into(),
+        });
+    }
     let unrevocable = crate::holders::forget_holder_core(
         &*state.store,
         &*state.host,

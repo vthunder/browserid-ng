@@ -229,6 +229,18 @@ fn migration_v30_wipes_pre_level_sessions() {
                 subject TEXT,
                 revoked_at TEXT
             );
+            CREATE TABLE warrants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                delegator_email TEXT,
+                agent_email TEXT,
+                audience TEXT,
+                scopes TEXT,
+                scope_hash TEXT,
+                warrant TEXT,
+                signed_at TEXT,
+                expires_at TEXT
+            );
             CREATE TABLE device_certs (
                 id INTEGER PRIMARY KEY,
                 user_id INTEGER,

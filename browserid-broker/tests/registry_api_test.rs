@@ -607,7 +607,7 @@ async fn warrant_registry_over_the_token_lane() {
         Some(json!({ "warrant": warrant.encoded(), "config_cert": config_cert })),
     )
     .await;
-    assert_eq!(r.status(), 204, "register");
+    assert_eq!(r.status(), 200, "register");
 
     // Listed, unrevoked, carrying the allocated index.
     let r = call("GET", "/api/v1/warrants".into(), None).await;
@@ -638,7 +638,8 @@ async fn warrant_registry_over_the_token_lane() {
         .clone();
     assert_eq!(row["revoked"], true);
 
-    // A REFLESS warrant registers fine but cannot be revoked: 409 + reason.
+    // A REFLESS warrant is refused (§5.4: every record carries a ref this
+    // registry allocated).
     let refless = Warrant::create(
         email,
         email,
@@ -656,37 +657,18 @@ async fn warrant_registry_over_the_token_lane() {
         Some(json!({ "warrant": refless.encoded(), "config_cert": config_cert })),
     )
     .await;
-    assert_eq!(r.status(), 204);
-    let r = call("GET", "/api/v1/warrants".into(), None).await;
-    let list: Value = r.json().await.unwrap();
-    let refless_id = list["warrants"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|w| w["audience"] == "https://other.example")
-        .unwrap()["id"]
-        .as_u64()
-        .unwrap();
-    let r = call("POST", "/api/v1/warrants/revoke".into(), Some(json!({ "id": refless_id }))).await;
-    assert_eq!(r.status(), 409);
+    assert_eq!(r.status(), 422);
     let body: Value = r.json().await.unwrap();
-    assert_eq!(body["error"], "conflict");
-    assert_eq!(body["reason"], "no_status_ref");
+    assert_eq!(body["reason"], "status_ref_missing");
 
-    // Forget drops the rows without touching bits.
-    for wid in [id, refless_id] {
-        let r = call("POST", "/api/v1/warrants/forget".into(), Some(json!({ "id": wid }))).await;
-        assert_eq!(r.status(), 204, "forget {wid}");
-    }
+    // Forget drops the row without touching bits.
+    let r = call("POST", "/api/v1/warrants/forget".into(), Some(json!({ "id": id }))).await;
+    assert_eq!(r.status(), 204, "forget {id}");
     let r = call("GET", "/api/v1/warrants".into(), None).await;
     let list: Value = r.json().await.unwrap();
     assert!(
-        !list["warrants"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|w| [Some(id), Some(refless_id)].contains(&w["id"].as_u64())),
-        "forgotten rows gone"
+        !list["warrants"].as_array().unwrap().iter().any(|w| w["id"].as_u64() == Some(id)),
+        "forgotten row gone"
     );
 }
 
@@ -1708,4 +1690,106 @@ async fn attach_cases_the_guard_takeover_detach_and_delete() {
     let doc: Value = l.client.get(format!("{}/.well-known/browserid", l.base)).send().await.unwrap().json().await.unwrap();
     assert_eq!(doc["registry"]["guard_kinds"][0]["kind"], "page");
     assert!(doc["registry"]["browser"]["guard"].as_str().unwrap().ends_with("/guard"));
+}
+
+/// registry-api-v1 §5.1, §5.4–§5.6 over a session (bean 0c49 steps 6–11):
+/// allocate → sign → register with the exact ref; list, lookup, revoke, a
+/// fresh index after revoke; certs with kids; the three fixed namespaces;
+/// discovery's `endpoint`.
+#[tokio::test]
+async fn warrants_certs_holders_and_discovery_over_sessions() {
+    let l = live_broker().await;
+    let email = "registry-owner@gmail.com";
+    let (_pres, config_kp, _dc, config_cert) = broker_presentation(&l, email, vec!["registry".into()]).await;
+    let (_, g) = guard_token(&l, email, &[&config_cert], Some("password123")).await;
+    let (status, body) = attach_call(&l, &[(&config_cert, &config_kp)], email, None, g["guard"].as_str(), false, None).await;
+    assert_eq!(status, 200, "{body}");
+    let token = body["token"].as_str().unwrap().to_string();
+    let holder = browserid_core::device::DeviceCert::parse(&config_cert).unwrap().holder().clone();
+    let audience = "https://site.example";
+
+    // Allocate, sign with that ref, register.
+    let (status, alloc, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/allocate_status",
+        Some(json!({"grantee": email, "audience": audience, "scopes": ["login"]}))).await;
+    assert_eq!(status, 200, "{alloc}");
+    let uri = alloc["uri"].as_str().unwrap().to_string();
+    let idx = alloc["idx"].as_u64().unwrap();
+    let sign = |status: Option<browserid_core::StatusRef>| {
+        Warrant::create(email, email, HolderMatcher::new(holder.as_str()).unwrap(), audience,
+            vec!["login".into()], Duration::days(30), &config_kp, status).unwrap().encoded().to_string()
+    };
+    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/register",
+        Some(json!({"warrant": sign(None), "config_cert": config_cert}))).await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["reason"], "status_ref_missing");
+    let wrong = browserid_core::StatusRef { uri: uri.clone(), idx: idx + 1000 };
+    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/register",
+        Some(json!({"warrant": sign(Some(wrong)), "config_cert": config_cert}))).await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["reason"], "status_ref_mismatch");
+    let right = browserid_core::StatusRef { uri: uri.clone(), idx };
+    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/register",
+        Some(json!({"warrant": sign(Some(right.clone())), "config_cert": config_cert}))).await;
+    assert_eq!(status, 200, "{body}");
+    let id = body["id"].as_u64().unwrap();
+
+    // List and lookup.
+    let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/warrants", None).await;
+    assert_eq!(status, 200, "{body}");
+    let item = body["warrants"].as_array().unwrap().iter().find(|w| w["id"] == id).unwrap();
+    assert_eq!(item["grantor"], email);
+    assert_eq!(item["grantee"], email);
+    assert_eq!(item["status"]["idx"], idx);
+    assert_eq!(item["revoked"], false);
+    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/lookup", Some(json!({"audience": audience}))).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["warrants"].as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(body["warrants"][0]["status"]["idx"], idx);
+    assert_eq!(body["warrants"][0]["holder"], holder.as_str());
+    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/lookup", Some(json!({"audience": "https://other.example"}))).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["warrants"].as_array().unwrap().len(), 0);
+
+    // Revoke: sticky, gone from lookup, and the next allocation is fresh.
+    let (status, _, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/revoke", Some(json!({"id": id}))).await;
+    assert_eq!(status, 204);
+    let (status, _, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/revoke", Some(json!({"id": id}))).await;
+    assert_eq!(status, 204, "a second revoke is a 204");
+    let (_, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/warrants", None).await;
+    assert_eq!(body["warrants"].as_array().unwrap().iter().find(|w| w["id"] == id).unwrap()["revoked"], true);
+    let (_, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/lookup", Some(json!({"audience": audience}))).await;
+    assert_eq!(body["warrants"].as_array().unwrap().len(), 0);
+    let (_, alloc2, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/allocate_status",
+        Some(json!({"grantee": email, "audience": audience, "scopes": ["login"]}))).await;
+    assert_ne!(alloc2["idx"].as_u64().unwrap(), idx, "a revoked record's key allocates a fresh index");
+    // Registering with the OLD ref is now a mismatch.
+    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/register",
+        Some(json!({"warrant": sign(Some(right)), "config_cert": config_cert}))).await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["reason"], "status_ref_mismatch");
+
+    // Holders: the three fixed namespaces.
+    let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/holders", None).await;
+    assert_eq!(status, 200, "{body}");
+    let names: Vec<&str> = body["namespaces"].as_array().unwrap().iter().map(|n| n["name"].as_str().unwrap()).collect();
+    for n in ["browsers", "agents", "services"] {
+        assert!(names.contains(&n), "{names:?}");
+    }
+
+    // Discovery.
+    let doc: Value = l.client.get(format!("{}/.well-known/browserid", l.base)).send().await.unwrap().json().await.unwrap();
+    assert_eq!(doc["registry"]["endpoint"], format!("{}/api/v1", l.base));
+
+    // Certs: listed with kids; revoking by kid the session's own cert ends it.
+    let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/certs", None).await;
+    assert_eq!(status, 200, "{body}");
+    let kid = config_kp.public_key().kid();
+    let mine = body["certs"].as_array().unwrap().iter().find(|c| c["kid"] == kid).expect("own cert listed");
+    assert_eq!(mine["purpose"], "authorization");
+    assert_eq!(mine["revoked"], false);
+    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/certs/revoke", Some(json!({"kid": kid}))).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["revoked"], true, "this registry is the issuer");
+    let (status, _, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/certs", None).await;
+    assert_eq!(status, 401);
 }

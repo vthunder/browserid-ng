@@ -775,10 +775,7 @@ pub async fn prepare(
         .filter(|r| !r.is_expired() && r.status == Status::Pending)
         .ok_or(RegistrarError::ProvisionRequestNotFound)?;
     for g in &mut rec.grants {
-        let idx = state.store.get_or_allocate_status(
-            "warrant",
-            &warrant_status_subject(user.user_id, &agent_email, &g.audience, &g.scopes),
-        )?;
+        let idx = crate::consent::live_status_index(&*state.store, user.user_id, &agent_email, &g.audience, &g.scopes)?;
         g.status_idx = Some(idx);
     }
     rec.holder = Some(holder.clone());

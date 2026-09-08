@@ -66,6 +66,7 @@ where
         doc = doc.with_registry(browserid_core::discovery::RegistrySupport {
             version: "v1".to_string(),
             token_endpoint: format!("{origin}/api/v1/token"),
+            endpoint: Some(format!("{origin}/api/v1")),
             status_list: browserid_registrar::consent::status_list_uri(&state.domain),
             browser: [
                 ("account".to_string(), format!("{origin}/account")),

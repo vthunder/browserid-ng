@@ -44,7 +44,7 @@ const POLL_INTERVAL_SECONDS: i64 = 5;
 /// The delegator (account identity) behind an agent identity: the local part
 /// with any `+tag` sub-address stripped. `danmills+claude@sandmill.org` →
 /// `danmills@sandmill.org`; a bare identity maps to itself.
-pub fn delegator_of(identity: &str) -> String {
+pub(crate) fn delegator_of(identity: &str) -> String {
     match browserid_core::identity::email_parts(identity) {
         Some((local, domain)) => {
             let base = local.split('+').next().unwrap_or(local);
@@ -64,6 +64,32 @@ pub fn status_list_uri(domain: &str) -> String {
 /// only in scopes (e85i) — so the subject carries the scope fingerprint.
 pub fn warrant_status_subject(user_id: u64, agent: &str, aud: &str, scopes: &[String]) -> String {
     format!("{}|{}|{}|{}", user_id, agent, aud, scope_fingerprint(scopes))
+}
+
+/// The LIVE status index for a grant key (registry-api-v1 §5.4): stable
+/// until the record is revoked, after which the next allocation is a fresh
+/// index — a later grant to the same agent never revives the old bytes.
+/// Generations are numbered in the subject (`…`, `…#1`, `…#2`).
+pub(crate) fn live_status_index(
+    store: &dyn crate::store::RegistrarStore,
+    user_id: u64,
+    grantee: &str,
+    audience: &str,
+    scopes: &[String],
+) -> Result<u64, RegistrarError> {
+    let base = warrant_status_subject(user_id, grantee, audience, scopes);
+    let mut gen = 0u32;
+    loop {
+        let subject = if gen == 0 { base.clone() } else { format!("{base}#{gen}") };
+        let idx = store.get_or_allocate_status("warrant", &subject)?;
+        if !store.is_status_revoked_idx(idx)? {
+            return Ok(idx);
+        }
+        gen += 1;
+        if gen > 10_000 {
+            return Err(RegistrarError::Internal("status generation overflow".into()));
+        }
+    }
 }
 
 /// Order-insensitive fingerprint of an opaque scope list (e85i). The
@@ -112,6 +138,8 @@ pub struct PendingRequestInfo {
     pub code: String,
     pub delegator_email: String,
     pub agent_email: String,
+    /// registry-api-v1 §5.3 name for `agent_email`.
+    pub grantee: String,
     /// The agent's opaque holder id — the consent page defaults the signed
     /// warrant's matcher to this (`<id>` isolation) or its `<ns>.*` prefix.
     pub holder: String,
@@ -241,6 +269,7 @@ pub(crate) fn pending_info(
     PendingRequestInfo {
         code: r.code,
         delegator_email: r.delegator_email,
+        grantee: r.agent_email.clone(),
         agent_email: r.agent_email,
         holder: r.holder,
         label: r.label,
@@ -925,6 +954,12 @@ pub struct WarrantInfo {
     pub id: u64,
     pub delegator_email: String,
     pub agent_email: String,
+    /// registry-api-v1 §5.4 names: the same two identities.
+    pub grantor: String,
+    pub grantee: String,
+    /// The status ref this registry allocated (`{ uri, idx }`), when any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<browserid_core::StatusRef>,
     pub audience: String,
     pub scopes: Vec<String>,
     /// The signed JWS — the delegator's own copy (paste into an agent)
@@ -1001,6 +1036,9 @@ pub(crate) fn list_warrants_core(
                 .map(str::to_string);
             WarrantInfo {
                 id: r.id,
+                grantor: r.delegator_email.clone(),
+                grantee: r.agent_email.clone(),
+                status: r.status_idx.map(|idx| browserid_core::StatusRef { uri: status_list_uri(&state.domain), idx }),
                 delegator_email: r.delegator_email,
                 agent_email: r.agent_email,
                 audience: r.audience,
@@ -1103,14 +1141,12 @@ pub(crate) fn register_warrant_core(
     let claims = warrant.claims();
     match &claims.status {
         Some(st) if st.uri == status_list_uri(&state.domain) => {
-            let own_idx = state.store.get_or_allocate_status(
-                "warrant",
-                &warrant_status_subject(
-                    user_id,
-                    &claims.grantee,
-                    &claims.audience,
-                    &claims.scope_strings(),
-                ),
+            let own_idx = live_status_index(
+                &*state.store,
+                user_id,
+                &claims.grantee,
+                &claims.audience,
+                &claims.scope_strings(),
             )?;
             if st.idx == own_idx {
                 let _ = state.store.set_status_active_idx(own_idx);
@@ -1202,10 +1238,7 @@ pub(crate) fn allocate_status_core(
     {
         return Err(RegistrarError::ValidationError("bad audience".into()));
     }
-    let idx = state.store.get_or_allocate_status(
-        "warrant",
-        &warrant_status_subject(user_id, agent_email, audience, scopes),
-    )?;
+    let idx = live_status_index(&*state.store, user_id, agent_email, audience, scopes)?;
     Ok((status_list_uri(&state.domain), idx))
 }
 
@@ -1455,10 +1488,7 @@ pub async fn warrant_request(
         .grants
         .iter()
         .map(|g| {
-            let idx = state.store.get_or_allocate_status(
-                "warrant",
-                &warrant_status_subject(user_id, &identity, &g.audience, &g.scopes),
-            )?;
+            let idx = live_status_index(&*state.store, user_id, &identity, &g.audience, &g.scopes)?;
             Ok(WarrantGrantItem {
                 audience: g.audience.clone(),
                 scopes: g.scopes.clone(),
