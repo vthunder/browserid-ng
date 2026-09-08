@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-30T18:01:42Z
-updated_at: 2026-09-08T08:21:33Z
+updated_at: 2026-09-08T08:31:24Z
 parent: browserid-ng-9yyk
 ---
 
@@ -164,7 +164,7 @@ Order follows the implementability review (riskiest first). Each step lands with
 - [x] **9. Holders** (three fixed namespaces always listed; forget refuses external holders; move/assignment/namespace create+delete routes stay until step 13) (§5.6): three fixed namespaces (rename only); `move` returns `new_holder`, retires old certs; `forget` returns `unrevocable`; drop `holders/assignment`, `certs/status`, namespaces create/delete.
 - [x] **10. Delete** (with step 4) (§5.2.3): `{immediate?, guard?}`; hold then drop; SHOULD guard on immediate.
 - [x] **11. Discovery** (`endpoint`, `guard_kinds`, `browser.guard` added; `version` stays "v1" and `token_endpoint` stays until step 13) (§5.1): `version`, `endpoint`, `status_list`, `browser`, `guard_kinds`, `lookup_tier`; emit alongside the old keys for one release.
-- [ ] **12. Wallet** (wallet/src/registry.js, bootstrap.js): session management + re-session on 401; bare attach; guard flow = open the page with the wallet's own loopback/custom-scheme return (bean e98a for the gotchas: mediator in the embedded browser, deferred attach, re-entrancy, identity choice); `warrants/lookup` before RP login; `confirm_takeover` only on an explicit user act; foreign-cert revoke → issuer before reporting.
+- [x] **12. Wallet** (2026-09-08: web dialog on `common/js/registry-session.js` — session/attach/in-dialog guard (fresh password session passes; else Approve screen), `grantee`, `/api/v1/certs`; native wallet `registry.js` on sessions, bootstrap attaches with the guard page in its partition; e98a mediator/deferred-attach still open) (wallet/src/registry.js, bootstrap.js): session management + re-session on 401; bare attach; guard flow = open the page with the wallet's own loopback/custom-scheme return (bean e98a for the gotchas: mediator in the embedded browser, deferred attach, re-entrancy, identity choice); `warrants/lookup` before RP login; `confirm_takeover` only on an explicit user act; foreign-cert revoke → issuer before reporting.
 - [ ] **13. Migration**: cert rows `guarded=1` for existing rows; expose account ids; `DPoP` + `Bearer` accepted one release; delete the token shim, api_tokens table, and old discovery keys afterwards.
 - [ ] **14. Tests**: table-driven per-endpoint tier tests; attach case-list tests (all 9 cases); guard kinds; hold/restore incl. contested flip; SqliteStore cascade test; e2e (warm broker on :3000 first).
 

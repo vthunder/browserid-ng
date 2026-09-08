@@ -81,6 +81,7 @@
     managedConsent: document.getElementById('managed-consent-screen'),
     sboConsent: document.getElementById('sbo-consent-screen'),
     success: document.getElementById('success-screen'),
+    guard: document.getElementById('guard-screen'),
     error: document.getElementById('error-screen')
   };
 
@@ -123,6 +124,51 @@
   }
 
   // Screen management
+  // The registry guard (registry-api-v1 §4.2), answered in this dialog when
+  // the registry is this broker: a fresh password session passes on its
+  // own (the password kind, just fulfilled); otherwise the guard screen
+  // shows the identity and key fingerprints and the user's Approve is the
+  // explicit action. Resolves with the guard token; rejects when declined.
+  Registry.onGuard(function (info) {
+    const post = (confirm) => postJson('/wsapi/guard', {
+      identity: info.identity, certs: info.certs, confirm
+    }).then(r => r && r.guard ? r.guard : null).catch(() => null);
+    return post(false).then(g => {
+      if (g) return g;
+      return new Promise((resolve, reject) => {
+        const list = document.getElementById('guard-fingerprints');
+        list.innerHTML = '';
+        for (const k of [info.kids.device, info.kids.config]) {
+          const li = document.createElement('li');
+          li.textContent = k;
+          list.appendChild(li);
+        }
+        document.getElementById('guard-text').textContent =
+          `This browser is asking to join your account as ${info.identity}.`;
+        const err = document.getElementById('guard-error');
+        err.hidden = true;
+        const previous = Object.keys(screens).find(k => screens[k].classList.contains('active')) || 'loading';
+        const approve = document.getElementById('guard-approve');
+        const skip = document.getElementById('guard-skip');
+        function done(fn, v) {
+          approve.onclick = null; skip.onclick = null;
+          showScreen(previous === 'guard' ? 'loading' : previous, 'Signing in...');
+          fn(v);
+        }
+        approve.onclick = () => {
+          approve.disabled = true;
+          post(true).then(g2 => {
+            approve.disabled = false;
+            if (g2) done(resolve, g2);
+            else { err.textContent = 'Approval was refused.'; err.hidden = false; }
+          }).catch(e => { approve.disabled = false; err.textContent = e.message || 'Approval failed.'; err.hidden = false; });
+        };
+        skip.onclick = () => done(reject, new Error('device approval declined'));
+        showScreen('guard');
+      });
+    });
+  });
+
   function showScreen(screenId, loadingText) {
     Object.values(screens).forEach(s => s.classList.remove('active'));
     screens[screenId].classList.add('active');
@@ -490,19 +536,33 @@
       // (71vt) — the same surface a native wallet uses. Configured here,
       // where the active pair is known; the noRegister (token-mint) path
       // never re-enters this branch, so token acquisition cannot recurse.
-      RegistryToken.configure({
+      // Wallet-role registry calls ride the standard /api/v1 session lane
+      // (registry-api-v1 §4.5): a session on the account this pair is
+      // attached to — attaching it first when it is not, which on a new
+      // browser means the account's guard (§4.2). Best-effort: a login
+      // must not fail because the registry could not be reached, and a
+      // guard the user declines just leaves this login's warrant
+      // unregistered.
+      await Registry.configure({
         pair: {
           deviceCert: pair.device.cert, devicePrivateKey: pair.device.privateKey,
           configCert: pair.config.cert, configPrivateKey: pair.config.privateKey
         },
-        identity: email, issuer, mintUrl
+        identity: email
       });
+      let registry = false;
       try {
-        const alloc = await RegistryToken.call('POST', '/api/v1/warrants/allocate_status', {
-          agent_email: email, audience, scopes: warrantScopes
-        });
-        if (alloc && alloc.uri) statusRef = { uri: alloc.uri, idx: alloc.idx };
-      } catch (e) { console.warn('warrant status allocation failed:', e.message || e); }
+        await Registry.ensure();
+        registry = true;
+      } catch (e) { console.warn('registry session unavailable:', e.message || e); }
+      if (registry) {
+        try {
+          const alloc = await Registry.call('POST', '/api/v1/warrants/allocate_status', {
+            grantee: email, audience, scopes: warrantScopes
+          });
+          if (alloc && alloc.uri) statusRef = { uri: alloc.uri, idx: alloc.idx };
+        } catch (e) { console.warn('warrant status allocation failed:', e.message || e); }
+      }
     }
     const warrantClaims = {
       typ: 'browserid-warrant-v1',
@@ -516,9 +576,9 @@
     };
     if (statusRef) warrantClaims.status = statusRef;
     const warrant = await signJws(pair.config.privateKey, warrantClaims);
-    if (registerable) {
+    if (registerable && statusRef) {
       try {
-        await RegistryToken.call('POST', '/api/v1/warrants/register', {
+        await Registry.call('POST', '/api/v1/warrants/register', {
           warrant, config_cert: pair.config.cert
         });
       } catch (e) { console.warn('warrant registration failed:', e.message || e); }
@@ -533,12 +593,9 @@
     // valid certs comes back on next use. devices/register is verified and
     // idempotent, so this can't resurrect a revoked cert, and a pending
     // holder move refuses (409) instead of resurrecting the old row.
-    if (registerable) {
-      RegistryToken.call('POST', '/api/v1/devices/register', {
-        device_cert: pair.device.cert, config_cert: pair.config.cert
-      }).catch(() => { /* best-effort */ });
-      keystoreHygiene();
-    }
+    // Registration is the session itself: Registry.ensure() attached this
+    // pair (idempotent on pubkey) or found it recorded.
+    if (registerable) keystoreHygiene();
 
     return `${minted.access_cert}~${assertion}~${warrant}~${pair.config.cert}`;
   }
@@ -551,7 +608,7 @@
       if (!state.proofs) return; // proofs unseen this session — next time
       const last = Number(localStorage.getItem('browserid:keystore_health_ts') || 0);
       if (Date.now() - last > 24 * 3600 * 1000) {
-        RegistryToken.call('GET', '/api/v1/devices')
+        Registry.call('GET', '/api/v1/certs')
           .then(dc => Keystore.healthRemote(dc.certs || [], state.proofs || [], location.host))
           .then(() => localStorage.setItem('browserid:keystore_health_ts', String(Date.now())))
           .catch(() => { /* hygiene only */ });
@@ -2318,10 +2375,10 @@
     if (!holder) throw new Error('device cert carries no holder');
     const scopeStrings = req.scopes.map(s => (typeof s === 'string' ? s : s.scope));
     for (const aud of req.audiences) {
-      // Token lane (71vt): RegistryToken was configured with this same pair
+      // Session lane: Registry was configured with this same pair
       // by the sign-in's buildPresentation before signingContext was set.
-      const alloc = await RegistryToken.call('POST', '/api/v1/warrants/allocate_status', {
-        agent_email: ctx.email, audience: aud, scopes: scopeStrings
+      const alloc = await Registry.call('POST', '/api/v1/warrants/allocate_status', {
+        grantee: ctx.email, audience: aud, scopes: scopeStrings
       });
       if (!alloc || !alloc.uri) throw new Error((alloc && alloc.reason) || 'status allocation failed');
       const jws = await signJws(ctx.pair.config.privateKey, {
@@ -2338,7 +2395,7 @@
         scopes: req.scopes,
         status: { uri: alloc.uri, idx: alloc.idx }
       });
-      await RegistryToken.call('POST', '/api/v1/warrants/register', {
+      await Registry.call('POST', '/api/v1/warrants/register', {
         warrant: jws, config_cert: ctx.pair.config.cert
       });
       const siteInfo = JSON.parse(localStorage.getItem('siteInfo') || '{}');

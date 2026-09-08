@@ -171,28 +171,89 @@ async function persist({ email, issuer, mintUrl, device, config, certs }) {
     deviceCert: certs.device_cert,
     configKey: config.privJwk,
     configCert: certs.config_cert,
+    account: null,      // the registry account this pair is attached to
     warrants: {},
     warrantRefs: {},
     bootstrappedAt: nowS(),
   });
 }
 
-// Step 4: registration is the WALLET's act (fallback-idp-api-v1 §4): a token
-// exchange with the new certs, then devices/register records the verified
-// pair — the token lane replaces the prototype's cookie session join.
-// Best-effort: the wallet works unregistered; the account page just won't
-// list this device until a later call succeeds (the token machinery runs
-// again on the inbox watch anyway).
-async function registerAtRegistry() {
+// Step 4: attaching is the WALLET's act (registry-api-v1 §5.2.1): the new
+// pair is attached to the account holding the identity. On a held identity
+// the registry asks for its guard (§4.2): the registry's guard page runs in
+// the SAME persistent partition the issuer ceremony just used, so when the
+// issuer is also this registry the fresh password session passes on its
+// own; otherwise the page asks (password, or Approve). Guard tokens come
+// back over the return_url lane like certs do. Best-effort: the wallet
+// works unattached; the inbox watch retries on every launch.
+//
+// Gotchas tracked on bean e98a (deferred attach of a second identity's
+// fresh certs, the mediator inside this embedded browser) are not yet built.
+async function attachAtRegistry({ testPassword } = {}) {
+  const registry = require('./registry');
   try {
-    const s = store.state();
-    await require('./registry').apiCall('POST', '/api/v1/devices/register', {
-      device_cert: s.deviceCert,
-      config_cert: s.configCert,
-    });
+    let r = await registry.attach();
+    if (r.ok) return true;
+    if (!r.guardUrl) throw new Error('the registry offers no guard page');
+    const guard = await guardHop({ guardUrl: r.guardUrl, testPassword });
+    r = await registry.attach({ guard });
+    if (r.ok) return true;
+    throw new Error('attach refused after the guard');
   } catch (e) {
-    console.warn('[wallet] device registration failed (non-fatal):', e.message || e);
+    console.warn('[wallet] attaching at the registry failed (non-fatal):', e.message || e);
+    return false;
   }
+}
+
+function guardHop({ guardUrl, testPassword }) {
+  const { BrowserWindow } = require('electron');
+  const s = store.state();
+  const RETURN_URL = `${broker.BROKER}/wallet-guard-return`; // never actually loaded
+  return new Promise((resolve, reject) => {
+    const win = new BrowserWindow({
+      width: 480, height: 640, title: 'Approve this device',
+      show: !testPassword,
+      webPreferences: { partition: 'persist:browserid', nodeIntegration: false, contextIsolation: true },
+    });
+    const url = guardUrl +
+      '#certs=' + encodeURIComponent([s.deviceCert, s.configCert].join(',')) +
+      '&identity=' + encodeURIComponent(s.identity) +
+      '&return_origin=' + encodeURIComponent(broker.ORIGIN) +
+      '&return_url=' + encodeURIComponent(RETURN_URL);
+    const timeout = setTimeout(() => { win.close(); reject(new Error('device approval timed out')); }, 5 * 60 * 1000);
+    let settled = false;
+    const finish = (fn, arg) => {
+      if (!settled) { settled = true; clearTimeout(timeout); fn(arg); setImmediate(() => win.close()); }
+    };
+    const onNav = (event, navUrl) => {
+      if (!navUrl.startsWith(RETURN_URL)) return;
+      event.preventDefault();
+      const frag = new URLSearchParams(navUrl.slice(navUrl.indexOf('#') + 1));
+      if (frag.get('guard_error')) return finish(reject, new Error(`guard refused: ${frag.get('guard_error')}`));
+      const guard = frag.get('guard');
+      if (!guard) return finish(reject, new Error('guard return carried no token'));
+      finish(resolve, guard);
+    };
+    win.webContents.on('will-navigate', onNav);
+    win.webContents.on('will-redirect', onNav);
+    win.on('closed', () => { if (!settled) { settled = true; clearTimeout(timeout); reject(new Error('approval window closed')); } });
+    if (testPassword) {
+      win.webContents.on('did-finish-load', () => {
+        win.webContents.executeJavaScript(`(function retry(n) {
+          var a = document.getElementById('approve-form');
+          if (a && !a.classList.contains('hidden')) { a.requestSubmit(); return; }
+          var f = document.getElementById('password-form');
+          if (f && !f.classList.contains('hidden')) {
+            document.getElementById('password').value = ${JSON.stringify(testPassword)};
+            f.requestSubmit();
+            return;
+          }
+          if (n > 0) setTimeout(function () { retry(n - 1); }, 200);
+        })(50);`).catch(() => {});
+      });
+    }
+    win.loadURL(url);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +266,7 @@ async function bootstrapForEmail(email, { testPassword } = {}) {
     deviceAuthUrl, email, devicePub: device.x, configPub: config.x, testPassword,
   });
   await persist({ email, issuer, mintUrl, device, config, certs });
-  await registerAtRegistry();
+  await attachAtRegistry({ testPassword });
   return { email };
 }
 

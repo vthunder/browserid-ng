@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-08-28T21:00:26Z
-updated_at: 2026-09-07T14:45:30Z
+updated_at: 2026-09-08T08:31:24Z
 parent: browserid-ng-9yyk
 blocked_by:
     - browserid-ng-d0xb
@@ -101,3 +101,5 @@ that also serve `/wsapi`).
 | — | `detach` / `delete` / `warrants/lookup` / `guard` | New. |
 | `/warrant/request`, `/warrant/poll`, `/agent-provision/*` | — | Agent side; core §7.5. |
 | `GET /wsapi/session_context` | — | CSRF has no equivalent here. |
+
+2026-09-08: dialog moved from the DPoP token client to sessions (registry-session.js; registry-token.js deleted): Registry.ensure() = session or attach (+ guard, answered in the dialog for this broker: fresh password session passes by itself, otherwise the guard screen's Approve), allocate uses grantee, keystore hygiene reads /api/v1/certs. devices/register self-heal replaced by attach. 121 e2e green. Cookie /wsapi duplicates deleted in 0c49 step 13; the role split (dialog stops calling /device/issue) is NOT done.

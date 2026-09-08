@@ -22,6 +22,8 @@ use crate::store::{EmailType, GuardToken, SessionStore, UserStore};
 /// Guard tokens live this long (§4.2: RECOMMENDED 1 h).
 const GUARD_TTL_SECONDS: i64 = 3600;
 const GUARD_MAX_FAILURES: u32 = 10;
+/// A full session younger than this is the password kind already passed.
+const FRESH_SESSION_SECONDS: i64 = 600;
 const GUARD_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
 
 #[derive(Deserialize)]
@@ -31,6 +33,10 @@ pub struct GuardRequest {
     pub certs: Vec<String>,
     #[serde(default)]
     pub password: Option<String>,
+    /// The explicit user action, when the check is a live session on the
+    /// account (the guard page's Approve, or the dialog's guard screen).
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 #[derive(Serialize)]
@@ -96,11 +102,16 @@ where
     };
     let user_id = rec.user_id;
 
-    // A live session on that account is the explicit-click path; else the
-    // account password.
+    // A live session on that account passes with the explicit action, or
+    // by itself when it is a FULL session opened moments ago — the user
+    // typed the account password in this very ceremony (the password kind,
+    // fulfilled); else the account password.
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref());
     let passed = match (session, req.password.as_deref()) {
-        (Some(s), _) if s.user_id == user_id => true,
+        (Some(s), _) if s.user_id == user_id
+            && (req.confirm
+                || (s.level == crate::store::SessionLevel::Full
+                    && (Utc::now() - s.created_at).num_seconds() <= FRESH_SESSION_SECONDS)) => true,
         (_, Some(pw)) if !pw.is_empty() => {
             let user = state.user_store.get_user(user_id)?.ok_or_else(rejected)?;
             !user.password_hash.is_empty()

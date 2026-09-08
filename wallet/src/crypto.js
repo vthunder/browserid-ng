@@ -41,17 +41,16 @@ const decodeJws = (j) => JSON.parse(Buffer.from(j.split('.')[1], 'base64url').to
 
 const sha256b64u = (s) => createHash('sha256').update(s).digest('base64url');
 
-// A registry API request proof (registry-api-v1 §3.2), signed with the
-// CONFIG key the token is bound to: htm/htu/iat/jti/ath under the
-// domain-separating proof typ.
-function proof(configPrivJwk, method, htu, accessToken) {
-  return signJws(configPrivJwk, b64uj({ alg: 'EdDSA', typ: PROOF_TYP }), {
-    htm: method,
-    htu,
-    iat: nowS(),
-    jti: randHex(12),
-    ath: sha256b64u(accessToken),
-  });
+// kid = base64url(SHA-256(raw public key)) (registry-api-v1 §4.4), from
+// a key's `x` or a cert's `public-key` claim.
+const kidOf = (x) => createHash('sha256').update(Buffer.from(x, 'base64url')).digest('base64url');
+
+// A registry request proof (registry-api-v1 §4.4): htm/htu/iat/jti, `bh`
+// binding the body when one is given, `kid` naming the signing key.
+function proof(privJwk, method, htu, { body = null, jti = null, x } = {}) {
+  const claims = { htm: method, htu, iat: nowS(), jti: jti || randHex(12) };
+  if (body !== null && body !== undefined) claims.bh = sha256b64u(body);
+  return signJws(privJwk, b64uj({ alg: 'EdDSA', typ: PROOF_TYP, kid: kidOf(x) }), claims);
 }
 
-module.exports = { generateKey, jws, proof, decodeJws, nowS, randHex, sha256b64u };
+module.exports = { generateKey, jws, proof, kidOf, decodeJws, nowS, randHex, sha256b64u };

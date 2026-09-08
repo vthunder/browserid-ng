@@ -103,7 +103,7 @@
     }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); });
   }
   function mint(password) {
-    var body = { identity: identity, certs: certs };
+    var body = { identity: identity, certs: certs, confirm: true };
     if (password) body.password = password;
     return api("/wsapi/guard", body);
   }

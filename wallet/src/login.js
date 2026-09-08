@@ -6,34 +6,11 @@ const store = require('./store');
 const broker = require('./broker');
 const { generateKey, jws, decodeJws, nowS, randHex } = require('./crypto');
 
-// The broker-audience warrant behind the session join and the registry token
-// exchange. Carries the `registry` scope (ig9p / registry-api-v1 §3.1) —
-// without it the token exchange refuses, and the cookie lane will too once
-// the migration window closes. Deliberately REFLESS and unregistered: it is
-// what the token lane itself authenticates with, so it cannot depend on the
-// token lane (a v1 warrant without a status ref is conformant at the
-// exchange); it never appears as a site grant on the account page.
-async function ensureBrokerWarrant() {
-  const s = store.state();
-  const cached = (s.warrants || {})[broker.ORIGIN];
-  if (cached && decodeJws(cached).exp > nowS() + 3600) return cached;
-  const warrant = await jws(s.configKey, {
-    typ: 'browserid-warrant-v1',
-    iat: nowS(), exp: nowS() + 90 * 86400,
-    grantor: s.identity, grantee: s.identity,
-    holder: `${s.holderPrefix}.*`,
-    audience: broker.ORIGIN,
-    scopes: ['login', 'registry'],
-  });
-  await store.set({ warrants: { ...(s.warrants || {}), [broker.ORIGIN]: warrant } });
-  return warrant;
-}
-
-// An RP-audience login warrant, with the per-site revocation bit the
-// prototype skipped: allocate the stable status ref over the registry API
-// and embed it, then register the signed warrant so it appears (revocably)
-// on the account page. Both are best-effort — a broker outage must not
-// break signing in.
+// An RP-audience login warrant with its per-site revocation bit: allocate
+// the stable status ref over the registry API and embed it, then register
+// the signed warrant so it appears (revocably) on the account page. Both
+// are best-effort — a broker outage must not break signing in; without a
+// ref the warrant stays unregistered (§5.4 refuses refless records).
 async function ensureWarrant(audience) {
   const s = store.state();
   const cached = (s.warrants || {})[audience];
@@ -61,10 +38,12 @@ async function ensureWarrant(audience) {
     warrants: { ...(store.state().warrants || {}), [audience]: warrant },
     warrantRefs: { ...(store.state().warrantRefs || {}), ...(ref ? { [audience]: ref } : {}) },
   });
-  try {
-    await registry.registerWarrant(warrant);
-  } catch (e) {
-    console.warn('[wallet] warrant registration failed (login proceeds):', e.message || e);
+  if (ref) {
+    try {
+      await registry.registerWarrant(warrant);
+    } catch (e) {
+      console.warn('[wallet] warrant registration failed (login proceeds):', e.message || e);
+    }
   }
   return warrant;
 }
@@ -93,18 +72,6 @@ async function mintAccess(audience) {
     throw new Error(`access/mint failed: ${mint.status} ${mint.data.reason || JSON.stringify(mint.data).slice(0, 200)}`);
   }
   return { cert: mint.data.access_cert, privJwk: access.privJwk };
-}
-
-// The registry token exchange's input (registry-api-v1 §3.1): a fresh
-// presentation for the BROKER's own audience. A fresh assertion every time —
-// the exchange is single-use per assertion.
-async function buildBrokerPresentation() {
-  const s = store.state();
-  if (!s.deviceCert) throw new Error('wallet not bootstrapped');
-  const warrant = await ensureBrokerWarrant();
-  const access = await mintAccess(broker.ORIGIN);
-  const assertion = await jws(access.privJwk, { exp: nowS() + 300, aud: broker.ORIGIN });
-  return `${access.cert}~${assertion}~${warrant}~${s.configCert}`;
 }
 
 async function login({ origin, caller, approveLogin, acceptedFallbacks }) {
@@ -137,4 +104,4 @@ async function login({ origin, caller, approveLogin, acceptedFallbacks }) {
   return { presentation, email: s.identity };
 }
 
-module.exports = { login, ensureWarrant, ensureBrokerWarrant, mintAccess, buildBrokerPresentation };
+module.exports = { login, ensureWarrant, mintAccess };
