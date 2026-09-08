@@ -282,6 +282,46 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
             .map_err(to_reg_err)
     }
 
+    fn create_session(&self, rec: reg::SessionRecord) -> Result<(), RegistrarError> {
+        self.user_store
+            .create_registry_session(crate::store::RegistrySession {
+                token_hash: rec.token_hash,
+                user_id: UserId(rec.user_id),
+                member_cert_ids: rec.member_cert_ids,
+                created_at: rec.created_at,
+                expires_at: rec.expires_at,
+            })
+            .map_err(to_reg_err)
+    }
+
+    fn get_session(&self, token_hash: &str) -> Result<Option<reg::SessionRecord>, RegistrarError> {
+        Ok(self
+            .user_store
+            .get_registry_session(token_hash)
+            .map_err(to_reg_err)?
+            .map(|r| reg::SessionRecord {
+                token_hash: r.token_hash,
+                user_id: r.user_id.0,
+                member_cert_ids: r.member_cert_ids,
+                created_at: r.created_at,
+                expires_at: r.expires_at,
+            }))
+    }
+
+    fn delete_session(&self, token_hash: &str) -> Result<bool, RegistrarError> {
+        self.user_store.delete_registry_session(token_hash).map_err(to_reg_err)
+    }
+
+    fn cleanup_expired_sessions(&self) -> Result<u64, RegistrarError> {
+        self.user_store.cleanup_expired_registry_sessions().map_err(to_reg_err)
+    }
+
+    fn end_sessions_solely_on_cert(&self, user_id: u64, cert_id: u64) -> Result<u64, RegistrarError> {
+        self.user_store
+            .end_sessions_solely_on_cert(UserId(user_id), cert_id)
+            .map_err(to_reg_err)
+    }
+
     fn create_api_token(&self, rec: reg::ApiTokenRecord) -> Result<(), RegistrarError> {
         UserStore::create_api_token(self.user_store.as_ref(), from_reg_api_token(rec))
             .map_err(to_reg_err)
@@ -645,6 +685,18 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
         crate::membership::sweep_holds(self.user_store.as_ref(), chrono::Utc::now())
             .map(|_| ())
             .map_err(to_reg_err)
+    }
+
+    fn account_public_id(&self, user_id: u64) -> Result<String, RegistrarError> {
+        self.user_store.account_public_id(UserId(user_id)).map_err(to_reg_err)
+    }
+
+    fn account_for_public_id(&self, public_id: &str) -> Result<Option<u64>, RegistrarError> {
+        Ok(self
+            .user_store
+            .user_for_public_id(public_id)
+            .map_err(to_reg_err)?
+            .map(|u| u.0))
     }
 
     fn agent_identities(&self, user_id: u64) -> Result<Vec<AgentIdentity>, RegistrarError> {

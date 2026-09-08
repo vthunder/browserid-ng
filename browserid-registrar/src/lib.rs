@@ -41,6 +41,7 @@ use browserid_core::KeyPair;
 
 pub mod agent_provision;
 pub mod api;
+pub mod session;
 pub mod consent;
 pub mod error;
 pub mod holders;
@@ -197,6 +198,8 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
     // cookie surface's CSRF machinery does not exist here.
     let api_v1 = Router::new()
         .route("/api/v1/token", post(api::token_exchange))
+        .route("/api/v1/session", post(session::open_session))
+        .route("/api/v1/session/end", post(session::end_session))
         .route("/api/v1/requests", get(api::list_requests))
         .route("/api/v1/requests/claim", post(api::claim_request))
         .route("/api/v1/requests/respond", post(api::respond))
@@ -217,6 +220,7 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         .route("/api/v1/namespaces/create", post(api::create_namespace))
         .route("/api/v1/namespaces/rename", post(api::rename_namespace))
         .route("/api/v1/namespaces/delete", post(api::delete_namespace))
+        .layer(axum::middleware::from_fn(session::buffer_body))
         .layer(axum::extract::DefaultBodyLimit::max(api::API_BODY_LIMIT));
     Router::new()
         .merge(api_v1)

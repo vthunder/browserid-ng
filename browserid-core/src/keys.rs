@@ -36,6 +36,13 @@ impl PublicKey {
         URL_SAFE_NO_PAD.encode(self.as_bytes())
     }
 
+    /// The key id registry-api-v1 §4.4 names a key by:
+    /// base64url(SHA-256(raw public bytes)).
+    pub fn kid(&self) -> String {
+        use sha2::Digest;
+        URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(self.as_bytes()))
+    }
+
     /// Decode from base64url
     pub fn from_base64(s: &str) -> Result<Self> {
         let bytes = URL_SAFE_NO_PAD.decode(s)?;

@@ -3,7 +3,7 @@
 
 use crate::error::RegistrarError;
 use crate::models::{
-    ApiTokenRecord, DeviceCertRecord, NamespaceRecord, WarrantRecord, WarrantRequestRecord,
+    ApiTokenRecord, DeviceCertRecord, NamespaceRecord, WarrantRecord, WarrantRequestRecord, SessionRecord,
 };
 
 pub type StoreResult<T> = Result<T, RegistrarError>;
@@ -127,6 +127,27 @@ pub trait RegistrarStore: Send + Sync {
 
     /// Drop expired API token rows. Best-effort housekeeping.
     fn cleanup_expired_api_tokens(&self) -> StoreResult<u64> {
+        Ok(0)
+    }
+
+    // --- Registry sessions (registry-api-v1 §4.5) ---
+    //
+    // Defaults error so hosts without the session lane keep compiling.
+
+    fn create_session(&self, _rec: SessionRecord) -> StoreResult<()> {
+        Err(RegistrarError::Internal("sessions not supported by this host".into()))
+    }
+    fn get_session(&self, _token_hash: &str) -> StoreResult<Option<SessionRecord>> {
+        Err(RegistrarError::Internal("sessions not supported by this host".into()))
+    }
+    fn delete_session(&self, _token_hash: &str) -> StoreResult<bool> {
+        Err(RegistrarError::Internal("sessions not supported by this host".into()))
+    }
+    fn cleanup_expired_sessions(&self) -> StoreResult<u64> {
+        Ok(0)
+    }
+    /// End the sessions `cert_id` is the last member of (§4.5).
+    fn end_sessions_solely_on_cert(&self, _user_id: u64, _cert_id: u64) -> StoreResult<u64> {
         Ok(0)
     }
 

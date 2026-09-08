@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    SuspendedIdentity,
+    RegistrySession, SuspendedIdentity,
     ApiTokenRecord, DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, SessionStore, StoreResult, Tenant, TenantStatus, User, UserId,
     UserStore, VerificationType, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
@@ -16,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 34;
+const SCHEMA_VERSION: i32 = 35;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -165,6 +165,9 @@ impl SqliteStore {
             }
             if current_version < 34 {
                 Self::migrate_v34(conn)?;
+            }
+            if current_version < 35 {
+                Self::migrate_v35(conn)?;
             }
 
             // Update schema version
@@ -909,6 +912,48 @@ impl SqliteStore {
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
+
+    fn migrate_v35(conn: &Connection) -> Result<(), BrokerError> {
+        // Registry sessions (registry-api-v1 §4.5, bean 0c49 step 2): a
+        // token names a SET of recorded certs. Public account ids (§3):
+        // opaque, minted on first use, never the row id.
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS registry_sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                members TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_registry_sessions_expires ON registry_sessions(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_registry_sessions_user ON registry_sessions(user_id);
+            CREATE TABLE IF NOT EXISTS account_ids (
+                user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                public_id TEXT NOT NULL UNIQUE
+            );
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+}
+
+fn registry_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistrySession> {
+    let user_id: i64 = row.get(1)?;
+    let members: String = row.get(2)?;
+    Ok(RegistrySession {
+        token_hash: row.get(0)?,
+        user_id: UserId(user_id as u64),
+        member_cert_ids: serde_json::from_str(&members).unwrap_or_default(),
+        created_at: parse_ts_opt(row.get(3)?).unwrap_or_else(Utc::now),
+        expires_at: parse_ts_opt(row.get(4)?).unwrap_or_else(Utc::now),
+    })
+}
+
+impl SqliteStore {
+    #[allow(dead_code)]
+    fn _v35_marker() {}
 }
 
 fn parse_ts_opt(s: Option<String>) -> Option<DateTime<Utc>> {
@@ -1924,6 +1969,102 @@ impl UserStore for SqliteStore {
             api_token_from_row,
         )
         .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn create_registry_session(&self, rec: RegistrySession) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO registry_sessions (token_hash, user_id, members, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                rec.token_hash,
+                rec.user_id.0 as i64,
+                serde_json::to_string(&rec.member_cert_ids).unwrap_or_else(|_| "[]".into()),
+                rec.created_at.to_rfc3339(),
+                rec.expires_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn get_registry_session(&self, token_hash: &str) -> StoreResult<Option<RegistrySession>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT token_hash, user_id, members, created_at, expires_at FROM registry_sessions WHERE token_hash = ?1",
+            params![token_hash],
+            registry_session_from_row,
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn delete_registry_session(&self, token_hash: &str) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute("DELETE FROM registry_sessions WHERE token_hash = ?1", params![token_hash])
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows > 0)
+    }
+
+    fn cleanup_expired_registry_sessions(&self) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "DELETE FROM registry_sessions WHERE expires_at < ?1",
+                params![Utc::now().to_rfc3339()],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows as u64)
+    }
+
+    fn end_sessions_solely_on_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "DELETE FROM registry_sessions WHERE user_id = ?1 AND members = ?2",
+                params![user_id.0 as i64, format!("[{cert_id}]")],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows as u64)
+    }
+
+    fn account_public_id(&self, user_id: UserId) -> StoreResult<String> {
+        let conn = self.conn.lock().unwrap();
+        if let Some(id) = conn
+            .query_row(
+                "SELECT public_id FROM account_ids WHERE user_id = ?1",
+                params![user_id.0 as i64],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+        {
+            return Ok(id);
+        }
+        let id = crate::crypto::generate_salt_b64();
+        conn.execute(
+            "INSERT OR IGNORE INTO account_ids (user_id, public_id) VALUES (?1, ?2)",
+            params![user_id.0 as i64, id],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        conn.query_row(
+            "SELECT public_id FROM account_ids WHERE user_id = ?1",
+            params![user_id.0 as i64],
+            |r| r.get::<_, String>(0),
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn user_for_public_id(&self, public_id: &str) -> StoreResult<Option<UserId>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT user_id FROM account_ids WHERE public_id = ?1",
+            params![public_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|o| o.map(|i| UserId(i as u64)))
         .map_err(|e| BrokerError::Internal(e.to_string()))
     }
 
@@ -3382,6 +3523,27 @@ impl UserStore for std::sync::Arc<SqliteStore> {
         (**self).cleanup_expired_api_tokens()
     }
 
+    fn create_registry_session(&self, rec: RegistrySession) -> StoreResult<()> {
+        (**self).create_registry_session(rec)
+    }
+    fn get_registry_session(&self, token_hash: &str) -> StoreResult<Option<RegistrySession>> {
+        (**self).get_registry_session(token_hash)
+    }
+    fn delete_registry_session(&self, token_hash: &str) -> StoreResult<bool> {
+        (**self).delete_registry_session(token_hash)
+    }
+    fn cleanup_expired_registry_sessions(&self) -> StoreResult<u64> {
+        (**self).cleanup_expired_registry_sessions()
+    }
+    fn end_sessions_solely_on_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<u64> {
+        (**self).end_sessions_solely_on_cert(user_id, cert_id)
+    }
+    fn account_public_id(&self, user_id: UserId) -> StoreResult<String> {
+        (**self).account_public_id(user_id)
+    }
+    fn user_for_public_id(&self, public_id: &str) -> StoreResult<Option<UserId>> {
+        (**self).user_for_public_id(public_id)
+    }
     fn set_email_suspension(&self, email: &str, until: Option<(DateTime<Utc>, DateTime<Utc>)>) -> StoreResult<()> {
         (**self).set_email_suspension(email, until)
     }

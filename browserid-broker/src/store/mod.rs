@@ -206,6 +206,23 @@ pub trait UserStore: Send + Sync {
     /// Drop expired API token rows; returns the number removed.
     fn cleanup_expired_api_tokens(&self) -> StoreResult<u64>;
 
+    // --- Registry sessions (registry-api-v1 §4.5; bean 0c49 step 2) ---
+
+    fn create_registry_session(&self, rec: RegistrySession) -> StoreResult<()>;
+    fn get_registry_session(&self, token_hash: &str) -> StoreResult<Option<RegistrySession>>;
+    fn delete_registry_session(&self, token_hash: &str) -> StoreResult<bool>;
+    fn cleanup_expired_registry_sessions(&self) -> StoreResult<u64>;
+    /// Delete every session of the account that lists `cert_id` as its ONLY
+    /// member (§4.5: retiring a cert ends the sessions it is the last member
+    /// of). Returns how many.
+    fn end_sessions_solely_on_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<u64>;
+
+    // --- Public account ids (registry-api-v1 §3: opaque, ≥128 bits) ---
+
+    /// The account's public id, minted on first use.
+    fn account_public_id(&self, user_id: UserId) -> StoreResult<String>;
+    fn user_for_public_id(&self, public_id: &str) -> StoreResult<Option<UserId>>;
+
     // --- Membership hold (registry-api-v1 §4.1 rule 3; bean 0c49 step 1) ---
     // Primitives only: the cascade itself is `crate::membership`.
 

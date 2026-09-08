@@ -216,6 +216,23 @@ impl DeviceCertRecord {
     }
 }
 
+/// A registry session (registry-api-v1 §4.5): a token naming a SET of
+/// the account's recorded certs. Members are re-checked on every call.
+#[derive(Debug, Clone)]
+pub struct SessionRecord {
+    pub token_hash: String,
+    pub user_id: u64,
+    pub member_cert_ids: Vec<u64>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl SessionRecord {
+    pub fn is_expired(&self) -> bool {
+        Utc::now() > self.expires_at
+    }
+}
+
 /// A registry API access token (registry-api-v1 §3.1): the server-side record
 /// behind an opaque token minted by the presentation→token exchange. The
 /// token itself is never stored — only its SHA-256 — so a leaked store dump

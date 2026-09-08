@@ -1393,3 +1393,158 @@ async fn notices_list_in_the_inbox_and_cannot_be_answered() {
     .await;
     assert_eq!(status, 404, "{body}");
 }
+
+/// A §4.4 call under a session: `Authorization: Bearer` + `Proof` (with
+/// `bh` on POSTs), signed by `kp`.
+async fn session_call(
+    l: &Live,
+    kp: &KeyPair,
+    token: &str,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> (reqwest::StatusCode, Value, reqwest::header::HeaderMap) {
+    let htu = format!("{}{path}", l.base);
+    let bytes = body.as_ref().map(|b| b.to_string().into_bytes());
+    let proof = browserid_registrar::session::build_proof_now(method, &htu, bytes.as_deref(), kp);
+    let req = if method == "GET" { l.client.get(&htu) } else { l.client.post(&htu) };
+    let req = req.header("authorization", format!("Bearer {token}")).header("proof", proof);
+    let req = match bytes {
+        Some(b) => req.header("content-type", "application/json").body(b),
+        None => req,
+    };
+    let r = req.send().await.unwrap();
+    let status = r.status();
+    let headers = r.headers().clone();
+    let body = if status == reqwest::StatusCode::NO_CONTENT { json!(null) } else { r.json().await.unwrap_or(json!(null)) };
+    (status, body, headers)
+}
+
+/// Open a §4.5 session with possession proofs by `keys`, the header proof
+/// signed by the first.
+async fn open_session(l: &Live, account: &str, keys: &[&KeyPair]) -> (reqwest::StatusCode, Value) {
+    let htu = format!("{}/api/v1/session", l.base);
+    let jti = rand_suffix();
+    let now = chrono::Utc::now().timestamp();
+    let proofs: Vec<String> = keys
+        .iter()
+        .map(|k| browserid_registrar::session::build_proof("POST", &htu, None, k, now, &jti))
+        .collect();
+    let body = json!({ "account": account, "proofs": proofs }).to_string().into_bytes();
+    let header = browserid_registrar::session::build_proof("POST", &htu, Some(&body), keys[0], now, &jti);
+    let r = l
+        .client
+        .post(&htu)
+        .header("proof", header)
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    let status = r.status();
+    (status, r.json().await.unwrap_or(json!(null)))
+}
+
+/// registry-api-v1 §4.4–§4.5 (bean 0c49 steps 2+3): a session is a set of
+/// recorded certs proven by possession; every call is proven by a member;
+/// POST bodies are bound; members are re-checked; the config-cert rule
+/// gates mutations; retiring the last member ends the session.
+#[tokio::test]
+async fn sessions_of_proofs_and_the_config_cert_rule() {
+    use browserid_broker::store::{DeviceCertRecord, UserStore};
+    let l = live_broker().await;
+    let email = "session-owner@gmail.com";
+    let (presentation, config_kp, device_cert, config_cert) =
+        broker_presentation(&l, email, vec!["registry".into()]).await;
+    // Record the pair (attach replaces this in step 4).
+    let (status, body) = exchange(&l, json!({ "presentation": presentation })).await;
+    assert_eq!(status, 200, "{body}");
+    let legacy = body["access_token"].as_str().unwrap().to_string();
+    let (status, body) = register_call(&l, &config_kp, &legacy, json!({"device_cert": device_cert, "config_cert": config_cert}), None).await;
+    assert_eq!(status, 204, "{body}");
+    let user_id = l.user_store.get_email(email).unwrap().unwrap().user_id;
+    let account = l.user_store.account_public_id(user_id).unwrap();
+
+    // Unknown account, or a key not recorded there: 401 invalid_cert/unknown_key.
+    let (status, body) = open_session(&l, "nope", &[&config_kp]).await;
+    assert_eq!(status, 401, "{body}");
+    assert_eq!(body["reason"], "unknown_key");
+    let stranger = KeyPair::generate();
+    let (status, body) = open_session(&l, &account, &[&stranger]).await;
+    assert_eq!(status, 401, "{body}");
+    assert_eq!(body["reason"], "unknown_key");
+
+    // A config-cert session.
+    let (status, body) = open_session(&l, &account, &[&config_kp]).await;
+    assert_eq!(status, 200, "{body}");
+    let token = body["token"].as_str().unwrap().to_string();
+    assert_eq!(body["account"], account);
+    assert_eq!(body["members"][0]["purpose"], "authorization");
+    assert_eq!(body["members"][0]["kid"], config_kp.public_key().kid());
+    assert!(body["roster"].as_array().unwrap().iter().any(|r| r["identity"] == email && r["state"] == "active"), "{body}");
+
+    // GET under it; a POST with its body bound; the config rule satisfied.
+    let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/requests", None).await;
+    assert_eq!(status, 200, "{body}");
+    let alloc = json!({"agent_email": email, "audience": "https://rp.example", "scopes": ["login"]});
+    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/allocate_status", Some(alloc.clone())).await;
+    assert_eq!(status, 200, "{body}");
+
+    // A POST whose proof binds a different body: 401 invalid_proof.
+    let htu = format!("{}/api/v1/warrants/allocate_status", l.base);
+    let proof = browserid_registrar::session::build_proof_now("POST", &htu, Some(b"{}"), &config_kp);
+    let r = l.client.post(&htu).header("authorization", format!("Bearer {token}")).header("proof", proof)
+        .header("content-type", "application/json").body(alloc.to_string()).send().await.unwrap();
+    assert_eq!(r.status(), 401);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["error"], "invalid_proof", "{body}");
+
+    // A stranger's key is not a member: 401 invalid_session, Bearer challenge.
+    let (status, body, headers) = session_call(&l, &stranger, &token, "GET", "/api/v1/requests", None).await;
+    assert_eq!(status, 401, "{body}");
+    assert_eq!(body["error"], "invalid_session");
+    assert_eq!(headers.get("www-authenticate").unwrap(), "Bearer");
+
+    // An auth-only session: reads, cannot mutate, may revoke its own cert —
+    // which ends it.
+    let auth_kp = KeyPair::generate();
+    let auth_id = l
+        .user_store
+        .insert_device_cert(DeviceCertRecord {
+            id: 0,
+            user_id,
+            identities: vec![email.into()],
+            purpose: "authentication".into(),
+            holder: "browsers.test".into(),
+            pubkey: auth_kp.public_key().to_base64(),
+            iss: l.domain.clone(),
+            issued_at: chrono::Utc::now(),
+            expires_at: chrono::Utc::now() + Duration::days(30),
+            revoked_at: None,
+            status_uri: None,
+            status_idx: None,
+            prov: "smtp".into(),
+        })
+        .unwrap();
+    let (status, body) = open_session(&l, &account, &[&auth_kp]).await;
+    assert_eq!(status, 200, "{body}");
+    let auth_token = body["token"].as_str().unwrap().to_string();
+    assert_eq!(body["members"][0]["purpose"], "authentication");
+    let (status, body, _) = session_call(&l, &auth_kp, &auth_token, "GET", "/api/v1/warrants", None).await;
+    assert_eq!(status, 200, "{body}");
+    let (status, body, _) = session_call(&l, &auth_kp, &auth_token, "POST", "/api/v1/warrants/allocate_status", Some(alloc.clone())).await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["error"], "forbidden");
+    assert_eq!(body["reason"], "config_cert_required");
+    let (status, body, _) = session_call(&l, &auth_kp, &auth_token, "POST", "/api/v1/devices/revoke", Some(json!({"id": auth_id}))).await;
+    assert_eq!(status, 200, "{body}");
+    let (status, body, _) = session_call(&l, &auth_kp, &auth_token, "GET", "/api/v1/warrants", None).await;
+    assert_eq!(status, 401, "{body}");
+    assert_eq!(body["error"], "invalid_session");
+
+    // Ending the config session.
+    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/session/end", Some(json!({}))).await;
+    assert_eq!(status, 204, "{body}");
+    let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/requests", None).await;
+    assert_eq!(status, 401, "{body}");
+}

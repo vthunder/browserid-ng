@@ -8,7 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    SuspendedIdentity,
+    RegistrySession, SuspendedIdentity,
     ApiTokenRecord, DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, Tenant, TenantStatus, User, UserId, UserStore, VerificationType,
@@ -51,6 +51,10 @@ pub struct InMemoryUserStore {
     interactive_proofs: RwLock<HashMap<String, chrono::DateTime<Utc>>>,
     /// token_hash -> registry API token record (registry-api-v1 §3.1)
     api_tokens: RwLock<HashMap<String, ApiTokenRecord>>,
+    /// token_hash -> registry session (registry-api-v1 §4.5)
+    registry_sessions: RwLock<HashMap<String, RegistrySession>>,
+    /// user -> public account id
+    account_ids: RwLock<HashMap<UserId, String>>,
 }
 
 impl InMemoryUserStore {
@@ -79,6 +83,8 @@ impl InMemoryUserStore {
             tenant_status: RwLock::new(HashMap::new()),
             interactive_proofs: RwLock::new(HashMap::new()),
             api_tokens: RwLock::new(HashMap::new()),
+            registry_sessions: RwLock::new(HashMap::new()),
+            account_ids: RwLock::new(HashMap::new()),
         }
     }
 
@@ -558,6 +564,51 @@ impl UserStore for InMemoryUserStore {
 
     fn get_api_token(&self, token_hash: &str) -> StoreResult<Option<ApiTokenRecord>> {
         Ok(self.api_tokens.read().unwrap().get(token_hash).cloned())
+    }
+
+    fn create_registry_session(&self, rec: RegistrySession) -> StoreResult<()> {
+        self.registry_sessions.write().unwrap().insert(rec.token_hash.clone(), rec);
+        Ok(())
+    }
+
+    fn get_registry_session(&self, token_hash: &str) -> StoreResult<Option<RegistrySession>> {
+        Ok(self.registry_sessions.read().unwrap().get(token_hash).cloned())
+    }
+
+    fn delete_registry_session(&self, token_hash: &str) -> StoreResult<bool> {
+        Ok(self.registry_sessions.write().unwrap().remove(token_hash).is_some())
+    }
+
+    fn cleanup_expired_registry_sessions(&self) -> StoreResult<u64> {
+        let mut s = self.registry_sessions.write().unwrap();
+        let before = s.len();
+        s.retain(|_, r| !r.is_expired());
+        Ok((before - s.len()) as u64)
+    }
+
+    fn end_sessions_solely_on_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<u64> {
+        let mut s = self.registry_sessions.write().unwrap();
+        let before = s.len();
+        s.retain(|_, r| !(r.user_id == user_id && r.member_cert_ids == vec![cert_id]));
+        Ok((before - s.len()) as u64)
+    }
+
+    fn account_public_id(&self, user_id: UserId) -> StoreResult<String> {
+        let mut ids = self.account_ids.write().unwrap();
+        Ok(ids
+            .entry(user_id)
+            .or_insert_with(crate::crypto::generate_salt_b64)
+            .clone())
+    }
+
+    fn user_for_public_id(&self, public_id: &str) -> StoreResult<Option<UserId>> {
+        Ok(self
+            .account_ids
+            .read()
+            .unwrap()
+            .iter()
+            .find(|(_, v)| v.as_str() == public_id)
+            .map(|(k, _)| *k))
     }
 
     fn set_email_suspension(

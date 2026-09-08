@@ -154,6 +154,17 @@ pub trait RegistrarHost: Send + Sync {
     fn sweep_holds(&self) -> Result<(), RegistrarError> {
         Ok(())
     }
+
+    /// The account's public id (registry-api-v1 §3: opaque, ≥128 bits,
+    /// never the row id), minted on first use.
+    fn account_public_id(&self, _user_id: u64) -> Result<String, RegistrarError> {
+        Err(RegistrarError::Internal("account ids not supported by this host".into()))
+    }
+
+    /// The account behind a public id, if any.
+    fn account_for_public_id(&self, _public_id: &str) -> Result<Option<u64>, RegistrarError> {
+        Err(RegistrarError::Internal("account ids not supported by this host".into()))
+    }
 }
 
 /// Require that the caller presented the session's CSRF token.

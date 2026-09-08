@@ -171,6 +171,26 @@ pub struct SuspendedIdentity {
     pub reason: String,
 }
 
+/// A registry session (registry-api-v1 §4.5): an opaque token that
+/// identifies a SET of the account's recorded certs — the members. Every
+/// call re-checks the members; the row only remembers which they are.
+#[derive(Debug, Clone)]
+pub struct RegistrySession {
+    /// base64url(SHA-256(token)) — the lookup key.
+    pub token_hash: String,
+    pub user_id: UserId,
+    /// Device-cert row ids the session was opened with.
+    pub member_cert_ids: Vec<u64>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl RegistrySession {
+    pub fn is_expired(&self) -> bool {
+        Utc::now() > self.expires_at
+    }
+}
+
 /// A pending email verification
 #[derive(Debug, Clone)]
 pub struct PendingVerification {

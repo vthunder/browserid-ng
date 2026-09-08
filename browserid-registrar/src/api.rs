@@ -36,11 +36,11 @@ use crate::RegistrarState;
 /// the token MUST NOT outlive the config cert it is bound to.
 const TOKEN_TTL_SECONDS: i64 = 3600;
 /// Proof `iat` acceptance window (§3.2, RECOMMENDED ±300s).
-const PROOF_IAT_WINDOW_SECONDS: i64 = 300;
+pub(crate) const PROOF_IAT_WINDOW_SECONDS: i64 = 300;
 /// Request body cap, API-wide (§3.1, RECOMMENDED 64 KiB).
 pub(crate) const API_BODY_LIMIT: usize = 64 * 1024;
 /// The proof's domain-separating JWS `typ` (§3.2).
-pub const PROOF_TYP: &str = "browserid-registry-proof-v1";
+pub(crate) const PROOF_TYP: &str = "browserid-registry-proof-v1";
 
 // ===========================================================================
 // Host-provided verification
@@ -178,8 +178,17 @@ pub enum ApiError {
     InvalidScope(String),
     /// 401 — missing/expired/revoked token (incl. a dead bound cert).
     InvalidToken(String),
-    /// 401 — the DPoP proof failed one of the §3.2 checks.
+    /// 401 — the proof failed one of the §4.4 checks.
     InvalidProof(String),
+    /// 401 — session token missing, unknown, expired or ended; no member
+    /// left; the Proof key is not a member (§4.5). `WWW-Authenticate: Bearer`.
+    InvalidSession(String),
+    /// 401 — `invalid_cert` on `session` (§7): a proof's key is not a
+    /// recorded, unretired cert of the named account, or fails the bar.
+    InvalidCertUnauthorized { reason: &'static str, description: String },
+    /// 403 — `forbidden`: the session lacks a config-cert member the call
+    /// needs, or a guard is needed or rejected (§7.1).
+    Forbidden { reason: &'static str, description: String },
     /// 403 — token scope does not cover the endpoint.
     InsufficientScope,
     /// 409 — a state refusal (e.g. revoking a refless warrant).
@@ -216,6 +225,13 @@ impl IntoResponse for ApiError {
             ApiError::InvalidScope(d) => (StatusCode::BAD_REQUEST, "invalid_scope", d, None),
             ApiError::InvalidToken(d) => (StatusCode::UNAUTHORIZED, "invalid_token", d, None),
             ApiError::InvalidProof(d) => (StatusCode::UNAUTHORIZED, "invalid_proof", d, None),
+            ApiError::InvalidSession(d) => (StatusCode::UNAUTHORIZED, "invalid_session", d, None),
+            ApiError::InvalidCertUnauthorized { reason, description } => {
+                (StatusCode::UNAUTHORIZED, "invalid_cert", description, Some(reason))
+            }
+            ApiError::Forbidden { reason, description } => {
+                (StatusCode::FORBIDDEN, "forbidden", description, Some(reason))
+            }
             ApiError::InsufficientScope => (
                 StatusCode::FORBIDDEN,
                 "insufficient_scope",
@@ -258,7 +274,7 @@ impl IntoResponse for ApiError {
         if status == StatusCode::UNAUTHORIZED {
             resp.headers_mut().insert(
                 axum::http::header::WWW_AUTHENTICATE,
-                axum::http::HeaderValue::from_static("DPoP"),
+                axum::http::HeaderValue::from_static(if matches!(error, "invalid_token" | "invalid_proof") { "DPoP" } else { "Bearer" }),
             );
         }
         resp
@@ -440,7 +456,7 @@ pub async fn token_exchange(
 }
 
 /// A fresh opaque token: 32 random bytes, base64url (≥128-bit entropy, §3.1).
-fn new_token() -> String {
+pub(crate) fn new_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -455,8 +471,36 @@ fn new_token() -> String {
 /// verified to the §3.2 bar, bound cert status re-checked fail-closed.
 pub struct ApiUser {
     pub user_id: u64,
-    /// The bound config cert's public key (base64) — the proof key.
+    /// The key that signed this call's proof (base64): the session member
+    /// that spoke, or the legacy token's bound config key.
     pub proof_key: String,
+    /// Whether the session holds a config-cert member (§4.3). A legacy
+    /// token is config-bound by construction.
+    pub has_config: bool,
+    /// Ids of the member certs that passed this call's re-check. Empty
+    /// for a legacy token.
+    pub member_cert_ids: Vec<u64>,
+    /// The identities the members were recorded for (§4.3), deduplicated.
+    /// Empty for a legacy token (whole-account authority).
+    pub member_identities: Vec<String>,
+    /// The session's token hash, so `session/end` can end it. `None` for a
+    /// legacy token.
+    pub session_token_hash: Option<String>,
+}
+
+impl ApiUser {
+    /// The config-cert rule (§4.3): calls that change or sign for the
+    /// account need a config-cert member.
+    pub fn require_config(&self) -> Result<(), ApiError> {
+        if self.has_config {
+            Ok(())
+        } else {
+            Err(ApiError::Forbidden {
+                reason: "config_cert_required",
+                description: "this call needs a session with a config-cert member".into(),
+            })
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -554,8 +598,11 @@ impl FromRequestParts<Arc<RegistrarState>> for ApiUser {
         let (scheme, token) = auth
             .split_once(' ')
             .ok_or_else(|| ApiError::InvalidToken("malformed Authorization header".into()))?;
+        if scheme.eq_ignore_ascii_case("bearer") {
+            return session_user(parts, state, token.trim()).await;
+        }
         if !scheme.eq_ignore_ascii_case("dpop") {
-            return Err(ApiError::InvalidToken("Authorization scheme must be DPoP".into()));
+            return Err(ApiError::InvalidToken("Authorization scheme must be Bearer or DPoP".into()));
         }
         let token = token.trim();
         let rec = state
@@ -624,8 +671,74 @@ impl FromRequestParts<Arc<RegistrarState>> for ApiUser {
             return Err(ApiError::InsufficientScope);
         }
 
-        Ok(ApiUser { user_id: rec.user_id, proof_key: rec.proof_key })
+        Ok(ApiUser {
+            user_id: rec.user_id,
+            proof_key: rec.proof_key,
+            has_config: true,
+            member_cert_ids: Vec::new(),
+            member_identities: Vec::new(),
+            session_token_hash: None,
+        })
     }
+}
+
+/// The §4.4 session path of the extractor: token → proof → member → claims
+/// → replay → member re-check. First failure is the response.
+async fn session_user(
+    parts: &Parts,
+    state: &Arc<RegistrarState>,
+    token: &str,
+) -> Result<ApiUser, ApiError> {
+    use crate::session::{header_proof, replay_check, resolve_members, BodyHash};
+    let hash = b64url_sha256(token.as_bytes());
+    let rec = state
+        .store
+        .get_session(&hash)
+        .map_err(|e| ApiError::Internal(format!("session lookup: {e}")))?
+        .ok_or_else(|| ApiError::InvalidSession("unknown session".into()))?;
+    if rec.is_expired() {
+        return Err(ApiError::InvalidSession("session expired".into()));
+    }
+    let proof = header_proof(&parts.headers)?;
+    let members = resolve_members(state, rec.user_id, &rec.member_cert_ids).await?;
+    if members.is_empty() {
+        return Err(ApiError::InvalidSession("no member of this session is still valid".into()));
+    }
+    let signer = members
+        .iter()
+        .find(|m| m.kid == proof.kid)
+        .ok_or_else(|| ApiError::InvalidSession("the Proof key is not a member of this session".into()))?;
+    proof.verify(&signer.cert.pubkey)?;
+    let expect_bh = if parts.method == axum::http::Method::GET {
+        None
+    } else {
+        Some(
+            parts
+                .extensions
+                .get::<BodyHash>()
+                .map(|b| b.0.clone())
+                .ok_or_else(|| ApiError::Internal("body hash middleware missing".into()))?,
+        )
+    };
+    proof.check_claims(state, parts.method.as_str(), parts.uri.path(), expect_bh.as_deref())?;
+    replay_check(state, &proof.kid, &proof.jti)?;
+
+    let mut identities: Vec<String> = Vec::new();
+    for m in &members {
+        for i in &m.cert.identities {
+            if !identities.iter().any(|x| x.eq_ignore_ascii_case(i)) {
+                identities.push(i.clone());
+            }
+        }
+    }
+    Ok(ApiUser {
+        user_id: rec.user_id,
+        proof_key: signer.cert.pubkey.clone(),
+        has_config: members.iter().any(|m| m.is_config()),
+        member_cert_ids: members.iter().map(|m| m.cert.id).collect(),
+        member_identities: identities,
+        session_token_hash: Some(hash),
+    })
 }
 
 // ===========================================================================
@@ -712,6 +825,7 @@ pub async fn claim_request(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<Json<crate::consent::PendingRequestInfo>, ApiError> {
+    user.require_config()?;
     let req: ApiClaimRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let rec = crate::consent::claim_core(&state, user.user_id, &req.code)
@@ -743,6 +857,7 @@ pub async fn respond(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    user.require_config()?;
     let req: ApiRespondRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let approve = req.approve;
@@ -795,6 +910,7 @@ pub async fn register_warrant(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
+    user.require_config()?;
     let req: ApiRegisterWarrantRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     crate::consent::register_warrant_core(&state, user.user_id, &req.warrant, &req.config_cert)
@@ -814,6 +930,7 @@ pub async fn revoke_warrant(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
+    user.require_config()?;
     let req: ApiWarrantIdRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     crate::consent::revoke_warrant_core(&state, user.user_id, req.id).map_err(consent_err)?;
@@ -827,6 +944,7 @@ pub async fn forget_warrant(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
+    user.require_config()?;
     let req: ApiWarrantIdRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     state.store.delete_warrant(user.user_id, req.id).map_err(consent_err)?;
@@ -856,6 +974,7 @@ pub async fn allocate_status(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<Json<ApiAllocateStatusResponse>, ApiError> {
+    user.require_config()?;
     let req: ApiAllocateStatusRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let (uri, idx) = crate::consent::allocate_status_core(
@@ -911,6 +1030,11 @@ pub async fn revoke_device(
 ) -> Result<Json<ApiRevokeDeviceResponse>, ApiError> {
     let req: ApiDeviceIdRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    // Any session may revoke a cert it itself holds; another device's cert
+    // needs a config-cert member (§5.5).
+    if !user.member_cert_ids.contains(&req.id) {
+        user.require_config()?;
+    }
     let revoked = crate::holders::revoke_device_core(
         &*state.store,
         &*state.host,
@@ -919,6 +1043,8 @@ pub async fn revoke_device(
         req.id,
     )
     .map_err(consent_err)?;
+    // Retiring a cert ends every session it is the last member of (§4.5).
+    state.store.end_sessions_solely_on_cert(user.user_id, req.id).ok();
     Ok(Json(ApiRevokeDeviceResponse { revoked }))
 }
 
@@ -940,6 +1066,7 @@ pub async fn register_device(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
+    user.require_config()?;
     let req: ApiRegisterDeviceRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let verifier = state.presentation_verifier.as_ref().ok_or_else(|| {
@@ -1123,6 +1250,7 @@ pub async fn rename_holder(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
+    user.require_config()?;
     let req: ApiRenameHolderRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     crate::holders::rename_holder_core(&*state.store, user.user_id, &req.holder_id, &req.label)
@@ -1150,6 +1278,7 @@ pub async fn move_holder(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<Json<ApiMoveHolderResponse>, ApiError> {
+    user.require_config()?;
     let req: ApiMoveHolderRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let new_holder = crate::holders::move_holder_core(
@@ -1184,6 +1313,7 @@ pub async fn forget_holder(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<Json<ApiForgetHolderResponse>, ApiError> {
+    user.require_config()?;
     let req: ApiForgetHolderRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let unrevocable = crate::holders::forget_holder_core(
@@ -1241,6 +1371,7 @@ pub async fn create_namespace(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
+    user.require_config()?;
     let req: ApiCreateNamespaceRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     crate::holders::create_namespace_core(
@@ -1266,6 +1397,7 @@ pub async fn rename_namespace(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
+    user.require_config()?;
     let req: ApiRenameNamespaceRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     crate::holders::rename_namespace_core(&*state.store, user.user_id, &req.name, &req.label)
@@ -1285,6 +1417,7 @@ pub async fn delete_namespace(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
+    user.require_config()?;
     let req: ApiDeleteNamespaceRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     crate::holders::delete_namespace_core(&*state.store, user.user_id, &req.name)
