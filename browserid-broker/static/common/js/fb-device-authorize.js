@@ -148,7 +148,7 @@
 
   function showLogin(err) {
     $("title").textContent = "Sign in";
-    $("subtitle").textContent = "Enter your password to authorize this device for " + email + ".";
+    $("subtitle").textContent = email;
     show("login-form");
     if (err) $("login-err").textContent = err;
     $("password").focus();
@@ -365,7 +365,7 @@
     fatal("This sign-in link is malformed. Close this window and try again.");
     return;
   }
-  $("subtitle").textContent = "Signing in as " + email;
+  $("subtitle").textContent = email;
 
   // A wallet this issuer does not deliver to is told so BEFORE any password
   // is typed (fallback-idp-api-v1 §3.1). There is no accepted origin to

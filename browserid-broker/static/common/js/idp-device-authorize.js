@@ -76,7 +76,16 @@
   // Drop the fragment from the address bar (defense in depth).
   try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
 
-  $("subtitle").textContent = email ? "Signing in as " + email : "Continue to your account";
+  // The tenant's own identity, not browserid's: its domain is the brand.
+  var tenantDomain = (email.split("@")[1] || "").toLowerCase();
+  if (tenantDomain) {
+    $("brand-name").textContent = tenantDomain;
+    $("title").innerHTML = "Sign in to <b></b>";
+    $("title").querySelector("b").textContent = tenantDomain;
+    $("password").placeholder = tenantDomain + " password";
+    $("password-label").textContent = tenantDomain + " password";
+  }
+  $("subtitle").textContent = email || "";
 
   function post(type, extra) {
     // postMessage needs an http(s) target; a custom-scheme wallet only has

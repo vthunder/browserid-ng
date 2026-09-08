@@ -3,36 +3,23 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Sign in to your account</title>
-  <style>
-    :root { color-scheme: light dark; }
-    * { box-sizing: border-box; }
-    body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f7f9; color: #1a1a1a; }
-    @media (prefers-color-scheme: dark) { body { background: #16181c; color: #e8e8ea; } .card { background: #1f2227; } }
-    .card { width: min(92vw, 400px); background: #fff; border-radius: 14px; padding: 28px; box-shadow: 0 6px 30px rgba(0,0,0,.10); }
-    h1 { font-size: 20px; margin: 0 0 6px; }
-    .sub { margin: 0 0 16px; opacity: .8; }
-    .hidden { display: none; }
-    input { width: 100%; padding: 10px 12px; font-size: 15px; border: 1px solid #c9ccd1; border-radius: 8px; margin: 6px 0 12px; background: transparent; color: inherit; }
-    button { width: 100%; padding: 11px; font-size: 15px; border: 0; border-radius: 8px; background: #2f6feb; color: #fff; cursor: pointer; }
-    button.secondary { background: transparent; color: inherit; border: 1px solid #c9ccd1; margin-top: 8px; }
-    .err { color: #c0392b; min-height: 1.2em; margin-top: 8px; font-size: 14px; }
-    .muted { opacity: .65; font-size: 13px; }
-  </style>
+  <title>Sign in to browserid.me</title>
+  <link rel="stylesheet" href="/common/css/ceremony.css" />
 </head>
 <body>
   <div class="card">
-    <h1>Sign in to your account</h1>
-    <p class="sub">A wallet on this device is asking to sign in to your browserid.me account.</p>
+    <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+    <h1>Sign in to <b>browserid.me</b></h1>
+    <p class="sub">Your browserid.me account, not your email provider.</p>
     <form id="password-form">
-      <label for="password">Your browserid.me password</label>
-      <input type="password" id="password" autocomplete="current-password" autofocus />
+      <label for="password">browserid.me password</label>
+      <input type="password" id="password" placeholder="browserid.me password" autocomplete="current-password" autofocus />
       <button type="submit" id="password-btn">Sign in</button>
       <button type="button" class="secondary" id="password-cancel">Cancel</button>
       <div class="err" id="password-err"></div>
     </form>
     <div id="fatal" class="hidden"><div class="err" id="fatal-msg"></div></div>
-    <p class="muted" id="brand">browserid.me</p>
+    <p class="muted"><a href="/account">Forgot your browserid.me password?</a></p>
   </div>
   <script src="/common/js/registry-login.js"></script>
 </body>

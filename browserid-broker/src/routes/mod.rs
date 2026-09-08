@@ -151,6 +151,7 @@ where
         // two files in sync).
         .route("/openapi.json", get(openapi_spec))
         .nest_service("/common/js", ServeDir::new(format!("{}/common/js", static_path)))
+        .nest_service("/common/css", ServeDir::new(format!("{}/common/css", static_path)))
         .layer(
             CorsLayer::new()
                 .allow_origin(tower_http::cors::Any)
