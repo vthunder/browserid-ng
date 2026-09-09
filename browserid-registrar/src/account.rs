@@ -212,8 +212,11 @@ struct BroughtKey {
     label: Option<String>,
 }
 
+/// `label` is the wallet's, else one derived from the User-Agent ("Chrome
+/// on macOS"), so a device the wallet did not name still reads as itself.
 fn brought_key(
     state: &RegistrarState,
+    headers: &axum::http::HeaderMap,
     hp: &Proof,
     path: &str,
     bh: &str,
@@ -239,7 +242,10 @@ fn brought_key(
     replay_check(state, &kid, &hp.jti)?;
     let label = match arg.label.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
         Some(l) => Some(crate::holders::validate_label(l).map_err(|e| ApiError::InvalidRequest(e.to_string()))?),
-        None => None,
+        None => headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .and_then(crate::holders::ua_label),
     };
     Ok(BroughtKey { pubkey: arg.pubkey.clone(), kid, label })
 }
@@ -331,7 +337,7 @@ pub async fn create(
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let identity = identity_arg(&req.identity)?;
     let carried = carried_certs(&state, &hp, path, &identity, &req.certs).await?;
-    let key = brought_key(&state, &hp, path, &bh, &req.login_key)?;
+    let key = brought_key(&state, &headers, &hp, path, &bh, &req.login_key)?;
     if !carried.iter().any(|c| c.purpose == "authorization") {
         return Err(invalid_cert("config_required", "creating an account needs a config cert"));
     }
@@ -456,7 +462,7 @@ pub async fn login(
                 return Err(ApiError::InvalidRequest("login_key is required with a token".into()));
             };
             let hp = header_proof(&headers)?;
-            let key = brought_key(&state, &hp, path, &bh, arg)?;
+            let key = brought_key(&state, &headers, &hp, path, &bh, arg)?;
             let spent = state
                 .store
                 .take_login_token(&b64url_sha256(token.as_bytes()))

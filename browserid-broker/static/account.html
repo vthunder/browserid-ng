@@ -414,15 +414,8 @@
         </div>
         <div class="rcard" id="lk-card">
           <div class="rtitle tight">Signed in to this account</div>
-          <div class="rsub" id="lk-sub">Devices and pages that can open this account without your password.</div>
+          <div class="rsub" id="lk-sub">Browsers and apps that open this account without your password.</div>
           <div id="lk-list" class="setlist"></div>
-          <div id="lk-pass-form" class="inform" hidden>
-            <div class="hint">Confirm your browserid.me password once — this browser then stays signed in to the account.</div>
-            <input class="inp txt" id="lk-pass" type="password" placeholder="browserid.me password" autocomplete="current-password" style="margin-bottom:0">
-            <div class="btnrow" style="margin-top:8px">
-              <button class="btn-dark" id="lk-go">Confirm</button>
-            </div>
-          </div>
           <p class="status" id="lk-status"></p>
         </div>
         <div class="rcard">
@@ -1707,60 +1700,49 @@ async function loadLoginKeys() {
   account.loginKeys = r.login_keys || [];
   renderLoginKeys();
 }
-// Establish the registry session: headless when this browser holds a login
-// key, else ask for the password in the card (no popup on load).
+// Establish the registry session: headless by this browser's login key.
+// Without one (a cookie from before login keys, or a key revoked from
+// another device) the page signs out — the next password sign-in enrols
+// the key. No page-local password prompt, no popup. The one exception is
+// an account with no password: the registry's login page cannot help it
+// yet, so the page stays on the cookie and says so.
 async function registryBoot() {
   if (!account.id) { $('lk-card').hidden = true; return; }
   window.Registry.configureKeyless({ account: account.id });
-  if (await window.Registry.hasLoginKey()) {
-    try { await loadLoginKeys(); return; } catch (e) { console.warn('login keys:', e.message || e); }
-  }
-  if (account.hasPassword === false) {
-    $('lk-list').innerHTML = '';
-    lkStatus('Set a password (Account settings) to manage what is signed in to this account.');
+  if (!(await window.Registry.hasLoginKey())) {
+    if (account.hasPassword === false) {
+      $('lk-list').innerHTML = '';
+      lkStatus('Set a password (Account settings) to manage what is signed in to this account.');
+      return;
+    }
+    await signOutForRelogin();
     return;
   }
-  $('lk-list').innerHTML = '';
-  $('lk-pass-form').hidden = false;
+  try { await loadLoginKeys(); } catch (e) {
+    if (e && (e.status === 401 || e.reason === 'login_required')) { await signOutForRelogin(); return; }
+    console.warn('login keys:', e.message || e);
+  }
 }
-$('lk-go').onclick = async () => {
-  const pass = $('lk-pass').value;
-  if (!pass) return;
-  $('lk-go').disabled = true; lkStatus('Signing in…');
-  window.Registry.configureKeyless({ account: account.id, password: pass });
-  try {
-    await window.Registry.ensure();
-    $('lk-pass-form').hidden = true; $('lk-pass').value = '';
-    lkStatus('');
-    await loadLoginKeys();
-  } catch (e) {
-    lkStatus(e.reason === 'login_rejected' ? 'Wrong password.' : ('Failed: ' + e.message), 'err');
-  } finally { $('lk-go').disabled = false; }
-};
-$('lk-pass').onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); $('lk-go').click(); } };
+async function signOutForRelogin() {
+  try { sessionStorage.setItem('acct-relogin', '1'); } catch (e) { /* private mode */ }
+  await finishSignout();
+}
 function renderLoginKeys() {
   const keys = (account.loginKeys || []).filter(k => !k.revoked);
   const fmt = (iso) => { try { return new Date(iso).toLocaleDateString(); } catch { return ''; } };
+  // This browser's own key is not signed out from here — the navbar's
+  // Sign out does that (and revokes the key with everything else).
   $('lk-list').innerHTML = keys.map(k => `
     <div class="lk-row" style="display:flex;align-items:center;gap:8px;padding:6px 0">
       <span style="flex:1;min-width:0;font:12.5px system-ui, sans-serif">${escapeHtml(k.label || 'Device')}${k.current ? ' <span class="via">(this browser)</span>' : ''}
         <span class="via">since ${fmt(k.enrolled_at)}</span></span>
-      <button class="btn-plain lk-revoke" data-id="${k.id}" data-kid="${escapeHtml(k.kid)}">Sign out</button>
-    </div>`).join('') || '<div class="via">Nothing else is signed in.</div>';
+      ${k.current ? '' : `<button class="btn-plain lk-revoke" data-id="${k.id}">Sign out</button>`}
+    </div>`).join('') || '<div class="via">Nothing is signed in.</div>';
   for (const b of $('lk-list').querySelectorAll('.lk-revoke')) b.onclick = async () => {
     if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = 'Confirm sign-out'; return; }
     b.disabled = true;
-    const mine = b.dataset.kid === window.Registry.loginKid();
     try {
       await window.Registry.call('POST', '/api/v1/login-keys/revoke', { id: Number(b.dataset.id) });
-      if (mine) {
-        // This page's own key: its session just ended. Forget the key and
-        // ask for the password again rather than fail on the next call.
-        await window.Registry.forgetLoginKey();
-        account.loginKeys = null;
-        await registryBoot();
-        return;
-      }
       await loadLoginKeys();
     } catch (e) {
       b.disabled = false; b.textContent = 'Failed — retry';
@@ -1905,7 +1887,9 @@ async function boot() {
       const hint = sessionStorage.getItem('pv-si-hint');
       if (hint) { sessionStorage.removeItem('pv-si-hint'); $('si-email').value = hint; }
     } catch (e) { /* private mode */ }
-    siShow('email', { lead: "Enter your email — we'll sign you in or set you up.", btn: 'Continue' });
+    let relogin = false;
+    try { relogin = sessionStorage.getItem('acct-relogin') === '1'; sessionStorage.removeItem('acct-relogin'); } catch (e) { /* private mode */ }
+    siShow('email', { lead: relogin ? 'Please sign in again to manage this account.' : "Enter your email — we'll sign you in or set you up.", btn: 'Continue' });
     return;
   }
   account.csrf = ctx.csrf_token;

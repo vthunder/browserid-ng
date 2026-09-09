@@ -144,7 +144,8 @@
     return { bodyStr: bodyStr, header: await proofBy(signer, "POST", path, bodyStr, jti) };
   }
   async function loginKeyArg(path, jti) {
-    return { pubkey: loginKey.publicKeyX, label: "This browser", proof: await proofBy(loginKey, "POST", path, null, jti) };
+    // No label: the registry names the device from the User-Agent.
+    return { pubkey: loginKey.publicKeyX, proof: await proofBy(loginKey, "POST", path, null, jti) };
   }
 
   async function lookupAccount() {

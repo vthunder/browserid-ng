@@ -1,9 +1,10 @@
 /**
  * /account as its own device (registry-api-v1 §4.2, handoff 2026-09-09):
- * a password sign-in logs the page in to the registry with a page-local
- * login key; the "Signed in to this account" card lists it; a reload is
- * headless (stored_key, no password asked); signing that key out ends the
- * page's session and the card asks for the password again.
+ * a password sign-in logs the page in to the registry with this browser's
+ * login key; the "Signed in to this account" card lists it (labelled from
+ * the User-Agent); a reload is headless (stored_key); the current browser
+ * has no sign-out in the card; without a key the page signs out rather
+ * than fall back to the cookie.
  */
 import { test, expect } from '@playwright/test';
 
@@ -31,36 +32,40 @@ test('the account page logs in as its own device and can sign itself out', async
 
   // The password sign-in enrolled this page's login key: listed, no prompt.
   const list = page.locator('#lk-list');
-  await expect(list).toContainText('This browser', { timeout: 10000 });
-  await expect(page.locator('#lk-pass-form')).toBeHidden();
+  await expect(list).toContainText('(this browser)', { timeout: 10000 });
+  await expect(list).toContainText('Chrome');
 
-  // A reload is headless: stored_key, still listed, still no prompt.
+  // A reload is headless: stored_key, still listed.
   await page.reload();
   await expect(page.locator('#app')).toBeVisible({ timeout: 10000 });
-  await expect(list).toContainText('This browser', { timeout: 10000 });
-  await expect(page.locator('#lk-pass-form')).toBeHidden();
+  await expect(list).toContainText('(this browser)', { timeout: 10000 });
 
   // The registry agrees: one live login key on the account.
   const keys = await page.evaluate(async () => {
     const r = await (window as any).Registry.call('GET', '/api/v1/login-keys');
-    return r.login_keys.filter((k: any) => !k.revoked).map((k: any) => k.label);
+    return r.login_keys.filter((k: any) => !k.revoked).map((k: any) => k.current);
   });
-  expect(keys).toEqual(['This browser']);
+  expect(keys).toEqual([true]);
 
-  // Sign the page's own key out (in-content confirm): the session ends and
-  // the card asks for the password.
-  const revoke = list.locator('.lk-revoke').first();
-  await revoke.click();
-  await expect(revoke).toHaveText('Confirm sign-out');
-  await revoke.click();
-  await expect(page.locator('#lk-pass-form')).toBeVisible({ timeout: 10000 });
+  // This browser's own key has no sign-out here (the navbar does that).
+  await expect(list.locator('.lk-revoke')).toHaveCount(0);
+  await expect(list).toContainText('(this browser)');
 
-  // The password brings it back with a fresh key.
-  await page.fill('#lk-pass', 'wrong-password');
-  await page.click('#lk-go');
-  await expect(page.locator('#lk-status')).toContainText('Wrong password', { timeout: 10000 });
-  await page.fill('#lk-pass', pass);
-  await page.click('#lk-go');
-  await expect(page.locator('#lk-pass-form')).toBeHidden({ timeout: 10000 });
-  await expect(list).toContainText('This browser');
+  // Without a login key the page does not fall back to the cookie: it
+  // signs out, and the sign-in card says why.
+  await page.evaluate(async () => {
+    await (window as any).Registry.call('POST', '/api/v1/login-keys/revoke', { kid: (window as any).Registry.loginKid() });
+    await (window as any).Registry.forgetLoginKey();
+  });
+  await page.reload();
+  await expect(page.locator('#signin')).toBeVisible({ timeout: 10000 });
+  await expect(page.locator('#si-lead')).toContainText('sign in again');
+
+  // Signing in again enrols a fresh key and the card is back.
+  await page.fill('#si-email', email);
+  await page.click('#si-btn');
+  await page.fill('#si-pass', pass);
+  await page.click('#si-btn');
+  await expect(page.locator('#app')).toBeVisible({ timeout: 10000 });
+  await expect(list).toContainText('(this browser)', { timeout: 10000 });
 });
