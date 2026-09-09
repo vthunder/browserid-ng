@@ -412,6 +412,19 @@
             an identity, sign a guestbook, bridge to Bluesky.</div>
           <a href="https://www.browserid.me/demos" style="font:500 12px system-ui, sans-serif">Browse the demos ↗</a>
         </div>
+        <div class="rcard" id="lk-card">
+          <div class="rtitle tight">Signed in to this account</div>
+          <div class="rsub" id="lk-sub">Devices and pages that can open this account without your password.</div>
+          <div id="lk-list" class="setlist"></div>
+          <div id="lk-pass-form" class="inform" hidden>
+            <div class="hint">Confirm your browserid.me password once — this browser then stays signed in to the account.</div>
+            <input class="inp txt" id="lk-pass" type="password" placeholder="browserid.me password" autocomplete="current-password" style="margin-bottom:0">
+            <div class="btnrow" style="margin-top:8px">
+              <button class="btn-dark" id="lk-go">Confirm</button>
+            </div>
+          </div>
+          <p class="status" id="lk-status"></p>
+        </div>
         <div class="rcard">
           <div class="rtitle tight">Account settings</div>
           <div class="setlist">
@@ -464,6 +477,7 @@
 <p class="foot"><a href="/">browserid.me</a></p>
 
 <script src="/common/js/keystore.js"></script>
+<script src="/common/js/registry-session.js"></script>
 <script type="module">
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
@@ -492,7 +506,8 @@ const post = (path, body) => api(path, {
 });
 
 let account = { emails: [], agents: [], parentOf: {}, publicNames: {}, managedOf: {}, warrants: [],
-  deviceCerts: [], holders: { namespaces: [], holders_without_namespace: [] }, csrf: null };
+  deviceCerts: [], holders: { namespaces: [], holders_without_namespace: [] }, csrf: null,
+  id: null, loginKeys: null };
 let deviceCache = []; // this browser's DEVICE-store records
 // Client view state (server data above; this is pure UI).
 let ui = { view: 'main', actorId: null, expandedId: null, expandedSite: null,
@@ -1647,6 +1662,7 @@ $('signin-form').onsubmit = async (e) => {
     if (siMode === 'login') {
       siMuted('Signing in…');
       await post('/wsapi/authenticate_user', { email, pass: $('si-pass').value, ephemeral: false });
+      await registryLoginWithPassword($('si-pass').value);
       location.reload(); return;
     }
     if (siMode === 'create') {
@@ -1664,10 +1680,92 @@ $('signin-form').onsubmit = async (e) => {
       siMuted('Confirming…');
       await post('/wsapi/complete_signin_code', { email, token: $('si-code').value.trim() });
       await post('/wsapi/authenticate_user', { email, pass: siPendingPass, ephemeral: false });
+      await registryLoginWithPassword(siPendingPass);
       location.reload(); return;
     }
   } catch (err) { siErr(err.message); }
 };
+
+// -------- registry session (registry-api-v1) --------
+// This page is its own device on the account (handoff 2026-09-09 ruling 1):
+// a page-local login key, one password login through the registry's login
+// page, stored_key from then on. The cookie session still serves the
+// issuer role (addresses, password, certs issued here); registry data is
+// read and managed under this session.
+async function registryLoginWithPassword(password) {
+  // Right after a password sign-in: the password is in hand, so log in to
+  // the registry now and mint the login key before the page reloads.
+  let ctx; try { ctx = await api('/wsapi/session_context'); } catch { return; }
+  if (!ctx.account) return;
+  window.Registry.configureKeyless({ account: ctx.account, password });
+  try { await window.Registry.ensure(); } catch (e) { console.warn('registry login:', e.message || e); }
+}
+function lkStatus(msg, cls) { const el = $('lk-status'); el.className = 'status ' + (cls || 'muted'); el.textContent = msg || ''; }
+async function loadLoginKeys() {
+  const r = await window.Registry.call('GET', '/api/v1/login-keys');
+  account.loginKeys = r.login_keys || [];
+  renderLoginKeys();
+}
+// Establish the registry session: headless when this browser holds a login
+// key, else ask for the password in the card (no popup on load).
+async function registryBoot() {
+  if (!account.id) { $('lk-card').hidden = true; return; }
+  window.Registry.configureKeyless({ account: account.id });
+  if (await window.Registry.hasLoginKey()) {
+    try { await loadLoginKeys(); return; } catch (e) { console.warn('login keys:', e.message || e); }
+  }
+  if (account.hasPassword === false) {
+    $('lk-list').innerHTML = '';
+    lkStatus('Set a password (Account settings) to manage what is signed in to this account.');
+    return;
+  }
+  $('lk-list').innerHTML = '';
+  $('lk-pass-form').hidden = false;
+}
+$('lk-go').onclick = async () => {
+  const pass = $('lk-pass').value;
+  if (!pass) return;
+  $('lk-go').disabled = true; lkStatus('Signing in…');
+  window.Registry.configureKeyless({ account: account.id, password: pass });
+  try {
+    await window.Registry.ensure();
+    $('lk-pass-form').hidden = true; $('lk-pass').value = '';
+    lkStatus('');
+    await loadLoginKeys();
+  } catch (e) {
+    lkStatus(e.reason === 'login_rejected' ? 'Wrong password.' : ('Failed: ' + e.message), 'err');
+  } finally { $('lk-go').disabled = false; }
+};
+$('lk-pass').onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); $('lk-go').click(); } };
+function renderLoginKeys() {
+  const keys = (account.loginKeys || []).filter(k => !k.revoked);
+  const fmt = (iso) => { try { return new Date(iso).toLocaleDateString(); } catch { return ''; } };
+  $('lk-list').innerHTML = keys.map(k => `
+    <div class="lk-row" style="display:flex;align-items:center;gap:8px;padding:6px 0">
+      <span style="flex:1;min-width:0;font:12.5px system-ui, sans-serif">${escapeHtml(k.label || 'Device')}
+        <span class="via">since ${fmt(k.issued_at)}</span></span>
+      <button class="btn-plain lk-revoke" data-id="${k.id}" data-kid="${escapeHtml(k.kid)}">Sign out</button>
+    </div>`).join('') || '<div class="via">Nothing else is signed in.</div>';
+  for (const b of $('lk-list').querySelectorAll('.lk-revoke')) b.onclick = async () => {
+    if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = 'Confirm sign-out'; return; }
+    b.disabled = true;
+    const mine = b.dataset.kid === window.Registry.loginKid();
+    try {
+      await window.Registry.call('POST', '/api/v1/login-keys/revoke', { id: Number(b.dataset.id) });
+      if (mine) {
+        // This page's own key: its session just ended. Forget the key and
+        // ask for the password again rather than fail on the next call.
+        await window.Registry.forgetLoginKey();
+        account.loginKeys = null;
+        await registryBoot();
+        return;
+      }
+      await loadLoginKeys();
+    } catch (e) {
+      b.disabled = false; b.textContent = 'Failed — retry';
+    }
+  };
+}
 
 // -------- session --------
 async function clearLocal() {
@@ -1684,6 +1782,11 @@ async function clearLocal() {
 // revoked AT their issuer, interactively — offer that in-content
 // (window.confirm is unreliable in background tabs), never force it.
 async function finishSignout() {
+  // The page's own registry login key goes too — revoked, not just dropped.
+  try {
+    const kid = window.Registry.loginKid();
+    if (kid) { await window.Registry.call('POST', '/api/v1/login-keys/revoke', { kid }); await window.Registry.forgetLoginKey(); }
+  } catch (e) { /* best-effort */ }
   try { await post('/wsapi/logout', {}); } catch (e) { /* session may be gone */ }
   await clearLocal();
   try { localStorage.removeItem('browserid:remembered'); } catch (e) { /* private mode */ }
@@ -1805,10 +1908,12 @@ async function boot() {
     return;
   }
   account.csrf = ctx.csrf_token;
+  account.id = ctx.account || null;
   try { await window.Keystore.purgeLegacy(); } catch (e) { console.warn('keystore purge:', e); }
   await reloadAccount();
   $('signout').hidden = false;
   $('app').hidden = false;
+  registryBoot().catch(e => console.warn('registry:', e.message || e));
   consumeAuthorizedHandoff();
   history.replaceState({ view: 'main' }, '', location.pathname);
   showView('main', { push: false });

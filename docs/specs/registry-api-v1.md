@@ -174,7 +174,8 @@ two, and a registry MUST offer both:
   this account is unexpired and unrevoked; no human involved.
 
 **Login certs.** Under a session, a wallet submits a login key of its
-own and the registry signs it into a login cert: a compact JWS,
+own — the call proven by a member, or by that key itself when the
+session has none (§5.2.3) — and the registry signs it into a login cert: a compact JWS,
 `typ: browserid-login-cert-v1`, `iss` the registry's domain, `sub` the
 account, `kid` the key (§4.4), `iat`/`exp`, and a status ref on the
 registry's own list. Lifetime is registry policy, RECOMMENDED 90 days.
@@ -258,8 +259,9 @@ failure is the response:
 1. parse the proof (`401 invalid_proof`);
 2. resolve `kid` to a key: on `accounts` and `accounts/lookup`, a cert
    carried in the call; on `login`, a login cert of the named account
-   (`403 forbidden/login_rejected`); on any other call, a session
-   member (`401 invalid_session`);
+   (`403 forbidden/login_rejected`); on `attach` and `login-keys`, a
+   session member or the cert or key the call carries; on any other
+   call, a session member (`401 invalid_session`);
 3. verify the signature under that key (`401 invalid_proof`) — before
    anything that costs a network fetch;
 4. an identity cert passes the validity bar (`422 invalid_cert/<reason>`
@@ -379,8 +381,14 @@ Defined in §4.2.
 
 **`POST /api/v1/login-keys`** — Request `{ "pubkey", "label"? }`
 (`pubkey` the base64url raw Ed25519 key, `label` per §3). Response
-`200 { "id", "kid", "cert", "expires_at" }`: a login cert (§4.2) for
-the session's account. At most one per key; repeating replaces it.
+`200 { "id", "kid", "cert", "expires_at", "session"? }`: a login cert
+(§4.2) for the session's account. At most one per key; repeating
+replaces it. The header proof is by a session member, or by the
+submitted key itself: a session opened by `login_page` has no member,
+and a device with no identity certs — a page that is its own device —
+has nothing else to sign with. When the key proved the call, `session`
+is a fresh §4.5 session body whose members are the caller's plus this
+key; the old token stays valid to expiry.
 
 **`GET /api/v1/login-keys`** — The account's login certs: `id`, `kid`,
 `label`, `issued_at`, `expires_at`, `revoked`. Retired ones stay

@@ -394,6 +394,12 @@ pub async fn login(
 // §5.2.3 login-keys
 // ---------------------------------------------------------------------------
 
+/// The account a login-keys call acts on (the rest of the handler reads
+/// `user.user_id` like an `ApiUser`).
+struct SessionUser {
+    user_id: u64,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LoginKeyRequest {
@@ -403,16 +409,34 @@ struct LoginKeyRequest {
 }
 
 /// `POST /api/v1/login-keys`: sign the wallet's login key into a login cert.
+/// The header proof is by a session member, or by the submitted key
+/// itself — a page login's session has no member, and a keyless device (a
+/// page as its own device) has nothing else to sign with. When the key
+/// proved the call, the response carries a fresh session body with it as
+/// a member, like attach.
 pub async fn create_login_key(
     State(state): State<Arc<RegistrarState>>,
-    user: ApiUser,
+    headers: axum::http::HeaderMap,
+    axum::Extension(BodyHash(bh)): axum::Extension<BodyHash>,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let path = "/api/v1/login-keys";
+    let (session, members) = crate::session::bearer_session(&state, &headers).await?;
+    let hp = header_proof(&headers)?;
     let req: LoginKeyRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let key = browserid_core::PublicKey::from_base64(&req.pubkey)
         .map_err(|e| ApiError::InvalidRequest(format!("bad pubkey: {e}")))?;
     let kid = key.kid();
+    let by_member = members.iter().find(|m| m.kid() == hp.kid).map(|m| m.pubkey().to_string());
+    let self_proven = by_member.is_none() && hp.kid == kid;
+    let signer_key = by_member
+        .or_else(|| if self_proven { Some(req.pubkey.clone()) } else { None })
+        .ok_or_else(|| ApiError::InvalidSession("the Proof key is neither a member of this session nor the submitted key".into()))?;
+    hp.verify(&signer_key)?;
+    hp.check_claims(&state, "POST", path, Some(&bh))?;
+    replay_check(&state, &hp.kid, &hp.jti)?;
+    let user = SessionUser { user_id: session.user_id };
     let label = match req.label.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
         Some(l) => Some(crate::holders::validate_label(l).map_err(|e| ApiError::InvalidRequest(e.to_string()))?),
         None => None,
@@ -468,7 +492,15 @@ pub async fn create_login_key(
         .map_err(|e| ApiError::Internal(format!("login cert store: {e}")))?;
     // A replaced (re-issued) key is live again.
     state.store.set_status_active_idx(idx).ok();
-    Ok(Json(serde_json::json!({ "id": id, "kid": kid, "cert": cert, "expires_at": exp.to_rfc3339() })))
+    let mut out = serde_json::json!({ "id": id, "kid": kid, "cert": cert, "expires_at": exp.to_rfc3339() });
+    if self_proven {
+        let member_cert_ids: Vec<u64> = members.iter().filter_map(|m| match m {
+            crate::session::Member::Cert { cert, .. } => Some(cert.id),
+            _ => None,
+        }).collect();
+        out["session"] = crate::session::open(&state, session.user_id, member_cert_ids, Some(id)).await?;
+    }
+    Ok(Json(out))
 }
 
 /// `GET /api/v1/login-keys`.

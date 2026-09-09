@@ -719,6 +719,27 @@ async fn login_methods_login_certs_and_session_authority() {
     assert_eq!(status, 403, "{body}");
     assert_eq!(body["reason"], "login_rejected");
 
+    // A keyless device (the account page): page login → a session with no
+    // member → enrol a login key proven by itself → a session it belongs
+    // to → headless from then on.
+    let page_token = body_token_or(&l, &account).await;
+    let page_kp = KeyPair::generate();
+    let (status, body) = create_login_key(&l, &page_kp, &page_token, &page_kp).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["session"]["members"][0]["kind"], "login", "{body}");
+    assert_eq!(body["session"]["members"][0]["kid"], page_kp.public_key().kid());
+    let page_session = body["session"]["token"].as_str().unwrap().to_string();
+    let (status, body, _) = session_call(&l, &page_kp, &page_session, "GET", "/api/v1/login-keys", None).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body["login_keys"].as_array().unwrap().iter().any(|k| k["kid"] == page_kp.public_key().kid()), "{body}");
+    let (status, body) = login_stored(&l, &account, &page_kp).await;
+    assert_eq!(status, 200, "{body}");
+    // A key that is neither a member nor the one submitted cannot prove it.
+    let other_kp = KeyPair::generate();
+    let page_token2 = body_token_or(&l, &account).await;
+    let (status, body) = create_login_key(&l, &other_kp, &page_token2, &KeyPair::generate()).await;
+    assert_eq!(status, 401, "{body}");
+
     // Listed; revoking the key ends the session it alone opened and refuses
     // the next stored_key login.
     let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/login-keys", None).await;

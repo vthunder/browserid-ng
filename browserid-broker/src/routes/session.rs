@@ -52,6 +52,11 @@ pub struct SessionContext {
     /// `acceptedFallbacks` (spec §8.1) to know whether email sign-in here is
     /// acceptable to the RP.
     pub domain: String,
+    /// The registry account's public id (registry-api-v1 §3) when
+    /// authenticated: what the /account page logs in to as its own
+    /// device (a login key, no identity certs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// GET /wsapi/session_context
@@ -72,7 +77,9 @@ where
     let domain_key_creation_time = 0i64;
 
     let context = if let Some(session) = session {
+        let account = state.user_store.account_public_id(session.user_id).ok();
         SessionContext {
+            account,
             csrf_token: Some(session.csrf_token),
             authenticated: true,
             auth_level: Some(match session.level {
@@ -99,6 +106,7 @@ where
             domain_key_creation_time,
             cookies: true, // Assume cookies are enabled - the original checks for a test cookie
             domain: state.domain.clone(),
+            account: None,
         }
     };
 

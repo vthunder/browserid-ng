@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-09-04T23:32:18Z
-updated_at: 2026-09-09T16:08:29Z
+updated_at: 2026-09-09T16:28:48Z
 parent: browserid-ng-71vt
 blocked_by:
     - browserid-ng-0c49
@@ -33,3 +33,7 @@ The API side is done; what remains is the cookie lane's registry-role surface, w
 2026-09-09 (Dan): /account as an RP rejected; the RP is the login page, later methods live there. §4.3 becomes 'a session suffices; signing calls carry a valid recorded config cert' (no config tier at all); warrants/lookup removed (redundant with GET warrants, no callers).
 
 - [x] Step 1: spec §4.3/§5/§7.1 + drop require_config/has_config + delete warrants/lookup
+
+- [x] Step 2: keyless mode in registry-session.js; /account logs in as its own device (page-local login key; password at sign-in or in the card; stored_key after); 'Signed in to this account' card lists login keys with sign-out; session_context carries the account id. API: POST /api/v1/login-keys provable by the submitted key itself (a page-login session has no member), answering a session body. e2e: account-registry-session.spec.ts.
+
+Open for step 3: accounts with no password (primary/bridge-only) cannot open a registry session until the login page has a second method (e98a). Today the card says so and the rest of the page still runs on the cookie; when warrants/certs/holders move to the API (step 3) that becomes a page-wide gate — decide then whether reads stay on the cookie for those accounts.

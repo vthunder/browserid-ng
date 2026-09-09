@@ -13,6 +13,15 @@
 // binding POST bodies) signed by a session member, re-logging in once on
 // 401 invalid_session.
 //
+// configureKeyless() is the other shape: a page that is its own device
+// (the registry's /account page) with a login key and no identity certs.
+// It knows the account id already, so ensure() skips lookup and attach:
+// stored_key when this browser holds a login cert for the account, else
+// the login page (the password the page collected, or askPassword()),
+// then a login cert so the next load is headless. Signing calls need a
+// config cert the session does not have; the page brings one from the
+// keystore when it has it.
+//
 // Depends on window.Keystore. Loaded after keystore.js.
 (function () {
   "use strict";
@@ -22,6 +31,7 @@
   var pair = null;      // {deviceCert, devicePrivateKey, configCert, configPrivateKey}
   var identity = null;
   var password = null;  // the password the user typed this run, if any
+  var askPassword = null; // keyless: () => Promise<string>, the page's own prompt
   var token = null;
   var tokenExp = 0;
   var kids = null;      // {device, config}
@@ -81,6 +91,7 @@
   // session holds it, else the config cert.
   function memberKey() {
     if (loginKey && members.indexOf(loginKey.kid) !== -1) return loginKey;
+    if (!pair) return null;
     if (members.indexOf(kids.config) !== -1) return configKey();
     if (members.indexOf(kids.device) !== -1) return deviceKey();
     return null;
@@ -97,7 +108,7 @@
     token = body.token;
     tokenExp = Math.floor(new Date(body.expires_at).getTime() / 1000) || (nowS() + 3600);
     members = (body.members || []).map(function (m) { return m.kid; });
-    if (body.account) { account = body.account; rememberAccount(body.account); }
+    if (body.account) { account = body.account; if (identity) rememberAccount(body.account); }
   }
   function error(r, path) {
     var e = new Error("POST " + path + ": " + (r.data.error_description || r.data.error || r.status));
@@ -108,13 +119,16 @@
 
   // --- what this browser remembers per identity ---------------------------
   function accountKey() { return "browserid:registry:account:" + identity; }
+  // The keystore key for a login key: the pair's identity, or the page's
+  // own slot when keyless (one login key per account for the page).
+  function loginKeyEmail(acct) { return (pair ? "@registry:" : "@registry-page:") + acct; }
   function knownAccount() { try { return localStorage.getItem(accountKey()) || null; } catch (e) { return null; } }
   function rememberAccount(id) { try { localStorage.setItem(accountKey(), id); } catch (e) { /* best-effort */ } }
   // Login keys live in the keystore's device store under kind "login",
   // keyed by the registry host and the account id.
   async function loadLoginKey(acct) {
     try {
-      var rec = await window.Keystore.getDevice(window.location.host, "@registry:" + acct, "login");
+      var rec = await window.Keystore.getDevice(window.location.host, loginKeyEmail(acct), "login");
       if (!rec || !rec.privateKey || !rec.cert) return null;
       var c = decode(rec.cert);
       if (!c || !c.exp || c.exp <= nowS() + 60) return null;
@@ -123,7 +137,7 @@
   }
   async function storeLoginKey(acct, key) {
     try {
-      await window.Keystore.putDevice(window.location.host, "@registry:" + acct, "login",
+      await window.Keystore.putDevice(window.location.host, loginKeyEmail(acct), "login",
         { publicKeyX: key.publicKeyX, privateKey: key.privateKey, cert: key.cert });
     } catch (e) { /* best-effort: next run logs in through the page again */ }
   }
@@ -176,6 +190,7 @@
     if (!(r.status === 403 && r.data.reason === "login_required" && r.data.url)) throw error(r, path);
     var url = new URL(r.data.url, window.location.origin);
     var pageToken;
+    if (url.origin === window.location.origin && !password && askPassword) password = await askPassword();
     if (url.origin === window.location.origin && password) {
       // This registry's own page: its check is the account password, which
       // the dialog has just collected — post it straight to the page's
@@ -222,7 +237,20 @@
   async function ensureLoginKey() {
     if (loginKey) return;
     var kp = await window.Keystore.generate();
-    var r = await call("POST", "/api/v1/login-keys", { pubkey: kp.publicKeyX, label: "This browser" });
+    var r;
+    if (memberKey()) {
+      r = await call("POST", "/api/v1/login-keys", { pubkey: kp.publicKeyX, label: "This browser" });
+    } else {
+      // No member to sign with (a page login, keyless): the key proves
+      // its own enrolment and the answer carries a session it belongs to.
+      var path = "/api/v1/login-keys";
+      var key = { privateKey: kp.privateKey, kid: await kidOfX(kp.publicKeyX) };
+      var bodyStr = JSON.stringify({ pubkey: kp.publicKeyX, label: "This browser (account page)" });
+      var res = await postRaw(path, bodyStr, { proof: await proofBy(key, "POST", path, bodyStr), authorization: "Bearer " + token });
+      if (!res.ok) throw error(res, path);
+      r = res.data;
+      if (r.session) took(r.session);
+    }
     loginKey = { privateKey: kp.privateKey, publicKeyX: kp.publicKeyX, kid: r.kid, cert: r.cert };
     await storeLoginKey(account, loginKey);
   }
@@ -237,9 +265,21 @@
     throw error(r, path);
   }
 
-  // A live session with the pair attached.
+  // Keyless: a live session by this page's login key.
+  async function ensureKeyless() {
+    token = null; members = [];
+    if (!loginKey) loginKey = await loadLoginKey(account);
+    if (loginKey && await loginStored(account)) return token;
+    loginKey = null;
+    await loginPage(account);
+    await ensureLoginKey();   // the page's only member: without it the session cannot sign
+    return token;
+  }
+
+  // A live session with the pair attached (keyless: by the login key).
   async function ensure() {
     if (token && nowS() < tokenExp - 60 && memberKey()) return token;
+    if (!pair && account) return ensureKeyless();
     if (!pair) throw new Error("Registry not configured");
     token = null; members = [];
     var acct = account || knownAccount();
@@ -313,7 +353,32 @@
       kids = { device: await kidOfCert(pair.deviceCert), config: await kidOfCert(pair.configCert) };
       if (!sameCert) { token = null; tokenExp = 0; members = []; }
     },
-    configured: function () { return !!pair; },
+    // Keyless (a page as its own device): account is the registry's public
+    // account id; password, when the page has just collected it;
+    // askPassword() the page's prompt for when it has not.
+    configureKeyless: function (opts) {
+      pair = null; kids = null; identity = null;
+      if (account !== opts.account) { loginKey = null; token = null; tokenExp = 0; members = []; }
+      account = opts.account;
+      password = opts.password || null;
+      askPassword = opts.askPassword || null;
+    },
+    configured: function () { return !!pair || !!account; },
+    // Whether this browser already holds a login cert for the account, so
+    // a page can tell "headless from here" from "will ask for the password".
+    hasLoginKey: async function () {
+      if (!account) return false;
+      if (!loginKey) loginKey = await loadLoginKey(account);
+      return !!loginKey;
+    },
+    // Forget this browser's login key for the account (after revoking it).
+    forgetLoginKey: async function () {
+      if (!account) return;
+      try { await window.Keystore.delDevice(window.location.host, loginKeyEmail(account), "login"); } catch (e) {}
+      loginKey = null; token = null; members = [];
+    },
+    account: function () { return account; },
+    loginKid: function () { return loginKey ? loginKey.kid : null; },
     ensure: ensure,
     call: call,
   };
