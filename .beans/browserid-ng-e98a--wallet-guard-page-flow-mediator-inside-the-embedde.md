@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-09-07T22:06:11Z
-updated_at: 2026-09-09T15:24:46Z
+updated_at: 2026-09-09T23:14:38Z
 parent: browserid-ng-9yyk
 blocked_by:
     - browserid-ng-0c49
@@ -28,3 +28,5 @@ From the 0c49 guard ruling (Dan, 2026-09-08): registry-api-v1 §4.2 now has ONE 
 2026-09-09: the guard became login (registry-api-v1 §4.2; bean r9jo). Everything here still applies, now to the registry's login page and its later methods (approval by another device, proof of another identity through the mediator). The password baseline is shipped; the wallet runs the login page in its own window today.
 
 2026-09-09 first item (Dan): native approvals — the wallet answers inbox requests itself with a native dialog and signs with its config key, posting requests/respond; today it opens the consent page, which has no key in a native-wallet browser. Plan in docs/plans/2026-09-09-registry-pages-handoff.md.
+
+2026-09-10: native approvals split out to jo0m (the wallet hosts the consent page with a signing bridge; no native rebuild of the card shapes). What remains here waits on the login page's SECOND method — none exists yet: the page checks a password only; 'approval from another device' and 'proof of another identity' are §4.2 possibilities, not implementations. Next design conversation: which second method, what the page shows, how the approving device or the proving wallet is asked. The general mediator-in-webview, deferred attach, re-entrancy and identity choice all hang off that; passwordless accounts on /account do too.
