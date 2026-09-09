@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-09-04T23:32:18Z
-updated_at: 2026-09-08T23:27:16Z
+updated_at: 2026-09-09T15:24:46Z
 parent: browserid-ng-71vt
 blocked_by:
     - browserid-ng-0c49
@@ -27,3 +27,5 @@ Ruled by Dan 2026-09-05: real gap, tackle separately once the token lane is full
 The API side is done; what remains is the cookie lane's registry-role surface, which still serves three pages. Migrating it means: account.html (warrants list/revoke, holders list/rename/forget, certs list/revoke, manual signing allocate+register — ~12 call sites), consent.html (warrant_requests, warrant_respond, warrants) and authorize.html on `Registry` (registry-session.js; pick a keystore pair for an identity on the account; the fresh-session guard rule applies), then deleting /wsapi/{warrants,register_warrant,forget_warrant,revoke_warrant,allocate_warrant_status,warrant_requests,warrant_respond,device_certs,revoke_device_cert,cert_revocation_status,holders,rename_holder,forget_holder,move_holder,holder_assignment} and reworking the Rust tests that drive them (agent_flows_v2, connection_record, device_cert, hosted_primary, merged_provision, status_endpoints, warrant_return_url, warrant_device) and the e2e specs that assert through them (device-auth-resume, silent-assertion, connection-sharing, sbo-signing-grants). The dialog's holder_assignment/browser_holder cookie calls go with it (holders/move is gone from the spec). Estimate: 2–3 days.
 
 2026-09-09: holder moves removed end to end (registrar cores, broker /wsapi/move_holder + holder_assignment, issuance/presentation healing, dialog's pending-move checks). The holder_moves table and its store methods remain, dead; drop them with the rest of the cookie lane.
+
+2026-09-09 rulings + plan: see docs/plans/2026-09-09-registry-pages-handoff.md. The account page logs in as its own keyless device (page-local login key → login page with password → stored_key after); §4.3 becomes 'sign' only (management writes need a session, signing needs a config cert); signing stays where the key is (dialog keystore on the web, the wallet natively — e98a).
