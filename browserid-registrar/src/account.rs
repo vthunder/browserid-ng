@@ -518,9 +518,6 @@ pub async fn revoke_login_key(
         _ => return Err(ApiError::InvalidRequest("exactly one of id or kid".into())),
     }
     .ok_or(ApiError::NotFound)?;
-    if user.login_key_id != Some(rec.id) {
-        user.require_config()?;
-    }
     state.store.revoke_login_cert(user.user_id, rec.id).map_err(|e| ApiError::Internal(format!("login cert: {e}")))?;
     if let Some(idx) = rec.status_idx {
         state.store.set_status_revoked_idx(idx).ok();
@@ -639,7 +636,6 @@ pub async fn detach(
     user: ApiUser,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
-    user.require_config()?;
     let req: DetachRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let identity = req.identity.trim().to_lowercase();
@@ -669,7 +665,6 @@ pub async fn delete(
     user: ApiUser,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
-    user.require_config()?;
     let _: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     state.host.delete_account(user.user_id).map_err(host_err)?;

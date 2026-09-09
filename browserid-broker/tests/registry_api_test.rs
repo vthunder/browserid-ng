@@ -277,7 +277,7 @@ async fn issue_keys(l: &Live, email: &str) -> (String, String, KeyPair, KeyPair)
 }
 
 /// registry-api-v1 §5.1, §5.4–§5.6 over a session (bean 0c49 steps 6–11):
-/// allocate → sign → register with the exact ref; list, lookup, revoke, a
+/// allocate → sign → register with the exact ref; list, revoke, a
 /// fresh index after revoke; certs with kids; the three fixed namespaces;
 /// discovery's `endpoint`.
 #[tokio::test]
@@ -314,7 +314,7 @@ async fn warrants_certs_holders_and_discovery_over_sessions() {
     assert_eq!(status, 200, "{body}");
     let id = body["id"].as_u64().unwrap();
 
-    // List and lookup.
+    // List.
     let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/warrants", None).await;
     assert_eq!(status, 200, "{body}");
     let item = body["warrants"].as_array().unwrap().iter().find(|w| w["id"] == id).unwrap();
@@ -322,24 +322,16 @@ async fn warrants_certs_holders_and_discovery_over_sessions() {
     assert_eq!(item["grantee"], email);
     assert_eq!(item["status"]["idx"], idx);
     assert_eq!(item["revoked"], false);
-    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/lookup", Some(json!({"audience": audience}))).await;
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(body["warrants"].as_array().unwrap().len(), 1, "{body}");
-    assert_eq!(body["warrants"][0]["status"]["idx"], idx);
-    assert_eq!(body["warrants"][0]["holder"], holder.as_str());
-    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/lookup", Some(json!({"audience": "https://other.example"}))).await;
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(body["warrants"].as_array().unwrap().len(), 0);
+    assert_eq!(item["holder"], holder.as_str());
+    assert_eq!(item["audience"], audience);
 
-    // Revoke: sticky, gone from lookup, and the next allocation is fresh.
+    // Revoke: sticky, listed as revoked, and the next allocation is fresh.
     let (status, _, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/revoke", Some(json!({"id": id}))).await;
     assert_eq!(status, 204);
     let (status, _, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/revoke", Some(json!({"id": id}))).await;
     assert_eq!(status, 204, "a second revoke is a 204");
     let (_, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/warrants", None).await;
     assert_eq!(body["warrants"].as_array().unwrap().iter().find(|w| w["id"] == id).unwrap()["revoked"], true);
-    let (_, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/lookup", Some(json!({"audience": audience}))).await;
-    assert_eq!(body["warrants"].as_array().unwrap().len(), 0);
     let (_, alloc2, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/allocate_status",
         Some(json!({"grantee": email, "audience": audience, "scopes": ["login"]}))).await;
     assert_ne!(alloc2["idx"].as_u64().unwrap(), idx, "a revoked record's key allocates a fresh index");
@@ -643,7 +635,7 @@ async fn login_session(l: &Live, email: &str, config_kp: &KeyPair, config_cert: 
 /// registry-api-v1 §4.2 + §4.3: the two login methods, what each session
 /// may do, login certs, and their revocation.
 #[tokio::test]
-async fn login_methods_login_certs_and_the_config_cert_rule() {
+async fn login_methods_login_certs_and_session_authority() {
     let l = live_broker().await;
     let email = "login-owner@gmail.com";
     let (_pres, config_kp, _dc, config_cert) = broker_presentation(&l, email, vec!["registry".into()]).await;
@@ -703,10 +695,18 @@ async fn login_methods_login_certs_and_the_config_cert_rule() {
     assert_eq!(body["members"][0]["kind"], "login");
     let (status, body, _) = session_call(&l, &login_kp, &stored, "GET", "/api/v1/requests", None).await;
     assert_eq!(status, 200, "{body}");
-    // ... but it holds no config cert: writes need one.
+    // A session is the whole check (§4.3): a login key alone manages the
+    // account, and signing calls are judged by the cert they carry.
     let (status, body, _) = session_call(&l, &login_kp, &stored, "POST", "/api/v1/warrants/allocate_status", Some(alloc.clone())).await;
-    assert_eq!(status, 403, "{body}");
-    assert_eq!(body["reason"], "config_cert_required");
+    assert_eq!(status, 200, "{body}");
+    let (_pres2, stranger_kp, _dc2, stranger_cert) = broker_presentation(&l, "login-stranger@gmail.com", vec!["registry".into()]).await;
+    let stranger_holder = browserid_core::device::DeviceCert::parse(&stranger_cert).unwrap().holder().clone();
+    let w = Warrant::create(email, email, HolderMatcher::new(stranger_holder.as_str()).unwrap(), "https://rp.example",
+        vec!["login".into()], Duration::days(30), &stranger_kp, None).unwrap().encoded().to_string();
+    let (status, body, _) = session_call(&l, &login_kp, &stored, "POST", "/api/v1/warrants/register",
+        Some(json!({"warrant": w, "config_cert": stranger_cert}))).await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["reason"], "config_cert_not_recorded", "{body}");
     let (status, body) = attach_call(&l, &login_kp, &stored, &[(&config_cert, &config_kp)], email, false).await;
     assert_eq!(status, 200, "{body}");
     let stored2 = body["token"].as_str().unwrap().to_string();

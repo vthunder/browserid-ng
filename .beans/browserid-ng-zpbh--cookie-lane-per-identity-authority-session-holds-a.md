@@ -1,11 +1,11 @@
 ---
 # browserid-ng-zpbh
 title: 'Cookie lane: per-identity authority (session holds a set of proven identities)'
-status: todo
+status: in-progress
 type: task
 priority: normal
 created_at: 2026-09-04T23:32:18Z
-updated_at: 2026-09-09T15:24:46Z
+updated_at: 2026-09-09T16:08:29Z
 parent: browserid-ng-71vt
 blocked_by:
     - browserid-ng-0c49
@@ -29,3 +29,7 @@ The API side is done; what remains is the cookie lane's registry-role surface, w
 2026-09-09: holder moves removed end to end (registrar cores, broker /wsapi/move_holder + holder_assignment, issuance/presentation healing, dialog's pending-move checks). The holder_moves table and its store methods remain, dead; drop them with the rest of the cookie lane.
 
 2026-09-09 rulings + plan: see docs/plans/2026-09-09-registry-pages-handoff.md. The account page logs in as its own keyless device (page-local login key → login page with password → stored_key after); §4.3 becomes 'sign' only (management writes need a session, signing needs a config cert); signing stays where the key is (dialog keystore on the web, the wallet natively — e98a).
+
+2026-09-09 (Dan): /account as an RP rejected; the RP is the login page, later methods live there. §4.3 becomes 'a session suffices; signing calls carry a valid recorded config cert' (no config tier at all); warrants/lookup removed (redundant with GET warrants, no callers).
+
+- [x] Step 1: spec §4.3/§5/§7.1 + drop require_config/has_config + delete warrants/lookup

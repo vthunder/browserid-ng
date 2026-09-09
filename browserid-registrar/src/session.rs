@@ -217,9 +217,6 @@ impl Member {
             Member::Login { rec } => &rec.pubkey,
         }
     }
-    pub fn is_config(&self) -> bool {
-        matches!(self, Member::Cert { cert, .. } if cert.purpose == "authorization")
-    }
 }
 
 /// The member set of a session as of now: each recorded cert re-checked

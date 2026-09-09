@@ -37,9 +37,9 @@ The flows, at a glance (the wallet's side; RP login itself is core
 |---|---|
 | First use | Issuer sign-in → auth + config cert → `accounts` (§5.2.1): the account is created around the identity and a session returned. Then a login cert for this wallet (§4.2) and `attach`. |
 | New device | Issuer sign-in → certs → `accounts/lookup` for the account → `login` (§4.2): the registry's login page, or later a stored key; then a login cert and `attach`. A shared computer is a new device like any other. |
-| Sign in at an RP | `warrants/lookup` (§5.4) for the site if the device lacks the warrant, `allocate_status` (§5.4) when minting one; then present. |
+| Sign in at an RP | `GET warrants` (§5.4) for a warrant the device may present when it lacks one, `allocate_status` (§5.4) when minting one; then present. |
 | Approve an agent | `GET requests` → `respond` with client-signed warrants (§5.3). |
-| Add an identity | Issuer sign-in for it → `attach` under a config session (§5.2.4). |
+| Add an identity | Issuer sign-in for it → `attach` under a session (§5.2.4). |
 | Take an identity from another account | The same, with the user's confirmation; the previous account is notified and its rows go on hold (§4.1). |
 | Remove an identity; leave | `detach` (§5.2.5); `delete` (§5.2.6). |
 | Manage | Warrants (§5.4), certs (§5.5), holders (§5.6). |
@@ -70,7 +70,7 @@ The flows, at a glance (the wallet's side; RP login itself is core
 
 - Bodies are JSON, UTF-8. No `success: true` — status codes carry
   success, §7 the errors. Refusals are cited as `<status>
-  <error>/<reason>`, e.g. `403 forbidden/config_cert_required`: §7
+  <error>/<reason>`, e.g. `403 forbidden/login_rejected`: §7
   defines every `error`, §7.1 every `reason`.
 - Data-free mutations return `204`; others `200` + JSON. OPTIONAL
   fields are absent, never `null`.
@@ -203,20 +203,18 @@ and per account (§3).
 ### 4.3 Authority
 
 Data belongs to the account: warrants, requests, certs, holders.
-Every session sees and manages everything on its account; two people
-who share an address share the account it is on. One distinction:
-calls that change the account or sign for it need a **config-cert
-member** — a session whose members include a config cert — and
-answer `403 forbidden/config_cert_required` otherwise. §5 marks
-them. A session of auth certs alone reads, looks up warrants, and
-revokes its own certs; it is one issuer sign-in away from attaching
-a config cert, by design.
+A session sees and manages everything on its account; two people
+who share an address share the account it is on. There is no tier
+above a session: login (§4.2) is the whole check, and a session
+opened by a login key alone — a page, a device with no identity
+certs — manages the account like any other.
 
-Where a particular identity matters: on `respond` and `register` the
-config cert MUST be an unretired cert of the account and MUST
+What a session cannot do is sign. Calls that store a signature the
+wallet made — `respond`, `register` — carry the signing **config
+cert**, which MUST be an unretired cert of the account and MUST
 authorize the warrant's grantor (§7.1), judged by the identities it
-was *recorded* for; `warrants/lookup` serves warrants for the
-identities the session's certs were recorded for.
+was *recorded* for. The session proves the caller may act on the
+account; the cert proves the signature is the account's.
 
 Identities the registry's operator issues itself use this API like any
 other. Issuing certs, passwords, and deleting the account are the
@@ -314,7 +312,7 @@ Request `{}`. Response `204`.
 
 Everything here is §4 session-authenticated, except §5.1 discovery
 (public), `accounts` and `accounts/lookup` (§5.2.1), and `login`
-(§4.2); calls marked **config** need a config-cert member (§4.3). Each
+(§4.2). Each
 endpoint states what it does, its request, its response, and its
 refusals as `<status> <error>/<reason>` (§7). Field lists are
 normative; example values illustrative. Checks run in the order
@@ -389,9 +387,8 @@ the session's account. At most one per key; repeating replaces it.
 listed.
 
 **`POST /api/v1/login-keys/revoke`** — Request `{ "id" }` or
-`{ "kid" }`. Sticky; a second revoke is a `204`. Any session for its
-own login key; otherwise **config**. Ends the sessions the key is the
-last member of. Response `204`.
+`{ "kid" }`. Sticky; a second revoke is a `204`. Ends the sessions
+the key is the last member of. Response `204`.
 
 #### 5.2.4 Attach — `POST /api/v1/account/attach`
 
@@ -416,9 +413,10 @@ filed.
   re-attached cert keeps its record and holder label.
 - *Suspended on this account* → **restored** (§4.1): the identity
   leaves wherever it is active and returns. Fresh certs required.
-- *Held by no account* → joins; **config**. Fresh certs required.
+- *Held by no account* → joins; a config cert among the carried
+  certs (`config_required`). Fresh certs required.
 - *Held by another account* → **transferred**: leaves there (§4.1) and
-  joins here; **config**, with `confirm_takeover`, else
+  joins here; a carried config cert, with `confirm_takeover`, else
   `409 conflict/identity_held`. Fresh certs required.
 
 Response `200`: the §4.5 session body — a new token whose members are
@@ -429,7 +427,7 @@ stays valid to expiry.
 
 Removes an identity from the account. Request: `{ "identity": "…" }`;
 `identity` MUST be active on the account (`404 not_found`).
-**Config**. Effects: those of an identity leaving an account (§4.1).
+Effects: those of an identity leaving an account (§4.1).
 Response `204`. The last identity cannot be detached
 (`409 conflict/last_identity`): use `delete`. Derived agent identities
 go with their parent, never a refusal.
@@ -438,7 +436,7 @@ go with their parent, never a refusal.
 
 Deletes the account at this registry: every identity leaves (§4.1,
 records on hold), and the account is dropped after the hold. Request
-`{}`. **Config**. Response `204`. Status bits already set stay set
+`{}`. Response `204`. Status bits already set stay set
 forever; indexes are never reused (§8). This is the ability to leave a
 registry; it does not touch the identities at their issuers. Exporting
 warrants and holders for use at another registry is a v2 concern.
@@ -496,7 +494,7 @@ deny-first.
 connection, or authoring request and allocates a status index into
 each of its grants that lacks one, so every warrant the wallet signs
 carries a ref (core §5). Request: `{ "code": … }`. Response `200`: the
-request item as `GET requests` shows it. **Config**. The request's
+request item as `GET requests` shows it. The request's
 core §7.5 audience proof MUST validate at claim time (a fresh fetch is
 RECOMMENDED); otherwise `422 invalid_warrant/audience_unproven`.
 Idempotent per account; a code that is unknown, expired, or claimed by
@@ -512,7 +510,7 @@ another account answers `404 not_found`.
 | `config_cert` | On approve: the config cert whose key signed them. MUST be an unretired cert of the account (`422 invalid_warrant/config_cert_not_recorded`). |
 | `grantor` | OPTIONAL, default the request's `grantor`. Must equal it when pinned (`grantor_pinned_mismatch`); when the pin is `"*"`, any active identity on the account the `config_cert` authorizes. |
 
-**Config**. Validation follows §7.1's `invalid_warrant` reasons
+Validation follows §7.1's `invalid_warrant` reasons
 in order (`422 invalid_warrant/<reason>`). That bar is written for
 `kind: "agent"`. The other kinds carry **admission records** — a
 warrant the approver signs to admit a connection or an authoring
@@ -548,24 +546,10 @@ Each item: `id`, `grantor`, `grantee`, `audience`, `scopes`,
 `expires_at`. Records of a suspended identity (§4.1) are listed with
 `revoked: true`.
 
-**`POST /api/v1/warrants/lookup`** — Returns the warrants for one
-audience, so a device can log into a site with a warrant it does not
-hold. Request: `{ "audience": "…" }`. Response `200`:
-`{ "warrants": [ { warrant, config_cert, holder?, status } ] }`, the
-unrevoked records that
-
-- are for exactly that audience,
-- have a grantor among the active identities any member cert was
-  recorded for, and
-- have a holder matcher covering that cert's holder,
-
-each with the config cert needed to present it; an empty list when
-none (never `404`).
-
 **`POST /api/v1/warrants/register`** — Records a warrant the wallet
 signed outside the inbox flow (for example a login warrant). Request:
 `{ "warrant": "<JWS>", "config_cert": "<JWS>" }`. Response `200`:
-`{ "id" }`. **Config**. The warrant MUST verify against the
+`{ "id" }`. The warrant MUST verify against the
 config-cert key; the cert MUST be `purpose: authorization`, authorize
 the grantor, and be an unretired cert of the account; the grantor
 MUST be an active account identity; the warrant's `status` MUST be
@@ -585,7 +569,7 @@ later grant to the same agent never revives the old bytes.
 before the wallet signs, so login warrants carry per-site revocation
 bits. Request: `{ "grantee", "audience", "scopes" }` (`grantee` is the
 identity that will present the warrant; for a login warrant, the
-wallet's own). **Config**. Response `200`: `{ "uri", "idx" }`, stable
+wallet's own). Response `200`: `{ "uri", "idx" }`, stable
 for the record key until that record is revoked. An index once
 allocated is never reused for the lifetime of the list URI (§8).
 
@@ -603,8 +587,7 @@ it), `status?` (`{ uri, idx }`).
 
 **`POST /api/v1/certs/revoke`** — Revokes a cert. Request:
 `{ "id": 7 }` or `{ "kid": "…" }` (not both). Response `200`:
-`{ "revoked": bool }`. Any session for a cert it itself holds;
-otherwise **config**. When this registry is the cert's
+`{ "revoked": bool }`. When this registry is the cert's
 revocation authority (`iss` is its domain) it sets the bit, sticky,
 and answers `true`. Either way the cert is **retired** here: excluded
 from holder matching and from session membership, dropped from any
@@ -644,7 +627,6 @@ holders (`409 conflict/external_holder`).
 **`POST /api/v1/namespaces/rename`** — Relabels a namespace. Request:
 `{ "name", "label" }`. Response `204`.
 
-**Config** for every mutation.
 Labels per §3. Holders are addressable only when on the account
 (`404 not_found`, no existence leaks).
 
@@ -673,7 +655,7 @@ JSON in the shape of RFC 6749 §5.2:
 | 401 | `invalid_session` | Token missing, unknown, expired, or ended; no member left after the per-call re-check (§4.5); the `Proof` key is not a member. Carries `WWW-Authenticate: Bearer`. |
 | 422 | `invalid_cert` | A carried cert fails the validity bar or a membership rule (`accounts`, `accounts/lookup`, `attach`). |
 | 401 | `invalid_proof` | A request or possession proof fails, on any call: missing, wrong `typ`, bad signature, `htm`/`htu` mismatch, stale `iat`, replayed `jti`, `bh` mismatch, or proofs in one request with differing `jti`. |
-| 403 | `forbidden` | The session lacks a config-cert member the call needs, or a login is needed or rejected (§7.1). |
+| 403 | `forbidden` | A login is needed or rejected (§7.1). |
 | 404 | `not_found` | Owner-scoped lookup misses — including "exists but isn't yours" — and requests that are unknown, expired, or answered. |
 | 409 | `conflict` | State refusals. |
 | 422 | `invalid_warrant` | Respond, claim, register: client-signed warrants (or the claim precondition) fail the §5.3/§5.4 bar. |
@@ -716,7 +698,6 @@ With `forbidden` (`403`):
 
 | Reason | Meaning |
 |---|---|
-| `config_cert_required` | The call needs a config-cert member and the session has none (§4.3). |
 | `login_required` | `login` by `login_page` without a token (§4.2); body carries `url`. |
 | `login_rejected` | `login` failed: unknown account, bad or spent token, unknown, expired or revoked login key, or the page refused (§4.2). One reason for all of them. |
 

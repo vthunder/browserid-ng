@@ -217,7 +217,6 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         .route("/api/v1/warrants/register", post(api::register_warrant))
         .route("/api/v1/warrants/revoke", post(api::revoke_warrant))
         .route("/api/v1/warrants/allocate_status", post(api::allocate_status))
-        .route("/api/v1/warrants/lookup", post(api::lookup_warrants))
         .route("/api/v1/certs", get(api::list_certs))
         .route("/api/v1/certs/revoke", post(api::revoke_cert))
         .route("/api/v1/holders", get(api::list_holders))

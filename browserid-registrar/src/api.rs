@@ -154,8 +154,7 @@ pub enum ApiError {
     /// 401 — `invalid_cert` on `session` (§7): a proof's key is not a
     /// recorded, unretired cert of the named account, or fails the bar.
     InvalidCertUnauthorized { reason: &'static str, description: String },
-    /// 403 — `forbidden`: the session lacks a config-cert member the call
-    /// needs, or a guard is needed or rejected (§7.1).
+    /// 403 — `forbidden`: a login is needed or rejected (§7.1).
     Forbidden { reason: &'static str, description: String },
     /// 403 — `forbidden/login_required`, carrying the login page (§4.2).
     LoginRequired { url: String },
@@ -297,9 +296,6 @@ pub struct ApiUser {
     /// The key that signed this call's proof (base64): the session member
     /// that spoke, or the legacy token's bound config key.
     pub proof_key: String,
-    /// Whether the session holds a config-cert member (§4.3). A legacy
-    /// token is config-bound by construction.
-    pub has_config: bool,
     /// Ids of the member certs that passed this call's re-check. Empty
     /// for a legacy token.
     pub member_cert_ids: Vec<u64>,
@@ -310,21 +306,6 @@ pub struct ApiUser {
     pub session_token_hash: Option<String>,
     /// The login cert whose key opened the session, if any.
     pub login_key_id: Option<u64>,
-}
-
-impl ApiUser {
-    /// The config-cert rule (§4.3): calls that change or sign for the
-    /// account need a config-cert member.
-    pub fn require_config(&self) -> Result<(), ApiError> {
-        if self.has_config {
-            Ok(())
-        } else {
-            Err(ApiError::Forbidden {
-                reason: "config_cert_required",
-                description: "this call needs a session with a config-cert member".into(),
-            })
-        }
-    }
 }
 
 #[axum::async_trait]
@@ -416,7 +397,6 @@ async fn session_user(
     Ok(ApiUser {
         user_id: rec.user_id,
         proof_key: signer.pubkey().to_string(),
-        has_config: members.iter().any(|m| m.is_config()),
         member_cert_ids: cert_ids,
         member_identities: identities,
         session_token_hash: Some(hash),
@@ -508,7 +488,6 @@ pub async fn claim_request(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<Json<crate::consent::PendingRequestInfo>, ApiError> {
-    user.require_config()?;
     let req: ApiClaimRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let rec = crate::consent::claim_core(&state, user.user_id, &req.code)
@@ -540,7 +519,6 @@ pub async fn respond(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    user.require_config()?;
     let req: ApiRespondRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let approve = req.approve;
@@ -597,7 +575,6 @@ pub async fn register_warrant(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    user.require_config()?;
     let req: ApiRegisterWarrantRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let warrant = browserid_core::device::Warrant::parse(&req.warrant).map_err(|e| ApiError::InvalidWarrant {
@@ -669,75 +646,6 @@ pub async fn register_warrant(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ApiLookupRequest {
-    audience: String,
-}
-
-/// `POST /api/v1/warrants/lookup` — the unrevoked warrants for one
-/// audience that a member cert may present: grantor among the active
-/// identities the member was recorded for, holder matcher covering its
-/// holder (§5.4). An empty list when none.
-pub async fn lookup_warrants(
-    State(state): State<Arc<RegistrarState>>,
-    user: ApiUser,
-    body: axum::body::Bytes,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    use browserid_core::device::{Holder, HolderMatcher};
-    let req: ApiLookupRequest = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
-    let certs = state
-        .store
-        .list_device_certs(user.user_id)
-        .map_err(|e| ApiError::Internal(format!("certs: {e}")))?;
-    // Members; a legacy token speaks for every active cert.
-    let members: Vec<_> = certs
-        .into_iter()
-        .filter(|c| c.is_active() && (user.member_cert_ids.is_empty() || user.member_cert_ids.contains(&c.id)))
-        .collect();
-    let mut out = Vec::new();
-    for w in state.store.list_warrants(user.user_id).map_err(consent_err)? {
-        if w.audience != req.audience {
-            continue;
-        }
-        let Some(idx) = w.status_idx else { continue };
-        if state.store.is_status_revoked_idx(idx).map_err(consent_err)? {
-            continue;
-        }
-        if state
-            .host
-            .identity_holder(&w.delegator_email)
-            .map_err(|e| ApiError::Internal(format!("membership: {e}")))?
-            != Some(user.user_id)
-        {
-            continue;
-        }
-        let matcher = w.holder.as_deref().and_then(|m| HolderMatcher::new(m).ok());
-        let presentable = members.iter().any(|m| {
-            m.identities.iter().any(|i| i.eq_ignore_ascii_case(&w.delegator_email))
-                && match (&matcher, Holder::new(&m.holder)) {
-                    (Some(mm), Ok(h)) => mm.matches(&h),
-                    (None, _) => true,
-                    _ => false,
-                }
-        });
-        if !presentable {
-            continue;
-        }
-        let mut item = serde_json::json!({
-            "warrant": w.warrant,
-            "config_cert": w.config_cert,
-            "status": { "uri": status_list_uri(&state.domain), "idx": idx },
-        });
-        if let Some(h) = &w.holder {
-            item["holder"] = serde_json::Value::String(h.clone());
-        }
-        out.push(item);
-    }
-    Ok(Json(serde_json::json!({ "warrants": out })))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ApiWarrantIdRequest {
     id: u64,
 }
@@ -748,7 +656,6 @@ pub async fn revoke_warrant(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
-    user.require_config()?;
     let req: ApiWarrantIdRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     crate::consent::revoke_warrant_core(&state, user.user_id, req.id).map_err(consent_err)?;
@@ -779,7 +686,6 @@ pub async fn allocate_status(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<Json<ApiAllocateStatusResponse>, ApiError> {
-    user.require_config()?;
     let req: ApiAllocateStatusRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     if req.grantee.trim().is_empty() {
@@ -866,9 +772,6 @@ pub async fn revoke_cert(
             .ok_or(ApiError::NotFound)?,
         _ => return Err(ApiError::InvalidRequest("exactly one of id or kid".into())),
     };
-    if !user.member_cert_ids.contains(&id) {
-        user.require_config()?;
-    }
     let revoked = crate::holders::revoke_device_core(&*state.store, &*state.host, &state.domain, user.user_id, id)
         .map_err(consent_err)?;
     state.store.end_sessions_solely_on_cert(user.user_id, id).ok();
@@ -914,7 +817,6 @@ pub async fn rename_holder(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
-    user.require_config()?;
     let req: ApiRenameHolderRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     crate::holders::rename_holder_core(&*state.store, user.user_id, &req.holder_id, &req.label)
@@ -942,7 +844,6 @@ pub async fn forget_holder(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<Json<ApiForgetHolderResponse>, ApiError> {
-    user.require_config()?;
     let req: ApiForgetHolderRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     // An external holder (another account's admitted agent) is refused (§5.6).
@@ -982,7 +883,6 @@ pub async fn rename_namespace(
     user: ApiUser,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
-    user.require_config()?;
     let req: ApiRenameNamespaceRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     crate::holders::rename_namespace_core(&*state.store, user.user_id, &req.name, &req.label)
