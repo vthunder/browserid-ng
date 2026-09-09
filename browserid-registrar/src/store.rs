@@ -145,6 +145,10 @@ pub trait RegistrarStore: Send + Sync {
     fn end_sessions_on_login_key(&self, _user_id: u64, _id: u64) -> StoreResult<u64> {
         Ok(0)
     }
+    /// Relabel a login key (§5.2.3).
+    fn set_login_cert_label(&self, _user_id: u64, _id: u64, _label: &str) -> StoreResult<bool> {
+        Err(RegistrarError::Internal("login keys not supported by this host".into()))
+    }
     /// Record the device's holder on a login key (§5.2.4).
     fn set_login_cert_holder(&self, _user_id: u64, _id: u64, _holder: &str) -> StoreResult<()> {
         Err(RegistrarError::Internal("login keys not supported by this host".into()))

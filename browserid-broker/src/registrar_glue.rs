@@ -349,6 +349,10 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
         self.user_store.end_sessions_on_login_key(UserId(user_id), id).map_err(to_reg_err)
     }
 
+    fn set_login_cert_label(&self, user_id: u64, id: u64, label: &str) -> Result<bool, RegistrarError> {
+        self.user_store.set_login_cert_label(UserId(user_id), id, label).map_err(to_reg_err)
+    }
+
     fn set_login_cert_holder(&self, user_id: u64, id: u64, holder: &str) -> Result<(), RegistrarError> {
         self.user_store.set_login_cert_holder(UserId(user_id), id, holder).map_err(to_reg_err)
     }

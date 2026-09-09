@@ -622,6 +622,13 @@ impl UserStore for InMemoryUserStore {
         Ok((before - s.len()) as u64)
     }
 
+    fn set_login_cert_label(&self, user_id: UserId, id: u64, label: &str) -> StoreResult<bool> {
+        if let Some(c) = self.login_certs.write().unwrap().get_mut(&id) {
+            if c.user_id == user_id { c.label = Some(label.to_string()); return Ok(true); }
+        }
+        Ok(false)
+    }
+
     fn set_login_cert_holder(&self, user_id: UserId, id: u64, holder: &str) -> StoreResult<()> {
         if let Some(c) = self.login_certs.write().unwrap().get_mut(&id) {
             if c.user_id == user_id { c.holder = Some(holder.to_string()); }

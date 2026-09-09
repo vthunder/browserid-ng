@@ -217,6 +217,7 @@ pub trait UserStore: Send + Sync {
     /// End every registry session bound to this login key.
     fn end_sessions_on_login_key(&self, user_id: UserId, id: u64) -> StoreResult<u64>;
     fn set_login_cert_holder(&self, user_id: UserId, id: u64, holder: &str) -> StoreResult<()>;
+    fn set_login_cert_label(&self, user_id: UserId, id: u64, label: &str) -> StoreResult<bool>;
     /// Revoke every login key recorded with this holder; the ids revoked.
     fn revoke_login_certs_for_holder(&self, user_id: UserId, holder: &str) -> StoreResult<Vec<u64>>;
     fn create_login_token(&self, rec: LoginToken) -> StoreResult<()>;

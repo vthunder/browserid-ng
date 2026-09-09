@@ -412,12 +412,6 @@
             an identity, sign a guestbook, bridge to Bluesky.</div>
           <a href="https://www.browserid.me/demos" style="font:500 12px system-ui, sans-serif">Browse the demos ↗</a>
         </div>
-        <div class="rcard" id="lk-card">
-          <div class="rtitle tight">Signed in to this account</div>
-          <div class="rsub" id="lk-sub">Browsers and apps that open this account without your password.</div>
-          <div id="lk-list" class="setlist"></div>
-          <p class="status" id="lk-status"></p>
-        </div>
         <div class="rcard">
           <div class="rtitle tight">Account settings</div>
           <div class="setlist">
@@ -500,12 +494,16 @@ const post = (path, body) => api(path, {
 
 let account = { emails: [], agents: [], parentOf: {}, publicNames: {}, managedOf: {}, warrants: [],
   deviceCerts: [], holders: { namespaces: [], holders_without_namespace: [] }, csrf: null,
-  id: null, loginKeys: null };
+  id: null, loginKeys: [], registry: false };
+// Registry data (devices, certs, warrants, holders) rides the standard
+// /api/v1 session this page holds as its own device (registry-api-v1);
+// the cookie session serves the issuer role only (addresses, password).
+const reg = (method, path, body) => window.Registry.call(method, path, body);
 let deviceCache = []; // this browser's DEVICE-store records
 // Client view state (server data above; this is pure UI).
 let ui = { view: 'main', actorId: null, expandedId: null, expandedSite: null,
   inactiveOpen: false, sharedOpen: false, editingName: false, editingPublic: false,
-  techOpen: false, highlight: null, confirmPerm: null };
+  techOpen: false, highlight: null, confirmPerm: null, confirmCutoff: false };
 
 // -------- local device credentials --------
 async function refreshKeystore() {
@@ -609,6 +607,7 @@ function allPerms() {
     const exp = Date.parse(w.expires_at);
     const requester = w.requester_origin
       ? w.requester_origin.replace(/^https?:\/\//, '') : null;
+    const statusIdx = w.status ? w.status.idx : (w.status_idx == null ? null : w.status_idx);
     out.push({
       id: w.id, audience: w.audience,
       // Signing grants (spec §5) render as requester ↔ audience — the site
@@ -617,7 +616,7 @@ function allPerms() {
         ? requester + ' ↔ ' + (w.audience || '—')
         : (w.audience || '—').replace(/^https?:\/\//, '').replace(/\/+$/, ''),
       scopes: (w.scopes || []).filter(s => s !== 'login').map(prettyScope),
-      as: w.agent_email, by: w.delegator_email,
+      as: w.grantee || w.agent_email, by: w.grantor || w.delegator_email,
       // Connection records (spec §5) are custody-channel grants, not
       // device grants: the sentinel holder keeps them off every actor row
       // (they render as host↔service connections instead).
@@ -625,59 +624,76 @@ function allPerms() {
       connection: w.binding_id ? { host: w.client_host || '', name: (w.client_name || '').trim() } : null,
       signing: requester ? { host: requester } : null,
       revoked: !!w.revoked, expired: !!exp && exp < Date.now(),
-      expiresAt: w.expires_at, statusIdx: w.status_idx,
+      expiresAt: w.expires_at, statusIdx,
     });
   }
   return out;
 }
 const liveOf = (ps) => ps.filter(p => !p.revoked && !p.expired);
 
-// Every holder the account knows, folded into an ACTOR: kind (browser /
-// agent / service), addresses (+ per-address trust), badges, recency.
+// The certs that belong to an actor: a device's are those attached under
+// its login key; an agent's or service's those on its holder.
+function actorCerts(actor) {
+  if (actor.keyId != null) return account.deviceCerts.filter(c => c.login_key === actor.keyId);
+  return account.deviceCerts.filter(c => c.holder === actor.id);
+}
+
+// The roster's ACTORS. A DEVICE is a login key and the certs attached under
+// it (registry-api-v1 §2) — one row per key, even a key with no certs yet
+// (this page in a browser that runs a native wallet). Agents and services
+// have no login key: they are their holder. Browser holders nothing is
+// attached under are not shown (legacy rows, wiped server-side).
 function buildActors() {
-  const here = localHolderIds();
   const perms = allPerms();
   const actors = [];
+  const covered = new Set();
+  for (const k of account.loginKeys) {
+    if (k.revoked) continue; // a signed-out device is gone; signing in again is a new row
+    const certs = account.deviceCerts.filter(c => c.login_key === k.id && !c.revoked);
+    const holders = [...new Set(certs.map(c => c.holder))];
+    if (k.holder) holders.push(k.holder);
+    holders.forEach(h => covered.add(h));
+    const emails = [...new Set(certs.flatMap(c => c.identities.filter(i => !i.includes('*'))))].sort();
+    actors.push({
+      id: 'key:' + k.id, keyId: k.id, kind: 'browser', label: k.label || 'A browser',
+      ids: emails.map(email => ({
+        email,
+        trusted: certs.some(c => c.purpose === 'authorization' && c.identities.some(p => identityMatches(p, email))),
+      })),
+      addr: null, publicName: '', here: !!k.current, inactive: false,
+      since: k.enrolled_at || '', external: false, holders: [...new Set(holders)],
+      keyOnly: certs.length === 0,
+    });
+  }
   const fold = (h, ns) => {
-    // A holder outside the three namespaces is a wallet that kept its own
-    // prefix (the registry provisions agents under `agents` itself).
+    if (covered.has(h.holder_id)) return;
     const kind = h.external ? 'service'
-      : (ns && ns.name === 'browsers') ? 'browser'
       : (ns && ns.name === 'services') ? 'service'
       : (ns && ns.name === 'agents') ? 'agent'
-      : 'browser';
+      : null;
+    if (!kind) return; // a browser holder with no device behind it
     const certs = account.deviceCerts.filter(c => c.holder === h.holder_id && !c.revoked);
     const emails = [...new Set(certs.flatMap(c => c.identities.filter(i => !i.includes('*'))))].sort();
-    const ids = emails.map(email => ({
-      email,
-      trusted: certs.some(c => c.purpose === 'authorization' && c.identities.some(p => identityMatches(p, email))),
-    }));
-    let addr = null;
-    if (kind !== 'browser') {
-      addr = emails[0] || null;
-      if (!addr) {
-        const w = perms.find(p => p.holder === h.holder_id);
-        addr = w ? w.as : null;
-      }
+    let addr = emails[0] || null;
+    if (!addr) {
+      const w = perms.find(p => p.holder === h.holder_id);
+      addr = w ? w.as : null;
     }
     actors.push({
-      id: h.holder_id, kind, label: h.label, ids, addr,
+      id: h.holder_id, keyId: null, kind, label: h.label,
+      ids: emails.map(email => ({ email, trusted: false })), addr,
       publicName: addr ? (account.publicNames[addr] || '') : '',
-      here: here.has(h.holder_id),
-      inactive: !!h.revoked,
-      since: h.issued_at || '',
-      external: !!h.external,
+      here: false, inactive: !!h.revoked, since: h.issued_at || '',
+      external: !!h.external, holders: [h.holder_id], keyOnly: false,
     });
   };
   for (const ns of (account.holders.namespaces || [])) for (const h of ns.holders) fold(h, ns);
   for (const h of (account.holders.holders_without_namespace || [])) fold(h, null);
-  // Recency: the API only records issued_at today, so "when it arrived" is
-  // the sort key and the row's right-hand date (bean lfpu adds last-used).
   actors.sort((a, b) => Date.parse(b.since || 0) - Date.parse(a.since || 0));
   return actors;
 }
 
-const appliesTo = (p, actor) => holderMatcherMatches(p.holder, actor.id);
+const appliesTo = (p, actor) => actor.holders.some(h => holderMatcherMatches(p.holder, h));
 
 // A browser's permission slices (the FULL-CONTROL BLANKET rule): for each
 // address it holds an authorization cert for, ONE blanket line replaces the
@@ -729,7 +745,7 @@ function permLineHtml(p, actor, opts) {
   const canRevoke = !p.revoked && !p.expired && p.statusIdx != null;
   const act = canRevoke
     ? `<button class="act revoke" data-i="${p.id}" data-act="revoke">Revoke</button>`
-    : `<button class="act forget" data-i="${p.id}" data-act="forget">Forget</button>`;
+    : '';
   const who = opts.who ? `<span class="who">${escapeHtml(opts.who)}</span>` : '';
   // Revoke asks inline, in the design language — no browser confirm().
   const confirming = ui.confirmPerm === p.id ? `<span class="permconfirm">
@@ -750,16 +766,11 @@ function wirePermActions(rootEl, rerender) {
       rerender();
       return;
     }
-    try {
-      await post('/wsapi/forget_warrant', { id });
-      await reloadAccount();
-      rerender();
-    } catch (e) { alert('Failed: ' + e.message); }
   };
   for (const b of rootEl.querySelectorAll('.pc-go')) b.onclick = async (ev) => {
     ev.stopPropagation();
     try {
-      await post('/wsapi/revoke_warrant', { id: Number(b.dataset.i) });
+      await reg('POST', '/api/v1/warrants/revoke', { id: Number(b.dataset.i) });
       ui.confirmPerm = null;
       await reloadAccount();
       rerender();
@@ -783,7 +794,8 @@ function actorRowHtml(actor, perms) {
   if (actor.here) badges.push('<span class="badge b-green">this device</span>');
   const trusted = actor.ids.filter(i => i.trusted).map(i => i.email);
   const loginOnly = actor.ids.filter(i => !i.trusted).map(i => i.email);
-  if (actor.kind === 'browser' && !trusted.length) badges.push('<span class="badge b-gray">sign-in only</span>');
+  if (actor.kind === 'browser' && actor.keyOnly) badges.push('<span class="badge b-gray">account page only</span>');
+  else if (actor.kind === 'browser' && !trusted.length) badges.push('<span class="badge b-gray">sign-in only</span>');
   const pub = actor.kind === 'agent' && actor.publicName
     ? ` <span class="apub">· appears publicly as “${escapeHtml(actor.publicName)}”</span>` : '';
   let sub;
@@ -792,7 +804,7 @@ function actorRowHtml(actor, perms) {
     if (trusted.length) parts.push('Full control of ' + trusted.map(escapeHtml).join(', '));
     if (loginOnly.length) parts.push('Signs in as ' + loginOnly.map(escapeHtml).join(', ')
       + ` · connected to ${nSites} site${nSites === 1 ? '' : 's'}`);
-    sub = parts.join(' · ') || 'No addresses yet';
+    sub = parts.join(' · ') || (actor.keyOnly ? 'Signed in to manage this account — holds no sign-in keys' : 'No addresses yet');
   } else if (actor.kind === 'agent') {
     sub = `${escapeHtml(actor.addr || '—')} · allowed at ${nSites} site${nSites === 1 ? '' : 's'}`;
   } else {
@@ -860,7 +872,10 @@ function renderMain() {
       rows: active.filter(a => a.kind === 'service') },
   ].filter(s => s.rows.length);
 
-  $('sections').innerHTML = sections.map(sec => {
+  $('sections').innerHTML = (!account.registry ? `<div class="sechead"><span class="t">Devices and permissions</span></div>
+    <div class="card"><div style="padding:14px 16px;font:12.5px/1.6 system-ui, sans-serif;color:#5c5c66">
+      Set a password (Account settings) to see and manage what is signed in to this account and what it may do.</div></div>` : '')
+    + sections.map(sec => {
     const sharedFoot = (sec.shared && sharedPerms.length) ? `
       <div style="border-top:1px solid rgba(0,0,0,.06)">
         <button class="sharedbtn" id="shared-toggle">${ui.sharedOpen ? '▾' : '▸'} Any browser you sign in with —
@@ -930,7 +945,7 @@ function renderMain() {
     }
     b.dataset.confirm = ''; b.disabled = true;
     try {
-      const r = await post('/wsapi/forget_holder', { holder_id: b.dataset.h });
+      const r = await reg('POST', '/api/v1/holders/forget', { holder_id: b.dataset.h });
       if (r && r.unrevocable && r.unrevocable.length) {
         // Honesty over tidiness: certs we are not the authority for stay
         // live until expiry — say so before the row disappears.
@@ -957,7 +972,7 @@ function whoOf(p, actors, bp) {
   if (p.holder === '*') return 'You, from any device';
   if (bp && p.holder === bp + '.*') return 'You, from any browser';
   if (p.holder.endsWith('.*')) return 'You, from a group of devices';
-  const a = actors.find(x => x.id === p.holder);
+  const a = actors.find(x => x.holders.includes(p.holder));
   return a ? a.label : 'A removed actor';
 }
 function renderSites() {
@@ -985,7 +1000,7 @@ function renderSites() {
         <span class="achev${expanded ? ' open' : ''}">›</span>
       </button>
       ${expanded ? `<div class="sexpand"><div class="permcol">${ps.map(p => {
-        const actor = actors.find(x => x.id === p.holder) || null;
+        const actor = actors.find(x => x.holders.includes(p.holder)) || null;
         return permLineHtml({ ...p, site: '' }, actor, { who: whoOf(p, actors, bp) });
       }).join('')}</div></div>` : ''}
     </div>`;
@@ -1026,7 +1041,7 @@ function renderDetail() {
     redundant = mine.filter(p => p.as && trusted.includes(p.as));
   }
   const shown = mine.filter(p => !redundant.includes(p));
-  const own = shown.filter(p => p.holder === actor.id);
+  const own = shown.filter(p => actor.holders.includes(p.holder));
   const grp = shown.filter(p => p.holder.endsWith('.*'));
   const any = shown.filter(p => p.holder === '*');
   const secs = [];
@@ -1082,11 +1097,12 @@ function renderDetail() {
   const noPerms = !secs.length && !(actor.kind === 'browser' && trusted.length);
 
   const dangerText = actor.kind === 'browser'
-    ? 'Sign out & remove this browser — it loses all its keys within minutes. If you still own it, it can simply sign in again.'
+    ? (actor.here ? 'Sign out this browser — the same as Sign out at the top: it loses its keys within minutes and can sign in again.'
+                  : 'Sign out this browser — it loses all its keys within minutes. If you still own it, it can simply sign in again.')
     : `Sign out this ${actor.kind} — it stops working everywhere within minutes. Its name and history stay attributed to it.`;
-  const dangerBtn = actor.kind === 'browser' ? 'Sign out & remove' : 'Sign out';
+  const dangerBtn = ui.confirmCutoff ? 'Confirm — sign out' : 'Sign out';
 
-  const certs = account.deviceCerts.filter(c => c.holder === actor.id);
+  const certs = actorCerts(actor);
   const techHtml = ui.techOpen ? `<div class="tech">${certs.length ? certs.map(c =>
     `${escapeHtml(c.purpose)} cert · ${c.identities.map(escapeHtml).join(', ')} · issued ${fmtDate(c.issued_at)}
      · expires ${fmtDate(c.expires_at)}${c.revoked ? ' · <span style="color:#9d2f26">revoked</span>' : ''}<br>
@@ -1116,7 +1132,8 @@ function renderDetail() {
       </div>`).join('')}
     <div class="dangerzone">
       <div class="t">${dangerText}</div>
-      <button class="dangerbtn" id="cutoff">${dangerBtn}</button>
+      <button class="dangerbtn" id="cutoff">${dangerBtn}</button>${ui.confirmCutoff ? ' <button class="btn-plain" id="cutoff-cancel">Cancel</button>' : ''}
+      <p class="status err" id="cutoff-status" style="margin:8px 0 0"></p>
     </div>
     <button class="techlink" id="tech-toggle">Technical details (certificates, key fingerprints) ${ui.techOpen ? '▾' : '▸'}</button>
     ${techHtml}`;
@@ -1131,8 +1148,11 @@ function renderDetail() {
     const v = $('rn-input').value.trim();
     ui.editingName = false;
     if (!v || v === actor.label) { renderDetail(); return; }
-    try { await post('/wsapi/rename_holder', { holder_id: actor.id, label: v }); await reloadAccount(); }
-    catch (e) { alert('Rename failed: ' + e.message); }
+    try {
+      if (actor.keyId != null) await reg('POST', '/api/v1/login-keys/rename', { id: actor.keyId, label: v });
+      else await reg('POST', '/api/v1/holders/rename', { holder_id: actor.id, label: v });
+      await reloadAccount();
+    } catch (e) { alert('Rename failed: ' + e.message); }
     renderDetail();
   };
   const pn = $('pn-edit');
@@ -1148,58 +1168,47 @@ function renderDetail() {
     renderDetail();
   };
   $('tech-toggle').onclick = () => { ui.techOpen = !ui.techOpen; renderDetail(); };
-  // Sign out = revoke every one of its certs (its keys die within minutes;
-  // fail-closed at verifiers) + revoke its own live grants. The entry stays,
-  // in the Inactive drawer — "Remove for good" (forget_holder) lives there.
+  // Sign out a DEVICE = revoke its login key: the registry ends its
+  // sessions and retires every cert attached under it (bits set where it
+  // is the authority). Certs from another issuer stay live until that
+  // issuer revokes them — the user is sent there. Sign out an AGENT or
+  // SERVICE = retire its certs and its own live grants. In-content
+  // confirm — never window.confirm() (suppressed in background tabs).
+  const cc = $('cutoff-cancel');
+  if (cc) cc.onclick = () => { ui.confirmCutoff = false; renderDetail(); };
   $('cutoff').onclick = async () => {
-    const verb = actor.kind === 'browser' ? 'Sign out & remove' : 'Sign out';
-    if (!confirm(`${verb} “${actor.label}”? It stops working everywhere within minutes.`)) return;
+    if (!ui.confirmCutoff) { ui.confirmCutoff = true; renderDetail(); return; }
+    ui.confirmCutoff = false;
+    const st = $('cutoff-status');
+    $('cutoff').disabled = true;
     try {
-      const certs2 = account.deviceCerts.filter(c => c.holder === actor.id && !c.revoked);
-      // Foreign-issued certs (browserid-ng-ft55): our status list cannot kill
-      // them — send the user to the ISSUER's revoke page (it re-authenticates
-      // them and flips its own list); the local revoke below only hides rows.
-      const foreignIss = [...new Set(certs2.filter(c => c.iss && c.iss !== location.host).map(c => c.iss))];
-      // Issuers whose revocation did NOT confirm: their rows stay visible so
-      // the user can retry — hiding an active cert would be a lie.
-      const unconfirmed = new Set();
-      for (const iss of foreignIss) {
-        const sample = certs2.find(c => c.iss === iss);
-        let r = {};
-        try { r = await api(`/wsapi/issuer_revoke_url?iss=${encodeURIComponent(iss)}`); } catch (e) { /* fall through */ }
-        if (!r.revoke_url) {
-          alert(`Certificates from ${iss} can’t be revoked from here — the issuer offers no revocation endpoint. They will be hidden but keep working until they expire${sample && sample.expires_at ? ' (' + fmtDate(sample.expires_at) + ')' : ''}.`);
-          continue;
+      if (actor.keyId != null) {
+        if (actor.here) { await finishSignout(); return; }
+        const r = await reg('POST', '/api/v1/login-keys/revoke', { id: actor.keyId });
+        for (const iss of (r && r.unrevocable) || []) {
+          // Only the issuer can revoke its certs: send the user there.
+          const sample = certs.find(c => c.iss === iss);
+          let u = {};
+          try { u = await api(`/wsapi/issuer_revoke_url?iss=${encodeURIComponent(iss)}`); } catch (e) { /* fall through */ }
+          if (!u.revoke_url) { st.textContent = `Certificates from ${iss} can’t be revoked from here — they keep working until they expire.`; continue; }
+          const ok = await openIssuerRevoke(u.revoke_url, sample ? sample.identities[0] : '', iss);
+          if (!ok) st.textContent = `Not confirmed at ${iss} — its certificates may still work there.`;
         }
-        await openIssuerRevoke(r.revoke_url, sample.identities[0], iss);
-        // The popup's word is not proof — the user may have cancelled, or
-        // the issuer may be broken. The issuer's SIGNED status list is:
-        // verify against it (fresh-fetched server-side) before believing.
-        let st = { state: 'unknown' };
-        try { st = await api(`/wsapi/cert_revocation_status?id=${sample.id}`); } catch (e) { /* stays unknown */ }
-        if (st.state !== 'revoked') {
-          unconfirmed.add(iss);
-          alert(st.state === 'active'
-            ? `The revocation at ${iss} did not go through — its certificates are still active there. Maybe you cancelled, or the issuer failed. They stay listed here; try again when ready.`
-            : `Could not confirm the revocation at ${iss} — its certificates stay listed here. Check again in a minute, or retry.`);
-        }
-      }
-      for (const c of certs2) {
-        if (c.iss && unconfirmed.has(c.iss)) continue;
-        await post('/wsapi/revoke_device_cert', { id: c.id });
-      }
-      const own2 = allPerms().filter(p => p.holder === actor.id && !p.revoked && p.statusIdx != null);
-      for (const p of own2) { try { await post('/wsapi/revoke_warrant', { id: p.id }); } catch (e) { /* best effort */ } }
-      if (!certs2.length) {
-        // Nothing to revoke (e.g. a service holder with no recorded certs):
-        // fall back to removing it outright.
-        await post('/wsapi/forget_holder', { holder_id: actor.id });
+      } else {
+        const live = certs.filter(c => !c.revoked);
+        for (const c of live) await reg('POST', '/api/v1/certs/revoke', { id: c.id });
+        const own2 = allPerms().filter(p => actor.holders.includes(p.holder) && !p.revoked && p.statusIdx != null);
+        for (const p of own2) { try { await reg('POST', '/api/v1/warrants/revoke', { id: p.id }); } catch (e) { /* best effort */ } }
+        if (!live.length) await reg('POST', '/api/v1/holders/forget', { holder_id: actor.id });
       }
       await reloadAccount();
-      ui.inactiveOpen = true;
+      ui.inactiveOpen = actor.keyId == null;
       showView('main', { push: false });
       history.replaceState({ view: 'main' }, '', location.pathname);
-    } catch (e) { alert('Sign out failed: ' + e.message); }
+    } catch (e) {
+      $('cutoff').disabled = false;
+      st.textContent = 'Sign out failed: ' + e.message;
+    }
   };
   wirePermActions($('detail-card'), renderDetail);
 }
@@ -1222,7 +1231,7 @@ function openSites() {
   showView('sites');
 }
 function openDetail(holderId) {
-  ui.actorId = holderId; ui.editingName = false; ui.editingPublic = false; ui.techOpen = false;
+  ui.actorId = holderId; ui.editingName = false; ui.editingPublic = false; ui.techOpen = false; ui.confirmCutoff = false;
   history.pushState({ view: 'detail', holderId }, '', '#a:' + encodeURIComponent(holderId));
   showView('detail');
 }
@@ -1481,16 +1490,17 @@ $('set-signout-all').onclick = async () => {
   if (!confirm('Sign out everywhere? Every browser signed in to this account loses its keys within minutes and must sign in again. Agents and services are not affected.')) return;
   const status = $('set-status'); status.className = 'status muted'; status.textContent = 'Signing out…';
   try {
-    const browsers = buildActors().filter(a => a.kind === 'browser');
-    for (const a of browsers) {
-      for (const c of account.deviceCerts.filter(c => c.holder === a.id && !c.revoked)) {
-        await post('/wsapi/revoke_device_cert', { id: c.id });
-      }
+    // Every other device's login key (its certs go with it); this one last,
+    // by finishSignout.
+    for (const k of account.loginKeys) {
+      if (k.revoked || k.current) continue;
+      await reg('POST', '/api/v1/login-keys/revoke', { id: k.id });
     }
     await finishSignout();
   } catch (e) { status.className = 'status err'; status.textContent = e.message; }
 };
 $('set-advanced').onclick = () => {
+  if (!account.registry) { const st = $('set-status'); st.className = 'status err'; st.textContent = 'Set a password first — the tools need a registry session.'; return; }
   const adv = $('advanced');
   adv.hidden = !adv.hidden;
   if (!adv.hidden) adv.scrollIntoView({ behavior: 'smooth' });
@@ -1533,9 +1543,9 @@ $('w-create').onclick = async () => {
   status.className = 'status muted'; status.textContent = 'Signing…';
   try {
     let statusRef = null;
-    try { const alloc = await post('/wsapi/allocate_warrant_status', { agent_email: agentEmail, audience, scopes }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
+    try { const alloc = await reg('POST', '/api/v1/warrants/allocate_status', { grantee: agentEmail, audience, scopes }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
     const jws = await signDeviceWarrant(config, agentEmail, '*', '*', audience, scopes, statusRef);
-    try { await post('/wsapi/register_warrant', { warrant: jws, config_cert: config.cert }); } catch (e) { console.warn(e); }
+    try { await reg('POST', '/api/v1/warrants/register', { warrant: jws, config_cert: config.cert }); } catch (e) { console.warn(e); }
     $('w-out').textContent = `${jws}~${config.cert}`; $('w-out').hidden = false;
     status.className = 'status ok'; status.textContent = 'Signed & registered — paste warrant~config_cert into the agent.';
     await reloadAccount(); renderMain();
@@ -1694,67 +1704,24 @@ async function registryLoginWithPassword(password) {
   window.Registry.configureKeyless({ account: ctx.account, password });
   try { await window.Registry.ensure(); } catch (e) { console.warn('registry login:', e.message || e); }
 }
-function lkStatus(msg, cls) { const el = $('lk-status'); el.className = 'status ' + (cls || 'muted'); el.textContent = msg || ''; }
-async function loadLoginKeys() {
-  const r = await window.Registry.call('GET', '/api/v1/login-keys');
-  account.loginKeys = r.login_keys || [];
-  renderLoginKeys();
-}
-// Establish the registry session: headless by this browser's login key.
-// Without one (a cookie from before login keys, or a key revoked from
-// another device) the page signs out — the next password sign-in enrols
-// the key. No page-local password prompt, no popup. The one exception is
-// an account with no password: the registry's login page cannot help it
-// yet, so the page stays on the cookie and says so.
-async function registryBoot() {
-  if (!account.id) { $('lk-card').hidden = true; return; }
+// Establish the registry session this page holds as its own device:
+// headless by this browser's login key. Without one (a cookie from before
+// login keys, or a key revoked from another device) the page signs out —
+// the next password sign-in enrols the key. No page-local password prompt,
+// no popup. The one exception is an account with no password: the
+// registry's login page cannot help it yet, so the page stays on the cookie
+// (addresses, password) and says so where devices would be.
+async function registrySetup(hasPassword) {
+  account.registry = false;
+  if (!account.id) return;
   window.Registry.configureKeyless({ account: account.id });
-  if (!(await window.Registry.hasLoginKey())) {
-    if (account.hasPassword === false) {
-      $('lk-list').innerHTML = '';
-      lkStatus('Set a password (Account settings) to manage what is signed in to this account.');
-      return;
-    }
-    await signOutForRelogin();
-    return;
-  }
-  try { await loadLoginKeys(); } catch (e) {
-    if (e && (e.status === 401 || e.reason === 'login_required')) { await signOutForRelogin(); return; }
-    console.warn('login keys:', e.message || e);
-  }
+  if (await window.Registry.hasLoginKey()) { account.registry = true; return; }
+  if (hasPassword === false) return;
+  await signOutForRelogin();
 }
 async function signOutForRelogin() {
   try { sessionStorage.setItem('acct-relogin', '1'); } catch (e) { /* private mode */ }
   await finishSignout();
-}
-function renderLoginKeys() {
-  const keys = (account.loginKeys || []).filter(k => !k.revoked);
-  const fmt = (iso) => { try { return new Date(iso).toLocaleDateString(); } catch { return ''; } };
-  // This browser's own key is not signed out from here — the navbar's
-  // Sign out does that (and revokes the key with everything else).
-  $('lk-list').innerHTML = keys.map(k => `
-    <div class="lk-row" style="display:flex;align-items:center;gap:8px;padding:6px 0">
-      <span style="flex:1;min-width:0;font:12.5px system-ui, sans-serif">${escapeHtml(k.label || 'Device')}${k.current ? ' <span class="via">(this browser)</span>' : ''}
-        <span class="via">since ${fmt(k.enrolled_at)}</span></span>
-      ${k.current ? '' : `<button class="btn-plain lk-revoke" data-id="${k.id}">Sign out</button>`}
-    </div>`).join('') || '<div class="via">Nothing is signed in.</div>';
-  for (const b of $('lk-list').querySelectorAll('.lk-revoke')) b.onclick = async () => {
-    if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = 'Confirm sign-out'; return; }
-    b.disabled = true;
-    try {
-      const r = await window.Registry.call('POST', '/api/v1/login-keys/revoke', { id: Number(b.dataset.id) });
-      if (r && r.unrevocable && r.unrevocable.length) {
-        // Honesty over tidiness: certs we are not the authority for stay
-        // live until expiry — say so before the row disappears.
-        lkStatus('Signed out — but certificates issued by ' + r.unrevocable.join(', ') +
-          ' could not be revoked from here; that device can still sign in with them until they expire.', 'err');
-      }
-      await loadLoginKeys();
-      await reloadAccount(); renderMain();
-    } catch (e) {
-      b.disabled = false; b.textContent = 'Failed — retry';
-    }
-  };
 }
 
 // -------- session --------
@@ -1786,17 +1753,8 @@ async function finishSignout() {
 $('signout').onclick = async () => {
   $('signout').disabled = true;
   await refreshKeystore();
-  const seen = new Set();
-  for (const r of deviceCache) {
-    const c = certPayload(r.cert);
-    if (!c || c.iss !== location.host) continue;
-    const row = (account.deviceCerts || []).find(d => d.pubkey === r.publicKeyX && !d.revoked);
-    if (row && !seen.has(row.id)) {
-      seen.add(row.id);
-      try { await post('/wsapi/revoke_device_cert', { id: row.id }); } catch (e) { /* best-effort */ }
-    }
-  }
-  // Primary-issued keys on this browser: only their issuer can revoke them.
+  // Broker-issued certs on this browser are retired with its login key
+  // (finishSignout). Primary-issued keys: only their issuer can revoke them.
   const foreign = deviceCache
     .map(r => ({ iss: (certPayload(r.cert) || {}).iss, email: r.email }))
     .filter(x => x.iss && x.iss !== location.host);
@@ -1858,10 +1816,21 @@ function consumeAuthorizedHandoff() {
 // -------- boot --------
 async function reloadAccount() {
   const resp = await api('/wsapi/list_emails');
-  let warrants = [], deviceCerts = [], holders = { namespaces: [], holders_without_namespace: [] };
-  try { warrants = (await api('/wsapi/warrants')).warrants || []; } catch {}
-  try { deviceCerts = (await api('/wsapi/device_certs')).certs || []; } catch {}
-  try { holders = await api('/wsapi/holders'); } catch {}
+  let warrants = [], deviceCerts = [], holders = { namespaces: [], holders_without_namespace: [] }, loginKeys = [];
+  if (account.registry) {
+    try {
+      [warrants, deviceCerts, holders, loginKeys] = await Promise.all([
+        reg('GET', '/api/v1/warrants').then(r => r.warrants || []),
+        reg('GET', '/api/v1/certs').then(r => r.certs || []),
+        reg('GET', '/api/v1/holders'),
+        reg('GET', '/api/v1/login-keys').then(r => r.login_keys || []),
+      ]);
+    } catch (e) {
+      // The session is gone for good (the key revoked elsewhere): sign out.
+      if (e && (e.status === 401 || e.reason === 'login_required')) { await signOutForRelogin(); return; }
+      throw e;
+    }
+  }
   account.emails = resp.emails || [];
   account.agents = resp.agents || [];
   account.parentOf = Object.fromEntries((resp.derived || []).map(d => [d.email, d.parent_email]));
@@ -1878,6 +1847,7 @@ async function reloadAccount() {
   account.warrants = warrants;
   account.deviceCerts = deviceCerts;
   account.holders = holders;
+  account.loginKeys = loginKeys;
   await refreshKeystore();
 }
 
@@ -1902,10 +1872,11 @@ async function boot() {
   account.csrf = ctx.csrf_token;
   account.id = ctx.account || null;
   try { await window.Keystore.purgeLegacy(); } catch (e) { console.warn('keystore purge:', e); }
+  let emails = {}; try { emails = await api('/wsapi/list_emails'); } catch (e) { /* reloadAccount reports */ }
+  await registrySetup(emails.has_password !== false);
   await reloadAccount();
   $('signout').hidden = false;
   $('app').hidden = false;
-  registryBoot().catch(e => console.warn('registry:', e.message || e));
   consumeAuthorizedHandoff();
   history.replaceState({ view: 'main' }, '', location.pathname);
   showView('main', { push: false });

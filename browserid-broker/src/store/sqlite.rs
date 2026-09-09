@@ -16,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 41;
+const SCHEMA_VERSION: i32 = 42;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -186,6 +186,9 @@ impl SqliteStore {
             }
             if current_version < 41 {
                 Self::migrate_v41(conn)?;
+            }
+            if current_version < 42 {
+                Self::migrate_v42(conn)?;
             }
 
             // Update schema version
@@ -1052,6 +1055,35 @@ impl SqliteStore {
                 expires_at TEXT NOT NULL
             );
             ALTER TABLE registry_sessions ADD COLUMN login_key_id INTEGER;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v42(conn: &Connection) -> Result<(), BrokerError> {
+        // Browser cert rows recorded before login keys and never attached
+        // under one have no device to belong to: drop them (Dan, 2026-09-09).
+        // The certs themselves expire on their own; agents' and services'
+        // rows (other namespaces) are untouched.
+        let has_namespaces: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'namespaces'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        if !has_namespaces {
+            return Ok(()); // a schema too old to have namespaces has no browser rows to wipe
+        }
+        conn.execute_batch(
+            r#"
+            DELETE FROM device_certs
+            WHERE login_key_id IS NULL
+              AND EXISTS (SELECT 1 FROM namespaces n
+                          WHERE n.user_id = device_certs.user_id AND n.name = 'browsers'
+                            AND device_certs.holder LIKE n.prefix || '.%');
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2181,6 +2213,17 @@ impl UserStore for SqliteStore {
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(rows as u64)
+    }
+
+    fn set_login_cert_label(&self, user_id: UserId, id: u64, label: &str) -> StoreResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE login_certs SET label = ?1 WHERE id = ?2 AND user_id = ?3",
+                params![label, id as i64, user_id.0 as i64],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows > 0)
     }
 
     fn set_login_cert_holder(&self, user_id: UserId, id: u64, holder: &str) -> StoreResult<()> {
@@ -3737,6 +3780,9 @@ impl UserStore for std::sync::Arc<SqliteStore> {
     }
     fn set_login_cert_holder(&self, user_id: UserId, id: u64, holder: &str) -> StoreResult<()> {
         (**self).set_login_cert_holder(user_id, id, holder)
+    }
+    fn set_login_cert_label(&self, user_id: UserId, id: u64, label: &str) -> StoreResult<bool> {
+        (**self).set_login_cert_label(user_id, id, label)
     }
     fn revoke_login_certs_for_holder(&self, user_id: UserId, holder: &str) -> StoreResult<Vec<u64>> {
         (**self).revoke_login_certs_for_holder(user_id, holder)

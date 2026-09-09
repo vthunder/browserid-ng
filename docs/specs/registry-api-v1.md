@@ -405,6 +405,10 @@ Enrolment happens at login (§4.2); there is no separate call.
 (`true` on the key this session is bound to). Revoked ones stay
 listed.
 
+**`POST /api/v1/login-keys/rename`** — Relabels a device. Request
+`{ "id", "label" }` (label per §3). Response `204`; an unknown or
+foreign id is `404 not_found`.
+
 **`POST /api/v1/login-keys/revoke`** — Logs a device out. Request
 `{ "id" }` or `{ "kid" }`. Marks the key revoked, ends its sessions,
 and retires the certs attached under it (§5.5) — and, for records

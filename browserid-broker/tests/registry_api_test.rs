@@ -756,6 +756,12 @@ async fn login_methods_login_certs_and_session_authority() {
     assert_eq!(mine["holder"], holder.as_str());
     assert_eq!(mine["current"], true);
     assert_eq!(mine["revoked"], false);
+    let (status, _, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/login-keys/rename", Some(json!({"id": mine["id"], "label": "  Dan's laptop "}))).await;
+    assert_eq!(status, 204);
+    let (status, body, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/login-keys/rename", Some(json!({"id": 999999, "label": "x"}))).await;
+    assert_eq!(status, 404, "{body}");
+    let (_, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/login-keys", None).await;
+    assert_eq!(body["login_keys"].as_array().unwrap().iter().find(|k| k["id"] == mine["id"]).unwrap()["label"], "Dan's laptop");
     // A second pair on a SIBLING holder (a browser that lost its holder
     // cache) attached under the same key is the same device.
     let prefix = holder.split('.').next().unwrap().to_string();

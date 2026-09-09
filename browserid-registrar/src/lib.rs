@@ -206,6 +206,7 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         .route("/api/v1/login", post(account::login))
         .route("/api/v1/login-keys", get(account::list_login_keys))
         .route("/api/v1/login-keys/revoke", post(account::revoke_login_key))
+        .route("/api/v1/login-keys/rename", post(account::rename_login_key))
         .route("/api/v1/session/end", post(session::end_session))
         .route("/api/v1/account/attach", post(account::attach))
         .route("/api/v1/account/detach", post(account::detach))

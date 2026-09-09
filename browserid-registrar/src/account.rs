@@ -533,6 +533,32 @@ pub async fn list_login_keys(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct LoginKeyRenameRequest {
+    id: u64,
+    label: String,
+}
+
+/// `POST /api/v1/login-keys/rename` (§5.2.3).
+pub async fn rename_login_key(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let req: LoginKeyRenameRequest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
+    let label = crate::holders::validate_label(req.label.trim()).map_err(|e| ApiError::InvalidRequest(e.to_string()))?;
+    let ok = state
+        .store
+        .set_login_cert_label(user.user_id, req.id, &label)
+        .map_err(|e| ApiError::Internal(format!("login key: {e}")))?;
+    if !ok {
+        return Err(ApiError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LoginKeyRevokeRequest {
     #[serde(default)]
     id: Option<u64>,

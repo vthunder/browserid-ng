@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-09-04T23:32:18Z
-updated_at: 2026-09-09T21:20:58Z
+updated_at: 2026-09-09T21:53:59Z
 parent: browserid-ng-71vt
 blocked_by:
     - browserid-ng-0c49
@@ -41,3 +41,9 @@ Open for step 3: accounts with no password (primary/bridge-only) cannot open a r
 2026-09-09 (later): h6xu reworked sessions under step 2 — the page shares the browser's per-account login key with the dialog; the 'Signed in to this account' card lists login keys with holder/current; no more page-slot key.
 
 2026-09-09 (later still): a device is a login key + the certs attached under it (device_certs.login_key_id, store v41, backfilled from the key's holder). login-keys/revoke retires certs by key with a holder fallback; holders/forget revokes the keys its certs were attached under. GET certs carries login_key. Step 3 should render the account page's browser rows one per login key (agents/services stay by holder).
+
+- [x] Step 3 (account page): roster's browser rows are one per login key (agents/services by holder); all registry data (warrants, certs, holders, login keys) over /api/v1 under the page's session; revoke/rename/forget/manual signing over the API; 'Signed in to this account' card removed; forget_warrant and cert_revocation_status dropped from the page. login-keys/rename added. Legacy browser cert rows without a key wiped (store v42). An account with no password stays on the cookie for addresses/password only and sees a note where devices would be.
+- [ ] Step 4: consent.html + authorize.html onto the API
+- [ ] Step 5: delete the cookie registry routes + holder_moves table
+- [ ] Step 6: port the Rust/e2e tests that drive them
+- [ ] Step 7: close the spec parity note

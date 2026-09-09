@@ -1,10 +1,10 @@
 /**
- * /account as its own device (registry-api-v1 §4.2, handoff 2026-09-09):
- * a password sign-in logs the page in to the registry with this browser's
- * login key; the "Signed in to this account" card lists it (labelled from
- * the User-Agent); a reload is headless (stored_key); the current browser
- * has no sign-out in the card; without a key the page signs out rather
- * than fall back to the cookie.
+ * /account as its own device (registry-api-v1 §2, §4.2): a password sign-in
+ * logs the page in to the registry with this browser's login key; the
+ * roster's "You, on your devices" draws one row per login key (labelled from
+ * the User-Agent), this browser marked and shown even with no certs; a
+ * reload is headless (stored_key); renaming goes through login-keys/rename;
+ * without a key the page signs out rather than fall back to the cookie.
  */
 import { test, expect } from '@playwright/test';
 
@@ -21,51 +21,68 @@ async function createAccount(request: any) {
   return { email, pass };
 }
 
-test('the account page logs in as its own device and can sign itself out', async ({ page, request }) => {
-  const { email, pass } = await createAccount(request);
-  await page.goto(`${baseUrl}/account`);
+async function signIn(page: any, email: string, pass: string) {
   await page.fill('#si-email', email);
   await page.click('#si-btn');
   await page.fill('#si-pass', pass);
   await page.click('#si-btn');
   await expect(page.locator('#app')).toBeVisible({ timeout: 10000 });
+}
 
-  // The password sign-in enrolled this page's login key: listed, no prompt.
-  const list = page.locator('#lk-list');
-  await expect(list).toContainText('(this browser)', { timeout: 10000 });
-  await expect(list).toContainText('Chrome');
+test('the roster lists this browser by its login key and the page signs out without one', async ({ page, request }) => {
+  const { email, pass } = await createAccount(request);
+  await page.goto(`${baseUrl}/account`);
+  await signIn(page, email, pass);
 
-  // A reload is headless: stored_key, still listed.
+  // One device row: this browser's login key, named from the User-Agent,
+  // with no certs yet (the page enrolled it, no dialog ran here).
+  const sections = page.locator('#sections');
+  await expect(sections).toContainText('this device', { timeout: 10000 });
+  await expect(sections).toContainText('Chrome');
+  await expect(sections).toContainText('account page only');
+  await expect(page.locator('#sections .arow')).toHaveCount(1);
+  // The old card is gone.
+  await expect(page.locator('#lk-list')).toHaveCount(0);
+
+  // The registry agrees: one live login key, the current one, no certs.
+  const state = await page.evaluate(async () => {
+    const R = (window as any).Registry;
+    const keys = (await R.call('GET', '/api/v1/login-keys')).login_keys.filter((k: any) => !k.revoked);
+    const certs = (await R.call('GET', '/api/v1/certs')).certs;
+    return { keys: keys.map((k: any) => k.current), certs: certs.length };
+  });
+  expect(state).toEqual({ keys: [true], certs: 0 });
+
+  // A reload is headless: stored_key, still one row.
   await page.reload();
   await expect(page.locator('#app')).toBeVisible({ timeout: 10000 });
-  await expect(list).toContainText('(this browser)', { timeout: 10000 });
+  await expect(sections).toContainText('this device', { timeout: 10000 });
 
-  // The registry agrees: one live login key on the account.
-  const keys = await page.evaluate(async () => {
-    const r = await (window as any).Registry.call('GET', '/api/v1/login-keys');
-    return r.login_keys.filter((k: any) => !k.revoked).map((k: any) => k.current);
-  });
-  expect(keys).toEqual([true]);
-
-  // This browser's own key has no sign-out here (the navbar does that).
-  await expect(list.locator('.lk-revoke')).toHaveCount(0);
-  await expect(list).toContainText('(this browser)');
+  // Rename it from the detail view (login-keys/rename).
+  await page.locator('#sections .rowtoggle').first().click();
+  await page.locator('#sections .managelink').first().click();
+  await expect(page.locator('#detail-card')).toBeVisible();
+  await page.click('#rn-edit');
+  await page.fill('#rn-input', 'My test browser');
+  await page.click('#rn-save');
+  await expect(page.locator('#detail-card')).toContainText('My test browser', { timeout: 10000 });
+  await page.click('#detail-back');
+  await expect(sections).toContainText('My test browser', { timeout: 10000 });
 
   // Without a login key the page does not fall back to the cookie: it
   // signs out, and the sign-in card says why.
   await page.evaluate(async () => {
-    await (window as any).Registry.call('POST', '/api/v1/login-keys/revoke', { kid: (window as any).Registry.loginKid() });
-    await (window as any).Registry.forgetLoginKey();
+    const R = (window as any).Registry;
+    await R.call('POST', '/api/v1/login-keys/revoke', { kid: R.loginKid() });
+    await R.forgetLoginKey();
   });
   await page.reload();
   await expect(page.locator('#signin')).toBeVisible({ timeout: 10000 });
   await expect(page.locator('#si-lead')).toContainText('sign in again');
 
-  // Signing in again enrols a fresh key and the card is back.
-  await page.fill('#si-email', email);
-  await page.click('#si-btn');
-  await page.fill('#si-pass', pass);
-  await page.click('#si-btn');
-  await expect(page.locator('#app')).toBeVisible({ timeout: 10000 });
-  await expect(list).toContainText('(this browser)', { timeout: 10000 });
+  // Signing in again enrols a fresh key: one row again, fresh name.
+  await signIn(page, email, pass);
+  await expect(sections).toContainText('this device', { timeout: 10000 });
+  await expect(page.locator('#sections .arow')).toHaveCount(1);
+  await expect(sections).not.toContainText('My test browser');
 });
