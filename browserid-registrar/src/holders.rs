@@ -435,21 +435,40 @@ pub fn forget_holder_core(
     user_id: u64,
     holder_id: &str,
 ) -> Result<Vec<String>> {
-    let certs = owned_certs(store, user_id, holder_id)?;
+    let unrevocable = log_out_device_core(store, host, own_domain, user_id, holder_id)?;
+    cleanup_holder_warrants(store, user_id, holder_id);
+    store.forget_holder(user_id, holder_id)?;
+    Ok(unrevocable)
+}
+
+/// Log a device out (§5.2.3 revoke, §5.6 forget): retire every cert on its
+/// holder (setting bits where this deployment is the authority), revoke
+/// its login keys, end their sessions. Returns the issuers whose bits it
+/// could not set. A holder with no certs is fine — a page's key has none.
+pub fn log_out_device_core(
+    store: &dyn RegistrarStore,
+    host: &dyn RegistrarHost,
+    own_domain: &str,
+    user_id: u64,
+    holder_id: &str,
+) -> Result<Vec<String>> {
+    let certs = match owned_certs(store, user_id, holder_id) {
+        Ok(c) => c,
+        Err(RegistrarError::HolderNotFound) => Vec::new(),
+        Err(e) => return Err(e),
+    };
     let mut unrevocable: Vec<String> = Vec::new();
     for cert in &certs {
+        store.revoke_device_cert(user_id, cert.id)?;
         if !revoke_at_authority(store, host, own_domain, cert)? {
             unrevocable.push(cert.iss.clone());
         }
     }
     unrevocable.sort();
     unrevocable.dedup();
-    cleanup_holder_warrants(store, user_id, holder_id);
-    // The device's login keys go with its certs (§5.6): logged out for good.
     for id in store.revoke_login_certs_for_holder(user_id, holder_id)? {
         store.end_sessions_on_login_key(user_id, id).ok();
     }
-    store.forget_holder(user_id, holder_id)?;
     Ok(unrevocable)
 }
 

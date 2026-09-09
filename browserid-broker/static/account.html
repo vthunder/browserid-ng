@@ -1742,8 +1742,15 @@ function renderLoginKeys() {
     if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = 'Confirm sign-out'; return; }
     b.disabled = true;
     try {
-      await window.Registry.call('POST', '/api/v1/login-keys/revoke', { id: Number(b.dataset.id) });
+      const r = await window.Registry.call('POST', '/api/v1/login-keys/revoke', { id: Number(b.dataset.id) });
+      if (r && r.unrevocable && r.unrevocable.length) {
+        // Honesty over tidiness: certs we are not the authority for stay
+        // live until expiry — say so before the row disappears.
+        lkStatus('Signed out — but certificates issued by ' + r.unrevocable.join(', ') +
+          ' could not be revoked from here; that device can still sign in with them until they expire.', 'err');
+      }
       await loadLoginKeys();
+      await reloadAccount(); renderMain();
     } catch (e) {
       b.disabled = false; b.textContent = 'Failed — retry';
     }

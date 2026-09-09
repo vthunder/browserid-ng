@@ -538,13 +538,15 @@ struct LoginKeyRevokeRequest {
     kid: Option<String>,
 }
 
-/// `POST /api/v1/login-keys/revoke`: marks the key revoked and ends its
-/// sessions — this one included, when it is the key named.
+/// `POST /api/v1/login-keys/revoke`: logs the device out — the key revoked
+/// and its sessions ended (this one included, when it is the key named),
+/// and the certs recorded with its holder retired, so it can neither manage
+/// the account nor sign in anywhere with them.
 pub async fn revoke_login_key(
     State(state): State<Arc<RegistrarState>>,
     user: ApiUser,
     body: Bytes,
-) -> Result<StatusCode, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let req: LoginKeyRevokeRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let keys = state
@@ -559,7 +561,12 @@ pub async fn revoke_login_key(
     .ok_or(ApiError::NotFound)?;
     state.store.revoke_login_cert(user.user_id, rec.id).map_err(|e| ApiError::Internal(format!("login key: {e}")))?;
     state.store.end_sessions_on_login_key(user.user_id, rec.id).ok();
-    Ok(StatusCode::NO_CONTENT)
+    let unrevocable = match rec.holder.as_deref() {
+        Some(h) => crate::holders::log_out_device_core(&*state.store, &*state.host, &state.domain, user.user_id, h)
+            .map_err(|e| ApiError::Internal(format!("device logout: {e}")))?,
+        None => Vec::new(),
+    };
+    Ok(Json(serde_json::json!({ "unrevocable": unrevocable })))
 }
 
 // ---------------------------------------------------------------------------

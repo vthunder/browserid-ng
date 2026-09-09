@@ -764,10 +764,17 @@ async fn login_methods_login_certs_and_session_authority() {
 
     // Revoking a key ends its sessions; the device is sent to the page and
     // may come back with the same key, its record restored.
-    let (status, _, _) = session_call(&l, &page_kp, &page_token, "POST", "/api/v1/login-keys/revoke", Some(json!({"kid": login_kp.public_key().kid()}))).await;
-    assert_eq!(status, 204);
+    let (status, body, _) = session_call(&l, &page_kp, &page_token, "POST", "/api/v1/login-keys/revoke", Some(json!({"kid": login_kp.public_key().kid()}))).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["unrevocable"], json!([]));
     let (status, body, _) = session_call(&l, &login_kp, &stored, "GET", "/api/v1/requests", None).await;
     assert_eq!(status, 401, "{body}");
+    // Signing a device out retires the certs on its holder too: it can no
+    // longer sign in anywhere with them.
+    let (_, certs, _) = session_call(&l, &page_kp, &page_token, "GET", "/api/v1/certs", None).await;
+    let own = certs["certs"].as_array().unwrap().iter().find(|c| c["kid"] == config_kp.public_key().kid()).unwrap();
+    assert_eq!(own["revoked"], true, "{certs}");
+    assert!(l.user_store.is_status_revoked_idx(own["status"]["idx"].as_u64().unwrap()).unwrap(), "the bit on our list");
     let (status, _, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/requests", None).await;
     assert_eq!(status, 401, "every session on the key");
     let (status, body) = login_stored(&l, &account, &login_kp).await;
@@ -789,6 +796,10 @@ async fn login_methods_login_certs_and_session_authority() {
     assert_eq!(status, 401, "the device is logged out");
     let (status, body) = login_stored(&l, &account, &login_kp).await;
     assert_eq!(status, 403, "{body}");
+    // Revoking the page's own key (no holder) is a plain logout.
+    let (status, body, _) = session_call(&l, &page_kp, &page_token, "POST", "/api/v1/login-keys/revoke", Some(json!({"kid": page_kp.public_key().kid()}))).await;
+    assert_eq!(status, 200, "{body}");
+    let page_token = page_login(&l, &account, &page_kp).await;
 
     // Ending a session.
     let (status, _, _) = session_call(&l, &page_kp, &page_token, "POST", "/api/v1/session/end", Some(json!({}))).await;

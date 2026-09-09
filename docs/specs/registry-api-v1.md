@@ -404,10 +404,16 @@ Enrolment happens at login (§4.2); there is no separate call.
 (`true` on the key this session is bound to). Revoked ones stay
 listed.
 
-**`POST /api/v1/login-keys/revoke`** — Request `{ "id" }` or
-`{ "kid" }`. Marks the key revoked and ends its sessions; a second
-revoke is a `204`. Response `204`. The device's next `stored_key`
-login answers `login_required` (§4.2).
+**`POST /api/v1/login-keys/revoke`** — Logs a device out. Request
+`{ "id" }` or `{ "kid" }`. Marks the key revoked, ends its sessions,
+and retires the certs recorded with its holder (§5.5) — a device that
+is signed out can neither manage the account nor sign in at a site
+with the certs it holds. Response `200 { "unrevocable": [ "<issuer
+domain>", … ] }`, the issuers whose bits it could not set (as
+`holders/forget`); the wallet MUST revoke there. A second revoke is a
+no-op `200`. The device's next `stored_key` login answers
+`login_required` (§4.2); passing the page re-enrols the key, but the
+retired certs stay retired — the device signs in at its issuers again.
 
 #### 5.2.4 Attach — `POST /api/v1/account/attach`
 
