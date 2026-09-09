@@ -411,8 +411,8 @@ where
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
     "'sha256-5ViIBAEw+xqDW5qSRiuxnUWgSQPPreaF6RQl7+GsqDI='", // account.html
-    "'sha256-hFA41qWuV3FdR8wWzXIxrnXheUsKRg6hBKPEXeFyySA='", // authorize.html
-    "'sha256-cgwfxDK4GCoGP+8bnCnRcDqyXuKYsNlxqR3e5aj4DKY='", // consent.html
+    "'sha256-PvJyf1RVthlvmqJMdb1ykTpVS3hQHOgt/lz+q+WWKzA='", // authorize.html
+    "'sha256-YzJ9cpaSSpriRSLicj74XPmhMiJzt2WkZsEEXsyl2V8='", // consent.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)
 ];
 

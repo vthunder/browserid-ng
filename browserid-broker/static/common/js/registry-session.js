@@ -346,6 +346,23 @@
     },
     account: function () { return account; },
     loginKid: function () { return loginKey ? loginKey.kid : null; },
+    // Keyless mode: record certs this page just had issued under its
+    // session (§5.2.4), so they belong to this device. certs:
+    // [{cert, privateKey}] (1–2, one identity).
+    attachCerts: async function (identityEmail, certs) {
+      await ensure();
+      var path = "/api/v1/account/attach";
+      var jti = rndHex();
+      var entries = [];
+      for (var i = 0; i < certs.length; i++) {
+        var key = { privateKey: certs[i].privateKey, kid: await kidOfCert(certs[i].cert) };
+        entries.push({ cert: certs[i].cert, proof: await proofBy(key, "POST", path, null, jti) });
+      }
+      var bodyStr = JSON.stringify({ identity: identityEmail, certs: entries });
+      var r = await postRaw(path, bodyStr, { proof: await proofBy(loginKey, "POST", path, bodyStr, jti), authorization: "Bearer " + token });
+      if (!r.ok) throw error(r, path);
+      return r.data;
+    },
     ensure: ensure,
     call: call,
   };

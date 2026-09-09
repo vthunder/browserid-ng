@@ -148,6 +148,7 @@
 </div>
 
 <script src="/common/js/keystore.js"></script>
+<script src="/common/js/registry-session.js"></script>
 <script type="module">
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
@@ -328,6 +329,7 @@ $('signin-form').onsubmit = async (e) => {
     if (siMode === 'login') {
       siMuted('Signing in…');
       await post('/wsapi/authenticate_user', { email, pass: $('si-pass').value, ephemeral: false });
+      await registryLoginWithPassword($('si-pass').value);
       location.reload(); return;
     }
     if (siMode === 'create') {
@@ -345,6 +347,7 @@ $('signin-form').onsubmit = async (e) => {
       siMuted('Confirming…');
       await post('/wsapi/complete_signin_code', { email, token: $('si-code').value.trim() });
       await post('/wsapi/authenticate_user', { email, pass: siPendingPass, ephemeral: false });
+      await registryLoginWithPassword(siPendingPass);
       location.reload(); return;
     }
   } catch (err) { siErr(err.message); }
@@ -1300,6 +1303,15 @@ async function pvDeny() {
   pvRender();
 }
 
+// Right after a password sign-in: log the page in to the registry while the
+// password is in hand, so the browser's login key exists for the account page.
+async function registryLoginWithPassword(password) {
+  let ctx; try { ctx = await api('/wsapi/session_context'); } catch { return; }
+  if (!ctx.account) return;
+  window.Registry.configureKeyless({ account: ctx.account, password });
+  try { await window.Registry.ensure(); } catch (e) { console.warn('registry login:', e.message || e); }
+}
+
 async function boot() {
   // Returning from the dialog after a primary sign-in leaves a `#browserid=…`
   // blob in the URL; the broker session cookie is already set, so clear it.
@@ -1327,7 +1339,15 @@ async function boot() {
   const resp = await api('/wsapi/list_emails');
   account.emails = resp.emails || [];
   account.agents = resp.agents || [];
-  try { account.warrants = (await api('/wsapi/warrants')).warrants || []; } catch {}
+  // The registered warrants (a hint for "already known" agents) come over
+  // the registry session this browser's login key opens; without a key the
+  // hint is simply absent — this page is a ceremony, not the place to log in.
+  try {
+    window.Registry.configureKeyless({ account: ctx.account || null });
+    if (ctx.account && await window.Registry.hasLoginKey()) {
+      account.warrants = (await window.Registry.call('GET', '/api/v1/warrants')).warrants || [];
+    }
+  } catch (e) { /* hint only */ }
   await refreshKeystore();
   await showProvisionApproval(requestCode);
 }

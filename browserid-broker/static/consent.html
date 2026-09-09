@@ -89,6 +89,7 @@
 </div>
 
 <script src="/common/js/keystore.js"></script>
+<script src="/common/js/registry-session.js"></script>
 <script type="module">
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
@@ -106,6 +107,11 @@ let rootIds = [];
 let registry = [];
 // Deep-linked code from /consent/<code>, if any.
 const linkedCode = location.pathname.match(/^\/consent\/(.+)$/)?.[1] || null;
+// Registry data and the respond call ride the standard /api/v1 session this
+// page holds as its own device (registry-api-v1) — the browser's login key
+// for the account, shared with the dialog and the account page. The cookie
+// session serves the issuer role only (who is signed in, cert issuance).
+const reg = (method, path, body) => window.Registry.call(method, path, body);
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { credentials: 'same-origin', ...opts });
@@ -639,6 +645,13 @@ async function resolve(r, approve, grantor, deniedNote) {
           await window.Keystore.putDevice(location.host, base, 'config', {
             publicKeyX: keys.config.publicKeyX, privateKey: keys.config.privateKey, cert: certs.config_cert,
           });
+          // Recorded under this device's login key, like the dialog would.
+          try {
+            await window.Registry.attachCerts(base, [
+              { cert: certs.device_cert, privateKey: keys.device.privateKey },
+              { cert: certs.config_cert, privateKey: keys.config.privateKey },
+            ]);
+          } catch (e3) { console.warn('attach failed:', e3.message || e3); }
           config = await localConfig(r.delegator_email, grantor);
         } catch (e2) { /* primary-rooted or refused: fall through */ }
       }
@@ -646,6 +659,9 @@ async function resolve(r, approve, grantor, deniedNote) {
         `no signing key for ${grantor} in this browser — ` +
         `sign in to an app with that identity here first, then retry`);
       configCert = config.cert;
+      // Claim (§5.3): allocates any missing status refs and re-checks the
+      // audience proof; the answer is the item with its refs.
+      try { const claimed = await reg('POST', '/api/v1/requests/claim', { code: r.code }); if (claimed && claimed.grants) r = { ...r, grants: claimed.grants }; } catch (e2) { /* refs from the listing */ }
       warrants = [];
       if (r.kind === 'connection') {
         // One v2 self-grant record, pinned to the broker-minted binding.id
@@ -675,15 +691,13 @@ async function resolve(r, approve, grantor, deniedNote) {
         }
       }
     }
-    const resolved = await api('/wsapi/warrant_respond', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        csrf, code: r.code, approve, warrants, config_cert: configCert,
-        // Only sent when the attributed identity differs from the agent —
-        // the on-behalf/foreign shapes (the server defaults to the agent).
-        ...(approve && grantor && grantor.toLowerCase() !== r.agent_email.toLowerCase()
-          ? { grantor } : {}),
-      }),
+    const resolved = await reg('POST', '/api/v1/requests/respond', {
+      code: r.code, approve,
+      ...(approve ? { warrants, config_cert: configCert } : {}),
+      // Only sent when the attributed identity differs from the agent —
+      // the on-behalf/foreign shapes (the server defaults to the agent).
+      ...(approve && grantor && grantor.toLowerCase() !== r.agent_email.toLowerCase()
+        ? { grantor } : {}),
     });
     status.className = approve ? 'status ok' : 'status muted';
     const who = r.kind === 'connection' || r.kind === 'authoring' ? 'the site' : 'the agent';
@@ -733,8 +747,10 @@ async function boot() {
     // A real sign-in, not a dead end: connection requests routinely land
     // signed-out users here (the identity-first connect flow). Same wsapi as
     // the account page's form; the reload restores the deep-linked request.
+    let relogin = false;
+    try { relogin = sessionStorage.getItem('acct-relogin') === '1'; sessionStorage.removeItem('acct-relogin'); } catch (e) { /* private mode */ }
     $('auth-gate').innerHTML = `<div class="pv-title" style="margin-bottom:10px">Sign in to continue</div>
-      <p class="pv-note" style="margin-bottom:12px">Approving happens from your browserid session.</p>
+      <p class="pv-note" style="margin-bottom:12px">${relogin ? 'Please sign in again to approve requests.' : 'Approving happens from your browserid session.'}</p>
       <form id="gate-si" style="display:flex;flex-direction:column;gap:8px">
         <input id="gate-email" type="email" required placeholder="you@example.com" autocomplete="username"
           style="font:14px system-ui;padding:9px 10px;border:1px solid rgba(0,0,0,.18);border-radius:8px">
@@ -749,14 +765,19 @@ async function boot() {
       const errEl = document.getElementById('gate-err');
       errEl.textContent = '';
       try {
+        const pass = document.getElementById('gate-pass').value;
         await api('/wsapi/authenticate_user', {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             email: document.getElementById('gate-email').value.trim(),
-            pass: document.getElementById('gate-pass').value,
-            ephemeral: false,
+            pass, ephemeral: false,
           }),
         });
+        // Log the page in to the registry while the password is in hand.
+        try {
+          const c2 = await api('/wsapi/session_context');
+          if (c2.account) { window.Registry.configureKeyless({ account: c2.account, password: pass }); await window.Registry.ensure(); }
+        } catch (e2) { console.warn('registry login:', e2.message || e2); }
         location.reload();
       } catch (e) {
         errEl.textContent = 'Sign-in failed: ' + e.message;
@@ -769,16 +790,52 @@ async function boot() {
     return;
   }
   csrf = ctx.csrf_token;
+  // The registry session: headless by this browser's login key. Without one
+  // (a cookie from before login keys, a key revoked elsewhere) the page
+  // signs out so the next password sign-in enrols the key — no page-local
+  // prompt. An account with no password cannot approve here yet.
+  const emails = await api('/wsapi/list_emails').catch(() => ({ emails: [], agents: [] }));
+  window.Registry.configureKeyless({ account: ctx.account || null });
+  if (!ctx.account || !(await window.Registry.hasLoginKey())) {
+    if (emails.has_password === false) {
+      $('auth-gate').innerHTML = `<p class="err" style="margin:0">Approving needs a browserid.me password — set one on <a href="/account">your account page</a>, then come back.</p>`;
+      return;
+    }
+    try { sessionStorage.setItem('acct-relogin', '1'); } catch (e) { /* private mode */ }
+    try { await api('/wsapi/logout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ csrf }) }); } catch (e) { /* gone */ }
+    location.reload();
+    return;
+  }
   $('auth-gate').hidden = true;
   // External requests are redirect-tied: they surface ONLY via their
   // /consent/<code> deep link, so pass the code through when we have one.
-  const [resp, reg, emails] = await Promise.all([
-    api('/wsapi/warrant_requests' + (linkedCode ? '?code=' + encodeURIComponent(linkedCode) : '')),
-    api('/wsapi/warrants').catch(() => ({ warrants: [] })),
-    api('/wsapi/list_emails').catch(() => ({ emails: [], agents: [] })),
-  ]);
+  let resp, regw;
+  try {
+    [resp, regw] = await Promise.all([
+      reg('GET', '/api/v1/requests' + (linkedCode ? '?code=' + encodeURIComponent(linkedCode) : '')),
+      reg('GET', '/api/v1/warrants').catch(() => ({ warrants: [] })),
+    ]);
+  } catch (e) {
+    if (e && (e.status === 401 || e.reason === 'login_required')) {
+      try { sessionStorage.setItem('acct-relogin', '1'); } catch (e2) { /* private mode */ }
+      try { await api('/wsapi/logout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ csrf }) }); } catch (e2) { /* gone */ }
+      location.reload();
+      return;
+    }
+    throw e;
+  }
+  // Record requests (connection / authoring) are unclaimed at creation and
+  // never list on their own (§5.3): a deep-linked code the listing lacks is
+  // claimed here — the audience proof re-checked, status refs allocated —
+  // and the answer is the item.
+  if (linkedCode && !(resp.requests || []).some(r => r.code === linkedCode)) {
+    try {
+      const item = await reg('POST', '/api/v1/requests/claim', { code: linkedCode });
+      if (item && item.code) resp.requests = [...(resp.requests || []), item];
+    } catch (e) { /* unknown, expired, or someone else's: the empty state says so */ }
+  }
   statusUri = resp.status_uri || null;
-  registry = reg.warrants || [];
+  registry = regw.warrants || [];
   const agentSet = new Set((emails.agents || []).map(a => a.toLowerCase()));
   rootIds = (emails.emails || []).filter(e => !agentSet.has(e.toLowerCase()));
   render(resp.requests);
