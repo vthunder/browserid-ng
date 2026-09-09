@@ -597,7 +597,7 @@ async fn login_rejects_wrong_password_and_unknown_tenant() {
 #[tokio::test]
 async fn managed_tenant_marks_certs_and_stamps_mint_policy() {
     use browserid_broker::store::ManagementPolicy;
-    use browserid_core::device::AudConstraint;
+    
 
     let (server, store) = make_server();
     seed_active_tenant(&store);

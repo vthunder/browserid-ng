@@ -50,7 +50,7 @@ async fn device_issue_then_access_mint() {
     let (server, sender) = make_server();
     let email = "human@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
-    let sess = common::registry::api_login(&server, &session, "testpassword").await;
+    let _sess = common::registry::api_login(&server, &session, "testpassword").await;
     let c = csrf(&server, &session).await;
 
     // 1. Batch-issue a user device cert + a config cert.
@@ -100,7 +100,7 @@ async fn device_issue_accepts_client_browser_holder_and_rejects_foreign() {
     let (server, sender) = make_server();
     let email = "human2@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
-    let sess = common::registry::api_login(&server, &session, "testpassword").await;
+    let _sess = common::registry::api_login(&server, &session, "testpassword").await;
     let c = csrf(&server, &session).await;
 
     // The account's browsers-namespace prefix (client broker fetches this).
@@ -148,7 +148,7 @@ async fn access_mint_rejects_request_not_signed_by_device_key() {
     let (server, sender) = make_server();
     let email = "human@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
-    let sess = common::registry::api_login(&server, &session, "testpassword").await;
+    let _sess = common::registry::api_login(&server, &session, "testpassword").await;
     let c = csrf(&server, &session).await;
     let device_kp = KeyPair::generate();
     let config_kp = KeyPair::generate();
@@ -210,7 +210,7 @@ async fn device_certs_list_and_revoke() {
     // Revoke the authentication cert (owner-scoped).
     let auth = certs.iter().find(|c| c["purpose"] == "authentication").unwrap();
     let id = auth["id"].as_u64().unwrap();
-    let c = csrf(&server, &session).await;
+    let _c = csrf(&server, &session).await;
     let body: Value = common::registry::api_post(&server, &sess, "/api/v1/certs/revoke", json!({ "id": id }))
         .await
         .json();
@@ -223,7 +223,7 @@ async fn device_certs_list_and_revoke() {
     let after = listed2["certs"].as_array().unwrap();
     let auth2 = after.iter().find(|c| c["id"].as_u64() == Some(id)).unwrap();
     assert_eq!(auth2["revoked"], true, "cert should be sticky-revoked");
-    let c = csrf(&server, &session).await;
+    let _c = csrf(&server, &session).await;
     let again = common::registry::api_post(&server, &sess, "/api/v1/certs/revoke", json!({ "id": id }))
         .await;
     assert_eq!(again.status_code(), 200, "re-revoke stays green (idempotent/sticky)");
@@ -245,7 +245,7 @@ async fn revoke_device_cert_is_owner_scoped() {
     let attacker = "attacker@localhost:3000";
     let attacker_session = create_user(&server, &sender, attacker, "testpassword").await;
     let attacker_sess = common::registry::api_login(&server, &attacker_session, "testpassword").await;
-    let c = csrf(&server, &attacker_session).await;
+    let _c = csrf(&server, &attacker_session).await;
     let resp = common::registry::api_post(&server, &attacker_sess, "/api/v1/certs/revoke", json!({ "id": victim_id }))
         .await;
     assert_ne!(resp.status_code(), 200, "cross-account revoke must fail");
@@ -280,7 +280,7 @@ async fn forget_holder_revokes_and_removes_all_of_its_certs() {
     assert!(certs.iter().all(|c| c["holder"] == holder.as_str()), "one pair, one holder");
 
     // A holder that isn't the user's is refused.
-    let c = csrf(&server, &session).await;
+    let _c = csrf(&server, &session).await;
     let r = common::registry::api_post(&server, &sess, "/api/v1/holders/forget", json!({ "holder_id": "zz.notmine" }))
         .await;
     assert_ne!(r.status_code(), 200, "foreign holder must be refused");
@@ -313,7 +313,7 @@ async fn foreign_issued_cert_revocation_never_touches_the_broker_status_list() {
     let ctx = create_test_context_customized(|_| {});
     let session = mk_user(&ctx.server, &ctx.email_sender, "me@mail.test", "password123").await;
     let sess = common::registry::api_login(&ctx.server, &session, "password123").await;
-    let csrf = get_csrf(&ctx.server, &session).await;
+    let _csrf = get_csrf(&ctx.server, &session).await;
     let user_id = ctx.user_store.get_user_by_email("me@mail.test").unwrap().unwrap().id;
 
     // A broker-owned status slot, as issuance would allocate it…
@@ -349,8 +349,7 @@ async fn foreign_issued_cert_revocation_never_touches_the_broker_status_list() {
     let own_id = ids.iter().find(|(_, i)| i == "localhost:3000").unwrap().0;
 
     // Revoking the FOREIGN cert soft-hides it but leaves our list alone.
-    let resp = ctx
-        .common::registry::api_post(&server, &sess, "/api/v1/certs/revoke", json!({ "id": foreign_id }))
+    let resp = common::registry::api_post(&ctx.server, &sess, "/api/v1/certs/revoke", json!({ "id": foreign_id }))
         .await;
     resp.assert_status_ok();
     assert!(
@@ -359,8 +358,7 @@ async fn foreign_issued_cert_revocation_never_touches_the_broker_status_list() {
     );
 
     // Revoking the OWN cert still flips our bit.
-    let resp = ctx
-        .common::registry::api_post(&server, &sess, "/api/v1/certs/revoke", json!({ "id": own_id }))
+    let resp = common::registry::api_post(&ctx.server, &sess, "/api/v1/certs/revoke", json!({ "id": own_id }))
         .await;
     resp.assert_status_ok();
     assert!(ctx.user_store.is_status_revoked_idx(own_idx).unwrap());
@@ -515,7 +513,7 @@ async fn device_issue_refuses_untrusted_web_return_origin() {
     let (server, sender) = make_server();
     let email = "human@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
-    let sess = common::registry::api_login(&server, &session, "testpassword").await;
+    let _sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     let (status, body) = issue_with_origin(&server, &session, email, "https://evil.example").await;
     assert_eq!(status, 403, "{body}");
@@ -534,7 +532,7 @@ async fn device_issue_accepts_native_trusted_and_own_origins() {
     let (server, sender) = make_server();
     let email = "human@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
-    let sess = common::registry::api_login(&server, &session, "testpassword").await;
+    let _sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     for o in [
         "http://127.0.0.1:4321",   // loopback
@@ -569,7 +567,7 @@ async fn suspended_agent_cannot_mint_on_the_old_account() {
     let email = "parent@localhost:3000";
     let agent = "parent+cal@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
-    let sess = common::registry::api_login(&server, &session, "testpassword").await;
+    let _sess = common::registry::api_login(&server, &session, "testpassword").await;
     let user_id = store.get_email(email).unwrap().unwrap().user_id;
     store.add_email_with_type(user_id, agent, true, EmailType::Agent).unwrap();
     store.set_parent_email(agent, Some(email)).unwrap();

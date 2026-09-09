@@ -302,9 +302,6 @@ impl FromRequestParts<Arc<RegistrarState>> for ApiUser {
         parts: &mut Parts,
         state: &Arc<RegistrarState>,
     ) -> Result<Self, ApiError> {
-        if !state.enabled {
-            return Err(ApiError::NotFound);
-        }
         let expect_bh = if parts.method == axum::http::Method::GET {
             None
         } else {
@@ -434,10 +431,9 @@ struct ApiRespondRequest {
 }
 
 /// `POST /api/v1/requests/respond` — approve or deny a pending request.
-/// Identical semantics to `/wsapi/warrant_respond` minus `csrf`: the SAME
-/// shared core validates the client-signed warrants, so the two lanes'
-/// bars cannot drift. Always `200` with a JSON body — `{return_url}` on an
-/// approve whose request carried one, `{}` otherwise (including every deny).
+/// `POST /api/v1/requests/respond` (§5.3). Always `200` with a JSON body —
+/// `{return_url}` when the request carried one (approve or deny: the
+/// requester learns the outcome either way), `{}` otherwise.
 pub async fn respond(
     State(state): State<Arc<RegistrarState>>,
     user: ApiUser,
@@ -456,10 +452,8 @@ pub async fn respond(
     let return_url =
         crate::consent::respond_core(&state, user.user_id, &core).map_err(consent_err)?;
     let mut resp = serde_json::Map::new();
-    if approve {
-        if let Some(url) = return_url {
-            resp.insert("return_url".into(), serde_json::Value::String(url));
-        }
+    if let Some(url) = return_url {
+        resp.insert("return_url".into(), serde_json::Value::String(url));
     }
     Ok(Json(serde_json::Value::Object(resp)))
 }

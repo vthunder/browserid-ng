@@ -131,7 +131,7 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
         Some(StatusRef { uri: status_uri, idx: status_idx }),
     )
     .unwrap();
-    let c = csrf(&server, &session).await;
+    let _c = csrf(&server, &session).await;
     let r = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({
             "code": code, "approve": true,
             "warrants": [warrant.encoded()],
@@ -231,7 +231,7 @@ async fn respond_rejects_overbroad_or_foreign_holder() {
     let status_uri = listed["status_uri"].as_str().unwrap().to_string();
     // The request surfaces the agent's holder for the consent page to bind to.
     assert_eq!(listed["requests"][0]["holder"], "ag.bot");
-    let c = csrf(&server, &session).await;
+    let _c = csrf(&server, &session).await;
 
     // Helper: sign a warrant with the given matcher and try to respond.
     let attempt = |matcher: &str| {
@@ -310,7 +310,7 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
                 Some(StatusRef { uri: status_uri, idx: status_idx }),
             )
             .unwrap();
-            let c = csrf(server, &session).await;
+            let _c = csrf(server, &session).await;
             let r = common::registry::api_post(server, sess, "/api/v1/requests/respond", json!({ "code": code, "approve": true,
                     "warrants": [w.encoded()], "config_cert": config_cert }))
                 .await;
@@ -330,7 +330,7 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
     let row = &listed["warrants"][0];
     assert_eq!(row["revoked"], false, "{listed}");
     let id = row["id"].as_u64().unwrap();
-    let c = csrf(&server, &session).await;
+    let _c = csrf(&server, &session).await;
     let r = common::registry::api_post(&server, &sess, "/api/v1/warrants/revoke", json!({ "id": id }))
         .await;
     assert_eq!(r.status_code(), 204, "revoke: {:?}", r.text());
@@ -371,7 +371,7 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
         Some(StatusRef { uri: status_uri, idx: real_idx + 1000 }),
     )
     .unwrap();
-    let c = csrf(&server, &session).await;
+    let _c = csrf(&server, &session).await;
     let r = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({ "code": code, "approve": true,
             "warrants": [forged.encoded()], "config_cert": config_cert.encoded() }))
         .await;

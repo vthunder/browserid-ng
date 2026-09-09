@@ -330,9 +330,6 @@ pub async fn create(
     axum::Extension(BodyHash(bh)): axum::Extension<BodyHash>,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if !state.enabled {
-        return Err(ApiError::NotFound);
-    }
     let path = "/api/v1/accounts";
     let hp = header_proof(&headers)?;
     let req: AccountsRequest = serde_json::from_slice(&body)
@@ -388,9 +385,6 @@ pub async fn lookup(
     axum::Extension(BodyHash(bh)): axum::Extension<BodyHash>,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if !state.enabled {
-        return Err(ApiError::NotFound);
-    }
     let path = "/api/v1/accounts/lookup";
     let hp = header_proof(&headers)?;
     let req: LookupRequest = serde_json::from_slice(&body)
@@ -445,9 +439,6 @@ pub async fn login(
     axum::Extension(BodyHash(bh)): axum::Extension<BodyHash>,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if !state.enabled {
-        return Err(ApiError::NotFound);
-    }
     let path = "/api/v1/login";
     let req: LoginRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;

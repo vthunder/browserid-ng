@@ -556,8 +556,9 @@ config-cert key.
 On approve the registry stores each `{warrant}~{config_cert}` for
 single pickup by the requester's core §7.5 poll and upserts a §5.4
 warrant record. Response `200`: `{ "return_url": … }` when the request
-carried one (an absolute URL the requester supplied at filing), else
-`{}` (always `{}` for a deny).
+carried one (an absolute URL the requester supplied at filing, echoed
+on approve and on deny alike so the user lands back at the requester
+either way), else `{}`.
 
 ### 5.4 Warrant registry
 

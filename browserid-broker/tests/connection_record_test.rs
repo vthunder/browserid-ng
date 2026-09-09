@@ -76,8 +76,9 @@ async fn spawn_resource() -> (String, Arc<RwLock<HashMap<String, String>>>) {
 /// claim validates the audience proof, allocates refs, and answers the item.
 async fn fetch_claimed(server: &TestServer, sess: &common::registry::ApiSession, request_id: &str) -> Value {
     let resp = common::registry::api_post(server, sess, "/api/v1/requests/claim", json!({ "code": request_id })).await;
-    if resp.status_code() != 200 { return json!({ "requests": [] }); }
-    json!({ "requests": [resp.json::<Value>()] })
+    if resp.status_code() != 200 { return json!({ "success": false, "requests": [] }); }
+    let listing: Value = common::registry::api_get(server, sess, "/api/v1/requests").await.json();
+    json!({ "success": true, "status_uri": listing["status_uri"], "requests": [resp.json::<Value>()] })
 }
 
 fn config_material(identity: &str, idp: &KeyPair) -> (KeyPair, DeviceCert) {
@@ -159,7 +160,7 @@ async fn connection_grant_request_end_to_end() {
         StatusRef { uri: status_uri, idx: status_idx },
     )
     .unwrap();
-    let csrf_token = csrf(&server, &session).await;
+    let _csrf_token = csrf(&server, &session).await;
     let resp = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({
             "code": request_id,
             "approve": true,
@@ -169,7 +170,6 @@ async fn connection_grant_request_end_to_end() {
         }))
         .await;
     resp.assert_status_ok();
-    assert_eq!(resp.json::<Value>()["success"], json!(true));
 
     // 4. The resource polls with {request_id} and receives warrant~config_cert.
     let resp = server
@@ -249,7 +249,7 @@ async fn connection_respond_rejects_wrong_binding_id() {
         StatusRef { uri: status_uri, idx: status_idx },
     )
     .unwrap();
-    let csrf_token = csrf(&server, &session).await;
+    let _csrf_token = csrf(&server, &session).await;
     let resp = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({
             "code": request_id,
             "approve": true,
@@ -342,7 +342,7 @@ async fn authoring_ceremony_end_to_end() {
         .unwrap();
         signed.push(record.encoded().to_string());
     }
-    let csrf_token = csrf(&server, &session).await;
+    let _csrf_token = csrf(&server, &session).await;
     let resp = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({
             "code": request_id,
             "approve": true,

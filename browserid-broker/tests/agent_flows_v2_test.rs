@@ -114,7 +114,7 @@ async fn warrant_request_grantor_pin_and_unknown_agent_reason() {
     assert_eq!(req["known"], false, "this account never met the agent");
     let status_idx = req["grants"][0]["status_idx"].as_u64().unwrap();
     let status_uri = listed["status_uri"].as_str().unwrap().to_string();
-    let c = csrf(&server, &session).await;
+    let _c = csrf(&server, &session).await;
 
     // A substituted grantor (on-behalf where the pin demands self) is refused.
     let onbehalf = Warrant::create(
@@ -150,7 +150,7 @@ async fn warrant_request_grantor_pin_and_unknown_agent_reason() {
         .await;
     assert_eq!(r.status_code(), 200, "{:?}", r.text());
     let code2 = r.json::<Value>()["code"].as_str().unwrap().to_string();
-    let c = csrf(&server, &session).await;
+    let _c = csrf(&server, &session).await;
     let r = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({ "code": code2, "approve": false }))
         .await;
     assert_eq!(r.status_code(), 200, "{:?}", r.text());
@@ -309,7 +309,7 @@ async fn two_stage_provision_then_known_agent() {
 async fn grants_stage_decline_still_delivers_the_credential() {
     let (server, sender, _idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
-    let sess = common::registry::api_login(&server, &session, "testpassword").await;
+    let _sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     let device_kp = KeyPair::generate();
     let r = server

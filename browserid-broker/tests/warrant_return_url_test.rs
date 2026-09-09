@@ -135,7 +135,6 @@ async fn return_url_persisted_and_echoed_on_approval() {
     let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
 
     let resolved = approve(&server, &sess, &code, &config_kp, &config_cert).await;
-    assert_eq!(resolved["success"], true);
     assert_eq!(
         resolved["return_url"].as_str(),
         Some(RETURN_URL),
@@ -162,7 +161,6 @@ async fn no_return_url_means_none_echoed() {
     let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
 
     let resolved = approve(&server, &sess, &code, &config_kp, &config_cert).await;
-    assert_eq!(resolved["success"], true);
     assert!(resolved.get("return_url").is_none(), "{resolved}");
 }
 
@@ -220,7 +218,7 @@ async fn denial_echoes_return_url() {
     assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
     let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
 
-    let c = csrf(&server, &session).await;
+    let _c = csrf(&server, &session).await;
     let r = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({ "code": code, "approve": false }))
         .await;
     assert_eq!(r.status_code(), 200, "deny: {:?}", r.text());

@@ -331,7 +331,7 @@ fn sqlite_revoke_user_certs_for_email_is_precisely_scoped() {
     let alice = store.create_user("hash").unwrap();
     let bob = store.create_user("hash").unwrap();
 
-    let mut insert = |user, email: &str, key: &str| {
+    let insert = |user, email: &str, key: &str| {
         let idx = store.get_or_allocate_status("device", key).unwrap();
         store
             .insert_device_cert(DeviceCertRecord {
@@ -455,7 +455,7 @@ async fn stale_class_presentation_revokes_the_whole_stale_set() {
     let csrf = get_csrf(&ctx.server, &session).await;
 
     // Two E3-era browser pairs (4 registry rows: 2 auth + 2 config).
-    let mut issue = |kp: &KeyPair| {
+    let issue = |kp: &KeyPair| {
         let server = &ctx.server;
         let session = session.clone();
         let csrf = csrf.clone();
@@ -530,7 +530,7 @@ fn sqlite_stale_class_revoker_spares_current_class() {
     let store = SqliteStore::open(dir.path().join("t.db").to_str().unwrap()).unwrap();
     let user = store.create_user("hash").unwrap();
 
-    let mut insert = |email: &str, key: &str, prov: &str| {
+    let insert = |email: &str, key: &str, prov: &str| {
         let idx = store.get_or_allocate_status("device", key).unwrap();
         store
             .insert_device_cert(DeviceCertRecord {
