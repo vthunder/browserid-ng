@@ -867,12 +867,9 @@ impl UserStore for InMemoryUserStore {
     fn insert_device_cert(&self, mut rec: DeviceCertRecord) -> StoreResult<u64> {
         let mut certs = self.device_certs.write().unwrap();
         // Upsert on pubkey: replace any existing row for the same key.
-        if let Some(existing_id) = certs
-            .values()
-            .find(|c| c.pubkey == rec.pubkey)
-            .map(|c| c.id)
-        {
-            rec.id = existing_id;
+        if let Some(existing) = certs.values().find(|c| c.pubkey == rec.pubkey) {
+            rec.id = existing.id;
+            if rec.login_key_id.is_none() { rec.login_key_id = existing.login_key_id; }
         } else {
             rec.id = self.next_device_cert_id.fetch_add(1, Ordering::SeqCst);
         }

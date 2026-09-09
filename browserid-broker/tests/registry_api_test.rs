@@ -166,6 +166,17 @@ async fn device_issue(
     device_kp: &KeyPair,
     config_kp: &KeyPair,
 ) -> reqwest::Response {
+    device_issue_on(l, session, email, device_kp, config_kp, None).await
+}
+
+async fn device_issue_on(
+    l: &Live,
+    session: &str,
+    email: &str,
+    device_kp: &KeyPair,
+    config_kp: &KeyPair,
+    holder: Option<&str>,
+) -> reqwest::Response {
     let ctx: Value = l
         .client
         .get(format!("{}/wsapi/session_context", l.base))
@@ -177,15 +188,17 @@ async fn device_issue(
         .await
         .unwrap();
     let csrf = ctx["csrf_token"].as_str().expect("csrf token").to_string();
+    let mut body = json!({
+        "csrf": csrf,
+        "email": email,
+        "device_pubkey": device_kp.public_key().to_base64(),
+        "config_pubkey": config_kp.public_key().to_base64(),
+    });
+    if let Some(h) = holder { body["holder"] = json!(h); }
     l.client
         .post(format!("{}/device/issue", l.base))
         .header("cookie", format!("browserid_session={session}"))
-        .json(&json!({
-            "csrf": csrf,
-            "email": email,
-            "device_pubkey": device_kp.public_key().to_base64(),
-            "config_pubkey": config_kp.public_key().to_base64(),
-        }))
+        .json(&body)
         .send()
         .await
         .unwrap()
@@ -259,13 +272,19 @@ async fn session_call(
 
 /// Issue a fresh device + config pair for `email` with known keys.
 async fn issue_keys(l: &Live, email: &str) -> (String, String, KeyPair, KeyPair) {
+    issue_keys_on(l, email, None).await
+}
+
+/// The same, on a holder of the caller's choosing (within the account's
+/// browsers namespace) — a browser that ended up with a sibling holder.
+async fn issue_keys_on(l: &Live, email: &str, holder: Option<&str>) -> (String, String, KeyPair, KeyPair) {
     let post = |path: &str, body: Value| l.client.post(format!("{}{path}", l.base)).json(&body);
     let r = post("/wsapi/authenticate_user", json!({"email": email, "pass": "password123"})).send().await.unwrap();
     assert_eq!(r.status(), 200);
     let session = set_cookie(&r, "browserid_session");
     let device_kp = KeyPair::generate();
     let config_kp = KeyPair::generate();
-    let r = device_issue(l, &session, email, &device_kp, &config_kp).await;
+    let r = device_issue_on(l, &session, email, &device_kp, &config_kp, holder).await;
     assert_eq!(r.status(), 200, "device/issue");
     let certs: Value = r.json().await.unwrap();
     (
@@ -472,7 +491,7 @@ async fn holders_and_certs_over_sessions() {
     let mk = |holder: &str, pubkey: &str, iss: &str, uri: Option<String>, idx: Option<u64>| DeviceCertRecord {
         id: 0, user_id, identities: vec![email.to_string()], purpose: "authentication".into(),
         holder: holder.to_string(), pubkey: pubkey.to_string(), iss: iss.to_string(),
-        issued_at: now, expires_at: now + Duration::days(90), revoked_at: None, status_uri: uri, status_idx: idx, prov: "smtp".into(),
+        issued_at: now, expires_at: now + Duration::days(90), revoked_at: None, status_uri: uri, status_idx: idx, prov: "smtp".into(), login_key_id: None,
     };
     let bot_id = l.user_store.insert_device_cert(mk(&bot_holder, "bot-pubkey", &l.domain,
         Some(format!("{}/.well-known/browserid-status", l.base)), Some(bot_idx))).unwrap();
@@ -737,6 +756,20 @@ async fn login_methods_login_certs_and_session_authority() {
     assert_eq!(mine["holder"], holder.as_str());
     assert_eq!(mine["current"], true);
     assert_eq!(mine["revoked"], false);
+    // A second pair on a SIBLING holder (a browser that lost its holder
+    // cache) attached under the same key is the same device.
+    let prefix = holder.split('.').next().unwrap().to_string();
+    let sibling = format!("{prefix}.sibling001");
+    let (dc_s, cc_s, dkp_s, ckp_s) = issue_keys_on(&l, email, Some(&sibling)).await;
+    let (status, body) = attach_call(&l, &login_kp, &token, &[(&dc_s, &dkp_s), (&cc_s, &ckp_s)], email, false).await;
+    assert_eq!(status, 200, "{body}");
+    let (_, certs, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/certs", None).await;
+    let key_id = mine["id"].as_u64().unwrap();
+    for kid in [config_kp.public_key().kid(), ckp_s.public_key().kid()] {
+        let c = certs["certs"].as_array().unwrap().iter().find(|c| c["kid"] == kid).unwrap();
+        assert_eq!(c["login_key"], key_id, "attached under the key: {c}");
+    }
+    assert_eq!(certs["certs"].as_array().unwrap().iter().find(|c| c["kid"] == ckp_s.public_key().kid()).unwrap()["holder"], sibling.as_str());
 
     // stored_key: headless from now on. A stranger's key, or none, is sent
     // to the page — never told whether the account exists.
@@ -769,12 +802,14 @@ async fn login_methods_login_certs_and_session_authority() {
     assert_eq!(body["unrevocable"], json!([]));
     let (status, body, _) = session_call(&l, &login_kp, &stored, "GET", "/api/v1/requests", None).await;
     assert_eq!(status, 401, "{body}");
-    // Signing a device out retires the certs on its holder too: it can no
-    // longer sign in anywhere with them.
+    // Signing a device out retires every cert attached under its key — both
+    // holders — so it can no longer sign in anywhere with them.
     let (_, certs, _) = session_call(&l, &page_kp, &page_token, "GET", "/api/v1/certs", None).await;
-    let own = certs["certs"].as_array().unwrap().iter().find(|c| c["kid"] == config_kp.public_key().kid()).unwrap();
-    assert_eq!(own["revoked"], true, "{certs}");
-    assert!(l.user_store.is_status_revoked_idx(own["status"]["idx"].as_u64().unwrap()).unwrap(), "the bit on our list");
+    for kid in [config_kp.public_key().kid(), ckp_s.public_key().kid()] {
+        let c = certs["certs"].as_array().unwrap().iter().find(|c| c["kid"] == kid).unwrap();
+        assert_eq!(c["revoked"], true, "{c}");
+        assert!(l.user_store.is_status_revoked_idx(c["status"]["idx"].as_u64().unwrap()).unwrap(), "the bit on our list");
+    }
     let (status, _, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/requests", None).await;
     assert_eq!(status, 401, "every session on the key");
     let (status, body) = login_stored(&l, &account, &login_kp).await;

@@ -61,6 +61,7 @@ The flows, at a glance (the wallet's side; RP login itself is core
 | **Login / login key** | A login (§4.2) is how a wallet authenticates to an account by a method the registry offers; it yields a session. A *login key* is a key the wallet generates for itself, enrolled on the account at login, that opens later sessions with no human and signs every request (§4.4). |
 | **Session** | An opaque token on one account, opened by a login and bound to the login key that opened it (§4.5). |
 | **Member** | An identity on the account, or a cert recorded for one. |
+| **Device** | A login key and the certs attached under it (§5.2.4). What the account page lists and what "sign out" acts on (§5.2.3). Agents and services have no login key; their device is their holder (§5.6). |
 | **Recorded / retired** | A cert is *recorded* on an account by `attach`, always under a session; *retired* when the account revokes it, its holder is forgotten, or it is dropped (§5.5). Retirement is permanent. |
 | **Validity bar** | The `invalid_cert` checks of §7.1, `cert_malformed` through `cert_revoked`; every cert passes it when recorded. |
 | **Suspended** | The state of an identity that has left an account (§4.1): its records kept but inert for the **hold**, restorable if it returns. |
@@ -406,9 +407,10 @@ listed.
 
 **`POST /api/v1/login-keys/revoke`** — Logs a device out. Request
 `{ "id" }` or `{ "kid" }`. Marks the key revoked, ends its sessions,
-and retires the certs recorded with its holder (§5.5) — a device that
-is signed out can neither manage the account nor sign in at a site
-with the certs it holds. Response `200 { "unrevocable": [ "<issuer
+and retires the certs attached under it (§5.5) — and, for records
+older than the link, the certs on any holder those carry — so a device
+that is signed out can neither manage the account nor sign in at a
+site with the certs it holds. Response `200 { "unrevocable": [ "<issuer
 domain>", … ] }`, the issuers whose bits it could not set (as
 `holders/forget`); the wallet MUST revoke there. A second revoke is a
 no-op `200`. The device's next `stored_key` login answers
@@ -445,9 +447,9 @@ filed.
   `409 conflict/identity_held`. Fresh certs required.
 
 Response `200 { "recorded": [ <cert ids> ] }`. The session is
-unchanged. The certs' holder is recorded on the session's login key
-when it has none yet (§4.2), so the key and the certs are one device
-to `holders/forget` (§5.6).
+unchanged. Each cert is recorded under the session's login key — that
+is what makes them one device (§2) — and the certs' holder lands on
+the key when it has none yet (§4.2).
 
 #### 5.2.5 Detach — `POST /api/v1/account/detach`
 
@@ -607,7 +609,8 @@ Retired certs stay listed.
 
 **`GET /api/v1/certs`** — Lists the account's recorded certs: `id`,
 `kid`, `identities` (those it was recorded for), `purpose`, `holder`,
-`pubkey`, `iss`, `issued_at`, `expires_at`,
+`login_key` (the key it was attached under, `null` for issuer- or
+agent-recorded rows), `pubkey`, `iss`, `issued_at`, `expires_at`,
 `revoked` (retired here, or the issuer's bit where this registry reads
 it), `status?` (`{ uri, idx }`).
 
@@ -643,8 +646,9 @@ of another account's agent admitted by a connection, core §6.6),
 `{ "holder_id", "label" }`. Response `204`.
 
 **`POST /api/v1/holders/forget`** — Retires a holder's certs (setting
-bits where it can), revokes the login keys recorded with that holder
-(§5.2.3), then deletes it: the way to remove a whole device at once. Request: `{ "holder_id" }`. Response `200`:
+bits where it can), revokes the login keys those certs were attached
+under or that recorded this holder (§5.2.3), then deletes it: the way
+to remove an agent or service, or a device by its holder. Request: `{ "holder_id" }`. Response `200`:
 `{ "unrevocable": [ "<issuer domain>", … ] }`, the issuers whose bits
 it could not set; the wallet MUST revoke there. Refused for external
 holders (`409 conflict/external_holder`).

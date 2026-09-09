@@ -148,6 +148,7 @@ async fn record(
     user_id: u64,
     identity: &str,
     carried: &[Carried],
+    login_key_id: u64,
 ) -> Result<Vec<u64>, ApiError> {
     let holder_id = carried[0].holder.clone();
     if let Some((prefix, _)) = holder_id.split_once('.') {
@@ -181,6 +182,7 @@ async fn record(
                 revoked_at: None,
                 status_uri: c.status_uri.clone(),
                 status_idx: c.status_idx,
+                login_key_id: Some(login_key_id),
             })
             .map_err(|e| ApiError::Internal(format!("device cert store: {e}")))?;
         ids.push(id);
@@ -359,15 +361,15 @@ pub async fn create(
             // issuer that also runs this registry revokes only the old
             // account's remaining certs for the identity (hg2j).
             let fresh_account = state.host.create_empty_account().map_err(host_err)?;
-            record(&state, &headers, fresh_account, &identity, &carried).await?;
-            state.host.transfer_identity(a, fresh_account, &identity, "taken_over").map_err(host_err)?;
             let k = enroll(&state, fresh_account, &key, Some(&carried[0].holder))?;
+            record(&state, &headers, fresh_account, &identity, &carried, k.id).await?;
+            state.host.transfer_identity(a, fresh_account, &identity, "taken_over").map_err(host_err)?;
             tracing::info!(%identity, "accounts: takeover into a new account");
             return Ok(Json(crate::session::open(&state, fresh_account, &k).await?));
         }
     };
-    record(&state, &headers, user_id, &identity, &carried).await?;
     let k = enroll(&state, user_id, &key, Some(&carried[0].holder))?;
+    record(&state, &headers, user_id, &identity, &carried, k.id).await?;
     tracing::info!(%identity, "accounts: created");
     Ok(Json(crate::session::open(&state, user_id, &k).await?))
 }
@@ -561,11 +563,8 @@ pub async fn revoke_login_key(
     .ok_or(ApiError::NotFound)?;
     state.store.revoke_login_cert(user.user_id, rec.id).map_err(|e| ApiError::Internal(format!("login key: {e}")))?;
     state.store.end_sessions_on_login_key(user.user_id, rec.id).ok();
-    let unrevocable = match rec.holder.as_deref() {
-        Some(h) => crate::holders::log_out_device_core(&*state.store, &*state.host, &state.domain, user.user_id, h)
-            .map_err(|e| ApiError::Internal(format!("device logout: {e}")))?,
-        None => Vec::new(),
-    };
+    let unrevocable = crate::holders::log_out_key_core(&*state.store, &*state.host, &state.domain, user.user_id, &rec)
+        .map_err(|e| ApiError::Internal(format!("device logout: {e}")))?;
     Ok(Json(serde_json::json!({ "unrevocable": unrevocable })))
 }
 
@@ -635,7 +634,7 @@ pub async fn attach(
         require_fresh()?;
         Some(Pending::Transfer(holder.unwrap()))
     };
-    let ids = record(&state, &headers, acct, &identity, &carried).await?;
+    let ids = record(&state, &headers, acct, &identity, &carried, key.id).await?;
     match pending {
         Some(Pending::Transfer(from)) => state.host.transfer_identity(from, acct, &identity, "transferred").map_err(host_err)?,
         Some(Pending::Add) => state.host.add_identity(acct, &identity, &iss).map_err(host_err)?,

@@ -435,31 +435,71 @@ pub fn forget_holder_core(
     user_id: u64,
     holder_id: &str,
 ) -> Result<Vec<String>> {
-    owned_certs(store, user_id, holder_id)?; // HolderNotFound → 404: no existence leak, no-op forget
-    let unrevocable = log_out_device_core(store, host, own_domain, user_id, holder_id)?;
+    let certs = owned_certs(store, user_id, holder_id)?; // HolderNotFound → 404
+    let unrevocable = retire_certs(store, host, own_domain, user_id, &certs)?;
+    // The device(s) these certs belong to are logged out: the keys they
+    // were attached under, and any key that recorded this holder.
+    let mut keys: Vec<u64> = certs.iter().filter_map(|c| c.login_key_id).collect();
+    keys.extend(store.revoke_login_certs_for_holder(user_id, holder_id)?);
+    keys.sort();
+    keys.dedup();
+    for id in keys {
+        store.revoke_login_cert(user_id, id)?;
+        store.end_sessions_on_login_key(user_id, id).ok();
+    }
     cleanup_holder_warrants(store, user_id, holder_id);
     store.forget_holder(user_id, holder_id)?;
     Ok(unrevocable)
 }
 
-/// Log a device out (§5.2.3 revoke, §5.6 forget): retire every cert on its
-/// holder (setting bits where this deployment is the authority), revoke
-/// its login keys, end their sessions. Returns the issuers whose bits it
-/// could not set. A holder with no certs is fine — a page's key has none.
-pub fn log_out_device_core(
+/// Log a device out (§5.2.3 revoke): the device is the login key and the
+/// certs attached under it; as a fallback for rows recorded before the
+/// link existed, also every cert on a holder those certs (or the key)
+/// carry. All of them are retired (bits set where this deployment is the
+/// authority), the key and any other key on those holders revoked, their
+/// sessions ended. Returns the issuers whose bits it could not set.
+pub fn log_out_key_core(
     store: &dyn RegistrarStore,
     host: &dyn RegistrarHost,
     own_domain: &str,
     user_id: u64,
-    holder_id: &str,
+    key: &crate::models::LoginCertRecord,
 ) -> Result<Vec<String>> {
-    let certs = match owned_certs(store, user_id, holder_id) {
-        Ok(c) => c,
-        Err(RegistrarError::HolderNotFound) => Vec::new(),
-        Err(e) => return Err(e),
-    };
+    let all = store.list_device_certs(user_id)?;
+    let mut holders: Vec<String> = all
+        .iter()
+        .filter(|c| c.login_key_id == Some(key.id))
+        .map(|c| c.holder.clone())
+        .collect();
+    holders.extend(key.holder.clone());
+    holders.sort();
+    holders.dedup();
+    let targets: Vec<DeviceCertRecord> = all
+        .into_iter()
+        .filter(|c| c.login_key_id == Some(key.id) || holders.contains(&c.holder))
+        .collect();
+    let unrevocable = retire_certs(store, host, own_domain, user_id, &targets)?;
+    store.revoke_login_cert(user_id, key.id)?;
+    store.end_sessions_on_login_key(user_id, key.id).ok();
+    for h in &holders {
+        for id in store.revoke_login_certs_for_holder(user_id, h)? {
+            store.end_sessions_on_login_key(user_id, id).ok();
+        }
+    }
+    Ok(unrevocable)
+}
+
+/// Retire certs here and at their authority; the issuers it could not
+/// revoke at, deduplicated.
+fn retire_certs(
+    store: &dyn RegistrarStore,
+    host: &dyn RegistrarHost,
+    own_domain: &str,
+    user_id: u64,
+    certs: &[DeviceCertRecord],
+) -> Result<Vec<String>> {
     let mut unrevocable: Vec<String> = Vec::new();
-    for cert in &certs {
+    for cert in certs {
         store.revoke_device_cert(user_id, cert.id)?;
         if !revoke_at_authority(store, host, own_domain, cert)? {
             unrevocable.push(cert.iss.clone());
@@ -467,9 +507,6 @@ pub fn log_out_device_core(
     }
     unrevocable.sort();
     unrevocable.dedup();
-    for id in store.revoke_login_certs_for_holder(user_id, holder_id)? {
-        store.end_sessions_on_login_key(user_id, id).ok();
-    }
     Ok(unrevocable)
 }
 

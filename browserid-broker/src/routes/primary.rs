@@ -228,6 +228,7 @@ where
             // Primary-issued certs recorded for the account UI: the broker's
             // provenance classes gate broker-signed secondary certs only.
             prov: "smtp".to_string(),
+            login_key_id: None,
         };
         if let Err(e) = state.user_store.insert_device_cert(rec) {
             tracing::warn!("failed to record primary device cert holder: {e}");
@@ -362,6 +363,7 @@ where
         // Primary-issued certs recorded for the account UI: the broker's
         // provenance classes gate broker-signed secondary certs only.
         prov: "smtp".to_string(),
+        login_key_id: None,
     };
     state.user_store.insert_device_cert(rec)?;
     Ok(Json(serde_json::json!({"success": true})))

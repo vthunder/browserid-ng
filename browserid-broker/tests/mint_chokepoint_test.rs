@@ -348,6 +348,7 @@ fn sqlite_revoke_user_certs_for_email_is_precisely_scoped() {
                 status_uri: Some("uri".to_string()),
                 status_idx: Some(idx),
                 prov: "smtp".to_string(),
+                login_key_id: None,
             })
             .unwrap();
         idx
@@ -546,6 +547,7 @@ fn sqlite_stale_class_revoker_spares_current_class() {
                 status_uri: Some("uri".to_string()),
                 status_idx: Some(idx),
                 prov: prov.to_string(),
+                login_key_id: None,
             })
             .unwrap();
         idx

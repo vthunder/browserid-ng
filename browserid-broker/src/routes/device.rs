@@ -279,6 +279,7 @@ where
             status_uri: Some(browserid_registrar::consent::status_list_uri(&state.domain)),
             status_idx: Some(status_idx),
             prov: prov.to_string(),
+            login_key_id: None,
         })?;
     }
     // First sight of this holder → a friendly UA-derived default label

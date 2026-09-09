@@ -208,6 +208,10 @@ pub struct DeviceCertRecord {
     pub status_uri: Option<String>,
     /// The cert's status-list index (its revocation bit), when it has one
     pub status_idx: Option<u64>,
+    /// The login key the cert was attached under (§5.2.4): the device it
+    /// belongs to. None for rows recorded by the issuer role or by agent
+    /// provisioning.
+    pub login_key_id: Option<u64>,
 }
 
 impl DeviceCertRecord {

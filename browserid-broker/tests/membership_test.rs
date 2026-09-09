@@ -47,6 +47,7 @@ fn agent_cert(user: UserId, identity: &str, idx: u64, pubkey: &str) -> DeviceCer
         status_uri: None,
         status_idx: Some(idx),
         prov: "smtp".into(),
+        login_key_id: None,
     }
 }
 

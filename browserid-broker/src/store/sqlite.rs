@@ -16,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 40;
+const SCHEMA_VERSION: i32 = 41;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -183,6 +183,9 @@ impl SqliteStore {
             }
             if current_version < 40 {
                 Self::migrate_v40(conn)?;
+            }
+            if current_version < 41 {
+                Self::migrate_v41(conn)?;
             }
 
             // Update schema version
@@ -1055,6 +1058,23 @@ impl SqliteStore {
         Ok(())
     }
 
+    fn migrate_v41(conn: &Connection) -> Result<(), BrokerError> {
+        // A device is a login key and the certs attached under it
+        // (registry-api-v1 §5.2.4). Backfill from the holder the key recorded.
+        conn.execute_batch(
+            r#"
+            ALTER TABLE device_certs ADD COLUMN login_key_id INTEGER;
+            UPDATE device_certs SET login_key_id = (
+                SELECT lc.id FROM login_certs lc
+                WHERE lc.user_id = device_certs.user_id AND lc.holder = device_certs.holder
+                ORDER BY lc.revoked_at IS NOT NULL, lc.id LIMIT 1)
+            WHERE login_key_id IS NULL;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
     fn migrate_v40(conn: &Connection) -> Result<(), BrokerError> {
         // A session is a device's login key (registry-api-v1 §4.2, §4.5):
         // the key remembers its device's holder so forgetting the device
@@ -1112,6 +1132,7 @@ fn device_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceCertR
     let user_id: i64 = row.get(1)?;
     let identities_json: String = row.get(2)?;
     let status_idx: Option<i64> = row.get(10)?;
+    let login_key_id: Option<i64> = row.get(13)?;
     Ok(DeviceCertRecord {
         id: id as u64,
         user_id: UserId(user_id as u64),
@@ -1126,11 +1147,12 @@ fn device_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceCertR
         status_uri: row.get(11)?,
         status_idx: status_idx.map(|i| i as u64),
         prov: row.get(12)?,
+        login_key_id: login_key_id.map(|i| i as u64),
     })
 }
 
 const DEVICE_CERT_COLUMNS: &str =
-    "id, user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx, status_uri, prov";
+    "id, user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx, status_uri, prov, login_key_id";
 
 // Row → WarrantRecord mapping (jipx registry)
 fn warrant_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WarrantRecord> {
@@ -2491,8 +2513,8 @@ impl UserStore for SqliteStore {
         // the account view forever, since device keys are long-lived and every
         // reissued cert upserts onto the old revoked row.
         conn.execute(
-            "INSERT INTO device_certs (user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx, status_uri, prov)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO device_certs (user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx, status_uri, prov, login_key_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(pubkey) DO UPDATE SET
                identities = excluded.identities,
                purpose = excluded.purpose,
@@ -2503,7 +2525,8 @@ impl UserStore for SqliteStore {
                revoked_at = excluded.revoked_at,
                status_idx = excluded.status_idx,
                status_uri = excluded.status_uri,
-               prov = excluded.prov",
+               prov = excluded.prov,
+               login_key_id = COALESCE(excluded.login_key_id, device_certs.login_key_id)",
             params![
                 rec.user_id.0 as i64,
                 serde_json::to_string(&rec.identities).unwrap_or_else(|_| "[]".into()),
@@ -2517,6 +2540,7 @@ impl UserStore for SqliteStore {
                 rec.status_idx.map(|i| i as i64),
                 rec.status_uri,
                 rec.prov,
+                rec.login_key_id.map(|i| i as i64),
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;

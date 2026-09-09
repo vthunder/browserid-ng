@@ -649,6 +649,7 @@ pub async fn list_certs(
                 "identities": c.identities,
                 "purpose": c.purpose,
                 "holder": c.holder,
+                "login_key": c.login_key_id,
                 "pubkey": c.pubkey,
                 "iss": c.iss,
                 "issued_at": c.issued_at.to_rfc3339(),

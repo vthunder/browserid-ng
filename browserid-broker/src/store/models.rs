@@ -412,6 +412,9 @@ pub struct DeviceCertRecord {
     /// set (auth + config, all browsers) instead of one presented cert at a
     /// time. Legacy rows read "smtp" (migration default — historically true).
     pub prov: String,
+    /// The login key the cert was attached under (registry-api-v1 §5.2.4):
+    /// the device it belongs to. None for issuer-recorded and agent rows.
+    pub login_key_id: Option<u64>,
 }
 
 impl DeviceCertRecord {

@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-09-04T23:32:18Z
-updated_at: 2026-09-09T19:24:58Z
+updated_at: 2026-09-09T21:20:58Z
 parent: browserid-ng-71vt
 blocked_by:
     - browserid-ng-0c49
@@ -39,3 +39,5 @@ The API side is done; what remains is the cookie lane's registry-role surface, w
 Open for step 3: accounts with no password (primary/bridge-only) cannot open a registry session until the login page has a second method (e98a). Today the card says so and the rest of the page still runs on the cookie; when warrants/certs/holders move to the API (step 3) that becomes a page-wide gate — decide then whether reads stay on the cookie for those accounts.
 
 2026-09-09 (later): h6xu reworked sessions under step 2 — the page shares the browser's per-account login key with the dialog; the 'Signed in to this account' card lists login keys with holder/current; no more page-slot key.
+
+2026-09-09 (later still): a device is a login key + the certs attached under it (device_certs.login_key_id, store v41, backfilled from the key's holder). login-keys/revoke retires certs by key with a holder fallback; holders/forget revokes the keys its certs were attached under. GET certs carries login_key. Step 3 should render the account page's browser rows one per login key (agents/services stay by holder).
