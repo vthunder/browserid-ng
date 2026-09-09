@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-08-29T20:49:11Z
-updated_at: 2026-09-07T12:42:09Z
+updated_at: 2026-09-09T16:12:07Z
 parent: browserid-ng-9yyk
 blocking:
     - browserid-ng-71vt
@@ -201,3 +201,5 @@ Resolved 2026-09-07:
     holder with no other device and no other guard kind cannot
     restore — the same limit as a lost only device. Design note:
     docs/specs/registry-explicit-account-note.md (rev 2c).
+
+2026-09-09: docs/specs/registry-explicit-account-note.md retired (deleted). Its three moves live in registry-api-v1 §4.1/§4.5/§5.2; its tier table was superseded by the login model and then by 'a session is the whole check' (§4.3, commit 6e0b88e). The rationale it carried: the answer to issuer power is the login gate, not per-identity partitioning.
