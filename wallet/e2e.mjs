@@ -96,6 +96,37 @@ must('inbox over the registry token lane', r.status === 200 && Array.isArray(inb
   JSON.stringify(inbox).slice(0, 120));
 must('inbox names the status list', typeof inbox.status_uri === 'string' && inbox.status_uri.includes('browserid-status'));
 
+// 4c. Native approvals (bean jo0m): an agent request — this device's own
+//     cert as the agent, the "agent that IS you" card — approved and, a
+//     second one, denied through the WALLET-HOSTED consent page; the
+//     requester's poll sees each outcome.
+r = await wallet('/test/state', {});
+const st0 = await r.json();
+const fileRequest = async (audience) => {
+  const rr = await fetch(`${BROKER}/warrant/request`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ device_cert: st0.deviceCert, identity: email, grants: [{ audience, scopes: ['post'] }] }),
+  });
+  const j = await rr.json();
+  must(`agent request filed for ${audience}`, rr.status === 200 && typeof j.code === 'string', JSON.stringify(j).slice(0, 120));
+  return j.code;
+};
+const pollRequest = async (code) =>
+  (await fetch(`${BROKER}/warrant/poll`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) })).json();
+const codeA = await fileRequest('https://approve.example');
+r = await wallet('/test/consent', { code: codeA, action: 'approve' });
+const ca = await r.json();
+must('hosted consent page approved the request', r.status === 200 && ca.outcome === 'approved', JSON.stringify(ca));
+const pa = await pollRequest(codeA);
+must('requester picks up the wallet-signed warrant', pa.status === 'approved' && typeof pa.grants?.[0]?.warrant === 'string'
+  && pa.grants[0].warrant.includes('~'), JSON.stringify(pa).slice(0, 160));
+const codeD = await fileRequest('https://deny.example');
+r = await wallet('/test/consent', { code: codeD, action: 'deny' });
+const cd = await r.json();
+must('hosted consent page denied the request', r.status === 200 && cd.outcome === 'denied', JSON.stringify(cd));
+const pd = await pollRequest(codeD);
+must('requester sees the denial', pd.status === 'denied', JSON.stringify(pd).slice(0, 120));
+
 // 4b. §5.4 lane: the wallet renames its own holder from the UA product-token
 //     default ("BrowserID-Wallet") to a friendly per-OS label.
 r = await wallet('/test/label', {});

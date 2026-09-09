@@ -244,15 +244,15 @@ async function listRequests() {
 }
 
 // Poll the inbox and native-notify on new pending requests; clicking opens
-// the consent page (approval stays a browser ceremony for now — the API
-// could sign it natively, but that UX is its own project).
+// the consent page IN THE WALLET (consent.js): the page signs with the
+// wallet's config key through the bridge, so approval works on a machine
+// with no browser wallet.
 let inboxTimer = null;
 const seenCodes = new Set();
 
 function startInboxWatch({ notify }) {
   if (inboxTimer || !store.state().deviceCert) return;
   ensureDeviceLabel(); // fire-and-forget: both startup paths converge here
-  const { shell } = require('electron');
   const poll = async () => {
     try {
       const data = await listRequests();
@@ -267,7 +267,7 @@ function startInboxWatch({ notify }) {
         const who = req.label || req.grantee || req.agent_email || 'An agent';
         const what = (req.grants || []).map((g) => `${(g.scopes || []).join(',')} @ ${g.audience}`).join('; ');
         notify(`Approval requested: ${who}`, what || 'wants access', () =>
-          shell.openExternal(`${broker.BROKER}/consent/${encodeURIComponent(req.code)}`)
+          require('./consent').hostConsent({ code: req.code }).catch((e) => console.warn('[wallet] consent window:', e.message || e))
         );
       }
     } catch (e) {

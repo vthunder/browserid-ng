@@ -105,6 +105,12 @@ function startServer({ approveLogin, approvePair, notify, onStateChange }) {
             onStateChange?.();
             return json(req, res, 200, r);
           }
+          if (url.pathname === '/test/consent') {
+            // Drives the wallet-hosted consent page: approve or deny `code`.
+            const { code, action } = await readBody(req);
+            const outcome = await require('./consent').hostConsent({ code, testAction: action || 'approve' });
+            return json(req, res, 200, { outcome });
+          }
           if (url.pathname === '/test/inbox') {
             // Drives the registry-API token lane end to end.
             return json(req, res, 200, await require('./registry').listRequests());

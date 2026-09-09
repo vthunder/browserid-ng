@@ -53,4 +53,4 @@ function proof(privJwk, method, htu, { body = null, jti = null, x } = {}) {
   return signJws(privJwk, b64uj({ alg: 'EdDSA', typ: PROOF_TYP, kid: kidOf(x) }), claims);
 }
 
-module.exports = { generateKey, jws, proof, kidOf, decodeJws, nowS, randHex, sha256b64u };
+module.exports = { generateKey, jws, signJws, proof, kidOf, decodeJws, nowS, randHex, sha256b64u };

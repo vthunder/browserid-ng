@@ -111,7 +111,12 @@ const linkedCode = location.pathname.match(/^\/consent\/(.+)$/)?.[1] || null;
 // page holds as its own device (registry-api-v1) — the browser's login key
 // for the account, shared with the dialog and the account page. The cookie
 // session serves the issuer role only (who is signed in, cert issuance).
-const reg = (method, path, body) => window.Registry.call(method, path, body);
+// When the NATIVE WALLET hosts this page (wallet/src/consent.js) it provides
+// a bridge: signing by the wallet's config key and registry calls under the
+// wallet's session. The page then needs no keystore and no session of its
+// own — the same cards, one UI for both wallets.
+const bridge = window.browseridWallet || null;
+const reg = (method, path, body) => bridge ? bridge.registryCall(method, path, body) : window.Registry.call(method, path, body);
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { credentials: 'same-origin', ...opts });
@@ -144,6 +149,13 @@ function identityMatches(pattern, email) {
 /// attributed identity, which the cert must be authoritative for. Prefers one
 /// stored for `delegatorEmail`. Deposited by the login dialog at sign-in.
 async function localConfig(delegatorEmail, grantorEmail) {
+  if (bridge) {
+    // The wallet's config cert, when it is authoritative for the grantor.
+    const info = await bridge.info();
+    let claims; try { claims = b64urlToJson(info.configCert.split('.')[1]); } catch { return null; }
+    if (!(claims.identities || []).some(p => identityMatches(p, grantorEmail))) return null;
+    return { cert: info.configCert, bridged: true };
+  }
   const recs = (await window.Keystore.allDevice()).filter(r => r.kind === 'config' && r.cert && r.privateKey);
   const now = Math.floor(Date.now() / 1000);
   const candidates = [];
@@ -178,6 +190,7 @@ async function signWarrant(config, grantor, grantee, audience, scopes, status, h
   };
   if (scopes && scopes.length) claims.scopes = scopes;
   if (status) claims.status = status;
+  if (config.bridged) return bridge.signWarrant(header, claims);
   const payload = b64urlJson(claims);
   const sig = await window.Keystore.sign(config.privateKey, `${header}.${payload}`);
   return `${header}.${payload}.${sig}`;
@@ -201,6 +214,7 @@ async function signWarrantV2(config, grantor, grantee, audience, scopes, status,
   };
   if (scopes && scopes.length) claims.scopes = scopes;
   claims.status = status;
+  if (config.bridged) return bridge.signWarrant(header, claims);
   const payload = b64urlJson(claims);
   const sig = await window.Keystore.sign(config.privateKey, `${header}.${payload}`);
   return `${header}.${payload}.${sig}`;
@@ -610,7 +624,7 @@ async function resolve(r, approve, grantor, deniedNote) {
       status.className = 'status muted';
       status.textContent = 'Signing…';
       let config = await localConfig(r.delegator_email, grantor);
-      if (!config) {
+      if (!config && !bridge) {
         // Fresh browser, no config cert deposited yet: for a broker-rooted
         // identity the signed-in session can issue a (device, config) pair
         // right here — the same endpoint the account page and the login
@@ -659,9 +673,12 @@ async function resolve(r, approve, grantor, deniedNote) {
         `no signing key for ${grantor} in this browser — ` +
         `sign in to an app with that identity here first, then retry`);
       configCert = config.cert;
-      // Claim (§5.3): allocates any missing status refs and re-checks the
-      // audience proof; the answer is the item with its refs.
-      try { const claimed = await reg('POST', '/api/v1/requests/claim', { code: r.code }); if (claimed && claimed.grants) r = { ...r, grants: claimed.grants }; } catch (e2) { /* refs from the listing */ }
+      // Claim (§5.3) record requests: allocates any missing status refs and
+      // re-checks the audience proof; the answer is the item with its refs.
+      // Agent requests carry their refs from filing and are not claimable.
+      if (r.kind === 'connection' || r.kind === 'authoring') {
+        try { const claimed = await reg('POST', '/api/v1/requests/claim', { code: r.code }); if (claimed && claimed.grants) r = { ...r, grants: claimed.grants }; } catch (e2) { /* refs from the listing */ }
+      }
       warrants = [];
       if (r.kind === 'connection') {
         // One v2 self-grant record, pinned to the broker-minted binding.id
@@ -714,6 +731,15 @@ async function resolve(r, approve, grantor, deniedNote) {
     // as the fallback (history.back() is a no-op if the browser has nothing
     // to go back to). Denials never auto-navigate: the user may want to look
     // at what they just refused.
+    if (bridge) {
+      // The wallet closes its window; nothing to navigate back to.
+      const back = document.createElement('p');
+      back.className = 'status muted';
+      back.textContent = 'All set.';
+      card.appendChild(back);
+      setTimeout(() => bridge.done(approve ? 'approved' : 'denied'), 600);
+      return;
+    }
     const returnUrl = resolved.return_url || null;
     const back = document.createElement('p');
     back.className = 'status muted';
@@ -740,7 +766,36 @@ async function resolve(r, approve, grantor, deniedNote) {
   }
 }
 
+// The inbox (and the account's warrants, for "known agent" facts) over the
+// registry session; a deep-linked record request the listing lacks is
+// claimed here (§5.3). Throws the API error so callers decide what a dead
+// session means.
+async function loadInbox() {
+  let resp, regw;
+  [resp, regw] = await Promise.all([
+    reg('GET', '/api/v1/requests' + (linkedCode ? '?code=' + encodeURIComponent(linkedCode) : '')),
+    reg('GET', '/api/v1/warrants').catch(() => ({ warrants: [] })),
+  ]);
+  if (linkedCode && !(resp.requests || []).some(r => r.code === linkedCode)) {
+    try {
+      const item = await reg('POST', '/api/v1/requests/claim', { code: linkedCode });
+      if (item && item.code) resp.requests = [...(resp.requests || []), item];
+    } catch (e) { /* unknown, expired, or someone else's: the empty state says so */ }
+  }
+  statusUri = resp.status_uri || null;
+  registry = regw.warrants || [];
+  return resp.requests || [];
+}
+
+async function bootBridged() {
+  const info = await bridge.info();
+  rootIds = info.identity ? [info.identity] : [];
+  $('auth-gate').hidden = true;
+  render(await loadInbox());
+}
+
 async function boot() {
+  if (bridge) return bootBridged();
   let ctx;
   try { ctx = await api('/wsapi/session_context'); } catch { ctx = {}; }
   if (!ctx.authenticated) {
@@ -807,14 +862,9 @@ async function boot() {
     return;
   }
   $('auth-gate').hidden = true;
-  // External requests are redirect-tied: they surface ONLY via their
-  // /consent/<code> deep link, so pass the code through when we have one.
-  let resp, regw;
+  let requests;
   try {
-    [resp, regw] = await Promise.all([
-      reg('GET', '/api/v1/requests' + (linkedCode ? '?code=' + encodeURIComponent(linkedCode) : '')),
-      reg('GET', '/api/v1/warrants').catch(() => ({ warrants: [] })),
-    ]);
+    requests = await loadInbox();
   } catch (e) {
     if (e && (e.status === 401 || e.reason === 'login_required')) {
       try { sessionStorage.setItem('acct-relogin', '1'); } catch (e2) { /* private mode */ }
@@ -824,21 +874,9 @@ async function boot() {
     }
     throw e;
   }
-  // Record requests (connection / authoring) are unclaimed at creation and
-  // never list on their own (§5.3): a deep-linked code the listing lacks is
-  // claimed here — the audience proof re-checked, status refs allocated —
-  // and the answer is the item.
-  if (linkedCode && !(resp.requests || []).some(r => r.code === linkedCode)) {
-    try {
-      const item = await reg('POST', '/api/v1/requests/claim', { code: linkedCode });
-      if (item && item.code) resp.requests = [...(resp.requests || []), item];
-    } catch (e) { /* unknown, expired, or someone else's: the empty state says so */ }
-  }
-  statusUri = resp.status_uri || null;
-  registry = regw.warrants || [];
   const agentSet = new Set((emails.agents || []).map(a => a.toLowerCase()));
   rootIds = (emails.emails || []).filter(e => !agentSet.has(e.toLowerCase()));
-  render(resp.requests);
+  render(requests);
 }
 
 boot().catch(e => { $('auth-gate').hidden = false; $('auth-gate').innerHTML = `<p class="err" style="margin:0">Error: ${escapeHtml(e.message)}</p>`; });
