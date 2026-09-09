@@ -26,7 +26,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::consent::status_list_uri;
 use crate::RegistrarState;
@@ -832,6 +831,6 @@ mod tests {
         let t = new_token();
         assert!(t.len() >= 43, "{t}");
         assert_ne!(t, new_token());
-        assert_eq!(b64url_sha256(t.as_bytes()), b64url_sha256(t.as_bytes()));
+        assert_eq!(crate::session::b64url_sha256(t.as_bytes()), crate::session::b64url_sha256(t.as_bytes()));
     }
 }
