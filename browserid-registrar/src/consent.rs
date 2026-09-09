@@ -25,15 +25,13 @@ use browserid_core::device::{DeviceCert, Purpose, Warrant};
 use browserid_core::{StatusList, StatusListToken};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use tower_cookies::Cookies;
 
 use crate::error::RegistrarError;
-use crate::host::require_csrf;
 use crate::models::{
     RecordRequestMeta, RequestKind, WarrantGrantItem, WarrantRecord, WarrantRequestRecord,
     WarrantRequestStatus,
 };
-use crate::registry::{require_enabled, require_session};
+use crate::registry::require_enabled;
 use crate::RegistrarState;
 
 /// How long a pending consent request lives before it expires.
@@ -203,52 +201,6 @@ pub struct ListRequestsQuery {
     pub code: Option<String>,
 }
 
-/// GET /wsapi/warrant_requests — the signed-in user's open consent requests.
-///
-/// Own-agent requests are always listed (the page shows the user's whole
-/// pending queue, as it always has). External requests are redirect-tied:
-/// reachable only through the `/consent/<code>` link the requesting service
-/// sent the user to, so one is surfaced only when its `code` is passed —
-/// an unsolicited external request is never browsable and just expires.
-pub async fn list_requests(
-    State(state): State<Arc<RegistrarState>>,
-    cookies: Cookies,
-    axum::extract::Query(query): axum::extract::Query<ListRequestsQuery>,
-) -> Result<Json<ListRequestsResponse>, RegistrarError> {
-    require_enabled(&state)?;
-    let user = require_session(&state, &cookies)?;
-    let mut requests: Vec<PendingRequestInfo> = state
-        .store
-        .list_pending_warrant_requests(user.user_id)?
-        .into_iter()
-        .filter(|r| !r.external || query.code.as_deref() == Some(r.code.as_str()))
-        .map(|r| pending_info(&state, user.user_id, r))
-        .collect();
-    // Record requests (§7.5) are unclaimed at creation (user_id 0) so they
-    // never appear in an inbox listing — they are surfaced only through
-    // their deep-linked consent_uri, after the audience proof verifies, and
-    // are claimed for the viewing account (status indexes allocated) so the
-    // page can embed the refs in the records it signs.
-    if let Some(code) = query.code.as_deref() {
-        if !requests.iter().any(|r| r.code == code) {
-            if let Some(rec) = state.store.get_warrant_request(code)? {
-                if rec.kind != RequestKind::Agent
-                    && rec.status == WarrantRequestStatus::Pending
-                    && !rec.is_expired()
-                {
-                    if let Some(rec) = surface_record_request(&state, user.user_id, rec).await? {
-                        requests.push(pending_info(&state, user.user_id, rec));
-                    }
-                }
-            }
-        }
-    }
-    Ok(Json(ListRequestsResponse {
-        success: true,
-        status_uri: status_list_uri(&state.domain),
-        requests,
-    }))
-}
 
 pub(crate) fn pending_info(
     state: &RegistrarState,
@@ -403,33 +355,6 @@ pub struct RespondResponse {
     pub return_url: Option<String>,
 }
 
-/// POST /wsapi/warrant_respond — resolve a pending request. On approve, the
-/// page has already signed each warrant with the config (authorization)
-/// device key held in this origin's keystore; the registrar validates them
-/// against the pending request (right agent identity, right audience, signed
-/// by the presented config cert — no swapped-in grants) and stores
-/// `warrant~config_cert` pairs for the single pickup.
-pub async fn respond(
-    State(state): State<Arc<RegistrarState>>,
-    cookies: Cookies,
-    Json(req): Json<RespondBody>,
-) -> Result<Json<RespondResponse>, RegistrarError> {
-    require_enabled(&state)?;
-    let user = require_session(&state, &cookies)?;
-    require_csrf(&user, &req.csrf)?;
-    let core = RespondCore {
-        code: req.code,
-        approve: req.approve,
-        warrants: req.warrants,
-        config_cert: req.config_cert,
-        grantor: req.grantor,
-    };
-    // Echoed on a denial too: the page offers a manual "return to the app"
-    // link so the requesting service can pick up the denial (it never
-    // auto-navigates on deny).
-    let return_url = respond_core(&state, user.user_id, &core)?;
-    Ok(Json(RespondResponse { success: true, return_url }))
-}
 
 /// The lane-independent fields of a consent response (the cookie body minus
 /// `csrf`; exactly the registry-api-v1 §5.1 respond shape).
@@ -997,16 +922,6 @@ pub struct ListWarrantsResponse {
     pub warrants: Vec<WarrantInfo>,
 }
 
-/// GET /wsapi/warrants — the signed-in user's registered warrants
-pub async fn list_warrants(
-    State(state): State<Arc<RegistrarState>>,
-    cookies: Cookies,
-) -> Result<Json<ListWarrantsResponse>, RegistrarError> {
-    require_enabled(&state)?;
-    let user = require_session(&state, &cookies)?;
-    let warrants = list_warrants_core(&state, user.user_id)?;
-    Ok(Json(ListWarrantsResponse { success: true, warrants }))
-}
 
 /// The account's registered warrants as `WarrantInfo` rows — shared by both
 /// lanes (`revoked` computed live from each status bit).
@@ -1069,22 +984,6 @@ pub struct RegisterWarrantBody {
     pub config_cert: String,
 }
 
-/// POST /wsapi/register_warrant — record a warrant signed outside the
-/// consent flow (manual signing, reissue, or the login dialog syncing a
-/// warrant for device-agnostic reuse). The warrant's delegator — its
-/// identifier with any `+tag` stripped — must be a verified email on this
-/// account, and the warrant must verify against the presented config cert.
-pub async fn register_warrant(
-    State(state): State<Arc<RegistrarState>>,
-    cookies: Cookies,
-    Json(req): Json<RegisterWarrantBody>,
-) -> Result<Json<RespondResponse>, RegistrarError> {
-    require_enabled(&state)?;
-    let user = require_session(&state, &cookies)?;
-    require_csrf(&user, &req.csrf)?;
-    register_warrant_core(&state, user.user_id, &req.warrant, &req.config_cert)?;
-    Ok(Json(RespondResponse { success: true, return_url: None }))
-}
 
 /// Record an externally-minted warrant — the shared core behind the cookie
 /// lane and `POST /api/v1/warrants/register` (registry-api-v1 §5.2).
@@ -1173,20 +1072,6 @@ pub struct ForgetWarrantBody {
     pub id: u64,
 }
 
-/// POST /wsapi/forget_warrant — drop a registry row. The signed warrant the
-/// agent holds stays valid until it expires; per-warrant revocation is
-/// `revoke_warrant` (status bit).
-pub async fn forget_warrant(
-    State(state): State<Arc<RegistrarState>>,
-    cookies: Cookies,
-    Json(req): Json<ForgetWarrantBody>,
-) -> Result<Json<RespondResponse>, RegistrarError> {
-    require_enabled(&state)?;
-    let user = require_session(&state, &cookies)?;
-    require_csrf(&user, &req.csrf)?;
-    state.store.delete_warrant(user.user_id, req.id)?;
-    Ok(Json(RespondResponse { success: true, return_url: None }))
-}
 
 #[derive(Deserialize)]
 pub struct AllocateStatusBody {
@@ -1205,21 +1090,6 @@ pub struct AllocateStatusResponse {
     pub idx: u64,
 }
 
-/// POST /wsapi/allocate_warrant_status — the manual-signing/reissue surfaces
-/// fetch (or re-fetch — stable per grant) the status index to embed before
-/// signing.
-pub async fn allocate_warrant_status(
-    State(state): State<Arc<RegistrarState>>,
-    cookies: Cookies,
-    Json(req): Json<AllocateStatusBody>,
-) -> Result<Json<AllocateStatusResponse>, RegistrarError> {
-    require_enabled(&state)?;
-    let user = require_session(&state, &cookies)?;
-    require_csrf(&user, &req.csrf)?;
-    let (uri, idx) =
-        allocate_status_core(&state, user.user_id, &req.agent_email, &req.audience, &req.scopes)?;
-    Ok(Json(AllocateStatusResponse { success: true, uri, idx }))
-}
 
 /// Allocate (idempotently) the stable status ref for a grant — shared by
 /// both lanes (registry-api-v1 §5.2 `warrants/allocate_status`). Stable per
@@ -1248,21 +1118,6 @@ pub struct RevokeWarrantBody {
     pub id: u64,
 }
 
-/// POST /wsapi/revoke_warrant — set the grant's status bit: the warrant (and
-/// any reissue sharing its index) dies at status-checking verifiers within
-/// one cache window, leaving the agent's other grants intact. The registry
-/// row is kept (marked by its bit) so the account view still shows it.
-pub async fn revoke_warrant(
-    State(state): State<Arc<RegistrarState>>,
-    cookies: Cookies,
-    Json(req): Json<RevokeWarrantBody>,
-) -> Result<Json<RespondResponse>, RegistrarError> {
-    require_enabled(&state)?;
-    let user = require_session(&state, &cookies)?;
-    require_csrf(&user, &req.csrf)?;
-    revoke_warrant_core(&state, user.user_id, req.id)?;
-    Ok(Json(RespondResponse { success: true, return_url: None }))
-}
 
 /// Flip a registered warrant's status bit — shared by both lanes. A warrant
 /// without a status ref cannot be revoked: `409` / `no_status_ref`

@@ -16,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 42;
+const SCHEMA_VERSION: i32 = 43;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -189,6 +189,9 @@ impl SqliteStore {
             }
             if current_version < 42 {
                 Self::migrate_v42(conn)?;
+            }
+            if current_version < 43 {
+                Self::migrate_v43(conn)?;
             }
 
             // Update schema version
@@ -1058,6 +1061,14 @@ impl SqliteStore {
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v43(conn: &Connection) -> Result<(), BrokerError> {
+        // Holder moves are gone (registry-api-v1: the three namespaces are
+        // fixed, holders do not move); the table with them.
+        conn.execute_batch("DROP TABLE IF EXISTS holder_moves;")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(())
     }
 
@@ -2654,57 +2665,8 @@ impl UserStore for SqliteStore {
         Ok(rows as u64)
     }
 
-    fn set_holder_move(&self, user_id: UserId, old_holder: &str, new_holder: &str) -> StoreResult<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO holder_moves (user_id, old_holder, new_holder, created_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(user_id, old_holder) DO UPDATE SET new_holder = excluded.new_holder",
-            params![user_id.0 as i64, old_holder, new_holder, Utc::now().to_rfc3339()],
-        )
-        .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        Ok(())
-    }
 
-    fn resolve_holder_move(&self, user_id: UserId, holder: &str) -> StoreResult<Option<String>> {
-        let conn = self.conn.lock().unwrap();
-        let mut current = holder.to_string();
-        let mut hops = 0;
-        loop {
-            let next: Option<String> = conn
-                .query_row(
-                    "SELECT new_holder FROM holder_moves WHERE user_id = ?1 AND old_holder = ?2",
-                    params![user_id.0 as i64, current],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(|e| BrokerError::Internal(e.to_string()))?;
-            match next {
-                Some(n) => {
-                    current = n;
-                    hops += 1;
-                    if hops > 8 {
-                        break; // defensive: never loop on a malformed chain
-                    }
-                }
-                None => break,
-            }
-        }
-        Ok(if current == holder { None } else { Some(current) })
-    }
 
-    fn list_holder_moves(&self, user_id: UserId) -> StoreResult<Vec<(String, String)>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT old_holder, new_holder FROM holder_moves WHERE user_id = ?1")
-            .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        let rows = stmt
-            .query_map(params![user_id.0 as i64], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(|e| BrokerError::Internal(e.to_string()))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        Ok(rows)
-    }
 
     fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {
         let conn = self.conn.lock().unwrap();
@@ -3869,17 +3831,8 @@ impl UserStore for std::sync::Arc<SqliteStore> {
         (**self).forget_holder(user_id, holder)
     }
 
-    fn set_holder_move(&self, user_id: UserId, old_holder: &str, new_holder: &str) -> StoreResult<()> {
-        (**self).set_holder_move(user_id, old_holder, new_holder)
-    }
 
-    fn resolve_holder_move(&self, user_id: UserId, holder: &str) -> StoreResult<Option<String>> {
-        (**self).resolve_holder_move(user_id, holder)
-    }
 
-    fn list_holder_moves(&self, user_id: UserId) -> StoreResult<Vec<(String, String)>> {
-        (**self).list_holder_moves(user_id)
-    }
 
     fn get_or_create_namespace(&self, user_id: UserId, name: &str) -> StoreResult<String> {
         (**self).get_or_create_namespace(user_id, name)

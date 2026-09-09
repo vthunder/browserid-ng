@@ -2,6 +2,8 @@
 
 #![allow(unused)]
 
+pub mod registry;
+
 use std::sync::Arc;
 use std::sync::RwLock;
 

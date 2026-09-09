@@ -400,8 +400,6 @@ pub fn rename_holder_core(
 /// with the holder gone they can never be presented again, and leaving them
 /// makes site listings show grants for "a removed device" forever. Group
 /// (`<ns>.*`) matchers cover other holders and are left alone. Best-effort.
-/// (The broker's `finish_holder_move` keeps a store-level copy of this for
-/// issuance paths that have no registrar handle.)
 pub fn cleanup_holder_warrants(store: &dyn RegistrarStore, user_id: u64, holder: &str) {
     let warrants = match store.list_warrants(user_id) {
         Ok(w) => w,
@@ -551,9 +549,7 @@ pub fn rename_namespace_core(
     store.set_namespace_label(user_id, name, &label)
 }
 
-/// Delete an EMPTY namespace. Occupancy counts pending moves: a holder moving
-/// INTO the namespace already lives there as far as the user's organization
-/// is concerned (the view files it there), so it blocks deletion too.
+/// Delete an EMPTY namespace.
 pub fn delete_namespace_core(
     store: &dyn RegistrarStore,
     user_id: u64,
@@ -564,15 +560,7 @@ pub fn delete_namespace_core(
         .into_iter()
         .find(|n| n.name == name)
         .ok_or(RegistrarError::NamespaceNotFound)?;
-    let moves = store.list_holder_moves(user_id)?;
-    let occupied = store.list_device_certs(user_id)?.iter().any(|c| {
-        let target = moves
-            .iter()
-            .find(|(old, _)| *old == c.holder)
-            .map(|(_, new)| new.as_str())
-            .unwrap_or(&c.holder);
-        holder_prefix(target) == ns.prefix
-    });
+    let occupied = store.list_device_certs(user_id)?.iter().any(|c| holder_prefix(&c.holder) == ns.prefix);
     if occupied {
         return Err(RegistrarError::Conflict {
             reason: "namespace_not_empty",

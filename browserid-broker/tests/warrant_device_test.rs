@@ -56,6 +56,7 @@ async fn csrf(server: &TestServer, session: &str) -> String {
 async fn agent_warrant_request_consent_poll_and_full_presentation() {
     let (server, sender, idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     // The agent's IdP-signed authentication device cert (what paired
     // provisioning issues), and the browser's config cert covering the
@@ -112,9 +113,7 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
     assert_eq!(r.json::<Value>()["status"], "pending");
 
     // 3. The delegator's consent page: list, then sign + respond.
-    let listed: Value = server
-        .get("/wsapi/warrant_requests")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let listed: Value = common::registry::api_get(&server, &sess, "/api/v1/requests")
         .await
         .json();
     let reqs = listed["requests"].as_array().unwrap();
@@ -133,11 +132,8 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
     )
     .unwrap();
     let c = csrf(&server, &session).await;
-    let r = server
-        .post("/wsapi/warrant_respond")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({
-            "csrf": c, "code": code, "approve": true,
+    let r = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({
+            "code": code, "approve": true,
             "warrants": [warrant.encoded()],
             "config_cert": config_cert.encoded(),
         }))
@@ -155,9 +151,7 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
     assert_ne!(r.status_code(), 200, "single delivery: second poll must fail");
 
     // 5. Registry: the grant is reviewable on the delegator's account.
-    let warrants: Value = server
-        .get("/wsapi/warrants")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let warrants: Value = common::registry::api_get(&server, &sess, "/api/v1/warrants")
         .await
         .json();
     let w = &warrants["warrants"][0];
@@ -202,6 +196,7 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
 async fn respond_rejects_overbroad_or_foreign_holder() {
     let (server, sender, idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     let agent_holder = Holder::new("ag.bot").unwrap();
     let agent_kp = KeyPair::generate();
@@ -228,9 +223,7 @@ async fn respond_rejects_overbroad_or_foreign_holder() {
         assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
         r.json::<Value>()["code"].as_str().unwrap().to_string()
     };
-    let listed: Value = server
-        .get("/wsapi/warrant_requests")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let listed: Value = common::registry::api_get(&server, &sess, "/api/v1/requests")
         .await
         .json();
     let grant = &listed["requests"][0]["grants"][0];
@@ -248,10 +241,7 @@ async fn respond_rejects_overbroad_or_foreign_holder() {
             Some(StatusRef { uri: status_uri.clone(), idx: status_idx }),
         )
         .unwrap();
-        server
-            .post("/wsapi/warrant_respond")
-            .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-            .json(&json!({ "csrf": c, "code": listed_code, "approve": true,
+        common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({ "code": listed_code, "approve": true,
                 "warrants": [w.encoded()], "config_cert": config_cert.encoded() }))
     };
 
@@ -275,6 +265,7 @@ async fn respond_rejects_overbroad_or_foreign_holder() {
 async fn revoked_subject_reactivates_on_fresh_consent_approval() {
     let (server, sender, idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     let agent_holder = Holder::new("ag.bot").unwrap();
     let agent_kp = KeyPair::generate();
@@ -294,6 +285,7 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
     // One full consent round: request → sign → approve → deliver.
     let round = |label: &'static str| {
         let server = &server;
+        let sess = &sess;
         let session = session.clone();
         let agent_cert = agent_cert.encoded().to_string();
         let config_kp = &config_kp;
@@ -306,9 +298,7 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
                 .await;
             assert_eq!(r.status_code(), 200, "{label} request: {:?}", r.text());
             let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
-            let listed: Value = server
-                .get("/wsapi/warrant_requests")
-                .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+            let listed: Value = common::registry::api_get(server, sess, "/api/v1/requests")
                 .await
                 .json();
             let req0 = &listed["requests"][0];
@@ -321,10 +311,7 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
             )
             .unwrap();
             let c = csrf(server, &session).await;
-            let r = server
-                .post("/wsapi/warrant_respond")
-                .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-                .json(&json!({ "csrf": c, "code": code, "approve": true,
+            let r = common::registry::api_post(server, sess, "/api/v1/requests/respond", json!({ "code": code, "approve": true,
                     "warrants": [w.encoded()], "config_cert": config_cert }))
                 .await;
             assert_eq!(r.status_code(), 200, "{label} respond: {:?}", r.text());
@@ -337,24 +324,17 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
     let idx1 = round("first").await;
 
     // The delegator revokes the grant.
-    let listed: Value = server
-        .get("/wsapi/warrants")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let listed: Value = common::registry::api_get(&server, &sess, "/api/v1/warrants")
         .await
         .json();
     let row = &listed["warrants"][0];
     assert_eq!(row["revoked"], false, "{listed}");
     let id = row["id"].as_u64().unwrap();
     let c = csrf(&server, &session).await;
-    let r = server
-        .post("/wsapi/revoke_warrant")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": c, "id": id }))
+    let r = common::registry::api_post(&server, &sess, "/api/v1/warrants/revoke", json!({ "id": id }))
         .await;
-    assert_eq!(r.status_code(), 200, "revoke: {:?}", r.text());
-    let listed: Value = server
-        .get("/wsapi/warrants")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    assert_eq!(r.status_code(), 204, "revoke: {:?}", r.text());
+    let listed: Value = common::registry::api_get(&server, &sess, "/api/v1/warrants")
         .await
         .json();
     assert_eq!(listed["warrants"][0]["revoked"], true, "{listed}");
@@ -364,9 +344,7 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
     // warrant is not born revoked.
     let idx2 = round("second").await;
     assert_ne!(idx1, idx2, "a revoked key allocates a fresh index");
-    let listed: Value = server
-        .get("/wsapi/warrants")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let listed: Value = common::registry::api_get(&server, &sess, "/api/v1/warrants")
         .await
         .json();
     assert_eq!(
@@ -382,9 +360,7 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
             "grants": [{ "audience": "https://third.example", "scopes": ["post"] }] }))
         .await;
     let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
-    let listed: Value = server
-        .get("/wsapi/warrant_requests")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let listed: Value = common::registry::api_get(&server, &sess, "/api/v1/requests")
         .await
         .json();
     let status_uri = listed["status_uri"].as_str().unwrap().to_string();
@@ -396,10 +372,7 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
     )
     .unwrap();
     let c = csrf(&server, &session).await;
-    let r = server
-        .post("/wsapi/warrant_respond")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": c, "code": code, "approve": true,
+    let r = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({ "code": code, "approve": true,
             "warrants": [forged.encoded()], "config_cert": config_cert.encoded() }))
         .await;
     assert_ne!(r.status_code(), 200, "a warrant with someone else's status index must be refused");

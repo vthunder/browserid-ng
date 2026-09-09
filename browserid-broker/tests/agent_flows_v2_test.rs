@@ -80,6 +80,7 @@ fn agent_cert(idp_kp: &KeyPair, agent: &str, holder: &str) -> (KeyPair, DeviceCe
 async fn warrant_request_grantor_pin_and_unknown_agent_reason() {
     let (server, sender, idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let agent = "alice+bot@example.com";
     let (_akp, acert) = agent_cert(&idp_kp, agent, "ag.bot");
     let (config_kp, config_cert) = config_cert_for_alice(&idp_kp);
@@ -104,9 +105,7 @@ async fn warrant_request_grantor_pin_and_unknown_agent_reason() {
     assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
     let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
 
-    let listed: Value = server
-        .get("/wsapi/warrant_requests")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let listed: Value = common::registry::api_get(&server, &sess, "/api/v1/requests")
         .await
         .json();
     let req = &listed["requests"][0];
@@ -124,10 +123,7 @@ async fn warrant_request_grantor_pin_and_unknown_agent_reason() {
         Some(StatusRef { uri: status_uri.clone(), idx: status_idx }),
     )
     .unwrap();
-    let r = server
-        .post("/wsapi/warrant_respond")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": c, "code": code, "approve": true,
+    let r = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({ "code": code, "approve": true,
             "warrants": [onbehalf.encoded()], "config_cert": config_cert.encoded(),
             "grantor": DELEGATOR }))
         .await;
@@ -141,10 +137,7 @@ async fn warrant_request_grantor_pin_and_unknown_agent_reason() {
         Some(StatusRef { uri: status_uri.clone(), idx: status_idx }),
     )
     .unwrap();
-    let r = server
-        .post("/wsapi/warrant_respond")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": c, "code": code, "approve": true,
+    let r = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({ "code": code, "approve": true,
             "warrants": [selfw.encoded()], "config_cert": config_cert.encoded() }))
         .await;
     assert_eq!(r.status_code(), 200, "pin-honoring approval: {:?}", r.text());
@@ -158,10 +151,7 @@ async fn warrant_request_grantor_pin_and_unknown_agent_reason() {
     assert_eq!(r.status_code(), 200, "{:?}", r.text());
     let code2 = r.json::<Value>()["code"].as_str().unwrap().to_string();
     let c = csrf(&server, &session).await;
-    let r = server
-        .post("/wsapi/warrant_respond")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": c, "code": code2, "approve": false }))
+    let r = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({ "code": code2, "approve": false }))
         .await;
     assert_eq!(r.status_code(), 200, "{:?}", r.text());
     let poll: Value = server.post("/warrant/poll").json(&json!({ "code": code2 })).await.json();
@@ -179,6 +169,7 @@ async fn warrant_request_grantor_pin_and_unknown_agent_reason() {
 async fn two_stage_provision_then_known_agent() {
     let (server, sender, idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (config_kp, config_cert) = config_cert_for_alice(&idp_kp);
 
     // 1. The agent's bundled request: identity + one grant, name + message.
@@ -268,9 +259,7 @@ async fn two_stage_provision_then_known_agent() {
             "grants": [{ "audience": "https://more.example" }] }))
         .await;
     assert_eq!(r.status_code(), 200, "{:?}", r.text());
-    let listed: Value = server
-        .get("/wsapi/warrant_requests")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let listed: Value = common::registry::api_get(&server, &sess, "/api/v1/requests")
         .await
         .json();
     let req = &listed["requests"][0];
@@ -320,6 +309,7 @@ async fn two_stage_provision_then_known_agent() {
 async fn grants_stage_decline_still_delivers_the_credential() {
     let (server, sender, _idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     let device_kp = KeyPair::generate();
     let r = server

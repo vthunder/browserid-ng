@@ -87,14 +87,12 @@ async fn raise(server: &TestServer, agent_cert: &DeviceCert, return_url: Option<
 /// respond-response JSON.
 async fn approve(
     server: &TestServer,
-    session: &str,
+    sess: &common::registry::ApiSession,
     code: &str,
     config_kp: &KeyPair,
     config_cert: &DeviceCert,
 ) -> Value {
-    let listed: Value = server
-        .get("/wsapi/warrant_requests")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.to_string()))
+    let listed: Value = common::registry::api_get(server, sess, "/api/v1/requests")
         .await
         .json();
     let req0 = listed["requests"]
@@ -112,12 +110,8 @@ async fn approve(
         Some(StatusRef { uri: status_uri, idx: status_idx }),
     )
     .unwrap();
-    let c = csrf(server, session).await;
-    let r = server
-        .post("/wsapi/warrant_respond")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.to_string()))
-        .json(&json!({
-            "csrf": c, "code": code, "approve": true,
+    let r = common::registry::api_post(server, sess, "/api/v1/requests/respond", json!({
+            "code": code, "approve": true,
             "warrants": [warrant.encoded()],
             "config_cert": config_cert.encoded(),
         }))
@@ -133,13 +127,14 @@ async fn approve(
 async fn return_url_persisted_and_echoed_on_approval() {
     let (server, sender, idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (agent_cert, _agent_kp, config_cert, config_kp) = certs(&idp_kp);
 
     let r = raise(&server, &agent_cert, Some(RETURN_URL)).await;
     assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
     let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
 
-    let resolved = approve(&server, &session, &code, &config_kp, &config_cert).await;
+    let resolved = approve(&server, &sess, &code, &config_kp, &config_cert).await;
     assert_eq!(resolved["success"], true);
     assert_eq!(
         resolved["return_url"].as_str(),
@@ -159,13 +154,14 @@ async fn return_url_persisted_and_echoed_on_approval() {
 async fn no_return_url_means_none_echoed() {
     let (server, sender, idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (agent_cert, _agent_kp, config_cert, config_kp) = certs(&idp_kp);
 
     let r = raise(&server, &agent_cert, None).await;
     assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
     let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
 
-    let resolved = approve(&server, &session, &code, &config_kp, &config_cert).await;
+    let resolved = approve(&server, &sess, &code, &config_kp, &config_cert).await;
     assert_eq!(resolved["success"], true);
     assert!(resolved.get("return_url").is_none(), "{resolved}");
 }
@@ -177,6 +173,7 @@ async fn no_return_url_means_none_echoed() {
 async fn foreign_return_url_is_refused() {
     let (server, sender, idp_kp) = make_server();
     let _session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let _sess = common::registry::api_login(&server, &_session, "testpassword").await;
     let (agent_cert, _agent_kp, _config_cert, _config_kp) = certs(&idp_kp);
 
     for bad in [
@@ -202,6 +199,7 @@ async fn foreign_return_url_is_refused() {
 async fn identity_domain_return_url_is_accepted() {
     let (server, sender, idp_kp) = make_server();
     let _session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let _sess = common::registry::api_login(&server, &_session, "testpassword").await;
     let (agent_cert, _agent_kp, _config_cert, _config_kp) = certs(&idp_kp);
 
     // AGENT is alice+gate@example.com — example.com is the identity domain.
@@ -215,6 +213,7 @@ async fn identity_domain_return_url_is_accepted() {
 async fn denial_echoes_return_url() {
     let (server, sender, idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (agent_cert, _agent_kp, _config_cert, _config_kp) = certs(&idp_kp);
 
     let r = raise(&server, &agent_cert, Some(RETURN_URL)).await;
@@ -222,10 +221,7 @@ async fn denial_echoes_return_url() {
     let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
 
     let c = csrf(&server, &session).await;
-    let r = server
-        .post("/wsapi/warrant_respond")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": c, "code": code, "approve": false }))
+    let r = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({ "code": code, "approve": false }))
         .await;
     assert_eq!(r.status_code(), 200, "deny: {:?}", r.text());
     let resolved: Value = r.json();

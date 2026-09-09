@@ -477,28 +477,8 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
             .map_err(to_reg_err)
     }
 
-    fn set_holder_move(
-        &self,
-        user_id: u64,
-        old_holder: &str,
-        new_holder: &str,
-    ) -> Result<(), RegistrarError> {
-        UserStore::set_holder_move(self.user_store.as_ref(), UserId(user_id), old_holder, new_holder)
-            .map_err(to_reg_err)
-    }
 
-    fn resolve_holder_move(
-        &self,
-        user_id: u64,
-        holder: &str,
-    ) -> Result<Option<String>, RegistrarError> {
-        UserStore::resolve_holder_move(self.user_store.as_ref(), UserId(user_id), holder)
-            .map_err(to_reg_err)
-    }
 
-    fn list_holder_moves(&self, user_id: u64) -> Result<Vec<(String, String)>, RegistrarError> {
-        UserStore::list_holder_moves(self.user_store.as_ref(), UserId(user_id)).map_err(to_reg_err)
-    }
 
     fn forget_holder(&self, user_id: u64, holder: &str) -> Result<u64, RegistrarError> {
         UserStore::forget_holder(self.user_store.as_ref(), UserId(user_id), holder)

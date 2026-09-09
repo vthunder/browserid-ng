@@ -242,14 +242,7 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         // grant requests + grantor-initiated authoring ceremonies. Poll is
         // shared with /warrant/poll ({request_id} is accepted as the code).
         .route("/warrant/record-request", post(consent::record_request))
-        .route("/wsapi/warrant_requests", get(consent::list_requests))
-        .route("/wsapi/warrant_respond", post(consent::respond))
         // Warrant registry (jipx):
-        .route("/wsapi/warrants", get(consent::list_warrants))
-        .route("/wsapi/register_warrant", post(consent::register_warrant))
-        .route("/wsapi/forget_warrant", post(consent::forget_warrant))
-        .route("/wsapi/revoke_warrant", post(consent::revoke_warrant))
-        .route("/wsapi/allocate_warrant_status", post(consent::allocate_warrant_status))
         // Signed revocation status list (core §6.4): a public, signed
         // artifact read cross-origin — include.js's page-side revocation
         // poll lands here via the broker's /status/proxy redirect, so it

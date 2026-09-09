@@ -48,6 +48,7 @@ async fn issue_and_revoke_device(
     email: &str,
 ) -> (Value, u64) {
     let session = create_user(server, sender, email, "testpassword").await;
+    let sess = common::registry::api_login(server, &session, "testpassword").await;
     let c = csrf(server, &session).await;
     let device_kp = KeyPair::generate();
     let config_kp = KeyPair::generate();
@@ -65,18 +66,13 @@ async fn issue_and_revoke_device(
     let cert = DeviceCert::parse(body["device_cert"].as_str().unwrap()).unwrap();
     let status = cert.claims().status.clone().expect("device cert has a status ref");
 
-    let certs: Value = server
-        .get("/wsapi/device_certs")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let certs: Value = common::registry::api_get(&server, &sess, "/api/v1/certs")
         .await
         .json();
     let id = certs["certs"][0]["id"].as_u64().unwrap();
 
     let refv = json!({ "uri": status.uri, "idx": status.idx });
-    server
-        .post("/wsapi/revoke_device_cert")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": csrf(server, &session).await, "id": id }))
+    common::registry::api_post(&server, &sess, "/api/v1/certs/revoke", json!({ "id": id }))
         .await
         .assert_status_ok();
     (refv, id)

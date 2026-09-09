@@ -221,30 +221,23 @@ test.describe('watch() v2 contract', () => {
     await page.evaluate(() => (window as any).__setup(null));
     await signInViaPopup(page, email, password);
 
-    // Revoke this session's device cert from a broker-origin tab (the popup's
-    // session cookie lives in this browser context).
+    // Revoke this session's device certs over the registry API from the
+    // account page (its session is the browser's login key the dialog
+    // enrolled; the popup's cookie lives in this browser context).
     const brokerTab = await page.context().newPage();
-    await brokerTab.goto(`${brokerUrl}/dialog/test.html`);
+    await brokerTab.goto(`${brokerUrl}/account`);
+    await expect(brokerTab.locator('#app')).toBeVisible({ timeout: 10000 });
     const revoked = await brokerTab.evaluate(async () => {
-      const sc = await fetch('/wsapi/session_context', { credentials: 'include' }).then((r) =>
-        r.json()
-      );
-      const certs = await fetch('/wsapi/device_certs', { credentials: 'include' }).then((r) =>
-        r.json()
-      );
+      const R = (window as any).Registry;
+      const certs = await R.call('GET', '/api/v1/certs');
       const active = (certs.certs || []).filter((c: any) => !c.revoked);
       if (!active.length) return { ok: false, reason: 'no active device certs' };
       const results = [];
       for (const cert of active) {
-        const res = await fetch('/wsapi/revoke_device_cert', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ csrf: sc.csrf_token, id: cert.id }),
-        });
-        results.push(res.status);
+        const r = await R.call('POST', '/api/v1/certs/revoke', { id: cert.id });
+        results.push(r.revoked === true);
       }
-      return { ok: results.every((s) => s === 200), results };
+      return { ok: results.every(Boolean), results };
     });
     await brokerTab.close();
     expect(revoked.ok).toBe(true);

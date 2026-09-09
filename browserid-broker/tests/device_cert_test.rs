@@ -50,6 +50,7 @@ async fn device_issue_then_access_mint() {
     let (server, sender) = make_server();
     let email = "human@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let c = csrf(&server, &session).await;
 
     // 1. Batch-issue a user device cert + a config cert.
@@ -99,6 +100,7 @@ async fn device_issue_accepts_client_browser_holder_and_rejects_foreign() {
     let (server, sender) = make_server();
     let email = "human2@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let c = csrf(&server, &session).await;
 
     // The account's browsers-namespace prefix (client broker fetches this).
@@ -146,6 +148,7 @@ async fn access_mint_rejects_request_not_signed_by_device_key() {
     let (server, sender) = make_server();
     let email = "human@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let c = csrf(&server, &session).await;
     let device_kp = KeyPair::generate();
     let config_kp = KeyPair::generate();
@@ -190,15 +193,13 @@ async fn device_certs_list_and_revoke() {
     let (server, sender) = make_server();
     let email = "human@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     // Issue a device+config pair, then list them.
     issue_pair(&server, &session, email).await;
-    let listed: Value = server
-        .get("/wsapi/device_certs")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let listed: Value = common::registry::api_get(&server, &sess, "/api/v1/certs")
         .await
         .json();
-    assert_eq!(listed["success"], true, "list: {listed}");
     let certs = listed["certs"].as_array().unwrap();
     assert_eq!(certs.len(), 2, "one authentication + one authorization cert");
     let purposes: Vec<&str> = certs.iter().map(|c| c["purpose"].as_str().unwrap()).collect();
@@ -210,28 +211,20 @@ async fn device_certs_list_and_revoke() {
     let auth = certs.iter().find(|c| c["purpose"] == "authentication").unwrap();
     let id = auth["id"].as_u64().unwrap();
     let c = csrf(&server, &session).await;
-    let body: Value = server
-        .post("/wsapi/revoke_device_cert")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": c, "id": id }))
+    let body: Value = common::registry::api_post(&server, &sess, "/api/v1/certs/revoke", json!({ "id": id }))
         .await
         .json();
-    assert_eq!(body["success"], true, "revoke: {body}");
+    assert_eq!(body["revoked"], true, "revoke: {body}");
 
     // Sticky: it now reads back revoked, and a second revoke still succeeds.
-    let listed2: Value = server
-        .get("/wsapi/device_certs")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let listed2: Value = common::registry::api_get(&server, &sess, "/api/v1/certs")
         .await
         .json();
     let after = listed2["certs"].as_array().unwrap();
     let auth2 = after.iter().find(|c| c["id"].as_u64() == Some(id)).unwrap();
     assert_eq!(auth2["revoked"], true, "cert should be sticky-revoked");
     let c = csrf(&server, &session).await;
-    let again = server
-        .post("/wsapi/revoke_device_cert")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": c, "id": id }))
+    let again = common::registry::api_post(&server, &sess, "/api/v1/certs/revoke", json!({ "id": id }))
         .await;
     assert_eq!(again.status_code(), 200, "re-revoke stays green (idempotent/sticky)");
 }
@@ -241,10 +234,9 @@ async fn revoke_device_cert_is_owner_scoped() {
     let (server, sender) = make_server();
     let owner = "owner@localhost:3000";
     let owner_session = create_user(&server, &sender, owner, "testpassword").await;
+    let owner_sess = common::registry::api_login(&server, &owner_session, "testpassword").await;
     issue_pair(&server, &owner_session, owner).await;
-    let owner_certs: Value = server
-        .get("/wsapi/device_certs")
-        .add_cookie(cookie::Cookie::new("browserid_session", owner_session.clone()))
+    let owner_certs: Value = common::registry::api_get(&server, &owner_sess, "/api/v1/certs")
         .await
         .json();
     let victim_id = owner_certs["certs"][0]["id"].as_u64().unwrap();
@@ -252,18 +244,14 @@ async fn revoke_device_cert_is_owner_scoped() {
     // A different account cannot revoke the owner's cert.
     let attacker = "attacker@localhost:3000";
     let attacker_session = create_user(&server, &sender, attacker, "testpassword").await;
+    let attacker_sess = common::registry::api_login(&server, &attacker_session, "testpassword").await;
     let c = csrf(&server, &attacker_session).await;
-    let resp = server
-        .post("/wsapi/revoke_device_cert")
-        .add_cookie(cookie::Cookie::new("browserid_session", attacker_session.clone()))
-        .json(&json!({ "csrf": c, "id": victim_id }))
+    let resp = common::registry::api_post(&server, &attacker_sess, "/api/v1/certs/revoke", json!({ "id": victim_id }))
         .await;
     assert_ne!(resp.status_code(), 200, "cross-account revoke must fail");
 
     // The owner's cert is untouched.
-    let still: Value = server
-        .get("/wsapi/device_certs")
-        .add_cookie(cookie::Cookie::new("browserid_session", owner_session.clone()))
+    let still: Value = common::registry::api_get(&server, &owner_sess, "/api/v1/certs")
         .await
         .json();
     let rec = still["certs"].as_array().unwrap().iter()
@@ -280,11 +268,10 @@ async fn forget_holder_revokes_and_removes_all_of_its_certs() {
     let (server, sender) = make_server();
     let email = "human@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     issue_pair(&server, &session, email).await;
 
-    let listed: Value = server
-        .get("/wsapi/device_certs")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let listed: Value = common::registry::api_get(&server, &sess, "/api/v1/certs")
         .await
         .json();
     let certs = listed["certs"].as_array().unwrap();
@@ -294,23 +281,15 @@ async fn forget_holder_revokes_and_removes_all_of_its_certs() {
 
     // A holder that isn't the user's is refused.
     let c = csrf(&server, &session).await;
-    let r = server
-        .post("/wsapi/forget_holder")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": c, "holder_id": "zz.notmine" }))
+    let r = common::registry::api_post(&server, &sess, "/api/v1/holders/forget", json!({ "holder_id": "zz.notmine" }))
         .await;
     assert_ne!(r.status_code(), 200, "foreign holder must be refused");
 
     // Forget the real one: rows gone from the list.
-    let r = server
-        .post("/wsapi/forget_holder")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": c, "holder_id": holder }))
+    let r = common::registry::api_post(&server, &sess, "/api/v1/holders/forget", json!({ "holder_id": holder }))
         .await;
     assert_eq!(r.status_code(), 200, "forget: {:?}", r.text());
-    let after: Value = server
-        .get("/wsapi/device_certs")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let after: Value = common::registry::api_get(&server, &sess, "/api/v1/certs")
         .await
         .json();
     assert_eq!(after["certs"].as_array().unwrap().len(), 0, "all rows removed: {after}");
@@ -333,6 +312,7 @@ async fn foreign_issued_cert_revocation_never_touches_the_broker_status_list() {
 
     let ctx = create_test_context_customized(|_| {});
     let session = mk_user(&ctx.server, &ctx.email_sender, "me@mail.test", "password123").await;
+    let sess = common::registry::api_login(&ctx.server, &session, "password123").await;
     let csrf = get_csrf(&ctx.server, &session).await;
     let user_id = ctx.user_store.get_user_by_email("me@mail.test").unwrap().unwrap().id;
 
@@ -370,10 +350,7 @@ async fn foreign_issued_cert_revocation_never_touches_the_broker_status_list() {
 
     // Revoking the FOREIGN cert soft-hides it but leaves our list alone.
     let resp = ctx
-        .server
-        .post("/wsapi/revoke_device_cert")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "id": foreign_id, "csrf": csrf }))
+        .common::registry::api_post(&server, &sess, "/api/v1/certs/revoke", json!({ "id": foreign_id }))
         .await;
     resp.assert_status_ok();
     assert!(
@@ -383,27 +360,24 @@ async fn foreign_issued_cert_revocation_never_touches_the_broker_status_list() {
 
     // Revoking the OWN cert still flips our bit.
     let resp = ctx
-        .server
-        .post("/wsapi/revoke_device_cert")
-        .add_cookie(cookie::Cookie::new("browserid_session", session))
-        .json(&json!({ "id": own_id, "csrf": csrf }))
+        .common::registry::api_post(&server, &sess, "/api/v1/certs/revoke", json!({ "id": own_id }))
         .await;
     resp.assert_status_ok();
     assert!(ctx.user_store.is_status_revoked_idx(own_idx).unwrap());
 }
 
-/// The post-revocation confirmation (browserid-ng-ft55 follow-up): the
-/// account page verifies a revocation actually landed before hiding
-/// anything. Own-issued certs answer from our store; a cert with no
-/// recorded status ref answers "unknown", never a false "revoked".
+/// Revocation answers from the authority (browserid-ng-ft55 follow-up): the
+/// certs list reads `revoked` from our store for own-issued certs; a cert
+/// from a foreign issuer with no recorded ref is only retired here —
+/// `certs/revoke` says so with `revoked: false`, never a false claim.
 #[tokio::test]
-async fn cert_revocation_status_answers_from_the_authority() {
+async fn cert_revocation_answers_from_the_authority() {
     use browserid_broker::store::{DeviceCertRecord, UserStore};
-    use common::{create_test_context_customized, create_user as mk_user, get_csrf};
+    use common::{create_test_context_customized, create_user as mk_user};
 
     let ctx = create_test_context_customized(|_| {});
     let session = mk_user(&ctx.server, &ctx.email_sender, "me@mail.test", "password123").await;
-    let csrf = get_csrf(&ctx.server, &session).await;
+    let sess = common::registry::api_login(&ctx.server, &session, "password123").await;
     let user_id = ctx.user_store.get_user_by_email("me@mail.test").unwrap().unwrap().id;
 
     let own_idx = ctx.user_store.get_or_allocate_status("device", "own-key-2").unwrap();
@@ -435,29 +409,23 @@ async fn cert_revocation_status_answers_from_the_authority() {
     let own_id = ids.iter().find(|(_, h)| h == "br3.own").unwrap().0;
     let norf_id = ids.iter().find(|(_, h)| h == "br4.norf").unwrap().0;
 
-    let get = |id: u64| {
-        ctx.server
-            .get(&format!("/wsapi/cert_revocation_status?id={id}"))
-            .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let srv = &ctx.server;
+    let sref = &sess;
+    let listed = |id: u64| async move {
+        let v: Value = common::registry::api_get(srv, sref, "/api/v1/certs").await.json();
+        v["certs"].as_array().unwrap().iter().find(|c| c["id"] == id).cloned().unwrap()
     };
-
-    // Own cert, bit not flipped → active.
-    let body: Value = get(own_id).await.json();
-    assert_eq!(body["state"], "active");
-
-    // Revoke it (own-issued: flips our bit) → revoked.
-    ctx.server
-        .post("/wsapi/revoke_device_cert")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "id": own_id, "csrf": csrf }))
-        .await
-        .assert_status_ok();
-    let body: Value = get(own_id).await.json();
-    assert_eq!(body["state"], "revoked");
-
-    // Foreign cert with no recorded ref → unknown, never a false claim.
-    let body: Value = get(norf_id).await.json();
-    assert_eq!(body["state"], "unknown");
+    // Own cert, bit not flipped → not revoked.
+    assert_eq!(listed(own_id).await["revoked"], false);
+    // Revoke it (own-issued: flips our bit) → revoked, and the call says so.
+    let r: Value = common::registry::api_post(&ctx.server, &sess, "/api/v1/certs/revoke", json!({ "id": own_id })).await.json();
+    assert_eq!(r["revoked"], true, "{r}");
+    assert_eq!(listed(own_id).await["revoked"], true);
+    assert!(ctx.user_store.is_status_revoked_idx(own_idx).unwrap());
+    // Foreign cert with no recorded ref: retired here, honestly not revoked
+    // anywhere a verifier looks.
+    let r: Value = common::registry::api_post(&ctx.server, &sess, "/api/v1/certs/revoke", json!({ "id": norf_id })).await.json();
+    assert_eq!(r["revoked"], false, "{r}");
 }
 
 // A revoked device cert must mint NOTHING new (audit M1 / bean mmnp):
@@ -467,6 +435,7 @@ async fn revoked_device_cert_cannot_mint() {
     let (server, sender) = make_server();
     let email = "revoke-me@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let c = csrf(&server, &session).await;
 
     // Issue + persist the device/config certs under the account.
@@ -498,9 +467,7 @@ async fn revoked_device_cert_cannot_mint() {
     assert_eq!(pre["success"], true, "pre-revoke mint should work: {pre}");
 
     // Find the authentication device cert's id and revoke it.
-    let certs: Value = server
-        .get("/wsapi/device_certs")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let certs: Value = common::registry::api_get(&server, &sess, "/api/v1/certs")
         .await
         .json();
     let id = certs["certs"]
@@ -510,13 +477,10 @@ async fn revoked_device_cert_cannot_mint() {
         .find(|c| c["purpose"] == "authentication")
         .and_then(|c| c["id"].as_u64())
         .expect("authentication cert id");
-    let revoked: Value = server
-        .post("/wsapi/revoke_device_cert")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({ "csrf": c, "id": id }))
+    let revoked: Value = common::registry::api_post(&server, &sess, "/api/v1/certs/revoke", json!({ "id": id }))
         .await
         .json();
-    assert_eq!(revoked["success"], true, "revoke: {revoked}");
+    assert_eq!(revoked["revoked"], true, "revoke: {revoked}");
 
     // Now the mint must refuse even a nominally-valid request.
     let areq2 = AccessRequest::create(
@@ -551,6 +515,7 @@ async fn device_issue_refuses_untrusted_web_return_origin() {
     let (server, sender) = make_server();
     let email = "human@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     let (status, body) = issue_with_origin(&server, &session, email, "https://evil.example").await;
     assert_eq!(status, 403, "{body}");
@@ -569,6 +534,7 @@ async fn device_issue_accepts_native_trusted_and_own_origins() {
     let (server, sender) = make_server();
     let email = "human@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     for o in [
         "http://127.0.0.1:4321",   // loopback
@@ -603,6 +569,7 @@ async fn suspended_agent_cannot_mint_on_the_old_account() {
     let email = "parent@localhost:3000";
     let agent = "parent+cal@localhost:3000";
     let session = create_user(&server, &sender, email, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let user_id = store.get_email(email).unwrap().unwrap().user_id;
     store.add_email_with_type(user_id, agent, true, EmailType::Agent).unwrap();
     store.set_parent_email(agent, Some(email)).unwrap();

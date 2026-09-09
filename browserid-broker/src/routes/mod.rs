@@ -243,18 +243,9 @@ where
         // Device-cert model (DC Phases 2/6) — additive alongside the legacy routes.
         .route("/device/issue", post(device::device_issue))
         .route("/access/mint", post(device::access_mint))
-        .route("/wsapi/device_certs", get(device::device_certs))
         .route("/wsapi/issuer_revoke_url", get(device::issuer_revoke_url))
-        .route("/wsapi/cert_revocation_status", get(device::cert_revocation_status))
         .route("/wsapi/browser_holder", get(device::browser_holder))
-        .route("/wsapi/revoke_device_cert", post(device::revoke_device_cert))
-        .route("/wsapi/holders", get(holders::holders))
-        .route("/wsapi/rename_holder", post(holders::rename_holder))
-        .route("/wsapi/forget_holder", post(holders::forget_holder))
         .route("/wsapi/record_device_cert", post(primary::record_device_cert))
-        .route("/wsapi/rename_namespace", post(holders::rename_namespace))
-        .route("/wsapi/create_namespace", post(holders::create_namespace))
-        .route("/wsapi/delete_namespace", post(holders::delete_namespace))
         .route("/wsapi/account_cancel", post(account::account_cancel))
         // Unified sign-in code (dw35/8gqm): the ONLY cold code-mailing lane —
         // creates the account or resets its password, decided server-side

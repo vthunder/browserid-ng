@@ -45,17 +45,16 @@ async function signIn(page: any, email: string, pass: string) {
   await expect(page.locator('#app')).toBeVisible({ timeout: 10000 });
 }
 
-/** Revoke a registry row through the account session (the wsapi the account
- *  page's Revoke button posts). */
+/** Revoke a registry row over the registry API, from the account page's own
+ *  session (the browser's login key for the account, enrolled by the sign-in
+ *  or the dialog) — what the account page's Revoke button does. */
 async function revokeWarrant(page: any, pick: (w: any) => boolean) {
-  const ctx = await (await page.request.get(`${baseUrl}/wsapi/session_context`)).json();
-  const list = await (await page.request.get(`${baseUrl}/wsapi/warrants`)).json();
+  await page.goto(`${baseUrl}/account`);
+  await expect(page.locator('#app')).toBeVisible({ timeout: 10000 });
+  const list = await page.evaluate(() => (window as any).Registry.call('GET', '/api/v1/warrants'));
   const row = (list.warrants || []).find(pick);
   expect(row, `no matching warrant row in ${JSON.stringify(list.warrants?.map((w: any) => ({ id: w.id, audience: w.audience, binding: w.binding_id })))}`).toBeTruthy();
-  const r = await page.request.post(`${baseUrl}/wsapi/revoke_warrant`, {
-    data: { csrf: ctx.csrf_token, id: row.id },
-  });
-  expect(r.ok()).toBeTruthy();
+  await page.evaluate((id: number) => (window as any).Registry.call('POST', '/api/v1/warrants/revoke', { id }), row.id);
   return row;
 }
 

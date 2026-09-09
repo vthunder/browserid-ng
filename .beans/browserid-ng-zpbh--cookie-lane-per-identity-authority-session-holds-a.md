@@ -1,11 +1,11 @@
 ---
 # browserid-ng-zpbh
 title: 'Cookie lane: per-identity authority (session holds a set of proven identities)'
-status: in-progress
+status: completed
 type: task
 priority: normal
 created_at: 2026-09-04T23:32:18Z
-updated_at: 2026-09-09T21:53:59Z
+updated_at: 2026-09-09T22:36:00Z
 parent: browserid-ng-71vt
 blocked_by:
     - browserid-ng-0c49
@@ -15,10 +15,10 @@ registry-api-v1 r5 (2026-09-05) moves the API from account-wide authority to per
 
 Ruled by Dan 2026-09-05: real gap, tackle separately once the token lane is fully deployed and working.
 
-- [ ] Cookie session carries a set of proven identities (one added per sign-in / presentation), not an account
-- [ ] Every /wsapi handler resolves its subject identity and checks it against the session's set + tier (same §3.3 subject table as the API)
-- [ ] /account page UI: show which identities the session has proven; prompt to sign in as another to act on it
-- [ ] §3.4 / invariant 1 in registry-api-v1: restate parity as 'same subject rule' and close the gap note
+- [x] (superseded) Cookie session carries a set of proven identities — the cookie lane no longer serves the registry role at all
+- [x] (superseded) /wsapi registry handlers deleted
+- [x] (superseded) /account runs on a registry session bound to the browser's login key
+- [x] (superseded) no parity note remains
 
 2026-09-07: spec committed at 45b8f0c. Cookie lane work starts after 0c49 step 13 (token shim removed). Note the target moved: per-identity authority was replaced by account tiers + the guard; the cookie session should become a session on an explicit account at a tier, minted from a presentation, with the same guard at first sign-in from a new browser.
 
@@ -43,7 +43,11 @@ Open for step 3: accounts with no password (primary/bridge-only) cannot open a r
 2026-09-09 (later still): a device is a login key + the certs attached under it (device_certs.login_key_id, store v41, backfilled from the key's holder). login-keys/revoke retires certs by key with a holder fallback; holders/forget revokes the keys its certs were attached under. GET certs carries login_key. Step 3 should render the account page's browser rows one per login key (agents/services stay by holder).
 
 - [x] Step 3 (account page): roster's browser rows are one per login key (agents/services by holder); all registry data (warrants, certs, holders, login keys) over /api/v1 under the page's session; revoke/rename/forget/manual signing over the API; 'Signed in to this account' card removed; forget_warrant and cert_revocation_status dropped from the page. login-keys/rename added. Legacy browser cert rows without a key wiped (store v42). An account with no password stays on the cookie for addresses/password only and sees a note where devices would be.
-- [ ] Step 4: consent.html + authorize.html onto the API
-- [ ] Step 5: delete the cookie registry routes + holder_moves table
-- [ ] Step 6: port the Rust/e2e tests that drive them
-- [ ] Step 7: close the spec parity note
+- [x] Step 4: consent.html + authorize.html onto the API
+- [x] Step 5: delete the cookie registry routes + holder_moves table (store v43)
+- [x] Step 6: port the Rust/e2e tests that drive them (tests/common/registry.rs: api_login / api_get / api_post)
+- [x] Step 7: close the spec parity note (nothing left to close: the cookie registry lane no longer exists, registry-api-v1 has no parity text)
+
+## Summary of Changes
+
+The cookie lane no longer serves the registry role. Every registry-role page (account, consent, authorize) runs on a registry-api-v1 session bound to the browser's login key; the registrar's /wsapi/{warrant_requests,warrant_respond,warrants,register_warrant,forget_warrant,revoke_warrant,allocate_warrant_status} and the broker's /wsapi/{device_certs,revoke_device_cert,cert_revocation_status,holders,rename_holder,forget_holder,rename_namespace,create_namespace,delete_namespace} are deleted, the holder_moves table and store methods with them (v43). Along the way (2026-09-09/10): §4.3 became session-only; sessions bound to login keys; a device = login key + certs attached under it; sign-out revokes the key and retires its certs; /account draws devices from login keys. Tests: tests/common/registry.rs gives axum-test suites a registry session; eight Rust suites and three e2e specs ported. Verified: cargo test --workspace, 122 Playwright, wallet e2e.

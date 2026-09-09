@@ -758,6 +758,8 @@ async fn forget_holder_revokes_at_the_tenant_authority() {
     let tenant = store.get_tenant(TENANT).unwrap().unwrap();
 
     let session = create_user(&server, &sender, "human@localhost:3000", "testpassword").await;
+
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let user_id = store.get_email("human@localhost:3000").unwrap().unwrap().user_id;
 
     // A tenant-issued config cert recorded for this account (as the dialog's
@@ -794,18 +796,7 @@ async fn forget_holder_revokes_at_the_tenant_authority() {
         ))
         .unwrap();
 
-    let csrf: String = server
-        .get("/wsapi/session_context")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .await
-        .json::<Value>()["csrf_token"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let resp = server
-        .post("/wsapi/forget_holder")
-        .add_cookie(cookie::Cookie::new("browserid_session", session))
-        .json(&json!({ "csrf": csrf, "holder_id": holder }))
+    let resp = common::registry::api_post(&server, &sess, "/api/v1/holders/forget", json!({ "holder_id": holder }))
         .await;
     assert_eq!(resp.status_code(), 200, "{}", resp.text());
     let body: Value = resp.json();

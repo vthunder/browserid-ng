@@ -72,13 +72,12 @@ async fn spawn_resource() -> (String, Arc<RwLock<HashMap<String, String>>>) {
     (origin, proofs)
 }
 
-/// Fetch the claimed request off the consent surface (proof-gated).
-async fn fetch_claimed(server: &TestServer, session: &str, request_id: &str) -> Value {
-    let resp = server
-        .get(&format!("/wsapi/warrant_requests?code={request_id}"))
-        .add_cookie(cookie::Cookie::new("browserid_session", session.to_string()))
-        .await;
-    resp.json::<Value>()
+/// Claim the record request (§5.3): a pure GET never lists one unclaimed;
+/// claim validates the audience proof, allocates refs, and answers the item.
+async fn fetch_claimed(server: &TestServer, sess: &common::registry::ApiSession, request_id: &str) -> Value {
+    let resp = common::registry::api_post(server, sess, "/api/v1/requests/claim", json!({ "code": request_id })).await;
+    if resp.status_code() != 200 { return json!({ "requests": [] }); }
+    json!({ "requests": [resp.json::<Value>()] })
 }
 
 fn config_material(identity: &str, idp: &KeyPair) -> (KeyPair, DeviceCert) {
@@ -101,6 +100,7 @@ fn config_material(identity: &str, idp: &KeyPair) -> (KeyPair, DeviceCert) {
 async fn connection_grant_request_end_to_end() {
     let (server, sender, idp) = make_server();
     let session = create_user(&server, &sender, USER, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (origin, proofs) = spawn_resource().await;
     let audience = format!("{origin}/mcp");
 
@@ -123,14 +123,14 @@ async fn connection_grant_request_end_to_end() {
 
     // 2. Consent render is proof-gated: before the proof is published, the
     //    deep-linked fetch fails (fail-closed) …
-    let gated = fetch_claimed(&server, &session, &request_id).await;
+    let gated = fetch_claimed(&server, &sess, &request_id).await;
     assert_ne!(gated["success"], json!(true), "must not surface before the proof verifies: {gated}");
 
     //    … after publishing (with trailing whitespace, which strips), it
     //    surfaces claimed: bound to the account, status index allocated,
     //    binding.id + client descriptor attached.
     proofs.write().unwrap().insert(request_id.clone(), format!("{challenge}\n"));
-    let claimed = fetch_claimed(&server, &session, &request_id).await;
+    let claimed = fetch_claimed(&server, &sess, &request_id).await;
     assert_eq!(claimed["success"], json!(true), "{claimed}");
     let req = &claimed["requests"][0];
     assert_eq!(req["kind"], "connection");
@@ -160,11 +160,7 @@ async fn connection_grant_request_end_to_end() {
     )
     .unwrap();
     let csrf_token = csrf(&server, &session).await;
-    let resp = server
-        .post("/wsapi/warrant_respond")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({
-            "csrf": csrf_token,
+    let resp = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({
             "code": request_id,
             "approve": true,
             "warrants": [record.encoded()],
@@ -194,9 +190,7 @@ async fn connection_grant_request_end_to_end() {
     }
 
     // 5. The registry shows it as a host↔service connection.
-    let resp = server
-        .get("/wsapi/warrants")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let resp = common::registry::api_get(&server, &sess, "/api/v1/warrants")
         .await;
     let warrants = resp.json::<Value>();
     let row = warrants["warrants"]
@@ -213,6 +207,7 @@ async fn connection_grant_request_end_to_end() {
 async fn connection_respond_rejects_wrong_binding_id() {
     let (server, sender, idp) = make_server();
     let session = create_user(&server, &sender, USER, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (origin, proofs) = spawn_resource().await;
     let audience = format!("{origin}/mcp");
 
@@ -231,7 +226,7 @@ async fn connection_respond_rejects_wrong_binding_id() {
         .write()
         .unwrap()
         .insert(request_id.clone(), body["challenge"].as_str().unwrap().to_string());
-    let claimed = fetch_claimed(&server, &session, &request_id).await;
+    let claimed = fetch_claimed(&server, &sess, &request_id).await;
     let status_idx = claimed["requests"][0]["grants"][0]["status_idx"].as_u64().unwrap();
     let status_uri = claimed["status_uri"].as_str().unwrap().to_string();
 
@@ -255,11 +250,7 @@ async fn connection_respond_rejects_wrong_binding_id() {
     )
     .unwrap();
     let csrf_token = csrf(&server, &session).await;
-    let resp = server
-        .post("/wsapi/warrant_respond")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({
-            "csrf": csrf_token,
+    let resp = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({
             "code": request_id,
             "approve": true,
             "warrants": [record.encoded()],
@@ -274,6 +265,7 @@ async fn connection_respond_rejects_wrong_binding_id() {
 async fn proof_mismatch_never_surfaces_the_request() {
     let (server, sender, _idp) = make_server();
     let session = create_user(&server, &sender, USER, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (origin, proofs) = spawn_resource().await;
     let audience = format!("{origin}/mcp");
 
@@ -291,7 +283,7 @@ async fn proof_mismatch_never_surfaces_the_request() {
 
     // Wrong nonce published → the consent surface refuses to render it.
     proofs.write().unwrap().insert(request_id.clone(), "not-the-challenge".into());
-    let gated = fetch_claimed(&server, &session, &request_id).await;
+    let gated = fetch_claimed(&server, &sess, &request_id).await;
     assert_ne!(gated["success"], json!(true), "{gated}");
 }
 
@@ -299,6 +291,7 @@ async fn proof_mismatch_never_surfaces_the_request() {
 async fn authoring_ceremony_end_to_end() {
     let (server, sender, idp) = make_server();
     let session = create_user(&server, &sender, USER, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (origin, proofs) = spawn_resource().await;
     let audience = format!("{origin}/notes");
 
@@ -321,7 +314,7 @@ async fn authoring_ceremony_end_to_end() {
         .unwrap()
         .insert(request_id.clone(), body["challenge"].as_str().unwrap().to_string());
 
-    let claimed = fetch_claimed(&server, &session, &request_id).await;
+    let claimed = fetch_claimed(&server, &sess, &request_id).await;
     assert_eq!(claimed["success"], json!(true), "{claimed}");
     let req = &claimed["requests"][0];
     assert_eq!(req["kind"], "authoring");
@@ -350,11 +343,7 @@ async fn authoring_ceremony_end_to_end() {
         signed.push(record.encoded().to_string());
     }
     let csrf_token = csrf(&server, &session).await;
-    let resp = server
-        .post("/wsapi/warrant_respond")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
-        .json(&json!({
-            "csrf": csrf_token,
+    let resp = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({
             "code": request_id,
             "approve": true,
             "warrants": signed,

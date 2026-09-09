@@ -102,11 +102,18 @@ test.describe('SBO signing grants', () => {
     expect(typeof c.status?.idx).toBe('number');
 
     // ---- 3. Registered: the ledger row carries the requester origin ----
-    const warrants = await page.request.get(`${BROKER}/wsapi/warrants`).then(r => r.json());
+    // Read over the registry API from the account page, whose session is
+    // the browser's login key the dialog just enrolled.
+    const acct = await page.context().newPage();
+    await acct.goto(`${BROKER}/account`);
+    await expect(acct.locator('#app')).toBeVisible({ timeout: 10000 });
+    const regCall = (method: string, path: string, body?: any) =>
+      acct.evaluate(([m, p, b]) => (window as any).Registry.call(m, p, b), [method, path, body] as any);
+    const warrants = await regCall('GET', '/api/v1/warrants');
     const row = (warrants.warrants || []).find((w: any) => w.audience === AUDIENCE);
     expect(row).toBeTruthy();
     expect(row.requester_origin).toBe(BROKER);
-    expect(row.status_idx).not.toBeNull();
+    expect(row.status?.idx).not.toBeNull();
     expect(row.warrant).toBe(stored!.jws);
 
     // ---- 4. Open the signer popup from a broker-origin RP page ----
@@ -191,14 +198,11 @@ test.describe('SBO signing grants', () => {
     expect(info.grants[0].scopes).toEqual(REQUEST.scopes);
 
     // ---- 9. Revocation flips the registry bit ----
-    const ctx = await page.request.get(`${BROKER}/wsapi/session_context`).then(r => r.json());
-    const revoke = await page.request.post(`${BROKER}/wsapi/revoke_warrant`, {
-      data: { csrf: ctx.csrf_token, id: row.id },
-    });
-    expect(revoke.ok()).toBeTruthy();
-    const after = await page.request.get(`${BROKER}/wsapi/warrants`).then(r => r.json());
+    await regCall('POST', '/api/v1/warrants/revoke', { id: row.id });
+    const after = await regCall('GET', '/api/v1/warrants');
     const revokedRow = (after.warrants || []).find((w: any) => w.id === row.id);
     expect(revokedRow.revoked).toBe(true);
+    await acct.close();
   });
 
   test('a boolean sboSign request grants nothing', async ({ page, dialogPage }) => {

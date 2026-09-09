@@ -58,6 +58,7 @@ async fn csrf(server: &TestServer, session: &str) -> String {
 async fn merged_request_prepare_approve_single_pickup() {
     let (server, sender, idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     // The browser's config cert covering the delegator's `+` namespace (what
     // login issuance deposits in the keystore).
@@ -177,9 +178,7 @@ async fn merged_request_prepare_approve_single_pickup() {
     assert_eq!(device_cert.purpose(), Purpose::Authentication);
 
     // 8. The grant landed in the delegator's warrant registry.
-    let warrants: Value = server
-        .get("/wsapi/warrants")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let warrants: Value = common::registry::api_get(&server, &sess, "/api/v1/warrants")
         .await
         .json();
     let w = &warrants["warrants"][0];
@@ -292,6 +291,7 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
     let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
     let sender = MockEmailSender { sent: email_sender.sent.clone() };
     let session = create_user(&server, &sender, P_DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     // The user's config cert for the primary identity — issued by the PRIMARY
     // (deposited at dialog login), covering the `+` namespace.
@@ -420,9 +420,7 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
 
     // The provisioned service is visible in the holder registry (account
     // "Devices & services") under its holder, labeled from the request.
-    let holders: Value = server
-        .get("/wsapi/holders")
-        .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
+    let holders: Value = common::registry::api_get(&server, &sess, "/api/v1/holders")
         .await
         .json();
     let all: Vec<Value> = holders["namespaces"].as_array().unwrap().iter()
@@ -490,6 +488,7 @@ async fn hosted_tenant_agent_cert_allows_the_serving_host_mint() {
     let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
     let sender = MockEmailSender { sent: email_sender.sent.clone() };
     let session = create_user(&server, &sender, T_DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     let config_kp = KeyPair::generate();
     let config_cert = DeviceCert::create(
@@ -581,6 +580,7 @@ async fn hosted_tenant_agent_cert_allows_the_serving_host_mint() {
 async fn as_you_service_provisions_under_the_users_own_identity() {
     let (server, sender, idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     let config_kp = KeyPair::generate();
     let config_cert = DeviceCert::create(
@@ -675,6 +675,7 @@ async fn as_you_service_provisions_under_the_users_own_identity() {
 async fn grantless_request_still_completes_without_prepare() {
     let (server, sender, _idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     let device_kp = KeyPair::generate();
     let r = server
@@ -714,6 +715,7 @@ async fn grantless_request_still_completes_without_prepare() {
 async fn user_chosen_identity_mode_overrides_the_request() {
     let (server, sender, _idp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let c = csrf(&server, &session).await;
 
     // Request SUGGESTS a handle; the user chooses "as me".
@@ -781,6 +783,7 @@ async fn user_chosen_identity_mode_overrides_the_request() {
 async fn delegated_foreign_grantee_is_warrant_only() {
     let (server, sender, idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
     // The approver's config cert (covers their identity).
     let config_kp = KeyPair::generate();

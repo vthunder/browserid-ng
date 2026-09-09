@@ -219,25 +219,6 @@ pub trait RegistrarStore: Send + Sync {
         Err(RegistrarError::Internal("holder registry not supported by this host".into()))
     }
 
-    /// Record a pending namespace move `old_holder → new_holder`.
-    fn set_holder_move(
-        &self,
-        _user_id: u64,
-        _old_holder: &str,
-        _new_holder: &str,
-    ) -> StoreResult<()> {
-        Err(RegistrarError::Internal("holder registry not supported by this host".into()))
-    }
-
-    /// The recorded move target for `holder`, if one is pending.
-    fn resolve_holder_move(&self, _user_id: u64, _holder: &str) -> StoreResult<Option<String>> {
-        Err(RegistrarError::Internal("holder registry not supported by this host".into()))
-    }
-
-    /// All pending moves as `(old_holder, new_holder)` pairs.
-    fn list_holder_moves(&self, _user_id: u64) -> StoreResult<Vec<(String, String)>> {
-        Err(RegistrarError::Internal("holder registry not supported by this host".into()))
-    }
 
     /// Delete a holder's cert rows + label (revocation is the caller's job —
     /// `forget_holder_core` flips the bits first). Returns rows removed.
