@@ -60,6 +60,16 @@ is nobody's concern.
   nothing is published: the registry is the only party that ever
   checks a login key. Expiry is registry policy (RECOMMENDED 90 days
   since last page login); an expired key answers `login_required`.
+  Re-enrolling a key the registry already knows (expired or revoked)
+  through the page restores its record — label and holder kept — since
+  a human just passed the check.
+- **The registry's two levers.** Per session: end it; the device's
+  next call is `401 invalid_session`, it logs in again by `stored_key`
+  and carries on without a human. Per key: revoke it (the user from
+  the account page, or the registry itself); its sessions end and
+  `stored_key` answers `login_required`, so the device must go through
+  the page before it gets a session again. Nothing more is needed to
+  make a device re-authenticate.
 - **Session.** `{ token, expires_at, account, key: { kid, label },
   roster }`. Opened only by `accounts` and `login`; always bound to
   the key those calls carried. Ended by `session/end`, by expiry, by
@@ -68,9 +78,9 @@ is nobody's concern.
 - **Proof header.** Unchanged in format (§4.4 JWS, `htm`/`htu`/`iat`/
   `jti`, `bh` on POST), always signed by the session's login key. On
   `accounts` and `login` the same key signs it before the session
-  exists. `accounts/lookup` keeps its proof by a carried cert (there
-  is no key to name yet — or the wallet may sign it with its login
-  key; decide: I lean login key for uniformity).
+  exists. `accounts/lookup` keeps its proof by a carried cert: its
+  whole purpose is a new device, with certs and no account id yet,
+  finding out which account to log in to.
 - **Possession proofs** stay where a key or cert is being enrolled or
   proven: certs on `accounts` and `attach`, the login key on
   `accounts`, `login` (both methods).
@@ -88,12 +98,12 @@ is nobody's concern.
 | Endpoint | Change |
 |---|---|
 | `POST accounts` | + `login_key: { pubkey, label?, proof }`; `Proof` header by it. |
-| `POST accounts/lookup` | `Proof` header by the login key (or a carried cert — decide). |
+| `POST accounts/lookup` | Unchanged: `Proof` header by a carried cert. |
 | `POST login` | `login_page` gains `login_key: { pubkey, label?, proof }`; `stored_key` unchanged; failures → `login_required { url }` except bad token / page refusal. |
 | `POST login-keys` | **Removed.** Enrolment is part of login. |
 | `GET login-keys` | Items: `id`, `kid`, `label`, `holder?`, `enrolled_at`, `expires_at`, `revoked`, `current` (this session's key). |
 | `POST login-keys/revoke` | Unchanged; also ends the key's sessions. |
-| `POST attach` | `Proof` header by the login key; certs get `holder` recorded and the session's key inherits it when it has none. No longer returns a session body (the session is unchanged): `200 { recorded: [ids] }`. |
+| `POST attach` | `Proof` header by the login key; certs get `holder` recorded and the session's key inherits it when it has none. Returns `200 { recorded: [ids] }`; the session is unchanged. |
 | `POST holders/forget` | Also revokes the holder's login keys. |
 | `session/end` | Unchanged. |
 | Session body | `members` → `key`. |
@@ -118,10 +128,14 @@ to `accounts`/`login`, stop signing with certs, drop the create call.
 Tests: `session_call` signs with the login key; `login_session` helper
 enrolls one.
 
-## Open (small)
+## Settled in review (Dan, 2026-09-09)
 
-1. `accounts/lookup` proof: login key or carried cert.
-2. Re-login flag: not now; revoke covers "sign out everywhere" and
-   password change. Add a flag when a soft step-up needs it.
-3. `attach` response: `{ recorded }` vs the session body. I prefer
-   the former since the session no longer changes.
+- `accounts/lookup` proves with an identity cert (its use is a new
+  device without an account id).
+- No separate "re-login" flag: ending a session and revoking a key are
+  the two levers, and revoking is what sends a device to the page.
+- `attach` answers `{ recorded }`.
+- Creating an account still needs a fresh config cert. Beyond the
+  abuse friction, an account with no identity has no meaning under
+  §4.1 rule 3 (an account whose every identity has left is dropped),
+  and first use stays one step.
