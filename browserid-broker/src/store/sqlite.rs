@@ -16,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 39;
+const SCHEMA_VERSION: i32 = 40;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -180,6 +180,9 @@ impl SqliteStore {
             }
             if current_version < 39 {
                 Self::migrate_v39(conn)?;
+            }
+            if current_version < 40 {
+                Self::migrate_v40(conn)?;
             }
 
             // Update schema version
@@ -980,9 +983,10 @@ fn login_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoginCert> {
         expires_at: parse_ts_opt(row.get(7)?).unwrap_or_else(Utc::now),
         revoked_at: parse_ts_opt(row.get(8)?),
         status_idx: status_idx.map(|i| i as u64),
+        holder: row.get(10)?,
     })
 }
-const LOGIN_CERT_COLUMNS: &str = "id, user_id, kid, pubkey, label, cert, issued_at, expires_at, revoked_at, status_idx";
+const LOGIN_CERT_COLUMNS: &str = "id, user_id, kid, pubkey, label, cert, issued_at, expires_at, revoked_at, status_idx, holder";
 
 impl SqliteStore {
     fn migrate_v36(conn: &Connection) -> Result<(), BrokerError> {
@@ -1045,6 +1049,21 @@ impl SqliteStore {
                 expires_at TEXT NOT NULL
             );
             ALTER TABLE registry_sessions ADD COLUMN login_key_id INTEGER;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v40(conn: &Connection) -> Result<(), BrokerError> {
+        // A session is a device's login key (registry-api-v1 §4.2, §4.5):
+        // the key remembers its device's holder so forgetting the device
+        // logs it out. Sessions from before (no login key) stop
+        // authenticating on their own.
+        conn.execute_batch(
+            r#"
+            ALTER TABLE login_certs ADD COLUMN holder TEXT;
+            DELETE FROM registry_sessions WHERE login_key_id IS NULL;
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2074,30 +2093,19 @@ impl UserStore for SqliteStore {
         Ok(rows as u64)
     }
 
-    fn end_sessions_solely_on_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<u64> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn
-            .execute(
-                "DELETE FROM registry_sessions WHERE user_id = ?1 AND members = ?2 AND login_key_id IS NULL",
-                params![user_id.0 as i64, format!("[{cert_id}]")],
-            )
-            .map_err(|e| BrokerError::Internal(e.to_string()))?;
-        Ok(rows as u64)
-    }
-
     fn insert_login_cert(&self, rec: LoginCert) -> StoreResult<u64> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO login_certs (user_id, kid, pubkey, label, cert, issued_at, expires_at, revoked_at, status_idx)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO login_certs (user_id, kid, pubkey, label, cert, issued_at, expires_at, revoked_at, status_idx, holder)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(kid) DO UPDATE SET
                user_id = excluded.user_id, pubkey = excluded.pubkey, label = excluded.label,
                cert = excluded.cert, issued_at = excluded.issued_at, expires_at = excluded.expires_at,
-               revoked_at = excluded.revoked_at, status_idx = excluded.status_idx",
+               revoked_at = excluded.revoked_at, status_idx = excluded.status_idx, holder = excluded.holder",
             params![
                 rec.user_id.0 as i64, rec.kid, rec.pubkey, rec.label, rec.cert,
                 rec.issued_at.to_rfc3339(), rec.expires_at.to_rfc3339(),
-                rec.revoked_at.map(|t| t.to_rfc3339()), rec.status_idx.map(|i| i as i64),
+                rec.revoked_at.map(|t| t.to_rfc3339()), rec.status_idx.map(|i| i as i64), rec.holder,
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2142,15 +2150,44 @@ impl UserStore for SqliteStore {
         Ok(rows > 0)
     }
 
-    fn end_sessions_solely_on_login_key(&self, user_id: UserId, id: u64) -> StoreResult<u64> {
+    fn end_sessions_on_login_key(&self, user_id: UserId, id: u64) -> StoreResult<u64> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .execute(
-                "DELETE FROM registry_sessions WHERE user_id = ?1 AND login_key_id = ?2 AND members = '[]'",
+                "DELETE FROM registry_sessions WHERE user_id = ?1 AND login_key_id = ?2",
                 params![user_id.0 as i64, id as i64],
             )
             .map_err(|e| BrokerError::Internal(e.to_string()))?;
         Ok(rows as u64)
+    }
+
+    fn set_login_cert_holder(&self, user_id: UserId, id: u64, holder: &str) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE login_certs SET holder = ?1 WHERE id = ?2 AND user_id = ?3",
+            params![holder, id as i64, user_id.0 as i64],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn revoke_login_certs_for_holder(&self, user_id: UserId, holder: &str) -> StoreResult<Vec<u64>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id FROM login_certs WHERE user_id = ?1 AND holder = ?2 AND revoked_at IS NULL")
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let ids: Vec<i64> = stmt
+            .query_map(params![user_id.0 as i64, holder], |r| r.get(0))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        drop(stmt);
+        conn.execute(
+            "UPDATE login_certs SET revoked_at = ?1 WHERE user_id = ?2 AND holder = ?3 AND revoked_at IS NULL",
+            params![Utc::now().to_rfc3339(), user_id.0 as i64, holder],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(ids.into_iter().map(|i| i as u64).collect())
     }
 
     fn create_login_token(&self, rec: LoginToken) -> StoreResult<()> {
@@ -3659,9 +3696,6 @@ impl UserStore for std::sync::Arc<SqliteStore> {
     fn cleanup_expired_registry_sessions(&self) -> StoreResult<u64> {
         (**self).cleanup_expired_registry_sessions()
     }
-    fn end_sessions_solely_on_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<u64> {
-        (**self).end_sessions_solely_on_cert(user_id, cert_id)
-    }
     fn insert_login_cert(&self, rec: LoginCert) -> StoreResult<u64> {
         (**self).insert_login_cert(rec)
     }
@@ -3674,8 +3708,14 @@ impl UserStore for std::sync::Arc<SqliteStore> {
     fn revoke_login_cert(&self, user_id: UserId, id: u64) -> StoreResult<bool> {
         (**self).revoke_login_cert(user_id, id)
     }
-    fn end_sessions_solely_on_login_key(&self, user_id: UserId, id: u64) -> StoreResult<u64> {
-        (**self).end_sessions_solely_on_login_key(user_id, id)
+    fn end_sessions_on_login_key(&self, user_id: UserId, id: u64) -> StoreResult<u64> {
+        (**self).end_sessions_on_login_key(user_id, id)
+    }
+    fn set_login_cert_holder(&self, user_id: UserId, id: u64, holder: &str) -> StoreResult<()> {
+        (**self).set_login_cert_holder(user_id, id, holder)
+    }
+    fn revoke_login_certs_for_holder(&self, user_id: UserId, holder: &str) -> StoreResult<Vec<u64>> {
+        (**self).revoke_login_certs_for_holder(user_id, holder)
     }
     fn create_login_token(&self, rec: LoginToken) -> StoreResult<()> {
         (**self).create_login_token(rec)

@@ -173,7 +173,6 @@ async function persist({ email, issuer, mintUrl, device, config, certs }) {
     configCert: certs.config_cert,
     account: null,      // the registry account this pair is attached to
     loginKey: null,     // this wallet's registry login key (private JWK + x)
-    loginCert: null,    // the registry-signed login cert over it
     warrants: {},
     warrantRefs: {},
     bootstrappedAt: nowS(),

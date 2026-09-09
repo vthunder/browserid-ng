@@ -202,7 +202,7 @@ async fn notices_list_in_the_inbox_and_cannot_be_answered() {
     let email = format!("notice-{}@example.com", rand_suffix());
     let (_pres, config_kp, _dc, config_cert) =
         broker_presentation(&l, &email, vec!["login".into(), "registry".into()]).await;
-    let (token, _account) = login_session(&l, &email, &config_kp, &config_cert).await;
+    let (token, _account, login_kp) = login_session(&l, &email, &config_kp, &config_cert).await;
 
     // A second identity on the account leaves it (the cascade is a pure
     // store operation; the HTTP triggers are the cookie lane + attach).
@@ -210,7 +210,7 @@ async fn notices_list_in_the_inbox_and_cannot_be_answered() {
     l.user_store.add_email(user_id, "gone@example.com", true).unwrap();
     browserid_broker::membership::detach(l.user_store.as_ref(), user_id, "gone@example.com").unwrap();
 
-    let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/requests", None).await;
+    let (status, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/requests", None).await;
     assert_eq!(status, 200, "{body}");
     let items = body["requests"].as_array().unwrap();
     let notice = items.iter().find(|i| i["kind"] == "notice").expect("a notice item");
@@ -223,10 +223,10 @@ async fn notices_list_in_the_inbox_and_cannot_be_answered() {
     let code = notice["code"].as_str().unwrap().to_string();
 
     // Nothing to answer: respond is a 404, claim is a 404.
-    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/requests/respond",
+    let (status, body, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/requests/respond",
         Some(json!({"code": code, "approve": false}))).await;
     assert_eq!(status, 404, "{body}");
-    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/requests/claim",
+    let (status, body, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/requests/claim",
         Some(json!({"code": code}))).await;
     assert_eq!(status, 404, "{body}");
 }
@@ -285,12 +285,12 @@ async fn warrants_certs_holders_and_discovery_over_sessions() {
     let l = live_broker().await;
     let email = "registry-owner@gmail.com";
     let (_pres, config_kp, _dc, config_cert) = broker_presentation(&l, email, vec!["registry".into()]).await;
-    let (token, _account) = login_session(&l, email, &config_kp, &config_cert).await;
+    let (token, _account, login_kp) = login_session(&l, email, &config_kp, &config_cert).await;
     let holder = browserid_core::device::DeviceCert::parse(&config_cert).unwrap().holder().clone();
     let audience = "https://site.example";
 
     // Allocate, sign with that ref, register.
-    let (status, alloc, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/allocate_status",
+    let (status, alloc, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/warrants/allocate_status",
         Some(json!({"grantee": email, "audience": audience, "scopes": ["login"]}))).await;
     assert_eq!(status, 200, "{alloc}");
     let uri = alloc["uri"].as_str().unwrap().to_string();
@@ -299,23 +299,23 @@ async fn warrants_certs_holders_and_discovery_over_sessions() {
         Warrant::create(email, email, HolderMatcher::new(holder.as_str()).unwrap(), audience,
             vec!["login".into()], Duration::days(30), &config_kp, status).unwrap().encoded().to_string()
     };
-    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/register",
+    let (status, body, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/warrants/register",
         Some(json!({"warrant": sign(None), "config_cert": config_cert}))).await;
     assert_eq!(status, 422, "{body}");
     assert_eq!(body["reason"], "status_ref_missing");
     let wrong = browserid_core::StatusRef { uri: uri.clone(), idx: idx + 1000 };
-    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/register",
+    let (status, body, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/warrants/register",
         Some(json!({"warrant": sign(Some(wrong)), "config_cert": config_cert}))).await;
     assert_eq!(status, 422, "{body}");
     assert_eq!(body["reason"], "status_ref_mismatch");
     let right = browserid_core::StatusRef { uri: uri.clone(), idx };
-    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/register",
+    let (status, body, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/warrants/register",
         Some(json!({"warrant": sign(Some(right.clone())), "config_cert": config_cert}))).await;
     assert_eq!(status, 200, "{body}");
     let id = body["id"].as_u64().unwrap();
 
     // List.
-    let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/warrants", None).await;
+    let (status, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/warrants", None).await;
     assert_eq!(status, 200, "{body}");
     let item = body["warrants"].as_array().unwrap().iter().find(|w| w["id"] == id).unwrap();
     assert_eq!(item["grantor"], email);
@@ -326,23 +326,23 @@ async fn warrants_certs_holders_and_discovery_over_sessions() {
     assert_eq!(item["audience"], audience);
 
     // Revoke: sticky, listed as revoked, and the next allocation is fresh.
-    let (status, _, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/revoke", Some(json!({"id": id}))).await;
+    let (status, _, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/warrants/revoke", Some(json!({"id": id}))).await;
     assert_eq!(status, 204);
-    let (status, _, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/revoke", Some(json!({"id": id}))).await;
+    let (status, _, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/warrants/revoke", Some(json!({"id": id}))).await;
     assert_eq!(status, 204, "a second revoke is a 204");
-    let (_, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/warrants", None).await;
+    let (_, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/warrants", None).await;
     assert_eq!(body["warrants"].as_array().unwrap().iter().find(|w| w["id"] == id).unwrap()["revoked"], true);
-    let (_, alloc2, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/allocate_status",
+    let (_, alloc2, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/warrants/allocate_status",
         Some(json!({"grantee": email, "audience": audience, "scopes": ["login"]}))).await;
     assert_ne!(alloc2["idx"].as_u64().unwrap(), idx, "a revoked record's key allocates a fresh index");
     // Registering with the OLD ref is now a mismatch.
-    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/register",
+    let (status, body, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/warrants/register",
         Some(json!({"warrant": sign(Some(right)), "config_cert": config_cert}))).await;
     assert_eq!(status, 422, "{body}");
     assert_eq!(body["reason"], "status_ref_mismatch");
 
     // Holders: the three fixed namespaces.
-    let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/holders", None).await;
+    let (status, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/holders", None).await;
     assert_eq!(status, 200, "{body}");
     let names: Vec<&str> = body["namespaces"].as_array().unwrap().iter().map(|n| n["name"].as_str().unwrap()).collect();
     for n in ["browsers", "agents", "services"] {
@@ -353,18 +353,20 @@ async fn warrants_certs_holders_and_discovery_over_sessions() {
     let doc: Value = l.client.get(format!("{}/.well-known/browserid", l.base)).send().await.unwrap().json().await.unwrap();
     assert_eq!(doc["registry"]["endpoint"], format!("{}/api/v1", l.base));
 
-    // Certs: listed with kids; revoking by kid the session's own cert ends it.
-    let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/certs", None).await;
+    // Certs: listed with kids; revoking by kid retires it, and the session
+    // (bound to the login key, not the cert) carries on.
+    let (status, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/certs", None).await;
     assert_eq!(status, 200, "{body}");
     let kid = config_kp.public_key().kid();
     let mine = body["certs"].as_array().unwrap().iter().find(|c| c["kid"] == kid).expect("own cert listed");
     assert_eq!(mine["purpose"], "authorization");
     assert_eq!(mine["revoked"], false);
-    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/certs/revoke", Some(json!({"kid": kid}))).await;
+    let (status, body, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/certs/revoke", Some(json!({"kid": kid}))).await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["revoked"], true, "this registry is the issuer");
-    let (status, _, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/certs", None).await;
-    assert_eq!(status, 401);
+    let (status, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/certs", None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["certs"].as_array().unwrap().iter().find(|c| c["kid"] == kid).unwrap()["revoked"], true);
 }
 
 /// registry-api-v1 §5.3 over a session: the inbox lists a request an agent
@@ -378,8 +380,8 @@ async fn respond_over_sessions_is_a_signing_ceremony() {
     let email = "approver@gmail.com";
     let (_pres, config_kp, device_cert, config_cert) =
         broker_presentation(&l, email, vec!["registry".into()]).await;
-    let (token, _account) = login_session(&l, email, &config_kp, &config_cert).await;
-    let respond = |body: Value| session_call(&l, &config_kp, &token, "POST", "/api/v1/requests/respond", Some(body));
+    let (token, _account, login_kp) = login_session(&l, email, &config_kp, &config_cert).await;
+    let respond = |body: Value| session_call(&l, &login_kp, &token, "POST", "/api/v1/requests/respond", Some(body));
 
     // The device cert raises a consent request for the account's own email.
     let r = l.client.post(format!("{}/warrant/request", l.base))
@@ -391,7 +393,7 @@ async fn respond_over_sessions_is_a_signing_ceremony() {
     assert_eq!(r.status(), 200);
     let code = r.json::<Value>().await.unwrap()["code"].as_str().unwrap().to_string();
 
-    let (status, inbox, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/requests", None).await;
+    let (status, inbox, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/requests", None).await;
     assert_eq!(status, 200, "{inbox}");
     let req0 = inbox["requests"].as_array().unwrap().iter().find(|r| r["code"] == code.as_str()).expect("listed");
     assert_eq!(req0["grantee"], req0["agent_email"]);
@@ -436,8 +438,8 @@ async fn holders_and_certs_over_sessions() {
     let l = live_broker().await;
     let email = "holders-owner@gmail.com";
     let (_pres, config_kp, _dc, config_cert) = broker_presentation(&l, email, vec!["registry".into()]).await;
-    let (token, _account) = login_session(&l, email, &config_kp, &config_cert).await;
-    let call = |method: &'static str, path: &'static str, body: Option<Value>| session_call(&l, &config_kp, &token, method, path, body);
+    let (token, _account, login_kp) = login_session(&l, email, &config_kp, &config_cert).await;
+    let call = |method: &'static str, path: &'static str, body: Option<Value>| session_call(&l, &login_kp, &token, method, path, body);
     let my_holder = browserid_core::device::DeviceCert::parse(&config_cert).unwrap().holder().as_str().to_string();
 
     let (status, view, _) = call("GET", "/api/v1/holders", None).await;
@@ -545,12 +547,36 @@ async fn post_proven(l: &Live, path: &str, bytes: Vec<u8>, header: String, beare
     (status, r.json().await.unwrap_or(json!(null)))
 }
 
-/// `POST /api/v1/accounts` (§5.2.1).
-async fn accounts_create(l: &Live, certs: &[(&str, &KeyPair)], identity: &str, confirm: bool) -> (reqwest::StatusCode, Value) {
+/// The `login_key` argument of `accounts` / `login_page` (§4.2): the key,
+/// a label, and its possession proof sharing `jti`.
+fn login_key_arg(htu: &str, login_kp: &KeyPair, now: i64, jti: &str) -> Value {
+    json!({
+        "pubkey": login_kp.public_key().to_base64(),
+        "label": "test wallet",
+        "proof": browserid_registrar::session::build_proof("POST", htu, None, login_kp, now, jti),
+    })
+}
+
+/// A session-opening call: certs' possession proofs + the login key's, the
+/// header proof by the login key.
+fn opening_proofs(htu: &str, certs: &[(&str, &KeyPair)], login_kp: &KeyPair, body_fn: impl Fn(Vec<Value>, Value) -> Value) -> (Vec<u8>, String) {
+    let jti = rand_suffix();
+    let now = chrono::Utc::now().timestamp();
+    let entries: Vec<Value> = certs
+        .iter()
+        .map(|(c, k)| json!({ "cert": c, "proof": browserid_registrar::session::build_proof("POST", htu, None, k, now, &jti) }))
+        .collect();
+    let bytes = body_fn(entries, login_key_arg(htu, login_kp, now, &jti)).to_string().into_bytes();
+    let header = browserid_registrar::session::build_proof("POST", htu, Some(&bytes), login_kp, now, &jti);
+    (bytes, header)
+}
+
+/// `POST /api/v1/accounts` (§5.2.1) with the device's login key.
+async fn accounts_create(l: &Live, certs: &[(&str, &KeyPair)], login_kp: &KeyPair, identity: &str, confirm: bool) -> (reqwest::StatusCode, Value) {
     let path = "/api/v1/accounts";
     let htu = format!("{}{path}", l.base);
-    let (bytes, header) = proofs_for(&htu, certs, certs[0].1, |entries| {
-        let mut b = json!({ "identity": identity, "certs": entries });
+    let (bytes, header) = opening_proofs(&htu, certs, login_kp, |entries, key| {
+        let mut b = json!({ "identity": identity, "certs": entries, "login_key": key });
         if confirm { b["confirm_takeover"] = json!(true); }
         b
     });
@@ -573,13 +599,19 @@ async fn login_token(l: &Live, account: &str, password: &str) -> (reqwest::Statu
     (status, r.json().await.unwrap_or(json!(null)))
 }
 
-/// `POST /api/v1/login` by `login_page` (§4.2).
-async fn login_page(l: &Live, account: &str, token: Option<&str>) -> (reqwest::StatusCode, Value) {
-    let mut body = json!({ "account": account, "method": "login_page" });
-    if let Some(t) = token { body["token"] = json!(t); }
-    let r = l.client.post(format!("{}/api/v1/login", l.base)).json(&body).send().await.unwrap();
-    let status = r.status();
-    (status, r.json().await.unwrap_or(json!(null)))
+/// `POST /api/v1/login` by `login_page` (§4.2): without a token, the bare
+/// ask; with one, the login key comes along and the header proof is by it.
+async fn login_page(l: &Live, account: &str, token: Option<&str>, login_kp: Option<&KeyPair>) -> (reqwest::StatusCode, Value) {
+    let path = "/api/v1/login";
+    let Some(t) = token else {
+        let r = l.client.post(format!("{}{path}", l.base)).json(&json!({ "account": account, "method": "login_page" })).send().await.unwrap();
+        let status = r.status();
+        return (status, r.json().await.unwrap_or(json!(null)));
+    };
+    let kp = login_kp.expect("a login key comes with the token");
+    let htu = format!("{}{path}", l.base);
+    let (bytes, header) = opening_proofs(&htu, &[], kp, |_, key| json!({ "account": account, "method": "login_page", "token": t, "login_key": key }));
+    post_proven(l, path, bytes, header, None).await
 }
 
 /// `POST /api/v1/login` by `stored_key` (§4.2): header + possession proofs
@@ -595,11 +627,11 @@ async fn login_stored(l: &Live, account: &str, login_kp: &KeyPair) -> (reqwest::
     post_proven(l, path, bytes, header, None).await
 }
 
-/// `POST /api/v1/account/attach` under a session whose member `member_kp` is.
-async fn attach_call(l: &Live, member_kp: &KeyPair, token: &str, certs: &[(&str, &KeyPair)], identity: &str, confirm: bool) -> (reqwest::StatusCode, Value) {
+/// `POST /api/v1/account/attach` under a session bound to `login_kp`.
+async fn attach_call(l: &Live, login_kp: &KeyPair, token: &str, certs: &[(&str, &KeyPair)], identity: &str, confirm: bool) -> (reqwest::StatusCode, Value) {
     let path = "/api/v1/account/attach";
     let htu = format!("{}{path}", l.base);
-    let (bytes, header) = proofs_for(&htu, certs, member_kp, |entries| {
+    let (bytes, header) = proofs_for(&htu, certs, login_kp, |entries| {
         let mut b = json!({ "identity": identity, "certs": entries });
         if confirm { b["confirm_takeover"] = json!(true); }
         b
@@ -607,33 +639,33 @@ async fn attach_call(l: &Live, member_kp: &KeyPair, token: &str, certs: &[(&str,
     post_proven(l, path, bytes, header, Some(token)).await
 }
 
-/// `POST /api/v1/login-keys` under a session.
-async fn create_login_key(l: &Live, member_kp: &KeyPair, token: &str, login_kp: &KeyPair) -> (reqwest::StatusCode, Value) {
-    let (status, body, _) = session_call(l, member_kp, token, "POST", "/api/v1/login-keys",
-        Some(json!({ "pubkey": login_kp.public_key().to_base64(), "label": "test wallet" }))).await;
-    (status, body)
-}
-
-/// A session on the account holding `email` with `config_kp` proven:
-/// lookup → login page (password) → login → attach the config cert.
-async fn login_session(l: &Live, email: &str, config_kp: &KeyPair, config_cert: &str) -> (String, String) {
+/// The new-device flow (§1): lookup → login page (password) → login with
+/// a fresh login key → attach the config cert. Returns the session token,
+/// the account, and the login key every call under it is signed with.
+async fn login_session(l: &Live, email: &str, config_kp: &KeyPair, config_cert: &str) -> (String, String, KeyPair) {
     let (status, body) = lookup(l, &[(config_cert, config_kp)], email).await;
     assert_eq!(status, 200, "lookup: {body}");
     let account = body["account"].as_str().unwrap().to_string();
-    let (status, body) = login_token(l, &account, "password123").await;
-    assert_eq!(status, 200, "login token: {body}");
-    let (status, body) = login_page(l, &account, body["login"].as_str()).await;
-    assert_eq!(status, 200, "login: {body}");
-    let token0 = body["token"].as_str().unwrap().to_string();
-    // The login-page session has no key of its own: the attach's header
-    // proof is by the config cert, which becomes a member.
-    let (status, body) = attach_call(l, config_kp, &token0, &[(config_cert, config_kp)], email, false).await;
+    let login_kp = KeyPair::generate();
+    let token = page_login(l, &account, &login_kp).await;
+    let (status, body) = attach_call(l, &login_kp, &token, &[(config_cert, config_kp)], email, false).await;
     assert_eq!(status, 200, "attach: {body}");
-    (body["token"].as_str().unwrap().to_string(), account)
+    (token, account, login_kp)
 }
 
-/// registry-api-v1 §4.2 + §4.3: the two login methods, what each session
-/// may do, login certs, and their revocation.
+/// A page login for `account` with `login_kp`: the session token.
+async fn page_login(l: &Live, account: &str, login_kp: &KeyPair) -> String {
+    let (status, body) = login_token(l, account, "password123").await;
+    assert_eq!(status, 200, "login token: {body}");
+    let (status, body) = login_page(l, account, body["login"].as_str(), Some(login_kp)).await;
+    assert_eq!(status, 200, "login: {body}");
+    body["token"].as_str().unwrap().to_string()
+}
+
+/// registry-api-v1 §4.2–§4.5: the two login methods, the session bound to
+/// the key it brought, attach leaving the session alone, revocation of a
+/// key (its sessions end, the page restores it), forget logging a device
+/// out, and a keyless device.
 #[tokio::test]
 async fn login_methods_login_certs_and_session_authority() {
     let l = live_broker().await;
@@ -649,7 +681,7 @@ async fn login_methods_login_certs_and_session_authority() {
 
     // login_page: without a token, the page URL; the page refuses a wrong
     // password and an unknown account alike; a bad token is rejected.
-    let (status, body) = login_page(&l, &account, None).await;
+    let (status, body) = login_page(&l, &account, None, None).await;
     assert_eq!(status, 403, "{body}");
     assert_eq!(body["reason"], "login_required");
     assert!(body["url"].as_str().unwrap().ends_with("/registry-login"));
@@ -657,117 +689,114 @@ async fn login_methods_login_certs_and_session_authority() {
     assert_eq!(status, 403);
     let (status, _) = login_token(&l, "no-such-account", "password123").await;
     assert_eq!(status, 403);
-    let (status, body) = login_page(&l, &account, Some("bogus")).await;
+    let login_kp = KeyPair::generate();
+    let (status, body) = login_page(&l, &account, Some("bogus"), Some(&login_kp)).await;
     assert_eq!(status, 403, "{body}");
     assert_eq!(body["reason"], "login_rejected");
     let (_, t) = login_token(&l, &account, "password123").await;
     let tok = t["login"].as_str().unwrap().to_string();
-    let (status, body) = login_page(&l, &account, Some(&tok)).await;
+    let (status, body) = login_page(&l, &account, Some(&tok), Some(&login_kp)).await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["account"], account);
-    assert_eq!(body["members"], json!([]), "a page login proves no key yet");
+    assert_eq!(body["key"]["kid"], login_kp.public_key().kid(), "the session is bound to the key it brought");
+    assert_eq!(body["key"]["label"], "test wallet");
     assert_eq!(body["roster"], json!([{ "identity": email, "state": "active" }]));
-    let (status, body) = login_page(&l, &account, Some(&tok)).await;
-    assert_eq!(status, 403, "a token is one-time: {body}");
-    let token0 = body_token_or(&l, &account).await; // fresh page login for the rest
-
-    // A session with no cert member cannot even prove a call: the config
-    // cert must be attached (its proof makes it a member).
-    let (status, body) = attach_call(&l, &config_kp, &token0, &[(&config_cert, &config_kp)], email, false).await;
-    assert_eq!(status, 200, "{body}");
     let token = body["token"].as_str().unwrap().to_string();
-    assert_eq!(body["members"][0]["kind"], "cert");
-    let alloc = json!({"grantee": email, "audience": "https://rp.example", "scopes": ["login"]});
-    let (status, body, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/warrants/allocate_status", Some(alloc.clone())).await;
-    assert_eq!(status, 200, "{body}");
+    let (status, body) = login_page(&l, &account, Some(&tok), Some(&login_kp)).await;
+    assert_eq!(status, 403, "a token is one-time: {body}");
+    assert_eq!(body["reason"], "login_rejected");
 
-    // stored_key: a login cert for this wallet's key, then a headless login.
-    let login_kp = KeyPair::generate();
-    let (status, body) = create_login_key(&l, &config_kp, &token, &login_kp).await;
+    // The session signs with its key and manages the account before any
+    // cert is recorded (§4.3); a cert cannot sign for it.
+    let alloc = json!({"grantee": email, "audience": "https://rp.example", "scopes": ["login"]});
+    let (status, body, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/warrants/allocate_status", Some(alloc.clone())).await;
     assert_eq!(status, 200, "{body}");
-    assert_eq!(body["kid"], login_kp.public_key().kid());
-    let cert = body["cert"].as_str().unwrap();
-    let hdr: Value = serde_json::from_slice(&base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, cert.split('.').next().unwrap()).unwrap()).unwrap();
-    assert_eq!(hdr["typ"], "browserid-login-cert-v1");
-    let (status, body) = login_stored(&l, &account, &login_kp).await;
-    assert_eq!(status, 200, "{body}");
-    let stored = body["token"].as_str().unwrap().to_string();
-    assert_eq!(body["members"][0]["kind"], "login");
-    let (status, body, _) = session_call(&l, &login_kp, &stored, "GET", "/api/v1/requests", None).await;
-    assert_eq!(status, 200, "{body}");
-    // A session is the whole check (§4.3): a login key alone manages the
-    // account, and signing calls are judged by the cert they carry.
-    let (status, body, _) = session_call(&l, &login_kp, &stored, "POST", "/api/v1/warrants/allocate_status", Some(alloc.clone())).await;
-    assert_eq!(status, 200, "{body}");
+    let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/requests", None).await;
+    assert_eq!(status, 401, "{body}");
+    assert_eq!(body["error"], "invalid_session");
+
+    // Signing calls are judged by the cert they carry, not the session.
     let (_pres2, stranger_kp, _dc2, stranger_cert) = broker_presentation(&l, "login-stranger@gmail.com", vec!["registry".into()]).await;
     let stranger_holder = browserid_core::device::DeviceCert::parse(&stranger_cert).unwrap().holder().clone();
     let w = Warrant::create(email, email, HolderMatcher::new(stranger_holder.as_str()).unwrap(), "https://rp.example",
         vec!["login".into()], Duration::days(30), &stranger_kp, None).unwrap().encoded().to_string();
-    let (status, body, _) = session_call(&l, &login_kp, &stored, "POST", "/api/v1/warrants/register",
+    let (status, body, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/warrants/register",
         Some(json!({"warrant": w, "config_cert": stranger_cert}))).await;
     assert_eq!(status, 422, "{body}");
     assert_eq!(body["reason"], "config_cert_not_recorded", "{body}");
-    let (status, body) = attach_call(&l, &login_kp, &stored, &[(&config_cert, &config_kp)], email, false).await;
+
+    // attach records certs, leaves the session alone, and gives the key its
+    // device's holder.
+    let (status, body) = attach_call(&l, &login_kp, &token, &[(&config_cert, &config_kp)], email, false).await;
     assert_eq!(status, 200, "{body}");
-    let stored2 = body["token"].as_str().unwrap().to_string();
-    let kinds: Vec<&str> = body["members"].as_array().unwrap().iter().map(|m| m["kind"].as_str().unwrap()).collect();
-    assert!(kinds.contains(&"login") && kinds.contains(&"cert"), "{body}");
-    let (status, _, _) = session_call(&l, &config_kp, &stored2, "POST", "/api/v1/warrants/allocate_status", Some(alloc.clone())).await;
-    assert_eq!(status, 200);
-    // A stranger's key is not a login key here.
+    assert_eq!(body["recorded"].as_array().unwrap().len(), 1, "{body}");
+    let holder = browserid_core::device::DeviceCert::parse(&config_cert).unwrap().holder().as_str().to_string();
+    let (status, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/login-keys", None).await;
+    assert_eq!(status, 200, "{body}");
+    let mine = body["login_keys"].as_array().unwrap().iter().find(|k| k["kid"] == login_kp.public_key().kid()).unwrap();
+    assert_eq!(mine["holder"], holder.as_str());
+    assert_eq!(mine["current"], true);
+    assert_eq!(mine["revoked"], false);
+
+    // stored_key: headless from now on. A stranger's key, or none, is sent
+    // to the page — never told whether the account exists.
+    let (status, body) = login_stored(&l, &account, &login_kp).await;
+    assert_eq!(status, 200, "{body}");
+    let stored = body["token"].as_str().unwrap().to_string();
+    assert_eq!(body["key"]["kid"], login_kp.public_key().kid());
     let (status, body) = login_stored(&l, &account, &KeyPair::generate()).await;
     assert_eq!(status, 403, "{body}");
-    assert_eq!(body["reason"], "login_rejected");
+    assert_eq!(body["reason"], "login_required");
+    assert!(body["url"].as_str().unwrap().ends_with("/registry-login"));
+    let (status, body) = login_stored(&l, "no-such-account", &login_kp).await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["reason"], "login_required");
 
-    // A keyless device (the account page): page login → a session with no
-    // member → enrol a login key proven by itself → a session it belongs
-    // to → headless from then on.
-    let page_token = body_token_or(&l, &account).await;
+    // A keyless device (the account page): the same flow with no certs.
     let page_kp = KeyPair::generate();
-    let (status, body) = create_login_key(&l, &page_kp, &page_token, &page_kp).await;
+    let page_token = page_login(&l, &account, &page_kp).await;
+    let (status, body, _) = session_call(&l, &page_kp, &page_token, "GET", "/api/v1/login-keys", None).await;
     assert_eq!(status, 200, "{body}");
-    assert_eq!(body["session"]["members"][0]["kind"], "login", "{body}");
-    assert_eq!(body["session"]["members"][0]["kid"], page_kp.public_key().kid());
-    let page_session = body["session"]["token"].as_str().unwrap().to_string();
-    let (status, body, _) = session_call(&l, &page_kp, &page_session, "GET", "/api/v1/login-keys", None).await;
-    assert_eq!(status, 200, "{body}");
-    assert!(body["login_keys"].as_array().unwrap().iter().any(|k| k["kid"] == page_kp.public_key().kid()), "{body}");
-    let (status, body) = login_stored(&l, &account, &page_kp).await;
-    assert_eq!(status, 200, "{body}");
-    // A key that is neither a member nor the one submitted cannot prove it.
-    let other_kp = KeyPair::generate();
-    let page_token2 = body_token_or(&l, &account).await;
-    let (status, body) = create_login_key(&l, &other_kp, &page_token2, &KeyPair::generate()).await;
-    assert_eq!(status, 401, "{body}");
+    let page_key = body["login_keys"].as_array().unwrap().iter().find(|k| k["kid"] == page_kp.public_key().kid()).unwrap();
+    assert!(page_key["holder"].is_null(), "no certs, no holder: {page_key}");
+    let (status, _) = login_stored(&l, &account, &page_kp).await;
+    assert_eq!(status, 200);
 
-    // Listed; revoking the key ends the session it alone opened and refuses
-    // the next stored_key login.
-    let (status, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/login-keys", None).await;
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(body["login_keys"][0]["label"], "test wallet");
-    assert_eq!(body["login_keys"][0]["revoked"], false);
-    let (status, _, _) = session_call(&l, &login_kp, &stored, "POST", "/api/v1/login-keys/revoke", Some(json!({"kid": login_kp.public_key().kid()}))).await;
+    // Revoking a key ends its sessions; the device is sent to the page and
+    // may come back with the same key, its record restored.
+    let (status, _, _) = session_call(&l, &page_kp, &page_token, "POST", "/api/v1/login-keys/revoke", Some(json!({"kid": login_kp.public_key().kid()}))).await;
     assert_eq!(status, 204);
-    let (status, _, _) = session_call(&l, &login_kp, &stored, "GET", "/api/v1/requests", None).await;
-    assert_eq!(status, 401);
+    let (status, body, _) = session_call(&l, &login_kp, &stored, "GET", "/api/v1/requests", None).await;
+    assert_eq!(status, 401, "{body}");
+    let (status, _, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/requests", None).await;
+    assert_eq!(status, 401, "every session on the key");
     let (status, body) = login_stored(&l, &account, &login_kp).await;
     assert_eq!(status, 403, "{body}");
-    let (_, body, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/login-keys", None).await;
-    assert_eq!(body["login_keys"][0]["revoked"], true);
+    assert_eq!(body["reason"], "login_required");
+    let (_, body, _) = session_call(&l, &page_kp, &page_token, "GET", "/api/v1/login-keys", None).await;
+    assert_eq!(body["login_keys"].as_array().unwrap().iter().find(|k| k["kid"] == login_kp.public_key().kid()).unwrap()["revoked"], true);
+    let again = page_login(&l, &account, &login_kp).await;
+    let (status, body, _) = session_call(&l, &login_kp, &again, "GET", "/api/v1/login-keys", None).await;
+    assert_eq!(status, 200, "{body}");
+    let mine = body["login_keys"].as_array().unwrap().iter().find(|k| k["kid"] == login_kp.public_key().kid()).unwrap();
+    assert_eq!(mine["revoked"], false, "re-enrolled through the page");
+    assert_eq!(mine["holder"], holder.as_str(), "holder kept");
+
+    // Forgetting the device revokes its login key with its certs.
+    let (status, body, _) = session_call(&l, &page_kp, &page_token, "POST", "/api/v1/holders/forget", Some(json!({"holder_id": holder}))).await;
+    assert_eq!(status, 200, "{body}");
+    let (status, _, _) = session_call(&l, &login_kp, &again, "GET", "/api/v1/requests", None).await;
+    assert_eq!(status, 401, "the device is logged out");
+    let (status, body) = login_stored(&l, &account, &login_kp).await;
+    assert_eq!(status, 403, "{body}");
 
     // Ending a session.
-    let (status, _, _) = session_call(&l, &config_kp, &token, "POST", "/api/v1/session/end", Some(json!({}))).await;
+    let (status, _, _) = session_call(&l, &page_kp, &page_token, "POST", "/api/v1/session/end", Some(json!({}))).await;
     assert_eq!(status, 204);
-    let (status, _, _) = session_call(&l, &config_kp, &token, "GET", "/api/v1/requests", None).await;
+    let (status, _, _) = session_call(&l, &page_kp, &page_token, "GET", "/api/v1/requests", None).await;
     assert_eq!(status, 401);
-}
-
-/// A fresh page-login session token for `account`.
-async fn body_token_or(l: &Live, account: &str) -> String {
-    let (_, t) = login_token(l, account, "password123").await;
-    let (status, body) = login_page(l, account, t["login"].as_str()).await;
-    assert_eq!(status, 200, "{body}");
-    body["token"].as_str().unwrap().to_string()
+    let (status, _) = login_stored(&l, &account, &page_kp).await;
+    assert_eq!(status, 200, "the key survives its session");
 }
 
 /// registry-api-v1 §5.2.1, §5.2.4–§5.2.6: creation refuses a held identity
@@ -782,60 +811,63 @@ async fn accounts_attach_takeover_detach_and_delete() {
 
     // The sign-up made an account: creating another around the identity is
     // refused until the user confirms a takeover.
-    let (status, body) = accounts_create(&l, &[(&config_cert, &config_kp)], email, false).await;
+    let (status, body) = accounts_create(&l, &[(&config_cert, &config_kp)], &KeyPair::generate(), email, false).await;
     assert_eq!(status, 409, "{body}");
     assert_eq!(body["reason"], "identity_held");
 
     // The normal new-device path: lookup, log in, attach.
-    let (token, account) = login_session(&l, email, &config_kp, &config_cert).await;
-    let (status, body) = attach_call(&l, &config_kp, &token, &[(&config_cert, &config_kp)], email, false).await;
+    let (token, account, login_kp) = login_session(&l, email, &config_kp, &config_cert).await;
+    let (status, body) = attach_call(&l, &login_kp, &token, &[(&config_cert, &config_kp)], email, false).await;
     assert_eq!(status, 200, "idempotent on pubkey: {body}");
-    assert_eq!(body["members"].as_array().unwrap().len(), 1);
     let (dc2, cc2, dkp2, ckp2) = issue_keys(&l, email).await;
-    let (status, body) = attach_call(&l, &config_kp, &token, &[(&dc2, &dkp2), (&cc2, &ckp2)], email, false).await;
+    let (status, body) = attach_call(&l, &login_kp, &token, &[(&dc2, &dkp2), (&cc2, &ckp2)], email, false).await;
     assert_eq!(status, 200, "{body}");
-    assert_eq!(body["account"], account);
-    assert_eq!(body["members"].as_array().unwrap().len(), 3, "the call's certs plus the caller's: {body}");
-    let token2 = body["token"].as_str().unwrap().to_string();
+    assert_eq!(body["recorded"].as_array().unwrap().len(), 2, "{body}");
+    let (status, certs, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/certs", None).await;
+    assert_eq!(status, 200);
+    assert!(certs["certs"].as_array().unwrap().iter().any(|c| c["kid"] == ckp2.public_key().kid()));
 
-    // Takeover: fresh certs create a NEW account around the identity; the
-    // old account keeps it on hold and its certs for it die at the issuer.
+    // Takeover: fresh certs and a new device's key create a NEW account
+    // around the identity; the old account keeps it on hold and its certs
+    // for it die at the issuer.
     let (dc3, cc3, dkp3, ckp3) = issue_keys(&l, email).await;
-    let (status, body) = accounts_create(&l, &[(&dc3, &dkp3), (&cc3, &ckp3)], email, true).await;
+    let login_kp3 = KeyPair::generate();
+    let (status, body) = accounts_create(&l, &[(&dc3, &dkp3), (&cc3, &ckp3)], &login_kp3, email, true).await;
     assert_eq!(status, 200, "{body}");
     let account3 = body["account"].as_str().unwrap().to_string();
     assert_ne!(account3, account);
+    assert_eq!(body["key"]["kid"], login_kp3.public_key().kid());
     assert_eq!(body["roster"], json!([{ "identity": email, "state": "active" }]));
     let token3 = body["token"].as_str().unwrap().to_string();
     let old_user = l.user_store.user_for_public_id(&account).unwrap().unwrap();
     assert_eq!(l.user_store.get_suspended_identity(old_user, email).unwrap().unwrap().reason, "taken_over");
-    let (status, body, _) = session_call(&l, &ckp2, &token2, "GET", "/api/v1/requests", None).await;
-    assert_eq!(status, 401, "the old device's cert was revoked by the issuer: {body}");
-    // A page login on the old account still works (the account itself is
-    // untouched) and shows the identity suspended, with the notice.
-    let old_token = body_token_or(&l, &account).await;
-    let (status, _body, _) = session_call(&l, &ckp2, &old_token, "GET", "/api/v1/requests", None).await;
-    assert_eq!(status, 401, "no member: a page session proves no key");
-    let _ = status;
-    let (_, t) = login_token(&l, &account, "password123").await;
-    let (_, body) = login_page(&l, &account, t["login"].as_str()).await;
+    // The old device keeps its login key and session (the account itself is
+    // untouched) and sees the identity suspended and its certs revoked.
+    let (status, certs, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/certs", None).await;
+    assert_eq!(status, 200, "{certs}");
+    assert!(certs["certs"].as_array().unwrap().iter().all(|c| c["revoked"] == true), "revoked by the issuer: {certs}");
+    let (_, body) = login_stored(&l, &account, &login_kp).await;
     assert_eq!(body["roster"], json!([{ "identity": email, "state": "suspended" }]), "{body}");
+    // The new account's key holds the new device's holder.
+    let (_, keys, _) = session_call(&l, &login_kp3, &token3, "GET", "/api/v1/login-keys", None).await;
+    let holder3 = browserid_core::device::DeviceCert::parse(&cc3).unwrap().holder().as_str().to_string();
+    assert_eq!(keys["login_keys"][0]["holder"], holder3.as_str(), "{keys}");
 
     // Detach and delete on the new account.
     let new_user = l.user_store.user_for_public_id(&account3).unwrap().unwrap();
-    let (status, body, _) = session_call(&l, &ckp3, &token3, "POST", "/api/v1/account/detach", Some(json!({"identity": email}))).await;
+    let (status, body, _) = session_call(&l, &login_kp3, &token3, "POST", "/api/v1/account/detach", Some(json!({"identity": email}))).await;
     assert_eq!(status, 409, "{body}");
     assert_eq!(body["reason"], "last_identity");
     l.user_store.add_email(new_user, "second@example.org", true).unwrap();
-    let (status, body, _) = session_call(&l, &ckp3, &token3, "POST", "/api/v1/account/detach", Some(json!({"identity": "second@example.org"}))).await;
+    let (status, body, _) = session_call(&l, &login_kp3, &token3, "POST", "/api/v1/account/detach", Some(json!({"identity": "second@example.org"}))).await;
     assert_eq!(status, 204, "{body}");
     assert!(l.user_store.get_email("second@example.org").unwrap().is_none());
-    let (status, body, _) = session_call(&l, &ckp3, &token3, "POST", "/api/v1/account/detach", Some(json!({"identity": "stranger@example.org"}))).await;
+    let (status, body, _) = session_call(&l, &login_kp3, &token3, "POST", "/api/v1/account/detach", Some(json!({"identity": "stranger@example.org"}))).await;
     assert_eq!(status, 404, "{body}");
-    let (status, body, _) = session_call(&l, &ckp3, &token3, "POST", "/api/v1/account/delete", Some(json!({}))).await;
+    let (status, body, _) = session_call(&l, &login_kp3, &token3, "POST", "/api/v1/account/delete", Some(json!({}))).await;
     assert_eq!(status, 204, "{body}");
     assert!(l.user_store.get_email(email).unwrap().is_none(), "every identity left");
     assert_eq!(l.user_store.get_suspended_identity(new_user, email).unwrap().unwrap().reason, "deleted");
-    let (status, _, _) = session_call(&l, &ckp3, &token3, "GET", "/api/v1/requests", None).await;
+    let (status, _, _) = session_call(&l, &login_kp3, &token3, "GET", "/api/v1/requests", None).await;
     assert_eq!(status, 401);
 }

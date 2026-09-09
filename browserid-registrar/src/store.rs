@@ -126,12 +126,8 @@ pub trait RegistrarStore: Send + Sync {
     fn cleanup_expired_sessions(&self) -> StoreResult<u64> {
         Ok(0)
     }
-    /// End the sessions `cert_id` is the last member of (§4.5).
-    fn end_sessions_solely_on_cert(&self, _user_id: u64, _cert_id: u64) -> StoreResult<u64> {
-        Ok(0)
-    }
 
-    // --- Login certs + login-page tokens (registry-api-v1 §4.2) ---
+    // --- Login keys + login-page tokens (registry-api-v1 §4.2) ---
 
     fn insert_login_cert(&self, _rec: LoginCertRecord) -> StoreResult<u64> {
         Err(RegistrarError::Internal("login certs not supported by this host".into()))
@@ -145,8 +141,17 @@ pub trait RegistrarStore: Send + Sync {
     fn revoke_login_cert(&self, _user_id: u64, _id: u64) -> StoreResult<bool> {
         Err(RegistrarError::Internal("login certs not supported by this host".into()))
     }
-    fn end_sessions_solely_on_login_key(&self, _user_id: u64, _id: u64) -> StoreResult<u64> {
+    /// End every session bound to this login key (§4.5).
+    fn end_sessions_on_login_key(&self, _user_id: u64, _id: u64) -> StoreResult<u64> {
         Ok(0)
+    }
+    /// Record the device's holder on a login key (§5.2.4).
+    fn set_login_cert_holder(&self, _user_id: u64, _id: u64, _holder: &str) -> StoreResult<()> {
+        Err(RegistrarError::Internal("login keys not supported by this host".into()))
+    }
+    /// Revoke every login key recorded with this holder (§5.6); the ids.
+    fn revoke_login_certs_for_holder(&self, _user_id: u64, _holder: &str) -> StoreResult<Vec<u64>> {
+        Ok(Vec::new())
     }
     /// Take (spend) a login-page token: the account it was minted for.
     fn take_login_token(&self, _token_hash: &str) -> StoreResult<Option<u64>> {

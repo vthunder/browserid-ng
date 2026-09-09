@@ -187,6 +187,7 @@
       var now = Math.floor(Date.now() / 1000);
       var drops = [];
       (recs || []).forEach(function (r) {
+        if (r && r.kind === "login") return; // a registry login key: no cert, the registry judges it
         var c = r && r.cert ? certClaims(r.cert) : null;
         if (!c || !c.exp || c.exp <= now + 60) {
           drops.push(delDevice(r.issuer, r.email, r.kind).catch(function () {}));

@@ -445,6 +445,10 @@ pub fn forget_holder_core(
     unrevocable.sort();
     unrevocable.dedup();
     cleanup_holder_warrants(store, user_id, holder_id);
+    // The device's login keys go with its certs (§5.6): logged out for good.
+    for id in store.revoke_login_certs_for_holder(user_id, holder_id)? {
+        store.end_sessions_on_login_key(user_id, id).ok();
+    }
     store.forget_holder(user_id, holder_id)?;
     Ok(unrevocable)
 }

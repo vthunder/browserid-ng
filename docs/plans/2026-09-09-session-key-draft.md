@@ -1,8 +1,9 @@
 # Draft: a session is a device's login key
 
-Review draft for the next registry-api-v1 revision, 2026-09-09. Agreed
-in discussion with Dan the same day; the spec text follows once this
-reads right. Bean: **h6xu** (blocks zpbh step 3).
+Review draft for the registry-api-v1 revision of 2026-09-09, agreed in
+discussion with Dan and **applied the same day** (spec, registrar, web
+dialog, native wallet, account page). Kept as the rationale record.
+Bean: **h6xu**.
 
 ## What changes, in one paragraph
 

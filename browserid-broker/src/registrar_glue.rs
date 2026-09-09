@@ -152,6 +152,7 @@ fn to_reg_login_cert(c: crate::store::LoginCert) -> reg::LoginCertRecord {
         kid: c.kid,
         pubkey: c.pubkey,
         label: c.label,
+        holder: c.holder,
         cert: c.cert,
         issued_at: c.issued_at,
         expires_at: c.expires_at,
@@ -276,7 +277,7 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
             .create_registry_session(crate::store::RegistrySession {
                 token_hash: rec.token_hash,
                 user_id: UserId(rec.user_id),
-                member_cert_ids: rec.member_cert_ids,
+                member_cert_ids: Vec::new(),
                 login_key_id: rec.login_key_id,
                 created_at: rec.created_at,
                 expires_at: rec.expires_at,
@@ -292,7 +293,6 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
             .map(|r| reg::SessionRecord {
                 token_hash: r.token_hash,
                 user_id: r.user_id.0,
-                member_cert_ids: r.member_cert_ids,
                 login_key_id: r.login_key_id,
                 created_at: r.created_at,
                 expires_at: r.expires_at,
@@ -307,12 +307,6 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
         self.user_store.cleanup_expired_registry_sessions().map_err(to_reg_err)
     }
 
-    fn end_sessions_solely_on_cert(&self, user_id: u64, cert_id: u64) -> Result<u64, RegistrarError> {
-        self.user_store
-            .end_sessions_solely_on_cert(UserId(user_id), cert_id)
-            .map_err(to_reg_err)
-    }
-
     fn insert_login_cert(&self, rec: reg::LoginCertRecord) -> Result<u64, RegistrarError> {
         self.user_store
             .insert_login_cert(crate::store::LoginCert {
@@ -321,6 +315,7 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
                 kid: rec.kid,
                 pubkey: rec.pubkey,
                 label: rec.label,
+                holder: rec.holder,
                 cert: rec.cert,
                 issued_at: rec.issued_at,
                 expires_at: rec.expires_at,
@@ -348,8 +343,16 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
         self.user_store.revoke_login_cert(UserId(user_id), id).map_err(to_reg_err)
     }
 
-    fn end_sessions_solely_on_login_key(&self, user_id: u64, id: u64) -> Result<u64, RegistrarError> {
-        self.user_store.end_sessions_solely_on_login_key(UserId(user_id), id).map_err(to_reg_err)
+    fn end_sessions_on_login_key(&self, user_id: u64, id: u64) -> Result<u64, RegistrarError> {
+        self.user_store.end_sessions_on_login_key(UserId(user_id), id).map_err(to_reg_err)
+    }
+
+    fn set_login_cert_holder(&self, user_id: u64, id: u64, holder: &str) -> Result<(), RegistrarError> {
+        self.user_store.set_login_cert_holder(UserId(user_id), id, holder).map_err(to_reg_err)
+    }
+
+    fn revoke_login_certs_for_holder(&self, user_id: u64, holder: &str) -> Result<Vec<u64>, RegistrarError> {
+        self.user_store.revoke_login_certs_for_holder(UserId(user_id), holder).map_err(to_reg_err)
     }
 
     fn take_login_token(&self, token_hash: &str) -> Result<Option<u64>, RegistrarError> {

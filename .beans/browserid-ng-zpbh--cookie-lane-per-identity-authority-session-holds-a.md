@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-09-04T23:32:18Z
-updated_at: 2026-09-09T16:28:48Z
+updated_at: 2026-09-09T19:24:58Z
 parent: browserid-ng-71vt
 blocked_by:
     - browserid-ng-0c49
@@ -37,3 +37,5 @@ The API side is done; what remains is the cookie lane's registry-role surface, w
 - [x] Step 2: keyless mode in registry-session.js; /account logs in as its own device (page-local login key; password at sign-in or in the card; stored_key after); 'Signed in to this account' card lists login keys with sign-out; session_context carries the account id. API: POST /api/v1/login-keys provable by the submitted key itself (a page-login session has no member), answering a session body. e2e: account-registry-session.spec.ts.
 
 Open for step 3: accounts with no password (primary/bridge-only) cannot open a registry session until the login page has a second method (e98a). Today the card says so and the rest of the page still runs on the cookie; when warrants/certs/holders move to the API (step 3) that becomes a page-wide gate — decide then whether reads stay on the cookie for those accounts.
+
+2026-09-09 (later): h6xu reworked sessions under step 2 — the page shares the browser's per-account login key with the dialog; the 'Signed in to this account' card lists login keys with holder/current; no more page-slot key.

@@ -269,10 +269,6 @@ impl ReplayCache {
     }
 }
 
-fn b64url_sha256(data: &[u8]) -> String {
-    URL_SAFE_NO_PAD.encode(Sha256::digest(data))
-}
-
 // ===========================================================================
 // POST /api/v1/token — the presentation → token exchange (§3.1)
 // ===========================================================================
@@ -289,23 +285,14 @@ pub(crate) fn new_token() -> String {
 // The request-proof extractor (§3.2)
 // ===========================================================================
 
-/// The authenticated caller of a token-authed endpoint: token + proof
-/// verified to the §3.2 bar, bound cert status re-checked fail-closed.
+/// The authenticated caller of a session-authed endpoint: token + the
+/// `Proof` header by the session's login key, verified to the §4.4 bar.
 pub struct ApiUser {
     pub user_id: u64,
-    /// The key that signed this call's proof (base64): the session member
-    /// that spoke, or the legacy token's bound config key.
-    pub proof_key: String,
-    /// Ids of the member certs that passed this call's re-check. Empty
-    /// for a legacy token.
-    pub member_cert_ids: Vec<u64>,
-    /// The identities the members were recorded for (§4.3), deduplicated.
-    /// Empty for a legacy token (whole-account authority).
-    pub member_identities: Vec<String>,
-    /// The session's token hash, so `session/end` can end it.
-    pub session_token_hash: Option<String>,
-    /// The login cert whose key opened the session, if any.
-    pub login_key_id: Option<u64>,
+    /// The session's token hash, so `session/end` and `delete` can end it.
+    pub session_token_hash: String,
+    /// The login key the session is bound to.
+    pub login_key_id: u64,
 }
 
 #[axum::async_trait]
@@ -319,89 +306,27 @@ impl FromRequestParts<Arc<RegistrarState>> for ApiUser {
         if !state.enabled {
             return Err(ApiError::NotFound);
         }
-        // Verification order per §3.2: token exists and is unexpired → proof
-        // signature under the bound key → typ/htm/htu/iat/ath → jti replay →
-        // bound cert status fail-closed → scope. Any failure rejects.
-        let auth = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| ApiError::InvalidSession("missing Authorization header".into()))?;
-        let (scheme, token) = auth
-            .split_once(' ')
-            .ok_or_else(|| ApiError::InvalidSession("malformed Authorization header".into()))?;
-        if !scheme.eq_ignore_ascii_case("bearer") {
-            return Err(ApiError::InvalidSession("Authorization scheme must be Bearer".into()));
-        }
-        session_user(parts, state, token.trim()).await
-    }
-}
-
-/// The §4.4 session path of the extractor: token → proof → member → claims
-/// → replay → member re-check. First failure is the response.
-async fn session_user(
-    parts: &Parts,
-    state: &Arc<RegistrarState>,
-    token: &str,
-) -> Result<ApiUser, ApiError> {
-    use crate::session::{header_proof, replay_check, resolve_members, BodyHash};
-    let hash = b64url_sha256(token.as_bytes());
-    let rec = state
-        .store
-        .get_session(&hash)
-        .map_err(|e| ApiError::Internal(format!("session lookup: {e}")))?
-        .ok_or_else(|| ApiError::InvalidSession("unknown session".into()))?;
-    if rec.is_expired() {
-        return Err(ApiError::InvalidSession("session expired".into()));
-    }
-    let proof = header_proof(&parts.headers)?;
-    let members = resolve_members(state, rec.user_id, &rec.member_cert_ids, rec.login_key_id).await?;
-    if members.is_empty() {
-        return Err(ApiError::InvalidSession("no member of this session is still valid".into()));
-    }
-    let signer = members
-        .iter()
-        .find(|m| m.kid() == proof.kid)
-        .ok_or_else(|| ApiError::InvalidSession("the Proof key is not a member of this session".into()))?;
-    proof.verify(signer.pubkey())?;
-    let expect_bh = if parts.method == axum::http::Method::GET {
-        None
-    } else {
-        Some(
-            parts
-                .extensions
-                .get::<BodyHash>()
-                .map(|b| b.0.clone())
-                .ok_or_else(|| ApiError::Internal("body hash middleware missing".into()))?,
+        let expect_bh = if parts.method == axum::http::Method::GET {
+            None
+        } else {
+            Some(
+                parts
+                    .extensions
+                    .get::<crate::session::BodyHash>()
+                    .map(|b| b.0.clone())
+                    .ok_or_else(|| ApiError::Internal("body hash middleware missing".into()))?,
+            )
+        };
+        let (rec, key, _) = crate::session::verify_session_call(
+            state,
+            &parts.headers,
+            parts.method.as_str(),
+            parts.uri.path(),
+            expect_bh.as_deref(),
         )
-    };
-    proof.check_claims(state, parts.method.as_str(), parts.uri.path(), expect_bh.as_deref())?;
-    replay_check(state, &proof.kid, &proof.jti)?;
-
-    let mut identities: Vec<String> = Vec::new();
-    let mut cert_ids = Vec::new();
-    for m in &members {
-        if let crate::session::Member::Cert { cert, .. } = m {
-            cert_ids.push(cert.id);
-            for i in &cert.identities {
-                if !identities.iter().any(|x| x.eq_ignore_ascii_case(i)) {
-                    identities.push(i.clone());
-                }
-            }
-        }
+        .await?;
+        Ok(ApiUser { user_id: rec.user_id, session_token_hash: rec.token_hash, login_key_id: key.id })
     }
-    let login_key_id = members.iter().find_map(|m| match m {
-        crate::session::Member::Login { rec } => Some(rec.id),
-        _ => None,
-    });
-    Ok(ApiUser {
-        user_id: rec.user_id,
-        proof_key: signer.pubkey().to_string(),
-        member_cert_ids: cert_ids,
-        member_identities: identities,
-        session_token_hash: Some(hash),
-        login_key_id,
-    })
 }
 
 // ===========================================================================
@@ -774,7 +699,6 @@ pub async fn revoke_cert(
     };
     let revoked = crate::holders::revoke_device_core(&*state.store, &*state.host, &state.domain, user.user_id, id)
         .map_err(consent_err)?;
-    state.store.end_sessions_solely_on_cert(user.user_id, id).ok();
     Ok(Json(ApiRevokeDeviceResponse { revoked }))
 }
 

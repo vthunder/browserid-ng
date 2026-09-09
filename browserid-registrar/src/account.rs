@@ -1,9 +1,9 @@
-//! Accounts, login, login certs, and membership over the API
+//! Accounts, login, login keys, and membership over the API
 //! (registry-api-v1 §4.2, §5.2): `accounts` creates an account around an
-//! identity, `accounts/lookup` finds one, `login` opens a session by a
-//! method the registry offers, `login-keys` are the registry's own signed
-//! credentials for headless logins, and `attach` / `detach` / `delete`
-//! are writes under a session.
+//! identity, `accounts/lookup` finds one, `login` opens a session bound to
+//! the device's login key (enrolled right there), `login-keys` lists and
+//! revokes those keys, and `attach` / `detach` / `delete` are writes under
+//! a session.
 
 use std::sync::Arc;
 
@@ -11,22 +11,19 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 
 use crate::api::{ApiError, ApiUser};
-use crate::consent::status_list_uri;
 use crate::models::{DeviceCertRecord, LoginCertRecord};
 use crate::session::{b64url_sha256, header_proof, kid_of, replay_check, BodyHash, Proof};
 use crate::RegistrarState;
 
 /// A cert creating an account or moving an identity must be this fresh.
 const FRESHNESS_SECONDS: i64 = 300;
-/// Login cert lifetime: registry policy, RECOMMENDED 90 days.
-const LOGIN_CERT_DAYS: i64 = 90;
-pub const LOGIN_CERT_TYP: &str = "browserid-login-cert-v1";
+/// Login key lifetime from its last login through the page: registry
+/// policy, RECOMMENDED 90 days.
+const LOGIN_KEY_DAYS: i64 = 90;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -194,6 +191,98 @@ async fn record(
 }
 
 // ---------------------------------------------------------------------------
+// Login keys (§4.2): the argument `accounts` and `login_page` carry, its
+// possession proof, and enrolment.
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoginKeyArg {
+    pubkey: String,
+    #[serde(default)]
+    label: Option<String>,
+    proof: String,
+}
+
+/// The login key a session-opening call brings, after its possession proof
+/// (same jti as the header proof, no bh) and the header proof by it.
+struct BroughtKey {
+    pubkey: String,
+    kid: String,
+    label: Option<String>,
+}
+
+fn brought_key(
+    state: &RegistrarState,
+    hp: &Proof,
+    path: &str,
+    bh: &str,
+    arg: &LoginKeyArg,
+) -> Result<BroughtKey, ApiError> {
+    let key = browserid_core::PublicKey::from_base64(&arg.pubkey)
+        .map_err(|e| ApiError::InvalidRequest(format!("login_key: bad pubkey: {e}")))?;
+    let kid = key.kid();
+    let pp = Proof::parse(&arg.proof)?;
+    if pp.jti != hp.jti {
+        return Err(ApiError::InvalidProof("proofs in one request must share a jti".into()));
+    }
+    if pp.kid != kid {
+        return Err(ApiError::InvalidProof("login_key: possession proof kid does not match the key".into()));
+    }
+    pp.verify(&arg.pubkey)?;
+    pp.check_claims(state, "POST", path, None)?;
+    if hp.kid != kid {
+        return Err(ApiError::InvalidProof("the Proof header must be signed by the login key".into()));
+    }
+    hp.verify(&arg.pubkey)?;
+    hp.check_claims(state, "POST", path, Some(bh))?;
+    replay_check(state, &kid, &hp.jti)?;
+    let label = match arg.label.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+        Some(l) => Some(crate::holders::validate_label(l).map_err(|e| ApiError::InvalidRequest(e.to_string()))?),
+        None => None,
+    };
+    Ok(BroughtKey { pubkey: arg.pubkey.clone(), kid, label })
+}
+
+/// Enrol (or re-enrol) a login key on `user_id` after a passed login: a
+/// fresh expiry, revocation cleared, label and holder kept unless given.
+fn enroll(
+    state: &RegistrarState,
+    user_id: u64,
+    key: &BroughtKey,
+    holder: Option<&str>,
+) -> Result<LoginCertRecord, ApiError> {
+    let existing = state
+        .store
+        .get_login_cert_by_kid(&key.kid)
+        .map_err(|e| ApiError::Internal(format!("login key: {e}")))?;
+    if let Some(e) = &existing {
+        if e.user_id != user_id {
+            return Err(ApiError::InvalidRequest("this key is a login key on another account".into()));
+        }
+    }
+    let now = Utc::now();
+    let rec = LoginCertRecord {
+        id: 0,
+        user_id,
+        kid: key.kid.clone(),
+        pubkey: key.pubkey.clone(),
+        label: key.label.clone().or_else(|| existing.as_ref().and_then(|e| e.label.clone())),
+        holder: holder.map(str::to_string).or_else(|| existing.as_ref().and_then(|e| e.holder.clone())),
+        cert: String::new(),
+        issued_at: now,
+        expires_at: now + Duration::days(LOGIN_KEY_DAYS),
+        revoked_at: None,
+        status_idx: None,
+    };
+    let id = state
+        .store
+        .insert_login_cert(rec.clone())
+        .map_err(|e| ApiError::Internal(format!("login key store: {e}")))?;
+    Ok(LoginCertRecord { id, ..rec })
+}
+
+// ---------------------------------------------------------------------------
 // §5.2.1 accounts, accounts/lookup
 // ---------------------------------------------------------------------------
 
@@ -202,6 +291,7 @@ async fn record(
 struct AccountsRequest {
     identity: String,
     certs: Vec<CertProof>,
+    login_key: LoginKeyArg,
     #[serde(default)]
     confirm_takeover: bool,
 }
@@ -241,7 +331,7 @@ pub async fn create(
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let identity = identity_arg(&req.identity)?;
     let carried = carried_certs(&state, &hp, path, &identity, &req.certs).await?;
-    header_by_carried(&state, &hp, &carried, path, &bh)?;
+    let key = brought_key(&state, &hp, path, &bh, &req.login_key)?;
     if !carried.iter().any(|c| c.purpose == "authorization") {
         return Err(invalid_cert("config_required", "creating an account needs a config cert"));
     }
@@ -263,15 +353,17 @@ pub async fn create(
             // issuer that also runs this registry revokes only the old
             // account's remaining certs for the identity (hg2j).
             let fresh_account = state.host.create_empty_account().map_err(host_err)?;
-            let ids = record(&state, &headers, fresh_account, &identity, &carried).await?;
+            record(&state, &headers, fresh_account, &identity, &carried).await?;
             state.host.transfer_identity(a, fresh_account, &identity, "taken_over").map_err(host_err)?;
+            let k = enroll(&state, fresh_account, &key, Some(&carried[0].holder))?;
             tracing::info!(%identity, "accounts: takeover into a new account");
-            return Ok(Json(crate::session::open(&state, fresh_account, ids, None).await?));
+            return Ok(Json(crate::session::open(&state, fresh_account, &k).await?));
         }
     };
-    let ids = record(&state, &headers, user_id, &identity, &carried).await?;
+    record(&state, &headers, user_id, &identity, &carried).await?;
+    let k = enroll(&state, user_id, &key, Some(&carried[0].holder))?;
     tracing::info!(%identity, "accounts: created");
-    Ok(Json(crate::session::open(&state, user_id, ids, None).await?))
+    Ok(Json(crate::session::open(&state, user_id, &k).await?))
 }
 
 #[derive(Deserialize)]
@@ -317,6 +409,8 @@ struct LoginRequest {
     #[serde(default)]
     token: Option<String>,
     #[serde(default)]
+    login_key: Option<LoginKeyArg>,
+    #[serde(default)]
     proof: Option<String>,
 }
 
@@ -324,7 +418,19 @@ fn rejected(d: &str) -> ApiError {
     ApiError::Forbidden { reason: "login_rejected", description: d.into() }
 }
 
-/// `POST /api/v1/login` (§4.2). Every failure is one reason.
+/// `403 login_required` with the page, or `login_rejected` when this
+/// registry runs no page.
+fn login_required(state: &RegistrarState) -> ApiError {
+    match state.login_page_url.clone() {
+        Some(url) => ApiError::LoginRequired { url },
+        None => rejected("this registry offers no login page"),
+    }
+}
+
+/// `POST /api/v1/login` (§4.2): `login_page` enrols the key the call
+/// brings; `stored_key` proves one already enrolled. Anything the registry
+/// will not open headlessly is `login_required`; a bad token is
+/// `login_rejected`.
 pub async fn login(
     State(state): State<Arc<RegistrarState>>,
     headers: axum::http::HeaderMap,
@@ -344,18 +450,21 @@ pub async fn login(
     match req.method.as_str() {
         "login_page" => {
             let Some(token) = req.token.filter(|t| !t.is_empty()) else {
-                let Some(url) = state.login_page_url.clone() else {
-                    return Err(rejected("this registry offers no login page"));
-                };
-                return Err(ApiError::LoginRequired { url });
+                return Err(login_required(&state));
             };
+            let Some(arg) = req.login_key.as_ref() else {
+                return Err(ApiError::InvalidRequest("login_key is required with a token".into()));
+            };
+            let hp = header_proof(&headers)?;
+            let key = brought_key(&state, &hp, path, &bh, arg)?;
             let spent = state
                 .store
                 .take_login_token(&b64url_sha256(token.as_bytes()))
                 .map_err(|e| ApiError::Internal(format!("login token: {e}")))?;
             match (spent, account) {
                 (Some(uid), Some(acct)) if uid == acct => {
-                    Ok(Json(crate::session::open(&state, acct, Vec::new(), None).await?))
+                    let k = enroll(&state, acct, &key, None)?;
+                    Ok(Json(crate::session::open(&state, acct, &k).await?))
                 }
                 _ => Err(rejected("login refused")),
             }
@@ -368,23 +477,22 @@ pub async fn login(
                 return Err(ApiError::InvalidRequest("proof is required for stored_key".into()));
             };
             let pp = Proof::parse(raw)?;
-            let Some(acct) = account else { return Err(rejected("login refused")) };
+            let Some(acct) = account else { return Err(login_required(&state)) };
             let rec = state
                 .store
                 .get_login_cert_by_kid(&pp.kid)
-                .map_err(|e| ApiError::Internal(format!("login cert: {e}")))?
+                .map_err(|e| ApiError::Internal(format!("login key: {e}")))?
                 .filter(|c| c.user_id == acct && c.is_live())
-                .filter(|c| !c.status_idx.map_or(false, |i| state.store.is_status_revoked_idx(i).unwrap_or(true)))
-                .ok_or_else(|| rejected("login refused"))?;
+                .ok_or_else(|| login_required(&state))?;
             if hp.kid != rec.kid || pp.jti != hp.jti {
-                return Err(rejected("login refused"));
+                return Err(ApiError::InvalidProof("the Proof header and proof must be by the same login key".into()));
             }
-            hp.verify(&rec.pubkey).map_err(|_| rejected("login refused"))?;
+            hp.verify(&rec.pubkey)?;
             hp.check_claims(&state, "POST", path, Some(&bh))?;
-            pp.verify(&rec.pubkey).map_err(|_| rejected("login refused"))?;
+            pp.verify(&rec.pubkey)?;
             pp.check_claims(&state, "POST", path, None)?;
             replay_check(&state, &hp.kid, &hp.jti)?;
-            Ok(Json(crate::session::open(&state, acct, Vec::new(), Some(rec.id)).await?))
+            Ok(Json(crate::session::open(&state, acct, &rec).await?))
         }
         other => Err(ApiError::InvalidRequest(format!("unknown login method '{other}'"))),
     }
@@ -394,130 +502,22 @@ pub async fn login(
 // §5.2.3 login-keys
 // ---------------------------------------------------------------------------
 
-/// The account a login-keys call acts on (the rest of the handler reads
-/// `user.user_id` like an `ApiUser`).
-struct SessionUser {
-    user_id: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LoginKeyRequest {
-    pubkey: String,
-    #[serde(default)]
-    label: Option<String>,
-}
-
-/// `POST /api/v1/login-keys`: sign the wallet's login key into a login cert.
-/// The header proof is by a session member, or by the submitted key
-/// itself — a page login's session has no member, and a keyless device (a
-/// page as its own device) has nothing else to sign with. When the key
-/// proved the call, the response carries a fresh session body with it as
-/// a member, like attach.
-pub async fn create_login_key(
-    State(state): State<Arc<RegistrarState>>,
-    headers: axum::http::HeaderMap,
-    axum::Extension(BodyHash(bh)): axum::Extension<BodyHash>,
-    body: Bytes,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let path = "/api/v1/login-keys";
-    let (session, members) = crate::session::bearer_session(&state, &headers).await?;
-    let hp = header_proof(&headers)?;
-    let req: LoginKeyRequest = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
-    let key = browserid_core::PublicKey::from_base64(&req.pubkey)
-        .map_err(|e| ApiError::InvalidRequest(format!("bad pubkey: {e}")))?;
-    let kid = key.kid();
-    let by_member = members.iter().find(|m| m.kid() == hp.kid).map(|m| m.pubkey().to_string());
-    let self_proven = by_member.is_none() && hp.kid == kid;
-    let signer_key = by_member
-        .or_else(|| if self_proven { Some(req.pubkey.clone()) } else { None })
-        .ok_or_else(|| ApiError::InvalidSession("the Proof key is neither a member of this session nor the submitted key".into()))?;
-    hp.verify(&signer_key)?;
-    hp.check_claims(&state, "POST", path, Some(&bh))?;
-    replay_check(&state, &hp.kid, &hp.jti)?;
-    let user = SessionUser { user_id: session.user_id };
-    let label = match req.label.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
-        Some(l) => Some(crate::holders::validate_label(l).map_err(|e| ApiError::InvalidRequest(e.to_string()))?),
-        None => None,
-    };
-    if let Some(existing) = state
-        .store
-        .get_login_cert_by_kid(&kid)
-        .map_err(|e| ApiError::Internal(format!("login cert: {e}")))?
-    {
-        if existing.user_id != user.user_id {
-            return Err(ApiError::InvalidRequest("this key is already a login key elsewhere".into()));
-        }
-    }
-    let account = state
-        .host
-        .account_public_id(user.user_id)
-        .map_err(|e| ApiError::Internal(format!("account id: {e}")))?;
-    let idx = state
-        .store
-        .get_or_allocate_status("login", &kid)
-        .map_err(|e| ApiError::Internal(format!("status: {e}")))?;
-    let now = Utc::now();
-    let exp = now + Duration::days(LOGIN_CERT_DAYS);
-    let header = URL_SAFE_NO_PAD.encode(format!(r#"{{"alg":"EdDSA","typ":"{LOGIN_CERT_TYP}","kid":"{kid}"}}"#));
-    let claims = serde_json::json!({
-        "typ": LOGIN_CERT_TYP,
-        "iss": state.domain,
-        "sub": account,
-        "kid": kid,
-        "public-key": req.pubkey,
-        "iat": now.timestamp(),
-        "exp": exp.timestamp(),
-        "status": { "uri": status_list_uri(&state.domain), "idx": idx },
-    });
-    let payload = URL_SAFE_NO_PAD.encode(claims.to_string());
-    let message = format!("{header}.{payload}");
-    let sig = URL_SAFE_NO_PAD.encode(state.keypair.sign(message.as_bytes()));
-    let cert = format!("{message}.{sig}");
-    let id = state
-        .store
-        .insert_login_cert(LoginCertRecord {
-            id: 0,
-            user_id: user.user_id,
-            kid: kid.clone(),
-            pubkey: req.pubkey,
-            label,
-            cert: cert.clone(),
-            issued_at: now,
-            expires_at: exp,
-            revoked_at: None,
-            status_idx: Some(idx),
-        })
-        .map_err(|e| ApiError::Internal(format!("login cert store: {e}")))?;
-    // A replaced (re-issued) key is live again.
-    state.store.set_status_active_idx(idx).ok();
-    let mut out = serde_json::json!({ "id": id, "kid": kid, "cert": cert, "expires_at": exp.to_rfc3339() });
-    if self_proven {
-        let member_cert_ids: Vec<u64> = members.iter().filter_map(|m| match m {
-            crate::session::Member::Cert { cert, .. } => Some(cert.id),
-            _ => None,
-        }).collect();
-        out["session"] = crate::session::open(&state, session.user_id, member_cert_ids, Some(id)).await?;
-    }
-    Ok(Json(out))
-}
-
 /// `GET /api/v1/login-keys`.
 pub async fn list_login_keys(
     State(state): State<Arc<RegistrarState>>,
     user: ApiUser,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let certs = state
+    let keys = state
         .store
         .list_login_certs(user.user_id)
-        .map_err(|e| ApiError::Internal(format!("login certs: {e}")))?;
-    let items: Vec<serde_json::Value> = certs
+        .map_err(|e| ApiError::Internal(format!("login keys: {e}")))?;
+    let items: Vec<serde_json::Value> = keys
         .into_iter()
-        .map(|c| serde_json::json!({
-            "id": c.id, "kid": c.kid, "label": c.label,
-            "issued_at": c.issued_at.to_rfc3339(), "expires_at": c.expires_at.to_rfc3339(),
-            "revoked": c.revoked_at.is_some() || c.status_idx.map_or(false, |i| state.store.is_status_revoked_idx(i).unwrap_or(false)),
+        .map(|k| serde_json::json!({
+            "id": k.id, "kid": k.kid, "label": k.label, "holder": k.holder,
+            "enrolled_at": k.issued_at.to_rfc3339(), "expires_at": k.expires_at.to_rfc3339(),
+            "revoked": k.revoked_at.is_some(),
+            "current": k.id == user.login_key_id,
         }))
         .collect();
     Ok(Json(serde_json::json!({ "login_keys": items })))
@@ -532,7 +532,8 @@ struct LoginKeyRevokeRequest {
     kid: Option<String>,
 }
 
-/// `POST /api/v1/login-keys/revoke`: own key under any session, else config.
+/// `POST /api/v1/login-keys/revoke`: marks the key revoked and ends its
+/// sessions — this one included, when it is the key named.
 pub async fn revoke_login_key(
     State(state): State<Arc<RegistrarState>>,
     user: ApiUser,
@@ -540,21 +541,18 @@ pub async fn revoke_login_key(
 ) -> Result<StatusCode, ApiError> {
     let req: LoginKeyRevokeRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
-    let certs = state
+    let keys = state
         .store
         .list_login_certs(user.user_id)
-        .map_err(|e| ApiError::Internal(format!("login certs: {e}")))?;
+        .map_err(|e| ApiError::Internal(format!("login keys: {e}")))?;
     let rec = match (req.id, req.kid) {
-        (Some(id), None) => certs.into_iter().find(|c| c.id == id),
-        (None, Some(kid)) => certs.into_iter().find(|c| c.kid == kid),
+        (Some(id), None) => keys.into_iter().find(|c| c.id == id),
+        (None, Some(kid)) => keys.into_iter().find(|c| c.kid == kid),
         _ => return Err(ApiError::InvalidRequest("exactly one of id or kid".into())),
     }
     .ok_or(ApiError::NotFound)?;
-    state.store.revoke_login_cert(user.user_id, rec.id).map_err(|e| ApiError::Internal(format!("login cert: {e}")))?;
-    if let Some(idx) = rec.status_idx {
-        state.store.set_status_revoked_idx(idx).ok();
-    }
-    state.store.end_sessions_solely_on_login_key(user.user_id, rec.id).ok();
+    state.store.revoke_login_cert(user.user_id, rec.id).map_err(|e| ApiError::Internal(format!("login key: {e}")))?;
+    state.store.end_sessions_on_login_key(user.user_id, rec.id).ok();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -571,9 +569,9 @@ struct AttachRequest {
     confirm_takeover: bool,
 }
 
-/// `POST /api/v1/account/attach` (§5.2.4): a write under a session. The
-/// header proof is by a session member, or by one of the carried certs —
-/// a page login's session has no member until this call gives it one.
+/// `POST /api/v1/account/attach` (§5.2.4): records certs under a session.
+/// The session is unchanged; the device's holder lands on the session's
+/// login key when it has none yet.
 pub async fn attach(
     State(state): State<Arc<RegistrarState>>,
     headers: axum::http::HeaderMap,
@@ -581,25 +579,11 @@ pub async fn attach(
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let path = "/api/v1/account/attach";
-    let (session, members) = crate::session::bearer_session(&state, &headers).await?;
-    let hp = header_proof(&headers)?;
+    let (session, key, hp) = crate::session::verify_session_call(&state, &headers, "POST", path, Some(&bh)).await?;
     let req: AttachRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     let identity = identity_arg(&req.identity)?;
     let carried = carried_certs(&state, &hp, path, &identity, &req.certs).await?;
-    let signer_key = members
-        .iter()
-        .find(|m| m.kid() == hp.kid)
-        .map(|m| m.pubkey().to_string())
-        .or_else(|| carried.iter().find(|c| c.kid == hp.kid).map(|c| c.pubkey.clone()))
-        .ok_or_else(|| ApiError::InvalidProof("the Proof key is neither a member nor a carried cert".into()))?;
-    hp.verify(&signer_key)?;
-    hp.check_claims(&state, "POST", path, Some(&bh))?;
-    replay_check(&state, &hp.kid, &hp.jti)?;
-    let member_cert_ids: Vec<u64> = members.iter().filter_map(|m| match m {
-        crate::session::Member::Cert { cert, .. } => Some(cert.id),
-        _ => None,
-    }).collect();
     let has_config = carried.iter().any(|c| c.purpose == "authorization");
     let iss = carried[0].iss.clone();
     let acct = session.user_id;
@@ -645,15 +629,11 @@ pub async fn attach(
         Some(Pending::Restore) => state.host.restore_identity(acct, &identity, &iss).map_err(host_err)?,
         None => {}
     }
-    // The fresh session: the call's certs plus the caller's members.
-    let mut union = ids.clone();
-    for m in &member_cert_ids {
-        if !union.contains(m) {
-            union.push(*m);
-        }
+    if key.holder.is_none() {
+        state.store.set_login_cert_holder(acct, key.id, &carried[0].holder).ok();
     }
     tracing::info!(%identity, "attach: recorded {} cert(s)", ids.len());
-    Ok(Json(crate::session::open(&state, acct, union, session.login_key_id).await?))
+    Ok(Json(serde_json::json!({ "recorded": ids })))
 }
 
 #[derive(Deserialize)]
@@ -700,9 +680,7 @@ pub async fn delete(
     let _: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
     state.host.delete_account(user.user_id).map_err(host_err)?;
-    if let Some(h) = user.session_token_hash.as_deref() {
-        state.store.delete_session(h).ok();
-    }
+    state.store.delete_session(&user.session_token_hash).ok();
     Ok(StatusCode::NO_CONTENT)
 }
 

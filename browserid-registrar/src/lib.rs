@@ -204,7 +204,7 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         .route("/api/v1/accounts", post(account::create))
         .route("/api/v1/accounts/lookup", post(account::lookup))
         .route("/api/v1/login", post(account::login))
-        .route("/api/v1/login-keys", get(account::list_login_keys).post(account::create_login_key))
+        .route("/api/v1/login-keys", get(account::list_login_keys))
         .route("/api/v1/login-keys/revoke", post(account::revoke_login_key))
         .route("/api/v1/session/end", post(session::end_session))
         .route("/api/v1/account/attach", post(account::attach))

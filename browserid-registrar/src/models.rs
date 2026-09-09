@@ -216,8 +216,10 @@ impl DeviceCertRecord {
     }
 }
 
-/// A login cert (registry-api-v1 §4.2): the registry's signed credential
-/// over a wallet's login key.
+/// A login key enrolled on an account (registry-api-v1 §4.2): the device's
+/// own credential, which opens sessions and signs every call. (The type
+/// keeps its historical name; `cert` is empty for keys enrolled since the
+/// registry stopped issuing login certs.)
 #[derive(Debug, Clone)]
 pub struct LoginCertRecord {
     pub id: u64,
@@ -225,6 +227,8 @@ pub struct LoginCertRecord {
     pub kid: String,
     pub pubkey: String,
     pub label: Option<String>,
+    /// The device's holder, once certs were recorded under this key (§5.2.4).
+    pub holder: Option<String>,
     pub cert: String,
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -238,14 +242,14 @@ impl LoginCertRecord {
     }
 }
 
-/// A registry session (registry-api-v1 §4.5): a token naming a SET of
-/// the account's recorded certs. Members are re-checked on every call.
+/// A registry session (registry-api-v1 §4.5): a token on one account,
+/// bound to the login key that opened it.
 #[derive(Debug, Clone)]
 pub struct SessionRecord {
     pub token_hash: String,
     pub user_id: u64,
-    pub member_cert_ids: Vec<u64>,
-    /// The login cert whose key opened the session, if any.
+    /// The login key the session is bound to. `None` only on rows from
+    /// before login keys, which no longer authenticate.
     pub login_key_id: Option<u64>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,

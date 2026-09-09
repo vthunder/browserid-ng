@@ -202,7 +202,9 @@ pub struct LoginCert {
     pub kid: String,
     pub pubkey: String,
     pub label: Option<String>,
-    /// The signed JWS.
+    /// The device's holder once certs were recorded under this key.
+    pub holder: Option<String>,
+    /// The signed JWS; empty for keys enrolled since login certs were dropped.
     pub cert: String,
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,

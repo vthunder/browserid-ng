@@ -2,25 +2,21 @@
 // web wallet as a first-class registry client on the SAME standardized
 // /api/v1 surface any native wallet uses.
 //
-// configure() takes the active identity's device pair (and the password
-// the user just typed, when the dialog has it). ensure() yields a session:
-// by `stored_key` with this browser's login cert for the account, else by
-// looking the account up with the identity cert, logging in through the
-// registry's login page — answered directly on this origin with the
-// password, or opened in a popup for a foreign registry — and, first time
-// on this browser, minting a login cert and attaching the pair. call()
-// sends `Authorization: Bearer` + a `Proof` JWS (kid in the header, bh
-// binding POST bodies) signed by a session member, re-logging in once on
-// 401 invalid_session.
+// A session is bound to this browser's LOGIN KEY for the account (§4.5):
+// one key per account, generated here, non-extractable, kept in the
+// keystore's device store under kind "login". ensure() yields a session:
+// `stored_key` when the registry still knows the key; else the login page
+// — answered straight on this origin with the password the page collected
+// (or askPassword()), opened in a popup for a foreign registry — which
+// enrols the key; `accounts` on first use, which enrols it too. call()
+// sends `Authorization: Bearer` + a `Proof` JWS by the login key (kid in
+// the header, bh binding POST bodies), re-logging in once on 401.
 //
-// configureKeyless() is the other shape: a page that is its own device
-// (the registry's /account page) with a login key and no identity certs.
-// It knows the account id already, so ensure() skips lookup and attach:
-// stored_key when this browser holds a login cert for the account, else
-// the login page (the password the page collected, or askPassword()),
-// then a login cert so the next load is headless. Signing calls need a
-// config cert the session does not have; the page brings one from the
-// keystore when it has it.
+// Two shapes. configure({pair, identity, password?}): the dialog with an
+// identity's device pair; after any login it attaches the pair (idempotent
+// on pubkey). configureKeyless({account, password?, askPassword?}): a page
+// that is its own device (the registry's /account page) — knows the account
+// id, has no certs, shares the browser's key for that account.
 //
 // Depends on window.Keystore. Loaded after keystore.js.
 (function () {
@@ -35,8 +31,7 @@
   var token = null;
   var tokenExp = 0;
   var kids = null;      // {device, config}
-  var loginKey = null;  // {privateKey, publicKeyX, kid, cert} for the account
-  var members = [];     // kids the current session holds
+  var loginKey = null;  // {privateKey, publicKeyX, kid} for the account
   var account = null;
 
   function nowS() { return Math.floor(Date.now() / 1000); }
@@ -87,15 +82,6 @@
   }
   function deviceKey() { return { privateKey: pair.devicePrivateKey, kid: kids.device }; }
   function configKey() { return { privateKey: pair.configPrivateKey, kid: kids.config }; }
-  // The key that signs a session call: a member. The login key when the
-  // session holds it, else the config cert.
-  function memberKey() {
-    if (loginKey && members.indexOf(loginKey.kid) !== -1) return loginKey;
-    if (!pair) return null;
-    if (members.indexOf(kids.config) !== -1) return configKey();
-    if (members.indexOf(kids.device) !== -1) return deviceKey();
-    return null;
-  }
 
   async function postRaw(path, bodyStr, headers) {
     var h = { "content-type": "application/json", accept: "application/json" };
@@ -107,7 +93,6 @@
   function took(body) {
     token = body.token;
     tokenExp = Math.floor(new Date(body.expires_at).getTime() / 1000) || (nowS() + 3600);
-    members = (body.members || []).map(function (m) { return m.kid; });
     if (body.account) { account = body.account; if (identity) rememberAccount(body.account); }
   }
   function error(r, path) {
@@ -117,63 +102,73 @@
     return e;
   }
 
-  // --- what this browser remembers per identity ---------------------------
+  // --- what this browser remembers per identity / per account -------------
   function accountKey() { return "browserid:registry:account:" + identity; }
-  // The keystore key for a login key: the pair's identity, or the page's
-  // own slot when keyless (one login key per account for the page).
-  function loginKeyEmail(acct) { return (pair ? "@registry:" : "@registry-page:") + acct; }
   function knownAccount() { try { return localStorage.getItem(accountKey()) || null; } catch (e) { return null; } }
   function rememberAccount(id) { try { localStorage.setItem(accountKey(), id); } catch (e) { /* best-effort */ } }
-  // Login keys live in the keystore's device store under kind "login",
-  // keyed by the registry host and the account id.
+  // The login key lives in the keystore's device store under kind "login",
+  // keyed by the registry host and the account id — shared by the dialog
+  // and the account page.
   async function loadLoginKey(acct) {
     try {
-      var rec = await window.Keystore.getDevice(window.location.host, loginKeyEmail(acct), "login");
-      if (!rec || !rec.privateKey || !rec.cert) return null;
-      var c = decode(rec.cert);
-      if (!c || !c.exp || c.exp <= nowS() + 60) return null;
-      return { privateKey: rec.privateKey, publicKeyX: rec.publicKeyX, kid: await kidOfX(rec.publicKeyX), cert: rec.cert };
+      var rec = await window.Keystore.getDevice(window.location.host, "@registry:" + acct, "login");
+      if (!rec || !rec.privateKey || !rec.publicKeyX) return null;
+      return { privateKey: rec.privateKey, publicKeyX: rec.publicKeyX, kid: await kidOfX(rec.publicKeyX) };
     } catch (e) { return null; }
   }
   async function storeLoginKey(acct, key) {
     try {
-      await window.Keystore.putDevice(window.location.host, loginKeyEmail(acct), "login",
-        { publicKeyX: key.publicKeyX, privateKey: key.privateKey, cert: key.cert });
+      await window.Keystore.putDevice(window.location.host, "@registry:" + acct, "login",
+        { publicKeyX: key.publicKeyX, privateKey: key.privateKey, cert: "" });
     } catch (e) { /* best-effort: next run logs in through the page again */ }
+  }
+  async function freshLoginKey() {
+    var kp = await window.Keystore.generate();
+    return { privateKey: kp.privateKey, publicKeyX: kp.publicKeyX, kid: await kidOfX(kp.publicKeyX) };
   }
 
   // --- the calls ---------------------------------------------------------
-  // Possession proofs for the pair, plus the header proof by `signer`.
-  async function withCerts(path, extra, signer) {
+  // Possession proofs for the pair (and the login key when `withKey`), plus
+  // the header proof by `signer`.
+  async function withCerts(path, extra, signer, withKey) {
     var jti = rndHex();
-    var body = Object.assign({
-      identity: identity,
-      certs: [
+    var body = Object.assign({ identity: identity }, extra || {});
+    if (pair) {
+      body.certs = [
         { cert: pair.deviceCert, proof: await proofBy(deviceKey(), "POST", path, null, jti) },
         { cert: pair.configCert, proof: await proofBy(configKey(), "POST", path, null, jti) },
-      ],
-    }, extra || {});
+      ];
+    }
+    if (withKey) body.login_key = await loginKeyArg(path, jti);
     var bodyStr = JSON.stringify(body);
-    return { bodyStr: bodyStr, header: await proofBy(signer || configKey(), "POST", path, bodyStr, jti) };
+    return { bodyStr: bodyStr, header: await proofBy(signer, "POST", path, bodyStr, jti) };
+  }
+  async function loginKeyArg(path, jti) {
+    return { pubkey: loginKey.publicKeyX, label: "This browser", proof: await proofBy(loginKey, "POST", path, null, jti) };
   }
 
   async function lookupAccount() {
     var path = "/api/v1/accounts/lookup";
-    var w = await withCerts(path, {});
+    var w = await withCerts(path, {}, configKey(), false);
     var r = await postRaw(path, w.bodyStr, { proof: w.header });
     if (r.ok && r.data.account) return r.data.account;
     if (r.status === 404) return null;
     throw error(r, path);
   }
 
+  // §5.2.1: a new account around the identity; the pair recorded and the
+  // login key enrolled by creation.
   async function createAccount() {
     var path = "/api/v1/accounts";
-    var w = await withCerts(path, {});
+    loginKey = await freshLoginKey();
+    var w = await withCerts(path, {}, loginKey, true);
     var r = await postRaw(path, w.bodyStr, { proof: w.header });
-    if (r.ok && r.data.token) { took(r.data); return; }
+    if (r.ok && r.data.token) { took(r.data); await storeLoginKey(account, loginKey); return; }
     throw error(r, path);
   }
 
+  // §4.2 stored_key. False when the registry sends us to the page
+  // (login_required: unknown, expired, or revoked key).
   async function loginStored(acct) {
     var path = "/api/v1/login";
     var jti = rndHex();
@@ -181,9 +176,12 @@
     var bodyStr = JSON.stringify({ account: acct, method: "stored_key", proof: pp });
     var r = await postRaw(path, bodyStr, { proof: await proofBy(loginKey, "POST", path, bodyStr, jti) });
     if (r.ok && r.data.token) { took(r.data); return true; }
-    return false;
+    if (r.status === 403 && r.data.reason === "login_required") return false;
+    throw error(r, path);
   }
 
+  // §4.2 login_page: the page's token, then login with the login key, which
+  // enrols (or re-enrols) it.
   async function loginPage(acct) {
     var path = "/api/v1/login";
     var r = await postRaw(path, JSON.stringify({ account: acct, method: "login_page" }), {});
@@ -193,7 +191,7 @@
     if (url.origin === window.location.origin && !password && askPassword) password = await askPassword();
     if (url.origin === window.location.origin && password) {
       // This registry's own page: its check is the account password, which
-      // the dialog has just collected — post it straight to the page's
+      // the page has just collected — post it straight to the page's
       // backend rather than rendering the page.
       var lr = await postRaw("/wsapi/registry_login", JSON.stringify({ account: acct, password: password }), {});
       if (!(lr.ok && lr.data.login)) throw error(lr, "/wsapi/registry_login");
@@ -203,8 +201,11 @@
       // the page itself asks.
       pageToken = await loginPopup(url, acct);
     }
-    var r2 = await postRaw(path, JSON.stringify({ account: acct, method: "login_page", token: pageToken }), {});
-    if (r2.ok && r2.data.token) { took(r2.data); return; }
+    if (!loginKey) loginKey = await freshLoginKey();
+    var jti = rndHex();
+    var bodyStr = JSON.stringify({ account: acct, method: "login_page", token: pageToken, login_key: await loginKeyArg(path, jti) });
+    var r2 = await postRaw(path, bodyStr, { proof: await proofBy(loginKey, "POST", path, bodyStr, jti) });
+    if (r2.ok && r2.data.token) { took(r2.data); await storeLoginKey(acct, loginKey); return; }
     throw error(r2, path);
   }
 
@@ -234,71 +235,37 @@
     });
   }
 
-  async function ensureLoginKey() {
-    if (loginKey) return;
-    var kp = await window.Keystore.generate();
-    var r;
-    if (memberKey()) {
-      r = await call("POST", "/api/v1/login-keys", { pubkey: kp.publicKeyX, label: "This browser" });
-    } else {
-      // No member to sign with (a page login, keyless): the key proves
-      // its own enrolment and the answer carries a session it belongs to.
-      var path = "/api/v1/login-keys";
-      var key = { privateKey: kp.privateKey, kid: await kidOfX(kp.publicKeyX) };
-      var bodyStr = JSON.stringify({ pubkey: kp.publicKeyX, label: "This browser (account page)" });
-      var res = await postRaw(path, bodyStr, { proof: await proofBy(key, "POST", path, bodyStr), authorization: "Bearer " + token });
-      if (!res.ok) throw error(res, path);
-      r = res.data;
-      if (r.session) took(r.session);
-    }
-    loginKey = { privateKey: kp.privateKey, publicKeyX: kp.publicKeyX, kid: r.kid, cert: r.cert };
-    await storeLoginKey(account, loginKey);
-  }
-
-  // Attach the pair under the session (idempotent on pubkey); the header
-  // proof is by a member when we have one, else by the config cert itself.
+  // §5.2.4: record the pair under the session (idempotent on pubkey). The
+  // session is unchanged.
   async function attach() {
     var path = "/api/v1/account/attach";
-    var w = await withCerts(path, {}, memberKey() || configKey());
+    var w = await withCerts(path, {}, loginKey, false);
     var r = await postRaw(path, w.bodyStr, { proof: w.header, authorization: "Bearer " + token });
-    if (r.ok && r.data.token) { took(r.data); return; }
+    if (r.ok) return;
     throw error(r, path);
   }
 
-  // Keyless: a live session by this page's login key.
-  async function ensureKeyless() {
-    token = null; members = [];
-    if (!loginKey) loginKey = await loadLoginKey(account);
-    if (loginKey && await loginStored(account)) return token;
-    loginKey = null;
-    await loginPage(account);
-    await ensureLoginKey();   // the page's only member: without it the session cannot sign
-    return token;
-  }
-
-  // A live session with the pair attached (keyless: by the login key).
+  // A live session bound to this browser's login key for the account; with
+  // a pair, the pair recorded under it.
   async function ensure() {
-    if (token && nowS() < tokenExp - 60 && memberKey()) return token;
-    if (!pair && account) return ensureKeyless();
-    if (!pair) throw new Error("Registry not configured");
-    token = null; members = [];
+    if (token && nowS() < tokenExp - 60 && loginKey) return token;
+    if (!pair && !account) throw new Error("Registry not configured");
+    token = null;
     var acct = account || knownAccount();
     if (acct) {
       if (!loginKey) loginKey = await loadLoginKey(acct);
       if (loginKey && await loginStored(acct)) {
-        if (!memberKey() || members.indexOf(kids.config) === -1) await attach();
+        if (pair) await attach();
         return token;
       }
-      loginKey = null;
     }
-    acct = await lookupAccount();
+    if (!acct && pair) acct = await lookupAccount();
     if (!acct) {
-      await createAccount();          // the pair is recorded by creation
-    } else {
-      await loginPage(acct);
-      await attach();
+      await createAccount();          // the pair recorded, the key enrolled
+      return token;
     }
-    try { await ensureLoginKey(); } catch (e) { console.warn("login key not minted:", e.message || e); }
+    await loginPage(acct);
+    if (pair) await attach();
     return token;
   }
 
@@ -306,8 +273,6 @@
   // does. 204 resolves to {}; any error throws with status/reason.
   async function call(method, path, body, retried) {
     await ensure();
-    var key = memberKey();
-    if (!key) throw new Error("no session member to sign with");
     var htuPath = path.split("?")[0];
     var bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
     var r = await fetch(path, {
@@ -316,7 +281,7 @@
         "content-type": "application/json",
         accept: "application/json",
         authorization: "Bearer " + token,
-        proof: await proofBy(key, method, htuPath, method === "GET" ? null : (bodyStr || ""), null),
+        proof: await proofBy(loginKey, method, htuPath, method === "GET" ? null : (bodyStr || ""), null),
       },
       body: bodyStr,
     });
@@ -350,22 +315,23 @@
       if (identity !== opts.identity) { account = null; loginKey = null; }
       identity = opts.identity;
       if (opts.password) password = opts.password;
+      askPassword = null;
       kids = { device: await kidOfCert(pair.deviceCert), config: await kidOfCert(pair.configCert) };
-      if (!sameCert) { token = null; tokenExp = 0; members = []; }
+      if (!sameCert) { token = null; tokenExp = 0; }
     },
     // Keyless (a page as its own device): account is the registry's public
     // account id; password, when the page has just collected it;
     // askPassword() the page's prompt for when it has not.
     configureKeyless: function (opts) {
       pair = null; kids = null; identity = null;
-      if (account !== opts.account) { loginKey = null; token = null; tokenExp = 0; members = []; }
+      if (account !== opts.account) { loginKey = null; token = null; tokenExp = 0; }
       account = opts.account;
       password = opts.password || null;
       askPassword = opts.askPassword || null;
     },
     configured: function () { return !!pair || !!account; },
-    // Whether this browser already holds a login cert for the account, so
-    // a page can tell "headless from here" from "will ask for the password".
+    // Whether this browser already holds a login key for the account, so a
+    // page can tell "headless from here" from "will ask for the password".
     hasLoginKey: async function () {
       if (!account) return false;
       if (!loginKey) loginKey = await loadLoginKey(account);
@@ -374,8 +340,8 @@
     // Forget this browser's login key for the account (after revoking it).
     forgetLoginKey: async function () {
       if (!account) return;
-      try { await window.Keystore.delDevice(window.location.host, loginKeyEmail(account), "login"); } catch (e) {}
-      loginKey = null; token = null; members = [];
+      try { await window.Keystore.delDevice(window.location.host, "@registry:" + account, "login"); } catch (e) {}
+      loginKey = null; token = null;
     },
     account: function () { return account; },
     loginKid: function () { return loginKey ? loginKey.kid : null; },

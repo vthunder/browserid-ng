@@ -1,11 +1,10 @@
 //! Sessions and request proofs (registry-api-v1 §4.4–§4.5). A session is
 //! an opaque token on one account, opened by a login (§4.2) or by
-//! `accounts` (§5.2.1). Its members are the keys that may sign its
-//! proofs: the login key that opened it and the identity certs proven
-//! under it. Every call carries `Authorization: Bearer <token>` and a
-//! `Proof` JWS signed by one member, whose `kid` says which; POST proofs
-//! bind the body by `bh`. Members are re-checked on every call and
-//! dropped as they fail; a session with none left is `401 invalid_session`.
+//! `accounts` (§5.2.1) and bound to the device's login key that call
+//! carried. Every call carries `Authorization: Bearer <token>` and a
+//! `Proof` JWS signed by that key; POST proofs bind the body by `bh`. The
+//! key is re-checked on every call: revoked or expired is
+//! `401 invalid_session`.
 
 use std::sync::Arc;
 
@@ -23,7 +22,7 @@ use sha2::{Digest, Sha256};
 
 use crate::api::{ApiError, ApiUser, PROOF_IAT_WINDOW_SECONDS, PROOF_TYP};
 use crate::consent::public_origin;
-use crate::models::{DeviceCertRecord, SessionRecord};
+use crate::models::{LoginCertRecord, SessionRecord};
 use crate::RegistrarState;
 
 /// Session lifetime (§4.5: RECOMMENDED ≤ 24 h).
@@ -193,93 +192,30 @@ pub(crate) fn kid_of(pubkey_b64: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Members
+// Sessions (§4.5)
 // ---------------------------------------------------------------------------
 
-/// A session member that passed the per-call re-check: an identity cert
-/// proven under the session, or the login key that opened it.
-#[derive(Clone, Debug)]
-pub enum Member {
-    Cert { cert: DeviceCertRecord, kid: String },
-    Login { rec: crate::models::LoginCertRecord },
-}
-
-impl Member {
-    pub fn kid(&self) -> &str {
-        match self {
-            Member::Cert { kid, .. } => kid,
-            Member::Login { rec } => &rec.kid,
-        }
-    }
-    pub fn pubkey(&self) -> &str {
-        match self {
-            Member::Cert { cert, .. } => &cert.pubkey,
-            Member::Login { rec } => &rec.pubkey,
-        }
-    }
-}
-
-/// The member set of a session as of now: each recorded cert re-checked
-/// for retirement, expiry and status (fail-closed), failing ones dropped;
-/// the login key while its cert is live.
-pub(crate) async fn resolve_members(
-    state: &RegistrarState,
-    user_id: u64,
-    cert_ids: &[u64],
-    login_key_id: Option<u64>,
-) -> Result<Vec<Member>, ApiError> {
-    let mut out = Vec::new();
-    if let Some(id) = login_key_id {
-        let live = state
-            .store
-            .list_login_certs(user_id)
-            .map_err(|e| ApiError::Internal(format!("login certs: {e}")))?
-            .into_iter()
-            .find(|c| c.id == id)
-            .filter(|c| c.is_live());
-        if let Some(rec) = live {
-            if !rec.status_idx.map_or(false, |i| state.store.is_status_revoked_idx(i).unwrap_or(true)) {
-                out.push(Member::Login { rec });
-            }
-        }
-    }
-    let certs = state
+/// The login key a session is bound to, as of now: live (unrevoked,
+/// unexpired) or the session is invalid.
+fn session_key(state: &RegistrarState, rec: &SessionRecord) -> Result<LoginCertRecord, ApiError> {
+    let Some(id) = rec.login_key_id else {
+        return Err(ApiError::InvalidSession("this session predates login keys; log in again".into()));
+    };
+    state
         .store
-        .list_device_certs(user_id)
-        .map_err(|e| ApiError::Internal(format!("certs: {e}")))?;
-    for id in cert_ids {
-        let Some(cert) = certs.iter().find(|c| c.id == *id) else { continue };
-        if !passes_bar(state, cert).await {
-            continue;
-        }
-        let Some(kid) = kid_of(&cert.pubkey) else { continue };
-        out.push(Member::Cert { cert: cert.clone(), kid });
-    }
-    Ok(out)
+        .list_login_certs(rec.user_id)
+        .map_err(|e| ApiError::Internal(format!("login keys: {e}")))?
+        .into_iter()
+        .find(|k| k.id == id)
+        .filter(|k| k.is_live())
+        .ok_or_else(|| ApiError::InvalidSession("this session's login key is revoked or expired".into()))
 }
 
-/// Unretired, unexpired, and not revoked at its status ref (uncheckable =
-/// revoked). Re-checks are refreshed within the host's list cache lifetime.
-pub(crate) async fn passes_bar(state: &RegistrarState, cert: &DeviceCertRecord) -> bool {
-    if !cert.is_active() || cert.expires_at <= Utc::now() {
-        return false;
-    }
-    match (cert.status_uri.as_deref(), cert.status_idx) {
-        (Some(uri), Some(idx)) => match state.presentation_verifier.as_ref() {
-            Some(v) => matches!(v.check_status_ref(uri, idx).await, Ok(false)),
-            None => false,
-        },
-        _ => true,
-    }
-}
-
-/// The session behind `Authorization: Bearer`, with its live members —
-/// possibly none: a page login proves no key until the first `attach`
-/// (§4.5), which is why `attach` resolves its own signer.
+/// The session behind `Authorization: Bearer` and its live login key.
 pub(crate) async fn bearer_session(
     state: &RegistrarState,
     headers: &axum::http::HeaderMap,
-) -> Result<(SessionRecord, Vec<Member>), ApiError> {
+) -> Result<(SessionRecord, LoginCertRecord), ApiError> {
     let auth = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -298,16 +234,35 @@ pub(crate) async fn bearer_session(
     if rec.is_expired() {
         return Err(ApiError::InvalidSession("session expired".into()));
     }
-    let members = resolve_members(state, rec.user_id, &rec.member_cert_ids, rec.login_key_id).await?;
-    Ok((rec, members))
+    let key = session_key(state, &rec)?;
+    Ok((rec, key))
 }
 
-/// Mint a session and answer its §4.5 body.
+/// The whole §4.4 session path for one call: token → key → the header
+/// proof by that key → claims (`bh` when a body is expected) → replay.
+pub(crate) async fn verify_session_call(
+    state: &RegistrarState,
+    headers: &axum::http::HeaderMap,
+    method: &str,
+    path: &str,
+    expect_bh: Option<&str>,
+) -> Result<(SessionRecord, LoginCertRecord, Proof), ApiError> {
+    let (rec, key) = bearer_session(state, headers).await?;
+    let proof = header_proof(headers)?;
+    if proof.kid != key.kid {
+        return Err(ApiError::InvalidSession("the Proof key is not this session's login key".into()));
+    }
+    proof.verify(&key.pubkey)?;
+    proof.check_claims(state, method, path, expect_bh)?;
+    replay_check(state, &proof.kid, &proof.jti)?;
+    Ok((rec, key, proof))
+}
+
+/// Mint a session bound to `key` and answer its §4.5 body.
 pub(crate) async fn open(
     state: &RegistrarState,
     user_id: u64,
-    member_ids: Vec<u64>,
-    login_key_id: Option<u64>,
+    key: &LoginCertRecord,
 ) -> Result<serde_json::Value, ApiError> {
     let now = Utc::now();
     let expires_at = now + Duration::seconds(SESSION_TTL_SECONDS);
@@ -317,26 +272,12 @@ pub(crate) async fn open(
         .create_session(SessionRecord {
             token_hash: b64url_sha256(token.as_bytes()),
             user_id,
-            member_cert_ids: member_ids.clone(),
-            login_key_id,
+            login_key_id: Some(key.id),
             created_at: now,
             expires_at,
         })
         .map_err(|e| ApiError::Internal(format!("session store: {e}")))?;
     state.store.cleanup_expired_sessions().ok();
-    session_body(state, user_id, &token, expires_at, &member_ids, login_key_id).await
-}
-
-/// The §4.5 session body.
-pub(crate) async fn session_body(
-    state: &RegistrarState,
-    user_id: u64,
-    token: &str,
-    expires_at: chrono::DateTime<Utc>,
-    member_ids: &[u64],
-    login_key_id: Option<u64>,
-) -> Result<serde_json::Value, ApiError> {
-    let members = resolve_members(state, user_id, member_ids, login_key_id).await?;
     let roster = state
         .host
         .roster(user_id)
@@ -349,10 +290,7 @@ pub(crate) async fn session_body(
         "token": token,
         "expires_at": expires_at.to_rfc3339(),
         "account": account,
-        "members": members.iter().map(|m| match m {
-            Member::Login { rec } => serde_json::json!({ "kid": rec.kid, "kind": "login" }),
-            Member::Cert { cert, kid } => serde_json::json!({ "id": cert.id, "kid": kid, "kind": "cert", "purpose": cert.purpose }),
-        }).collect::<Vec<_>>(),
+        "key": { "id": key.id, "kid": key.kid, "label": key.label },
         "roster": roster.iter().map(|(identity, state)| serde_json::json!({
             "identity": identity, "state": state,
         })).collect::<Vec<_>>(),
@@ -364,12 +302,9 @@ pub async fn end_session(
     State(state): State<Arc<RegistrarState>>,
     user: ApiUser,
 ) -> Result<StatusCode, ApiError> {
-    let Some(hash) = user.session_token_hash.as_deref() else {
-        return Err(ApiError::InvalidRequest("this call needs a session, not a legacy token".into()));
-    };
     state
         .store
-        .delete_session(hash)
+        .delete_session(&user.session_token_hash)
         .map_err(|e| ApiError::Internal(format!("session store: {e}")))?;
     Ok(StatusCode::NO_CONTENT)
 }

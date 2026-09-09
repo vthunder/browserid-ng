@@ -204,7 +204,6 @@ pub trait UserStore: Send + Sync {
     /// Delete every session of the account that lists `cert_id` as its ONLY
     /// member (§4.5: retiring a cert ends the sessions it is the last member
     /// of). Returns how many.
-    fn end_sessions_solely_on_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<u64>;
 
     // --- Login certs + login-page tokens (registry-api-v1 §4.2) ---
 
@@ -215,7 +214,11 @@ pub trait UserStore: Send + Sync {
     /// Sticky. `false` when no such row on the account.
     fn revoke_login_cert(&self, user_id: UserId, id: u64) -> StoreResult<bool>;
     /// Delete the account's sessions whose only member is this login key.
-    fn end_sessions_solely_on_login_key(&self, user_id: UserId, id: u64) -> StoreResult<u64>;
+    /// End every registry session bound to this login key.
+    fn end_sessions_on_login_key(&self, user_id: UserId, id: u64) -> StoreResult<u64>;
+    fn set_login_cert_holder(&self, user_id: UserId, id: u64, holder: &str) -> StoreResult<()>;
+    /// Revoke every login key recorded with this holder; the ids revoked.
+    fn revoke_login_certs_for_holder(&self, user_id: UserId, holder: &str) -> StoreResult<Vec<u64>>;
     fn create_login_token(&self, rec: LoginToken) -> StoreResult<()>;
     /// Take (delete) a login token; `None` when unknown.
     fn take_login_token(&self, token_hash: &str) -> StoreResult<Option<LoginToken>>;

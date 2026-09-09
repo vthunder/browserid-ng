@@ -31,13 +31,13 @@ test('the account page logs in as its own device and can sign itself out', async
 
   // The password sign-in enrolled this page's login key: listed, no prompt.
   const list = page.locator('#lk-list');
-  await expect(list).toContainText('account page', { timeout: 10000 });
+  await expect(list).toContainText('This browser', { timeout: 10000 });
   await expect(page.locator('#lk-pass-form')).toBeHidden();
 
   // A reload is headless: stored_key, still listed, still no prompt.
   await page.reload();
   await expect(page.locator('#app')).toBeVisible({ timeout: 10000 });
-  await expect(list).toContainText('account page', { timeout: 10000 });
+  await expect(list).toContainText('This browser', { timeout: 10000 });
   await expect(page.locator('#lk-pass-form')).toBeHidden();
 
   // The registry agrees: one live login key on the account.
@@ -45,7 +45,7 @@ test('the account page logs in as its own device and can sign itself out', async
     const r = await (window as any).Registry.call('GET', '/api/v1/login-keys');
     return r.login_keys.filter((k: any) => !k.revoked).map((k: any) => k.label);
   });
-  expect(keys).toEqual(['This browser (account page)']);
+  expect(keys).toEqual(['This browser']);
 
   // Sign the page's own key out (in-content confirm): the session ends and
   // the card asks for the password.
@@ -62,5 +62,5 @@ test('the account page logs in as its own device and can sign itself out', async
   await page.fill('#lk-pass', pass);
   await page.click('#lk-go');
   await expect(page.locator('#lk-pass-form')).toBeHidden({ timeout: 10000 });
-  await expect(list).toContainText('account page');
+  await expect(list).toContainText('This browser');
 });

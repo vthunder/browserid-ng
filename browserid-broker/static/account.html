@@ -1688,7 +1688,8 @@ $('signin-form').onsubmit = async (e) => {
 
 // -------- registry session (registry-api-v1) --------
 // This page is its own device on the account (handoff 2026-09-09 ruling 1):
-// a page-local login key, one password login through the registry's login
+// the browser's login key for the account (shared with the dialog when the
+// web wallet runs here), one password login through the registry's login
 // page, stored_key from then on. The cookie session still serves the
 // issuer role (addresses, password, certs issued here); registry data is
 // read and managed under this session.
@@ -1742,8 +1743,8 @@ function renderLoginKeys() {
   const fmt = (iso) => { try { return new Date(iso).toLocaleDateString(); } catch { return ''; } };
   $('lk-list').innerHTML = keys.map(k => `
     <div class="lk-row" style="display:flex;align-items:center;gap:8px;padding:6px 0">
-      <span style="flex:1;min-width:0;font:12.5px system-ui, sans-serif">${escapeHtml(k.label || 'Device')}
-        <span class="via">since ${fmt(k.issued_at)}</span></span>
+      <span style="flex:1;min-width:0;font:12.5px system-ui, sans-serif">${escapeHtml(k.label || 'Device')}${k.current ? ' <span class="via">(this browser)</span>' : ''}
+        <span class="via">since ${fmt(k.enrolled_at)}</span></span>
       <button class="btn-plain lk-revoke" data-id="${k.id}" data-kid="${escapeHtml(k.kid)}">Sign out</button>
     </div>`).join('') || '<div class="via">Nothing else is signed in.</div>';
   for (const b of $('lk-list').querySelectorAll('.lk-revoke')) b.onclick = async () => {

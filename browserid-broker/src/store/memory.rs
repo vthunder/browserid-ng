@@ -583,13 +583,6 @@ impl UserStore for InMemoryUserStore {
         Ok((before - s.len()) as u64)
     }
 
-    fn end_sessions_solely_on_cert(&self, user_id: UserId, cert_id: u64) -> StoreResult<u64> {
-        let mut s = self.registry_sessions.write().unwrap();
-        let before = s.len();
-        s.retain(|_, r| !(r.user_id == user_id && r.member_cert_ids == vec![cert_id]));
-        Ok((before - s.len()) as u64)
-    }
-
     fn insert_login_cert(&self, mut rec: LoginCert) -> StoreResult<u64> {
         let mut certs = self.login_certs.write().unwrap();
         if let Some(id) = certs.values().find(|c| c.kid == rec.kid).map(|c| c.id) {
@@ -622,11 +615,30 @@ impl UserStore for InMemoryUserStore {
         }
     }
 
-    fn end_sessions_solely_on_login_key(&self, user_id: UserId, id: u64) -> StoreResult<u64> {
+    fn end_sessions_on_login_key(&self, user_id: UserId, id: u64) -> StoreResult<u64> {
         let mut s = self.registry_sessions.write().unwrap();
         let before = s.len();
-        s.retain(|_, r| !(r.user_id == user_id && r.login_key_id == Some(id) && r.member_cert_ids.is_empty()));
+        s.retain(|_, r| !(r.user_id == user_id && r.login_key_id == Some(id)));
         Ok((before - s.len()) as u64)
+    }
+
+    fn set_login_cert_holder(&self, user_id: UserId, id: u64, holder: &str) -> StoreResult<()> {
+        if let Some(c) = self.login_certs.write().unwrap().get_mut(&id) {
+            if c.user_id == user_id { c.holder = Some(holder.to_string()); }
+        }
+        Ok(())
+    }
+
+    fn revoke_login_certs_for_holder(&self, user_id: UserId, holder: &str) -> StoreResult<Vec<u64>> {
+        let mut certs = self.login_certs.write().unwrap();
+        let mut ids = Vec::new();
+        for c in certs.values_mut() {
+            if c.user_id == user_id && c.holder.as_deref() == Some(holder) && c.revoked_at.is_none() {
+                c.revoked_at = Some(Utc::now());
+                ids.push(c.id);
+            }
+        }
+        Ok(ids)
     }
 
     fn create_login_token(&self, rec: LoginToken) -> StoreResult<()> {
