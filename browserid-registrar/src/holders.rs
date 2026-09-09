@@ -435,6 +435,7 @@ pub fn forget_holder_core(
     user_id: u64,
     holder_id: &str,
 ) -> Result<Vec<String>> {
+    owned_certs(store, user_id, holder_id)?; // HolderNotFound → 404: no existence leak, no-op forget
     let unrevocable = log_out_device_core(store, host, own_domain, user_id, holder_id)?;
     cleanup_holder_warrants(store, user_id, holder_id);
     store.forget_holder(user_id, holder_id)?;
