@@ -199,6 +199,36 @@ must('no popup opened', pagesAfter === pagesBefore, `${pagesBefore} -> ${pagesAf
 const bodyText = await page.evaluate(() => document.body.innerText);
 must('page shows logged-in state with the email', bodyText.includes(email), bodyText.slice(0, 300).replace(/\n+/g, ' | '));
 
+// 7b. Request kinds over the shim (spec §7.3, g69e): warrant (self-grant)
+//     then signature (typed object under it), both answered natively — no
+//     popup, artefacts back to the page as promises.
+const AUD = 'sbo+raw://avail:turing:506/';
+const envelope = (action) => ({
+  action, owner: email, path: '/communities/cooks/spaces/general/',
+  id: 'wallet-e2e-' + Date.now(), public_key: 'ed25519:' + '00'.repeat(32),
+  content_schema: 'post.v1', payload: Array.from(new TextEncoder().encode('{"body":"hi"}')),
+  hlc: `${Date.now()}.0`,
+});
+const ask = (kind, args) => page.evaluate(([k, a]) =>
+  navigator.id.request(k, a).then((r) => ({ ok: r }), (e) => ({ err: e })), [kind, args]);
+const wr = await ask('warrant', { grants: [{ audience: AUD, scopes: ['sign:sbo:post', { scope: 'sign:sbo:delete', mode: 'prompt' }] }] });
+must('warrant kind answered natively', !!wr.ok && Array.isArray(wr.ok.warrants) && wr.ok.warrants.length === 1, JSON.stringify(wr).slice(0, 200));
+const wc = wr.ok ? JSON.parse(Buffer.from(wr.ok.warrants[0].split('.')[1], 'base64url').toString()) : {};
+must('self-grant bound to the RP origin + this holder', wc.typ === 'browserid-warrant-v2' && wc.grantor === email
+  && (wc.binding || []).some((b) => b.kind === 'requester' && b.origin === RP_ORIGIN)
+  && (wc.binding || []).some((b) => b.kind === 'holder') && typeof (wc.status || {}).idx === 'number', JSON.stringify(wc.binding));
+const sg = await ask('signature', { audience: AUD, object: envelope('post') });
+must('signature kind answered natively', !!sg.ok && /^[0-9a-f]+$/.test(sg.ok.signature || ''), JSON.stringify(sg).slice(0, 200));
+if (sg.ok) {
+  const parts = String(sg.ok.presentation).split('~');
+  const asr = JSON.parse(Buffer.from(parts[1].split('.')[1], 'base64url').toString());
+  must('signature presentation carries the stored record + req_origin', parts.length === 4 && parts[2] === wr.ok.warrants[0] && asr.req_origin === RP_ORIGIN, JSON.stringify(asr));
+}
+const bad = await ask('signature', { audience: 'sbo+raw://avail:turing:999/', object: envelope('post') });
+must('signature without a grant refuses no_grant', bad.err && bad.err.error === 'no_grant', JSON.stringify(bad));
+const unk = await ask('bogus', {});
+must('unknown kind answers unsupported_kind', unk.err && unk.err.error === 'unsupported_kind', JSON.stringify(unk));
+
 // 8. The login's site warrant closed the prototype gap: it carries an
 //    allocated status ref (per-site revocation bit) and was registered.
 //    NOTE: the extension paired itself during the click, which ROTATED the

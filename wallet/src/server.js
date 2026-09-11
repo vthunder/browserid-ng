@@ -41,7 +41,7 @@ async function readBody(req) {
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
 }
 
-function startServer({ approveLogin, approvePair, notify, onStateChange }) {
+function startServer({ approveLogin, approveRequest, approvePair, notify, onStateChange }) {
   return new Promise((resolve) => {
     const server = http.createServer(async (req, res) => {
       const origin = req.headers.origin || null;
@@ -96,6 +96,21 @@ function startServer({ approveLogin, approvePair, notify, onStateChange }) {
           const result = await require('./login').login({
             origin: rpOrigin, caller: describeCaller(origin), approveLogin, notify,
             acceptedFallbacks,
+          });
+          return json(req, res, result.error ? 400 : 200, result);
+        }
+
+        if (url.pathname === '/request' && req.method === 'POST') {
+          // { kind, origin, args } -> the kind's artefact (spec §7.3,
+          // request-kinds). `origin` is the browser-attached sender origin
+          // the paired extension forwards (bean fta9); trusted on the
+          // strength of the pairing token, bound to the extension origin.
+          const { kind, origin: rpOrigin, args } = await readBody(req);
+          if (!kind || !rpOrigin) return json(req, res, 400, { error: 'bad_request', message: 'kind and origin required' });
+          const result = await require('./request').handle({
+            kind, origin: rpOrigin, args: args || {}, caller: describeCaller(origin),
+            approveLogin, approve: approveRequest, notify,
+            acceptedFallbacks: args && args.acceptedFallbacks,
           });
           return json(req, res, result.error ? 400 : 200, result);
         }

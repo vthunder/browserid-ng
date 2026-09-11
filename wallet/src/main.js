@@ -69,6 +69,24 @@ async function approveLogin({ origin, email, caller, warning }) {
   return response === 0;
 }
 
+// Native approval for a non-login request (warrant: the grants; signature:
+// the object to sign, prompt-mode). Deny is the default.
+async function approveRequest({ kind, origin, email, caller, lines }) {
+  const what = kind === 'warrant' ? 'Grant this permission?' : 'Sign this?';
+  const lead = kind === 'warrant'
+    ? `The site at ${origin} asks for permission, attributed to ${email}, at:`
+    : `The site at ${origin} asks you to sign, as ${email}:`;
+  const { response } = await dialog.showMessageBox({
+    type: 'question',
+    buttons: [kind === 'warrant' ? 'Allow' : 'Sign', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    message: what,
+    detail: `${lead}\n\n${(lines || []).join('\n')}\n\nRequested via: ${caller || 'unknown caller'}`,
+  });
+  return response === 0;
+}
+
 // Native approval for a caller pairing with the bridge — the
 // trust-establishing step, so name the caller and default to Cancel.
 async function approvePair({ caller }) {
@@ -108,7 +126,7 @@ app.whenReady().then(async () => {
     log(`tray created (icon ${icon.isEmpty() ? 'EMPTY' : icon.getSize().width + 'px'})`);
     await store.init(app.getPath('userData'));
     updateTray(store.state());
-    const port = await startServer({ approveLogin, approvePair, notify, onStateChange: () => updateTray(store.state()) });
+    const port = await startServer({ approveLogin, approveRequest, approvePair, notify, onStateChange: () => updateTray(store.state()) });
     log(`localhost server on 127.0.0.1:${port}`);
 
     if (store.state().deviceCert) {

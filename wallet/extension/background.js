@@ -45,13 +45,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const origin = senderOrigin(sender);
       if (!origin || !/^https?:/.test(origin)) {
         sendResponse({ error: 'untrusted sender origin' });
-      } else if (msg.cmd === 'login') {
-        sendResponse(await walletCall('/login', {
-          origin,
-          acceptedFallbacks: msg.payload.acceptedFallbacks || null,
+      } else if (typeof msg.cmd === 'string' && msg.cmd) {
+        // Every request kind rides one bridge call (spec §7.3); the wallet
+        // answers unsupported_kind for kinds it does not know.
+        sendResponse(await walletCall('/request', {
+          kind: msg.cmd, origin, args: msg.payload || {},
         }));
       } else {
-        sendResponse({ error: 'unsupported_kind', kind: msg.cmd });
+        sendResponse({ error: 'bad_request' });
       }
     } catch (err) {
       sendResponse({ error: String(err.message || err) });

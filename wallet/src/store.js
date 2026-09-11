@@ -27,6 +27,7 @@ const EMPTY = {
   configCert: null,
   warrants: {},     // audience -> signed login-warrant JWS
   warrantRefs: {},  // audience -> { uri, idx } (allocated status refs)
+  signingGrants: {}, // requesting origin -> audience -> self-grant JWS (request kind 'warrant')
   bootstrappedAt: null,
 };
 

@@ -39,14 +39,27 @@
       observers = { login: opts.onlogin, logout: opts.onlogout || null, ready: opts.onready || null };
       if (observers.ready) setTimeout(() => observers.ready(), 0);
     },
-    request(opts) {
-      opts = opts || {};
+    // request(options) — legacy login, delivered to watch()'s onlogin.
+    // request(kind, args) — a Promise of the kind's artefact (spec §7.3).
+    request(kindOrOpts, args) {
+      if (typeof kindOrOpts === 'string') {
+        const kind = kindOrOpts;
+        const a = args || {};
+        // The page's origin is NOT sent: the extension background reads it
+        // from the browser-supplied sender (bean fta9).
+        const p = callWallet(kind, kind === 'login'
+          ? { acceptedFallbacks: Array.isArray(a.acceptedFallbacks) ? a.acceptedFallbacks : null }
+          : a);
+        return p.then((result) => {
+          if (result && result.error) throw result;
+          if (kind === 'login' && result && result.presentation && observers.login) {
+            observers.login(result.presentation, { presentation: result.presentation, email: result.email });
+          }
+          return result;
+        });
+      }
+      const opts = kindOrOpts || {};
       if (!observers.login) throw new Error('navigator.id.watch must be called before navigator.id.request');
-      // Forward the RP's accepted fallback IdPs (spec §8.1, bean u6jq) so
-      // the wallet can warn when its identity's issuer will be rejected at
-      // the RP's verifier.
-      // The page's origin is NOT sent: the extension background reads it
-      // from the browser-supplied sender (bean fta9).
       callWallet('login', {
         acceptedFallbacks: Array.isArray(opts.acceptedFallbacks) ? opts.acceptedFallbacks : null,
       }).then((result) => {

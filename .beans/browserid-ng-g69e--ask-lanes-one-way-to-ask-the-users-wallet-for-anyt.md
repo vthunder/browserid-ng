@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-09-11T06:47:46Z
-updated_at: 2026-09-11T13:29:05Z
+updated_at: 2026-09-11T13:45:24Z
 ---
 
 Design + build epic (Dan, 2026-09-10/11). Eight flows end at a consent card or a non-login signature; all but login sign inside a broker page with a keystore key the native wallet does not have, and three of them (connection, authoring, provisioning) are server-filed then REDIRECT a present user to the card — where native-wallet users strand. Target: two lanes (present ask over navigator.id, routed to whichever wallet; out-of-band ask over the registry inbox, also the fallback for platforms without the JS API), one consent component hosted by the wallet, one signing interface answered from the keystore (web) or natively (shim → wallet). The ask vocabulary is a set of schemas kept as a side spec. Manual signing card deleted.
@@ -19,8 +19,8 @@ Design first (fresh context), in this order:
 
 Then build, in migration order:
 - [x] Delete the account page's manual signing card (account.html advanced card + CSP hash) — 2026-09-11
-- [ ] Signing interface in both wallets (web: keystore behind navigator.id; native: shim → jo0m's bridge generalised per ask kind)
-- [ ] SBO grant + SBO action onto the interface (already JS-lane)
+- [x] Signing interface in both wallets (web: common/js/wallet-signer.js behind navigator.id.request(kind); native: shim → /request bridge → wallet/src/request.js) — 2026-09-11
+- [x] SBO grant + SBO action onto the interface: request("warrant") / request("signature") on both wallets; /sign popup kept as a compatibility transport over the same signer — 2026-09-11
 - [ ] Connection + authoring admissions onto the present lane; server lane stays as fallback
 - [ ] Provisioning approval onto the present lane
 - [ ] Delete the redirect paths and per-page keystore signing; consent page = the wallet-hosted card only
