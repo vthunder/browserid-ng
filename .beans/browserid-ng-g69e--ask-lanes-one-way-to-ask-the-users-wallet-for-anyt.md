@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-09-11T06:47:46Z
-updated_at: 2026-09-11T14:04:50Z
+updated_at: 2026-09-11T14:16:27Z
 ---
 
 Design + build epic (Dan, 2026-09-10/11). Eight flows end at a consent card or a non-login signature; all but login sign inside a broker page with a keystore key the native wallet does not have, and three of them (connection, authoring, provisioning) are server-filed then REDIRECT a present user to the card — where native-wallet users strand. Target: two lanes (present ask over navigator.id, routed to whichever wallet; out-of-band ask over the registry inbox, also the fallback for platforms without the JS API), one consent component hosted by the wallet, one signing interface answered from the keystore (web) or natively (shim → wallet). The ask vocabulary is a set of schemas kept as a side spec. Manual signing card deleted.
@@ -22,7 +22,7 @@ Then build, in migration order:
 - [x] Signing interface in both wallets (web: common/js/wallet-signer.js behind navigator.id.request(kind); native: shim → /request bridge → wallet/src/request.js) — 2026-09-11
 - [x] SBO grant + SBO action onto the interface: request("warrant") / request("signature") on both wallets; /sign popup kept as a compatibility transport over the same signer — 2026-09-11
 - [x] Connection + authoring admissions onto the present lane; server lane stays as fallback — 2026-09-11: registrar generic POST/GET /api/v1/requests + claim page_origin; dialog + native wallet answer request("admission", {code}); gate interstitial hands the code to the wallet (no redirect), consent_uri fallback
-- [ ] Provisioning approval onto the present lane
+- [x] Provisioning approval onto the present lane — 2026-09-11 web dialog (embeds /authorize?present=1, CSP frame-ancestors self); native wallet deferred to bean 1iif (prepare/complete need the token lane)
 - [ ] Delete the redirect paths and per-page keystore signing; consent page = the wallet-hosted card only
 - [ ] e2e per lane × wallet (web dialog, native shim), plus the no-JS fallback
 

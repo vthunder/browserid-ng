@@ -84,6 +84,7 @@
     sboConsent: document.getElementById('sbo-consent-screen'),
     signPrompt: document.getElementById('sign-prompt-screen'),
     admission: document.getElementById('admission-screen'),
+    provision: document.getElementById('provision-screen'),
     success: document.getElementById('success-screen'),
     error: document.getElementById('error-screen')
   };
@@ -2094,6 +2095,23 @@
       return;
     }
     if (state.kind === 'admission') return runAdmission();
+    if (state.kind === 'provision') {
+      // request("provision", { code }): the sign-in gave this popup the
+      // broker session the approval card needs. Embed the card (same
+      // origin) and relay its terminal outcome to the page. Navigating the
+      // popup instead would trip WinChan's unload guard (a cancel).
+      const frame = document.getElementById('provision-frame');
+      const onMsg = (e) => {
+        if (e.origin !== location.origin || e.source !== frame.contentWindow) return;
+        if (!e.data || e.data.type !== 'browserid:present') return;
+        window.removeEventListener('message', onMsg);
+        sendResponse({ ...(e.data.d || {}), email: state.email });
+      };
+      window.addEventListener('message', onMsg);
+      frame.src = '/authorize?code=' + encodeURIComponent(state.request.code) + '&present=1';
+      showScreen('provision');
+      return;
+    }
     if (state.sboSign && !sboGrantsCover(state.origin, state.sboSign, state.email)) {
       state.pendingPresentation = presentation;
       fillSboConsentCard();
@@ -2468,7 +2486,7 @@
     state.kind = (p.kind === undefined || p.kind === null || p.kind === 'login') ? 'login' : String(p.kind);
     state.request = null;
     if (state.kind === 'warrant') state.request = normalizeWarrantRequest(p.request);
-    else if (state.kind === 'signature' || state.kind === 'admission') state.request = (p.request && typeof p.request === 'object') ? p.request : null;
+    else if (state.kind === 'signature' || state.kind === 'admission' || state.kind === 'provision') state.request = (p.request && typeof p.request === 'object') ? p.request : null;
     state.sboSign = state.kind === 'login' ? normalizeSboSign(p.sboSign) : false;
     state.provisionEmail = state.kind === 'login' ? (p.provisionEmail || null) : null;
     state.acceptedFallbacks = normalizeAcceptedFallbacks(p.acceptedFallbacks);
@@ -3116,14 +3134,15 @@
     // record names the identity. `warrant` rides the sign-in flow to learn
     // who signs, then branches at returnPresentation.
     if (state.kind === 'signature') return runSignature();
-    if (state.kind !== 'login' && state.kind !== 'warrant' && state.kind !== 'admission') {
+    if (['login', 'warrant', 'admission', 'provision'].indexOf(state.kind) === -1) {
       return sendResponse({ error: 'unsupported_kind', kind: state.kind });
     }
     if (state.kind === 'warrant' && !state.request) {
       return sendResponse({ error: 'bad_request', message: 'warrant needs { grants: [{ audience, scopes }] }' });
     }
-    if (state.kind === 'admission' && !(state.request && typeof state.request.code === 'string' && state.request.code)) {
-      return sendResponse({ error: 'bad_request', message: 'admission needs { code }' });
+    if ((state.kind === 'admission' || state.kind === 'provision') &&
+        !(state.request && typeof state.request.code === 'string' && state.request.code)) {
+      return sendResponse({ error: 'bad_request', message: state.kind + ' needs { code }' });
     }
     // Learn this broker's own issuer domain (its fallback-IdP identity) so the
     // acceptedFallbacks gate (spec §8.1) works on every entry path, including

@@ -173,6 +173,17 @@ const post = (path, body) => api(path, {
 // legacy shape old printed agent URLs still carry (via /account's redirect).
 const qs = new URLSearchParams(location.search);
 const requestCode = qs.get('code') || qs.get('provision');
+// Present lane (spec §7.3, request-kinds `provision`): the dialog embeds
+// this page (same origin; CSP frame-ancestors 'self') for
+// `request("provision", { code })`. Terminal outcomes are posted to the
+// embedding dialog, which answers the requesting page; nothing lands on
+// /account. Only honoured when actually framed by this origin.
+const presentMode = qs.get('present') === '1' && window.parent !== window;
+function presentAnswer(d) {
+  if (!presentMode) return false;
+  try { window.parent.postMessage({ type: 'browserid:present', d }, location.origin); } catch (e) { return false; }
+  return true;
+}
 
 let account = { emails: [], agents: [], warrants: [], csrf: null };
 let deviceCache = []; // this browser's DEVICE-store records
@@ -463,6 +474,7 @@ function pvCloseAction(btn, fallback) {
 // banner + roster highlight, then go there. The dashboard is the landing
 // pattern — approval flows end in the roster, not on a terminal card here.
 function pvLandOnAccount(result) {
+  if (presentAnswer({ status: 'approved', agent: result.agent, name: result.name })) return;
   try { sessionStorage.setItem('browserid:authorized', JSON.stringify({ ...result, ts: Date.now() })); }
   catch (e) { /* private mode: the roster still shows the new actor */ }
   location.replace('/account');
@@ -1210,6 +1222,8 @@ async function pvApproveIdentity(mode) {
     pv.identityDone = true;
     pv.view = 'done';
     pvRender();
+    // Grant-less request: the identity stage was the whole ask.
+    if (!pv.grants.length) presentAnswer({ status: 'approved', agent: agentEmail });
   } catch (e) {
     if (popup) { try { popup.close(); } catch (e2) { /* already closed */ } }
     status.className = 'status err'; status.textContent = 'Failed: ' + e.message;
@@ -1293,6 +1307,7 @@ async function pvDenyGrants() {
   pv.grantsDenied = true;
   pv.view = 'done';
   pvRender();
+  presentAnswer({ status: 'approved', agent: pv.agentEmail || pvAgentEmail(), grants_denied: true });
 }
 
 // Deny (A8): the requester is told immediately via its poll — it never sits
@@ -1301,6 +1316,7 @@ async function pvDeny() {
   try { await post('/agent-provision/complete', { code: pv.code, approve: false }); } catch (e) { /* best effort */ }
   pv.view = 'denied';
   pvRender();
+  presentAnswer({ status: 'denied' });
 }
 
 // Right after a password sign-in: log the page in to the registry while the

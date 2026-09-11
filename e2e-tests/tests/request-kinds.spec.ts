@@ -14,6 +14,7 @@
  */
 import { test, expect, generateTestPassword } from '../fixtures/test-helpers';
 import { DialogPage } from '../pages/dialog';
+import { requestProvision } from '../../sdk/agent/src/device.mjs';
 
 const BROKER = process.env.BROKER_URL || 'http://localhost:3000';
 const AUDIENCE = 'sbo+raw://avail:turing:506/';
@@ -186,5 +187,44 @@ test.describe('request(kind, args)', () => {
     expect(c.binding.kind).toBe('connection');
     expect(c.binding.client_host).toBe('claude.ai');
     expect(c.audience).toBe(audience);
+  });
+
+  test('provision: the page hands over the code, the approval card answers the page, the agent picks up', async ({ page }) => {
+    test.setTimeout(120000);
+    const handle = `agt${Date.now().toString(36)}p`;
+    const pending = await requestProvision(BROKER, {
+      handle, grants: [{ audience: 'https://notes.example.com', scopes: ['post'] }], label: 'Present-lane agent',
+    });
+    await page.goto('/');
+    await page.addScriptTag({ url: `${BROKER}/include.js` });
+    await page.waitForFunction(() => typeof (navigator as any).id?.request === 'function');
+    const popupP = page.context().waitForEvent('page');
+    await page.evaluate((code) => {
+      const w = window as any;
+      w.__p = { pending: true };
+      (navigator as any).id.request('provision', { code }).then(
+        (r: any) => { w.__p = { ok: r }; }, (e: any) => { w.__p = { err: e }; });
+    }, pending.code);
+    const popup = await popupP;
+    await popup.waitForSelector('#email-screen.active', { timeout: 15000 });
+    await new DialogPage(popup).signInExistingUser(email, password);
+    // The dialog embeds the approval card (same session, present mode).
+    const card = popup.frameLocator('#provision-frame');
+    await expect(card.locator('#provision')).toContainText('Is this your agent?', { timeout: 30000 });
+    await card.locator('#pv-match').click();
+    await expect(card.locator('#provision')).toContainText('Give your agent a name and an address');
+    await card.locator('#pv-approve').click();
+    await expect(card.locator('#provision')).toContainText('Meet', { timeout: 20000 });
+    await card.locator('#pv-toperm').click();
+    await expect(card.locator('#provision')).toContainText('wants permission');
+    await card.locator('#pv-approve').click();
+    await page.waitForFunction(() => !(window as any).__p.pending, undefined, { timeout: 30000 });
+    const p = await page.evaluate(() => (window as any).__p);
+    expect(p.ok, JSON.stringify(p)).toBeTruthy();
+    expect(p.ok.status).toBe('approved');
+    expect(p.ok.agent).toContain(`+${handle}@`);
+    const result = await pending.wait();
+    expect(result.credential.identity).toBe(p.ok.agent);
+    expect(result.grants.length).toBe(1);
   });
 });

@@ -284,6 +284,11 @@ async function handle({ kind, origin, args, caller, approveLogin, approve, accep
   if (kind === 'warrant') return warrant({ origin, args, caller, approve });
   if (kind === 'signature') return signature({ origin, args, caller, approve });
   if (kind === 'admission') return admission({ origin, args });
+  if (kind === 'provision') {
+    // The approval page needs the broker cookie session (prepare/complete
+    // are not on the token lane yet); the page falls back to the link.
+    return { error: 'unsupported_kind', kind: 'provision', message: 'native provisioning approval is not available yet — open the approval link' };
+  }
   return { error: 'unsupported_kind', kind: String(kind) };
 }
 

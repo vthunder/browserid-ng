@@ -402,7 +402,7 @@ where
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
     "'sha256-YSzkZoBbMwto8IrjLETivwinoRTNrmsGye3XXswJPCQ='", // account.html
-    "'sha256-PvJyf1RVthlvmqJMdb1ykTpVS3hQHOgt/lz+q+WWKzA='", // authorize.html
+    "'sha256-Uhz1lBLZwAXFZXRhook/XnlTqQ+CMS/mr2ShGoYR8o0='", // authorize.html
     "'sha256-XTrQqSS9JOYtbKQFu6lSXhIF2ES0OSNBtS7+e++1bgw='", // consent.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)
 ];
@@ -434,6 +434,11 @@ fn build_strict_csp(frame_ancestors_none: bool, connect_any_web: bool) -> String
     csp
 }
 
+static CSP_STRICT_SELF_FRAMED: std::sync::LazyLock<HeaderValue> = std::sync::LazyLock::new(|| {
+    HeaderValue::from_str(&format!("{}; frame-ancestors 'self'", build_strict_csp(false, false)))
+        .expect("valid CSP header")
+});
+
 static CSP_STRICT: std::sync::LazyLock<HeaderValue> = std::sync::LazyLock::new(|| {
     HeaderValue::from_str(&build_strict_csp(true, false)).expect("valid CSP header")
 });
@@ -457,6 +462,10 @@ enum CspTier {
     /// The login dialog: strict, framing denied, but connect-src open to any
     /// web origin (it POSTs to primary IdPs' mint APIs discovered at runtime).
     Dialog,
+    /// The agent approval card (/authorize): strict, framed ONLY by this
+    /// origin — the dialog embeds it for `request("provision")` (present
+    /// lane, spec §7.3); every other framer is refused.
+    StrictSelfFramed,
 }
 
 fn csp_tier(path: &str) -> CspTier {
@@ -465,6 +474,9 @@ fn csp_tier(path: &str) -> CspTier {
     // origin (Dialog tier). Both are popups → framing still denied.
     if path.starts_with("/dialog/") || path == "/sign" {
         return CspTier::Dialog;
+    }
+    if path == "/authorize" {
+        return CspTier::StrictSelfFramed;
     }
     // The winchan relay is framed cross-origin by the RP page during a dialog
     // popup handshake — the one surface that still legitimately embeds.
@@ -529,6 +541,10 @@ async fn security_headers(
         CspTier::Dialog => {
             headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
             headers.insert(header::CONTENT_SECURITY_POLICY, CSP_DIALOG.clone());
+        }
+        CspTier::StrictSelfFramed => {
+            headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN"));
+            headers.insert(header::CONTENT_SECURITY_POLICY, CSP_STRICT_SELF_FRAMED.clone());
         }
     }
 
@@ -865,7 +881,7 @@ mod csp_tests {
     #[test]
     fn csp_tiers_route_correctly() {
         assert!(matches!(csp_tier("/account"), CspTier::Strict));
-        assert!(matches!(csp_tier("/authorize"), CspTier::Strict));
+        assert!(matches!(csp_tier("/authorize"), CspTier::StrictSelfFramed));
         assert!(matches!(csp_tier("/consent"), CspTier::Strict));
         assert!(matches!(csp_tier("/dialog/dialog.html"), CspTier::Dialog));
         assert!(matches!(csp_tier("/sign"), CspTier::Dialog));

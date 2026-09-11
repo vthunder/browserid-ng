@@ -13,7 +13,7 @@ Each kind fixes five things:
 | [`warrant`](./warrant.json) | `grants[]`, `message?` (self-grant only) | agent: device-key signature | each grant, equal prominence; grantee, label, and deny-first when filed | warrants + config cert | page (inline) / poll (filed) |
 | [`signature`](./signature.json) | `audience`, `object` | — (filed form is §5 labeled door 4) | the typed object | presentation + JWS over the object | page |
 | [`admission`](./admission.json) | `code` | resource backend: audience proof, or page origin = audience origin | connection / authoring card | admission records + config cert | poll only |
-| [`provision`](./provision.json) | `code` | agent: anonymous until the user binds | identity stage, then grants stage | device cert + warrants | poll only |
+| [`provision`](./provision.json) | `code` | agent: anonymous until the user binds | identity stage, then grants stage (the wallet hosts the registry's approval card) | device cert + warrants | poll only |
 | `notice` | — | the registry | informational; nothing to sign | — | — |
 
 Rules every kind shares:
