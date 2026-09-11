@@ -274,14 +274,6 @@
       padding: 7px; text-align: center; cursor: pointer; width: 100%; }
     .pv-ghost:hover { color: #17171a; }
 
-    /* Advanced tools (debug manual-warrant signer) */
-    .advcard { background: #fff; border: 1px solid rgba(0,0,0,.09); border-radius: 10px; padding: 16px; }
-    .advcard label { display: block; margin: 8px 0 4px; font: 11px system-ui, sans-serif; color: #8a8a93; }
-    .advcard select { width: 100%; font: 12px ui-monospace, Menlo, monospace; color: #17171a; padding: 8px 10px;
-      border: 1px solid rgba(0,0,0,.14); border-radius: 7px; outline: none; background: #fff; }
-    pre.wout { background: #faf9f7; border: 1px solid rgba(0,0,0,.08); padding: 12px; border-radius: 6px;
-      overflow-x: auto; font-size: 11px; white-space: pre-wrap; word-break: break-all;
-      font-family: ui-monospace, Menlo, monospace; }
   </style>
 </head>
 <body>
@@ -345,23 +337,6 @@
       <div class="maincol">
         <div id="sections"></div>
         <div id="inactive"></div>
-        <div id="advanced" hidden>
-          <div class="sechead"><span class="t">Advanced tools</span>
-            <span class="x">sign a permission by hand — debug only</span></div>
-          <div class="advcard">
-            <label for="w-agent">Agent identity</label>
-            <input class="inp" id="w-agent" placeholder="attestor@browserid.me" style="margin-bottom:0">
-            <label for="w-audience">Audience (exact value the app advertises)</label>
-            <input class="inp" id="w-audience" placeholder="https://api.example.com or sbo://ledger" style="margin-bottom:0">
-            <label for="w-scopes">Scopes (space-separated, optional)</label>
-            <input class="inp" id="w-scopes" placeholder="post read" style="margin-bottom:0">
-            <div class="btnrow" style="margin-top:10px">
-              <button class="btn-dark" id="w-create">Sign warrant</button>
-              <span class="status" id="w-status" style="margin:0"></span>
-            </div>
-            <pre class="wout" id="w-out" hidden></pre>
-          </div>
-        </div>
       </div>
       <div class="rail">
         <div class="rcard">
@@ -417,7 +392,6 @@
           <div class="setlist">
             <button id="set-pass">Change password</button>
             <button id="set-signout-all">Sign out everywhere</button>
-            <button id="set-advanced">Advanced tools</button>
             <button id="set-delete" class="danger">Delete account</button>
           </div>
           <div id="pass-form" class="inform" hidden>
@@ -467,9 +441,6 @@
 <script src="/common/js/registry-session.js"></script>
 <script type="module">
 const $ = (id) => document.getElementById(id);
-const enc = new TextEncoder();
-const b64urlJson = (obj) => btoa(String.fromCharCode(...enc.encode(JSON.stringify(obj))))
-  .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const escapeHtml = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const nowS = () => Math.floor(Date.now() / 1000);
 
@@ -527,19 +498,6 @@ function identityMatches(pattern, email) {
   const pLocal = pattern.slice(0, pa), eLocal = email.slice(0, ea);
   return pattern.slice(pa) === email.slice(ea)
     && eLocal.length > pLocal.length && eLocal.startsWith(pLocal) && eLocal[pLocal.length] === '+';
-}
-// The config (authorization) record whose cert authorizes `identity` — what
-// signs warrants for it (advanced tools only, on this page).
-function configFor(identity) {
-  const want = (identity || '').toLowerCase();
-  for (const r of deviceCache) {
-    if (r.kind !== 'config' || !r.privateKey || !r.cert) continue;
-    const c = certPayload(r.cert);
-    if (!c || (c.exp || 0) <= nowS() + 60) continue;
-    if (c.purpose !== 'authorization') continue;
-    if ((c.identities || []).some(p => identityMatches(p, want))) return r;
-  }
-  return null;
 }
 // ALL distinct holder ids found on this browser's local device certs → the
 // "this device" badge. Only AUTHENTICATION records count: a deposited
@@ -1499,12 +1457,6 @@ $('set-signout-all').onclick = async () => {
     await finishSignout();
   } catch (e) { status.className = 'status err'; status.textContent = e.message; }
 };
-$('set-advanced').onclick = () => {
-  if (!account.registry) { const st = $('set-status'); st.className = 'status err'; st.textContent = 'Set a password first — the tools need a registry session.'; return; }
-  const adv = $('advanced');
-  adv.hidden = !adv.hidden;
-  if (!adv.hidden) adv.scrollIntoView({ behavior: 'smooth' });
-};
 $('set-delete').onclick = () => { toggleForm('del-form'); if (!$('del-form').hidden) $('del-pass').focus(); };
 $('del-cancel').onclick = () => { $('del-form').hidden = true; };
 $('del-go').onclick = async () => {
@@ -1515,41 +1467,6 @@ $('del-go').onclick = async () => {
     await clearLocal();
     location.href = '/';
   } catch (e) { status.className = 'status err'; status.textContent = e.message; }
-};
-
-// -------- advanced: manual warrant signing (debug) --------
-// Signs a device-shaped warrant with the CONFIG key held in this browser and
-// registers it. Output is `warrant~config_cert` — the exact tail an agent
-// splices into its access presentations. Manually-signed warrants default to
-// `*` (any of your holders).
-async function signDeviceWarrant(config, grantor, grantee, holder, audience, scopes, statusRef) {
-  const header = b64urlJson({ alg: 'EdDSA', typ: 'JWT' });
-  const claims = { typ: 'browserid-warrant-v1', iat: nowS(), exp: nowS() + 90*24*3600,
-    grantor, grantee, holder, audience };
-  if ((scopes || []).length) claims.scopes = scopes;
-  if (statusRef) claims.status = statusRef;
-  const payload = b64urlJson(claims);
-  const sig = await window.Keystore.sign(config.privateKey, `${header}.${payload}`);
-  return `${header}.${payload}.${sig}`;
-}
-$('w-create').onclick = async () => {
-  const agentEmail = $('w-agent').value.trim().toLowerCase(), audience = $('w-audience').value.trim();
-  const scopes = $('w-scopes').value.split(/\s+/).map(s => s.trim()).filter(Boolean);
-  const status = $('w-status'); const fail = (m) => { status.className = 'status err'; status.textContent = m; };
-  if (!/^[^@\s]+@[^@\s]+$/.test(agentEmail)) return fail('Agent identity must be an email.');
-  if (!audience || audience.includes('*')) return fail('Audience must be one exact value (no wildcards).');
-  const config = configFor(agentEmail);
-  if (!config) return fail(`No config key covering ${agentEmail} in this browser — sign in with the delegating identity through an app's dialog first.`);
-  status.className = 'status muted'; status.textContent = 'Signing…';
-  try {
-    let statusRef = null;
-    try { const alloc = await reg('POST', '/api/v1/warrants/allocate_status', { grantee: agentEmail, audience, scopes }); statusRef = { uri: alloc.uri, idx: alloc.idx }; } catch {}
-    const jws = await signDeviceWarrant(config, agentEmail, '*', '*', audience, scopes, statusRef);
-    try { await reg('POST', '/api/v1/warrants/register', { warrant: jws, config_cert: config.cert }); } catch (e) { console.warn(e); }
-    $('w-out').textContent = `${jws}~${config.cert}`; $('w-out').hidden = false;
-    status.className = 'status ok'; status.textContent = 'Signed & registered — paste warrant~config_cert into the agent.';
-    await reloadAccount(); renderMain();
-  } catch (e) { fail('Failed: ' + e.message); }
 };
 
 // -------- sign-in (direct visit while signed out) --------
