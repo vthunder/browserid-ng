@@ -1070,17 +1070,18 @@ authenticates is the IdP's choice: an **interactive login** for a browser (§7.3
 or the **device-grant** for a headless holder (§7.4).
 
 **Derived identities.** An IdP MAY mint an identity that is backed by another
-identity the same person holds (a site handle backed by an external email):
-the issuer authenticates the **parent**, never the derived identity itself.
-Two consequences: (1) at issuance the IdP names the parent (`parent_email`
-in its device-cert handback) and the wallet records the link on the account,
-so the derived identity is shown as signing in via its parent; (2) when a
-browser later needs the derived identity's device certs and the issuer holds
-no session for the parent, the wallet MAY prove the parent itself — a
+identity the same person holds (a pseudonymous site handle backed by an
+external email): the issuer authenticates the **parent**, never the derived
+identity itself. The mapping is the person's secret. The issuer MUST NOT
+disclose it — not in a cert, an assertion, or its device-cert handback, which
+reaches whatever origin opened the hop. Only the person's own wallet may
+learn it, from the person, and it stays private account metadata there. When
+a browser needs the derived identity's device certs and the issuer holds no
+session for the parent, the wallet MAY prove the parent it knows — a
 presentation for the issuer's origin, minted from the parent's own certs
 (`parent_presentation` in the device-authorize hop) — and the issuer opens
-its session from that proof before issuing. The link is private account
-metadata; it never appears in a cert or assertion.
+its session from that proof before issuing. An issuer that receives no proof
+asks for an undirected sign-in of its own.
 
 ### 7.2 The access-cert mint
 
