@@ -169,6 +169,18 @@
       font: 12px ui-monospace, Menlo, monospace; color: #17171a; }
     .addrlist div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .addrlist .via { font: 10.5px system-ui, sans-serif; color: #8a8a93; }
+    .addrlist .addr { display: flex; align-items: center; gap: 6px; }
+    .addrlist .addr > span:first-child { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+    .addr-x { font: 500 10.5px system-ui, sans-serif; color: #8a8a93; background: none; border: none;
+      padding: 0 2px; cursor: pointer; flex: none; }
+    .addr-x:hover { color: #b42318; }
+    .addr-confirm { white-space: normal; font: 11px/1.5 system-ui, sans-serif; color: #6b6b74;
+      background: #faf9f7; border: 1px solid rgba(0,0,0,.08); border-radius: 6px; padding: 8px 10px; }
+    .addr-confirm .btnrow { margin-top: 6px; }
+    .addr-confirm .btn-danger { font: 600 11px system-ui, sans-serif; color: #fff; background: #b42318;
+      border: none; border-radius: 6px; padding: 5px 9px; cursor: pointer; }
+    .addr-confirm .btn-plain { font: 500 11px system-ui, sans-serif; color: #6b6b74; background: none;
+      border: none; padding: 5px 6px; cursor: pointer; }
     .rlink { font: 500 12px system-ui, sans-serif; color: #1f6feb; background: none; border: none;
       padding: 0; cursor: pointer; text-align: left; }
     .rlink:hover { text-decoration: underline; }
@@ -875,13 +887,41 @@ function renderMain() {
     </div>` : '';
 
   // Addresses rail
+  // Removing an address is the registry's detach (registry-api-v1 §5.2.5):
+  // the identity leaves this account with its records on hold, and signing
+  // in with it again brings them back. Offered only with a registry session
+  // and never for the last address (delete the account instead). The
+  // confirmation is in-page — browsers suppress confirm() in many contexts.
+  const canRemove = !!account.registry && rootIds().length > 1;
   $('addrlist').innerHTML = rootIds().map(email => {
     const via = account.parentOf[email];
     const md = account.managedOf[email];
     const mpill = md ? ` <span class="mpill" title="${escapeHtml(md)} manages this address — it can see and limit where it's used">managed</span>` : '';
-    return `<div title="${escapeHtml(email)}">${escapeHtml(email)}${via ? ` <span class="via">via ${escapeHtml(via)}</span>` : ''}${mpill}</div>`;
+    const x = canRemove ? `<button type="button" class="addr-x" data-remove="${escapeHtml(email)}" title="Remove ${escapeHtml(email)} from this account" aria-label="Remove ${escapeHtml(email)}">remove</button>` : '';
+    const confirm = ui.removeAddr === email ? `<div class="addr-confirm" data-confirm="${escapeHtml(email)}">
+        Remove <b>${escapeHtml(email)}</b> from this account? Its sign-ins and permissions go on hold;
+        signing in with it again restores them.
+        <div class="btnrow"><button type="button" class="btn-danger" data-remove-go="${escapeHtml(email)}">Remove</button>
+        <button type="button" class="btn-plain" data-remove-cancel="1">Keep it</button>
+        <span class="status" data-remove-status="1" style="margin:0"></span></div></div>` : '';
+    return `<div class="addr" title="${escapeHtml(email)}"><span>${escapeHtml(email)}${via ? ` <span class="via">via ${escapeHtml(via)}</span>` : ''}${mpill}</span>${x}</div>${confirm}`;
   }).join('') || '<div class="via">No addresses yet.</div>';
   $('addr-managed-note').hidden = !rootIds().some(email => account.managedOf[email]);
+  for (const b of $('addrlist').querySelectorAll('[data-remove]')) b.onclick = () => { ui.removeAddr = b.dataset.remove; renderMain(); };
+  for (const b of $('addrlist').querySelectorAll('[data-remove-cancel]')) b.onclick = () => { ui.removeAddr = null; renderMain(); };
+  for (const b of $('addrlist').querySelectorAll('[data-remove-go]')) b.onclick = async () => {
+    const email = b.dataset.removeGo;
+    const st = $('addrlist').querySelector('[data-remove-status]');
+    b.disabled = true; st.className = 'status muted'; st.textContent = 'Removing…';
+    try {
+      await reg('POST', '/api/v1/account/detach', { identity: email });
+      ui.removeAddr = null;
+      await reloadAccount(); renderMain();
+    } catch (e) {
+      b.disabled = false; st.className = 'status err';
+      st.textContent = (e && e.reason === 'last_identity') ? 'The last address cannot be removed — delete the account instead.' : ('Could not remove: ' + ((e && e.message) || e));
+    }
+  };
 
   // wiring
   for (const b of $('sections').querySelectorAll('.rowtoggle')) b.onclick = () => {
