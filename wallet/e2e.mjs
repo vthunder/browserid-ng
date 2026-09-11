@@ -228,6 +228,21 @@ const bad = await ask('signature', { audience: 'sbo+raw://avail:turing:999/', ob
 must('signature without a grant refuses no_grant', bad.err && bad.err.error === 'no_grant', JSON.stringify(bad));
 const unk = await ask('bogus', {});
 must('unknown kind answers unsupported_kind', unk.err && unk.err.error === 'unsupported_kind', JSON.stringify(unk));
+// 7c. admission (present lane): the "resource" (audience origin == the RP
+//     origin) files over the generic endpoint, publishes NO proof; the page
+//     hands the code to the wallet; the wallet claims with the page origin
+//     and answers through its hosted card; the resource polls the record.
+const filed = await (await fetch(`${BROKER}/api/v1/requests`, {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ kind: 'admission', type: 'connection', audience: `${RP_ORIGIN}/notes`,
+    scopes: ['tool:read_file'], client: { client_host: 'claude.ai', client_name: 'Claude' } }),
+})).json();
+must('admission filed over POST /api/v1/requests', !!filed.code, JSON.stringify(filed).slice(0, 160));
+const adm = await ask('admission', { code: filed.code });
+must('admission answered natively (hosted card, page origin as proof)', !!adm.ok && adm.ok.status === 'approved', JSON.stringify(adm).slice(0, 200));
+await new Promise((s) => setTimeout(s, 5500));
+const polled = await (await fetch(`${BROKER}/api/v1/requests/${filed.code}`)).json();
+must('resource polls the connection record', polled.status === 'approved' && Array.isArray(polled.grants), JSON.stringify(polled).slice(0, 160));
 
 // 8. The login's site warrant closed the prototype gap: it carries an
 //    allocated status ref (per-site revocation bit) and was registered.

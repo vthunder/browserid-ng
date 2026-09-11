@@ -116,19 +116,29 @@ async function connectMember(memberPage: any, request: any, member: any, opts: {
   await expect(memberPage.locator('#continue')).toBeVisible({ timeout: 15000 });
   await expect(memberPage.locator('body')).toContainText(member.email);
   await expect(memberPage.locator('#switch')).toBeVisible();
+  // Present lane (spec §7.5, g69e): the continue click files the request
+  // and hands its code to the wallet through the request mediator — the
+  // dialog popup opens on the gate's own origin, no redirect to the broker.
+  const cardPopupPromise = memberPage.context().waitForEvent('page');
   await memberPage.click('#continue');
-  // The broker's PINNED connection card: names the connection AND the
-  // signed-in identity (no selector), and lists only the member's actual
-  // entitlement — not the host's requested ceiling.
-  await expect(memberPage.locator('#list .pvcard')).toContainText('Connect Claude to this site?', { timeout: 15000 });
-  await expect(memberPage.locator('#list .pvcard')).toContainText('127.0.0.1');
-  await expect(memberPage.locator('#list .pvcard')).toContainText('as reported by the site');
-  await expect(memberPage.locator('#list .pvcard')).toContainText(member.email);
-  await expect(memberPage.locator('#list .pvcard')).toContainText('tool:read_text_file');
-  await expect(memberPage.locator('#list .pvcard')).not.toContainText('tool:list_directory');
-  await memberPage.click('button.approve:enabled', { timeout: 5000 });
-  // The page signs the v2 record, then auto-bounces through the gate's
-  // return leg to the host redirect (the catcher).
+  const card = await cardPopupPromise;
+  // The dialog has a live session from the login above: pick the identity.
+  await card.waitForSelector('#pick-email-screen.active', { timeout: 15000 });
+  await card.click('#pick-email-form button[type="submit"]');
+  // The PINNED connection card in the wallet: names the connection AND the
+  // signed-in identity, and lists only the member's actual entitlement —
+  // not the host's requested ceiling.
+  await card.waitForSelector('#admission-screen.active', { timeout: 20000 });
+  await expect(card.locator('#admission-title')).toContainText('Connect Claude to this site?');
+  await expect(card.locator('#admission-lead')).toContainText('127.0.0.1');
+  await expect(card.locator('#admission-foot')).toContainText('as reported by the site');
+  await expect(card.locator('#admission-lead')).toContainText(member.email);
+  await expect(card.locator('#admission-grants')).toContainText('tool:read_text_file');
+  await expect(card.locator('#admission-grants')).not.toContainText('tool:list_directory');
+  await card.click('#admission-approve');
+  // The wallet signs the v2 record and answers the registry; the gate page
+  // follows return_url through the gate's return leg to the host redirect
+  // (the catcher). The record itself travelled by the gate's poll only.
   const code = await codePromise;
   expect(code, code).not.toMatch(/^ERROR:/);
   const tok = await (

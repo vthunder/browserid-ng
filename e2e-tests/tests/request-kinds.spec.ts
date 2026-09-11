@@ -138,4 +138,53 @@ test.describe('request(kind, args)', () => {
     await start('warrant', { grants: [] }, '__s7');
     expect((await outcome('__s7')).err?.error).toBe('bad_request');
   });
+
+  test('admission: the resource files, the page hands over the code, the record arrives by poll', async ({ page, request }) => {
+    test.setTimeout(120000);
+    // The resource (audience origin == this page's origin) files over the
+    // generic endpoint and never publishes the well-known proof.
+    const audience = `${BROKER}/mcp-e2e-${uniqueId}`;
+    const filed = await (await request.post(`${BROKER}/api/v1/requests`, { data: {
+      kind: 'admission', type: 'connection', audience, scopes: ['tool:read_file'],
+      client: { client_host: 'claude.ai', client_name: 'Claude' },
+      return_url: `${BROKER}/authorize/return?st=e2e`,
+    } })).json();
+    expect(filed.code, JSON.stringify(filed)).toBeTruthy();
+    expect((await (await request.get(`${BROKER}/api/v1/requests/${filed.code}`)).json()).status).toBe('pending');
+
+    await page.goto('/');
+    await page.addScriptTag({ url: `${BROKER}/include.js` });
+    await page.waitForFunction(() => typeof (navigator as any).id?.request === 'function');
+    const popupP = page.context().waitForEvent('page');
+    await page.evaluate((code) => {
+      const w = window as any;
+      w.__a = { pending: true };
+      (navigator as any).id.request('admission', { code }).then(
+        (r: any) => { w.__a = { ok: r }; }, (e: any) => { w.__a = { err: e }; });
+    }, filed.code);
+    const popup = await popupP;
+    await popup.waitForSelector('#email-screen.active', { timeout: 15000 });
+    await new DialogPage(popup).signInExistingUser(email, password);
+    await popup.waitForSelector('#admission-screen.active', { timeout: 20000 });
+    await expect(popup.locator('#admission-title')).toContainText('Connect Claude to this site?');
+    await expect(popup.locator('#admission-lead')).toContainText(audience);
+    await expect(popup.locator('#admission-foot')).toContainText('as reported by the site');
+    await popup.click('#admission-approve');
+    await page.waitForFunction(() => !(window as any).__a.pending, undefined, { timeout: 30000 });
+    const a = await page.evaluate(() => (window as any).__a);
+    expect(a.ok, JSON.stringify(a)).toBeTruthy();
+    expect(a.ok.status).toBe('approved');
+    expect(a.ok.return_url).toContain('/authorize/return');
+    // The page never saw the record; the resource's poll delivers it.
+    expect(Object.keys(a.ok)).not.toContain('warrants');
+    await new Promise(r => setTimeout(r, 5500)); // the lane's poll interval
+    const poll = await (await request.get(`${BROKER}/api/v1/requests/${filed.code}`)).json();
+    expect(poll.status, JSON.stringify(poll)).toBe('approved');
+    const c = claimsOf(poll.grants[0].warrant.split('~')[0]);
+    expect(c.typ).toBe('browserid-warrant-v2');
+    expect(c.grantor).toBe(email);
+    expect(c.binding.kind).toBe('connection');
+    expect(c.binding.client_host).toBe('claude.ai');
+    expect(c.audience).toBe(audience);
+  });
 });

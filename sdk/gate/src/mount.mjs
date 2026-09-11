@@ -235,7 +235,7 @@ export async function createMount(opts) {
             const continueUrl = `${resource}/authorize?${params.toString()}`;
             const switchUrl = `/connect/login?next=${encodeURIComponent(continueUrl)}&switch=1`;
             res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-            res.end(continueAsPage(user, name, continueUrl, switchUrl));
+            res.end(continueAsPage(user, name, continueUrl, switchUrl, broker));
             return true;
           }
           const ent = await entitlementFor(user);
@@ -251,7 +251,15 @@ export async function createMount(opts) {
           const scopes = requested.length ? requested.filter((sc) => entScopes.includes(sc)) : entScopes;
           authCtx = { grantor: user, scopes };
         }
-        const { redirect } = await lane.handleAuthorize(Object.fromEntries(url.searchParams), authCtx);
+        const { redirect, present } = await lane.handleAuthorize(Object.fromEntries(url.searchParams), authCtx);
+        // Present lane (spec §7.5, g69e): the interstitial's continue click
+        // asks for JSON and hands the code to the user's wallet through the
+        // request mediator on THIS origin — no redirect. The redirect stays
+        // the fallback for everything else.
+        if (present && url.searchParams.get("gate_present") === "1") {
+          json(res, 200, present, { "cache-control": "no-store" });
+          return true;
+        }
         redirect302(res, redirect);
       } catch (e) {
         tokenError(res, e);
@@ -420,8 +428,36 @@ export const json = (res, code, obj, headers = {}) => {
 /** The identity interstitial: a live gate session is visible, never silent —
  *  confirm who's connecting or switch accounts before anything is asked on
  *  their behalf. */
-export function continueAsPage(email, serverName, continueUrl, switchUrl) {
+export function continueAsPage(email, serverName, continueUrl, switchUrl, broker) {
   const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  // Present lane (spec §7.5, g69e): the continue click files the request
+  // (JSON) and hands its code to the user's wallet via the request mediator
+  // in the same user gesture, so the wallet may open; the page then follows
+  // return_url. Anything short of an answer falls back to the redirect
+  // lane (consent_uri), and without include.js the link works as before.
+  const mediator = broker ? `<script src="${esc(broker)}/include.js"></script>` : "";
+  const present = `${mediator}
+<script>
+(function () {
+  var a = document.getElementById('continue');
+  var jsonUrl = ${JSON.stringify(continueUrl + "&gate_present=1")};
+  a.addEventListener('click', function (ev) {
+    if (!navigator.id || typeof navigator.id.request !== 'function') return; // redirect lane
+    ev.preventDefault();
+    a.textContent = 'Connecting\\u2026';
+    var go = function (u) { location.replace(u); };
+    fetch(jsonUrl, { credentials: 'include', headers: { accept: 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+      .then(function (p) {
+        if (!p || !p.code) return go(a.href);
+        return navigator.id.request('admission', { code: p.code }).then(
+          function () { go(p.return_url); },
+          function (e) { if (e && e.error === 'denied') go(p.return_url); else go(p.consent_uri); });
+      })
+      .catch(function () { go(a.href); });
+  });
+})();
+</script>`;
   return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Connect — ${esc(serverName)}</title>
 <style>body{font:15px/1.6 -apple-system,system-ui,sans-serif;max-width:420px;margin:16vh auto;padding:0 24px;color:#1a1a1a;text-align:center}
 .btn{display:inline-block;font:600 15px system-ui;padding:11px 22px;border-radius:10px;border:0;background:#17171a;color:#fff;cursor:pointer;text-decoration:none}
@@ -430,7 +466,8 @@ export function continueAsPage(email, serverName, continueUrl, switchUrl) {
 <p>You're signed in here as <b>${esc(email)}</b>. The next screen shows exactly
 what this connection may do as that identity.</p>
 <a class="btn" id="continue" href="${esc(continueUrl)}">Continue as ${esc(email)}</a>
-<a class="alt" id="switch" href="${esc(switchUrl)}">Use a different account</a>`;
+<a class="alt" id="switch" href="${esc(switchUrl)}">Use a different account</a>
+${present}`;
 }
 
 /** Refusal page for a signed-in user with no grants here (identity-first

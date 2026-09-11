@@ -373,3 +373,92 @@ async fn support_document_advertises_record_grants() {
     let doc = server.get("/.well-known/browserid").await.json::<Value>();
     assert_eq!(doc["record-grants"], "/warrant/record-request");
 }
+
+/// Present lane (core §7.5 step 2, present-lane alternative; g69e): the
+/// resource files over the generic `POST /api/v1/requests`, never publishes
+/// the well-known proof, and its own page hands the code to the wallet. The
+/// wallet claims with the browser-attached page origin; equal to the
+/// audience origin ⇒ proven, no fetch. A wrong page origin still fails
+/// closed. The resource polls over `GET /api/v1/requests/<code>`.
+#[tokio::test]
+async fn present_lane_admission_over_generic_endpoints() {
+    let (server, sender, idp) = make_server();
+    let session = create_user(&server, &sender, USER, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
+    let (origin, _proofs) = spawn_resource().await; // proof map left EMPTY on purpose
+    let audience = format!("{origin}/mcp");
+
+    // 1. File through the generic endpoint.
+    let resp = server
+        .post("/api/v1/requests")
+        .json(&json!({
+            "kind": "admission",
+            "type": "connection",
+            "audience": audience,
+            "scopes": ["tool:read_file"],
+            "client": { "client_host": "claude.ai", "client_name": "Claude" },
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "{}", resp.text());
+    let body = resp.json::<Value>();
+    let code = body["code"].as_str().unwrap().to_string();
+    assert_eq!(body["request_id"], json!(code));
+    assert!(body["consent_uri"].as_str().unwrap().ends_with(&format!("/consent/{code}")));
+
+    // 2. Generic poll: pending.
+    let poll = server.get(&format!("/api/v1/requests/{code}")).await;
+    poll.assert_status_ok();
+    assert_eq!(poll.json::<Value>()["status"], "pending");
+
+    // 3. A claim naming the WRONG page origin falls back to the fetch, which
+    //    finds nothing published ⇒ fail closed.
+    let bad = common::registry::api_post(&server, &sess, "/api/v1/requests/claim",
+        json!({ "code": code, "page_origin": "https://evil.example" })).await;
+    assert_ne!(bad.status_code(), 200, "{}", bad.text());
+
+    // 4. The audience origin as the page origin IS the proof.
+    let claimed = common::registry::api_post(&server, &sess, "/api/v1/requests/claim",
+        json!({ "code": code, "page_origin": origin })).await;
+    claimed.assert_status_ok();
+    let req = claimed.json::<Value>();
+    let binding_id = req["binding_id"].as_str().unwrap().to_string();
+    let status_idx = req["grants"][0]["status_idx"].as_u64().unwrap();
+    let listing: Value = common::registry::api_get(&server, &sess, "/api/v1/requests").await.json();
+    let status_uri = listing["status_uri"].as_str().unwrap().to_string();
+
+    // 5. Sign + respond, then the resource picks the record up by the generic poll.
+    let (config_key, config_cert) = config_material(USER, &idp);
+    let record = Warrant::create_v2(
+        USER, USER,
+        Binding::Connection {
+            protocol: ConnectionProtocol::Oauth, id: binding_id.clone(),
+            client_host: "claude.ai".into(), client_name: "Claude".into(),
+        },
+        &audience, vec!["tool:read_file".into()], Duration::days(90), &config_key,
+        StatusRef { uri: status_uri, idx: status_idx },
+    ).unwrap();
+    common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({
+        "code": code, "approve": true, "warrants": [record.encoded()],
+        "config_cert": config_cert.encoded(), "grantor": USER,
+    })).await.assert_status_ok();
+    // Faster than the interval ⇒ slow_down, exactly as the legacy poll.
+    let poll = server.get(&format!("/api/v1/requests/{code}")).await;
+    poll.assert_status_ok();
+    let v = poll.json::<Value>();
+    assert_eq!(v["status"], "approved", "{v}");
+    let bundle = RecordBundle::parse(v["grants"][0]["warrant"].as_str().unwrap()).unwrap();
+    match bundle.warrant.claims().binding_set().entries() {
+        [Binding::Connection { id, .. }] => assert_eq!(id.as_str(), binding_id),
+        other => panic!("expected connection binding, got {other:?}"),
+    }
+    // Single pickup.
+    assert_ne!(server.get(&format!("/api/v1/requests/{code}")).await.status_code(), 200);
+}
+
+#[tokio::test]
+async fn generic_file_rejects_unknown_kind() {
+    let (server, _sender, _idp) = make_server();
+    let resp = server.post("/api/v1/requests").json(&json!({ "kind": "bogus" })).await;
+    assert_eq!(resp.status_code(), 400);
+    assert!(resp.text().contains("unsupported_kind"), "{}", resp.text());
+}

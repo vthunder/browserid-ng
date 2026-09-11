@@ -398,6 +398,11 @@ fn consent_err(e: crate::error::RegistrarError) -> ApiError {
 #[serde(deny_unknown_fields)]
 struct ApiClaimRequest {
     code: String,
+    /// Present lane (core §7.5): the browser-attached origin of the page that
+    /// handed the wallet this code. Equal to the audience origin ⇒ audience
+    /// proven, no well-known fetch. Anything else is ignored.
+    #[serde(default)]
+    page_origin: Option<String>,
 }
 
 /// `POST /api/v1/requests/claim` — the legacy GET's hidden side effect made
@@ -411,10 +416,112 @@ pub async fn claim_request(
 ) -> Result<Json<crate::consent::PendingRequestInfo>, ApiError> {
     let req: ApiClaimRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::InvalidRequest(format!("bad request body: {e}")))?;
-    let rec = crate::consent::claim_core(&state, user.user_id, &req.code)
+    let rec = crate::consent::claim_core(&state, user.user_id, &req.code, req.page_origin.as_deref())
         .await
         .map_err(consent_err)?;
     Ok(Json(crate::consent::pending_info(&state, user.user_id, rec)))
+}
+
+// ===========================================================================
+// POST /api/v1/requests (file) + GET /api/v1/requests/<code> (filer poll)
+// (registry-api-v1 §5.3; request-kinds side spec). One generic transport
+// over the per-kind lanes; the legacy paths stay as aliases.
+// ===========================================================================
+
+fn with_code_fields(mut v: serde_json::Value, code: &str, consent_uri: &str) -> serde_json::Value {
+    if let Some(o) = v.as_object_mut() {
+        o.insert("code".into(), serde_json::Value::String(code.to_string()));
+        o.insert("request_id".into(), serde_json::Value::String(code.to_string()));
+        o.insert("consent_uri".into(), serde_json::Value::String(consent_uri.to_string()));
+    }
+    v
+}
+
+/// `POST /api/v1/requests` — file a request of any kind. The body carries
+/// `kind` plus the kind's fields; who may file and how the filing is
+/// authenticated is the kind's rule (an agent's device-key signature, a
+/// resource's audience proof, an anonymous provisioning pairing).
+pub async fn file_request(
+    State(state): State<Arc<RegistrarState>>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    let mut v: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return ApiError::InvalidRequest(format!("bad request body: {e}")).into_response(),
+    };
+    let kind = v
+        .as_object_mut()
+        .and_then(|o| o.remove("kind"))
+        .and_then(|k| k.as_str().map(str::to_string))
+        .unwrap_or_default();
+    match kind.as_str() {
+        "warrant" => {
+            let req = match serde_json::from_value(v) {
+                Ok(r) => r,
+                Err(e) => return ApiError::InvalidRequest(format!("bad warrant request: {e}")).into_response(),
+            };
+            match crate::consent::warrant_request(State(state), Json(req)).await {
+                Ok(Json(r)) => {
+                    let (code, uri) = (r.code.clone(), r.verification_uri_complete.clone());
+                    let v = serde_json::to_value(r).unwrap_or_default();
+                    (StatusCode::CREATED, Json(with_code_fields(v, &code, &uri))).into_response()
+                }
+                Err(e) => e.into_response(),
+            }
+        }
+        "admission" => {
+            let req = match serde_json::from_value(v) {
+                Ok(r) => r,
+                Err(e) => return ApiError::InvalidRequest(format!("bad admission request: {e}")).into_response(),
+            };
+            match crate::consent::record_request(State(state), Json(req)).await {
+                Ok(Json(r)) => {
+                    let (code, uri) = (r.request_id.clone(), r.consent_uri.clone());
+                    let v = serde_json::to_value(r).unwrap_or_default();
+                    (StatusCode::CREATED, Json(with_code_fields(v, &code, &uri))).into_response()
+                }
+                Err(e) => e.into_response(),
+            }
+        }
+        "provision" => {
+            let req = match serde_json::from_value(v) {
+                Ok(r) => r,
+                Err(e) => return ApiError::InvalidRequest(format!("bad provision request: {e}")).into_response(),
+            };
+            match crate::agent_provision::request(State(state), Json(req)).await {
+                Ok(Json(r)) => {
+                    let (code, uri) = (r.code.clone(), r.verification_uri_complete.clone());
+                    let v = serde_json::to_value(r).unwrap_or_default();
+                    (StatusCode::CREATED, Json(with_code_fields(v, &code, &uri))).into_response()
+                }
+                Err(e) => e.into_response(),
+            }
+        }
+        "" => ApiError::InvalidRequest("kind is required".into()).into_response(),
+        other => ApiError::InvalidRequest(format!("unsupported_kind: {other}")).into_response(),
+    }
+}
+
+/// `GET /api/v1/requests/<code>` — the filer's poll: pending / approved
+/// (single pickup) / denied / expired, with the lane's slow-down rule.
+pub async fn poll_request(
+    State(state): State<Arc<RegistrarState>>,
+    axum::extract::Path(code): axum::extract::Path<String>,
+) -> axum::response::Response {
+    match crate::consent::warrant_poll(
+        State(state.clone()),
+        Json(crate::consent::WarrantPollBody { code: code.clone() }),
+    )
+    .await
+    {
+        Ok(r) => r.into_response(),
+        Err(crate::error::RegistrarError::WarrantRequestNotFound) => {
+            // Not a consent-request code: a provisioning code polls its own
+            // lane (unknown == expired there).
+            crate::agent_provision::poll(State(state), Json(crate::agent_provision::PollBody { code })).await
+        }
+        Err(e) => e.into_response(),
+    }
 }
 
 #[derive(Deserialize)]

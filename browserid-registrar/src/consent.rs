@@ -251,17 +251,32 @@ async fn surface_record_request(
     state: &RegistrarState,
     user_id: u64,
     mut rec: WarrantRequestRecord,
+    page_origin: Option<&str>,
 ) -> Result<Option<WarrantRequestRecord>, RegistrarError> {
     let Some(mut meta) = rec.meta.clone() else { return Ok(None) };
     if !meta.proof_ok {
-        let Some(fetcher) = state.proof_fetcher.as_ref() else { return Ok(None) };
         let origin = audience_origin(&rec.grants[0].audience)?;
-        let body = fetcher.fetch_proof(&origin, &rec.code).await?;
-        if body.trim_end_matches(|c: char| c.is_ascii_whitespace()) != meta.challenge {
-            return Err(vfail("audience_unproven", "audience proof mismatch"));
+        // Present lane (core §7.5 step 2, present-lane alternative): the
+        // wallet hands us the browser-attached origin of the page that asked.
+        // When it IS the audience origin — exact, scheme/host/port — that is
+        // the audience proof and the well-known fetch is skipped. Any other
+        // value is ignored and the fetch runs as usual (fail-closed).
+        let origin_proven = page_origin
+            .and_then(|po| url_origin(po).map(|(s, h, p)| normalized_origin(s, &h, p)))
+            .map(|po| po == origin)
+            .unwrap_or(false);
+        if origin_proven {
+            meta.proof_ok = true;
+            rec.meta = Some(meta.clone());
+        } else {
+            let Some(fetcher) = state.proof_fetcher.as_ref() else { return Ok(None) };
+            let body = fetcher.fetch_proof(&origin, &rec.code).await?;
+            if body.trim_end_matches(|c: char| c.is_ascii_whitespace()) != meta.challenge {
+                return Err(vfail("audience_unproven", "audience proof mismatch"));
+            }
+            meta.proof_ok = true;
+            rec.meta = Some(meta.clone());
         }
-        meta.proof_ok = true;
-        rec.meta = Some(meta.clone());
     }
     let needs_claim =
         rec.user_id != user_id || rec.grants.iter().any(|g| g.status_idx.is_none());
@@ -306,6 +321,7 @@ pub(crate) async fn claim_core(
     state: &Arc<RegistrarState>,
     user_id: u64,
     code: &str,
+    page_origin: Option<&str>,
 ) -> Result<WarrantRequestRecord, RegistrarError> {
     let rec = state
         .store
@@ -319,7 +335,7 @@ pub(crate) async fn claim_core(
     {
         return Err(RegistrarError::WarrantRequestNotFound);
     }
-    surface_record_request(state, user_id, rec)
+    surface_record_request(state, user_id, rec, page_origin)
         .await?
         .ok_or_else(|| vfail("audience_unproven", "the audience proof could not be verified"))
 }
@@ -1704,11 +1720,15 @@ fn audience_origin(audience: &str) -> Result<String, RegistrarError> {
     if scheme == "http" && !(host == "localhost" || host.starts_with("127.")) {
         return Err(bad("audience must be https (http is allowed only for localhost)"));
     }
-    Ok(if (scheme == "https" && port == 443) || (scheme == "http" && port == 80) {
+    Ok(normalized_origin(scheme, &host, port))
+}
+
+fn normalized_origin(scheme: &str, host: &str, port: u16) -> String {
+    if (scheme == "https" && port == 443) || (scheme == "http" && port == 80) {
         format!("{scheme}://{host}")
     } else {
         format!("{scheme}://{host}:{port}")
-    })
+    }
 }
 
 #[derive(Deserialize)]

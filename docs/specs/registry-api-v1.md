@@ -552,10 +552,14 @@ connection, or authoring request and allocates a status index into
 each of its grants that lacks one (for a connection, one index and the
 `binding_id` for that binding — never shared across connections to the
 same audience), so every warrant the wallet signs
-carries a ref (core §5). Request: `{ "code": … }`. Response `200`: the
-request item as `GET requests` shows it. The request's
+carries a ref (core §5). Request: `{ "code": …, "page_origin"? }`.
+`page_origin` is the present lane (core §7.5): the browser-attached origin
+of the page that handed the wallet this code — equal to the audience origin
+(exact: scheme, host, port) it IS the audience proof and no fetch runs;
+any other value is ignored. Response `200`: the
+request item as `GET requests` shows it. Otherwise the request's
 core §7.5 audience proof MUST validate at claim time (a fresh fetch is
-RECOMMENDED); otherwise `422 invalid_warrant/audience_unproven`.
+RECOMMENDED); failing that, `422 invalid_warrant/audience_unproven`.
 Idempotent per account; a code that is unknown, expired, or claimed by
 another account answers `404 not_found`.
 

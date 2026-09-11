@@ -830,7 +830,14 @@ export function createAuthCodeLane(opts) {
         requestId: pending.request_id,
         exp,
       });
-      return { redirect: pending.consent_uri };
+      // Present lane (core §7.5, g69e): the resource's own page may hand
+      // this code to the user's wallet (navigator.id.request("admission"))
+      // instead of following the redirect; the record still arrives by our
+      // poll, and consent_uri stays the no-JS fallback.
+      return {
+        redirect: pending.consent_uri,
+        present: { code: pending.request_id, consent_uri: pending.consent_uri, return_url: returnUrl, broker },
+      };
     }
 
     // Agent mode (fallback): the gateway-as-agent flow via the credential.

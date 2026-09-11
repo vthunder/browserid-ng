@@ -251,12 +251,39 @@ async function signature({ origin, args, caller, approve }) {
   return { signature: out.signature, presentation: out.cert, pubkey: out.pubkey, email: s.identity };
 }
 
+// --- admission -------------------------------------------------------------
+// The resource filed the request; the page handed us the code. Claim with
+// the browser-attached page origin (== audience origin ⇒ proven, no fetch),
+// then the wallet-hosted card (jo0m) signs and responds; the page learns
+// only the status.
+async function admission({ origin, args }) {
+  const s = store.state();
+  if (!s.deviceCert) return { error: 'wallet not bootstrapped' };
+  const code = args && typeof args.code === 'string' ? args.code : '';
+  if (!code) return { error: 'bad_request', message: 'admission needs { code }' };
+  const registry = require('./registry');
+  let item;
+  try {
+    item = await registry.apiCall('POST', '/api/v1/requests/claim', { code, page_origin: origin });
+  } catch (e) {
+    return { error: 'not_found', message: `this request could not be claimed here: ${e.message || e}` };
+  }
+  if (!item || (item.kind !== 'connection' && item.kind !== 'authoring')) {
+    return { error: 'unsupported_kind', kind: item && item.kind };
+  }
+  const testAction = process.env.WALLET_TEST === '1' && process.env.WALLET_AUTO_APPROVE === '1' ? 'approve' : undefined;
+  const outcome = await require('./consent').hostConsent({ code, testAction });
+  if (outcome === 'approved' || outcome === 'denied') return { status: outcome, email: s.identity };
+  return { error: 'cancelled', message: `consent window ${outcome}` };
+}
+
 async function handle({ kind, origin, args, caller, approveLogin, approve, acceptedFallbacks }) {
   if (kind === 'login') {
     return require('./login').login({ origin, caller, approveLogin, acceptedFallbacks });
   }
   if (kind === 'warrant') return warrant({ origin, args, caller, approve });
   if (kind === 'signature') return signature({ origin, args, caller, approve });
+  if (kind === 'admission') return admission({ origin, args });
   return { error: 'unsupported_kind', kind: String(kind) };
 }
 

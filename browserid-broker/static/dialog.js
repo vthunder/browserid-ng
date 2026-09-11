@@ -83,6 +83,7 @@
     managedConsent: document.getElementById('managed-consent-screen'),
     sboConsent: document.getElementById('sbo-consent-screen'),
     signPrompt: document.getElementById('sign-prompt-screen'),
+    admission: document.getElementById('admission-screen'),
     success: document.getElementById('success-screen'),
     error: document.getElementById('error-screen')
   };
@@ -2092,6 +2093,7 @@
       showScreen('sboConsent');
       return;
     }
+    if (state.kind === 'admission') return runAdmission();
     if (state.sboSign && !sboGrantsCover(state.origin, state.sboSign, state.email)) {
       state.pendingPresentation = presentation;
       fillSboConsentCard();
@@ -2362,6 +2364,103 @@
     }
   }
 
+  // --- request("admission", { code }) ---------------------------------------
+  // The resource FILED the request (core §7.5); its page hands us the code.
+  // Claim with the browser-verified page origin: equal to the audience
+  // origin, it is the audience proof (no well-known fetch). Then the one
+  // connection / authoring card, signed here, answered through the
+  // registry; the page learns only the status — the record reaches the
+  // resource by its own poll.
+  function admissionText(id, text) { document.getElementById(id).textContent = text; }
+  function fillAdmissionCard(item) {
+    const list = document.getElementById('admission-grants');
+    list.textContent = '';
+    const foot = document.getElementById('admission-foot');
+    foot.textContent = '';
+    if (item.kind === 'connection') {
+      const host = item.client_host || '';
+      const name = (item.client_name || '').trim();
+      const g = (item.grants || [])[0] || { audience: '', scopes: [] };
+      admissionText('admission-title', 'Connect ' + (name || host) + ' to this site?');
+      admissionText('admission-lead', "You're connecting " + (name || host) + ' (' + host + ') to ' +
+        g.audience + '. It can use the permissions below, attributed to ' + state.email +
+        '. You can disconnect it any time from your account page.');
+      (g.scopes || []).forEach(sc => {
+        const li = document.createElement('li'); li.textContent = scopeVerb(sc); list.appendChild(li);
+      });
+      document.getElementById('admission-approve').textContent = 'Connect for 90 days';
+      if (name) foot.textContent = 'Calls itself \u201c' + name + '\u201d \u2014 as reported by the site. Not checked by browserid.';
+    } else {
+      admissionText('admission-title', 'Share this site?');
+      admissionText('admission-lead', 'You are granting the people below access at this site, attributed to ' + state.email + '.');
+      (item.grants || []).forEach(g => {
+        const li = document.createElement('li');
+        li.textContent = g.grantee + ' \u2014 ' + g.audience + ': ' + (g.scopes || []).map(scopeVerb).join(', ');
+        list.appendChild(li);
+      });
+      document.getElementById('admission-approve').textContent = 'Share';
+    }
+  }
+  async function runAdmission() {
+    const code = state.request.code;
+    const ctx = state.signingContext;
+    showScreen('loading', 'Checking the request\u2026');
+    let item, statusUri;
+    try {
+      item = await Registry.call('POST', '/api/v1/requests/claim', { code, page_origin: state.origin });
+      if (!item || !item.kind) throw new Error((item && (item.description || item.reason)) || 'claim failed');
+      const listing = await Registry.call('GET', '/api/v1/requests?code=' + encodeURIComponent(code));
+      statusUri = listing && listing.status_uri;
+      if (!statusUri) throw new Error('registry did not name its status list');
+    } catch (e) {
+      return sendResponse({ error: 'not_found', message: 'this request could not be claimed here: ' + ((e && e.message) || e) });
+    }
+    if (item.kind !== 'connection' && item.kind !== 'authoring') {
+      return sendResponse({ error: 'unsupported_kind', kind: item.kind });
+    }
+    if (item.grantor && item.grantor !== '*' && item.grantor.toLowerCase() !== state.email.toLowerCase()) {
+      return sendResponse({ error: 'grantor_pinned_mismatch', message: 'this request is for ' + item.grantor });
+    }
+    fillAdmissionCard(item);
+    showScreen('admission');
+    const approve = document.getElementById('admission-approve');
+    const deny = document.getElementById('admission-deny');
+    const respond = async (ok) => {
+      approve.onclick = deny.onclick = null;
+      showScreen('loading', ok ? 'Recording your approval\u2026' : 'Recording\u2026');
+      try {
+        let body = { code, approve: ok };
+        if (ok) {
+          const warrants = [];
+          for (const g of (item.grants || [])) {
+            if (g.status_idx == null) throw new Error('the registry allocated no status ref');
+            const claims = {
+              typ: 'browserid-warrant-v2', iat: nowS(), exp: nowS() + 90 * 86400,
+              grantor: state.email,
+              grantee: item.kind === 'connection' ? state.email : g.grantee,
+              binding: item.kind === 'connection'
+                ? { kind: 'connection', protocol: 'oauth', id: item.binding_id,
+                    client_host: item.client_host, client_name: item.client_name || '' }
+                : { kind: 'holder', matcher: '*' },
+              audience: g.audience,
+            };
+            if (g.scopes && g.scopes.length) claims.scopes = g.scopes;
+            claims.status = { uri: statusUri, idx: g.status_idx };
+            warrants.push(await signJws(ctx.pair.config.privateKey, claims));
+          }
+          body = { ...body, warrants, config_cert: ctx.pair.config.cert, grantor: state.email };
+        }
+        const r = await Registry.call('POST', '/api/v1/requests/respond', body);
+        if (r && r.error) throw new Error(r.description || r.reason || r.error);
+        sendResponse({ status: ok ? 'approved' : 'denied', email: state.email, return_url: r && r.return_url });
+      } catch (e) {
+        showError('Could not record your answer: ' + ((e && e.message) || e));
+      }
+    };
+    approve.onclick = () => respond(true);
+    deny.onclick = () => respond(false);
+  }
+
   // The request parameters every intake path reads (WinChan, postMessage,
   // dev lane): kind + args, plus the login-kind options.
   function readRequest(p) {
@@ -2369,7 +2468,7 @@
     state.kind = (p.kind === undefined || p.kind === null || p.kind === 'login') ? 'login' : String(p.kind);
     state.request = null;
     if (state.kind === 'warrant') state.request = normalizeWarrantRequest(p.request);
-    else if (state.kind === 'signature') state.request = (p.request && typeof p.request === 'object') ? p.request : null;
+    else if (state.kind === 'signature' || state.kind === 'admission') state.request = (p.request && typeof p.request === 'object') ? p.request : null;
     state.sboSign = state.kind === 'login' ? normalizeSboSign(p.sboSign) : false;
     state.provisionEmail = state.kind === 'login' ? (p.provisionEmail || null) : null;
     state.acceptedFallbacks = normalizeAcceptedFallbacks(p.acceptedFallbacks);
@@ -3017,11 +3116,14 @@
     // record names the identity. `warrant` rides the sign-in flow to learn
     // who signs, then branches at returnPresentation.
     if (state.kind === 'signature') return runSignature();
-    if (state.kind !== 'login' && state.kind !== 'warrant') {
+    if (state.kind !== 'login' && state.kind !== 'warrant' && state.kind !== 'admission') {
       return sendResponse({ error: 'unsupported_kind', kind: state.kind });
     }
     if (state.kind === 'warrant' && !state.request) {
       return sendResponse({ error: 'bad_request', message: 'warrant needs { grants: [{ audience, scopes }] }' });
+    }
+    if (state.kind === 'admission' && !(state.request && typeof state.request.code === 'string' && state.request.code)) {
+      return sendResponse({ error: 'bad_request', message: 'admission needs { code }' });
     }
     // Learn this broker's own issuer domain (its fallback-IdP identity) so the
     // acceptedFallbacks gate (spec §8.1) works on every entry path, including
