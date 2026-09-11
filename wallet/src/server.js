@@ -86,7 +86,10 @@ function startServer({ approveLogin, approvePair, notify, onStateChange }) {
 
         if (url.pathname === '/login' && req.method === 'POST') {
           // { origin } -> presentation for that RP origin, after native
-          // approval. The RP origin in the body is caller-claimed; the
+          // approval. The RP origin in the body is supplied by the paired
+          // extension's background from the browser's sender origin (never
+          // by page script; bean fta9) and is trusted on the strength of the
+          // pairing token, which is bound to the extension origin. The
           // caller line shown to the human comes from the Origin header.
           const { origin: rpOrigin, acceptedFallbacks } = await readBody(req);
           if (!rpOrigin) return json(req, res, 400, { error: 'origin required' });

@@ -30,16 +30,28 @@ async function walletCall(path, body) {
   return res.json();
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+// The requesting page's origin is what the BROWSER says about the sender,
+// never what the page wrote into the message: page script cannot forge
+// sender.origin (spec §7.3 "trusted origin"; bean fta9). The sender is the
+// frame that asked, so an iframe requests for its own origin.
+function senderOrigin(sender) {
+  if (sender.origin && /^https?:/.test(sender.origin)) return sender.origin;
+  try { return new URL(sender.url).origin; } catch { return null; }
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
-      if (msg.cmd === 'login') {
+      const origin = senderOrigin(sender);
+      if (!origin || !/^https?:/.test(origin)) {
+        sendResponse({ error: 'untrusted sender origin' });
+      } else if (msg.cmd === 'login') {
         sendResponse(await walletCall('/login', {
-          origin: msg.payload.origin,
+          origin,
           acceptedFallbacks: msg.payload.acceptedFallbacks || null,
         }));
       } else {
-        sendResponse({ error: `unknown cmd ${msg.cmd}` });
+        sendResponse({ error: 'unsupported_kind', kind: msg.cmd });
       }
     } catch (err) {
       sendResponse({ error: String(err.message || err) });

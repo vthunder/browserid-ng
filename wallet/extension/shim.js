@@ -32,6 +32,7 @@
   const idApi = {
     __menubarWallet: true,
     _shimmed: true,
+    version: '0.3.0',
     watch(opts) {
       opts = opts || {};
       if (typeof opts.onlogin !== 'function') throw new Error('onlogin is required');
@@ -44,8 +45,9 @@
       // Forward the RP's accepted fallback IdPs (spec §8.1, bean u6jq) so
       // the wallet can warn when its identity's issuer will be rejected at
       // the RP's verifier.
+      // The page's origin is NOT sent: the extension background reads it
+      // from the browser-supplied sender (bean fta9).
       callWallet('login', {
-        origin: location.origin,
         acceptedFallbacks: Array.isArray(opts.acceptedFallbacks) ? opts.acceptedFallbacks : null,
       }).then((result) => {
         if (result && result.presentation) {
