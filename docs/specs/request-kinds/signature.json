@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://browserid.me/specs/request-kinds/signature.json",
+  "title": "signature request",
+  "description": "Present lane. The wallet signs `object` under a stored signing grant whose channel set covers (trusted page origin, audience); otherwise `no_grant`. The card renders the typed object; there is no free-text summary. A filed form needs protocol §5 labeled door 4 and is not specified.",
+  "type": "object",
+  "properties": {
+    "kind": { "const": "signature" },
+    "audience": { "type": "string" },
+    "object": { "type": "object", "description": "The typed envelope to sign (for SBO: the action envelope). Rendered field by field." }
+  },
+  "required": ["kind", "audience", "object"],
+  "additionalProperties": false,
+  "$comment": "Artefact: { signature: JWS over object, presentation: access_cert~assertion~warrant~config_cert } — the assertion carries req_origin (protocol §6.6 invariant 13)."
+}

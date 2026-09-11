@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://browserid.me/specs/request-kinds/login.json",
+  "title": "login request",
+  "description": "Present lane only. Result: the presentation bundle (protocol §5).",
+  "type": "object",
+  "properties": {
+    "kind": { "const": "login" },
+    "acceptedFallbacks": {
+      "type": "array", "items": { "type": "string", "format": "hostname" },
+      "description": "Fallback IdPs the RP will accept (protocol §8.1)."
+    }
+  },
+  "required": ["kind"],
+  "additionalProperties": false
+}

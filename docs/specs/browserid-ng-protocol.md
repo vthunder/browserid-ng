@@ -515,8 +515,11 @@ constraints until the verifiers it cares about conform.
   the id problem and is enforceable by the resource, and this field is its
   natural home when that is designed; **(3)** the composition rules (§6.5) do
   not yet say how channel entries on a policy record conjoin with the
-  connection record's own set. All three are design work, not prohibitions;
-  until done, fail closed.
+  connection record's own set; **(4)** a `requester` entry naming an
+  identity or holder rather than a web origin — what an out-of-band
+  signature request (request-kinds `signature`, filed) would need, since a
+  filed request has no browser-verified origin for the wallet to match. All
+  four are design work, not prohibitions; until done, fail closed.
 
   **Grantee matchers (admission only).** An admission-consumed record MAY
   carry a grantee matcher: `*@<domain>` (anyone at the domain) or `*` (any
@@ -1096,25 +1099,49 @@ Minting online on a fresh key each time is what lets a credential be **cookie-fr
 (no session cookie to lose to browser storage policies) and lets a headless holder
 **mint with no browser and no user present**.
 
-### 7.3 Interactive login: the web exchange
+### 7.3 Interactive requests: the web exchange
 
 For a browser RP, obtaining a presentation is an interactive exchange, kept
-**first-party** so signing keys never leave the origin that holds them:
+**first-party** so signing keys never leave the wallet that holds them:
 
-1. The RP invokes a **login mediator** — today a small script it includes; a
+1. The RP invokes a **request mediator** — today a small script it includes; a
    native browser federated-login API could serve the same role. The invocation
    carries an optional **`acceptedFallbacks`** list (§8.1): the fallback IdPs the
    RP will accept for a no-primary email. It is a call argument, not fetched from
    the RP.
-2. The mediator opens the identity flow in a **first-party popup**. There the
+2. The mediator routes the request to the user's **wallet** — a first-party
+   popup, or a native wallet reached through a browser extension. There the
    holder authenticates to its IdP, obtains its device cert(s) (§7.1), mints an
    access cert (§7.2), and assembles the bundle — signing the assertion, and, **if
    it holds a config cert**, a fresh login **warrant** for this audience. A holder
    issued only an auth cert instead presents a **preexisting** warrant whose
-   holder-matcher covers it (§7.5). Each signing step happens in the origin that
-   holds the key.
+   holder-matcher covers it (§7.5). Every signing step happens in the wallet.
 3. The mediator returns the **presentation bundle** (§5) to the RP, which verifies
    it (§6).
+
+**Requests generally.** Login is one **kind** of request; the same mediator
+carries every kind a page may put to the user's wallet (in the reference
+shim: `navigator.id.request(kind, args)`). The kinds, their arguments, the
+card each renders, the artefact each yields, and where it is delivered are
+fixed by the [request-kinds](./request-kinds/README.md) side spec. A
+request is **inline** — its payload travels in the call and its artefact
+returns to the page — or **filed** — it already sits at the user's registry
+under a code (§7.5, registry-api-v1 §5.3) and the call carries only that
+code, so the wallet in front of the user answers it and the filer collects
+the artefact by its own poll. Two rules hold for every kind:
+
+- **Trusted origin.** The wallet acts on the origin the *browser* attached
+  to the message it received (the popup's message-event origin; the
+  extension's sender origin) and never on an origin the page or the
+  mediator script claims. This origin is the `requester` channel (§5) and
+  the only authority an inline request carries.
+- **Inline only where that origin is authority enough.** Self-grants
+  (`warrant`), signatures under a self-grant (`signature`), and the
+  admission origin check (§7.5) are inline; anything naming another
+  grantee, a client, or an identity that does not yet exist is filed.
+
+A wallet that does not know a kind answers `unsupported_kind`; the page
+falls back to the filed lane's deep link when the request has one.
 
 `acceptedFallbacks` only routes the exchange and lets it fail fast; it grants
 nothing, because the RP's verifier independently enforces its trusted-issuer set
@@ -1187,8 +1214,8 @@ How a holder comes to present a warrant depends on what it was issued:
   machine, or a headless holder not trusted to authorize) cannot create warrants. It
   presents a **preexisting** warrant whose holder-matcher covers it (e.g. a standing
   grant to the `browsers` category), and obtains new ones through the just-in-time
-  consent flow below, where a party holding the config cert (the user, at their
-  broker) signs on its behalf.
+  consent flow below, where the user's wallet — the party holding the config
+  cert — signs on its behalf.
 
 The **just-in-time consent flow** lets a holder obtain a warrant with the user
 approving out of band. A **registry that serves such holders MUST host this
@@ -1205,16 +1232,17 @@ the OAuth device authorization grant (RFC 8628):
    own ≤500-char rationale, shown quoted and marked unverified. The broker verifies
    the signature against the holder's device cert and returns a `code`,
    `verification_uri`, `expires_in`, and `interval`.
-2. **Consent.** The broker serves the consent page at `verification_uri` to the
-   signed-in user only. It MUST show the holder's identity and **user-chosen
+2. **Consent.** The user's wallet renders the consent card — reached through
+   its registry inbox, or by `verification_uri`, or by a page handing it the
+   `code` through the request mediator (§7.3). The card MUST show the holder's identity and **user-chosen
    display name** (the requester's own label only ever shown marked unverified),
    and — for **every** grant, each with equal prominence — the **verified audience**
    and its requested scopes, prefilled from the request, never user-typed. A
    request from a holder the account has never met MUST render a deny-only card
    (the poll learns a machine reason, e.g. `unknown_agent`). Approval MUST be
    deliberate (no default-focused button) and is all-or-nothing over the displayed
-   set; on approval the page signs one warrant per grant with the config cert and
-   records each in the registry.
+   set; on approval the wallet signs one warrant per grant with the config cert
+   and records each in the registry.
 3. **Poll.** The holder polls with `{ code }`: `pending` → retry after `interval`;
    `approved` → the warrants (one per grant, in order); `denied` (optionally with a
    machine reason); `expired`; or `429` if polling faster than `interval`. `code`
@@ -1246,7 +1274,7 @@ control**:
    the broker fetches it over TLS — redirects refused, connections only to
    public unicast addresses (loopback, private, and link-local ranges
    refused at resolution time), short timeout, fail-closed — before the
-   consent page will render. The document body is the challenge nonce
+   consent card will render. The document body is the challenge nonce
    verbatim (`Content-Type` SHOULD be `text/plain` and is otherwise
    ignored); the broker compares it byte-for-byte after stripping trailing
    ASCII whitespace, and the resource MUST keep it published until the
@@ -1256,6 +1284,15 @@ control**:
    which WebPKI names the audience; a path tenant that does not control its
    origin has no independent identity in this model. The card always
    renders the **full audience**, path included.
+   **Present-lane alternative.** When the resource's own page hands the
+   `request_id` to the user's wallet through the request mediator (§7.3),
+   the wallet instead compares the audience origin with the browser-attached
+   origin of that page — exact match, scheme, host and port; `http(s)`
+   audiences only. A match is the audience proof and the fetch is skipped;
+   a mismatch answers `origin_mismatch` and the resource falls back to the
+   fetch and `consent_uri`. Either way the request was filed by the
+   resource: page script never names the client and never receives the
+   record.
 3. **Consent (connection variant).** The card names the **connection**, not a
    requester: "Connect <client_name> (<client_host>) to <audience>. It will
    be able to use: <scopes> — attributed to you. Revocable here." The
@@ -1263,12 +1300,16 @@ control**:
    above; `client_name` MUST be marked as reported by the site — the broker
    cannot verify the host's involvement and the card MUST NOT imply it did
    (the client binding is enforced by the audience's redirect-URI + PKCE
-   mechanics, §5). Approval mints `binding.id`, signs the **self-grant**
-   record with the approver's config cert, and stores the registry row — the
-   `id ↔ record` pairing (§6.6 invariant 5) plus the status index.
-4. **Delivery.** The resource sends the connecting user's browser to
-   `consent_uri` (in the OAuth lane, as a step of its own authorize
-   redirect) and polls with `{ request_id }` under the JIT flow's state
+   mechanics, §5). The registry mints `binding.id` and a status index for
+   this binding when the wallet claims the request; the wallet then signs
+   the **self-grant** record with the approver's config cert, and the
+   registry stores the row — the `id ↔ record` pairing (§6.6 invariant 5)
+   plus the status index. A wallet that cannot obtain the index MUST NOT
+   sign.
+4. **Delivery.** The resource hands the request to the user's wallet through
+   its page (step 2's present-lane alternative) or sends the connecting
+   user's browser to `consent_uri` (in the OAuth lane, as a step of its own
+   authorize redirect), and polls with `{ request_id }` under the JIT flow's state
    machine: `pending` → retry after `interval`; `approved`; `denied`
    (optionally with a machine reason); `expired` (after `expires_in`); `429`
    if polling faster than `interval`. `approved` delivers the signed record
@@ -1297,7 +1338,8 @@ The wire shape mirrors the connection flow:
    fetch rules, and document format, keyed by this `request_id`, at the
    grants' shared origin. Same bounded stakes; the proof keeps the consent
    surface clean.
-3. **Consent.** The resource sends the grantor to `consent_uri`. The broker
+3. **Consent.** The resource hands the request to the grantor's wallet as in
+   the connection flow (its page, or `consent_uri`). The wallet
    renders the compiled set under the **just-in-time flow's** consent rules
    above (verified audience per grant with equal prominence, prefilled and
    never user-typed, deliberate all-or-nothing approval) — and, because rows
@@ -1314,9 +1356,10 @@ The wire shape mirrors the connection flow:
 A policy edit is revoke-old + sign-new in one ceremony; roles remain a
 resource-side abstraction — the protocol sees only flat records.
 
-**Signing grants (wallet ceremony).** A signing grant (§5) is authored where
-the wallet is: the requesting site opens the user's wallet surface (in the
-reference deployment, the broker login dialog) declaring the audience(s) and
+**Signing grants (present lane).** A signing grant (§5) is authored where
+the wallet is: the requesting site asks through the request mediator (§7.3,
+kind `warrant`, self-grant; a signature under it is kind `signature`)
+declaring the audience(s) and
 `sign:` scopes it asks for, and after sign-in the wallet renders the standard
 consent card — verified requesting origin, identity, audience, and a verb
 per scope, prompt-mode scopes called out. Approval signs one record per
@@ -1331,8 +1374,10 @@ stakes as above. Where config keys are device-resident, each device signs
 its own record on first use — one card per device, the posture holder
 channels already impose.
 
-The consent page is the trust boundary against consent-phishing: it MUST render the
+The consent card is the trust boundary against consent-phishing: it MUST render the
 verified target origin (not only a friendly name), and approval MUST be deliberate.
+Whichever lane a request arrived by, the wallet hosts the card and holds the key;
+no broker page signs.
 
 ### 7.6 Managing issued certs
 

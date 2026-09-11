@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://browserid.me/specs/request-kinds/provision.json",
+  "title": "provision request",
+  "description": "Always filed by the agent (protocol §7.5 two-stage provisioning, §7.4 issuance). Present lane: the landing page hands the wallet only `code`; the page origin carries no authority. Identity stage, then grants stage, under one code; the chosen identity must satisfy `grantor` when pinned. Delivered to the agent's pickup only.",
+  "type": "object",
+  "oneOf": [
+    {
+      "properties": { "kind": { "const": "provision" }, "code": { "type": "string" } },
+      "required": ["kind", "code"], "additionalProperties": false,
+      "$comment": "Present-lane form."
+    },
+    {
+      "properties": {
+        "kind": { "const": "provision" },
+        "pairing": { "type": "object", "description": "The device-grant pairing (protocol §7.4); shape per agent-provisioning-and-grant-api.md." },
+        "grants": { "$ref": "warrant.json#/properties/grants" },
+        "grantor": { "type": "string" },
+        "message": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["kind", "pairing"], "additionalProperties": false,
+      "$comment": "Filed form. Artefact: device cert, then warrants (or none with reason grants_denied)."
+    }
+  ]
+}

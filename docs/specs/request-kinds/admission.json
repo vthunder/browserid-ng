@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://browserid.me/specs/request-kinds/admission.json",
+  "title": "admission request",
+  "description": "Always filed by the resource's backend (protocol §7.5 connection and authoring flows). Present lane: the resource's page hands the wallet only `code`; the wallet checks page origin = audience origin in place of the well-known proof. The record is delivered to the filer's poll only.",
+  "type": "object",
+  "oneOf": [
+    {
+      "properties": {
+        "kind": { "const": "admission" },
+        "code": { "type": "string" }
+      },
+      "required": ["kind", "code"], "additionalProperties": false,
+      "$comment": "Present-lane form."
+    },
+    {
+      "properties": {
+        "kind": { "const": "admission" },
+        "type": { "const": "connection" },
+        "audience": { "type": "string", "pattern": "^https?://" },
+        "scopes": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "client": {
+          "type": "object",
+          "properties": { "client_host": { "type": "string" }, "client_name": { "type": "string" } },
+          "required": ["client_host"], "additionalProperties": false
+        },
+        "message": { "type": "string", "maxLength": 500 },
+        "return_url": { "type": "string", "format": "uri" }
+      },
+      "required": ["kind", "type", "audience", "scopes", "client"], "additionalProperties": false,
+      "$comment": "Filed form, one audience per connection. Artefact: one self-grant record embedding binding_id, with config_cert."
+    },
+    {
+      "properties": {
+        "kind": { "const": "admission" },
+        "type": { "const": "authoring" },
+        "grants": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "grantee": { "type": "string" },
+              "audience": { "type": "string", "pattern": "^https?://" },
+              "scopes": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            },
+            "required": ["grantee", "audience", "scopes"], "additionalProperties": false
+          },
+          "description": "All audiences share one origin; duplicate (grantee, audience) pairs are rejected."
+        },
+        "return_url": { "type": "string", "format": "uri" }
+      },
+      "required": ["kind", "type", "grants"], "additionalProperties": false,
+      "$comment": "Filed form. Artefact: one policy record per grant, with config_cert."
+    }
+  ]
+}

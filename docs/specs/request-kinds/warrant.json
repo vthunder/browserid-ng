@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://browserid.me/specs/request-kinds/warrant.json",
+  "title": "warrant request",
+  "description": "Present lane: a self-grant (grantee is the signing identity; requester channel is the trusted page origin). Filed: an agent's device-key-signed request naming itself as grantee (protocol §7.5 just-in-time flow).",
+  "type": "object",
+  "properties": {
+    "kind": { "const": "warrant" },
+    "grants": {
+      "type": "array", "minItems": 1, "maxItems": 8,
+      "items": {
+        "type": "object",
+        "properties": {
+          "audience": { "type": "string" },
+          "scopes": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+        },
+        "required": ["audience", "scopes"], "additionalProperties": false
+      },
+      "description": "Duplicate audiences are rejected."
+    },
+    "message": { "type": "string", "maxLength": 500, "description": "Requester's rationale; shown quoted and marked unverified." },
+    "grantee": { "type": "string", "description": "Filed only: the agent identity. Absent on the present lane (self-grant)." },
+    "holder": { "type": "string", "description": "Filed only: the holder id the grant binds to." },
+    "grantor": { "type": "string", "description": "Filed only: '*' (approver chooses), 'self', or an identity; never silently substituted." },
+    "return_url": { "type": "string", "format": "uri", "description": "Filed only; echoed by respond on approve and deny." }
+  },
+  "required": ["kind", "grants"],
+  "additionalProperties": false,
+  "$comment": "Artefact: { warrants: [JWS…] (one per grant, in order), config_cert }. Delivered to the page (present) or the filer's poll (filed)."
+}

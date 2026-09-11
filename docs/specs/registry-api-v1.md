@@ -169,7 +169,7 @@ two, and a registry MUST offer both:
   `return_url#login_error=<reason>`. What the page checks is the
   registry's business: a password, approval from a device already
   logged in, proof of another identity on the account obtained through
-  the login mediator (core §7.3) as any site would. The page MUST
+  the request mediator (core §7.3) as any site would. The page MUST
   require an explicit user action, MUST NOT complete on ambient
   credentials alone, and MUST validate `return_origin` (same-origin
   with `return_url`; no allowlist — whoever holds the token still needs
@@ -475,10 +475,32 @@ warrants and holders for use at another registry is a v2 concern.
 
 ### 5.3 Consent inbox
 
-Where agent requests wait for the user's decision. A requester (an
-agent, a site, a page) files a request through the core §7.5 lanes;
-the wallet lists it here, shows it to the user, signs the warrants,
-and answers.
+Where filed requests wait for the user's decision. A filer (an agent,
+or a resource's backend) files a request here; the wallet lists it,
+shows it to the user, signs, and answers. A page in front of the user
+may hand the wallet the request's `code` through the request mediator
+(core §7.3) so the wallet answers at once, but the filer still collects
+the artefact by its poll. The request kinds, their fields, cards, and
+artefacts are fixed by the [request-kinds](./request-kinds/README.md)
+side spec; this section is the transport.
+
+**`POST /api/v1/requests`** — Files a request. Body: `{ "kind": …, …
+}` per the kind's schema. Who may file, and how the filing is
+authenticated, is the kind's rule (an agent signs with its device key;
+a resource proves audience control — or, present-lane, its page's
+browser-attached origin matches the audience, core §7.5). Response
+`201`: `{ "code", "consent_uri", "expires_in", "interval" }` plus the
+kind's extras (`challenge` for admission). The registry SHOULD
+rate-limit filings per filer origin. The legacy paths
+`/warrant/request`, `/warrant/record-request`, and
+`/agent-provision/*` are aliases of this endpoint and MAY be removed.
+
+**`GET /api/v1/requests/<code>`** — The filer's poll, under the core
+§7.5 state machine: `pending` (retry after `interval`), `approved`
+(the artefact, single pickup), `denied` (with an optional machine
+reason), `expired`; `429` when polled faster than `interval`. This
+endpoint is the only way an artefact reaches a filer; a present-lane
+page learns only the status.
 
 **`GET /api/v1/requests`** — Lists the account's open requests and
 notices.
@@ -492,7 +514,10 @@ Response `200`: `{ "status_uri": …, "requests": [ … ] }`. `status_uri`
 is the registry's status-list URI, the `uri` half of the status refs
 the wallet embeds in warrants it signs.
 
-Every item has a `kind`, which says who is asking for what:
+Every item has a `kind`, which says who is asking for what. The
+request-kinds names are `warrant` (below: `agent`), `admission` with
+`type` `connection` | `authoring` (below: `connection`, `authoring`),
+`provision`, and `notice`; this listing keeps the v1 item names:
 
 - `"agent"` — an agent asks the user for warrants (core §7.5);
 - `"connection"` — a site asks the user to admit an agent's
@@ -524,7 +549,9 @@ deny-first.
 
 **`POST /api/v1/requests/claim`** — Claims a pending agent,
 connection, or authoring request and allocates a status index into
-each of its grants that lacks one, so every warrant the wallet signs
+each of its grants that lacks one (for a connection, one index and the
+`binding_id` for that binding — never shared across connections to the
+same audience), so every warrant the wallet signs
 carries a ref (core §5). Request: `{ "code": … }`. Response `200`: the
 request item as `GET requests` shows it. The request's
 core §7.5 audience proof MUST validate at claim time (a fresh fetch is
@@ -533,6 +560,10 @@ Idempotent per account; a code that is unknown, expired, or claimed by
 another account answers `404 not_found`.
 
 **`POST /api/v1/requests/respond`** — Approves or denies a request.
+Lane-blind: the registry accepts the same artefacts whether a web
+wallet, a native wallet, or a deep-link claimant signed them. A wallet
+claims and responds only from a card the user was shown; it MUST NOT
+claim a code it merely found in a URL.
 
 | Field | Meaning |
 |---|---|
