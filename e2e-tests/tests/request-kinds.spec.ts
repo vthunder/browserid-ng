@@ -198,16 +198,20 @@ test.describe('request(kind, args)', () => {
     await page.goto('/');
     await page.addScriptTag({ url: `${BROKER}/include.js` });
     await page.waitForFunction(() => typeof (navigator as any).id?.request === 'function');
+    await page.evaluate((id) => { (window as any).__identity = id; }, email);
     const popupP = page.context().waitForEvent('page');
     await page.evaluate((code) => {
       const w = window as any;
       w.__p = { pending: true };
-      (navigator as any).id.request('provision', { code }).then(
+      (navigator as any).id.request('provision', { code, identity: w.__identity }).then(
         (r: any) => { w.__p = { ok: r }; }, (e: any) => { w.__p = { err: e }; });
     }, pending.code);
     const popup = await popupP;
-    await popup.waitForSelector('#email-screen.active', { timeout: 15000 });
-    await new DialogPage(popup).signInExistingUser(email, password);
+    // The identity hint skips the chooser: straight to that identity's sign-in.
+    const dlg = new DialogPage(popup);
+    await dlg.waitForScreen('password');
+    await dlg.passwordInput.fill(password);
+    await dlg.signInButton.click();
     // The dialog embeds the approval card (same session, present mode).
     const card = popup.frameLocator('#provision-frame');
     await expect(card.locator('#provision')).toContainText('Is this your agent?', { timeout: 30000 });

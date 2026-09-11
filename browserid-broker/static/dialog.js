@@ -2488,7 +2488,13 @@
     if (state.kind === 'warrant') state.request = normalizeWarrantRequest(p.request);
     else if (state.kind === 'signature' || state.kind === 'admission' || state.kind === 'provision') state.request = (p.request && typeof p.request === 'object') ? p.request : null;
     state.sboSign = state.kind === 'login' ? normalizeSboSign(p.sboSign) : false;
-    state.provisionEmail = state.kind === 'login' ? (p.provisionEmail || null) : null;
+    // login keeps its provisionEmail option; request("provision", { code,
+    // identity }) may name the identity that must sign (the request's
+    // grantor pin, e.g. a site's own handle for you) so the dialog drives
+    // it straight through its issuer instead of showing the chooser.
+    state.provisionEmail = state.kind === 'login' ? (p.provisionEmail || null)
+      : (state.kind === 'provision' && state.request && typeof state.request.identity === 'string'
+          && /^[^@\s]+@[^@\s]+$/.test(state.request.identity)) ? state.request.identity.toLowerCase() : null;
     state.acceptedFallbacks = normalizeAcceptedFallbacks(p.acceptedFallbacks);
   }
 

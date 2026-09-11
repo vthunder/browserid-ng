@@ -6,7 +6,11 @@
   "type": "object",
   "oneOf": [
     {
-      "properties": { "kind": { "const": "provision" }, "code": { "type": "string" } },
+      "properties": {
+        "kind": { "const": "provision" },
+        "code": { "type": "string" },
+        "identity": { "type": "string", "format": "email", "description": "Optional: the identity that must sign (the request's grantor pin). The wallet drives that identity through its issuer instead of offering a chooser." }
+      },
       "required": ["kind", "code"], "additionalProperties": false,
       "$comment": "Present-lane form."
     },
