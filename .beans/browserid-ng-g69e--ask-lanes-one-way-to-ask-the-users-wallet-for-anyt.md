@@ -5,7 +5,7 @@ status: todo
 type: epic
 priority: high
 created_at: 2026-09-11T06:47:46Z
-updated_at: 2026-09-11T06:47:46Z
+updated_at: 2026-09-11T06:48:03Z
 ---
 
 Design + build epic (Dan, 2026-09-10/11). Eight flows end at a consent card or a non-login signature; all but login sign inside a broker page with a keystore key the native wallet does not have, and three of them (connection, authoring, provisioning) are server-filed then REDIRECT a present user to the card — where native-wallet users strand. Target: two lanes (present ask over navigator.id, routed to whichever wallet; out-of-band ask over the registry inbox, also the fallback for platforms without the JS API), one consent component hosted by the wallet, one signing interface answered from the keystore (web) or natively (shim → wallet). The ask vocabulary is a set of schemas kept as a side spec. Manual signing card deleted.
@@ -25,3 +25,5 @@ Then build, in migration order:
 - [ ] Provisioning approval onto the present lane
 - [ ] Delete the redirect paths and per-page keystore signing; consent page = the wallet-hosted card only
 - [ ] e2e per lane × wallet (web dialog, native shim), plus the no-JS fallback
+
+Related epic: 9yyk (wallets on one standardized API surface) — an epic cannot parent an epic, so linked here instead.
