@@ -302,7 +302,16 @@ each entry until its `iat` window closes.
 ### 4.5 Sessions
 
 A session is opened only by `login` (§4.2) or `accounts` (§5.2.1),
-and is bound to the login key that call carried. Response `200`, the
+and is bound to the login key that call carried.
+
+**One account per wallet.** A wallet keeps a single account on a
+registry — one login key, one remembered account id — and signs every
+identity in to it, attaching each identity's certs there (§5.2.4: a
+join when nothing holds the identity, a transfer with the person's
+explicit confirmation when another account does). A wallet MUST NOT
+track accounts per identity, and MUST NOT create an account while it
+holds one: that is how a freshly issued identity ends up alone on a
+second account. Response `200`, the
 **session body**:
 
 ```json

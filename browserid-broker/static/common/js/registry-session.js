@@ -12,11 +12,19 @@
 // sends `Authorization: Bearer` + a `Proof` JWS by the login key (kid in
 // the header, bh binding POST bodies), re-logging in once on 401.
 //
-// Two shapes. configure({pair, identity, password?}): the dialog with an
-// identity's device pair; after any login it attaches the pair (idempotent
-// on pubkey). configureKeyless({account, password?, askPassword?}): a page
-// that is its own device (the registry's /account page) — knows the account
-// id, has no certs, shares the browser's key for that account.
+// ONE registry login per wallet (bean mojx). This browser remembers a single
+// wallet account for this registry host and holds one login key for it; every
+// identity signs in to THAT account and its certs are attached there — an
+// identity held by no account joins, one held by another account is
+// transferred after the person confirms (askTakeover). A registry account is
+// created only when the wallet has none at all. Never per identity: that is
+// how a freshly minted identity once ended up with its own account.
+//
+// Two shapes. configure({pair, identity, password?, askTakeover?}): the dialog
+// with an identity's device pair; after any login it attaches the pair
+// (idempotent on pubkey). configureKeyless({account, password?, askPassword?}):
+// a page that is its own device (the registry's /account page) — knows the
+// account id, has no certs, shares the browser's key for that account.
 //
 // Depends on window.Keystore. Loaded after keystore.js.
 (function () {
@@ -33,6 +41,7 @@
   var kids = null;      // {device, config}
   var loginKey = null;  // {privateKey, publicKeyX, kid} for the account
   var account = null;
+  var askTakeover = null; // (identity) => Promise<boolean>: may this identity move to the wallet's account?
 
   function nowS() { return Math.floor(Date.now() / 1000); }
   function rndHex() {
@@ -93,7 +102,7 @@
   function took(body) {
     token = body.token;
     tokenExp = Math.floor(new Date(body.expires_at).getTime() / 1000) || (nowS() + 3600);
-    if (body.account) { account = body.account; if (identity) rememberAccount(body.account); }
+    if (body.account) { account = body.account; rememberWallet(body.account); }
   }
   function error(r, path) {
     var e = new Error("POST " + path + ": " + (r.data.error_description || r.data.error || r.status));
@@ -102,10 +111,11 @@
     return e;
   }
 
-  // --- what this browser remembers per identity / per account -------------
-  function accountKey() { return "browserid:registry:account:" + identity; }
-  function knownAccount() { try { return localStorage.getItem(accountKey()) || null; } catch (e) { return null; } }
-  function rememberAccount(id) { try { localStorage.setItem(accountKey(), id); } catch (e) { /* best-effort */ } }
+  // --- what this browser remembers: ONE wallet account for this registry ---
+  var WALLET_KEY = "browserid:registry:wallet";
+  function walletAccount() { try { return localStorage.getItem(WALLET_KEY) || null; } catch (e) { return null; } }
+  function rememberWallet(id) { try { localStorage.setItem(WALLET_KEY, id); } catch (e) { /* best-effort */ } }
+  function forgetWallet() { try { localStorage.removeItem(WALLET_KEY); } catch (e) { /* best-effort */ } }
   // The login key lives in the keystore's device store under kind "login",
   // keyed by the registry host and the account id — shared by the dialog
   // and the account page.
@@ -238,12 +248,23 @@
 
   // §5.2.4: record the pair under the session (idempotent on pubkey). The
   // session is unchanged.
-  async function attach() {
+  async function attach(confirmTakeover) {
     var path = "/api/v1/account/attach";
-    var w = await withCerts(path, {}, loginKey, false);
+    var w = await withCerts(path, confirmTakeover ? { confirm_takeover: true } : {}, loginKey, false);
     var r = await postRaw(path, w.bodyStr, { proof: w.header, authorization: "Bearer " + token });
     if (r.ok) return;
     throw error(r, path);
+  }
+  // Attach the configured identity's pair to the session's account: a join
+  // for an identity held by no account, a TRANSFER — with the person's
+  // explicit yes — for one held elsewhere (registry-api-v1 §5.2.4, §4.1).
+  async function attachHere() {
+    try { await attach(false); return; }
+    catch (e) {
+      if (!(e.status === 409 && e.reason === "identity_held")) throw e;
+      if (!askTakeover || !(await askTakeover(identity))) throw e;
+      await attach(true);
+    }
   }
 
   // A live session bound to this browser's login key for the account; with
@@ -252,21 +273,33 @@
     if (token && nowS() < tokenExp - 60 && loginKey) return token;
     if (!pair && !account) throw new Error("Registry not configured");
     token = null;
-    var acct = account || knownAccount();
+    // The wallet's one account: an explicit one (keyless pages name the
+    // session's), else the remembered one. Every identity signs in there.
+    var acct = account || walletAccount();
     if (acct) {
       if (!loginKey) loginKey = await loadLoginKey(acct);
       if (loginKey && await loginStored(acct)) {
-        if (pair) await attach();
+        if (pair) await attachHere();
         return token;
       }
-    }
-    if (!acct && pair) acct = await lookupAccount();
-    if (!acct) {
-      await createAccount();          // the pair recorded, the key enrolled
+      // Known account, no usable key: the account's own login (password /
+      // page) enrols a fresh key. Never a different account.
+      await loginPage(acct);
+      if (pair) await attachHere();
       return token;
     }
-    await loginPage(acct);
-    if (pair) await attach();
+    // No wallet account yet. Adopt the one that holds this identity — with a
+    // key this browser may already have for it (pre-mojx browsers), else its
+    // login page — and only when nothing holds it, create one.
+    if (pair) acct = await lookupAccount();
+    if (acct) {
+      loginKey = await loadLoginKey(acct);
+      if (!(loginKey && await loginStored(acct))) await loginPage(acct);
+      rememberWallet(acct);
+      if (pair) await attachHere();
+      return token;
+    }
+    await createAccount();          // the pair recorded, the key enrolled
     return token;
   }
 
@@ -313,10 +346,12 @@
         configCert: opts.pair.configCert,
         configPrivateKey: opts.pair.configPrivateKey,
       };
-      if (identity !== opts.identity) { account = null; loginKey = null; }
+      // A new identity does NOT mean a new account or key: the wallet has one
+      // of each. Only the attach (which identity's pair) changes.
       identity = opts.identity;
       if (opts.password) password = opts.password;
       askPassword = null;
+      askTakeover = opts.askTakeover || null;
       kids = { device: await kidOfCert(pair.deviceCert), config: await kidOfCert(pair.configCert) };
       if (!sameCert) { token = null; tokenExp = 0; }
     },
@@ -342,8 +377,10 @@
     forgetLoginKey: async function () {
       if (!account) return;
       try { await window.Keystore.delDevice(window.location.host, "@registry:" + account, "login"); } catch (e) {}
+      if (walletAccount() === account) forgetWallet();
       loginKey = null; token = null;
     },
+    walletAccount: walletAccount,
     account: function () { return account; },
     loginKid: function () { return loginKey ? loginKey.kid : null; },
     // Keyless mode: record certs this page just had issued under its

@@ -82,6 +82,7 @@
     primaryAuthContinue: document.getElementById('primary-auth-continue-screen'),
     claimContinue: document.getElementById('claim-continue-screen'),
     managedConsent: document.getElementById('managed-consent-screen'),
+    takeover: document.getElementById('takeover-screen'),
     sboConsent: document.getElementById('sbo-consent-screen'),
     signPrompt: document.getElementById('sign-prompt-screen'),
     admission: document.getElementById('admission-screen'),
@@ -361,6 +362,20 @@
   // screen. NOT native confirm(): browsers block confirm() in popup/iframe
   // contexts and silently return false, which made every managed login fail
   // as "declined" without the user ever seeing a prompt.
+  // An identity this wallet signed in is held by ANOTHER browserid account
+  // (a split account, bean mojx). The wallet has one account; ask before
+  // moving the identity into it (registry-api-v1 §4.1: the other account is
+  // told, and can take it back).
+  let takeoverPending = null;
+  function askTakeover(identityEmail) {
+    return new Promise((resolve) => {
+      takeoverPending = { resolve };
+      const e = screens.takeover.querySelector('.email-display');
+      if (e) e.textContent = identityEmail;
+      showScreen('takeover');
+    });
+  }
+
   let managedConsentPending = null;
   function managedDisclosure(issuer, email) {
     return new Promise((resolve, reject) => {
@@ -507,7 +522,8 @@
           configCert: pair.config.cert, configPrivateKey: pair.config.privateKey
         },
         identity: email,
-        password: state.typedPassword || null
+        password: state.typedPassword || null,
+        askTakeover: askTakeover
       });
       let registry = false;
       try {
@@ -3052,6 +3068,16 @@
     // Managed-identity disclosure: Continue resumes the sign-in (the flow is
     // awaiting the promise inside storeDevicePair); Cancel aborts the flow and
     // returns control to the RP as a user cancellation.
+    document.getElementById('takeover-move').addEventListener('click', () => {
+      const p = takeoverPending; takeoverPending = null;
+      showScreen('loading', 'Moving…');
+      if (p) p.resolve(true);
+    });
+    document.getElementById('takeover-cancel').addEventListener('click', () => {
+      const p = takeoverPending; takeoverPending = null;
+      showScreen('loading', 'Signing in…');
+      if (p) p.resolve(false);
+    });
     document.getElementById('managed-consent-continue').addEventListener('click', () => {
       const p = managedConsentPending;
       managedConsentPending = null;
