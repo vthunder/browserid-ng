@@ -871,6 +871,15 @@
           }
           return; // artefact went to the promise; never through the login observer
         }
+        // The wallet answered a login request with an error object (e.g. the
+        // identity's issuer refused because this browser is not signed in
+        // there): the site explains; onerror when it gave one, else oncancel.
+        if (!err && r && r.error && !r.presentation) {
+          if (options && typeof options.onerror === 'function') options.onerror(r);
+          else if (options && options.oncancel) options.oncancel();
+          delete options.oncancel;
+          return;
+        }
         if (!err && r && r.presentation && observers.login) {
           try {
             deliverLogin(r.presentation, r);

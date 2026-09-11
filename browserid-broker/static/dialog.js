@@ -672,14 +672,16 @@
   // (reason `not_signed_in`). Say so without naming who owns it, and send the
   // person back to the chooser: signing in as the identity that backs it
   // lets the issuer's own site set this one up afterwards.
-  function primaryHopMessage(email, reason) {
-    const domain = email.split('@')[1] || 'its identity provider';
+  // The issuer's page had no session for this identity and closed itself
+  // (reason `not_signed_in`). That is the requesting site's failure to
+  // explain — it knows how its identities get set up — so hand it back as
+  // an error result rather than a wallet screen. Anything else is shown here.
+  function primaryHopFailed(email, reason) {
     if (String(reason) === 'not_signed_in') {
-      return email + ' is issued by ' + domain + ', and this browser is not signed in there. ' +
-        'Try again and choose the identity you use to sign in to ' + domain +
-        '; it will then set up ' + email + ' for you.';
+      sendResponse({ error: 'issuer_not_signed_in', identity: email, issuer: email.split('@')[1] || null });
+      return;
     }
-    return 'Sign-in with your email provider failed: ' + reason;
+    showError('Sign-in with your email provider failed: ' + reason);
   }
 
   async function recordParentHint(email) {
@@ -1305,7 +1307,7 @@
       pair = await reconcileBrowserHolder(email, domain, keys, certs, pair, mintUrl, addressInfo.device_auth);
       await finishSignIn(email, pair, domain, mintUrl);
     } catch (e) {
-      showError(primaryHopMessage(email, (e && e.message) || e));
+      primaryHopFailed(email, (e && e.message) || e);
     }
   }
 
@@ -1480,7 +1482,7 @@
     });
     const errReason = frag.get('device_error');
     if (errReason) {
-      showError(primaryHopMessage(pending.email, errReason));
+      primaryHopFailed(pending.email, errReason);
       return;
     }
     const certs = fragCerts;
@@ -2982,7 +2984,7 @@
         if (err && err.popupBlocked) {
           showError('Could not open the sign-in window. Please allow popups for this site and try again.');
         } else {
-          showError(primaryHopMessage(p.email, err.message || String(err)));
+          primaryHopFailed(p.email, err.message || String(err));
         }
       }
     });
@@ -3030,7 +3032,10 @@
 
     // Try again button
     document.querySelector('.try-again').addEventListener('click', () => {
-      showScreen('email');
+      // Back to where the person can choose again: the chooser when the
+      // account's identities are known, else the typed-email screen.
+      if (state.emails && state.emails.length) { populateEmailList(state.emails); showScreen('pickEmail'); }
+      else showScreen('email');
     });
 
     // SBO signing consent: Allow grants this origin the typed-signing
