@@ -355,13 +355,12 @@
     <section id="sbo-consent-screen" class="screen">
       <div class="content">
         <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
-        <h2 style="margin-bottom:14px">Allow signing as you?</h2>
-        <div class="consent-card"><b class="rp-name"></b> will sign content on the SBO
-          network as <span class="email-display"></span>, to
-          <code id="sbo-consent-audiences"></code>:
+        <h2 style="margin-bottom:14px">Allow this as you?</h2>
+        <div class="consent-card"><b class="rp-name"></b> asks, as <span class="email-display"></span>,
+          at <code id="sbo-consent-audiences"></code>, to:
           <ul id="sbo-consent-scopes" style="margin:8px 0 0 18px; padding:0"></ul>
         </div>
-        <p class="muted-note">Revocable anytime from your account page.</p>
+        <p class="muted-note">Attributed to you. Revocable anytime from your account page.</p>
 
         <div class="button-row">
           <button type="button" id="sbo-consent-allow" class="primary">Allow</button>
@@ -371,6 +370,20 @@
     </section>
 
     <!-- Success Screen -->
+    <section id="sign-prompt-screen" class="screen">
+      <div class="content">
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <h2 id="sign-prompt-title" style="margin-bottom:14px">Approve this action?</h2>
+        <div class="consent-card"><b class="rp-name"></b> asks you to sign:
+          <pre id="sign-prompt-detail" style="margin:8px 0 0; white-space:pre-wrap; word-break:break-all; font-size:12px"></pre>
+        </div>
+        <div class="button-row">
+          <button type="button" id="sign-prompt-approve" class="primary">Approve</button>
+          <button type="button" id="sign-prompt-decline" class="secondary">Decline</button>
+        </div>
+      </div>
+    </section>
+
     <section id="success-screen" class="screen">
       <div class="content">
         <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
@@ -415,6 +428,8 @@
   <script src="/common/js/keystore.js"></script>
   <script src="/common/js/registry-session.js"></script>
   <script src="winchan.js"></script>
+  <script src="/common/js/sbo-sign.js"></script>
+  <script src="/common/js/wallet-signer.js"></script>
   <script src="dialog.js"></script>
 </body>
 </html>

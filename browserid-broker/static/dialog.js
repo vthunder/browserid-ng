@@ -36,6 +36,8 @@
     acceptedFallbacks: null,   // RP's accepted fallback IdPs (spec §8.1); null = default {this broker}
     brokerDomain: null,        // this broker's own issuer domain (from session_context)
     sboSign: false,  // RP's signing-grant request: false | { audiences, scopes } (spec §7.5)
+    kind: 'login',   // request kind (spec §7.3, request-kinds): login | warrant | signature
+    request: null,   // the kind's args as the page passed them (normalized in readRequest)
     pendingPresentation: null,  // presentation held while showing the SBO consent screen
     provisionEmail: null,  // RP asked to provision/sign in a SPECIFIC identity (skip the chooser)
     loginHint: null,  // caller pre-filled the email (e.g. /account) → skip the email screen
@@ -80,6 +82,7 @@
     claimContinue: document.getElementById('claim-continue-screen'),
     managedConsent: document.getElementById('managed-consent-screen'),
     sboConsent: document.getElementById('sbo-consent-screen'),
+    signPrompt: document.getElementById('sign-prompt-screen'),
     success: document.getElementById('success-screen'),
     error: document.getElementById('error-screen')
   };
@@ -2081,6 +2084,14 @@
   // signing grants and stored records don't already cover the request on this
   // device, show the consent card first; otherwise return immediately.
   function returnPresentation(presentation) {
+    if (state.kind === 'warrant') {
+      // request("warrant"): the sign-in only established WHO signs; the ask
+      // itself is the card (spec §7.5 signing grants, present lane).
+      state.pendingPresentation = presentation;
+      fillConsentCard(state.request.grants);
+      showScreen('sboConsent');
+      return;
+    }
     if (state.sboSign && !sboGrantsCover(state.origin, state.sboSign, state.email)) {
       state.pendingPresentation = presentation;
       fillSboConsentCard();
@@ -2096,29 +2107,72 @@
   // The consent-card copy must state the standing authority plainly (spec §5):
   // auto-mode scopes are silent, repeated signing — say so in the verb;
   // prompt-mode scopes are called out as ask-each-time.
-  function sboScopeVerb(entry) {
-    const scope = typeof entry === 'string' ? entry : entry.scope;
-    const prompt = typeof entry === 'object' && entry.mode === 'prompt';
-    const kind = scope.replace(/^sign:sbo:/, '');
-    const noun = { post: 'posts', delete: 'deletions' }[kind] || (kind + ' actions');
-    return noun + (prompt ? ' — you approve each one' : ' — signed automatically');
+  // Scope → words. A wallet-owned label table (request-kinds README): the
+  // requester never supplies card prose. Unknown scopes render raw, capped,
+  // control and bidi characters stripped.
+  function scopeVerb(entry) {
+    const scope = String(typeof entry === 'string' ? entry : (entry && entry.scope) || '');
+    const prompt = typeof entry === 'object' && entry && entry.mode === 'prompt';
+    if (scope.indexOf('sign:sbo:') === 0) {
+      const kind = scope.replace(/^sign:sbo:/, '');
+      const noun = { post: 'posts', delete: 'deletions' }[kind] || (kind + ' actions');
+      return 'sign ' + noun + (prompt ? ' — you approve each one' : ' — signed automatically');
+    }
+    if (scope === 'login') return 'sign you in';
+    const raw = scope.replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '').slice(0, 64);
+    return raw + (prompt ? ' — you approve each one' : '');
   }
+  const sboScopeVerb = scopeVerb;
 
-  function fillSboConsentCard() {
-    const req = state.sboSign;
+  // The one warrant card (spec decision: the SBO grant has no wording of
+  // its own). `grants` = [{ audience, scopes }].
+  function fillConsentCard(grants) {
     const emailEl = screens.sboConsent.querySelector('.email-display');
     if (emailEl) emailEl.textContent = state.email || '';
     const audEl = document.getElementById('sbo-consent-audiences');
-    if (audEl) audEl.textContent = req.audiences.join(', ');
+    if (audEl) audEl.textContent = grants.map(g => g.audience).join(', ');
     const list = document.getElementById('sbo-consent-scopes');
     if (list) {
       list.textContent = '';
-      req.scopes.forEach(s => {
+      const seen = {};
+      grants.forEach(g => (g.scopes || []).forEach(sc => {
+        const label = scopeVerb(sc);
+        if (seen[label]) return;
+        seen[label] = true;
         const li = document.createElement('li');
-        li.textContent = sboScopeVerb(s);
+        li.textContent = label;
         list.appendChild(li);
-      });
+      }));
     }
+  }
+  function fillSboConsentCard() {
+    const req = state.sboSign;
+    fillConsentCard(req.audiences.map(a => ({ audience: a, scopes: req.scopes })));
+  }
+
+  // request("warrant") args → [{ audience, scopes }] or null (fail-closed).
+  // Present-lane warrants are SELF-grants only (spec §7.3): no grantee field.
+  function normalizeWarrantRequest(v) {
+    if (!v || typeof v !== 'object' || !Array.isArray(v.grants)) return null;
+    if (!v.grants.length || v.grants.length > 8) return null;
+    if (v.grantee !== undefined && v.grantee !== 'self') return null;
+    const seen = {};
+    const grants = [];
+    for (const g of v.grants) {
+      if (!g || typeof g !== 'object' || typeof g.audience !== 'string' || !g.audience) return null;
+      if (g.audience.includes('*') || /\s/.test(g.audience) || g.audience.length > 512) return null;
+      if (seen[g.audience]) return null;
+      seen[g.audience] = true;
+      if (!Array.isArray(g.scopes) || !g.scopes.length || g.scopes.length > 32) return null;
+      for (const sc of g.scopes) {
+        const name = typeof sc === 'string' ? sc : (sc && typeof sc === 'object' && sc.scope);
+        if (typeof name !== 'string' || !/^[a-z0-9_:.-]{1,64}$/.test(name)) return null;
+        if (typeof sc === 'object' && !Object.keys(sc).every(k => k === 'scope' || k === 'mode')) return null;
+        if (typeof sc === 'object' && sc.mode !== undefined && sc.mode !== 'auto' && sc.mode !== 'prompt') return null;
+      }
+      grants.push({ audience: g.audience, scopes: g.scopes });
+    }
+    return { grants, message: typeof v.message === 'string' ? v.message.slice(0, 500) : null };
   }
 
   // Show the "automatically sign in next time" checkbox only when the RP's
@@ -2234,43 +2288,91 @@
   // no index ⇒ no record, fail-closed), sign the record with this device's
   // config key, register it (→ /account row), store it for the popup. Only a
   // consent ceremony ever authors these (spec §6.6 invariant 11).
-  async function grantSigningRecords() {
-    const req = state.sboSign;
+  // sign("warrant"): one self-grant record per { audience, scopes }, signed
+  // with this device's config key under the verified requesting origin.
+  // Returns { warrants: [JWS…] (in order), config_cert }.
+  async function grantRecords(grants) {
     const ctx = state.signingContext;
-    if (!req || !ctx || !ctx.pair) throw new Error('no signed-in device to grant from');
+    if (!grants || !ctx || !ctx.pair) throw new Error('no signed-in device to grant from');
     const holder = certHolder(ctx.pair.device.cert);
     if (!holder) throw new Error('device cert carries no holder');
-    const scopeStrings = req.scopes.map(s => (typeof s === 'string' ? s : s.scope));
-    for (const aud of req.audiences) {
+    const warrants = [];
+    for (const g of grants) {
+      const scopeStrings = g.scopes.map(s => (typeof s === 'string' ? s : s.scope));
       // Session lane: Registry was configured with this same pair
       // by the sign-in's buildPresentation before signingContext was set.
       const alloc = await Registry.call('POST', '/api/v1/warrants/allocate_status', {
-        grantee: ctx.email, audience: aud, scopes: scopeStrings
+        grantee: ctx.email, audience: g.audience, scopes: scopeStrings
       });
       if (!alloc || !alloc.uri) throw new Error((alloc && alloc.reason) || 'status allocation failed');
-      const jws = await signJws(ctx.pair.config.privateKey, {
-        typ: 'browserid-warrant-v2',
-        iat: nowS(),
-        exp: nowS() + 90 * 86400,
-        grantor: ctx.email,
-        grantee: ctx.email,
-        binding: [
-          { kind: 'holder', matcher: holder },
-          { kind: 'requester', origin: state.origin }
-        ],
-        audience: aud,
-        scopes: req.scopes,
-        status: { uri: alloc.uri, idx: alloc.idx }
-      });
+      const jws = await signJws(ctx.pair.config.privateKey, WalletSigner.warrantV2Claims({
+        email: ctx.email, holder, origin: state.origin,
+        audience: g.audience, scopes: g.scopes, status: { uri: alloc.uri, idx: alloc.idx }
+      }));
       await Registry.call('POST', '/api/v1/warrants/register', {
         warrant: jws, config_cert: ctx.pair.config.cert
       });
-      const siteInfo = JSON.parse(localStorage.getItem('siteInfo') || '{}');
-      siteInfo[state.origin] = siteInfo[state.origin] || {};
-      siteInfo[state.origin].signing_grants = siteInfo[state.origin].signing_grants || {};
-      siteInfo[state.origin].signing_grants[aud] = jws;
-      localStorage.setItem('siteInfo', JSON.stringify(siteInfo));
+      WalletSigner.storeGrant(state.origin, g.audience, jws);
+      warrants.push(jws);
     }
+    return { warrants, config_cert: ctx.pair.config.cert };
+  }
+  function grantSigningRecords() {
+    const req = state.sboSign;
+    return grantRecords(req.audiences.map(a => ({ audience: a, scopes: req.scopes })));
+  }
+
+  // --- request("signature") -------------------------------------------------
+  // No sign-in: the stored record for (origin, audience) names the identity;
+  // the shared signer enforces channel set, scope, status, and prompt mode.
+  function promptSignature(action, envelope) {
+    return new Promise(resolve => {
+      document.getElementById('sign-prompt-title').textContent = 'Approve this ' + action + '?';
+      document.getElementById('sign-prompt-detail').textContent =
+        JSON.stringify(WalletSigner.objectSummary(action, envelope), null, 2);
+      const ok = document.getElementById('sign-prompt-approve');
+      const no = document.getElementById('sign-prompt-decline');
+      const done = v => { ok.onclick = no.onclick = null; resolve(v); };
+      ok.onclick = () => done(true);
+      no.onclick = () => done(false);
+      showScreen('signPrompt');
+    });
+  }
+  async function runSignature() {
+    const req = state.request || {};
+    const audience = typeof req.audience === 'string' ? req.audience : '';
+    const envelope = req.object;
+    if (!audience || !envelope || typeof envelope !== 'object') {
+      return sendResponse({ error: 'bad_request', message: 'signature needs { audience, object }' });
+    }
+    showScreen('loading', 'Checking your signing grant…');
+    const rec = WalletSigner.decodeJws(WalletSigner.storedGrants(state.origin)[audience] || '');
+    if (!rec || !rec.grantee) {
+      return sendResponse({ error: 'no_grant', message: 'no signing grant for this site and audience' });
+    }
+    try {
+      const out = await WalletSigner.signObject({
+        origin: state.origin, email: rec.grantee, audience, envelope, prompt: promptSignature
+      });
+      sendResponse({ signature: out.signature, presentation: out.cert, pubkey: out.pubkey, email: out.email });
+    } catch (e) {
+      const code = (e && e.error) || 'sign_failed';
+      const map = { not_granted: 'no_grant', prompt_declined: 'denied' };
+      sendResponse({ error: map[code] || code, message: (e && e.message) || String(e) });
+    }
+  }
+
+  // The request parameters every intake path reads (WinChan, postMessage,
+  // dev lane): kind + args, plus the login-kind options.
+  function readRequest(p) {
+    p = p || {};
+    state.kind = (p.kind === undefined || p.kind === null || p.kind === 'login') ? 'login' : String(p.kind);
+    state.request = null;
+    if (state.kind === 'warrant') state.request = normalizeWarrantRequest(p.request);
+    else if (state.kind === 'signature') state.request = (p.request && typeof p.request === 'object') ? p.request : null;
+    state.sboSign = state.kind === 'login' ? normalizeSboSign(p.sboSign) : false;
+    state.provisionEmail = state.kind === 'login' ? (p.provisionEmail || null) : null;
+    state.acceptedFallbacks = normalizeAcceptedFallbacks(p.acceptedFallbacks);
   }
 
   // Communication with parent window
@@ -2754,6 +2856,22 @@
 
     document.getElementById('sbo-consent-allow').addEventListener('click', async () => {
       showScreen('loading', 'Recording your approval…');
+      if (state.kind === 'warrant') {
+        let out;
+        try {
+          out = await grantRecords(state.request.grants);
+        } catch (e) {
+          showError('Could not record the grant: ' + ((e && e.message) || e));
+          return;
+        }
+        const presentation = state.pendingPresentation;
+        state.pendingPresentation = null;
+        showScreen('success');
+        setTimeout(() => {
+          sendResponse({ warrants: out.warrants, config_cert: out.config_cert, email: state.email, presentation });
+        }, 600);
+        return;
+      }
       try {
         await grantSigningRecords();
       } catch (e) {
@@ -2763,6 +2881,11 @@
       finishAfterConsent();
     });
     document.getElementById('sbo-consent-deny').addEventListener('click', () => {
+      if (state.kind === 'warrant') {
+        state.pendingPresentation = null;
+        sendResponse({ error: 'denied', email: state.email });
+        return;
+      }
       finishAfterConsent();
     });
 
@@ -2770,9 +2893,7 @@
     window.addEventListener('message', (e) => {
       if (e.data && e.data.type === 'browserid:request') {
         state.origin = e.origin;
-        state.sboSign = normalizeSboSign(e.data.params && e.data.params.sboSign);
-        state.provisionEmail = (e.data.params && e.data.params.provisionEmail) || null;
-        state.acceptedFallbacks = normalizeAcceptedFallbacks(e.data.params && e.data.params.acceptedFallbacks);
+        readRequest(e.data.params);
         document.querySelectorAll('.rp-name').forEach(el => {
           el.textContent = new URL(e.origin).hostname;
         });
@@ -2892,6 +3013,16 @@
     try { await Keystore.healthLocal(); } catch (e) { /* hygiene only */ }
     // Retired pre-M9 SBO grant booleans grant nothing — clear them out.
     wipeLegacySboBooleans();
+    // Request kinds (spec §7.3). `signature` needs no sign-in: the stored
+    // record names the identity. `warrant` rides the sign-in flow to learn
+    // who signs, then branches at returnPresentation.
+    if (state.kind === 'signature') return runSignature();
+    if (state.kind !== 'login' && state.kind !== 'warrant') {
+      return sendResponse({ error: 'unsupported_kind', kind: state.kind });
+    }
+    if (state.kind === 'warrant' && !state.request) {
+      return sendResponse({ error: 'bad_request', message: 'warrant needs { grants: [{ audience, scopes }] }' });
+    }
     // Learn this broker's own issuer domain (its fallback-IdP identity) so the
     // acceptedFallbacks gate (spec §8.1) works on every entry path, including
     // the provisionEmail fast-path below.
@@ -3024,6 +3155,15 @@
     state.provisionEmail = params.get('provision_email');
     state.acceptedFallbacks = normalizeAcceptedFallbacks(
       params.get('accepted_fallbacks') ? params.get('accepted_fallbacks').split(',') : null);
+    // Dev lane's request kind: ?request=<b64url {kind, ...args}>.
+    const devReq = params.get('request');
+    if (devReq) {
+      try {
+        const r = JSON.parse(atob(devReq.replace(/-/g, '+').replace(/_/g, '/')));
+        readRequest({ kind: r.kind, request: r, sboSign: false,
+          acceptedFallbacks: state.acceptedFallbacks });
+      } catch (e) { /* malformed ⇒ login */ }
+    }
     document.querySelectorAll('.rp-name').forEach(el => {
       el.textContent = new URL(origin).hostname;
     });
@@ -3037,9 +3177,7 @@
       WinChan.onOpen(function(origin, args, cb) {
         if (args && args.params) {
           state.origin = origin;
-          state.sboSign = normalizeSboSign(args.params.sboSign);
-          state.provisionEmail = args.params.provisionEmail || null;
-          state.acceptedFallbacks = normalizeAcceptedFallbacks(args.params.acceptedFallbacks);
+          readRequest(args.params);
           state.winchanCallback = cb;
           // FedCM opt-in: include.js sets this when the browser supports FedCM.
           maybeShowFedcmOptin(!!args.params.fedcm);

@@ -778,6 +778,11 @@
         catch(e) {
           /* IE7 blows up here, do nothing */
         }
+        if (options._deferred) {
+          var d = options._deferred;
+          delete options._deferred;
+          d.reject({ error: 'busy', message: 'a wallet window is already open' });
+        }
         return;
       }
 
@@ -806,7 +811,10 @@
           (navigator.maxTouchPoints > 1 &&
            typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches);
       } catch (e) { isMobile = false; }
-      if ((options.redirect === true || isMobile) && observers.login) {
+      // Non-login request kinds return their artefact to THIS page, so they
+      // are popup-only: no redirect lane (spec §7.3, request-kinds).
+      var kindRequest = !!(options.kind && options.kind !== 'login');
+      if ((options.redirect === true || isMobile) && observers.login && !kindRequest) {
         return engageRedirect(options);
       }
 
@@ -818,7 +826,7 @@
       function armDetachedPopupWatchdog(popupOptions) {
         readyTimer = setTimeout(function () {
           readyTimer = null;
-          if (!observers.login) return; // stateless API cannot survive a navigation
+          if (!observers.login || kindRequest) return; // stateless API cannot survive a navigation
           try { if (w) w.close(); } catch (e) { }
           w = undefined;
           engageRedirect(popupOptions);
@@ -842,13 +850,28 @@
         if (readyTimer) { clearTimeout(readyTimer); readyTimer = null; }
         // Popup blocked outright: fall back to the full-page redirect flow
         // (only possible in watch mode — the observer survives navigation).
-        if (err === 'popup blocked' && observers.login) {
+        if (err === 'popup blocked' && observers.login && !kindRequest) {
           w = undefined;
           return engageRedirect(options);
         }
         // clear the window handle
         w = undefined;
-        if (!err && r && r.presentation) {
+        // request(kind, args) promise: settle it from the wallet's answer.
+        var deferred = options._deferred;
+        delete options._deferred;
+        if (deferred) {
+          if (err) deferred.reject({ error: err === 'client closed window' ? 'cancelled' : 'error', message: String(err) });
+          else if (!r) deferred.reject({ error: 'cancelled' });
+          else if (r.error) deferred.reject(r);
+          else deferred.resolve(r);
+        }
+        if (kindRequest) {
+          if (err === 'client closed window' || !r) {
+            if (options && options.oncancel) options.oncancel();
+          }
+          return; // artefact went to the promise; never through the login observer
+        }
+        if (!err && r && r.presentation && observers.login) {
           try {
             deliverLogin(r.presentation, r);
           } catch(clientError) {
@@ -1210,19 +1233,46 @@
     // ----------------------------------------------------------------------
 
     navigator.id = {
-      request: function(options) {
+      // Two forms (spec §7.3, request-kinds side spec):
+      //   request(options)        — legacy: a login, delivered to watch()'s onlogin
+      //   request(kind, args)     — returns a Promise of the kind's artefact
+      //     "login"     args as the legacy options; resolves { presentation, email }
+      //                 (and still fires onlogin when watch() registered one)
+      //     "warrant"   { grants: [{ audience, scopes }], message? } → { warrants, config_cert }
+      //     "signature" { audience, object } → { signature, presentation, pubkey }
+      //   Rejections carry { error }: cancelled | denied | no_grant | bad_request |
+      //   unsupported_kind | ...
+      request: function(kindOrOptions, args) {
         if (this != navigator.id)
           throw new Error("all navigator.id calls must be made on the navigator.id object");
 
-        if (!observers.login)
-          throw new Error("navigator.id.watch must be called before navigator.id.request");
+        var options;
+        var kind = null;
+        if (typeof kindOrOptions === 'string') {
+          kind = kindOrOptions;
+          if (kind === 'login') {
+            options = {};
+            for (var k in (args || {})) if (Object.prototype.hasOwnProperty.call(args, k)) options[k] = args[k];
+          } else {
+            options = { kind: kind, request: args || {} };
+          }
+        } else {
+          options = kindOrOptions || {};
+          if (!observers.login)
+            throw new Error("navigator.id.watch must be called before navigator.id.request");
+        }
 
-        options = options || {};
         checkCompat(false);
         api_called = "request";
         // returnTo is used for post-email-verification redirect
         if (!options.returnTo) options.returnTo = document.location.pathname;
-        return internalRequest(options);
+        if (kind === null) return internalRequest(options);
+
+        return new Promise(function (resolve, reject) {
+          options._deferred = { resolve: resolve, reject: reject };
+          try { internalRequest(options); }
+          catch (e) { delete options._deferred; reject({ error: 'error', message: String(e && e.message || e) }); }
+        });
       },
       watch: function(options) {
         if (this != navigator.id)
