@@ -89,6 +89,7 @@
 </div>
 
 <script src="/common/js/keystore.js"></script>
+<script src="/common/js/wallet-signer.js"></script>
 <script src="/common/js/registry-session.js"></script>
 <script type="module">
 const $ = (id) => document.getElementById(id);
@@ -191,9 +192,8 @@ async function signWarrant(config, grantor, grantee, audience, scopes, status, h
   if (scopes && scopes.length) claims.scopes = scopes;
   if (status) claims.status = status;
   if (config.bridged) return bridge.signWarrant(header, claims);
-  const payload = b64urlJson(claims);
-  const sig = await window.Keystore.sign(config.privateKey, `${header}.${payload}`);
-  return `${header}.${payload}.${sig}`;
+  // Web wallet: the one signer (common/js/wallet-signer.js), same as the dialog.
+  return window.WalletSigner.signJws(config.privateKey, claims);
 }
 
 /// Sign a v2 admission record (spec §5): the binding slot replaces the
@@ -215,9 +215,7 @@ async function signWarrantV2(config, grantor, grantee, audience, scopes, status,
   if (scopes && scopes.length) claims.scopes = scopes;
   claims.status = status;
   if (config.bridged) return bridge.signWarrant(header, claims);
-  const payload = b64urlJson(claims);
-  const sig = await window.Keystore.sign(config.privateKey, `${header}.${payload}`);
-  return `${header}.${payload}.${sig}`;
+  return window.WalletSigner.signJws(config.privateKey, claims);
 }
 
 // ---- classification ------------------------------------------------------

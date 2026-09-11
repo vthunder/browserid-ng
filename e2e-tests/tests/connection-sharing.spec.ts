@@ -92,7 +92,11 @@ test.afterAll(async () => {
  *  connect; the origin-wide session auto-bounces afterwards), raises the
  *  request pinned to them with their ACTUAL entitlement, and the member
  *  approves the pinned connection card → code lands on the catcher. */
-async function connectMember(memberPage: any, request: any, member: any, opts: { expectLogin: boolean }) {
+async function connectMember(memberPage: any, request: any, member: any, opts: { expectLogin: boolean; noJs?: boolean }) {
+  // No-JS fallback (spec §7.5): with the mediator script unavailable the
+  // continue link is a plain navigation → the redirect lane → the broker's
+  // consent card, exactly as before the present lane existed.
+  if (opts.noJs) await memberPage.route('**/include.js', (r: any) => r.abort());
   const reg = await (
     await request.post(`${GATE}/register`, { data: { redirect_uris: [REDIRECT], client_name: 'Claude' } })
   ).json();
@@ -119,6 +123,13 @@ async function connectMember(memberPage: any, request: any, member: any, opts: {
   // Present lane (spec §7.5, g69e): the continue click files the request
   // and hands its code to the wallet through the request mediator — the
   // dialog popup opens on the gate's own origin, no redirect to the broker.
+  if (opts.noJs) {
+    await memberPage.click('#continue');
+    await expect(memberPage.locator('#list .pvcard')).toContainText('Connect Claude to this site?', { timeout: 15000 });
+    await expect(memberPage.locator('#list .pvcard')).toContainText(member.email);
+    await memberPage.click('button.approve:enabled', { timeout: 5000 });
+    return finishConnect(request, reg, p, codePromise);
+  }
   const cardPopupPromise = memberPage.context().waitForEvent('page');
   await memberPage.click('#continue');
   const card = await cardPopupPromise;
@@ -139,6 +150,10 @@ async function connectMember(memberPage: any, request: any, member: any, opts: {
   // The wallet signs the v2 record and answers the registry; the gate page
   // follows return_url through the gate's return leg to the host redirect
   // (the catcher). The record itself travelled by the gate's poll only.
+  return finishConnect(request, reg, p, codePromise);
+}
+
+async function finishConnect(request: any, reg: any, p: any, codePromise: Promise<string>) {
   const code = await codePromise;
   expect(code, code).not.toMatch(/^ERROR:/);
   const tok = await (
@@ -215,7 +230,7 @@ test('owner shares to a member email; member connects, works under S ∩ S′, b
     await request.post(`${GATE}/token`, { data: { grant_type: 'refresh_token', refresh_token: tokens.refresh_token } })
   ).json();
   expect(deadRefresh.error).toBe('invalid_grant');
-  const tokens2 = await connectMember(memberPage, request, member, { expectLogin: false });
+  const tokens2 = await connectMember(memberPage, request, member, { expectLogin: false, noJs: true });
   expect(tokens2.access_token, JSON.stringify(tokens2)).toBeTruthy();
   const okAgain = await callTool(request, tokens2.access_token, 'read_text_file', { path: 'hello.txt' });
   expect(await okAgain.text()).toContain('shared notes from the vault');
