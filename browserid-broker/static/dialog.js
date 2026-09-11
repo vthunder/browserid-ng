@@ -40,6 +40,7 @@
     request: null,   // the kind's args as the page passed them (normalized in readRequest)
     pendingPresentation: null,  // presentation held while showing the SBO consent screen
     provisionEmail: null,  // RP asked to provision/sign in a SPECIFIC identity (skip the chooser)
+    parentHint: null,      // with provisionEmail: the identity it derives from, honoured only from the identity's own domain
     loginHint: null,  // caller pre-filled the email (e.g. /account) → skip the email screen
     pendingPrimary: null,  // {email, info, keys} while waiting on tap-to-continue
     pendingClaim: null,    // {email, info} while waiting on claim tap-to-continue
@@ -660,6 +661,25 @@
     }
   }
 
+  // Record a derived identity's parent, as told by the identity's OWN issuer
+  // site (mingo-cm8z, bean 4d80): the site directed a sign-in for the handle
+  // and named the parent it just authenticated. Honoured only when the
+  // requesting page IS the identity's domain (the issuer asking about its own
+  // identity — no oracle for anyone else), only for the directed identity,
+  // and only once the issuer has actually issued and the broker session owns
+  // both identities (the broker enforces the last part).
+  async function recordParentHint(email) {
+    if (!state.parentHint || !state.provisionEmail) return;
+    if (String(state.provisionEmail).toLowerCase() !== String(email).toLowerCase()) return;
+    if (state.parentHint === String(email).toLowerCase()) return;
+    let rpHost = null;
+    try { rpHost = new URL(state.origin).hostname.toLowerCase(); } catch (e) { return; }
+    if ((email.split('@')[1] || '').toLowerCase() !== rpHost) return;
+    try {
+      await apiCall('/wsapi/set_parent', 'POST', { email, parent_email: state.parentHint });
+    } catch (e) { console.warn('browserid: parent link not recorded:', (e && e.message) || e); }
+  }
+
   async function maybeSubstituteParent(email) {
     if (state.provisionEmail) return null;
     let rpHost = null;
@@ -1221,6 +1241,7 @@
       if (stored) {
         try {
           await ensureBrokerSession(email, stored, domain, mintUrl);
+          await recordParentHint(email);
           return await finishSignIn(email, stored, domain, mintUrl);
         } catch (e) {
           // Mint refused (revoked / IdP policy) — drop the pair and re-authorize.
@@ -1263,6 +1284,7 @@
       }
       let pair = await finishPrimaryCerts(email, keys, certs);
       await ensureBrokerSession(email, pair, domain, mintUrl);
+      await recordParentHint(email);
       // Unconditional: reconciliation itself decides whether anything needs
       // fixing, and it now has a repair route even when the IdP window is gone
       // (the OAuth-redirect case, which is where cold logins actually land).
@@ -1299,6 +1321,7 @@
         sboSign: state.sboSign,
         fedcm: !!state.fedcm,
         provisionEmail: state.provisionEmail,
+        parentHint: state.parentHint,
         acceptedFallbacks: state.acceptedFallbacks,
         emails: state.emails
       }
@@ -1434,6 +1457,7 @@
     state.redirect = pending.dialog.redirect;
     state.sboSign = normalizeSboSign(pending.dialog.sboSign);
     state.provisionEmail = pending.dialog.provisionEmail || null;
+    state.parentHint = pending.dialog.parentHint || null;
     state.acceptedFallbacks = pending.dialog.acceptedFallbacks || null;
     state.emails = pending.dialog.emails || [];
     maybeShowFedcmOptin(!!pending.dialog.fedcm);
@@ -1465,6 +1489,7 @@
         await followHolderCache(certHolder(pair.device.cert), pending.orphanPrefix);
       } else {
         await ensureBrokerSession(pending.email, pair, pending.domain, pending.mintUrl);
+        await recordParentHint(pending.email);
         const issued = certHolder(pair.device.cert);
         pending.orphanPrefix = issued && issued.includes('.')
           ? issued.slice(0, issued.indexOf('.')) : null;
@@ -1571,6 +1596,7 @@
         sboSign: state.sboSign,
         fedcm: !!state.fedcm,
         provisionEmail: state.provisionEmail,
+        parentHint: state.parentHint,
         acceptedFallbacks: state.acceptedFallbacks,
         emails: state.emails
       }
@@ -1694,6 +1720,7 @@
     state.redirect = pending.dialog.redirect;
     state.sboSign = normalizeSboSign(pending.dialog.sboSign);
     state.provisionEmail = pending.dialog.provisionEmail || null;
+    state.parentHint = pending.dialog.parentHint || null;
     state.acceptedFallbacks = pending.dialog.acceptedFallbacks || null;
     state.emails = pending.dialog.emails || [];
     maybeShowFedcmOptin(!!pending.dialog.fedcm);
@@ -1849,6 +1876,7 @@
         sboSign: state.sboSign,
         fedcm: !!state.fedcm,
         provisionEmail: state.provisionEmail,
+        parentHint: state.parentHint,
         acceptedFallbacks: state.acceptedFallbacks,
         emails: state.emails
       }
@@ -1971,6 +1999,7 @@
     state.redirect = pending.dialog.redirect;
     state.sboSign = normalizeSboSign(pending.dialog.sboSign);
     state.provisionEmail = pending.dialog.provisionEmail || null;
+    state.parentHint = pending.dialog.parentHint || null;
     state.acceptedFallbacks = pending.dialog.acceptedFallbacks || null;
     state.emails = pending.dialog.emails || [];
     maybeShowFedcmOptin(!!pending.dialog.fedcm);
@@ -2529,6 +2558,8 @@
     // identity }) may name the identity that must sign (the request's
     // grantor pin, e.g. a site's own handle for you) so the dialog drives
     // it straight through its issuer instead of showing the chooser.
+    state.parentHint = (state.kind === 'login' && typeof p.parent === 'string' && /^[^@\s]+@[^@\s]+$/.test(p.parent))
+      ? p.parent.toLowerCase() : null;
     state.provisionEmail = state.kind === 'login' ? (p.provisionEmail || null)
       : (state.kind === 'provision' && state.request && typeof state.request.identity === 'string'
           && /^[^@\s]+@[^@\s]+$/.test(state.request.identity)) ? state.request.identity.toLowerCase() : null;
@@ -2930,6 +2961,7 @@
         const certs = await primaryPopupFlow(p.email, p.info.device_auth, p.keys, p.holder, /* hold */ !p.holder, p.parentProof || null);
         let pair = await finishPrimaryCerts(p.email, p.keys, certs);
         await ensureBrokerSession(p.email, pair, p.email.split('@')[1], p.info.access_mint);
+        await recordParentHint(p.email);
         pair = await reconcileBrowserHolder(p.email, p.email.split('@')[1], p.keys, certs, pair, p.info.access_mint, p.info.device_auth);
         await finishSignIn(p.email, pair, p.email.split('@')[1], p.info.access_mint);
       } catch (err) {
@@ -3291,6 +3323,7 @@
       try { opts = b64urlParse(params.get('params') || '') || {}; } catch (e) { /* defaults */ }
       state.sboSign = normalizeSboSign(opts.sboSign);
       state.provisionEmail = opts.provisionEmail || null;
+      state.parentHint = (typeof opts.parent === 'string' && /^[^@\s]+@[^@\s]+$/.test(opts.parent)) ? opts.parent.toLowerCase() : null;
       state.loginHint = params.get('login_hint') || null;
       state.acceptedFallbacks = normalizeAcceptedFallbacks(opts.acceptedFallbacks);
       maybeShowFedcmOptin(!!opts.fedcm);

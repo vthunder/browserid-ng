@@ -938,6 +938,7 @@
           // the legacy boolean form is retired and grants nothing.
           sboSign: options.sboSign || false,
           provisionEmail: options.provisionEmail || null,
+          parent: options.parent || null,
           acceptedFallbacks: options.acceptedFallbacks || null,
           fedcm: fedcmAvailable()
         };
