@@ -392,6 +392,17 @@
     await Keystore.putDevice(issuer, email, 'config', {
       publicKeyX: keys.config.publicKeyX, privateKey: keys.config.privateKey, cert: certs.config_cert
     });
+    // Provenance (mingo-cm8z): a primary that issues a DERIVED identity (a
+    // site handle backed by one of the account's emails) names the parent in
+    // the handback. Record it so the chooser can say "signs in via <parent>"
+    // and substitute the parent's sign-in. Best-effort: the broker accepts it
+    // only when both identities are on the signed-in account.
+    if (certs.parent_email && typeof certs.parent_email === 'string' &&
+        certs.parent_email.toLowerCase() !== String(email).toLowerCase()) {
+      try {
+        await apiCall('/wsapi/set_parent', 'POST', { email, parent_email: certs.parent_email.toLowerCase() });
+      } catch (e) { console.warn('browserid: parent link not recorded:', (e && e.message) || e); }
+    }
   }
 
   // Issue a fresh device+config pair for a session-owned email (the device
@@ -856,7 +867,7 @@
               clearTimeout(tid);
               window.removeEventListener('message', onMsg);
               try { popup.close(); } catch (e) { /* already closed */ }
-              if (d.device_cert && d.config_cert) res({ device_cert: d.device_cert, config_cert: d.config_cert });
+              if (d.device_cert && d.config_cert) res({ device_cert: d.device_cert, config_cert: d.config_cert, parent_email: d.parent_email || null });
               else rej(new Error('identity provider returned no certificates'));
             } else if (d.type === 'browserid:device_error') {
               clearTimeout(tid);
@@ -898,10 +909,10 @@
           if (hold) {
             // Popup stays open for one optional re-issue; the caller MUST end
             // with reissue() or done().
-            resolve({ device_cert: d.device_cert, config_cert: d.config_cert, reissue, done: release });
+            resolve({ device_cert: d.device_cert, config_cert: d.config_cert, parent_email: d.parent_email || null, reissue, done: release });
           } else {
             try { popup.close(); } catch (e) { /* already closed */ }
-            resolve({ device_cert: d.device_cert, config_cert: d.config_cert });
+            resolve({ device_cert: d.device_cert, config_cert: d.config_cert, parent_email: d.parent_email || null });
           }
         } else if (d.type === 'browserid:device_error') {
           cleanup();
@@ -983,7 +994,7 @@
             if (!certKeyMatchesStrict(d.device_cert, keys.device.publicKeyX)) return;
             lastNonce = m.nonce;
             ackResume(m.nonce);
-            const got = { device_cert: d.device_cert, config_cert: d.config_cert };
+            const got = { device_cert: d.device_cert, config_cert: d.config_cert, parent_email: d.parent_email || null };
             // Second handback: the re-issue we asked for, under the new holder.
             if (awaitingReissue) {
               const w = awaitingReissue;
@@ -1293,7 +1304,8 @@
       const payload = errReason
         ? { type: 'browserid:device_error', reason: errReason, device_pubkey: errPubX || null }
         : (certs.device_cert && certs.config_cert
-          ? { type: 'browserid:device_certs', device_cert: certs.device_cert, config_cert: certs.config_cert }
+          ? Object.assign({ type: 'browserid:device_certs', device_cert: certs.device_cert, config_cert: certs.config_cert },
+              certs.parent_email ? { parent_email: certs.parent_email } : {})
           : null);
       if (!payload) {
         try { chan.close(); } catch (e) { /* ignore */ }
@@ -1375,7 +1387,7 @@
     let pending = null;
     try { pending = await Keystore.getPending(); } catch (e) { /* fall through */ }
     try { await Keystore.clearPending(); } catch (e) { /* best-effort */ }
-    const fragCerts = { device_cert: frag.get('device_cert'), config_cert: frag.get('config_cert') };
+    const fragCerts = { device_cert: frag.get('device_cert'), config_cert: frag.get('config_cert'), parent_email: frag.get('parent_email') || null };
     // A parked record only belongs to THIS handback if the returned cert
     // certifies the key it parked; otherwise it is the leftover of an
     // abandoned redirect hop and using it would mint an unusable pair.

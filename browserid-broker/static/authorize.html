@@ -988,8 +988,13 @@ async function pvApproveDelegated() {
         config = configFor(grantor);
       } catch (e) { /* primary-rooted: fall through to the guidance below */ }
     }
-    if (!config) throw new Error(
-      `No signing key for ${grantor} in this browser — sign in as ${grantor} here first, then retry.`);
+    if (!config) {
+      const primary = pv.addressInfo && pv.addressInfo.type === 'primary';
+      throw new Error(primary
+        ? `No signing key for ${grantor} in this browser yet — ${grantor} is issued by its own identity provider. ` +
+          `Approve from the site that asked (it signs ${grantor} in for you), or sign in to an app as ${grantor} here first, then retry.`
+        : `No signing key for ${grantor} in this browser — sign in as ${grantor} here first, then retry.`);
+    }
     status.textContent = 'Signing…';
     const warrants = [];
     for (const g of prep.grants) {
