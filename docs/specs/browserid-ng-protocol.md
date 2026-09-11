@@ -1069,6 +1069,19 @@ holder that should be able to log in but not create warrants (§7.5). How the ho
 authenticates is the IdP's choice: an **interactive login** for a browser (§7.3),
 or the **device-grant** for a headless holder (§7.4).
 
+**Derived identities.** An IdP MAY mint an identity that is backed by another
+identity the same person holds (a site handle backed by an external email):
+the issuer authenticates the **parent**, never the derived identity itself.
+Two consequences: (1) at issuance the IdP names the parent (`parent_email`
+in its device-cert handback) and the wallet records the link on the account,
+so the derived identity is shown as signing in via its parent; (2) when a
+browser later needs the derived identity's device certs and the issuer holds
+no session for the parent, the wallet MAY prove the parent itself — a
+presentation for the issuer's origin, minted from the parent's own certs
+(`parent_presentation` in the device-authorize hop) — and the issuer opens
+its session from that proof before issuing. The link is private account
+metadata; it never appears in a cert or assertion.
+
 ### 7.2 The access-cert mint
 
 **Every IdP MUST implement the access-cert mint.** The holder signs an **access

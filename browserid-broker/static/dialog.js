@@ -638,6 +638,39 @@
   // INTO the issuer, we authenticate the parent and deliver ITS presentation
   // instead. For every OTHER relying party the subordinate is a first-class
   // identity (returns null → proceed normally, revealing nothing about the parent).
+  // Parent proof for a DERIVED identity's issuer (mingo-cm8z, bean 4d80). A
+  // site-minted handle is backed by one of the account's own identities; its
+  // issuer will only sign the handle's device certs for a browser that has
+  // proven the parent. Instead of sending the user off to sign in to the
+  // issuer by hand (a dead end when that site's session has lapsed), the
+  // dialog proves the parent ITSELF — it is on the same account — with a
+  // presentation for the issuer's origin, handed along in the device-
+  // authorize hop. Null when the identity is not derived, the parent cannot
+  // be presented from here, or there is no broker session to ask.
+  async function parentProofFor(email, idpOrigin) {
+    try {
+      const pj = await apiCall('/wsapi/parent_of?email=' + encodeURIComponent(email));
+      const parent = pj && pj.parent_email;
+      if (!parent || parent.toLowerCase() === email.toLowerCase()) return null;
+      let pair = await WalletSigner.devicePairFor(parent);
+      let issuer = pair && pair.issuer;
+      if (!pair) {
+        // No local pair: a broker-rooted parent the session owns can be
+        // issued one here; a primary-rooted parent needs its own hop first.
+        const ai = await checkEmail(parent);
+        if (ai.type === 'primary') return null;
+        pair = await issueDevicePair(parent);
+        issuer = state.brokerDomain;
+        if (!pair) return null;
+      }
+      const mintUrl = await WalletSigner.mintUrlFor(parent, issuer);
+      return await buildPresentation(pair, issuer, mintUrl, parent, idpOrigin, /* noRegister */ true);
+    } catch (e) {
+      console.warn('browserid: parent proof unavailable:', (e && e.message) || e);
+      return null;
+    }
+  }
+
   async function maybeSubstituteParent(email) {
     if (state.provisionEmail) return null;
     let rpHost = null;
@@ -815,7 +848,7 @@
   // otherwise orphans a duplicate namespace). The resolved object then also
   // carries `reissue(holder)` and `done()`; an IdP that predates hold support
   // just closes itself, and `reissue` rejects immediately (non-fatal).
-  function primaryPopupFlow(email, deviceAuthUrl, keys, holder, hold) {
+  function primaryPopupFlow(email, deviceAuthUrl, keys, holder, hold, parentProof) {
     return new Promise((resolve, reject) => {
       const idpOrigin = new URL(deviceAuthUrl).origin;
       const url = deviceAuthUrl +
@@ -824,6 +857,7 @@
         '&config_pubkey=' + encodeURIComponent(keys.config.publicKeyX) +
         (holder ? '&holder=' + encodeURIComponent(holder) : '') +
         (hold ? '&hold=1' : '') +
+        (parentProof ? '&parent_presentation=' + encodeURIComponent(parentProof) : '') +
         '&return_origin=' + encodeURIComponent(window.location.origin);
 
       const popup = window.open(url, 'browserid_device_auth', 'width=600,height=700');
@@ -1219,16 +1253,17 @@
         return await primaryRedirectHop(email, addressInfo, holder);
       }
       const keys = { device: await Keystore.generate(), config: await Keystore.generate() };
+      const parentProof = await parentProofFor(email, new URL(addressInfo.device_auth).origin);
       let certs;
       try {
         // No known browser holder = cold login: hold the popup open so the
         // post-join reconciliation can re-issue under the canonical prefix
         // without a second gesture.
-        certs = await primaryPopupFlow(email, addressInfo.device_auth, keys, holder, /* hold */ !holder);
+        certs = await primaryPopupFlow(email, addressInfo.device_auth, keys, holder, /* hold */ !holder, parentProof);
       } catch (e) {
         if (e && e.popupBlocked) {
           // Blocked — re-run from a fresh tap gesture (mobile).
-          state.pendingPrimary = { email, info: addressInfo, keys, holder };
+          state.pendingPrimary = { email, info: addressInfo, keys, holder, parentProof };
           document.querySelectorAll('.email-display').forEach(el => el.textContent = email);
           document.querySelectorAll('#primary-auth-continue-screen .idp-name')
             .forEach(el => { el.textContent = domain; });
@@ -1280,12 +1315,14 @@
       }
     });
     const resume = window.location.origin + RESUME_PATH;
+    const parentProof = await parentProofFor(email, new URL(info.device_auth).origin);
     window.location.assign(
       info.device_auth +
       '#email=' + encodeURIComponent(email) +
       '&device_pubkey=' + encodeURIComponent(keys.device.publicKeyX) +
       '&config_pubkey=' + encodeURIComponent(keys.config.publicKeyX) +
       (holder ? '&holder=' + encodeURIComponent(holder) : '') +
+      (parentProof ? '&parent_presentation=' + encodeURIComponent(parentProof) : '') +
       '&return_origin=' + encodeURIComponent(window.location.origin) +
       '&return_url=' + encodeURIComponent(resume)
     );
@@ -2902,7 +2939,7 @@
       if (!p) return showScreen('email');
       state.pendingPrimary = null;
       try {
-        const certs = await primaryPopupFlow(p.email, p.info.device_auth, p.keys, p.holder, /* hold */ !p.holder);
+        const certs = await primaryPopupFlow(p.email, p.info.device_auth, p.keys, p.holder, /* hold */ !p.holder, p.parentProof || null);
         let pair = await finishPrimaryCerts(p.email, p.keys, certs);
         await ensureBrokerSession(p.email, pair, p.email.split('@')[1], p.info.access_mint);
         pair = await reconcileBrowserHolder(p.email, p.email.split('@')[1], p.keys, certs, pair, p.info.access_mint, p.info.device_auth);
