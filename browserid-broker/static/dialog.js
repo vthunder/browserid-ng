@@ -668,6 +668,20 @@
   // identity — no oracle for anyone else), only for the directed identity,
   // and only once the issuer has actually issued and the broker session owns
   // both identities (the broker enforces the last part).
+  // The issuer's page had no session for this identity and closed itself
+  // (reason `not_signed_in`). Say so without naming who owns it, and send the
+  // person back to the chooser: signing in as the identity that backs it
+  // lets the issuer's own site set this one up afterwards.
+  function primaryHopMessage(email, reason) {
+    const domain = email.split('@')[1] || 'its identity provider';
+    if (String(reason) === 'not_signed_in') {
+      return email + ' is issued by ' + domain + ', and this browser is not signed in there. ' +
+        'Try again and choose the identity you use to sign in to ' + domain +
+        '; it will then set up ' + email + ' for you.';
+    }
+    return 'Sign-in with your email provider failed: ' + reason;
+  }
+
   async function recordParentHint(email) {
     if (!state.parentHint || !state.provisionEmail) return;
     if (String(state.provisionEmail).toLowerCase() !== String(email).toLowerCase()) return;
@@ -1291,7 +1305,7 @@
       pair = await reconcileBrowserHolder(email, domain, keys, certs, pair, mintUrl, addressInfo.device_auth);
       await finishSignIn(email, pair, domain, mintUrl);
     } catch (e) {
-      showError('Sign-in with your email provider failed: ' + (e.message || e));
+      showError(primaryHopMessage(email, (e && e.message) || e));
     }
   }
 
@@ -1466,7 +1480,7 @@
     });
     const errReason = frag.get('device_error');
     if (errReason) {
-      showError('Sign-in with your email provider failed: ' + errReason);
+      showError(primaryHopMessage(pending.email, errReason));
       return;
     }
     const certs = fragCerts;
@@ -2968,7 +2982,7 @@
         if (err && err.popupBlocked) {
           showError('Could not open the sign-in window. Please allow popups for this site and try again.');
         } else {
-          showError(err.message || String(err));
+          showError(primaryHopMessage(p.email, err.message || String(err)));
         }
       }
     });
