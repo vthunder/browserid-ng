@@ -777,6 +777,9 @@ impl Fixture {
                 ScopeEntry::Parameterized(ScopeParams {
                     scope: "sign:sbo:delete".into(),
                     mode: Some(ScopeMode::Prompt),
+                    cap: None,
+                    counterparties: None,
+                    max_duration: None,
                 }),
             ],
             status: status("https://browserid.me/.well-known/browserid-status", 171),
@@ -1021,4 +1024,97 @@ fn identity_glob_is_domain_anchored() {
     assert!(!super::identity_matches("danmills+*@sandmill.org", "danmills+x@evil.example"));
     // Malformed emails never match (audit L1).
     assert!(!super::identity_matches("*@sandmill.org", "a@b@sandmill.org"));
+}
+
+mod scope_params {
+    use super::super::{parse_iso_duration_secs, parse_money_minor, Cap, ScopeEntry, ScopeMode, ScopeParams};
+
+    #[test]
+    fn money_parses_exactly() {
+        assert_eq!(parse_money_minor("20"), Some(2000));
+        assert_eq!(parse_money_minor("20.5"), Some(2050));
+        assert_eq!(parse_money_minor("20.05"), Some(2005));
+        assert_eq!(parse_money_minor(".5"), Some(50));
+        assert_eq!(parse_money_minor("0.001"), None);
+        assert_eq!(parse_money_minor("-1"), None);
+        assert_eq!(parse_money_minor("1e3"), None);
+        assert_eq!(parse_money_minor(""), None);
+        assert_eq!(parse_money_minor("."), None);
+    }
+
+    #[test]
+    fn durations_parse() {
+        assert_eq!(parse_iso_duration_secs("P30D"), Some(30 * 86_400));
+        assert_eq!(parse_iso_duration_secs("P1W"), Some(7 * 86_400));
+        assert_eq!(parse_iso_duration_secs("PT1H"), Some(3600));
+        assert_eq!(parse_iso_duration_secs("P1DT12H"), Some(86_400 + 12 * 3600));
+        assert_eq!(parse_iso_duration_secs("P1M"), Some(30 * 86_400));
+        assert_eq!(parse_iso_duration_secs("P"), None);
+        assert_eq!(parse_iso_duration_secs("30D"), None);
+        assert_eq!(parse_iso_duration_secs("P1H"), None);
+        assert_eq!(parse_iso_duration_secs("PD"), None);
+        assert_eq!(parse_iso_duration_secs("P1D1D"), None);
+    }
+
+    #[test]
+    fn round_trips_and_rejects_unknown_keys() {
+        let json = r#"{"scope":"pay:transfer","cap":{"amount":"20.00","currency":"USD","window":"P30D"}}"#;
+        let e: ScopeEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(e.scope(), "pay:transfer");
+        assert_eq!(e.cap().unwrap().amount_minor(), Some(2000));
+        assert_eq!(e.cap().unwrap().window_secs(), Ok(Some(30 * 86_400)));
+        assert_eq!(serde_json::to_string(&e).unwrap(), json);
+
+        let json = r#"{"scope":"contract:agreement","cap":{"amount":"50","currency":"USD"},"counterparties":["*@acme.example"],"max_duration":"P30D"}"#;
+        let e: ScopeEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(e.counterparties(), Some(&["*@acme.example".to_string()][..]));
+        assert_eq!(e.max_duration(), Some("P30D"));
+        assert_eq!(serde_json::to_string(&e).unwrap(), json);
+
+        // invariant 14: an unknown parameter key is a restriction we cannot honor
+        assert!(serde_json::from_str::<ScopeEntry>(r#"{"scope":"pay:transfer","max_per_day":3}"#).is_err());
+        assert!(serde_json::from_str::<ScopeEntry>(r#"{"scope":"pay:transfer","cap":{"amount":"1","currency":"USD","per":"day"}}"#).is_err());
+        // a bare string still parses
+        let e: ScopeEntry = serde_json::from_str(r#""pay:transfer""#).unwrap();
+        assert!(e.cap().is_none());
+    }
+
+    fn cap(amount: &str, window: Option<&str>) -> Cap {
+        Cap { amount: amount.into(), currency: "USD".into(), window: window.map(String::from) }
+    }
+
+    #[test]
+    fn stricter_wins_order() {
+        assert!(cap("10", Some("P7D")).is_at_least_as_strict_as(&cap("20", Some("P30D"))));
+        assert!(cap("10", Some("P7D")).is_at_least_as_strict_as(&cap("10", None)));
+        assert!(!cap("10", None).is_at_least_as_strict_as(&cap("10", Some("P7D"))));
+        assert!(!cap("30", Some("P7D")).is_at_least_as_strict_as(&cap("20", Some("P30D"))));
+        let mut eur = cap("1", None);
+        eur.currency = "EUR".into();
+        assert!(!eur.is_at_least_as_strict_as(&cap("10", None)));
+        assert!(!cap("x", None).is_at_least_as_strict_as(&cap("10", None)));
+
+        let base = ScopeParams {
+            scope: "contract:agreement".into(),
+            mode: None,
+            cap: Some(cap("50", None)),
+            counterparties: Some(vec!["*@acme.example".into(), "b@x.example".into()]),
+            max_duration: Some("P30D".into()),
+        };
+        let tighter = ScopeParams {
+            scope: "contract:agreement".into(),
+            mode: Some(ScopeMode::Prompt),
+            cap: Some(cap("10", Some("P7D"))),
+            counterparties: Some(vec!["b@x.example".into()]),
+            max_duration: Some("P7D".into()),
+        };
+        assert!(tighter.is_at_least_as_strict_as(&base));
+        assert!(!base.is_at_least_as_strict_as(&tighter));
+        let mut other_scope = tighter.clone();
+        other_scope.scope = "pay:transfer".into();
+        assert!(!other_scope.is_at_least_as_strict_as(&base));
+        let mut no_cap = tighter.clone();
+        no_cap.cap = None;
+        assert!(!no_cap.is_at_least_as_strict_as(&base));
+    }
 }

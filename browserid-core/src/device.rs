@@ -860,6 +860,179 @@ pub struct ScopeParams {
     /// `auto` (standing silent authority — prompt is the tightening).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<ScopeMode>,
+    /// The `cap` parameter (§5): the most the grantee may commit under this
+    /// entry — a spend budget on `pay:` scopes, a per-agreement ceiling on
+    /// `contract:` scopes. **Audience-enforced** (the stateful party holding
+    /// the money — a custodian), never wallet-enforced. Stricter: smaller
+    /// amount, then shorter window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cap: Option<Cap>,
+    /// The `counterparties` parameter (§5): who the grantee may deal with —
+    /// exact emails or `*@<domain>` matchers. Absent ⇒ anyone. Stricter:
+    /// a subset. Audience-enforced.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counterparties: Option<Vec<String>>,
+    /// The `max_duration` parameter (§5): the longest obligation window an
+    /// agreement entered under this entry may carry — an ISO-8601 duration.
+    /// Stricter: shorter. Audience-enforced.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_duration: Option<String>,
+}
+
+/// The `cap` parameter's value (§5). `amount` is a decimal string
+/// (`"20.00"`, never a float — money), `currency` an ISO 4217 code,
+/// `window` an ISO-8601 duration measured **rolling** from the warrant's
+/// `iat`; absent ⇒ a lifetime cap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cap {
+    pub amount: String,
+    pub currency: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+}
+
+/// Parse a decimal money string (`"20"`, `"20.5"`, `"20.00"`) to minor
+/// units (cents) — exact, no floats. At most two fraction digits; anything
+/// else is `None` (malformed caps must fail closed at the consumer).
+pub fn parse_money_minor(amount: &str) -> Option<u64> {
+    let (whole, frac) = match amount.split_once('.') {
+        Some((w, f)) => (w, f),
+        None => (amount, ""),
+    };
+    if whole.is_empty() && frac.is_empty() {
+        return None;
+    }
+    if !whole.chars().all(|c| c.is_ascii_digit()) || !frac.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    if frac.len() > 2 {
+        return None;
+    }
+    let whole: u64 = if whole.is_empty() { 0 } else { whole.parse().ok()? };
+    let frac: u64 = match frac.len() {
+        0 => 0,
+        1 => frac.parse::<u64>().ok()? * 10,
+        _ => frac.parse().ok()?,
+    };
+    whole.checked_mul(100)?.checked_add(frac)
+}
+
+/// Parse a restricted ISO-8601 duration (`P30D`, `PT1H`, `P1W`, `P1DT12H`,
+/// with Y/M/W/D and H/M/S components) to whole seconds. Years and months
+/// use fixed lengths (365 / 30 days) — a rolling window needs a definite
+/// length, not calendar arithmetic. `None` on anything else.
+pub fn parse_iso_duration_secs(d: &str) -> Option<u64> {
+    let rest = d.strip_prefix('P')?;
+    let (date, time) = match rest.split_once('T') {
+        Some((a, b)) => (a, Some(b)),
+        None => (rest, None),
+    };
+    if date.is_empty() && time.map_or(true, str::is_empty) {
+        return None;
+    }
+    fn walk(part: &str, units: &[(char, u64)]) -> Option<u64> {
+        let mut total: u64 = 0;
+        let mut num = String::new();
+        let mut last_idx: Option<usize> = None;
+        for c in part.chars() {
+            if c.is_ascii_digit() {
+                num.push(c);
+                continue;
+            }
+            let idx = units.iter().position(|(u, _)| *u == c)?;
+            // components must appear in order, each at most once
+            if last_idx.is_some_and(|l| idx <= l) || num.is_empty() {
+                return None;
+            }
+            last_idx = Some(idx);
+            let n: u64 = num.parse().ok()?;
+            num.clear();
+            total = total.checked_add(n.checked_mul(units[idx].1)?)?;
+        }
+        if !num.is_empty() {
+            return None;
+        }
+        Some(total)
+    }
+    const DAY: u64 = 86_400;
+    let mut secs = walk(date, &[('Y', 365 * DAY), ('M', 30 * DAY), ('W', 7 * DAY), ('D', DAY)])?;
+    if let Some(t) = time {
+        secs = secs.checked_add(walk(t, &[('H', 3600), ('M', 60), ('S', 1)])?)?;
+    }
+    Some(secs)
+}
+
+impl Cap {
+    /// Amount in minor units; `None` if malformed.
+    pub fn amount_minor(&self) -> Option<u64> {
+        parse_money_minor(&self.amount)
+    }
+    /// Window length in seconds; `Ok(None)` for a lifetime cap, `Err(())`
+    /// if the window is malformed.
+    pub fn window_secs(&self) -> std::result::Result<Option<u64>, ()> {
+        match &self.window {
+            None => Ok(None),
+            Some(w) => parse_iso_duration_secs(w).map(Some).ok_or(()),
+        }
+    }
+    /// Is `self` at least as strict as `other` (stricter-wins order, §5)?
+    /// Same currency required; smaller-or-equal amount; and a window no
+    /// longer than `other`'s (a lifetime window is the loosest). Malformed
+    /// values compare as NOT stricter (fail-closed).
+    pub fn is_at_least_as_strict_as(&self, other: &Cap) -> bool {
+        if self.currency != other.currency {
+            return false;
+        }
+        let (Some(a), Some(b)) = (self.amount_minor(), other.amount_minor()) else {
+            return false;
+        };
+        if a > b {
+            return false;
+        }
+        match (self.window_secs(), other.window_secs()) {
+            (Ok(_), Ok(None)) => true,
+            (Ok(Some(x)), Ok(Some(y))) => x <= y,
+            _ => false,
+        }
+    }
+}
+
+impl ScopeParams {
+    /// Is `self` at least as strict as `other` across every parameter
+    /// (§5 stricter-wins): same scope string; a parameter present on
+    /// `other` must be present and no looser on `self`; parameters only on
+    /// `self` are extra tightenings. `mode`: prompt > auto.
+    pub fn is_at_least_as_strict_as(&self, other: &ScopeParams) -> bool {
+        if self.scope != other.scope {
+            return false;
+        }
+        if other.mode == Some(ScopeMode::Prompt) && self.mode != Some(ScopeMode::Prompt) {
+            return false;
+        }
+        if let Some(oc) = &other.cap {
+            match &self.cap {
+                Some(sc) if sc.is_at_least_as_strict_as(oc) => {}
+                _ => return false,
+            }
+        }
+        if let Some(ol) = &other.counterparties {
+            match &self.counterparties {
+                Some(sl) if sl.iter().all(|s| ol.iter().any(|o| o == s)) => {}
+                _ => return false,
+            }
+        }
+        if let Some(od) = &other.max_duration {
+            match &self.max_duration {
+                Some(sd) => match (parse_iso_duration_secs(sd), parse_iso_duration_secs(od)) {
+                    (Some(a), Some(b)) if a <= b => {}
+                    _ => return false,
+                },
+                None => return false,
+            }
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -884,6 +1057,22 @@ impl ScopeEntry {
             ScopeEntry::Bare(_) => ScopeMode::Auto,
             ScopeEntry::Parameterized(p) => p.mode.unwrap_or(ScopeMode::Auto),
         }
+    }
+    /// The entry's parameters, if any (a bare entry has none).
+    pub fn params(&self) -> Option<&ScopeParams> {
+        match self {
+            ScopeEntry::Bare(_) => None,
+            ScopeEntry::Parameterized(p) => Some(p),
+        }
+    }
+    pub fn cap(&self) -> Option<&Cap> {
+        self.params().and_then(|p| p.cap.as_ref())
+    }
+    pub fn counterparties(&self) -> Option<&[String]> {
+        self.params().and_then(|p| p.counterparties.as_deref())
+    }
+    pub fn max_duration(&self) -> Option<&str> {
+        self.params().and_then(|p| p.max_duration.as_deref())
     }
 }
 
