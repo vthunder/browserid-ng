@@ -760,6 +760,10 @@
       } catch (e) {
         console.warn('registry session unavailable:', e.message || e);
         try { await Keystore.delDevice(issuer, email, 'device'); await Keystore.delDevice(issuer, email, 'config'); } catch (x) { /* best-effort */ }
+        // The issuer session this sign-in opened, and the remembered address
+        // list, go with the certs: an unadmitted browser learns nothing.
+        try { await apiCall('/wsapi/logout', 'POST', {}); } catch (x) { /* best-effort */ }
+        try { localStorage.removeItem(REMEMBERED_KEY); } catch (x) { }
         showScreen('loading');
         const cancelled = /cancelled/i.test(String(e.message || e));
         throw new Error(cancelled
@@ -3561,6 +3565,25 @@
     try {
       // Check if already authenticated
       const session = await apiCall(API.sessionContext);
+
+      // The account's address list is the registry's to show (Dan,
+      // 2026-09-15): a browser the registry has not admitted — no login
+      // key for the account — gets the cold entry screen even on a live
+      // issuer session, and nothing is remembered. The session itself
+      // stays: the flows that run off it (set a first password, re-prove
+      // an address) still need it once the person names an address.
+      let admitted = false;
+      if (session.authenticated && session.account) {
+        try {
+          Registry.configureKeyless({ account: session.account });
+          admitted = await Registry.hasLoginKey();
+        } catch (e) { admitted = false; }
+      }
+      if (session.authenticated && !admitted) {
+        try { localStorage.removeItem(REMEMBERED_KEY); } catch (e) { }
+        showScreen('email');
+        return;
+      }
 
       if (session.authenticated) {
         // Get user's emails

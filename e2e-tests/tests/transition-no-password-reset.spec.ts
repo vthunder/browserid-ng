@@ -97,10 +97,13 @@ test.describe('transition_no_password routing (gg5s / 8gqm)', () => {
 
     await page.goto(`${BASE_URL}/dialog/dialog.html?origin=http://example.com`);
 
-    // Authenticated with one owned address → the dialog opens on the chooser
-    // with it preselected. Confirming it is the real session-owned flow.
-    await page.waitForSelector('#pick-email-screen.active', { timeout: 10000 });
-    await page.click('#pick-email-form button.primary');
+    // A live issuer session on a browser the registry has not admitted (no
+    // login key here) opens on the email entry, not the account's address
+    // list (Dan, 2026-09-15); naming the owned address is the session-owned
+    // flow.
+    await page.waitForSelector('#email-screen.active', { timeout: 10000 });
+    await page.fill('#email', email);
+    await page.click('#email-form button[type="submit"]');
 
     // The session proves control — direct first-password screen, no code.
     await expect(page.locator('#set-password-screen')).toHaveClass(/active/, { timeout: 10000 });
