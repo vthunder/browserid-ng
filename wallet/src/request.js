@@ -18,7 +18,8 @@ const store = require('./store');
 const broker = require('./broker');
 const { generateKey, jws, decodeJws, nowS } = require('./crypto');
 
-const SCOPE_RE = /^[a-z0-9_:.-]{1,64}$/;
+// Scope names include SBO dimensions (`path:/a/**`, `as:user@host`).
+const SCOPE_RE = /^[a-z0-9_:.\-\/*@+]{1,128}$/;
 // The same entry shape check the web dialog runs (broker
 // common/js/scope-labels.js `valid`): a scope name, or { scope, mode?, cap?,
 // counterparties?, max_duration? } with well-formed values. Entries pass
