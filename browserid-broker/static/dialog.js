@@ -434,20 +434,11 @@
       catch (e) { console.warn('proof for', m.email, 'failed:', e.message || e); }
     }
     if (proven.length < needed) {
-      // Show what is missing; nothing more can be proven from here.
-      await new Promise((resolve) => {
-        provePending = { resolve };
-        const list = document.getElementById('prove-list');
-        list.innerHTML = '';
-        for (const hint of hints.filter(x => !proven.some(p => maskOf(p) === x))) {
-          const row = document.createElement('div');
-          row.className = 'consent-card';
-          row.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:13px;margin:6px 0';
-          row.textContent = hint + ' — sign in with this address here first';
-          list.appendChild(row);
-        }
-        showScreen('proveIdentities');
-      });
+      // Not enough from what this browser holds. The registry step is
+      // best-effort and must never hold the sign-in (or the issuer's popup)
+      // hostage: give up quietly; the next sign-in with a missing identity
+      // here, or the account page, can finish it.
+      console.warn('registry login: identity proofs short —', proven.length, 'of', needed, '; missing', hints.join(', '));
       throw new Error('more identity proofs are needed');
     }
     const t = await post('/wsapi/registry_login_proofs', { account, presentations });
