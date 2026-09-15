@@ -67,6 +67,30 @@ pub async fn api_login(server: &TestServer, cookie: &str, password: &str) -> Api
     ApiSession { token: session["token"].as_str().unwrap().to_string(), key, account, origin }
 }
 
+/// Admit the browser behind `cookie` (bean 160l): log the account in to the
+/// registry with a fresh login key and bind the cookie session to that key
+/// through `/wsapi/session_admit`. Returns the registry session.
+pub async fn admit_session(server: &TestServer, cookie: &str, password: &str) -> ApiSession {
+    let sess = api_login(server, cookie, password).await;
+    let r = admit_with(server, cookie, &sess).await;
+    assert_eq!(r.status_code(), 200, "session_admit: {}", r.text());
+    sess
+}
+
+/// `POST /wsapi/session_admit` under `sess`, with the cookie session.
+pub async fn admit_with(server: &TestServer, cookie: &str, sess: &ApiSession) -> TestResponse {
+    let path = "/wsapi/session_admit";
+    let bytes = b"{}".to_vec();
+    server
+        .post(path)
+        .add_cookie(cookie::Cookie::new("browserid_session", cookie.to_string()))
+        .add_header("authorization", format!("Bearer {}", sess.token))
+        .add_header("proof", proof_for(sess, "POST", path, Some(&bytes)))
+        .add_header("content-type", "application/json")
+        .bytes(bytes.into())
+        .await
+}
+
 fn proof_for(sess: &ApiSession, method: &str, path: &str, body: Option<&[u8]>) -> String {
     let htu = format!("{}{}", sess.origin, path.split('?').next().unwrap());
     browserid_registrar::session::build_proof_now(method, &htu, body, &sess.key)

@@ -657,7 +657,55 @@
         if (r && r.prefix) localStorage.setItem('browserid:holder:' + r.prefix, issuedHolder);
       } catch (e) { /* best-effort */ }
     }
+    // No holder was known (first contact): the broker assigned one in the
+    // account's browsers namespace — remember it under its prefix so every
+    // later issuance on this browser reuses the SAME holder.
+    if (!holder && issuedHolder && issuedHolder.includes('.')) {
+      const p = issuedHolder.slice(0, issuedHolder.indexOf('.'));
+      try { if (!localStorage.getItem('browserid:holder:' + p)) localStorage.setItem('browserid:holder:' + p, issuedHolder); } catch (e) { /* best-effort */ }
+    }
     return storedDevicePair(state.brokerDomain, email);
+  }
+
+  // The registry step of a sign-in (Dan, 2026-09-15): a session on the
+  // account this pair is attached to — by this browser's login key,
+  // enrolled here if need be (the login page answered with the password the
+  // user just typed, the login token the issuance earned, or identity
+  // proofs) — the pair attached under it, and the issuer's cookie session
+  // ADMITTED (bean 160l): bound to that key, which is the point from which
+  // the account's address list is this browser's to see. A browser that
+  // cannot be added to the account — the bar not met, or the registry
+  // unreachable — does not sign in, and the certs it was just issued are
+  // dropped so nothing unrecorded is left behind; the issuer session this
+  // sign-in opened, and the remembered address list, go with them. Runs
+  // from buildPresentation, before anything account-wide (parent links).
+  async function ensureRegistryAdmission(pair, email, issuer) {
+    await Registry.configure({
+      pair: {
+        deviceCert: pair.device.cert, devicePrivateKey: pair.device.privateKey,
+        configCert: pair.config.cert, configPrivateKey: pair.config.privateKey
+      },
+      identity: email,
+      password: state.typedPassword || null,
+      loginToken: state.registryLoginToken || null,
+      askTakeover: askTakeover,
+      proveIdentities: (account) => proveIdentities(account, email, pair, issuer)
+    });
+    state.registryLoginToken = null;
+    try {
+      await Registry.ensure();
+      await Registry.admitSession();
+    } catch (e) {
+      console.warn('registry session unavailable:', e.message || e);
+      try { await Keystore.delDevice(issuer, email, 'device'); await Keystore.delDevice(issuer, email, 'config'); } catch (x) { /* best-effort */ }
+      try { await apiCall('/wsapi/logout', 'POST', {}); } catch (x) { /* best-effort */ }
+      try { localStorage.removeItem(REMEMBERED_KEY); } catch (x) { }
+      showScreen('loading');
+      const cancelled = /cancelled/i.test(String(e.message || e));
+      throw new Error(cancelled
+        ? 'This browser was not added to your account, so the sign-in was cancelled.'
+        : 'This browser could not be added to your browserid account (' + (e.message || e) + '). Try again.');
+    }
   }
 
   // Mint + warrant + assertion → the 4-object presentation for `audience`
@@ -720,6 +768,7 @@
     // session-join presentation (not a site grant) — an RP hosted on the
     // broker's own origin (e.g. /broker-demo) still registers.
     let statusRef = null;
+    let registry = false;
     const registerable = !noRegister;
     // ig9p phase 1: warrants for the BROKER's own audience (the session-join
     // presentation, or an RP hosted on this origin) carry the `registry`
@@ -728,48 +777,12 @@
     const warrantScopes = (audience === window.location.origin)
       ? ['login', 'registry'] : ['login'];
     if (registerable) {
-      // Wallet-role registry calls ride the standard /api/v1 token lane
-      // (71vt) — the same surface a native wallet uses. Configured here,
-      // where the active pair is known; the noRegister (token-mint) path
-      // never re-enters this branch, so token acquisition cannot recurse.
       // Wallet-role registry calls ride the standard /api/v1 session lane
-      // (registry-api-v1 §4.2, §4.5): a session on the account this pair
-      // is attached to — by this browser's login cert, or by the login
-      // page answered with the password the user just typed. Best-effort:
-      // a login must not fail because the registry could not be reached.
-      await Registry.configure({
-        pair: {
-          deviceCert: pair.device.cert, devicePrivateKey: pair.device.privateKey,
-          configCert: pair.config.cert, configPrivateKey: pair.config.privateKey
-        },
-        identity: email,
-        password: state.typedPassword || null,
-        loginToken: state.registryLoginToken || null,
-        askTakeover: askTakeover,
-        proveIdentities: (account) => proveIdentities(account, email, pair, issuer)
-      });
-      state.registryLoginToken = null;
-      // The registry step is PART of the sign-in (Dan, 2026-09-15): a
-      // browser that cannot be added to the account — the bar not met, or
-      // the registry unreachable — does not sign in, and the certs it was
-      // just issued are dropped so nothing unrecorded is left behind.
-      let registry = false;
-      try {
-        await Registry.ensure();
-        registry = true;
-      } catch (e) {
-        console.warn('registry session unavailable:', e.message || e);
-        try { await Keystore.delDevice(issuer, email, 'device'); await Keystore.delDevice(issuer, email, 'config'); } catch (x) { /* best-effort */ }
-        // The issuer session this sign-in opened, and the remembered address
-        // list, go with the certs: an unadmitted browser learns nothing.
-        try { await apiCall('/wsapi/logout', 'POST', {}); } catch (x) { /* best-effort */ }
-        try { localStorage.removeItem(REMEMBERED_KEY); } catch (x) { }
-        showScreen('loading');
-        const cancelled = /cancelled/i.test(String(e.message || e));
-        throw new Error(cancelled
-          ? 'This browser was not added to your account, so the sign-in was cancelled.'
-          : 'This browser could not be added to your browserid account (' + (e.message || e) + '). Try again.');
-      }
+      // (registry-api-v1 §4.2, §4.5) — the same surface a native wallet
+      // uses. The registry step is PART of the sign-in: see
+      // ensureRegistryAdmission.
+      await ensureRegistryAdmission(pair, email, issuer);
+      registry = true;
       if (registry) {
         try {
           const alloc = await Registry.call('POST', '/api/v1/warrants/allocate_status', {
@@ -974,8 +987,12 @@
     try {
       const ctx = await apiCall(API.sessionContext);
       if (!ctx.authenticated) return false;
-      const resp = await apiCall(API.listEmails);
       const want = email.toLowerCase();
+      // An identity session owns what it proved; the roster is only an
+      // admitted session's to read (bean 160l).
+      if ((ctx.proved_emails || []).some(e => e.toLowerCase() === want)) return true;
+      if (!ctx.admitted) return false;
+      const resp = await apiCall(API.listEmails);
       return (resp.emails || []).some(e => e.toLowerCase() === want);
     } catch (e) {
       return false;
@@ -1513,7 +1530,6 @@
       if (stored) {
         try {
           await ensureBrokerSession(email, stored, domain, mintUrl);
-          await recordParentHint(email);
           return await finishSignIn(email, stored, domain, mintUrl);
         } catch (e) {
           // Mint refused (revoked / IdP policy) — drop the pair and re-authorize.
@@ -1556,7 +1572,6 @@
       }
       let pair = await finishPrimaryCerts(email, keys, certs);
       await ensureBrokerSession(email, pair, domain, mintUrl);
-      await recordParentHint(email);
       // Unconditional: reconciliation itself decides whether anything needs
       // fixing, and it now has a repair route even when the IdP window is gone
       // (the OAuth-redirect case, which is where cold logins actually land).
@@ -1761,7 +1776,6 @@
         await followHolderCache(certHolder(pair.device.cert), pending.orphanPrefix);
       } else {
         await ensureBrokerSession(pending.email, pair, pending.domain, pending.mintUrl);
-        await recordParentHint(pending.email);
         const issued = certHolder(pair.device.cert);
         pending.orphanPrefix = issued && issued.includes('.')
           ? issued.slice(0, issued.indexOf('.')) : null;
@@ -2422,6 +2436,9 @@
       }
     }
     const presentation = await buildPresentation(pair, issuer, mintUrl, email);
+    // Account-wide, so only once the registry step above admitted this
+    // browser (bean 160l): the parent link for a derived identity.
+    await recordParentHint(email);
     storeLoggedInState(state.origin, email);
     state.email = email;
     // Kept for the signing-grant consent path: the record is signed with THIS
@@ -3202,8 +3219,15 @@
         // First SMTP address on a passwordless account: the add code just
         // verified is the ONE roundtrip — chain straight into choosing a
         // password on the session instead of mailing a second code (iudv).
-        const emails = await apiCall(API.listEmails);
-        if (emails.has_password === false) {
+        // The roster needs an admitted session (bean 160l); a session that
+        // only re-verified the address it proved reads the state instead.
+        let hasPassword = true;
+        try { hasPassword = (await apiCall(API.listEmails)).has_password !== false; }
+        catch (e) {
+          try { hasPassword = (await checkEmail(state.email)).state !== 'transition_no_password'; }
+          catch (e2) { /* assume a password: the step-up asks if not */ }
+        }
+        if (!hasPassword) {
           document.querySelectorAll('.email-display').forEach(el => el.textContent = state.email);
           showScreen('setPassword');
           return;
@@ -3242,7 +3266,6 @@
         const certs = await primaryPopupFlow(p.email, p.info.device_auth, p.keys, p.holder, /* hold */ !p.holder, p.parentProof || null);
         let pair = await finishPrimaryCerts(p.email, p.keys, certs);
         await ensureBrokerSession(p.email, pair, p.email.split('@')[1], p.info.access_mint);
-        await recordParentHint(p.email);
         pair = await reconcileBrowserHolder(p.email, p.email.split('@')[1], p.keys, certs, pair, p.info.access_mint, p.info.device_auth);
         await finishSignIn(p.email, pair, p.email.split('@')[1], p.info.access_mint);
       } catch (err) {
@@ -3567,16 +3590,19 @@
       const session = await apiCall(API.sessionContext);
 
       // The account's address list is the registry's to show (Dan,
-      // 2026-09-15): a browser the registry has not admitted — no login
-      // key for the account — gets the cold entry screen even on a live
-      // issuer session, and nothing is remembered. The session itself
-      // stays: the flows that run off it (set a first password, re-prove
-      // an address) still need it once the person names an address.
-      let admitted = false;
-      if (session.authenticated && session.account) {
+      // 2026-09-15; bean 160l): the broker answers it only to a session
+      // bound to this browser's login key for the account. A browser that
+      // holds the key but whose session is not yet bound (a sign-in that
+      // ended between the two) binds it here, silently, by the stored key;
+      // any other browser gets the cold entry screen even on a live issuer
+      // session, and nothing is remembered. The session itself stays: the
+      // flows that run off it (set a first password, re-prove an address)
+      // still need it once the person names an address.
+      let admitted = !!session.admitted;
+      if (session.authenticated && !admitted && session.account) {
         try {
           Registry.configureKeyless({ account: session.account });
-          admitted = await Registry.hasLoginKey();
+          admitted = await Registry.admitSession({ storedOnly: true });
         } catch (e) { admitted = false; }
       }
       if (session.authenticated && !admitted) {

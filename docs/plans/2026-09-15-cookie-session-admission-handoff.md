@@ -133,3 +133,30 @@ applied to the sessions themselves and enforced where the data is served.
 
 Size: two to three days including the test migration. Bean: see the
 epic 0vdu status; the bean is **160l**.
+
+## Outcome (2026-09-15, bean 160l built)
+
+Built as designed, with three deliberate departures:
+
+- **`browser_holder` stays open** to any authenticated session. The
+  browsers-namespace prefix is an opaque id an identity session learns
+  anyway from the holder of the cert it is issued, and issuing under it
+  *before* the registry step is what keeps one browser one device — a
+  gate here gave every pre-admission password sign-in a fresh
+  broker-assigned holder. The dialog also caches a broker-assigned holder
+  under its prefix on first contact.
+- **`session_context.account` stays visible** to an unadmitted session.
+  It is the handle the device logs in to the registry with — the very
+  step that admits it — and reveals nothing else. `admitted` and
+  `proved_emails` were added instead of an `email` field.
+- **`address_info` discloses `state` to the session that proved the
+  address**, admitted or not: the unverified / transition lanes for a
+  proved identity are issuer-role work (rule 4), and the dialog's
+  set-password chain reads the passwordless state from there now.
+
+`session_admit` answers 401 (no cookie session) as "nothing to admit" on
+the client; the dialog's init binds a not-yet-bound session silently by
+the stored key (`Registry.admitSession({ storedOnly: true })`), never
+interactively. Test helpers: `create_user` now admits; `create_user_unadmitted`
+and `registry::admit_session` / `admit_with` cover the rest. The Rust
+coverage is `session_admission_test.rs`.

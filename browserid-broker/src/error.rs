@@ -38,6 +38,13 @@ pub enum BrokerError {
     #[error("password required")]
     PasswordRequired,
 
+    /// The cookie session is not bound to a registry login key enrolled on
+    /// the account (bean 160l): it proved an identity, but the registry has
+    /// not admitted this browser. 403 with the stable reason `not_admitted`;
+    /// the dialog and account page treat it like `login_required`.
+    #[error("not_admitted")]
+    NotAdmitted,
+
     #[error("Invalid CSRF token")]
     InvalidCsrf,
 
@@ -194,6 +201,7 @@ impl IntoResponse for BrokerError {
             }
             BrokerError::NotAuthenticated => (StatusCode::UNAUTHORIZED, "Not authenticated"),
             BrokerError::PasswordRequired => (StatusCode::UNAUTHORIZED, "password required"),
+            BrokerError::NotAdmitted => (StatusCode::FORBIDDEN, "not_admitted"),
             BrokerError::InvalidCsrf => (StatusCode::FORBIDDEN, "Invalid CSRF token"),
             BrokerError::EmailNotVerified => (StatusCode::FORBIDDEN, "Email not verified"),
             BrokerError::EmailVerificationExpired => {

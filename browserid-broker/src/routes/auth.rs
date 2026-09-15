@@ -139,10 +139,22 @@ where
     // Success clears this IP's failure counter.
     state.login_attempts.write().unwrap().remove(&ip);
 
-    // Create session — Full: the account password was just verified.
+    // Create session — Full: the account password was just verified. The
+    // password proves every broker-vouched address on the account (bean
+    // 160l): those are the identities this session may issue for — or
+    // re-verify, so an address a reset unverified (kgb9) stays in reach —
+    // before the registry admits the browser. Primary addresses are their
+    // own IdP's to prove.
+    let proved: Vec<String> = state
+        .user_store
+        .list_emails(user.id)?
+        .into_iter()
+        .filter(|e| e.email_type != crate::store::EmailType::Primary)
+        .map(|e| e.email)
+        .collect();
     let session = state
         .session_store
-        .create(user.id, crate::store::SessionLevel::Full)?;
+        .create(user.id, crate::store::SessionLevel::Full, proved)?;
     super::session::set_session_cookie(
         &cookies,
         &session.id.0,
@@ -220,6 +232,8 @@ where
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
     super::session::require_csrf(&session, &req.csrf)?;
+    // Account-wide: admitted browsers only (bean 160l).
+    super::session::require_admitted(&session)?;
 
     // Validate new password length
     if req.newpass.len() < MIN_PASSWORD_LENGTH {
@@ -254,9 +268,11 @@ where
     // one for the caller so the password change also logs out any other live
     // session (e.g. a co-resident attacker) without logging *this* user out.
     state.session_store.delete_by_user(session.user_id)?;
-    let fresh = state
-        .session_store
-        .create(session.user_id, crate::store::SessionLevel::Full)?;
+    let fresh = super::session::recreate_session(
+        state.session_store.as_ref(),
+        &session,
+        crate::store::SessionLevel::Full,
+    )?;
     super::session::set_session_cookie(
         &cookies,
         &fresh.id.0,
@@ -326,9 +342,11 @@ where
     // current session upgrades; other live sessions keep their own level
     // (this is not a recovery event, so no delete_by_user).
     state.session_store.delete(&session.id)?;
-    let fresh = state
-        .session_store
-        .create(session.user_id, crate::store::SessionLevel::Full)?;
+    let fresh = super::session::recreate_session(
+        state.session_store.as_ref(),
+        &session,
+        crate::store::SessionLevel::Full,
+    )?;
     super::session::set_session_cookie(
         &cookies,
         &fresh.id.0,

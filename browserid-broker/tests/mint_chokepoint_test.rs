@@ -55,7 +55,7 @@ async fn e3_mint_requires_full_session() {
     let user = ctx.user_store.get_user_by_email(email).unwrap().unwrap();
     let light = ctx
         .session_store
-        .create(user.id, SessionLevel::Lightweight)
+        .create(user.id, SessionLevel::Lightweight, vec![email.to_string()])
         .unwrap()
         .id
         .0;
@@ -132,7 +132,7 @@ async fn agent_identity_follows_password_rule() {
 
     let light = ctx
         .session_store
-        .create(user.id, SessionLevel::Lightweight)
+        .create(user.id, SessionLevel::Lightweight, vec!["owner+bot@example.com".to_string()])
         .unwrap()
         .id
         .0;
@@ -199,7 +199,7 @@ async fn fedcm_follows_the_chokepoint() {
     // list) and an assertion for the E3 is refused.
     let light = ctx
         .session_store
-        .create(user.id, SessionLevel::Lightweight)
+        .create(user.id, SessionLevel::Lightweight, vec![email.to_string()])
         .unwrap()
         .id
         .0;

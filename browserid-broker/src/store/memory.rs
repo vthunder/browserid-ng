@@ -1533,13 +1533,20 @@ impl Default for InMemorySessionStore {
 }
 
 impl SessionStore for InMemorySessionStore {
-    fn create(&self, user_id: UserId, level: SessionLevel) -> StoreResult<Session> {
+    fn create(
+        &self,
+        user_id: UserId,
+        level: SessionLevel,
+        proved_emails: Vec<String>,
+    ) -> StoreResult<Session> {
         let session = Session {
             id: SessionId(Uuid::new_v4().to_string()),
             user_id,
             csrf_token: Uuid::new_v4().to_string(),
             created_at: Utc::now(),
             level,
+            proved_emails,
+            login_key_id: None,
         };
         self.sessions
             .write()
@@ -1550,6 +1557,33 @@ impl SessionStore for InMemorySessionStore {
 
     fn get(&self, session_id: &SessionId) -> StoreResult<Option<Session>> {
         Ok(self.sessions.read().unwrap().get(session_id).cloned())
+    }
+
+    fn add_proved_email(&self, session_id: &SessionId, email: &str) -> StoreResult<()> {
+        if let Some(s) = self.sessions.write().unwrap().get_mut(session_id) {
+            if !s.proved(email) {
+                s.proved_emails.push(email.to_lowercase());
+            }
+        }
+        Ok(())
+    }
+
+    fn bind_login_key(&self, session_id: &SessionId, login_key_id: u64) -> StoreResult<()> {
+        if let Some(s) = self.sessions.write().unwrap().get_mut(session_id) {
+            s.login_key_id = Some(login_key_id);
+        }
+        Ok(())
+    }
+
+    fn unbind_login_key(&self, user_id: UserId, login_key_id: u64) -> StoreResult<u64> {
+        let mut n = 0;
+        for s in self.sessions.write().unwrap().values_mut() {
+            if s.user_id == user_id && s.login_key_id == Some(login_key_id) {
+                s.login_key_id = None;
+                n += 1;
+            }
+        }
+        Ok(n)
     }
 
     fn delete(&self, session_id: &SessionId) -> StoreResult<()> {
@@ -1601,7 +1635,7 @@ mod tests {
     fn test_session_lifecycle() {
         let store = InMemorySessionStore::new();
 
-        let session = store.create(UserId(1), SessionLevel::Full).unwrap();
+        let session = store.create(UserId(1), SessionLevel::Full, vec![]).unwrap();
         assert!(store.get(&session.id).unwrap().is_some());
 
         store.delete(&session.id).unwrap();

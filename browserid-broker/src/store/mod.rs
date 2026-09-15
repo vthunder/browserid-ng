@@ -527,10 +527,30 @@ pub trait SessionStore: Send + Sync {
     /// session was established (browserid-ng-ca29): `Full` only when the
     /// account password was presented, `Lightweight` for E1/E2 proofs
     /// (primary presentation, bridge claim, emailed code).
-    fn create(&self, user_id: UserId, level: SessionLevel) -> StoreResult<Session>;
+    ///
+    /// `proved_emails`: the identities this session proved (bean 160l) —
+    /// what an unadmitted session may do issuer-role work for.
+    fn create(
+        &self,
+        user_id: UserId,
+        level: SessionLevel,
+        proved_emails: Vec<String>,
+    ) -> StoreResult<Session>;
 
     /// Get a session by ID
     fn get(&self, session_id: &SessionId) -> StoreResult<Option<Session>>;
+
+    /// Record one more identity this session proved (a claim or
+    /// presentation under a live session). Idempotent.
+    fn add_proved_email(&self, session_id: &SessionId, email: &str) -> StoreResult<()>;
+
+    /// Bind the session to a registry login key (admission, bean 160l).
+    fn bind_login_key(&self, session_id: &SessionId, login_key_id: u64) -> StoreResult<()>;
+
+    /// Unbind every session of the account bound to this login key (the key
+    /// was revoked); returns how many. The sessions stay, as identity
+    /// sessions.
+    fn unbind_login_key(&self, user_id: UserId, login_key_id: u64) -> StoreResult<u64>;
 
     /// Delete a session
     fn delete(&self, session_id: &SessionId) -> StoreResult<()>;

@@ -57,6 +57,15 @@ pub struct SessionContext {
     /// device (a login key, no identity certs).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// Whether the registry has admitted this browser: the session is bound
+    /// to a login key enrolled on the account (bean 160l). Until then the
+    /// account-wide cookie endpoints answer `403 not_admitted`.
+    pub admitted: bool,
+    /// The identities this session proved itself — what an unadmitted
+    /// session may still do issuer-role work for (issue, re-verify, set a
+    /// first password). Never the account's roster; that is `list_emails`,
+    /// admitted only.
+    pub proved_emails: Vec<String>,
 }
 
 /// GET /wsapi/session_context
@@ -77,9 +86,14 @@ where
     let domain_key_creation_time = 0i64;
 
     let context = if let Some(session) = session {
+        // The account id stays visible to an unadmitted session: it is the
+        // opaque handle the device needs to log in to the registry (§4.2)
+        // — the very step that admits it — and reveals nothing else.
         let account = state.user_store.account_public_id(session.user_id).ok();
         SessionContext {
             account,
+            admitted: session.admitted(),
+            proved_emails: session.proved_emails.clone(),
             csrf_token: Some(session.csrf_token),
             authenticated: true,
             auth_level: Some(match session.level {
@@ -107,10 +121,94 @@ where
             cookies: true, // Assume cookies are enabled - the original checks for a test cookie
             domain: state.domain.clone(),
             account: None,
+            admitted: false,
+            proved_emails: vec![],
         }
     };
 
     Json(context)
+}
+
+/// Refuse unless the registry has admitted this browser (bean 160l): the
+/// session is bound to a login key enrolled on the account. Every
+/// account-wide cookie endpoint — the roster, the browsers namespace,
+/// parent links, names, removals, cancellation, the password change —
+/// goes through this.
+pub fn require_admitted(session: &crate::store::Session) -> Result<(), BrokerError> {
+    if session.admitted() {
+        Ok(())
+    } else {
+        Err(BrokerError::NotAdmitted)
+    }
+}
+
+/// Replace `old` with a fresh session at `level` that keeps what the old
+/// one had earned: the identities it proved and its admission. Used where
+/// a password change re-mints the caller's session.
+pub fn recreate_session<S: SessionStore>(
+    store: &S,
+    old: &crate::store::Session,
+    level: crate::store::SessionLevel,
+) -> Result<crate::store::Session, BrokerError> {
+    let fresh = store.create(old.user_id, level, old.proved_emails.clone())?;
+    if let Some(id) = old.login_key_id {
+        store.bind_login_key(&fresh.id, id)?;
+    }
+    Ok(fresh)
+}
+
+#[derive(Serialize)]
+pub struct SessionAdmitResponse {
+    pub success: bool,
+    pub admitted: bool,
+}
+
+/// POST /wsapi/session_admit — bind the cookie session to the registry
+/// login key the call is made under (bean 160l; broker-private, the
+/// co-located issuer + registry case). The call carries the registry's
+/// `Authorization: Bearer` + `Proof` by the login key — the same §4.4 path
+/// `/device/issue` accepts — so the registry, not the cookie, vouches that
+/// this browser is enrolled on the account. Refused when the registry
+/// session's account is not the cookie session's. Idempotent.
+pub async fn session_admit<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    cookies: Cookies,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<SessionAdmitResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let session = get_session_from_cookies(&cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    let registrar = state
+        .registrar
+        .get()
+        .ok_or_else(|| BrokerError::Internal("registrar not wired".into()))?;
+    let bh = browserid_registrar::session::b64url_sha256_pub(&body);
+    let (rec, key, _proof) = browserid_registrar::session::verify_session_call(
+        registrar,
+        &headers,
+        "POST",
+        "/wsapi/session_admit",
+        Some(&bh),
+    )
+    .await
+    .map_err(|e| BrokerError::PolicyRefused(format!("registry session: {e:?}")))?;
+    if rec.user_id != session.user_id.0 || key.user_id != session.user_id.0 {
+        return Err(BrokerError::PolicyRefused(
+            "the registry session is not on this account".into(),
+        ));
+    }
+    if !key.is_live() {
+        return Err(BrokerError::PolicyRefused("the login key is not live".into()));
+    }
+    if session.login_key_id != Some(key.id) {
+        state.session_store.bind_login_key(&session.id, key.id)?;
+    }
+    Ok(Json(SessionAdmitResponse { success: true, admitted: true }))
 }
 
 /// Helper to get current session from cookies. Sessions past

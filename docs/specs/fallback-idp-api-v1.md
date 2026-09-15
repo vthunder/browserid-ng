@@ -128,6 +128,15 @@ satisfy:
   the issuer assigns fresh — never taken from the page's own browser
   session. The resulting device is the wallet, not the browser the
   ceremony ran in. Same rule as the primary lane.
+- **An issuer session is an identity session until the device is
+  enrolled.** An issuer that is also the registry MUST NOT let an
+  issuer session (a browser cookie, say) read or manage the account
+  beyond the identity it proved until the device is enrolled at the
+  registry: no address list, no account-wide changes, no issuance
+  for a sibling identity. Enrolment is the registry's login (registry
+  §4.2, §4.3); the issuer learns of it by a broker-private bind of the
+  session to the enrolled login key (the broker's
+  `POST /wsapi/session_admit`, called under the registry session).
 - **Config-cert coverage tracks the bar.** A config cert covering
   the address's sub-addresses (`local+*@domain`) grants authority
   over the holder's derived agent identities, so the wildcard is

@@ -210,11 +210,14 @@ fn from_reg_device_cert(c: reg::DeviceCertRecord) -> crate::store::DeviceCertRec
 }
 
 /// Adapts any broker `UserStore` into the registrar's store.
-pub struct BrokerRegistrarStore<U> {
+pub struct BrokerRegistrarStore<U, S> {
     pub user_store: Arc<U>,
+    /// The cookie sessions: a revoked login key also un-admits the cookie
+    /// sessions bound to it (bean 160l).
+    pub session_store: Arc<S>,
 }
 
-impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
+impl<U: UserStore, S: SessionStore> RegistrarStore for BrokerRegistrarStore<U, S> {
     fn create_warrant_request(&self, req: reg::WarrantRequestRecord) -> Result<(), RegistrarError> {
         UserStore::create_warrant_request(self.user_store.as_ref(), from_reg_request(req))
             .map_err(to_reg_err)
@@ -358,6 +361,9 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
     }
 
     fn end_sessions_on_login_key(&self, user_id: u64, id: u64) -> Result<u64, RegistrarError> {
+        // The cookie sessions this key admitted fall back to identity
+        // sessions (bean 160l); the registry sessions end.
+        self.session_store.unbind_login_key(UserId(user_id), id).map_err(to_reg_err)?;
         self.user_store.end_sessions_on_login_key(UserId(user_id), id).map_err(to_reg_err)
     }
 

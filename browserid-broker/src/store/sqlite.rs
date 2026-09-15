@@ -16,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 46;
+const SCHEMA_VERSION: i32 = 47;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -201,6 +201,9 @@ impl SqliteStore {
             }
             if current_version < 46 {
                 Self::migrate_v46(conn)?;
+            }
+            if current_version < 47 {
+                Self::migrate_v47(conn)?;
             }
 
             // Update schema version
@@ -1087,6 +1090,23 @@ impl SqliteStore {
                 expires_at TEXT NOT NULL
             );
             ALTER TABLE registry_sessions ADD COLUMN login_key_id INTEGER;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v47(conn: &Connection) -> Result<(), BrokerError> {
+        // Cookie-session admission (bean 160l): a session records the
+        // identities it proved and the registry login key it is bound to;
+        // the account-wide cookie endpoints answer only bound sessions.
+        // Sessions from before carry neither, so they are ended — the next
+        // sign-in opens one that does.
+        conn.execute_batch(
+            r#"
+            DELETE FROM sessions;
+            ALTER TABLE sessions ADD COLUMN proved_emails TEXT NOT NULL DEFAULT '[]';
+            ALTER TABLE sessions ADD COLUMN login_key_id INTEGER;
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -3672,7 +3692,12 @@ fn title_case(name: &str) -> String {
 }
 
 impl SessionStore for SqliteStore {
-    fn create(&self, user_id: UserId, level: SessionLevel) -> StoreResult<Session> {
+    fn create(
+        &self,
+        user_id: UserId,
+        level: SessionLevel,
+        proved_emails: Vec<String>,
+    ) -> StoreResult<Session> {
         let conn = self.conn.lock().unwrap();
         let session = Session {
             id: SessionId(Uuid::new_v4().to_string()),
@@ -3680,16 +3705,19 @@ impl SessionStore for SqliteStore {
             csrf_token: Uuid::new_v4().to_string(),
             created_at: Utc::now(),
             level,
+            proved_emails,
+            login_key_id: None,
         };
 
         conn.execute(
-            "INSERT INTO sessions (id, user_id, csrf_token, created_at, level) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO sessions (id, user_id, csrf_token, created_at, level, proved_emails) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 session.id.0,
                 session.user_id.0 as i64,
                 session.csrf_token,
                 session.created_at.to_rfc3339(),
                 session.level.as_str(),
+                serde_json::to_string(&session.proved_emails).unwrap_or_else(|_| "[]".into()),
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -3701,7 +3729,7 @@ impl SessionStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         conn.query_row(
-            "SELECT id, user_id, csrf_token, created_at, level FROM sessions WHERE id = ?1",
+            "SELECT id, user_id, csrf_token, created_at, level, proved_emails, login_key_id FROM sessions WHERE id = ?1",
             params![session_id.0],
             |row| {
                 let id: String = row.get(0)?;
@@ -3709,6 +3737,8 @@ impl SessionStore for SqliteStore {
                 let csrf_token: String = row.get(2)?;
                 let created_at: String = row.get(3)?;
                 let level: String = row.get(4)?;
+                let proved: String = row.get(5)?;
+                let login_key_id: Option<i64> = row.get(6)?;
                 Ok(Session {
                     id: SessionId(id),
                     user_id: UserId(user_id as u64),
@@ -3718,11 +3748,53 @@ impl SessionStore for SqliteStore {
                         .unwrap_or_else(|_| Utc::now()),
                     // Unknown tokens parse to Lightweight (least privilege).
                     level: SessionLevel::parse(&level),
+                    // A bad row proves nothing (least privilege).
+                    proved_emails: serde_json::from_str(&proved).unwrap_or_default(),
+                    login_key_id: login_key_id.map(|v| v as u64),
                 })
             },
         )
         .optional()
         .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn add_proved_email(&self, session_id: &SessionId, email: &str) -> StoreResult<()> {
+        let Some(mut session) = self.get(session_id)? else { return Ok(()) };
+        if session.proved(email) {
+            return Ok(());
+        }
+        session.proved_emails.push(email.to_lowercase());
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET proved_emails = ?1 WHERE id = ?2",
+            params![
+                serde_json::to_string(&session.proved_emails).unwrap_or_else(|_| "[]".into()),
+                session_id.0
+            ],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn bind_login_key(&self, session_id: &SessionId, login_key_id: u64) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET login_key_id = ?1 WHERE id = ?2",
+            params![login_key_id as i64, session_id.0],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn unbind_login_key(&self, user_id: UserId, login_key_id: u64) -> StoreResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE sessions SET login_key_id = NULL WHERE user_id = ?1 AND login_key_id = ?2",
+                params![user_id.0 as i64, login_key_id as i64],
+            )
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(n as u64)
     }
 
     fn delete(&self, session_id: &SessionId) -> StoreResult<()> {
@@ -4262,8 +4334,25 @@ impl UserStore for std::sync::Arc<SqliteStore> {
 }
 
 impl SessionStore for std::sync::Arc<SqliteStore> {
-    fn create(&self, user_id: UserId, level: SessionLevel) -> StoreResult<Session> {
-        (**self).create(user_id, level)
+    fn create(
+        &self,
+        user_id: UserId,
+        level: SessionLevel,
+        proved_emails: Vec<String>,
+    ) -> StoreResult<Session> {
+        (**self).create(user_id, level, proved_emails)
+    }
+
+    fn add_proved_email(&self, session_id: &SessionId, email: &str) -> StoreResult<()> {
+        (**self).add_proved_email(session_id, email)
+    }
+
+    fn bind_login_key(&self, session_id: &SessionId, login_key_id: u64) -> StoreResult<()> {
+        (**self).bind_login_key(session_id, login_key_id)
+    }
+
+    fn unbind_login_key(&self, user_id: UserId, login_key_id: u64) -> StoreResult<u64> {
+        (**self).unbind_login_key(user_id, login_key_id)
     }
 
     fn get(&self, session_id: &SessionId) -> StoreResult<Option<Session>> {
@@ -4418,12 +4507,48 @@ mod tests {
         let (store, _dir) = create_test_store();
 
         let user_id = store.create_user("hashed_password").unwrap();
-        let session = store.create(user_id, SessionLevel::Full).unwrap();
+        let session = store.create(user_id, SessionLevel::Full, vec![]).unwrap();
 
         assert!(store.get(&session.id).unwrap().is_some());
 
         store.delete(&session.id).unwrap();
         assert!(store.get(&session.id).unwrap().is_none());
+    }
+
+    /// The admission columns round-trip through SQLite (bean 160l; the
+    /// memory store never sees the schema).
+    #[test]
+    fn session_admission_columns_round_trip() {
+        let (store, _dir) = create_test_store();
+        let user_id = store.create_user("pw").unwrap();
+        let other = store.create_user("pw").unwrap();
+
+        let s = store
+            .create(user_id, SessionLevel::Lightweight, vec!["Me@Example.com".into()])
+            .unwrap();
+        let got = store.get(&s.id).unwrap().unwrap();
+        assert_eq!(got.proved_emails, vec!["Me@Example.com".to_string()]);
+        assert!(got.proved("me@example.com"));
+        assert!(!got.admitted());
+        assert_eq!(got.login_key_id, None);
+
+        store.add_proved_email(&s.id, "Two@example.com").unwrap();
+        store.add_proved_email(&s.id, "two@EXAMPLE.com").unwrap(); // idempotent
+        let got = store.get(&s.id).unwrap().unwrap();
+        assert_eq!(got.proved_emails.len(), 2);
+        assert!(got.proved("two@example.com"));
+
+        store.bind_login_key(&s.id, 7).unwrap();
+        let got = store.get(&s.id).unwrap().unwrap();
+        assert!(got.admitted());
+        assert_eq!(got.login_key_id, Some(7));
+
+        // Another account's session on the "same" key id is untouched.
+        let o = store.create(other, SessionLevel::Full, vec![]).unwrap();
+        store.bind_login_key(&o.id, 7).unwrap();
+        assert_eq!(store.unbind_login_key(user_id, 7).unwrap(), 1);
+        assert!(!store.get(&s.id).unwrap().unwrap().admitted());
+        assert!(store.get(&o.id).unwrap().unwrap().admitted());
     }
 
     #[test]
@@ -4432,7 +4557,7 @@ mod tests {
 
         let user_id = store.create_user("hashed_password").unwrap();
         store.add_email(user_id, "test@example.com", true).unwrap();
-        let session = store.create(user_id, SessionLevel::Full).unwrap();
+        let session = store.create(user_id, SessionLevel::Full, vec![]).unwrap();
 
         // Delete user
         store.delete_user(user_id).unwrap();

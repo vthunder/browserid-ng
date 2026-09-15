@@ -70,6 +70,8 @@ where
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
     super::session::require_csrf(&session, &req.csrf)?;
+    // Account-wide: admitted browsers only (bean 160l).
+    super::session::require_admitted(&session)?;
 
     // Verify the provided email belongs to this user
     let emails = state.user_store.list_emails(session.user_id)?;

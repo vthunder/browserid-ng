@@ -86,6 +86,8 @@ where
 {
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
+    // Account-wide: admitted browsers only (bean 160l).
+    super::session::require_admitted(&session)?;
 
     let emails = state.user_store.list_emails(session.user_id)?;
 
@@ -195,6 +197,8 @@ where
 {
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
+    // Account-wide: admitted browsers only (bean 160l).
+    super::session::require_admitted(&session)?;
     let email = state
         .user_store
         .get_email(&q.email)?
@@ -241,6 +245,8 @@ where
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
     super::session::require_csrf(&session, &req.csrf)?;
+    // Account-wide: admitted browsers only (bean 160l).
+    super::session::require_admitted(&session)?;
 
     let rec = state
         .user_store
@@ -295,6 +301,8 @@ where
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
     super::session::require_csrf(&session, &req.csrf)?;
+    // Account-wide: admitted browsers only (bean 160l).
+    super::session::require_admitted(&session)?;
 
     if req.email.eq_ignore_ascii_case(&req.parent_email) {
         return Err(BrokerError::ValidationError(
@@ -383,10 +391,19 @@ where
     // An email that already exists may be RE-staged by its OWNING account —
     // the re-verification roundtrip (kgb9: a password reset unverifies the
     // account's sibling E3 addresses). Anyone else's email stays refused.
-    if let Some(owner) = state.user_store.get_user_by_email(&req.email)? {
-        if owner.id != session.user_id {
+    match state.user_store.get_user_by_email(&req.email)? {
+        Some(owner) if owner.id != session.user_id => {
             return Err(BrokerError::EmailAlreadyExists);
         }
+        // Re-verifying an address on this account: open to a session that
+        // proved that address itself, else admitted only (bean 160l).
+        Some(_) => {
+            if !session.admitted() && !session.proved(&req.email) {
+                return Err(BrokerError::NotAdmitted);
+            }
+        }
+        // Adding a NEW address to the account: admitted browsers only.
+        None => super::session::require_admitted(&session)?,
     }
 
     // The SMTP loop only proves ownership where the mailbox is the
@@ -531,6 +548,8 @@ where
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
     super::session::require_csrf(&session, &req.csrf)?;
+    // Account-wide: admitted browsers only (bean 160l).
+    super::session::require_admitted(&session)?;
 
     // Ensure user has at least one other email
     let emails = state.user_store.list_emails(session.user_id)?;
@@ -779,8 +798,14 @@ where
         &cookies,
         state.session_store.as_ref(),
     ) {
+        // … and, since bean 160l, only when the registry admitted the
+        // browser or the session proved this very address: an unadmitted
+        // session learns nothing about the account's OTHER addresses.
         Some(session) => match state.user_store.get_email(&normalized)? {
-            Some(ref email) if email.user_id == session.user_id => {
+            Some(ref email)
+                if email.user_id == session.user_id
+                    && (session.admitted() || session.proved(&normalized)) =>
+            {
                 if !email.verified || crate::mint::verification_stale(email) {
                     // Marked for re-verification — kgb9 (a password reset
                     // unverifies the account's sibling E3 addresses) or uboq

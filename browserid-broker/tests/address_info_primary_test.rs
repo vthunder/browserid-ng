@@ -14,7 +14,7 @@ use serde_json::Value;
 
 /// GET address_info under a session belonging to `user_id`.
 async fn address_info_as_owner(ctx: &TestContext, user_id: UserId, email: &str) -> Value {
-    let session = ctx.session_store.create(user_id, SessionLevel::Full).unwrap();
+    let session = ctx.session_store.create(user_id, SessionLevel::Full, vec![email.to_string()]).unwrap();
     let response = ctx
         .server
         .get(&format!("/wsapi/address_info?email={}", email))

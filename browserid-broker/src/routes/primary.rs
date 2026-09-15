@@ -172,12 +172,18 @@ where
     let reuse = existing_session
         .as_ref()
         .is_some_and(|s| s.user_id == user_id);
-    if !reuse {
+    if reuse {
+        // The session proved one more identity (bean 160l).
+        if let Some(s) = existing_session.as_ref() {
+            state.session_store.add_proved_email(&s.id, &email)?;
+        }
+    } else {
         // Lightweight: a primary presentation proves the identity (E1), not
-        // the broker account password (ca29).
+        // the broker account password (ca29) — and only that identity
+        // (bean 160l).
         let session = state
             .session_store
-            .create(user_id, crate::store::SessionLevel::Lightweight)?;
+            .create(user_id, crate::store::SessionLevel::Lightweight, vec![email.clone()])?;
         if !req.ephemeral {
             super::session::set_session_cookie(
                 &cookies,

@@ -505,6 +505,28 @@ pub struct Session {
     /// How this session was established — Full (password) or Lightweight
     /// (E1/E2 proof). Every creation site must decide (browserid-ng-ca29).
     pub level: SessionLevel,
+    /// The identities this session proved (bean 160l): the presented
+    /// primary address, the bridge-claimed address, or — for the password —
+    /// every broker-vouched address on the account. Until admitted, the
+    /// session is an *identity session*: issuer-role work for these only.
+    pub proved_emails: Vec<String>,
+    /// The registry login key this session is bound to, once the registry
+    /// admitted the device (`/wsapi/session_admit`). `None` = not admitted:
+    /// the account-wide cookie endpoints refuse with `not_admitted`.
+    pub login_key_id: Option<u64>,
+}
+
+impl Session {
+    /// Bound to a login key the registry enrolled on the account.
+    pub fn admitted(&self) -> bool {
+        self.login_key_id.is_some()
+    }
+
+    /// Whether this session proved `email` itself (case-insensitive).
+    pub fn proved(&self, email: &str) -> bool {
+        let want = email.to_lowercase();
+        self.proved_emails.iter().any(|e| e.to_lowercase() == want)
+    }
 }
 
 /// Lifecycle of a hosted-primary tenant domain (bean g5qt).

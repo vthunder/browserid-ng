@@ -327,6 +327,36 @@
     return token;
   }
 
+  // Bind the issuer's cookie session to this browser's login key (bean
+  // 160l; POST /wsapi/session_admit, broker-private): the registry vouches
+  // — Bearer + Proof by the login key — that this browser is enrolled on
+  // the account, and only then does the cookie session reveal and manage
+  // the account. Same-origin: the cookie rides along. Idempotent. Resolves
+  // true when admitted, false when there is no cookie session to admit or,
+  // with {storedOnly}, when the stored key alone cannot open a registry
+  // session (nothing interactive is attempted). Throws on refusal.
+  async function admitSession(opts) {
+    opts = opts || {};
+    if (opts.storedOnly) {
+      var acct = account || walletAccount();
+      if (!acct) return false;
+      if (!loginKey) loginKey = await loadLoginKey(acct);
+      if (!loginKey) return false;
+      if (!(token && nowS() < tokenExp - 60) && !(await loginStored(acct))) return false;
+    } else {
+      await ensure();
+    }
+    var path = "/wsapi/session_admit";
+    var bodyStr = "{}";
+    var r = await postRaw(path, bodyStr, {
+      proof: await proofBy(loginKey, "POST", path, bodyStr),
+      authorization: "Bearer " + token,
+    });
+    if (r.ok) return true;
+    if (r.status === 401) return false; // no cookie session here to admit
+    throw error(r, path);
+  }
+
   // Session-authed API call (§4.4). `path` may carry a query — htu never
   // does. 204 resolves to {}; any error throws with status/reason.
   async function call(method, path, body, retried) {
@@ -427,6 +457,7 @@
       return r.data;
     },
     ensure: ensure,
+    admitSession: admitSession,
     call: call,
   };
 })();

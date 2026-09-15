@@ -1759,22 +1759,27 @@ async function registryLoginWithPassword(password) {
   let ctx; try { ctx = await api('/wsapi/session_context'); } catch { return; }
   if (!ctx.account) return;
   window.Registry.configureKeyless({ account: ctx.account, password });
-  try { await window.Registry.ensure(); } catch (e) { console.warn('registry login:', e.message || e); }
+  // …and have the cookie session admitted (bean 160l): bound to the key,
+  // so the reload can read and manage the account.
+  try { await window.Registry.ensure(); await window.Registry.admitSession(); }
+  catch (e) { console.warn('registry login:', e.message || e); }
 }
 // Establish the registry session this page holds as its own device:
-// headless by this browser's login key. Without one (a cookie from before
-// login keys, or a key revoked from another device) the page signs out —
-// the next password sign-in enrols the key. No page-local password prompt,
-// no popup. The one exception is an account with no password: the
-// registry's login page cannot help it yet, so the page stays on the cookie
-// (addresses, password) and says so where devices would be.
-async function registrySetup(hasPassword) {
+// headless by this browser's login key, and the cookie session ADMITTED
+// under it (bean 160l) — the broker answers the address list only to a
+// session bound to an enrolled key. Without a usable key (a cookie from
+// before login keys, a key revoked from another device, an unadmitted
+// session left by an interrupted sign-in) the page signs out — the next
+// sign-in enrols the key. No page-local password prompt, no popup.
+async function registrySetup() {
   account.registry = false;
-  if (!account.id) return;
+  if (!account.id) { await signOutForRelogin(); return; }
   window.Registry.configureKeyless({ account: account.id });
-  if (await window.Registry.hasLoginKey()) { account.registry = true; return; }
-  if (hasPassword === false) return;
-  await signOutForRelogin();
+  let admitted = false;
+  try { admitted = await window.Registry.admitSession({ storedOnly: true }); }
+  catch (e) { console.warn('session admission:', e.message || e); }
+  if (!admitted) { await signOutForRelogin(); return; }
+  account.registry = true;
 }
 async function signOutForRelogin() {
   try { sessionStorage.setItem('acct-relogin', '1'); } catch (e) { /* private mode */ }
@@ -1872,7 +1877,13 @@ function consumeAuthorizedHandoff() {
 
 // -------- boot --------
 async function reloadAccount() {
-  const resp = await api('/wsapi/list_emails');
+  let resp;
+  try { resp = await api('/wsapi/list_emails'); }
+  catch (e) {
+    // The session lost its admission (the key revoked elsewhere): sign out.
+    if (e && e.message === 'not_admitted') { await signOutForRelogin(); return; }
+    throw e;
+  }
   let warrants = [], deviceCerts = [], holders = { namespaces: [], holders_without_namespace: [] }, loginKeys = [], approvals = [];
   if (account.registry) {
     try {
@@ -1931,8 +1942,8 @@ async function boot() {
   account.csrf = ctx.csrf_token;
   account.id = ctx.account || null;
   try { await window.Keystore.purgeLegacy(); } catch (e) { console.warn('keystore purge:', e); }
-  let emails = {}; try { emails = await api('/wsapi/list_emails'); } catch (e) { /* reloadAccount reports */ }
-  await registrySetup(emails.has_password !== false);
+  await registrySetup();
+  if (!account.registry) return; // signing out
   await reloadAccount();
   $('signout').hidden = false;
   $('app').hidden = false;

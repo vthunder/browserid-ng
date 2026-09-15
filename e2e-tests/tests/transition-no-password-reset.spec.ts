@@ -79,33 +79,65 @@ test.describe('transition_no_password routing (gg5s / 8gqm)', () => {
 
     await stubTransitionNoPassword(page, email);
 
-    // Report the visitor as authenticated AND owning the address.
+    // Report the visitor as authenticated on a session that PROVED the
+    // address but is not admitted (bean 160l: no registry login key bound),
+    // the state a bridge sign-in leaves before the add-a-device step. The
+    // roster is not this session's to read — it must not be asked for.
     await page.route('**/wsapi/session_context', (route) => {
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ authenticated: true, user_id: 1, email }),
+        body: JSON.stringify({ authenticated: true, user_id: 1, admitted: false, proved_emails: [email] }),
+      });
+    });
+    let rosterAsked = false;
+    await page.route('**/wsapi/list_emails', (route) => {
+      rosterAsked = true;
+      route.fulfill({
+        status: 403,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, reason: 'not_admitted' }),
+      });
+    });
+
+    await page.goto(`${BASE_URL}/dialog/dialog.html?origin=http://example.com`);
+
+    // A live issuer session the registry has not admitted opens on the
+    // email entry, not the account's address list (Dan, 2026-09-15); naming
+    // the proved address is the session-owned flow.
+    await page.waitForSelector('#email-screen.active', { timeout: 10000 });
+    expect(rosterAsked).toBe(false);
+    await page.fill('#email', email);
+    await page.click('#email-form button[type="submit"]');
+
+    // The session proves control — direct first-password screen, no code.
+    await expect(page.locator('#set-password-screen')).toHaveClass(/active/, { timeout: 10000 });
+  });
+
+  test('an admitted session opens on the account address list', async ({ page }) => {
+    const email = 'admitted-owner@example.com';
+    const sibling = 'sibling@example.com';
+    await stubTransitionNoPassword(page, email);
+    // The registry admitted this browser: the session is bound to its
+    // login key, so the roster is its to see (bean 160l).
+    await page.route('**/wsapi/session_context', (route) => {
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ authenticated: true, user_id: 1, admitted: true, account: 'acct_1', proved_emails: [email] }),
       });
     });
     await page.route('**/wsapi/list_emails', (route) => {
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ emails: [email] }),
+        body: JSON.stringify({ success: true, emails: [email, sibling], derived: [], agents: [], public_names: [], managed: [], proofs: [], has_password: false }),
       });
     });
 
     await page.goto(`${BASE_URL}/dialog/dialog.html?origin=http://example.com`);
-
-    // A live issuer session on a browser the registry has not admitted (no
-    // login key here) opens on the email entry, not the account's address
-    // list (Dan, 2026-09-15); naming the owned address is the session-owned
-    // flow.
-    await page.waitForSelector('#email-screen.active', { timeout: 10000 });
-    await page.fill('#email', email);
-    await page.click('#email-form button[type="submit"]');
-
-    // The session proves control — direct first-password screen, no code.
-    await expect(page.locator('#set-password-screen')).toHaveClass(/active/, { timeout: 10000 });
+    await page.waitForSelector('#pick-email-screen.active', { timeout: 10000 });
+    await expect(page.locator('#pick-email-screen')).toContainText(email);
+    await expect(page.locator('#pick-email-screen')).toContainText(sibling);
   });
 });

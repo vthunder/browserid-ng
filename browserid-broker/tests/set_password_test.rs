@@ -16,7 +16,7 @@ fn passwordless_session(ctx: &TestContext, email: &str) -> String {
     let user_id = ctx.user_store.create_user_no_password().unwrap();
     ctx.user_store.add_email(user_id, email, true).unwrap();
     ctx.session_store
-        .create(user_id, SessionLevel::Lightweight)
+        .create(user_id, SessionLevel::Lightweight, vec![email.to_string()])
         .unwrap()
         .id
         .0
@@ -107,14 +107,16 @@ async fn set_password_success_on_passwordless_account() {
     let session = passwordless_session(&ctx, email);
     let csrf = csrf_for(&ctx, &session).await;
 
-    // list_emails reports the passwordless state (drives the UI prompt).
+    // The passwordless state (drives the UI prompt) is disclosed for the
+    // address the session proved — the roster itself needs admission
+    // (bean 160l), which a passwordless identity session does not have.
     let response = ctx
         .server
-        .get("/wsapi/list_emails")
+        .get(&format!("/wsapi/address_info?email={email}"))
         .add_cookie(cookie::Cookie::new("browserid_session", session.clone()))
         .await;
     let body: Value = response.json();
-    assert_eq!(body["has_password"], false);
+    assert_eq!(body["state"], "transition_no_password");
 
     let response = ctx
         .server
@@ -143,14 +145,15 @@ async fn set_password_success_on_passwordless_account() {
         .await;
     assert_eq!(response.status_code(), 200);
 
-    // …and list_emails flips.
+    // …and the address's state flips (the re-minted session is still an
+    // unadmitted identity session, so the roster itself is not its to read).
     let response = ctx
         .server
-        .get("/wsapi/list_emails")
+        .get(&format!("/wsapi/address_info?email={email}"))
         .add_cookie(cookie::Cookie::new("browserid_session", fresh))
         .await;
     let body: Value = response.json();
-    assert_eq!(body["has_password"], true);
+    assert_eq!(body["state"], "known");
 }
 
 /// The bean's headline flow: a passwordless account adds an SMTP (E3) address
@@ -162,6 +165,13 @@ async fn passwordless_add_email_costs_one_code_then_sets_password() {
     let first = "bridge-born@example.com";
     let added = "inbox@example.com";
     let session = passwordless_session(&ctx, first);
+    // Adding a NEW address is account-wide, so the browser must be admitted
+    // (bean 160l): in the dialog that happened at the registry step of the
+    // bridge sign-in. Bind the session directly — admission itself is
+    // session_admission_test's subject.
+    ctx.session_store
+        .bind_login_key(&browserid_broker::store::SessionId(session.clone()), 1)
+        .unwrap();
     let csrf = csrf_for(&ctx, &session).await;
 
     // Stage + complete the E3 addition (the one SMTP roundtrip).

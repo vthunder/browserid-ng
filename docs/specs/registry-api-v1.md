@@ -256,6 +256,12 @@ other. Issuing certs, passwords, and deleting the account are the
 issuer API's operations, not this one's, so nothing here lets an
 identity affect its own issuance.
 
+The converse holds too: an issuer session is not a registry session.
+Where the issuer and the registry are one deployment, the issuer's own
+sessions reveal and manage the account only once bound to a login key
+this login enrolled (fallback-idp-api-v1 §3.2); the bind is the
+issuer's private call, not part of this API.
+
 ### 4.4 Request proof — `browserid-registry-proof-v1`
 
 A proof is a compact JWS with three parts: a protected header, a JSON

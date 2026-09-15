@@ -170,8 +170,26 @@ pub fn create_test_context_customized(
 /// Helper to create a user and return a FULL (password-authed) session
 /// cookie, via the unified sign-in code lane (the only signup path since M7
 /// retired stage_user, browserid-ng-8gqm). Completion mints no session, so
-/// the helper signs in with the password afterwards, matching the dialog.
+/// the helper signs in with the password afterwards, matching the dialog —
+/// and, like the dialog, has the registry admit the browser (bean 160l):
+/// a login key is enrolled and the cookie session bound to it, so the
+/// account-wide cookie endpoints answer. For the bare identity session a
+/// sign-in opens before admission, see [`create_user_unadmitted`].
 pub async fn create_user(
+    server: &TestServer,
+    email_sender: &MockEmailSender,
+    email: &str,
+    password: &str,
+) -> String {
+    let cookie = create_user_unadmitted(server, email_sender, email, password).await;
+    registry::admit_session(server, &cookie, password).await;
+    cookie
+}
+
+/// [`create_user`] without the admission step: the session has proved the
+/// password (so every broker-vouched address) but no registry login key is
+/// bound — the state a browser is in until the add-a-device step succeeds.
+pub async fn create_user_unadmitted(
     server: &TestServer,
     email_sender: &MockEmailSender,
     email: &str,

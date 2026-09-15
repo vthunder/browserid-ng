@@ -82,6 +82,7 @@ where
             enabled: state.agent_provisioning_enabled,
             store: Arc::new(crate::registrar_glue::BrokerRegistrarStore {
                 user_store: state.user_store.clone(),
+                session_store: state.session_store.clone(),
             }),
             host: Arc::new(crate::registrar_glue::BrokerRegistrarHost {
                 user_store: state.user_store.clone(),
@@ -209,6 +210,7 @@ where
         .merge(idp_cors_routes)
         .merge(verification_api_routes)
         .route("/wsapi/session_context", get(session::get_session_context))
+        .route("/wsapi/session_admit", post(session::session_admit))
         // Admin seed provisioning (ADMIN_TOKEN-gated; for @mingo.place demo accounts)
         .route("/admin/create_account", post(account::admin_create_account))
         // Operator-only code peek (X-Admin-Token) — testing escape hatch when
@@ -406,7 +408,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-tT9Rn3P31zu8+x+2mP0Soy371BJmSHcyVKE8mwH4vf4='", // account.html
+    "'sha256-yPHucKYYWG0GBAOEhIRSHCANNYyeTJOvyHwxJ/0EUHY='", // account.html
     "'sha256-remU3at+zAi06G6qcdzxUbyhB348phS21WwQqtFIu2g='", // authorize.html
     "'sha256-pR9ebbafpGYvx+PEfXddv4xnnnTj+6U9uhDHRKrHgbA='", // consent.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)

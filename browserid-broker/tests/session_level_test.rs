@@ -100,7 +100,7 @@ async fn lightweight_session_reported_in_context() {
         .unwrap();
     let session = ctx
         .session_store
-        .create(user_id, SessionLevel::Lightweight)
+        .create(user_id, SessionLevel::Lightweight, vec![])
         .unwrap()
         .id
         .0;
@@ -121,7 +121,7 @@ async fn set_password_upgrades_session_to_full() {
         .unwrap();
     let session = ctx
         .session_store
-        .create(user_id, SessionLevel::Lightweight)
+        .create(user_id, SessionLevel::Lightweight, vec![])
         .unwrap()
         .id
         .0;
@@ -164,6 +164,9 @@ async fn update_password_remint_is_full() {
         .unwrap()
         .value()
         .to_string();
+    // update_password is account-wide: the registry must have admitted
+    // this browser first (bean 160l).
+    common::registry::admit_session(&ctx.server, &session, "password123").await;
     let csrf = get_csrf(&ctx.server, &session).await;
 
     let response = ctx
@@ -192,7 +195,7 @@ fn sqlite_session_level_round_trips() {
     let user_id = store.create_user("hash").unwrap();
 
     for level in [SessionLevel::Full, SessionLevel::Lightweight] {
-        let session = store.create(user_id, level).unwrap();
+        let session = store.create(user_id, level, vec![]).unwrap();
         let got = store.get(&session.id).unwrap().expect("session exists");
         assert_eq!(got.level, level);
     }

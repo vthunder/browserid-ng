@@ -207,6 +207,10 @@ where
     S: SessionStore,
     E: EmailSender,
 {
+    // Any authenticated session, admitted or not (bean 160l): the prefix
+    // is an opaque namespace id an identity session learns anyway from the
+    // holder of the cert it is issued, and issuing under it BEFORE the
+    // registry step is what keeps one browser one device.
     let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
     let prefix = state
@@ -258,6 +262,12 @@ where
     };
     let (user_id, email, ttl, prov, login_key_id): (crate::store::UserId, String, Duration, &'static str, Option<u64>) = match &caller {
         IssueCaller::Cookie(session) => {
+            // An unadmitted session is an identity session (bean 160l): it
+            // issues only for an identity it proved itself. Admitted, it
+            // issues for any identity of the account.
+            if !session.admitted() && !session.proved(&req.email) {
+                return Err(BrokerError::NotAdmitted);
+            }
             let csrf = req.csrf.as_deref().unwrap_or("");
             let (email, ttl, prov) = owned_mintable_email(&state, &cookies, csrf, &req.email)?;
             if let Some(ro) = req.return_origin.as_deref().filter(|s| !s.trim().is_empty()) {
@@ -642,8 +652,10 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
         .ok_or(BrokerError::NotAuthenticated)?;
+    // Account-wide: admitted browsers only (bean 160l).
+    super::session::require_admitted(&session)?;
 
     let iss = query.iss.trim().to_ascii_lowercase();
     if iss.is_empty() || iss == state.domain.to_ascii_lowercase() {

@@ -490,10 +490,13 @@ where
 
     // A cold claim ends signed in, like completing an email verification —
     // but only Lightweight: the bridge proof shows no account password.
-    if session.is_none() {
+    if let Some(s) = session.as_ref() {
+        // The session proved one more identity (bean 160l).
+        state.session_store.add_proved_email(&s.id, email)?;
+    } else {
         let new_session = state
             .session_store
-            .create(user_id, crate::store::SessionLevel::Lightweight)?;
+            .create(user_id, crate::store::SessionLevel::Lightweight, vec![email.to_string()])?;
         super::session::set_session_cookie(
             cookies,
             &new_session.id.0,

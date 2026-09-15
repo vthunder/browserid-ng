@@ -127,6 +127,9 @@ where
     let accounts: Vec<serde_json::Value> = emails
         .iter()
         .filter(|e| e.verified && e.email_type == EmailType::Secondary)
+        // An unadmitted session lists only the identities it proved itself
+        // (bean 160l) — never the account's whole roster.
+        .filter(|e| session.admitted() || session.proved(&e.email))
         // Only accounts /fedcm/assertion would actually mint for (u4xz) — a
         // chooser entry that dead-ends at the assertion gate is worse than
         // its absence.
@@ -223,7 +226,10 @@ where
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "store error"),
     };
     let Some(email_record) = emails.iter().find(|e| {
-        e.email == req.account_id && e.verified && e.email_type == EmailType::Secondary
+        e.email == req.account_id
+            && e.verified
+            && e.email_type == EmailType::Secondary
+            && (session.admitted() || session.proved(&e.email))
     }) else {
         return err(StatusCode::FORBIDDEN, "account not eligible");
     };
