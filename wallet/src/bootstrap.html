@@ -24,6 +24,14 @@
   <div class="err" id="err"></div>
 </form>
 <script>
+  (function () {
+    var m = /hint=([^&]*)/.exec(location.hash || '');
+    if (m && m[1]) {
+      document.querySelector('h1').textContent = 'Which address is ' + decodeURIComponent(m[1]) + '?';
+      document.querySelector('p').textContent = 'Your account needs one more address proven. Type the full address; you\u2019ll sign in at its provider.';
+      document.querySelector('button').textContent = 'Sign in';
+    }
+  })();
   const f = document.getElementById('f');
   const email = document.getElementById('email');
   const go = document.getElementById('go');

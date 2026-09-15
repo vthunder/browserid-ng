@@ -46,6 +46,47 @@ function askEmail() {
   });
 }
 
+// The same window, asking for the address behind a masked hint (bean d26p).
+function askAddress(hint) {
+  const { BrowserWindow, ipcMain } = require('electron');
+  return new Promise((resolve) => {
+    const win = new BrowserWindow({
+      width: 420, height: 300, title: 'Which address?', resizable: false,
+      webPreferences: {
+        preload: path.join(__dirname, 'bootstrap-preload.js'),
+        nodeIntegration: false, contextIsolation: true,
+      },
+    });
+    let settled = false;
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      ipcMain.removeHandler('wallet:bootstrap-email');
+      resolve(v);
+      if (!win.isDestroyed()) win.close();
+    };
+    ipcMain.handle('wallet:bootstrap-email', (_e, email) => finish((email || '').trim().toLowerCase() || null));
+    win.on('closed', () => finish(null));
+    win.loadFile(path.join(__dirname, 'bootstrap.html'), { hash: 'hint=' + encodeURIComponent(hint || '') });
+  });
+}
+
+// Prove another identity for a login in flight (bean d26p): its issuer's
+// ceremony, a fresh pair, NOT persisted and NOT attached — the mediator
+// holds it until the login has a session (deferred attach).
+async function proveIdentity(email, { testPassword } = {}) {
+  const { issuer, deviceAuthUrl, mintUrl } = await resolveIssuer(email);
+  const device = await generateKey();
+  const config = await generateKey();
+  const certs = await primaryHop({ deviceAuthUrl, email, devicePub: device.x, configPub: config.x, testPassword });
+  const holder = decodeJws(certs.device_cert).holder;
+  return {
+    identity: email, domain: issuer, mintUrl, holder, holderPrefix: holder.split('.')[0],
+    deviceKey: { ...device.privJwk, x: device.x }, deviceCert: certs.device_cert,
+    configKey: { ...config.privJwk, x: config.x }, configCert: certs.config_cert,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Step 2: issuer resolution. The primary branch still leans on the broker's
 // /wsapi/address_info as its discovery convenience (client-side core §3
@@ -191,9 +232,12 @@ async function persist({ email, issuer, mintUrl, device, config, certs }) {
 //
 // Gotchas tracked on bean e98a (deferred attach of a second identity's
 // fresh certs, the mediator inside this embedded browser) are not yet built.
-async function attachAtRegistry({ testPassword, pageToken } = {}) {
+async function attachAtRegistry({ testPassword, pageToken, testMethod } = {}) {
   try {
-    await require('./registry').ensure({ openPage: (url, account) => loginHop({ url, account, testPassword }), pageToken });
+    await require('./registry').ensure({ openPage: (url, account) => loginHop({ url, account, testPassword, testMethod }), pageToken });
+    // Identities proven for this login through the mediator: recorded now
+    // that the session exists (bean e98a's deferred attach).
+    await require('./mediator').deferredAttach();
     return true;
   } catch (e) {
     console.warn('[wallet] attaching at the registry failed (non-fatal):', e.message || e);
@@ -201,14 +245,20 @@ async function attachAtRegistry({ testPassword, pageToken } = {}) {
   }
 }
 
-function loginHop({ url: loginUrl, account, testPassword }) {
+function loginHop({ url: loginUrl, account, testPassword, testMethod }) {
   const { BrowserWindow } = require('electron');
   const RETURN_URL = `${broker.BROKER}/wallet-login-return`; // never actually loaded
+  // The page can ask this wallet for identity proofs (bean d26p): the
+  // mediator answers navigator.id inside this window.
+  require('./mediator').install({ askAddress });
   return new Promise((resolve, reject) => {
     const win = new BrowserWindow({
       width: 480, height: 640, title: 'Sign in to your account',
-      show: !testPassword,
-      webPreferences: { partition: 'persist:browserid', nodeIntegration: false, contextIsolation: true },
+      show: !(testPassword || testMethod),
+      webPreferences: {
+        partition: 'persist:browserid', nodeIntegration: false, contextIsolation: true,
+        preload: path.join(__dirname, 'login-page-preload.js'),
+      },
     });
     const url = loginUrl +
       '#account=' + encodeURIComponent(account) +
@@ -230,8 +280,18 @@ function loginHop({ url: loginUrl, account, testPassword }) {
     };
     win.webContents.on('will-navigate', onNav);
     win.webContents.on('will-redirect', onNav);
-    win.on('closed', () => { if (!settled) { settled = true; clearTimeout(timeout); reject(new Error('approval window closed')); } });
-    if (testPassword) {
+    win.on('closed', () => { if (!settled) { settled = true; clearTimeout(timeout); require('./mediator').abandon(); reject(new Error('approval window closed')); } });
+    if (testMethod === 'proofs') {
+      // Test lane: drive the page's "prove your identities" method; the
+      // mediator answers with this wallet's identity.
+      win.webContents.on('did-finish-load', () => {
+        win.webContents.executeJavaScript(`(function retry(n) {
+          var b = document.getElementById('to-proofs');
+          if (b) { b.click(); setTimeout(function () { var s = document.getElementById('proofs-start'); if (s) s.click(); }, 300); return; }
+          if (n > 0) setTimeout(function () { retry(n - 1); }, 200);
+        })(50);`).catch(() => {});
+      });
+    } else if (testPassword) {
       win.webContents.on('did-finish-load', () => {
         win.webContents.executeJavaScript(`(function retry(n) {
           var f = document.getElementById('password-form');
@@ -292,4 +352,4 @@ async function bootstrapPassword({ email, pass }) {
   return bootstrapForEmail(email.trim().toLowerCase(), { testPassword: pass });
 }
 
-module.exports = { startBootstrap, bootstrapPassword };
+module.exports = { startBootstrap, bootstrapPassword, proveIdentity, attachAtRegistry };

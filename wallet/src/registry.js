@@ -123,6 +123,26 @@ async function loginPage(account, openPage, earned) {
   throw apiError('POST', path, r2);
 }
 
+// §5.2.4 for a pair other than the held one (an identity proven for a
+// login, bean d26p): recorded under the session it earned.
+async function attachPair(pair, identity) {
+  const path = '/api/v1/account/attach';
+  const htu = broker.ORIGIN + path;
+  const jti = randHex(12);
+  const body = {
+    identity,
+    certs: [
+      { cert: pair.deviceCert, proof: await proof(pair.deviceKey, 'POST', htu, { jti, x: pair.deviceKey.x }) },
+      { cert: pair.configCert, proof: await proof(pair.configKey, 'POST', htu, { jti, x: pair.configKey.x }) },
+    ],
+  };
+  const bodyStr = JSON.stringify(body);
+  const key = store.state().loginKey;
+  const r = await postRaw(path, bodyStr, { proof: await proof(key, 'POST', htu, { body: bodyStr, jti, x: key.x }), authorization: `Bearer ${token}` });
+  if (r.ok) return;
+  throw apiError('POST', path, r);
+}
+
 // §5.2.4: record the pair under the session (idempotent on pubkey). The
 // session is unchanged.
 async function attach() {
@@ -305,8 +325,12 @@ function startInboxWatch({ notify }) {
   poll();
 }
 
+function dropSession() { token = null; tokenExp = 0; }
+
 module.exports = {
   ensure,
+  dropSession,
+  attachPair,
   reissueCerts,
   apiCall,
   allocateStatus,

@@ -56,7 +56,7 @@
   }
   function fail(reason) { finish("login_error=" + encodeURIComponent(reason)); }
   function fatal(msg) {
-    $("password-form").classList.add("hidden"); $("approval").classList.add("hidden");
+    $("password-form").classList.add("hidden"); $("approval").classList.add("hidden"); $("proofs").classList.add("hidden");
     $("fatal").classList.remove("hidden"); $("fatal-msg").textContent = msg;
   }
   function postJson(path, body) {
@@ -92,11 +92,13 @@
   function showPassword() {
     stopPolling();
     $("approval").classList.add("hidden");
+    $("proofs").classList.add("hidden");
     $("password-form").classList.remove("hidden");
     try { $("password").focus(); } catch (e) {}
   }
   function showApproval() {
     $("password-form").classList.add("hidden");
+    $("proofs").classList.add("hidden");
     $("approval").classList.remove("hidden");
     $("approval-err").textContent = "";
     $("approval-wait").classList.remove("hidden");
@@ -134,5 +136,86 @@
   $("to-approval").addEventListener("click", showApproval);
   $("to-password").addEventListener("click", showPassword);
   $("approval-cancel").addEventListener("click", function () { stopPolling(); fail("cancelled"); });
+
+  // --- Method 3: proofs of the account's identities (bean d26p) ---------
+  // The page asks the wallet (navigator.id, answered by the native wallet
+  // inside its own window, or by the browserid dialog) for a presentation
+  // per identity; one proof unlocks masked hints for the rest; enough
+  // proofs earn the token.
+  var proofs = { presentations: [], proven: [], hints: [], needed: 0, watching: false };
+  function proofsUi() {
+    var list = $("proofs-list");
+    list.innerHTML = "";
+    proofs.proven.forEach(function (p) {
+      var li = document.createElement("li"); li.className = "done";
+      li.innerHTML = '<span class="tick">✓</span><span></span>';
+      li.querySelector("span:nth-child(2)").textContent = p;
+      list.appendChild(li);
+    });
+    proofs.hints.forEach(function (h) {
+      var li = document.createElement("li");
+      li.innerHTML = '<span class="tick"></span><span></span><button type="button">Sign in</button>';
+      li.querySelector("span:nth-child(2)").textContent = h;
+      li.querySelector("button").addEventListener("click", function () { askWallet(h); });
+      list.appendChild(li);
+    });
+    var left = Math.max(0, proofs.needed - proofs.proven.length);
+    $("proofs-lead").textContent = proofs.proven.length === 0
+      ? "Sign in with the addresses on this account. Your wallet answers each one."
+      : (left > 0 ? "One more: sign in with " + (left === 1 ? "one" : left) + " of the addresses below." : "That's enough. Signing you in…");
+    $("proofs-start").classList.toggle("hidden", proofs.proven.length > 0);
+  }
+  function showProofs() {
+    $("password-form").classList.add("hidden");
+    $("approval").classList.add("hidden");
+    $("proofs").classList.remove("hidden");
+    $("proofs-err").textContent = "";
+    if (!(navigator.id && typeof navigator.id.request === "function")) {
+      $("proofs-err").textContent = "No wallet answered on this page. Use the password instead.";
+      $("proofs-start").disabled = true;
+      return;
+    }
+    if (!proofs.watching) {
+      proofs.watching = true;
+      try { navigator.id.watch({ onlogin: function () {}, onlogout: function () {} }); } catch (e) {}
+    }
+    proofsUi();
+  }
+  function askWallet(hint) {
+    $("proofs-err").textContent = "";
+    $("proofs-wait").classList.remove("hidden");
+    var args = { siteName: "browserid.me account" };
+    // A masked hint is not an address; the wallet picks the identity that
+    // matches it, or asks the person.
+    if (hint) args.hint = hint;
+    var p;
+    try { p = navigator.id.request("login", args); } catch (e) { p = Promise.reject(e); }
+    if (!p || typeof p.then !== "function") p = Promise.reject(new Error("the wallet on this page cannot answer requests"));
+    p.then(function (r) {
+      var pres = r && r.presentation;
+      if (!pres) throw new Error("no presentation");
+      proofs.presentations.push(pres);
+      return postJson("/wsapi/registry_login_hints", { account: account, presentations: proofs.presentations });
+    }).then(function (r) {
+      $("proofs-wait").classList.add("hidden");
+      if (!r.ok) { proofs.presentations.pop(); $("proofs-err").textContent = "That sign-in did not prove an address on this account."; return; }
+      proofs.proven = r.data.proven || []; proofs.hints = r.data.hints || []; proofs.needed = r.data.needed || 1;
+      proofsUi();
+      if (proofs.proven.length >= proofs.needed) {
+        return postJson("/wsapi/registry_login_proofs", { account: account, presentations: proofs.presentations }).then(function (t) {
+          if (t.ok && t.data.login) { finish("login=" + encodeURIComponent(t.data.login)); return; }
+          $("proofs-err").textContent = "That didn't work. Try the password instead.";
+        });
+      }
+    }).catch(function (e) {
+      $("proofs-wait").classList.add("hidden");
+      $("proofs-err").textContent = (e && e.error === "cancelled") ? "" : "The wallet did not answer. Try again, or use the password.";
+    });
+  }
+  $("to-proofs").addEventListener("click", showProofs);
+  $("to-password-2").addEventListener("click", showPassword);
+  $("proofs-start").addEventListener("click", function () { askWallet(null); });
+  $("proofs-cancel").addEventListener("click", function () { fail("cancelled"); });
   if (startWith === "approval") showApproval();
+  if (startWith === "proofs") showProofs();
 })();

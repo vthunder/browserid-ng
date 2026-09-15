@@ -43,6 +43,7 @@
   var loginKey = null;  // {privateKey, publicKeyX, kid} for the account
   var account = null;
   var askTakeover = null; // (identity) => Promise<boolean>: may this identity move to the wallet's account?
+  var proveIdentities = null; // (account) => Promise<token>: identity proofs as the login (bean d26p)
 
   function nowS() { return Math.floor(Date.now() / 1000); }
   function rndHex() {
@@ -216,6 +217,11 @@
       var lr = await postRaw("/wsapi/registry_login", JSON.stringify({ account: acct, password: password }), {});
       if (!(lr.ok && lr.data.login)) throw error(lr, "/wsapi/registry_login");
       earned = lr.data.login;
+    } else if (url.origin === window.location.origin && proveIdentities) {
+      // No password: prove the account's identities from what this wallet
+      // holds (the dialog's own certs), falling back to the page.
+      try { earned = await proveIdentities(acct); }
+      catch (e) { console.warn('identity proofs did not log in:', e.message || e); throw e; }
     } else {
       // No password at hand (a remembered session), or a foreign registry:
       // the page itself asks.
@@ -362,6 +368,7 @@
       if (opts.loginToken) pageToken = opts.loginToken;
       askPassword = null;
       askTakeover = opts.askTakeover || null;
+      proveIdentities = opts.proveIdentities || null;
       kids = { device: await kidOfCert(pair.deviceCert), config: await kidOfCert(pair.configCert) };
       if (!sameCert) { token = null; tokenExp = 0; }
     },

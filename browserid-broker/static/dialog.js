@@ -82,6 +82,7 @@
     primaryAuthContinue: document.getElementById('primary-auth-continue-screen'),
     claimContinue: document.getElementById('claim-continue-screen'),
     managedConsent: document.getElementById('managed-consent-screen'),
+    proveIdentities: document.getElementById('prove-identities-screen'),
     takeover: document.getElementById('takeover-screen'),
     sboConsent: document.getElementById('sbo-consent-screen'),
     signPrompt: document.getElementById('sign-prompt-screen'),
@@ -376,6 +377,84 @@
     });
   }
 
+  // Identity proofs as the registry login (bean d26p): the registry's
+  // add-a-device rule wants proofs of k of the account's identities. This
+  // browser proves the one it just signed in with, learns the others as
+  // masked hints, and proves any it already holds certs for — a held
+  // identity is one the person signed in with here. Enough proofs earn the
+  // login token; otherwise a screen names what is missing and the registry
+  // login waits for another day (best-effort, like every registry step).
+  let provePending = null;
+  function maskOf(email) {
+    const i = email.indexOf('@');
+    return i > 0 ? email[0] + '***' + email.slice(i) : '***';
+  }
+  async function heldPairs() {
+    const out = [];
+    let all = [];
+    try { all = await Keystore.allDevice(); } catch (e) { return out; }
+    const byKey = {};
+    for (const d of all) {
+      if (!d || !d.email || !d.issuer) continue;
+      const k = d.issuer + '|' + d.email.toLowerCase();
+      byKey[k] = byKey[k] || { issuer: d.issuer, email: d.email.toLowerCase() };
+      byKey[k][d.kind] = d;
+    }
+    for (const k of Object.keys(byKey)) {
+      const e = byKey[k];
+      if (e.device && e.config && e.device.cert && e.config.cert && !jwsExpired(e.device.cert) && !jwsExpired(e.config.cert)) {
+        out.push({ issuer: e.issuer, email: e.email, pair: { device: e.device, config: e.config } });
+      }
+    }
+    return out;
+  }
+  async function proveIdentities(account, currentEmail, currentPair, currentIssuer) {
+    const brokerOrigin = window.location.origin;
+    const post = async (path, body) => {
+      const r = await fetch(path, { method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body) });
+      return { ok: r.ok, data: await r.json().catch(() => ({})) };
+    };
+    const presentationFor = async (pair, issuer, email) => {
+      const mintUrl = await WalletSigner.mintUrlFor(email, issuer);
+      return buildPresentation(pair, issuer, mintUrl, email, brokerOrigin, /* noRegister */ true);
+    };
+    const presentations = [await presentationFor(currentPair, currentIssuer, currentEmail)];
+    const h = await post('/wsapi/registry_login_hints', { account, presentations });
+    if (!h.ok) throw new Error('this identity is not on the account');
+    let proven = h.data.proven || [], hints = h.data.hints || [];
+    const needed = h.data.needed || 1;
+    const held = await heldPairs();
+    // Prove every held identity that matches a hint, silently.
+    for (const hint of hints) {
+      if (proven.length >= needed) break;
+      const m = held.find(x => maskOf(x.email) === hint && !proven.includes(x.email));
+      if (!m) continue;
+      try { presentations.push(await presentationFor(m.pair, m.issuer, m.email)); proven.push(m.email); }
+      catch (e) { console.warn('proof for', m.email, 'failed:', e.message || e); }
+    }
+    if (proven.length < needed) {
+      // Show what is missing; nothing more can be proven from here.
+      await new Promise((resolve) => {
+        provePending = { resolve };
+        const list = document.getElementById('prove-list');
+        list.innerHTML = '';
+        for (const hint of hints.filter(x => !proven.some(p => maskOf(p) === x))) {
+          const row = document.createElement('div');
+          row.className = 'consent-card';
+          row.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:13px;margin:6px 0';
+          row.textContent = hint + ' — sign in with this address here first';
+          list.appendChild(row);
+        }
+        showScreen('proveIdentities');
+      });
+      throw new Error('more identity proofs are needed');
+    }
+    const t = await post('/wsapi/registry_login_proofs', { account, presentations });
+    if (!(t.ok && t.data.login)) throw new Error('the registry refused the proofs');
+    return t.data.login;
+  }
+
   let managedConsentPending = null;
   function managedDisclosure(issuer, email) {
     return new Promise((resolve, reject) => {
@@ -530,7 +609,8 @@
         identity: email,
         password: state.typedPassword || null,
         loginToken: state.registryLoginToken || null,
-        askTakeover: askTakeover
+        askTakeover: askTakeover,
+        proveIdentities: (account) => proveIdentities(account, email, pair, issuer)
       });
       state.registryLoginToken = null;
       let registry = false;
@@ -3080,6 +3160,11 @@
       const p = takeoverPending; takeoverPending = null;
       showScreen('loading', 'Moving…');
       if (p) p.resolve(true);
+    });
+    document.getElementById('prove-skip').addEventListener('click', () => {
+      const p = provePending; provePending = null;
+      showScreen('loading', 'Finishing sign-in...');
+      if (p) p.resolve(false);
     });
     document.getElementById('takeover-cancel').addEventListener('click', () => {
       const p = takeoverPending; takeoverPending = null;

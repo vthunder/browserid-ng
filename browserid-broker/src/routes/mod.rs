@@ -217,6 +217,8 @@ where
         .route("/wsapi/authenticate_user", post(auth::authenticate_user))
         // The registry login page's backend (registry-api-v1 §4.2).
         .route("/wsapi/registry_login", post(registry_login::mint))
+        .route("/wsapi/registry_login_hints", post(registry_login::hints))
+        .route("/wsapi/registry_login_proofs", post(registry_login::proofs))
         // Primary-IdP session join (device model): a presentation for the
         // broker's own audience links the identity into an account so the
         // chooser remembers it.

@@ -1169,3 +1169,71 @@ async fn a_login_key_reissues_broker_vouched_certs_and_the_ceremony_logs_in() {
     assert_eq!(status, 403, "{refused}");
     assert!(refused["reason"].as_str().unwrap_or("").contains("bridge"), "{refused}");
 }
+
+/// A broker-audience presentation for an identity whose pair the caller
+/// already holds (the second identity of an account, bean d26p).
+async fn presentation_from_pair(l: &Live, email: &str, device_kp: &KeyPair, device_cert: &str, config_kp: &KeyPair, config_cert: &str) -> String {
+    let holder = browserid_core::device::DeviceCert::parse(device_cert).unwrap().holder().clone();
+    let access_kp = KeyPair::generate();
+    let areq = AccessRequest::create(&l.domain, email, holder.clone(), &access_kp.public_key(), &format!("jti-{}", rand_suffix()), device_kp).unwrap();
+    let r = l.client.post(format!("{}/access/mint", l.base)).json(&json!({"device_cert": device_cert, "access_request": areq.encoded()})).send().await.unwrap();
+    assert_eq!(r.status(), 200, "mint");
+    let access_cert = r.json::<Value>().await.unwrap()["access_cert"].as_str().unwrap().to_string();
+    let warrant = Warrant::create(email, email, HolderMatcher::new(holder.as_str()).unwrap(), &l.base, vec!["login".into(), "registry".into()], Duration::days(90), config_kp, None).unwrap();
+    let assertion = Assertion::create(&l.base, Duration::minutes(5), &access_kp).unwrap();
+    format!("{}~{}~{}~{}", access_cert, assertion.encoded(), warrant.encoded(), config_cert)
+}
+
+/// Bean d26p: identity proofs as a login method. One valid proof unlocks
+/// masked hints for the account's other identities and says how many the
+/// rule wants; proofs of enough identities earn the token, which enrols a
+/// key as `proofs` naming them. A proof for a stranger's identity, or a
+/// presentation for another audience, is refused flat.
+#[tokio::test]
+async fn identity_proofs_log_a_device_in_after_masked_hints() {
+    use browserid_broker::store::{EmailType, UserStore};
+    let l = live_broker().await;
+    let first = "proofs-one@gmail.com";
+    let (p1, config_kp, _dc, config_cert) = broker_presentation(&l, first, vec!["login".into(), "registry".into()]).await;
+    let (status, body) = lookup(&l, &[(&config_cert, &config_kp)], first).await;
+    assert_eq!(status, 200, "{body}");
+    let account = body["account"].as_str().unwrap().to_string();
+    let uid = l.user_store.user_for_public_id(&account).unwrap().unwrap();
+    // A second identity on the same account, with its own pair.
+    let second = "proofs-two@example.org";
+    l.user_store.add_email_with_type(uid, second, true, EmailType::Secondary).unwrap();
+    let (dc2, cc2, dkp2, ckp2) = issue_keys(&l, second).await;
+    let p2 = presentation_from_pair(&l, second, &dkp2, &dc2, &ckp2, &cc2).await;
+    let post = |path: &str, body: Value| l.client.post(format!("{}{path}", l.base)).json(&body).send();
+
+    // Hints after one proof: the other identity, masked; the rule wants two.
+    let r = post("/wsapi/registry_login_hints", json!({ "account": account, "presentations": [p1] })).await.unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let h: Value = r.json().await.unwrap();
+    assert_eq!(h["proven"], json!([first]));
+    assert_eq!(h["needed"], 2);
+    assert_eq!(h["hints"], json!(["p***@example.org"]));
+    // One proof is not enough for the token.
+    let r = post("/wsapi/registry_login_proofs", json!({ "account": account, "presentations": [p1] })).await.unwrap();
+    assert_eq!(r.status(), 403);
+    // No proof, no hints: the account is not even confirmed to exist.
+    let r = post("/wsapi/registry_login_hints", json!({ "account": account, "presentations": [] })).await.unwrap();
+    assert_eq!(r.status(), 403);
+    // A stranger's proof is refused, even alongside a good one.
+    let (p_other, _, _, _) = broker_presentation(&l, "stranger@gmail.com", vec!["login".into(), "registry".into()]).await;
+    let r = post("/wsapi/registry_login_proofs", json!({ "account": account, "presentations": [p1, p_other] })).await.unwrap();
+    assert_eq!(r.status(), 403);
+    // Two identities: the token; the key enrols as `proofs` naming both.
+    let r = post("/wsapi/registry_login_proofs", json!({ "account": account, "presentations": [p1, p2] })).await.unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let login = r.json::<Value>().await.unwrap()["login"].as_str().unwrap().to_string();
+    let kp = KeyPair::generate();
+    let (status, body) = login_page(&l, &account, Some(&login), Some(&kp)).await;
+    assert_eq!(status, 200, "{body}");
+    let token = body["token"].as_str().unwrap().to_string();
+    let (_, keys, _) = session_call(&l, &kp, &token, "GET", "/api/v1/login-keys", None).await;
+    let mine = keys["login_keys"].as_array().unwrap().iter().find(|k| k["current"] == true).unwrap().clone();
+    assert_eq!(mine["enrolled_by"], "proofs", "{mine}");
+    let with = mine["enrolled_with"].as_array().unwrap();
+    assert!(with.contains(&json!(first)) && with.contains(&json!(second)), "{with:?}");
+}

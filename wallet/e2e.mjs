@@ -101,6 +101,15 @@ r = await wallet('/test/reissue', {});
 const re = await r.json();
 must('pair re-issued on the login key, no ceremony', r.status === 200 && re.after > re.before, JSON.stringify(re));
 
+// 3c. Identity proofs as the login (bean d26p): the wallet's key revoked,
+//     it logs in again through the page's "prove your identities" method —
+//     the mediator inside the wallet's window answers navigator.id — and
+//     the fresh key records `proofs` naming this identity.
+r = await wallet('/test/relogin', { method: 'proofs' });
+const rl = await r.json();
+must('re-login by identity proofs through the in-window mediator', r.status === 200 && rl.ok && rl.enrolled_by === 'proofs'
+  && Array.isArray(rl.enrolled_with) && rl.enrolled_with.includes(email), JSON.stringify(rl));
+
 // 4. registry API lane: the approvals inbox over token+proof (no cookies)
 r = await wallet('/test/inbox', {});
 const inbox = await r.json();

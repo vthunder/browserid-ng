@@ -159,6 +159,19 @@ function startServer({ approveLogin, approveRequest, approvePair, notify, onStat
             const outcome = await ad.askApproval(a, { testCode: code });
             return json(req, res, 200, { outcome });
           }
+          if (url.pathname === '/test/relogin') {
+            // Forget this wallet's login key (as a wiped device would; a revoke
+            // would also retire the certs) and log in again through the page
+            // by `method` (bean d26p): a fresh key, enrolled that way.
+            const { method } = await readBody(req);
+            const registry = require('./registry');
+            await store.set({ loginKey: null, loginVia: null });
+            registry.dropSession();
+            const ok = await require('./bootstrap').attachAtRegistry({ testMethod: method || 'proofs' });
+            const keys = ok ? await registry.apiCall('GET', '/api/v1/login-keys') : { login_keys: [] };
+            const mine = (keys.login_keys || []).find((k) => k.current) || null;
+            return json(req, res, 200, { ok, loginVia: store.state().loginVia, enrolled_by: mine && mine.enrolled_by, enrolled_with: mine && mine.enrolled_with });
+          }
           if (url.pathname === '/test/reissue') {
             // Drives the login-key re-issue (§3.3); returns the new cert's iat.
             const registry = require('./registry');

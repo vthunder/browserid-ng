@@ -12,6 +12,12 @@
     .dot { width: 8px; height: 8px; border-radius: 50%; background: #17171a; opacity: 0.35; animation: pulse 1.2s ease-in-out infinite; }
     @keyframes pulse { 50% { opacity: 1; } }
     @media (prefers-reduced-motion: reduce) { .dot { animation: none; opacity: 0.7; } }
+    ul.proofs { list-style: none; margin: 0 0 12px; padding: 0; }
+    ul.proofs li { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; margin-bottom: 6px;
+                   font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+    ul.proofs li.done { border-color: #17171a; }
+    ul.proofs li .tick { width: 16px; text-align: center; color: #17171a; }
+    ul.proofs li button { width: auto; margin: 0 0 0 auto; padding: 6px 10px; font-size: 12px; }
   </style>
 </head>
 <body>
@@ -24,6 +30,7 @@
       <input type="password" id="password" placeholder="browserid.me password" autocomplete="current-password" autofocus />
       <button type="submit" id="password-btn">Sign in</button>
       <button type="button" class="secondary" id="to-approval">Approve from another device instead</button>
+      <button type="button" class="secondary" id="to-proofs">Prove your identities instead</button>
       <button type="button" class="secondary" id="password-cancel">Cancel</button>
       <div class="err" id="password-err"></div>
     </form>
@@ -35,9 +42,19 @@
       <button type="button" class="secondary" id="to-password">Use the password instead</button>
       <button type="button" class="secondary" id="approval-cancel">Cancel</button>
     </div>
+    <div id="proofs" class="hidden">
+      <p id="proofs-lead">Sign in with the addresses on this account. Your wallet answers each one.</p>
+      <ul id="proofs-list" class="proofs"></ul>
+      <div class="wait hidden" id="proofs-wait"><span class="dot"></span><span>Waiting for your wallet…</span></div>
+      <div class="err" id="proofs-err"></div>
+      <button type="button" id="proofs-start">Sign in with an address</button>
+      <button type="button" class="secondary" id="to-password-2">Use the password instead</button>
+      <button type="button" class="secondary" id="proofs-cancel">Cancel</button>
+    </div>
     <div id="fatal" class="hidden"><div class="err" id="fatal-msg"></div></div>
     <p class="muted"><a href="/account">Forgot your browserid.me password?</a></p>
   </div>
+  <script src="/include.js"></script>
   <script src="/common/js/registry-login.js"></script>
 </body>
 </html>
