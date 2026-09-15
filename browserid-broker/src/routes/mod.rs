@@ -406,7 +406,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-CMMvVqxe3cvJC6hncFq4nIMfnQycfQGLqGuSvOcJ6vc='", // account.html
+    "'sha256-nMbsoU4xZKX0CYoob7sgSE+Dt4t2T2zCcuuswTRhB0s='", // account.html
     "'sha256-ZbsFGcatZehag94pEBIjy+EuZ/ObSLWBaWB7S08EHkM='", // authorize.html
     "'sha256-w/igx8p93BpXUR17HqZFmzy1jfefM+J6noXLYxXzlOo='", // consent.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)
