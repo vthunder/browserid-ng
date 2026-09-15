@@ -586,18 +586,19 @@
   }
 
   async function storeDevicePair(issuer, email, keys, certs) {
-    // BEFORE storing certs marked `managed: true`, tell the user what that
-    // means — once per identity, re-shown if the marker (re)appears after an
-    // unmanaged period.
+    // Certs marked `managed: true` need the person told what that means —
+    // once per identity, re-shown if the marker (re)appears after an
+    // unmanaged period. Shown at finishSignIn, AFTER the issuer's popup is
+    // released (it used to fire right here, behind a popup still held open
+    // for a holder re-issue, and looked like a hang — Dan, 2026-09-15). A
+    // declined disclosure drops the pair again, so nothing managed is kept
+    // unacknowledged.
     const dc = decodeJws(certs.device_cert);
     if (dc && dc.managed === true) {
       const ackKey = 'browserid:managed-ack:' + email;
       let acked = null;
       try { acked = localStorage.getItem(ackKey); } catch (e) { }
-      if (!acked) {
-        await managedDisclosure(issuer, email);
-        try { localStorage.setItem(ackKey, String(Date.now())); } catch (e) { }
-      }
+      if (!acked) state.pendingManaged = { issuer, email, ackKey };
     }
     await Keystore.putDevice(issuer, email, 'device', {
       publicKeyX: keys.device.publicKeyX, privateKey: keys.device.privateKey, cert: certs.device_cert
@@ -2391,6 +2392,17 @@
 
   // Shared tail: mint + warrant + assertion, record login, return to the RP.
   async function finishSignIn(email, pair, issuer, mintUrl) {
+    const pm = state.pendingManaged;
+    if (pm && pm.email === email) {
+      state.pendingManaged = null;
+      try {
+        await managedDisclosure(pm.issuer, pm.email);
+        try { localStorage.setItem(pm.ackKey, String(Date.now())); } catch (e) { }
+      } catch (e) {
+        try { await Keystore.delDevice(pm.issuer, pm.email, 'device'); await Keystore.delDevice(pm.issuer, pm.email, 'config'); } catch (x) { }
+        throw e;
+      }
+    }
     const presentation = await buildPresentation(pair, issuer, mintUrl, email);
     storeLoggedInState(state.origin, email);
     state.email = email;
