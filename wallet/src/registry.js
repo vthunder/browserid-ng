@@ -275,7 +275,8 @@ function startInboxWatch({ notify }) {
       console.warn('[wallet] inbox poll failed:', e.message || e);
     }
   };
-  inboxTimer = setInterval(poll, 60_000);
+  // Approvals wait five minutes; a minute between polls would eat most of it.
+  inboxTimer = setInterval(poll, 15_000);
   poll();
 }
 

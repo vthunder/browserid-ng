@@ -163,6 +163,14 @@ fn to_reg_login_cert(c: crate::store::LoginCert) -> reg::LoginCertRecord {
     }
 }
 
+fn to_reg_approval(a: crate::store::LoginApproval) -> reg::ApprovalRecord {
+    reg::ApprovalRecord {
+        id: a.id, user_id: a.user_id.0, code: a.code, label: a.label,
+        created_at: a.created_at, expires_at: a.expires_at,
+        approved_by: a.approved_by, denied: a.denied, token: a.token,
+    }
+}
+
 fn to_reg_device_cert(c: crate::store::DeviceCertRecord) -> reg::DeviceCertRecord {
     reg::DeviceCertRecord {
         id: c.id,
@@ -372,6 +380,41 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
             .map_err(to_reg_err)?
             .filter(|t| t.expires_at > chrono::Utc::now())
             .map(|t| reg::LoginTokenRecord { user_id: t.user_id.0, method: t.method, detail: t.detail }))
+    }
+
+    fn create_login_token(&self, user_id: u64, method: &str, detail: Option<&str>) -> Result<String, RegistrarError> {
+        crate::account_auth::mint_login_token(
+            self.user_store.as_ref(),
+            UserId(user_id),
+            &crate::account_auth::Outcome { met: true, method: method.to_string(), detail: detail.map(str::to_string) },
+        )
+        .map_err(to_reg_err)
+    }
+
+    fn create_approval(&self, rec: reg::ApprovalRecord) -> Result<(), RegistrarError> {
+        self.user_store
+            .create_login_approval(crate::store::LoginApproval {
+                id: rec.id, user_id: UserId(rec.user_id), code: rec.code, label: rec.label,
+                created_at: rec.created_at, expires_at: rec.expires_at,
+                approved_by: rec.approved_by, denied: rec.denied, token: rec.token,
+            })
+            .map_err(to_reg_err)
+    }
+
+    fn get_approval(&self, id: &str) -> Result<Option<reg::ApprovalRecord>, RegistrarError> {
+        Ok(self.user_store.get_login_approval(id).map_err(to_reg_err)?.map(to_reg_approval))
+    }
+
+    fn list_pending_approvals(&self, user_id: u64) -> Result<Vec<reg::ApprovalRecord>, RegistrarError> {
+        Ok(self.user_store.list_pending_login_approvals(UserId(user_id)).map_err(to_reg_err)?.into_iter().map(to_reg_approval).collect())
+    }
+
+    fn resolve_approval(&self, id: &str, approved_by: Option<u64>, token: Option<&str>) -> Result<(), RegistrarError> {
+        self.user_store.resolve_login_approval(id, approved_by, token).map_err(to_reg_err)
+    }
+
+    fn take_approval_token(&self, id: &str) -> Result<Option<String>, RegistrarError> {
+        self.user_store.take_login_approval_token(id).map_err(to_reg_err)
     }
 
     fn get_account_policy(&self, user_id: u64) -> Result<Option<String>, RegistrarError> {

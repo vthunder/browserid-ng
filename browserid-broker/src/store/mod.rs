@@ -224,6 +224,16 @@ pub trait UserStore: Send + Sync {
     /// Take (delete) a login token; `None` when unknown.
     fn take_login_token(&self, token_hash: &str) -> StoreResult<Option<LoginToken>>;
 
+    // --- Device approvals (registry-api-v1 §5.2.8, bean puo8) ---
+
+    fn create_login_approval(&self, rec: LoginApproval) -> StoreResult<()>;
+    fn get_login_approval(&self, id: &str) -> StoreResult<Option<LoginApproval>>;
+    /// Open (unanswered, unexpired) approvals, oldest first.
+    fn list_pending_login_approvals(&self, user_id: UserId) -> StoreResult<Vec<LoginApproval>>;
+    fn resolve_login_approval(&self, id: &str, approved_by: Option<u64>, token: Option<&str>) -> StoreResult<()>;
+    /// Hand out the token once.
+    fn take_login_approval_token(&self, id: &str) -> StoreResult<Option<String>>;
+
     // --- Account authentication policy (registry-api-v1 §4.2, bean noqd) ---
 
     /// The account's stored policy JSON, if any.

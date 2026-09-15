@@ -245,6 +245,25 @@ pub struct LoginCertRecord {
     pub enrolled_with: Option<String>,
 }
 
+/// A pending "approve a new device" ceremony (§5.2.8, bean puo8).
+#[derive(Debug, Clone)]
+pub struct ApprovalRecord {
+    /// Secret handle the opener polls by.
+    pub id: String,
+    pub user_id: u64,
+    /// The code the new device shows, e.g. `ABC-234`.
+    pub code: String,
+    /// The new device, as far as its User-Agent says.
+    pub label: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    /// The login key that approved, once one has.
+    pub approved_by: Option<u64>,
+    pub denied: bool,
+    /// The one-time login token minted on approval, until the poll takes it.
+    pub token: Option<String>,
+}
+
 /// A one-time login-page token as the registry sees it: the account it
 /// is bound to and how the page authenticated the user.
 #[derive(Debug, Clone)]

@@ -586,7 +586,8 @@ pub async fn list_login_keys(
             "revoked": k.revoked_at.is_some(),
             "current": k.id == user.login_key_id,
             "enrolled_by": k.enrolled_by,
-            "enrolled_with": k.enrolled_with.as_deref().and_then(|w| serde_json::from_str::<serde_json::Value>(w).ok()).unwrap_or(serde_json::Value::Null),
+            // A JSON array of identities (proofs) or a bare kid (approval).
+            "enrolled_with": k.enrolled_with.as_deref().map(|w| serde_json::from_str::<serde_json::Value>(w).unwrap_or_else(|_| serde_json::Value::String(w.to_string()))).unwrap_or(serde_json::Value::Null),
         }))
         .collect();
     Ok(Json(serde_json::json!({ "login_keys": items })))

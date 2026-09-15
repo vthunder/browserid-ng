@@ -991,3 +991,98 @@ async fn login_keys_record_how_they_were_enrolled_and_policy_has_floors() {
     assert_eq!(mine["enrolled_by"], "proofs", "{mine}");
     assert_eq!(mine["enrolled_with"], json!([other]));
 }
+
+/// Bean puo8 (registry-api-v1 §5.2.8): a new device joins by approval — the
+/// page opens an approval, an enrolled device types the code back, the poll
+/// hands out a one-time login token, and the key it enrols records
+/// `approval` with the approver's kid. Floors: the wrong code, a policy
+/// with approval off, and an approval-enrolled device that has proven
+/// nothing are all refused.
+#[tokio::test]
+async fn a_new_device_joins_by_approval_from_an_enrolled_one() {
+    let l = live_broker().await;
+    let email = "approver@gmail.com";
+    let (_pres, config_kp, _dc, config_cert) = broker_presentation(&l, email, vec!["registry".into()]).await;
+    let (token, account, login_kp) = login_session(&l, email, &config_kp, &config_cert).await;
+    let post_json = |path: &str, body: Value| l.client.post(format!("{}{path}", l.base)).json(&body).send();
+    let get_json = |path: String| l.client.get(format!("{}{path}", l.base)).send();
+
+    // The new device's page opens an approval: a code, a handle, an expiry.
+    let r = post_json("/api/v1/approvals", json!({ "account": account, "label": "Phone" })).await.unwrap();
+    assert_eq!(r.status(), 200);
+    let opened: Value = r.json().await.unwrap();
+    let id = opened["id"].as_str().unwrap().to_string();
+    let code = opened["code"].as_str().unwrap().to_string();
+    assert_eq!(code.len(), 7, "{code}");
+    // Unknown accounts get a code too (no oracle), and unknown ids poll as pending.
+    let r = post_json("/api/v1/approvals", json!({ "account": "no-such-account" })).await.unwrap();
+    assert_eq!(r.status(), 200);
+    let bogus: Value = get_json("/api/v1/approvals/nope".into()).await.unwrap().json().await.unwrap();
+    assert_eq!(bogus["status"], "pending");
+    let p: Value = get_json(format!("/api/v1/approvals/{id}")).await.unwrap().json().await.unwrap();
+    assert_eq!(p["status"], "pending");
+
+    // The enrolled device sees it listed, without the code.
+    let (status, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/approvals", None).await;
+    assert_eq!(status, 200, "{body}");
+    let listed = &body["approvals"][0];
+    assert_eq!(listed["id"], id);
+    assert_eq!(listed["label"], "Phone");
+    assert!(listed.get("code").is_none(), "{listed}");
+
+    // Wrong code: refused, still pending.
+    let (status, body, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/approvals/approve", Some(json!({ "id": id, "code": "ZZZ-999" }))).await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["reason"], "code_mismatch");
+    // Right code, loosely typed.
+    let typed = code.to_lowercase().replace('-', "");
+    let (status, body, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/approvals/approve", Some(json!({ "id": id, "code": typed }))).await;
+    assert_eq!(status, 200, "{body}");
+    // The poll hands the token out once.
+    let p: Value = get_json(format!("/api/v1/approvals/{id}")).await.unwrap().json().await.unwrap();
+    assert_eq!(p["status"], "approved", "{p}");
+    let login = p["login"].as_str().unwrap().to_string();
+    let p2: Value = get_json(format!("/api/v1/approvals/{id}")).await.unwrap().json().await.unwrap();
+    assert_eq!(p2["status"], "approved");
+    assert!(p2.get("login").is_none(), "one-time: {p2}");
+    // No longer listed.
+    let (_, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/approvals", None).await;
+    assert_eq!(body["approvals"].as_array().unwrap().len(), 0);
+
+    // The new device logs in with the token and a fresh key: enrolled by
+    // approval, naming the approver.
+    let phone_kp = KeyPair::generate();
+    let (status, body) = login_page(&l, &account, Some(&login), Some(&phone_kp)).await;
+    assert_eq!(status, 200, "{body}");
+    let phone_token = body["token"].as_str().unwrap().to_string();
+    let (_, keys, _) = session_call(&l, &phone_kp, &phone_token, "GET", "/api/v1/login-keys", None).await;
+    let mine = keys["login_keys"].as_array().unwrap().iter().find(|k| k["current"] == true).unwrap().clone();
+    assert_eq!(mine["enrolled_by"], "approval", "{mine}");
+    assert_eq!(mine["enrolled_with"], login_kp.public_key().kid());
+
+    // Floor: the phone has proven no identity, so it cannot approve others.
+    let r = post_json("/api/v1/approvals", json!({ "account": account })).await.unwrap();
+    let opened2: Value = r.json().await.unwrap();
+    let (id2, code2) = (opened2["id"].as_str().unwrap().to_string(), opened2["code"].as_str().unwrap().to_string());
+    let (status, body, _) = session_call(&l, &phone_kp, &phone_token, "POST", "/api/v1/approvals/approve", Some(json!({ "id": id2, "code": code2 }))).await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["reason"], "approver_unproven");
+    // Deny from the laptop; the poll says so.
+    let (status, _, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/approvals/deny", Some(json!({ "id": id2 }))).await;
+    assert_eq!(status, 200);
+    let p: Value = get_json(format!("/api/v1/approvals/{id2}")).await.unwrap().json().await.unwrap();
+    assert_eq!(p["status"], "denied");
+
+    // Policy: approval off → the laptop's approve is refused.
+    let htu = format!("{}/api/v1/account/policy", l.base);
+    let bytes = json!({ "approval": false }).to_string().into_bytes();
+    let proof = browserid_registrar::session::build_proof_now("PUT", &htu, Some(&bytes), &login_kp);
+    let r = l.client.put(&htu).header("authorization", format!("Bearer {token}")).header("proof", proof)
+        .header("content-type", "application/json").body(bytes).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let opened3: Value = post_json("/api/v1/approvals", json!({ "account": account })).await.unwrap().json().await.unwrap();
+    let (id3, code3) = (opened3["id"].as_str().unwrap().to_string(), opened3["code"].as_str().unwrap().to_string());
+    let (status, body, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/approvals/approve", Some(json!({ "id": id3, "code": code3 }))).await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["reason"], "approval_disabled");
+}

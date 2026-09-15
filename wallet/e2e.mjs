@@ -127,6 +127,46 @@ must('hosted consent page denied the request', r.status === 200 && cd.outcome ==
 const pd = await pollRequest(codeD);
 must('requester sees the denial', pd.status === 'denied', JSON.stringify(pd).slice(0, 120));
 
+// 4d. Approve a new device (registry-api-v1 §5.2.8, bean puo8): a "phone"
+//     opens an approval for this wallet's account; the wallet lists it,
+//     refuses a wrong code, takes the right one through its window; the
+//     phone's poll gets a one-time login token, and logging in with it
+//     enrols a key marked `approval` naming this wallet's login key.
+const acct = st0.account;
+must('wallet knows its account', typeof acct === 'string' && acct.length > 0);
+const opened = await (await fetch(`${BROKER}/api/v1/approvals`, {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ account: acct, label: 'E2E phone' }),
+})).json();
+must('phone opened an approval', typeof opened.id === 'string' && /^[A-Z2-9]{3}-[A-Z2-9]{3}$/.test(opened.code || ''), JSON.stringify(opened));
+r = await wallet('/test/approvals', {});
+const listed = await r.json();
+must('wallet lists the waiting phone (no code)', r.status === 200 && listed.approvals.some((a) => a.id === opened.id && a.label === 'E2E phone' && a.code === undefined), JSON.stringify(listed).slice(0, 160));
+r = await wallet('/test/approve', { id: opened.id, code: 'ZZZ-999' });
+const wrong = await r.json();
+must('wrong code leaves the window open (timeout)', wrong.outcome === 'timeout' || wrong.outcome === 'closed', JSON.stringify(wrong));
+must('phone still pending after a wrong code', (await (await fetch(`${BROKER}/api/v1/approvals/${opened.id}`)).json()).status === 'pending');
+r = await wallet('/test/approve', { id: opened.id, code: opened.code.toLowerCase() });
+const okOut = await r.json();
+must('window approved with the right code', okOut.outcome === 'approved', JSON.stringify(okOut));
+const polled1 = await (await fetch(`${BROKER}/api/v1/approvals/${opened.id}`)).json();
+must('phone poll receives the login token once', polled1.status === 'approved' && typeof polled1.login === 'string', JSON.stringify(polled1).slice(0, 80));
+{
+  const { generateKey, proof } = requireLocal('./src/crypto');
+  const k = await generateKey();
+  const key = { ...k.privJwk, x: k.x };
+  const htu = `${BROKER}/api/v1/login`;
+  const jti = 'e2e-' + Date.now();
+  const body = JSON.stringify({ account: acct, method: 'login_page', token: polled1.login,
+    login_key: { pubkey: key.x, label: 'E2E phone', proof: await proof(key, 'POST', htu, { jti, x: key.x }) } });
+  const lr = await fetch(htu, { method: 'POST', headers: { 'content-type': 'application/json', proof: await proof(key, 'POST', htu, { body, jti, x: key.x }) }, body });
+  const session = await lr.json();
+  must('phone logs in with the token', lr.status === 200 && typeof session.token === 'string', JSON.stringify(session).slice(0, 120));
+  const keysRes = await fetch(`${BROKER}/api/v1/login-keys`, { headers: { authorization: `Bearer ${session.token}`, proof: await proof(key, 'GET', `${BROKER}/api/v1/login-keys`, { x: key.x }) } });
+  const keys = await keysRes.json();
+  const mine = (keys.login_keys || []).find((x) => x.current);
+  must('phone key enrolled by approval, naming this wallet', mine && mine.enrolled_by === 'approval' && typeof mine.enrolled_with === 'string' && mine.enrolled_with.length > 0, JSON.stringify(mine));
+}
+
 // 4b. §5.4 lane: the wallet renames its own holder from the UA product-token
 //     default ("BrowserID-Wallet") to a friendly per-OS label.
 r = await wallet('/test/label', {});

@@ -842,7 +842,22 @@ function renderMain() {
       rows: active.filter(a => a.kind === 'service') },
   ].filter(s => s.rows.length);
 
-  $('sections').innerHTML = (!account.registry ? `<div class="sechead"><span class="t">Devices and permissions</span></div>
+  // A new device waiting to join (registry-api-v1 §5.2.8): the code it
+  // shows goes in here; approving enrols it, denying ends it.
+  const approvalsHtml = (account.approvals || []).length ? `<div style="margin-bottom:20px">
+      <div class="sechead"><span class="t">A new device is waiting</span><span class="x">enter the code it shows, or deny it</span></div>
+      <div class="card">${account.approvals.map(a => `
+        <form class="arow" data-approval="${escapeHtml(a.id)}" style="display:flex;align-items:center;gap:10px;padding:12px 16px">
+          <div style="flex:1;min-width:0"><div style="font-weight:600">${escapeHtml(a.label || 'A device')}</div>
+            <div style="font-size:12px;color:#6b6b74">asked ${fmtDate(a.created_at, { hour: 'numeric', minute: '2-digit' })}</div></div>
+          <input name="code" placeholder="ABC-234" maxlength="7" autocomplete="off"
+            style="width:110px;font:600 15px ui-monospace,Menlo,monospace;letter-spacing:.1em;text-transform:uppercase;padding:7px 8px;border:1px solid rgba(0,0,0,.16);border-radius:7px">
+          <button type="submit" class="primary">Approve</button>
+          <button type="button" class="secondary" data-approval-deny="${escapeHtml(a.id)}">Deny</button>
+          <div class="err" data-approval-err="${escapeHtml(a.id)}" style="flex-basis:100%;margin:0"></div>
+        </form>`).join('')}</div>
+    </div>` : '';
+  $('sections').innerHTML = approvalsHtml + (!account.registry ? `<div class="sechead"><span class="t">Devices and permissions</span></div>
     <div class="card"><div style="padding:14px 16px;font:12.5px/1.6 system-ui, sans-serif;color:#5c5c66">
       Set a password (Account settings) to see and manage what is signed in to this account and what it may do.</div></div>` : '')
     + sections.map(sec => {
@@ -931,6 +946,31 @@ function renderMain() {
   for (const b of $('sections').querySelectorAll('.managelink')) b.onclick = () => openDetail(b.dataset.h);
   const st = $('shared-toggle');
   if (st) st.onclick = () => { ui.sharedOpen = !ui.sharedOpen; renderMain(); };
+  for (const f of $('sections').querySelectorAll('form[data-approval]')) {
+    const id = f.dataset.approval;
+    const errEl = f.querySelector(`[data-approval-err="${CSS.escape(id)}"]`);
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const code = f.querySelector('input[name=code]').value.trim();
+      if (code.replace(/[^A-Za-z0-9]/g, '').length < 6) { errEl.textContent = 'Enter the six-character code the new device shows.'; return; }
+      for (const b of f.querySelectorAll('button')) b.disabled = true;
+      try { await reg('POST', '/api/v1/approvals/approve', { id, code }); /* the row disappears on reload */ }
+      catch (err) {
+        errEl.textContent = err.reason === 'code_mismatch' ? 'That is not the code the new device shows.'
+          : err.reason === 'approver_unproven' ? 'This browser has to sign in to an address before it can approve other devices.'
+          : err.reason === 'approval_disabled' ? 'Your settings do not allow adding devices by approval.'
+          : (err.message || 'That did not work.');
+        for (const b of f.querySelectorAll('button')) b.disabled = false;
+        return;
+      }
+      await reloadAccount(); renderMain();
+    };
+    f.querySelector('[data-approval-deny]').onclick = async () => {
+      for (const b of f.querySelectorAll('button')) b.disabled = true;
+      try { await reg('POST', '/api/v1/approvals/deny', { id }); } catch (err) { /* already gone */ }
+      await reloadAccount(); renderMain();
+    };
+  }
   const it = $('inactive-toggle');
   if (it) it.onclick = () => { ui.inactiveOpen = !ui.inactiveOpen; renderMain(); };
   for (const b of $('inactive').querySelectorAll('.dangerout')) b.onclick = async () => {
@@ -1773,14 +1813,15 @@ function consumeAuthorizedHandoff() {
 // -------- boot --------
 async function reloadAccount() {
   const resp = await api('/wsapi/list_emails');
-  let warrants = [], deviceCerts = [], holders = { namespaces: [], holders_without_namespace: [] }, loginKeys = [];
+  let warrants = [], deviceCerts = [], holders = { namespaces: [], holders_without_namespace: [] }, loginKeys = [], approvals = [];
   if (account.registry) {
     try {
-      [warrants, deviceCerts, holders, loginKeys] = await Promise.all([
+      [warrants, deviceCerts, holders, loginKeys, approvals] = await Promise.all([
         reg('GET', '/api/v1/warrants').then(r => r.warrants || []),
         reg('GET', '/api/v1/certs').then(r => r.certs || []),
         reg('GET', '/api/v1/holders'),
         reg('GET', '/api/v1/login-keys').then(r => r.login_keys || []),
+        reg('GET', '/api/v1/approvals').then(r => r.approvals || []).catch(() => []),
       ]);
     } catch (e) {
       // The session is gone for good (the key revoked elsewhere): sign out.
@@ -1805,6 +1846,7 @@ async function reloadAccount() {
   account.deviceCerts = deviceCerts;
   account.holders = holders;
   account.loginKeys = loginKeys;
+  account.approvals = approvals;
   await refreshKeystore();
 }
 
@@ -1837,6 +1879,14 @@ async function boot() {
   consumeAuthorizedHandoff();
   history.replaceState({ view: 'main' }, '', location.pathname);
   showView('main', { push: false });
+  // A new device waiting to join shows up without a reload (§5.2.8).
+  if (account.registry) setInterval(async () => {
+    if (document.hidden || ui.view !== 'main') return;
+    let approvals; try { approvals = (await reg('GET', '/api/v1/approvals')).approvals || []; } catch (e) { return; }
+    const before = (account.approvals || []).map(a => a.id).join(',');
+    if (approvals.map(a => a.id).join(',') === before) return;
+    account.approvals = approvals; renderMain();
+  }, 10000);
   // The fresh arrival from /authorize: make sure the highlighted actor is
   // visible even when the roster is long.
   if (ui.highlight) {

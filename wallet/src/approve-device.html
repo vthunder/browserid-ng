@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Approve a new device</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 24px; color: #222; }
+  h1 { font-size: 17px; margin: 0 0 6px; }
+  p { color: #555; margin: 0 0 14px; }
+  input { width: 100%; box-sizing: border-box; font: 600 22px/1.2 ui-monospace, Menlo, monospace; letter-spacing: 0.12em;
+          text-align: center; text-transform: uppercase; padding: 10px; border: 1px solid #bbb; border-radius: 6px; }
+  .row { display: flex; gap: 10px; margin-top: 14px; }
+  button { flex: 1; padding: 9px; font-size: 14px; border: 0; border-radius: 6px; cursor: pointer; }
+  button.approve { background: #2563eb; color: #fff; }
+  button.deny { background: #e5e7eb; color: #222; }
+  button:disabled { opacity: 0.55; }
+  .err { color: #b91c1c; font-size: 13px; min-height: 18px; margin-top: 8px; }
+  .ok { color: #166534; }
+</style>
+</head>
+<body>
+<h1>A new device wants to join your account</h1>
+<p id="who">Enter the code that device is showing. If you are not adding a device right now, deny it.</p>
+<form id="f">
+  <input id="code" placeholder="ABC-234" autocomplete="off" autofocus maxlength="7">
+  <div class="row">
+    <button type="button" class="deny" id="deny">Deny</button>
+    <button type="submit" class="approve" id="go">Approve</button>
+  </div>
+  <div class="err" id="err"></div>
+</form>
+<script>
+  const f = document.getElementById('f');
+  const code = document.getElementById('code');
+  const go = document.getElementById('go');
+  const deny = document.getElementById('deny');
+  const err = document.getElementById('err');
+  window.walletBridge.info().then((i) => {
+    if (i && i.label) document.getElementById('who').textContent =
+      `"${i.label}" wants to join your account. Enter the code it is showing. If you are not adding a device right now, deny it.`;
+  });
+  f.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const v = code.value.trim();
+    if (v.replace(/[^A-Za-z0-9]/g, '').length < 6) { err.textContent = 'Enter the six-character code.'; return; }
+    go.disabled = true; deny.disabled = true;
+    const r = await window.walletBridge.approve(v);
+    if (r && r.ok) { err.className = 'err ok'; err.textContent = 'Approved. The new device is signing in.'; return; }
+    go.disabled = false; deny.disabled = false;
+    err.textContent = (r && r.message) || 'That did not work.';
+  });
+  deny.addEventListener('click', async () => {
+    go.disabled = true; deny.disabled = true;
+    await window.walletBridge.deny();
+  });
+</script>
+</body>
+</html>

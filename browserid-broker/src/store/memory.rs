@@ -8,7 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    LoginCert, LoginToken, RegistrySession, SuspendedIdentity,
+    LoginApproval, LoginCert, LoginToken, RegistrySession, SuspendedIdentity,
     DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, Tenant, TenantStatus, User, UserId, UserStore, VerificationType,
@@ -53,6 +53,7 @@ pub struct InMemoryUserStore {
     /// user -> public account id
     account_ids: RwLock<HashMap<UserId, String>>,
     account_policies: RwLock<HashMap<UserId, String>>,
+    login_approvals: RwLock<HashMap<String, LoginApproval>>,
     login_certs: RwLock<HashMap<u64, LoginCert>>,
     next_login_cert_id: AtomicU64,
     login_tokens: RwLock<HashMap<String, LoginToken>>,
@@ -85,6 +86,7 @@ impl InMemoryUserStore {
             registry_sessions: RwLock::new(HashMap::new()),
             account_ids: RwLock::new(HashMap::new()),
             account_policies: RwLock::new(HashMap::new()),
+            login_approvals: RwLock::new(HashMap::new()),
             login_certs: RwLock::new(HashMap::new()),
             next_login_cert_id: AtomicU64::new(1),
             login_tokens: RwLock::new(HashMap::new()),
@@ -655,6 +657,38 @@ impl UserStore for InMemoryUserStore {
 
     fn take_login_token(&self, token_hash: &str) -> StoreResult<Option<LoginToken>> {
         Ok(self.login_tokens.write().unwrap().remove(token_hash))
+    }
+
+    fn create_login_approval(&self, rec: LoginApproval) -> StoreResult<()> {
+        self.login_approvals.write().unwrap().insert(rec.id.clone(), rec);
+        Ok(())
+    }
+
+    fn get_login_approval(&self, id: &str) -> StoreResult<Option<LoginApproval>> {
+        Ok(self.login_approvals.read().unwrap().get(id).cloned())
+    }
+
+    fn list_pending_login_approvals(&self, user_id: UserId) -> StoreResult<Vec<LoginApproval>> {
+        let now = Utc::now();
+        let mut v: Vec<LoginApproval> = self.login_approvals.read().unwrap().values()
+            .filter(|a| a.user_id == user_id && a.approved_by.is_none() && !a.denied && a.expires_at > now)
+            .cloned().collect();
+        v.sort_by_key(|a| a.created_at);
+        Ok(v)
+    }
+
+    fn resolve_login_approval(&self, id: &str, approved_by: Option<u64>, token: Option<&str>) -> StoreResult<()> {
+        if let Some(a) = self.login_approvals.write().unwrap().get_mut(id) {
+            match approved_by {
+                Some(k) => { a.approved_by = Some(k); a.token = token.map(str::to_string); }
+                None => a.denied = true,
+            }
+        }
+        Ok(())
+    }
+
+    fn take_login_approval_token(&self, id: &str) -> StoreResult<Option<String>> {
+        Ok(self.login_approvals.write().unwrap().get_mut(id).and_then(|a| a.token.take()))
     }
 
     fn get_account_policy(&self, user_id: UserId) -> StoreResult<Option<String>> {

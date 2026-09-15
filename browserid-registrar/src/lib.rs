@@ -42,6 +42,7 @@ use browserid_core::KeyPair;
 pub mod agent_provision;
 pub mod account;
 pub mod api;
+pub mod approvals;
 pub mod session;
 pub mod consent;
 pub mod error;
@@ -213,6 +214,10 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         .route("/api/v1/account/detach", post(account::detach))
         .route("/api/v1/account/delete", post(account::delete))
         .route("/api/v1/account/policy", get(account::get_policy).put(account::put_policy))
+        .route("/api/v1/approvals", get(approvals::list).post(approvals::open))
+        .route("/api/v1/approvals/:id", get(approvals::poll))
+        .route("/api/v1/approvals/approve", post(approvals::approve))
+        .route("/api/v1/approvals/deny", post(approvals::deny))
         .route("/api/v1/requests", get(api::list_requests).post(api::file_request))
         .route("/api/v1/requests/:code", get(api::poll_request))
         .route("/api/v1/requests/claim", post(api::claim_request))

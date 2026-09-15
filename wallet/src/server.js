@@ -145,6 +145,20 @@ function startServer({ approveLogin, approveRequest, approvePair, notify, onStat
             ].find((h) => h.holder_id === holder);
             return json(req, res, 200, { holder, label: mine?.label ?? null });
           }
+          if (url.pathname === '/test/approvals') {
+            // The open approvals this wallet would ask about.
+            return json(req, res, 200, { approvals: await require('./approve-device').listApprovals() });
+          }
+          if (url.pathname === '/test/approve') {
+            // Drives the approve-device window with the code typed in.
+            const { id, code, action } = await readBody(req);
+            const ad = require('./approve-device');
+            const approvals = await ad.listApprovals();
+            const a = approvals.find((x) => x.id === id) || { id };
+            if (action === 'deny') { await ad.denyDevice(a.id); return json(req, res, 200, { outcome: 'denied' }); }
+            const outcome = await ad.askApproval(a, { testCode: code });
+            return json(req, res, 200, { outcome });
+          }
           if (url.pathname === '/test/state') {
             const { pairToken: _p, deviceKey: _d, configKey: _c, ...rest } = store.state();
             return json(req, res, 200, rest); // never the keys, even in tests

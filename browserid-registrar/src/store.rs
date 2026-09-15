@@ -3,7 +3,7 @@
 
 use crate::error::RegistrarError;
 use crate::models::{
-    DeviceCertRecord, NamespaceRecord, WarrantRecord, WarrantRequestRecord, SessionRecord, LoginCertRecord, LoginTokenRecord,
+    DeviceCertRecord, NamespaceRecord, WarrantRecord, WarrantRequestRecord, SessionRecord, LoginCertRecord, LoginTokenRecord, ApprovalRecord,
 };
 
 pub type StoreResult<T> = Result<T, RegistrarError>;
@@ -161,6 +161,34 @@ pub trait RegistrarStore: Send + Sync {
     /// how the page authenticated the user.
     fn take_login_token(&self, _token_hash: &str) -> StoreResult<Option<LoginTokenRecord>> {
         Err(RegistrarError::Internal("login tokens not supported by this host".into()))
+    }
+
+    /// Mint a one-time login-page token for `user_id` recording `method`
+    /// (§4.2 `enrolled_by`) and `detail`; the raw token.
+    fn create_login_token(&self, _user_id: u64, _method: &str, _detail: Option<&str>) -> StoreResult<String> {
+        Err(RegistrarError::Internal("login tokens not supported by this host".into()))
+    }
+
+    // --- Device approvals (registry-api-v1 §5.2.8, bean puo8) ---
+
+    fn create_approval(&self, _rec: ApprovalRecord) -> StoreResult<()> {
+        Err(RegistrarError::Internal("approvals not supported by this host".into()))
+    }
+    fn get_approval(&self, _id: &str) -> StoreResult<Option<ApprovalRecord>> {
+        Ok(None)
+    }
+    /// Open (unanswered, unexpired) approvals on the account, oldest first.
+    fn list_pending_approvals(&self, _user_id: u64) -> StoreResult<Vec<ApprovalRecord>> {
+        Ok(Vec::new())
+    }
+    /// Answer an approval: the approving key and the token (approved), or
+    /// neither (denied).
+    fn resolve_approval(&self, _id: &str, _approved_by: Option<u64>, _token: Option<&str>) -> StoreResult<()> {
+        Err(RegistrarError::Internal("approvals not supported by this host".into()))
+    }
+    /// Hand out the approval's token once; `None` after.
+    fn take_approval_token(&self, _id: &str) -> StoreResult<Option<String>> {
+        Ok(None)
     }
 
     // --- Account policy (registry-api-v1 §4.2, bean noqd) ---

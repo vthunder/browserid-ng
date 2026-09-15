@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    LoginCert, LoginToken, RegistrySession, SuspendedIdentity,
+    LoginApproval, LoginCert, LoginToken, RegistrySession, SuspendedIdentity,
     DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, SessionStore, StoreResult, Tenant, TenantStatus, User, UserId,
     UserStore, VerificationType, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
@@ -16,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 44;
+const SCHEMA_VERSION: i32 = 45;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -195,6 +195,9 @@ impl SqliteStore {
             }
             if current_version < 44 {
                 Self::migrate_v44(conn)?;
+            }
+            if current_version < 45 {
+                Self::migrate_v45(conn)?;
             }
 
             // Update schema version
@@ -1002,6 +1005,24 @@ fn login_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoginCert> {
 }
 const LOGIN_CERT_COLUMNS: &str = "id, user_id, kid, pubkey, label, cert, issued_at, expires_at, revoked_at, status_idx, holder, enrolled_by, enrolled_with";
 
+fn login_approval_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoginApproval> {
+    let user_id: i64 = row.get(1)?;
+    let approved_by: Option<i64> = row.get(6)?;
+    let denied: i64 = row.get(7)?;
+    Ok(LoginApproval {
+        id: row.get(0)?,
+        user_id: UserId(user_id as u64),
+        code: row.get(2)?,
+        label: row.get(3)?,
+        created_at: parse_ts_opt(row.get(4)?).unwrap_or_else(Utc::now),
+        expires_at: parse_ts_opt(row.get(5)?).unwrap_or_else(Utc::now),
+        approved_by: approved_by.map(|i| i as u64),
+        denied: denied != 0,
+        token: row.get(8)?,
+    })
+}
+const LOGIN_APPROVAL_COLUMNS: &str = "id, user_id, code, label, created_at, expires_at, approved_by, denied, token";
+
 impl SqliteStore {
     fn migrate_v36(conn: &Connection) -> Result<(), BrokerError> {
         // Guard tokens (registry-api-v1 §4.2, bean 0c49 step 5).
@@ -1063,6 +1084,28 @@ impl SqliteStore {
                 expires_at TEXT NOT NULL
             );
             ALTER TABLE registry_sessions ADD COLUMN login_key_id INTEGER;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v45(conn: &Connection) -> Result<(), BrokerError> {
+        // Device approvals (registry-api-v1 §5.2.8, bean puo8).
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS login_approvals (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                code TEXT NOT NULL,
+                label TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                approved_by INTEGER,
+                denied INTEGER NOT NULL DEFAULT 0,
+                token TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_login_approvals_user ON login_approvals(user_id);
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2329,6 +2372,80 @@ impl UserStore for SqliteStore {
                 .map_err(|e| BrokerError::Internal(e.to_string()))?;
         }
         Ok(rec)
+    }
+
+    fn create_login_approval(&self, rec: LoginApproval) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO login_approvals (id, user_id, code, label, created_at, expires_at, approved_by, denied, token)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                rec.id, rec.user_id.0 as i64, rec.code, rec.label, rec.created_at.to_rfc3339(), rec.expires_at.to_rfc3339(),
+                rec.approved_by.map(|i| i as i64), rec.denied as i64, rec.token,
+            ],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        // Sweep what is long past: answered or not, a day-old approval is noise.
+        conn.execute(
+            "DELETE FROM login_approvals WHERE expires_at < ?1",
+            params![(Utc::now() - chrono::Duration::days(1)).to_rfc3339()],
+        )
+        .ok();
+        Ok(())
+    }
+
+    fn get_login_approval(&self, id: &str) -> StoreResult<Option<LoginApproval>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            &format!("SELECT {LOGIN_APPROVAL_COLUMNS} FROM login_approvals WHERE id = ?1"),
+            params![id],
+            login_approval_from_row,
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn list_pending_login_approvals(&self, user_id: UserId) -> StoreResult<Vec<LoginApproval>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {LOGIN_APPROVAL_COLUMNS} FROM login_approvals
+                 WHERE user_id = ?1 AND approved_by IS NULL AND denied = 0 AND expires_at > ?2 ORDER BY created_at"
+            ))
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![user_id.0 as i64, Utc::now().to_rfc3339()], login_approval_from_row)
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(rows)
+    }
+
+    fn resolve_login_approval(&self, id: &str, approved_by: Option<u64>, token: Option<&str>) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        match approved_by {
+            Some(k) => conn.execute(
+                "UPDATE login_approvals SET approved_by = ?1, token = ?2 WHERE id = ?3",
+                params![k as i64, token, id],
+            ),
+            None => conn.execute("UPDATE login_approvals SET denied = 1 WHERE id = ?1", params![id]),
+        }
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn take_login_approval_token(&self, id: &str) -> StoreResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let token: Option<String> = conn
+            .query_row("SELECT token FROM login_approvals WHERE id = ?1", params![id], |r| r.get(0))
+            .optional()
+            .map_err(|e| BrokerError::Internal(e.to_string()))?
+            .flatten();
+        if token.is_some() {
+            conn.execute("UPDATE login_approvals SET token = NULL WHERE id = ?1", params![id])
+                .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        }
+        Ok(token)
     }
 
     fn get_account_policy(&self, user_id: UserId) -> StoreResult<Option<String>> {
@@ -3816,6 +3933,21 @@ impl UserStore for std::sync::Arc<SqliteStore> {
     }
     fn get_account_policy(&self, user_id: UserId) -> StoreResult<Option<String>> {
         (**self).get_account_policy(user_id)
+    }
+    fn create_login_approval(&self, rec: LoginApproval) -> StoreResult<()> {
+        (**self).create_login_approval(rec)
+    }
+    fn get_login_approval(&self, id: &str) -> StoreResult<Option<LoginApproval>> {
+        (**self).get_login_approval(id)
+    }
+    fn list_pending_login_approvals(&self, user_id: UserId) -> StoreResult<Vec<LoginApproval>> {
+        (**self).list_pending_login_approvals(user_id)
+    }
+    fn resolve_login_approval(&self, id: &str, approved_by: Option<u64>, token: Option<&str>) -> StoreResult<()> {
+        (**self).resolve_login_approval(id, approved_by, token)
+    }
+    fn take_login_approval_token(&self, id: &str) -> StoreResult<Option<String>> {
+        (**self).take_login_approval_token(id)
     }
     fn set_account_policy(&self, user_id: UserId, policy_json: &str) -> StoreResult<()> {
         (**self).set_account_policy(user_id, policy_json)

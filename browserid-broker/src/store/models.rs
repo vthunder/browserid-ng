@@ -229,6 +229,20 @@ pub struct LoginToken {
     pub detail: Option<String>,
 }
 
+/// A pending "approve a new device" ceremony (registry-api-v1 §5.2.8).
+#[derive(Debug, Clone)]
+pub struct LoginApproval {
+    pub id: String,
+    pub user_id: UserId,
+    pub code: String,
+    pub label: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub approved_by: Option<u64>,
+    pub denied: bool,
+    pub token: Option<String>,
+}
+
 /// A pending email verification
 #[derive(Debug, Clone)]
 pub struct PendingVerification {

@@ -527,6 +527,44 @@ at most `identities`; `mint_proven_identities` addresses. Response: as
 `GET`. A policy can only tighten the baseline; nothing here makes
 enrolment satisfiable by nothing.
 
+#### 5.2.8 Approvals — `/api/v1/approvals`
+
+A device already enrolled lets a new one in (§4.2 `approval`). The new
+device's login page opens an approval and shows its **code**; a person
+at an enrolled device types that code back — proof that they can see
+the new device's screen — and the page's poll receives a one-time
+login token.
+
+**`POST /api/v1/approvals`** — Public. Request `{ "account", "label"? }`
+(`label` the new device's name, else derived from its User-Agent).
+Response `200 { "id", "code", "expires_at" }`: `id` a secret handle,
+`code` six characters from an unambiguous alphabet shown as `ABC-234`,
+expiry RECOMMENDED 5 minutes. An unknown account gets the same answer
+and is never approved. `403 forbidden/login_rejected` when the account
+already has its cap of open approvals.
+
+**`GET /api/v1/approvals/:id`** — Public, the new device's poll.
+Response `200 { "status" }` with `pending`, `approved`, `denied`, or
+`expired`; the first `approved` answer also carries `login`, the token
+for `login_page` (§4.2), never repeated. An unknown id polls as
+`pending`.
+
+**`GET /api/v1/approvals`** — Session. The account's open approvals:
+`id`, `label`, `created_at`, `expires_at`. The code is not listed.
+
+**`POST /api/v1/approvals/approve`** — Session. Request `{ "id",
+"code" }`; the code compares case- and dash-insensitively. Checks, in
+order: the approval is open on this account (`404 not_found`); the
+session's key, when it was itself enrolled by approval, has certs
+recorded under it (`403 forbidden/approver_unproven`, the floor that
+keeps approvals from chaining); the account's policy (§5.2.7) accepts
+approval (`403 forbidden/approval_disabled`); the code matches
+(`403 forbidden/code_mismatch`). Then the token is minted recording
+`approval` and this key's `kid`, and the response is `200`.
+
+**`POST /api/v1/approvals/deny`** — Session. Request `{ "id" }`.
+Response `200`.
+
 ### 5.3 Consent inbox
 
 Where filed requests wait for the user's decision. A filer (an agent,

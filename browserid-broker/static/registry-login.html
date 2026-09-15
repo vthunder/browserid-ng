@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Sign in to browserid.me</title>
   <link rel="stylesheet" href="/common/css/ceremony.css" />
+  <style>
+    .code { margin: 8px 0 14px; padding: 16px 12px; text-align: center; font: 600 30px/1 ui-monospace, Menlo, monospace;
+            letter-spacing: 0.12em; color: #17171a; background: #f5f5f4; border-radius: 9px; }
+    .wait { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #6b6b74; margin: 0 0 12px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #17171a; opacity: 0.35; animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) { .dot { animation: none; opacity: 0.7; } }
+  </style>
 </head>
 <body>
   <div class="card">
@@ -15,9 +23,18 @@
       <label for="password">browserid.me password</label>
       <input type="password" id="password" placeholder="browserid.me password" autocomplete="current-password" autofocus />
       <button type="submit" id="password-btn">Sign in</button>
+      <button type="button" class="secondary" id="to-approval">Approve from another device instead</button>
       <button type="button" class="secondary" id="password-cancel">Cancel</button>
       <div class="err" id="password-err"></div>
     </form>
+    <div id="approval" class="hidden">
+      <p>On a device that is already signed in to this account, open the account page or your wallet and enter this code:</p>
+      <div class="code" id="approval-code">···-···</div>
+      <div class="wait" id="approval-wait"><span class="dot"></span><span>Waiting for that device…</span></div>
+      <div class="err" id="approval-err"></div>
+      <button type="button" class="secondary" id="to-password">Use the password instead</button>
+      <button type="button" class="secondary" id="approval-cancel">Cancel</button>
+    </div>
     <div id="fatal" class="hidden"><div class="err" id="fatal-msg"></div></div>
     <p class="muted"><a href="/account">Forgot your browserid.me password?</a></p>
   </div>
