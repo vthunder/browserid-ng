@@ -97,10 +97,26 @@ async function login({ origin, caller, approveLogin, acceptedFallbacks }) {
     || (await approveLogin({ origin, email: s.identity, caller, warning }));
   if (!ok) return { error: 'user cancelled' };
 
+  // Renewal on the login key (§3.3): a pair inside a week of expiry is
+  // re-issued first; a mint refused for an expired or revoked cert gets
+  // one re-issue and retry. Best-effort — a registry outage must not
+  // break a sign-in the current certs can still carry.
+  const RENEW_AHEAD = 7 * 86400;
+  try {
+    const dc = decodeJws(s.deviceCert);
+    if (dc && dc.exp && dc.exp < nowS() + RENEW_AHEAD) await require('./registry').reissueCerts();
+  } catch (e) { console.warn('[wallet] cert renewal skipped:', e.message || e); }
   const warrant = await ensureWarrant(origin);
-  const access = await mintAccess(origin);
+  let access;
+  try {
+    access = await mintAccess(origin);
+  } catch (e) {
+    if (!/expired|revoked/i.test(String(e.message || ''))) throw e;
+    await require('./registry').reissueCerts();
+    access = await mintAccess(origin);
+  }
   const assertion = await jws(access.privJwk, { exp: nowS() + 300, aud: origin });
-  const presentation = `${access.cert}~${assertion}~${warrant}~${s.configCert}`;
+  const presentation = `${access.cert}~${assertion}~${warrant}~${store.state().configCert}`;
   return { presentation, email: s.identity };
 }
 

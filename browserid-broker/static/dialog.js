@@ -418,13 +418,19 @@
     const body = {
       email,
       device_pubkey: keys.device.publicKeyX,
-      config_pubkey: keys.config.publicKeyX
+      config_pubkey: keys.config.publicKeyX,
+      // The broker is this wallet's registry too (fallback-idp-api-v1
+      // §3.3): a login token rides along when this session's proof meets
+      // the account's add-a-device rule, so a bridged sign-in with no
+      // password enrols this browser's login key without the login page.
+      want_login: true
     };
     if (holder) body.holder = holder;
     const certs = await apiCall(API.deviceIssue, 'POST', body);
     if (!certs.device_cert || !certs.config_cert) {
       throw new Error(certs.reason || 'device issuance failed');
     }
+    if (certs.login) state.registryLoginToken = certs.login;
     await storeDevicePair(state.brokerDomain, email, keys, certs);
     // The account may have MOVED this device: the server silently redirects a
     // stale supplied holder to the move target. Follow it in the local cache
@@ -523,8 +529,10 @@
         },
         identity: email,
         password: state.typedPassword || null,
+        loginToken: state.registryLoginToken || null,
         askTakeover: askTakeover
       });
+      state.registryLoginToken = null;
       let registry = false;
       try {
         await Registry.ensure();

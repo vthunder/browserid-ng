@@ -104,6 +104,53 @@ pub fn mint_login_token<U: UserStore>(store: &U, user_id: UserId, outcome: &Outc
     Ok(token)
 }
 
+/// What a device that holds `key` has proven itself: the identities of
+/// the active certs recorded under it (registry-api-v1 §4.2).
+pub fn proven_by_key<U: UserStore>(store: &U, user_id: UserId, key_id: u64) -> Result<Vec<String>, BrokerError> {
+    let mut out: Vec<String> = Vec::new();
+    for c in store.list_device_certs(user_id)? {
+        if c.login_key_id == Some(key_id) && c.revoked_at.is_none() && c.expires_at > Utc::now() {
+            for i in &c.identities {
+                if !i.contains('*') && !out.iter().any(|x| x.eq_ignore_ascii_case(i)) {
+                    out.push(i.to_lowercase());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Whether the account's mint rule (§5.2.7) holds for a device asking on
+/// its login key to mint `identity` (bean 73ok).
+pub fn mint_rule_met<U: UserStore>(
+    store: &U,
+    user_id: UserId,
+    key: &browserid_registrar::models::LoginCertRecord,
+    identity: &str,
+) -> Result<bool, BrokerError> {
+    let p = account_policy(store, user_id)?;
+    let f = Facts {
+        enrolled: key.is_live(),
+        proven: proven_by_key(store, user_id, key.id)?,
+        enrolled_by: Some(key.enrolled_by.clone()),
+        identities: identity_count(store, user_id)?,
+        ..Default::default()
+    };
+    Ok(p.mint(identity).met(&f))
+}
+
+/// The proofs a cookie session amounts to for the identity it just had
+/// issued: the password when the session is Full, the identity itself
+/// (the ceremony proved it at this issuer). What the ceremony page hands
+/// the account-authentication check when the issuer is also the registry.
+pub fn proofs_of_session(level: crate::store::SessionLevel, identity: &str) -> Vec<Proof> {
+    let mut v = vec![Proof::Identity(identity.to_lowercase())];
+    if level == crate::store::SessionLevel::Full {
+        v.push(Proof::Password);
+    }
+    v
+}
+
 /// Evaluate and mint in one step: the token, or `login_rejected`.
 pub fn login_token_for<U: UserStore>(store: &U, user_id: UserId, proofs: &[Proof]) -> Result<String, BrokerError> {
     let outcome = evaluate(store, user_id, proofs)?;

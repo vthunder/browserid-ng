@@ -63,25 +63,24 @@ fn parse_pub(s: &str) -> Result<PublicKey, BrokerError> {
 /// are the BRIDGE's decision, threaded through the bridge grant (pr3a).
 const BROKER_VOUCHED_CERT_TTL_DAYS: i64 = 90;
 
-/// Ownership + provenance gate for session-authed broker mints: the session's
-/// account must own the verified email, AND the chokepoint (browserid-ng-u4xz)
-/// must authorize a broker-session mint for its provenance. Returns the email,
-/// the cert TTL — the VOUCHER's decision for delegated (E2) provenance,
-/// redeemed from the live bridge grant (pr3a) — and the proof class the cert
-/// is issued under (stamped into the cert so /access/mint can refuse it after
-/// a later provenance upgrade, kts0). No live grant, or a Primary (E1)
-/// identity → refusal; `NeedPassword` maps to a 401 step-up.
-fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
+/// Ownership + provenance gate for broker mints: the account must own the
+/// verified email, AND the chokepoint (browserid-ng-u4xz) must authorize a
+/// mint for its provenance — `decide` is the caller's chokepoint (a cookie
+/// session's level, or a registry login key's standing, bean 73ok).
+/// Returns the email, the cert TTL — the VOUCHER's decision for delegated
+/// (E2) provenance, redeemed from the live bridge grant (pr3a) — and the
+/// proof class the cert is issued under (stamped into the cert so
+/// /access/mint can refuse it after a later provenance upgrade, kts0). No
+/// live grant, or a Primary (E1) identity → refusal; `NeedPassword` maps to
+/// a 401 step-up.
+fn mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
     state: &AppState<U, S, E>,
-    cookies: &Cookies,
-    csrf: &str,
+    user_id: crate::store::UserId,
     email: &str,
+    decide: impl FnOnce(&crate::store::Email) -> Result<crate::mint::MintDecision, BrokerError>,
 ) -> Result<(String, Duration, &'static str), BrokerError> {
-    let session = super::session::get_session_from_cookies(cookies, state.session_store.as_ref())
-        .ok_or(BrokerError::NotAuthenticated)?;
-    super::session::require_csrf(&session, csrf)?;
     let normalized = email.to_lowercase();
-    let emails = state.user_store.list_emails(session.user_id)?;
+    let emails = state.user_store.list_emails(user_id)?;
     let rec = emails
         .iter()
         .find(|e| e.email.to_lowercase() == normalized && e.verified)
@@ -95,7 +94,7 @@ fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
         ));
     }
     let prov = rec.proof.as_str();
-    match crate::mint::authorize_mint(rec, session.level) {
+    match decide(rec)? {
         crate::mint::MintDecision::Allow => Ok((
             rec.email.clone(),
             Duration::days(BROKER_VOUCHED_CERT_TTL_DAYS),
@@ -110,7 +109,7 @@ fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
             ))
         }
         crate::mint::MintDecision::Delegate(_) => {
-            match state.take_bridge_grant(session.user_id, &rec.email) {
+            match state.take_bridge_grant(user_id, &rec.email) {
                 Some(ttl) => Ok((rec.email.clone(), ttl, prov)),
                 None => Err(BrokerError::PolicyRefused(
                     "a live bridge proof is required to mint this address".into(),
@@ -118,6 +117,21 @@ fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
             }
         }
     }
+}
+
+/// The cookie-session form of [`mintable_email`]: the session's account,
+/// CSRF-bound, judged by the session's level.
+fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
+    state: &AppState<U, S, E>,
+    cookies: &Cookies,
+    csrf: &str,
+    email: &str,
+) -> Result<(String, Duration, &'static str), BrokerError> {
+    let session = super::session::get_session_from_cookies(cookies, state.session_store.as_ref())
+        .ok_or(BrokerError::NotAuthenticated)?;
+    super::session::require_csrf(&session, csrf)?;
+    let level = session.level;
+    mintable_email(state, session.user_id, email, |rec| Ok(crate::mint::authorize_mint(rec, level)))
 }
 
 fn device_status<U: UserStore, S: SessionStore, E: EmailSender>(
@@ -139,7 +153,10 @@ fn device_status<U: UserStore, S: SessionStore, E: EmailSender>(
 
 #[derive(Deserialize)]
 pub struct DeviceIssueRequest {
-    pub csrf: String,
+    /// The cookie session's CSRF token. Absent on the registry-session form
+    /// (bean 73ok: `Authorization: Bearer` + `Proof` by the login key).
+    #[serde(default)]
+    pub csrf: Option<String>,
     pub email: String,
     pub device_pubkey: String,
     pub config_pubkey: String,
@@ -155,6 +172,12 @@ pub struct DeviceIssueRequest {
     /// a configured trusted wallet is refused.
     #[serde(default)]
     pub return_origin: Option<String>,
+    /// The ceremony page asks for a registry login token alongside the
+    /// certs (fallback-idp-api-v1 §3.3): when what this session proved meets
+    /// the account's add-a-device rule, the wallet enrols its login key
+    /// with it and needs no second ceremony. Cookie form only.
+    #[serde(default)]
+    pub want_login: bool,
 }
 
 #[derive(Serialize)]
@@ -162,6 +185,9 @@ pub struct DeviceIssueResponse {
     pub success: bool,
     pub device_cert: String,
     pub config_cert: String,
+    /// A one-time registry login token (§3.3), when asked for and earned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -189,28 +215,67 @@ where
     Ok(Json(BrowserHolderResponse { prefix }))
 }
 
+/// Who is asking `/device/issue`: the issuer's own cookie session (the
+/// dialog, the ceremony page), or a wallet on its registry login key
+/// (co-located issuer + registry, bean 73ok).
+enum IssueCaller {
+    Cookie(crate::store::Session),
+    Key { user_id: crate::store::UserId, key: browserid_registrar::models::LoginCertRecord },
+}
+
 pub async fn device_issue<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
     headers: axum::http::HeaderMap,
-    Json(req): Json<DeviceIssueRequest>,
+    body: axum::body::Bytes,
 ) -> Result<Json<DeviceIssueResponse>, BrokerError>
 where
     U: UserStore,
     S: SessionStore,
     E: EmailSender,
 {
-    // owned_mintable_email re-derives the session; grab it too so we can
-    // persist the issued certs under this account (DC Phase 8 — listable +
-    // revocable in the account UI).
-    let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
-        .ok_or(BrokerError::NotAuthenticated)?;
-    let (email, ttl, prov) = owned_mintable_email(&state, &cookies, &req.csrf, &req.email)?;
-    if let Some(ro) = req.return_origin.as_deref().filter(|s| !s.trim().is_empty()) {
-        if !state.return_origin_accepted(ro, &state.domain) {
-            return Err(BrokerError::PolicyRefused(crate::return_origin::REFUSAL.into()));
+    let req: DeviceIssueRequest = serde_json::from_slice(&body)
+        .map_err(|e| BrokerError::ValidationError(format!("bad request body: {e}")))?;
+    // The registry-session form: Bearer + Proof by an enrolled login key.
+    // The registrar verifies the whole §4.4 path (token, live key, proof,
+    // body hash, replay); the issuer then applies its own mint chokepoint.
+    let caller = if headers.contains_key(axum::http::header::AUTHORIZATION) {
+        let registrar = state
+            .registrar
+            .get()
+            .ok_or_else(|| BrokerError::Internal("registrar not wired".into()))?;
+        let bh = browserid_registrar::session::b64url_sha256_pub(&body);
+        let (session, key, _proof) = browserid_registrar::session::verify_session_call(
+            registrar, &headers, "POST", "/device/issue", Some(&bh),
+        )
+        .await
+        .map_err(|e| BrokerError::PolicyRefused(format!("registry session: {e:?}")))?;
+        IssueCaller::Key { user_id: crate::store::UserId(session.user_id), key }
+    } else {
+        let session = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref())
+            .ok_or(BrokerError::NotAuthenticated)?;
+        IssueCaller::Cookie(session)
+    };
+    let (user_id, email, ttl, prov, login_key_id): (crate::store::UserId, String, Duration, &'static str, Option<u64>) = match &caller {
+        IssueCaller::Cookie(session) => {
+            let csrf = req.csrf.as_deref().unwrap_or("");
+            let (email, ttl, prov) = owned_mintable_email(&state, &cookies, csrf, &req.email)?;
+            if let Some(ro) = req.return_origin.as_deref().filter(|s| !s.trim().is_empty()) {
+                if !state.return_origin_accepted(ro, &state.domain) {
+                    return Err(BrokerError::PolicyRefused(crate::return_origin::REFUSAL.into()));
+                }
+            }
+            (session.user_id, email, ttl, prov, None)
         }
-    }
+        IssueCaller::Key { user_id, key } => {
+            let store = state.user_store.as_ref();
+            let (email, ttl, prov) = mintable_email(&state, *user_id, &req.email, |rec| {
+                let met = crate::account_auth::mint_rule_met(store, *user_id, key, &rec.email)?;
+                Ok(crate::mint::authorize_mint_on_login_key(rec, met))
+            })?;
+            (*user_id, email, ttl, prov, Some(key.id))
+        }
+    };
     let device_pub = parse_pub(&req.device_pubkey)?;
     let config_pub = parse_pub(&req.config_pubkey)?;
     let device_ref = device_status(&state, &device_pub)?;
@@ -221,7 +286,7 @@ where
     // must sit in this account's `browsers` namespace (the requester can name a
     // holder only *within* its own browsers namespace, never a service's). Absent
     // → the broker assigns a fresh one (older clients / first contact).
-    let ns_prefix = state.user_store.get_or_create_namespace(session.user_id, "browsers")?;
+    let ns_prefix = state.user_store.get_or_create_namespace(user_id, "browsers")?;
     let holder = match req.holder.as_deref() {
         Some(h) if !h.is_empty() => {
             browserid_core::device::Holder::new(h.to_string()).map_err(ce)?;
@@ -258,7 +323,8 @@ where
     ).map_err(ce)?;
 
     // Durable registry rows (upsert on pubkey) so the certs are enumerable and
-    // revocable per account.
+    // revocable per account. Issued on a login key, they are recorded under
+    // it — the device's own certs, as an attach would record them.
     let now = Utc::now();
     let expires = now + ttl;
     for (pubkey, purpose, status_idx) in [
@@ -267,7 +333,7 @@ where
     ] {
         state.user_store.insert_device_cert(DeviceCertRecord {
             id: 0,
-            user_id: session.user_id,
+            user_id,
             identities: vec![email.clone()],
             purpose: purpose.to_string(),
             holder: holder.clone(),
@@ -279,18 +345,35 @@ where
             status_uri: Some(browserid_registrar::consent::status_list_uri(&state.domain)),
             status_idx: Some(status_idx),
             prov: prov.to_string(),
-            login_key_id: None,
+            login_key_id,
         })?;
     }
     // First sight of this holder → a friendly UA-derived default label
     // ("Chrome on macOS"); never clobbers a user rename, never fails issuance.
     super::holders::maybe_label_holder_from_ua(
-        state.user_store.as_ref(), session.user_id, &holder, &headers,
+        state.user_store.as_ref(), user_id, &holder, &headers,
     );
+    // The ceremony page's ask (§3.3): what this session proved — the
+    // identity, and the password when the session is Full — against the
+    // account's add-a-device rule; a token only when it is met.
+    let login = match (&caller, req.want_login) {
+        (IssueCaller::Cookie(session), true) => {
+            let proofs = crate::account_auth::proofs_of_session(session.level, &email);
+            match crate::account_auth::evaluate(state.user_store.as_ref(), user_id, &proofs) {
+                Ok(o) if o.met => crate::account_auth::mint_login_token(state.user_store.as_ref(), user_id, &o).ok(),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    if let IssueCaller::Key { key, .. } = &caller {
+        tracing::info!(kid = %key.kid, %email, "device/issue: minted on a login key");
+    }
     Ok(Json(DeviceIssueResponse {
         success: true,
         device_cert: device_cert.encoded().to_string(),
         config_cert: config_cert.encoded().to_string(),
+        login,
     }))
 }
 

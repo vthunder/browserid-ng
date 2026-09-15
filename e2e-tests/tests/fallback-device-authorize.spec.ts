@@ -82,6 +82,10 @@ test.describe('fallback device-authorize ceremony', () => {
     expect(frag).toContain('device_cert=');
     expect(frag).toContain('config_cert=');
     expect(frag).not.toContain('device_error');
+    // Co-located issuer + registry (fallback-idp-api-v1 §3.3): the password
+    // ceremony also earned a registry login token, so the wallet needs no
+    // second ceremony.
+    expect(frag).toContain('&login=');
   });
 
   test('a live session needs an explicit click — never silent issuance', async ({ context, page, baseURL }) => {

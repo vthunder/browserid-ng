@@ -101,12 +101,18 @@ async function loginStored(account) {
 
 // §4.2 login_page: the registry's page, run by `openPage(url, account)`
 // (bootstrap.js: a BrowserWindow in the wallet's partition) → token.
-async function loginPage(account, openPage) {
+async function loginPage(account, openPage, earned) {
   const path = '/api/v1/login';
-  const r = await postRaw(path, JSON.stringify({ account, method: 'login_page' }), {});
-  if (!(r.status === 403 && r.data.reason === 'login_required' && r.data.url)) throw apiError('POST', path, r);
-  if (!openPage) { const e = new Error('a login is needed: run setup'); e.reason = 'login_needed'; throw e; }
-  const pageToken = await openPage(r.data.url, account);
+  let pageToken = earned || null;
+  if (!pageToken) {
+    const r = await postRaw(path, JSON.stringify({ account, method: 'login_page' }), {});
+    if (!(r.status === 403 && r.data.reason === 'login_required' && r.data.url)) throw apiError('POST', path, r);
+    if (!openPage) { const e = new Error('a login is needed: run setup'); e.reason = 'login_needed'; throw e; }
+    pageToken = await openPage(r.data.url, account);
+    await store.set({ loginVia: 'page' });
+  } else {
+    await store.set({ loginVia: 'ceremony' });
+  }
   // Login with the wallet's login key, which the registry enrols.
   const key = await loginKey();
   const htu = broker.ORIGIN + path;
@@ -138,7 +144,7 @@ function apiError(method, path, r) {
 // it. `openPage` is bootstrap's login window; without it (the steady state)
 // a needed page login surfaces as an error and the wallet keeps working
 // unattached until setup runs.
-async function ensure({ openPage } = {}) {
+async function ensure({ openPage, pageToken } = {}) {
   const s = store.state();
   if (!s.deviceCert) throw new Error('wallet not bootstrapped');
   if (token && nowS() < tokenExp - 60 && s.loginKey) return token;
@@ -153,9 +159,28 @@ async function ensure({ openPage } = {}) {
     await createAccount();
     return token;
   }
-  await loginPage(account, openPage);
+  await loginPage(account, openPage, pageToken);
   await attach();
   return token;
+}
+
+// Re-issue this wallet's pair on its login key (fallback-idp-api-v1 §3.3):
+// the issuer is our registry, so an enrolled key renews broker-vouched
+// certs without a ceremony. Same keys, fresh certs. Bridged and primary
+// identities are refused here by design; their ceremony must run.
+async function reissueCerts() {
+  const s = store.state();
+  const issuerIsRegistry = s.domain === new URL(broker.BROKER).host;
+  if (!issuerIsRegistry) { const e = new Error('issuer is not this registry'); e.reason = 'not_colocated'; throw e; }
+  const data = await apiCall('POST', '/device/issue', {
+    email: s.identity,
+    device_pubkey: s.deviceKey.x,
+    config_pubkey: s.configKey.x,
+    holder: s.holder,
+  });
+  if (!data.device_cert || !data.config_cert) throw new Error('re-issue returned no certs');
+  await store.set({ deviceCert: data.device_cert, configCert: data.config_cert, reissuedAt: nowS() });
+  return { device_cert: data.device_cert, config_cert: data.config_cert };
 }
 
 async function apiCall(method, path, body, retried = false) {
@@ -282,6 +307,7 @@ function startInboxWatch({ notify }) {
 
 module.exports = {
   ensure,
+  reissueCerts,
   apiCall,
   allocateStatus,
   registerWarrant,

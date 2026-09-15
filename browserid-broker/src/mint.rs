@@ -112,11 +112,42 @@ pub fn authorize_mint(email: &Email, level: SessionLevel) -> MintDecision {
     }
 }
 
+/// The chokepoint for a mint on a registry LOGIN KEY (co-located issuer +
+/// registry, bean 73ok): the device passed the account's add-a-device bar
+/// once, and `rule_met` says the account's mint rule (registry-api-v1
+/// §5.2.7) holds for it now. Broker-vouched identities mint on that;
+/// bridged and primary identities never do — the bridge, or the primary,
+/// re-proves them live every time, whatever key asks.
+pub fn authorize_mint_on_login_key(email: &Email, rule_met: bool) -> MintDecision {
+    match (email.email_type, email.proof) {
+        (EmailType::Primary, _) => MintDecision::Delegate(Voucher::Primary),
+        (EmailType::Secondary, ProofMethod::Oidc) => MintDecision::Delegate(Voucher::Oidc),
+        (EmailType::Secondary, ProofMethod::Atproto) => MintDecision::Delegate(Voucher::Atproto),
+        (EmailType::Secondary, ProofMethod::Smtp) if !rule_met => MintDecision::NeedPassword,
+        (EmailType::Secondary, ProofMethod::Smtp) if verification_stale(email) => MintDecision::Reverify,
+        (EmailType::Secondary, ProofMethod::Smtp) => MintDecision::Allow,
+        (EmailType::Agent, _) if !rule_met => MintDecision::NeedPassword,
+        (EmailType::Agent, _) => MintDecision::Allow,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
     use crate::store::UserId;
+
+    #[test]
+    fn login_key_mints_broker_vouched_only_when_the_rule_holds() {
+        let smtp = email(EmailType::Secondary, ProofMethod::Smtp);
+        assert_eq!(authorize_mint_on_login_key(&smtp, true), MintDecision::Allow);
+        assert_eq!(authorize_mint_on_login_key(&smtp, false), MintDecision::NeedPassword);
+        let agent = email(EmailType::Agent, ProofMethod::Smtp);
+        assert_eq!(authorize_mint_on_login_key(&agent, true), MintDecision::Allow);
+        // Never the bridge's or a primary's identities, rule or no rule.
+        assert_eq!(authorize_mint_on_login_key(&email(EmailType::Secondary, ProofMethod::Oidc), true), MintDecision::Delegate(Voucher::Oidc));
+        assert_eq!(authorize_mint_on_login_key(&email(EmailType::Primary, ProofMethod::Smtp), true), MintDecision::Delegate(Voucher::Primary));
+    }
 
     fn email(email_type: EmailType, proof: ProofMethod) -> Email {
         Email {

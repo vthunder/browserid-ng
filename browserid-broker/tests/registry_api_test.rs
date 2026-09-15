@@ -1086,3 +1086,86 @@ async fn a_new_device_joins_by_approval_from_an_enrolled_one() {
     assert_eq!(status, 403, "{body}");
     assert_eq!(body["reason"], "approval_disabled");
 }
+
+/// Bean 73ok (fallback-idp-api-v1 §3.3): issuer and registry are one entity
+/// here, so (1) the ceremony's issuance hands the wallet a registry login
+/// token when what it proved meets the add-a-device rule, and (2) an
+/// enrolled login key re-issues broker-vouched certs on `/device/issue`
+/// without a ceremony, recorded under the key — subject to the account's
+/// mint rule; a bridged identity is refused whatever the key.
+#[tokio::test]
+async fn a_login_key_reissues_broker_vouched_certs_and_the_ceremony_logs_in() {
+    use browserid_broker::store::UserStore;
+    let l = live_broker().await;
+    let email = "colocated@gmail.com";
+    let (_pres, config_kp, _dc, config_cert) = broker_presentation(&l, email, vec!["registry".into()]).await;
+
+    // (1) The cookie form with want_login: a Full session (password) meets
+    // the rule; the token enrols a fresh key as `password`.
+    let post = |path: &str, body: Value| l.client.post(format!("{}{path}", l.base)).json(&body);
+    let r = post("/wsapi/authenticate_user", json!({"email": email, "pass": "password123"})).send().await.unwrap();
+    let session = set_cookie(&r, "browserid_session");
+    let ctx: Value = l.client.get(format!("{}/wsapi/session_context", l.base)).header("cookie", format!("browserid_session={session}")).send().await.unwrap().json().await.unwrap();
+    let dkp = KeyPair::generate();
+    let ckp = KeyPair::generate();
+    let r = post("/device/issue", json!({
+        "csrf": ctx["csrf_token"], "email": email,
+        "device_pubkey": dkp.public_key().to_base64(), "config_pubkey": ckp.public_key().to_base64(),
+        "want_login": true,
+    })).header("cookie", format!("browserid_session={session}")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let issued: Value = r.json().await.unwrap();
+    let login = issued["login"].as_str().expect("a login token rides along").to_string();
+    let (status, body) = lookup(&l, &[(&config_cert, &config_kp)], email).await;
+    assert_eq!(status, 200, "{body}");
+    let account = body["account"].as_str().unwrap().to_string();
+    let wallet_kp = KeyPair::generate();
+    let (status, body) = login_page(&l, &account, Some(&login), Some(&wallet_kp)).await;
+    assert_eq!(status, 200, "{body}");
+    let token = body["token"].as_str().unwrap().to_string();
+    let (_, keys, _) = session_call(&l, &wallet_kp, &token, "GET", "/api/v1/login-keys", None).await;
+    let mine = keys["login_keys"].as_array().unwrap().iter().find(|k| k["current"] == true).unwrap().clone();
+    assert_eq!(mine["enrolled_by"], "password", "{mine}");
+
+    // (2) The registry-session form: the wallet re-issues on its login key.
+    let dkp2 = KeyPair::generate();
+    let ckp2 = KeyPair::generate();
+    let body = json!({ "email": email, "device_pubkey": dkp2.public_key().to_base64(), "config_pubkey": ckp2.public_key().to_base64() });
+    let (status, issued2, _) = session_call(&l, &wallet_kp, &token, "POST", "/device/issue", Some(body.clone())).await;
+    assert_eq!(status, 200, "{issued2}");
+    assert!(issued2["device_cert"].is_string() && issued2["config_cert"].is_string());
+    assert!(issued2.get("login").is_none(), "no token on the key form");
+    // Recorded under the key: the registry lists them as this device's.
+    let (_, certs, _) = session_call(&l, &wallet_kp, &token, "GET", "/api/v1/certs", None).await;
+    let key_id = mine["id"].as_u64().unwrap();
+    assert!(certs["certs"].as_array().unwrap().iter().any(|c| c["kid"] == ckp2.public_key().kid() && c["login_key"] == key_id), "{certs}");
+    // A wrong body hash / no session is refused before any issuance.
+    let r = post("/device/issue", body.clone()).header("authorization", "Bearer nope").header("proof", "x.y.z").send().await.unwrap();
+    assert_eq!(r.status(), 403, "{}", r.text().await.unwrap());
+
+    // The mint rule: require two proven identities on the device — the key
+    // has proven one (the certs above), so it is refused with a step-up.
+    let htu = format!("{}/api/v1/account/policy", l.base);
+    let bytes = json!({ "mint_proven": 2 }).to_string().into_bytes();
+    let proof = browserid_registrar::session::build_proof_now("PUT", &htu, Some(&bytes), &wallet_kp);
+    let r = l.client.put(&htu).header("authorization", format!("Bearer {token}")).header("proof", proof).header("content-type", "application/json").body(bytes).send().await.unwrap();
+    assert_eq!(r.status(), 400, "a single-identity account cannot ask for two: {}", r.text().await.unwrap());
+    let bytes = json!({ "mint_proven": 1, "mint_proven_identities": ["other@example.com"] }).to_string().into_bytes();
+    let proof = browserid_registrar::session::build_proof_now("PUT", &htu, Some(&bytes), &wallet_kp);
+    let r = l.client.put(&htu).header("authorization", format!("Bearer {token}")).header("proof", proof).header("content-type", "application/json").body(bytes).send().await.unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let (status, refused, _) = session_call(&l, &wallet_kp, &token, "POST", "/device/issue", Some(body)).await;
+    assert_eq!(status, 401, "step-up when the mint rule is not met: {refused}");
+
+    // A bridged identity never mints on a key: the bridge must run.
+    let uid = l.user_store.user_for_public_id(&account).unwrap().unwrap();
+    l.user_store.add_email_with_type(uid, "bridged@gmail.com", true, browserid_broker::store::EmailType::Secondary).unwrap();
+    l.user_store.set_email_proof("bridged@gmail.com", browserid_broker::store::ProofMethod::Oidc, Some("sub-1")).unwrap();
+    let bytes = json!({}).to_string().into_bytes();
+    let proof = browserid_registrar::session::build_proof_now("PUT", &htu, Some(&bytes), &wallet_kp);
+    l.client.put(&htu).header("authorization", format!("Bearer {token}")).header("proof", proof).header("content-type", "application/json").body(bytes).send().await.unwrap();
+    let body = json!({ "email": "bridged@gmail.com", "device_pubkey": KeyPair::generate().public_key().to_base64(), "config_pubkey": KeyPair::generate().public_key().to_base64() });
+    let (status, refused, _) = session_call(&l, &wallet_kp, &token, "POST", "/device/issue", Some(body)).await;
+    assert_eq!(status, 403, "{refused}");
+    assert!(refused["reason"].as_str().unwrap_or("").contains("bridge"), "{refused}");
+}

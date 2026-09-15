@@ -75,7 +75,7 @@ where
             }
         }
     });
-    let registrar = browserid_registrar::router(Arc::new(
+    let registrar_state = Arc::new(
         browserid_registrar::RegistrarState {
             domain: state.domain.clone(),
             keypair: state.keypair.clone(),
@@ -112,7 +112,9 @@ where
                 browserid_registrar::consent::public_origin(&state.domain)
             )),
         },
-    ));
+    );
+    let _ = state.registrar.set(registrar_state.clone());
+    let registrar = browserid_registrar::router(registrar_state);
 
     // Cross-origin surfaces (audit L9): CORS is granted per surface, never
     // globally — /wsapi/* and the registrar answer same-origin (and

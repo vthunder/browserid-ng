@@ -99,18 +99,20 @@
   }
 
   function deliver(certs) {
+    var loginPart = certs.login ? "&login=" + encodeURIComponent(certs.login) : "";
     if (returnUrl) {
       try {
         var sep = returnUrl.indexOf("#") === -1 ? "#" : "&";
         location.replace(returnUrl + sep +
           "device_cert=" + encodeURIComponent(certs.device_cert) +
-          "&config_cert=" + encodeURIComponent(certs.config_cert));
+          "&config_cert=" + encodeURIComponent(certs.config_cert) + loginPart);
         return;
       } catch (e) {}
     }
     post("browserid:device_certs", {
       device_cert: certs.device_cert,
       config_cert: certs.config_cert,
+      login: certs.login || null,
     });
     setTimeout(function () { window.close(); }, 100);
   }
@@ -178,6 +180,11 @@
         device_pubkey: devicePubkey,
         config_pubkey: configPubkey,
         return_origin: returnOriginRaw,
+        // Co-located issuer + registry (fallback-idp-api-v1 §3.3): when what
+        // this session proved meets the account's add-a-device rule, a
+        // registry login token rides along and the wallet needs no second
+        // ceremony. The wallet uses it only if its registry is this origin.
+        want_login: true,
       });
     }).then(function (res) {
       if (res && res.ok && res.body.device_cert) return res.body;

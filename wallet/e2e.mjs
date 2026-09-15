@@ -89,6 +89,18 @@ const boot = await r.json();
 must('wallet bootstrapped (single login at the issuer)', r.status === 200 && boot.email === email,
   JSON.stringify(boot).slice(0, 120));
 
+// 3b. Co-located issuer + registry (bean 73ok): the ceremony's password
+//     login earned the registry token, so the wallet enrolled its key
+//     without the login page; and it re-issues its pair on that key.
+r = await wallet('/test/state', {});
+const stBoot = await r.json();
+must('one ceremony: registry login came from the issuance', stBoot.loginVia === 'ceremony', JSON.stringify({ loginVia: stBoot.loginVia }));
+must('wallet holds a login key and an account', !!stBoot.account && stBoot.loginKey === undefined, 'keys redacted in /test/state');
+await new Promise((s) => setTimeout(s, 1100)); // a later iat
+r = await wallet('/test/reissue', {});
+const re = await r.json();
+must('pair re-issued on the login key, no ceremony', r.status === 200 && re.after > re.before, JSON.stringify(re));
+
 // 4. registry API lane: the approvals inbox over token+proof (no cookies)
 r = await wallet('/test/inbox', {});
 const inbox = await r.json();

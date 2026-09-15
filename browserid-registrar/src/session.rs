@@ -76,7 +76,7 @@ struct ProofClaims {
 }
 
 /// A parsed, not-yet-verified proof.
-pub(crate) struct Proof {
+pub struct Proof {
     pub kid: String,
     pub htm: String,
     pub htu: String,
@@ -212,7 +212,7 @@ fn session_key(state: &RegistrarState, rec: &SessionRecord) -> Result<LoginCertR
 }
 
 /// The session behind `Authorization: Bearer` and its live login key.
-pub(crate) async fn bearer_session(
+pub async fn bearer_session(
     state: &RegistrarState,
     headers: &axum::http::HeaderMap,
 ) -> Result<(SessionRecord, LoginCertRecord), ApiError> {
@@ -240,7 +240,7 @@ pub(crate) async fn bearer_session(
 
 /// The whole §4.4 session path for one call: token → key → the header
 /// proof by that key → claims (`bh` when a body is expected) → replay.
-pub(crate) async fn verify_session_call(
+pub async fn verify_session_call(
     state: &RegistrarState,
     headers: &axum::http::HeaderMap,
     method: &str,

@@ -135,6 +135,10 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// session. In-memory like the app's other anti-replay state; std RwLock:
     /// never held across an await.
     pub bridge_mint_grants: std::sync::RwLock<HashMap<(u64, String), BridgeMintGrant>>,
+    /// The registrar this broker embeds (registry-api-v1), set once by the
+    /// router: the issuer role reaches it to accept a registry session on
+    /// `/device/issue` (co-located issuer + registry, bean 73ok).
+    pub registrar: std::sync::OnceLock<Arc<browserid_registrar::RegistrarState>>,
 }
 
 /// One live bridge proof (browserid-ng-pr3a): the voucher-decided cert TTL
@@ -198,6 +202,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             trusted_wallet_origins: crate::return_origin::DEFAULT_TRUSTED.iter().map(|s| s.to_string()).collect(),
             oidc: None,
             bridge_mint_grants: std::sync::RwLock::new(HashMap::new()),
+            registrar: std::sync::OnceLock::new(),
         }
     }
 
@@ -238,6 +243,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             trusted_wallet_origins: crate::return_origin::DEFAULT_TRUSTED.iter().map(|s| s.to_string()).collect(),
             oidc: None,
             bridge_mint_grants: std::sync::RwLock::new(HashMap::new()),
+            registrar: std::sync::OnceLock::new(),
         }
     }
 

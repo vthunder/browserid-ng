@@ -135,7 +135,10 @@ function primaryHop({ deviceAuthUrl, email, devicePub, configPub, testPassword }
       if (frag.get('device_error')) return finish(reject, new Error(`IdP refused: ${frag.get('device_error')}`));
       const device_cert = frag.get('device_cert'), config_cert = frag.get('config_cert');
       if (!device_cert || !config_cert) return finish(reject, new Error('IdP return carried no certs'));
-      finish(resolve, { device_cert, config_cert });
+      // A co-located issuer + registry may log the wallet in with the same
+      // ceremony (fallback-idp-api-v1 §3.3): the token is used only when
+      // this wallet's registry is that issuer.
+      finish(resolve, { device_cert, config_cert, login: frag.get('login') || null });
     };
     win.webContents.on('will-navigate', onNav);
     win.webContents.on('will-redirect', onNav);
@@ -188,9 +191,9 @@ async function persist({ email, issuer, mintUrl, device, config, certs }) {
 //
 // Gotchas tracked on bean e98a (deferred attach of a second identity's
 // fresh certs, the mediator inside this embedded browser) are not yet built.
-async function attachAtRegistry({ testPassword } = {}) {
+async function attachAtRegistry({ testPassword, pageToken } = {}) {
   try {
-    await require('./registry').ensure({ openPage: (url, account) => loginHop({ url, account, testPassword }) });
+    await require('./registry').ensure({ openPage: (url, account) => loginHop({ url, account, testPassword }), pageToken });
     return true;
   } catch (e) {
     console.warn('[wallet] attaching at the registry failed (non-fatal):', e.message || e);
@@ -255,7 +258,10 @@ async function bootstrapForEmail(email, { testPassword } = {}) {
     deviceAuthUrl, email, devicePub: device.x, configPub: config.x, testPassword,
   });
   await persist({ email, issuer, mintUrl, device, config, certs });
-  await attachAtRegistry({ testPassword });
+  // The ceremony's login token counts only when the issuer IS our registry
+  // (same origin, §3.3); a primary's return never carries one anyway.
+  const colocated = issuer === new URL(broker.BROKER).host;
+  await attachAtRegistry({ testPassword, pageToken: colocated ? certs.login : null });
   return { email };
 }
 

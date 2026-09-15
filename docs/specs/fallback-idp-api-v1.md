@@ -136,6 +136,36 @@ satisfy:
   exact-address config cert (the 7ww7 blast-radius rule).
 - **Per-key status refs** on both certs (core §6.3).
 
+### 3.3 Co-located issuer and registry
+
+Nothing above assumes the issuer and the wallet's registry are the
+same entity, and a wallet MUST NOT assume it either. When they are —
+the wallet finds the same origin serving both `device-authorization`
+and the registry's `endpoint` (registry-api-v1 §5.1) — two things
+follow, both optional for the issuer and both discovered, never
+configured:
+
+- **The ceremony can log the wallet in.** The success return MAY
+  carry `login=<token>`, a one-time registry login token
+  (registry-api-v1 §4.2 `login_page`), when what the ceremony proved
+  meets the account's add-a-device rule (registry-api-v1 §5.2.7): a
+  password typed here, or the identity itself on an account whose
+  rule that satisfies. The wallet spends it at `POST /api/v1/login`
+  with its login key, and needs no second ceremony. Absent, the wallet
+  runs the registry's login page as it always could.
+- **A login key can re-issue.** The issuance endpoint accepts a
+  registry session — `Authorization: Bearer` and the §4.4 `Proof`
+  header by the wallet's enrolled login key, `bh` over the body — in
+  place of the ceremony, for the identities the issuer vouches for
+  itself (the reference broker: plain mailboxes and agent identities),
+  subject to the account's mint rule. Bridged and primary identities
+  are never issued this way: their proof is live at the bridge or the
+  primary, whatever key asks. Certs issued on a login key are recorded
+  under it, as an attach would record them.
+
+The reference broker implements both: `/device/issue` answers `login`
+when asked (`want_login`) and takes the registry session form.
+
 ## 4. Registration
 
 Issuance yields certs. The wallet then registers them at its

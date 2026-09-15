@@ -35,6 +35,7 @@
   var pair = null;      // {deviceCert, devicePrivateKey, configCert, configPrivateKey}
   var identity = null;
   var password = null;  // the password the user typed this run, if any
+  var pageToken = null; // a login-page token the ceremony already earned (§3.3), spent once
   var askPassword = null; // keyless: () => Promise<string>, the page's own prompt
   var token = null;
   var tokenExp = 0;
@@ -198,23 +199,31 @@
     var r = await postRaw(path, JSON.stringify({ account: acct, method: "login_page" }), {});
     if (!(r.status === 403 && r.data.reason === "login_required" && r.data.url)) throw error(r, path);
     var url = new URL(r.data.url, window.location.origin);
-    var pageToken;
-    if (url.origin === window.location.origin && !password && askPassword) password = await askPassword();
-    if (url.origin === window.location.origin && password) {
+    // A token the issuance that just ran here earned (co-located issuer +
+    // registry, fallback-idp-api-v1 §3.3) is spent as is: no password, no
+    // popup. Only for this origin's own page.
+    var earned = (pageToken && url.origin === window.location.origin) ? pageToken : null;
+    pageToken = null;
+    if (earned) {
+      // nothing to collect
+    } else if (url.origin === window.location.origin && !password && askPassword) password = await askPassword();
+    if (earned) {
+      // spend it below
+    } else if (url.origin === window.location.origin && password) {
       // This registry's own page: its check is the account password, which
       // the page has just collected — post it straight to the page's
       // backend rather than rendering the page.
       var lr = await postRaw("/wsapi/registry_login", JSON.stringify({ account: acct, password: password }), {});
       if (!(lr.ok && lr.data.login)) throw error(lr, "/wsapi/registry_login");
-      pageToken = lr.data.login;
+      earned = lr.data.login;
     } else {
       // No password at hand (a remembered session), or a foreign registry:
       // the page itself asks.
-      pageToken = await loginPopup(url, acct);
+      earned = await loginPopup(url, acct);
     }
     if (!loginKey) loginKey = await freshLoginKey();
     var jti = rndHex();
-    var bodyStr = JSON.stringify({ account: acct, method: "login_page", token: pageToken, login_key: await loginKeyArg(path, jti) });
+    var bodyStr = JSON.stringify({ account: acct, method: "login_page", token: earned, login_key: await loginKeyArg(path, jti) });
     var r2 = await postRaw(path, bodyStr, { proof: await proofBy(loginKey, "POST", path, bodyStr, jti) });
     if (r2.ok && r2.data.token) { took(r2.data); await storeLoginKey(acct, loginKey); return; }
     throw error(r2, path);
@@ -350,6 +359,7 @@
       // of each. Only the attach (which identity's pair) changes.
       identity = opts.identity;
       if (opts.password) password = opts.password;
+      if (opts.loginToken) pageToken = opts.loginToken;
       askPassword = null;
       askTakeover = opts.askTakeover || null;
       kids = { device: await kidOfCert(pair.deviceCert), config: await kidOfCert(pair.configCert) };

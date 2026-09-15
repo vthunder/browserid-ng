@@ -159,8 +159,16 @@ function startServer({ approveLogin, approveRequest, approvePair, notify, onStat
             const outcome = await ad.askApproval(a, { testCode: code });
             return json(req, res, 200, { outcome });
           }
+          if (url.pathname === '/test/reissue') {
+            // Drives the login-key re-issue (§3.3); returns the new cert's iat.
+            const registry = require('./registry');
+            const before = require('./crypto').decodeJws(store.state().deviceCert).iat;
+            const r = await registry.reissueCerts();
+            const after = require('./crypto').decodeJws(r.device_cert).iat;
+            return json(req, res, 200, { before, after });
+          }
           if (url.pathname === '/test/state') {
-            const { pairToken: _p, deviceKey: _d, configKey: _c, ...rest } = store.state();
+            const { pairToken: _p, deviceKey: _d, configKey: _c, loginKey: _l, ...rest } = store.state();
             return json(req, res, 200, rest); // never the keys, even in tests
           }
         }
