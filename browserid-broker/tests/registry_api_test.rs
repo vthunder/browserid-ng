@@ -1237,3 +1237,53 @@ async fn identity_proofs_log_a_device_in_after_masked_hints() {
     let with = mine["enrolled_with"].as_array().unwrap();
     assert!(with.contains(&json!(first)) && with.contains(&json!(second)), "{with:?}");
 }
+
+/// Bean yz4y: a reset on a two-identity account is one ceremony — the
+/// mailbox code, then a presentation for the other identity — and only
+/// then does it change anything: the new password works, the old one does
+/// not, every login key is revoked, and the sessions are gone.
+#[tokio::test]
+async fn a_reset_waits_for_the_accounts_proof_bar() {
+    use browserid_broker::store::{EmailType, UserStore};
+    let l = live_broker().await;
+    let first = "reset-one@gmail.com";
+    let (_p1, config_kp, _dc, config_cert) = broker_presentation(&l, first, vec!["login".into(), "registry".into()]).await;
+    let (token, account, login_kp) = login_session(&l, first, &config_kp, &config_cert).await;
+    let uid = l.user_store.user_for_public_id(&account).unwrap().unwrap();
+    let second = "reset-two@example.org";
+    l.user_store.add_email_with_type(uid, second, true, EmailType::Secondary).unwrap();
+    let (dc2, cc2, dkp2, ckp2) = issue_keys(&l, second).await;
+    let p2 = presentation_from_pair(&l, second, &dkp2, &dc2, &ckp2, &cc2).await;
+    let post = |path: &str, body: Value| l.client.post(format!("{}{path}", l.base)).json(&body).send();
+
+    let r = post("/wsapi/stage_signin_code", json!({ "email": first, "pass": "new-password-9" })).await.unwrap();
+    assert_eq!(r.status(), 200);
+    let code = l.email_sender.get_code(first).expect("code emailed");
+    let r = post("/wsapi/complete_signin_code", json!({ "email": first, "token": code })).await.unwrap();
+    assert_eq!(r.status(), 200);
+    let body: Value = r.json().await.unwrap();
+    let id = body["recovery"]["id"].as_str().expect("recovery pending").to_string();
+    assert_eq!(body["recovery"]["hints"], json!(["r***@example.org"]));
+    // Old password still works: nothing changed.
+    let r = post("/wsapi/authenticate_user", json!({ "email": first, "pass": "password123" })).await.unwrap();
+    assert_eq!(r.status(), 200, "nothing changed yet");
+    // The second identity's proof completes the ceremony.
+    let r = post("/wsapi/recovery_proofs", json!({ "id": id, "presentations": [p2] })).await.unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let done: Value = r.json().await.unwrap();
+    assert_eq!(done["reset"], true, "{done}");
+    // Effects: the new password, not the old; login keys revoked; the
+    // session on the old key is dead.
+    let r = post("/wsapi/authenticate_user", json!({ "email": first, "pass": "password123" })).await.unwrap();
+    assert_ne!(r.status(), 200, "old password");
+    let r = post("/wsapi/authenticate_user", json!({ "email": first, "pass": "new-password-9" })).await.unwrap();
+    assert_eq!(r.status(), 200, "new password");
+    let (status, _, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/login-keys", None).await;
+    assert_eq!(status, 401, "the old session died with its key");
+    let (_, body) = login_stored(&l, &account, &login_kp).await;
+    assert_eq!(body["reason"], "login_required", "the key is revoked: {body}");
+    assert!(l.user_store.list_login_certs(uid).unwrap().iter().all(|k| k.revoked_at.is_some()));
+    // The attempt is spent.
+    let r = post("/wsapi/recovery_proofs", json!({ "id": id, "presentations": [] })).await.unwrap();
+    assert_ne!(r.status(), 200);
+}

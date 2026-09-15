@@ -121,7 +121,9 @@ async fn test_reset_password_too_short() {
 /// address on the account authenticates with the new password only.
 #[tokio::test]
 async fn test_reset_affects_all_emails() {
-    let (server, email_sender) = create_test_server();
+    use browserid_broker::store::UserStore;
+    let ctx = common::create_test_context();
+    let (server, email_sender) = (&ctx.server, &ctx.email_sender);
     let email1 = "first@example.com";
     let email2 = "second@example.com";
     let old_password = "oldpassword";
@@ -145,6 +147,10 @@ async fn test_reset_affects_all_emails() {
         .add_cookie(cookie::Cookie::new("browserid_session", session))
         .json(&json!({ "email": email2, "token": code, "csrf": csrf }))
         .await;
+    // Two identities: the baseline rule would wait for a second proof (bean
+    // yz4y); one proof here, so the mailed code alone completes the reset.
+    let uid = ctx.user_store.get_user_by_email(email1).unwrap().unwrap().id;
+    ctx.user_store.set_account_policy(uid, "{\"proofs\":1}").unwrap();
 
     // Reset password using first email
     server

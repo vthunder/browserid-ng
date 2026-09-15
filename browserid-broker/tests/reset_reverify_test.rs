@@ -37,7 +37,13 @@ async fn seeded_account(ctx: &TestContext) {
 /// A reset is the unified sign-in code flow since 8gqm (stage_reset retired):
 /// stage with the NEW password, complete with the mailed code — the server
 /// runs the reset branch (this file's fences) because the account exists.
+/// Since bean yz4y a reset must meet the account's proof bar; this account
+/// has five identities, so its policy is set to one proof here — the
+/// mailbox code alone — to exercise the completion fences. The multi-proof
+/// path is `registry_api_test::a_reset_waits_for_the_accounts_proof_bar`.
 async fn run_reset(ctx: &TestContext, email: &str, new_pass: &str) {
+    let user = ctx.user_store.get_user_by_email(email).unwrap().unwrap();
+    ctx.user_store.set_account_policy(user.id, "{\"proofs\":1}").unwrap();
     let response = ctx
         .server
         .post("/wsapi/stage_signin_code")
@@ -65,7 +71,40 @@ async fn reset_unverifies_only_sibling_e3_addresses() {
     assert!(!verified(OTHER_E3), "sibling E3 must need re-verification");
     assert!(verified("bridge@example.com"), "E2 trust doesn't rest on the password");
     assert!(verified("me@primary.example"), "E1 trust doesn't rest on the password");
-    assert!(verified("reset-me+bot@example.com"), "agent identities ride the account");
+    assert!(verified("reset-me+bot@example.com"), "an agent of the proven address rides along");
+}
+
+/// Bean yz4y: with the baseline rule (two proofs on a multi-identity
+/// account) the mailbox code alone changes NOTHING — the reset waits, and
+/// the response says what else to prove.
+#[tokio::test]
+async fn a_multi_identity_account_waits_for_a_second_proof() {
+    let ctx = create_test_context();
+    seeded_account(&ctx).await;
+    let before = ctx.user_store.get_user_by_email(RESET_ADDR).unwrap().unwrap().password_hash;
+    let r = ctx.server.post("/wsapi/stage_signin_code").json(&json!({ "email": RESET_ADDR, "pass": "new-password-1" })).await;
+    assert_eq!(r.status_code(), 200);
+    let code = ctx.email_sender.get_code(RESET_ADDR).unwrap();
+    let r = ctx.server.post("/wsapi/complete_signin_code").json(&json!({ "email": RESET_ADDR, "token": code })).await;
+    assert_eq!(r.status_code(), 200);
+    let body: Value = r.json();
+    assert_eq!(body["success"], true);
+    let rec = &body["recovery"];
+    assert!(rec["id"].is_string(), "{body}");
+    assert_eq!(rec["needed"], 2);
+    assert_eq!(rec["proven"], json!([RESET_ADDR]));
+    let hints = rec["hints"].as_array().unwrap();
+    assert!(hints.iter().any(|h| h == "o***@example.com"), "{hints:?}");
+    assert!(hints.iter().any(|h| h == "b***@example.com"), "{hints:?}");
+    assert!(!hints.iter().any(|h| h.as_str().unwrap().contains("bot")), "agents are not identities to prove: {hints:?}");
+    let after = ctx.user_store.get_user_by_email(RESET_ADDR).unwrap().unwrap().password_hash;
+    assert_eq!(before, after, "nothing changed yet");
+    assert!(ctx.user_store.get_email(OTHER_E3).unwrap().unwrap().verified, "nothing changed yet");
+    // A bad continuation is refused; the attempt stays.
+    let r = ctx.server.post("/wsapi/recovery_proofs").json(&json!({ "id": rec["id"], "presentations": ["nope"] })).await;
+    assert_ne!(r.status_code(), 200);
+    let r = ctx.server.post("/wsapi/recovery_proofs").json(&json!({ "id": "unknown", "presentations": [] })).await;
+    assert_ne!(r.status_code(), 200);
 }
 
 /// The attack the invariant closes, end-to-end: attacker controlling ONE E3

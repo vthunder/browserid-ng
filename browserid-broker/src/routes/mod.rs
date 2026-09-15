@@ -218,6 +218,7 @@ where
         // The registry login page's backend (registry-api-v1 §4.2).
         .route("/wsapi/registry_login", post(registry_login::mint))
         .route("/wsapi/registry_login_hints", post(registry_login::hints))
+        .route("/wsapi/recovery_proofs", post(signin_code::recovery_proofs))
         .route("/wsapi/registry_login_proofs", post(registry_login::proofs))
         // Primary-IdP session join (device model): a presentation for the
         // broker's own audience links the identity into an account so the
@@ -405,7 +406,7 @@ where
 /// if you edit one of those inline scripts, that test fails and prints the new
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
-    "'sha256-TOkDtHJRzcoKtTW1yKOV8qEiwT6SUg0jvQkpJMdIY3Q='", // account.html
+    "'sha256-CMMvVqxe3cvJC6hncFq4nIMfnQycfQGLqGuSvOcJ6vc='", // account.html
     "'sha256-ZbsFGcatZehag94pEBIjy+EuZ/ObSLWBaWB7S08EHkM='", // authorize.html
     "'sha256-w/igx8p93BpXUR17HqZFmzy1jfefM+J6noXLYxXzlOo='", // consent.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)

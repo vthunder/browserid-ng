@@ -481,6 +481,8 @@ where
         .is_some_and(|e| e.user_id == session.user_id)
     {
         state.user_store.verify_email(&pending.email)?;
+        // Agents unverified by a reset come back with their parent (yz4y).
+        super::signin_code::reverify_agents_of(state.user_store.as_ref(), session.user_id, &pending.email)?;
     } else {
         state
             .user_store

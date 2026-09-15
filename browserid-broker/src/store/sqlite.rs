@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    LoginApproval, LoginCert, LoginToken, RegistrySession, SuspendedIdentity,
+    LoginApproval, LoginCert, LoginToken, RecoveryAttempt, RegistrySession, SuspendedIdentity,
     DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, SessionStore, StoreResult, Tenant, TenantStatus, User, UserId,
     UserStore, VerificationType, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
@@ -16,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 45;
+const SCHEMA_VERSION: i32 = 46;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -198,6 +198,9 @@ impl SqliteStore {
             }
             if current_version < 45 {
                 Self::migrate_v45(conn)?;
+            }
+            if current_version < 46 {
+                Self::migrate_v46(conn)?;
             }
 
             // Update schema version
@@ -1084,6 +1087,26 @@ impl SqliteStore {
                 expires_at TEXT NOT NULL
             );
             ALTER TABLE registry_sessions ADD COLUMN login_key_id INTEGER;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v46(conn: &Connection) -> Result<(), BrokerError> {
+        // Password recovery attempts (bean yz4y): a reset that needs more
+        // than the mailbox code waits here until the proofs are in.
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS recovery_attempts (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                email TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                proven TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            );
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2446,6 +2469,57 @@ impl UserStore for SqliteStore {
                 .map_err(|e| BrokerError::Internal(e.to_string()))?;
         }
         Ok(token)
+    }
+
+    fn create_recovery(&self, rec: RecoveryAttempt) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO recovery_attempts (id, user_id, email, password_hash, proven, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![rec.id, rec.user_id.0 as i64, rec.email, rec.password_hash, serde_json::to_string(&rec.proven).unwrap_or_else(|_| "[]".into()), rec.created_at.to_rfc3339(), rec.expires_at.to_rfc3339()],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        conn.execute("DELETE FROM recovery_attempts WHERE expires_at < ?1", params![Utc::now().to_rfc3339()]).ok();
+        Ok(())
+    }
+
+    fn get_recovery(&self, id: &str) -> StoreResult<Option<RecoveryAttempt>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, user_id, email, password_hash, proven, created_at, expires_at FROM recovery_attempts WHERE id = ?1",
+            params![id],
+            |r| {
+                let uid: i64 = r.get(1)?;
+                let proven: String = r.get(4)?;
+                Ok(RecoveryAttempt {
+                    id: r.get(0)?,
+                    user_id: UserId(uid as u64),
+                    email: r.get(2)?,
+                    password_hash: r.get(3)?,
+                    proven: serde_json::from_str(&proven).unwrap_or_default(),
+                    created_at: parse_ts_opt(r.get(5)?).unwrap_or_else(Utc::now),
+                    expires_at: parse_ts_opt(r.get(6)?).unwrap_or_else(Utc::now),
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn set_recovery_proven(&self, id: &str, proven: &[String]) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE recovery_attempts SET proven = ?1 WHERE id = ?2",
+            params![serde_json::to_string(proven).unwrap_or_else(|_| "[]".into()), id],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn delete_recovery(&self, id: &str) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM recovery_attempts WHERE id = ?1", params![id])
+            .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
     }
 
     fn get_account_policy(&self, user_id: UserId) -> StoreResult<Option<String>> {
@@ -3948,6 +4022,18 @@ impl UserStore for std::sync::Arc<SqliteStore> {
     }
     fn take_login_approval_token(&self, id: &str) -> StoreResult<Option<String>> {
         (**self).take_login_approval_token(id)
+    }
+    fn create_recovery(&self, rec: RecoveryAttempt) -> StoreResult<()> {
+        (**self).create_recovery(rec)
+    }
+    fn get_recovery(&self, id: &str) -> StoreResult<Option<RecoveryAttempt>> {
+        (**self).get_recovery(id)
+    }
+    fn set_recovery_proven(&self, id: &str, proven: &[String]) -> StoreResult<()> {
+        (**self).set_recovery_proven(id, proven)
+    }
+    fn delete_recovery(&self, id: &str) -> StoreResult<()> {
+        (**self).delete_recovery(id)
     }
     fn set_account_policy(&self, user_id: UserId, policy_json: &str) -> StoreResult<()> {
         (**self).set_account_policy(user_id, policy_json)

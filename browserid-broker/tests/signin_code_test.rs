@@ -89,6 +89,10 @@ async fn completes_as_password_reset_for_existing_address() {
         .unwrap()
         .id;
     ctx.user_store.add_email(uid, "sibling@example.com", true).unwrap();
+    // Two identities: the baseline rule would wait for a second proof (bean
+    // yz4y, `reset_reverify_test::a_multi_identity_account_waits_for_a_second_proof`);
+    // one proof here, so the code alone completes and the fences below run.
+    ctx.user_store.set_account_policy(uid, "{\"proofs\":1}").unwrap();
 
     let response = ctx
         .server

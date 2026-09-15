@@ -234,6 +234,13 @@ pub trait UserStore: Send + Sync {
     /// Hand out the token once.
     fn take_login_approval_token(&self, id: &str) -> StoreResult<Option<String>>;
 
+    // --- Password recovery attempts (bean yz4y) ---
+
+    fn create_recovery(&self, rec: RecoveryAttempt) -> StoreResult<()>;
+    fn get_recovery(&self, id: &str) -> StoreResult<Option<RecoveryAttempt>>;
+    fn set_recovery_proven(&self, id: &str, proven: &[String]) -> StoreResult<()>;
+    fn delete_recovery(&self, id: &str) -> StoreResult<()>;
+
     // --- Account authentication policy (registry-api-v1 §4.2, bean noqd) ---
 
     /// The account's stored policy JSON, if any.

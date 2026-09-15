@@ -243,6 +243,23 @@ pub struct LoginApproval {
     pub token: Option<String>,
 }
 
+/// A password reset in flight (bean yz4y): the mailbox code landed but the
+/// account's rule wants more identity proofs before anything changes.
+#[derive(Debug, Clone)]
+pub struct RecoveryAttempt {
+    /// Secret handle the client continues by.
+    pub id: String,
+    pub user_id: UserId,
+    /// The address the code proved.
+    pub email: String,
+    /// The staged new password.
+    pub password_hash: String,
+    /// Identities proven so far, lowercase.
+    pub proven: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
 /// A pending email verification
 #[derive(Debug, Clone)]
 pub struct PendingVerification {

@@ -86,3 +86,33 @@ test('the roster lists this browser by its login key and the page signs out with
   await expect(page.locator('#sections .arow')).toHaveCount(1);
   await expect(sections).not.toContainText('My test browser');
 });
+
+
+/**
+ * Bean svs7: the policy editor under Account settings reads the account's
+ * effective rule and saves within the floors; a device row says how it got
+ * in (this browser: with the password).
+ */
+test('the policy editor saves within the floors and rows say how they got in', async ({ page, request }) => {
+  const { email, pass } = await createAccount(request);
+  await page.goto(`${baseUrl}/account`);
+  await signIn(page, email, pass);
+  await expect(page.locator('#sections')).toContainText('this device', { timeout: 10000 });
+  // The row's detail names the method.
+  await page.locator('#sections .rowtoggle').first().click();
+  await page.locator('#sections .managelink').first().click();
+  await expect(page.locator('#detail-card')).toContainText('added with your password', { timeout: 10000 });
+  await page.click('#detail-back');
+
+  await page.click('#set-policy');
+  await expect(page.locator('#policy-form')).toBeVisible();
+  // A single-identity account: only "any one address" is offered.
+  await expect(page.locator('#pol-proofs option')).toHaveCount(1);
+  await expect(page.locator('#pol-approval')).toBeChecked();
+  await page.locator('#pol-approval').uncheck();
+  await page.click('#pol-go');
+  await expect(page.locator('#pol-status')).toHaveText('Saved.', { timeout: 10000 });
+  const stored = await page.evaluate(async () => (await (window as any).Registry.call('GET', '/api/v1/account/policy')).policy);
+  expect(stored.approval).toBe(false);
+  expect(stored.proofs).toBe(1);
+});

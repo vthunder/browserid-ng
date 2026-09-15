@@ -20,8 +20,11 @@ use crate::email::EmailSender;
 use crate::error::BrokerError;
 use crate::state::AppState;
 use crate::store::{
-    EmailType, PendingVerification, ProofMethod, SessionStore, UserStore, VerificationType,
+    EmailType, PendingVerification, ProofMethod, RecoveryAttempt, SessionStore, UserId, UserStore, VerificationType,
 };
+
+/// A recovery attempt waits this long for its remaining proofs.
+const RECOVERY_SECONDS: i64 = 30 * 60;
 
 /// Minimum password length (same as original Persona)
 const MIN_PASSWORD_LENGTH: usize = 8;
@@ -43,6 +46,19 @@ pub struct StageSigninCodeRequest {
 #[derive(Serialize)]
 pub struct SigninCodeResponse {
     pub success: bool,
+    /// The reset needs more identity proofs first (bean yz4y): continue at
+    /// `/wsapi/recovery_proofs` with this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoveryInfo>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct RecoveryInfo {
+    pub id: String,
+    /// Masked addresses still to prove.
+    pub hints: Vec<String>,
+    pub proven: Vec<String>,
+    pub needed: u32,
 }
 
 /// POST /wsapi/stage_signin_code
@@ -119,7 +135,7 @@ where
         .send_verification(&req.email, &code)
         .map_err(BrokerError::Internal)?;
 
-    Ok(Json(SigninCodeResponse { success: true }))
+    Ok(Json(SigninCodeResponse { success: true, recovery: None }))
 }
 
 #[derive(Deserialize)]
@@ -161,20 +177,21 @@ where
         .clone()
         .ok_or(BrokerError::InvalidVerificationCode)?;
 
+    let mut recovery = None;
     match pending.user_id {
         None => {
             // No account at staging time. Guard against one having appeared
             // since (e.g. a parallel create flow) — that turns this into the
             // reset branch, never a duplicate account.
             match state.user_store.get_user_by_email(&pending.email)? {
-                Some(user) => reset_password(&state, user.id, &pending)?,
+                Some(user) => recovery = begin_reset(&state, user.id, &pending)?,
                 None => {
                     let user_id = state.user_store.create_user(&password_hash)?;
                     state.user_store.add_email(user_id, &pending.email, true)?;
                 }
             }
         }
-        Some(user_id) => reset_password(&state, user_id, &pending)?,
+        Some(user_id) => recovery = begin_reset(&state, user_id, &pending)?,
     }
 
     state.user_store.delete_pending(&pending.secret)?;
@@ -184,16 +201,36 @@ where
     // later) isn't blocked. Unredeemed codes keep the cooldown.
     state.clear_email_throttle(&pending.email).await;
 
-    Ok(Json(SigninCodeResponse { success: true }))
+    Ok(Json(SigninCodeResponse { success: true, recovery }))
 }
 
-/// The existing-account branch = a password reset, so it carries the reset
-/// path's security fences verbatim (see `reset::complete_reset`).
-fn reset_password<U, S, E>(
+/// The proofs a reset wants (registry-api-v1 §5.2.7 `proofs`, capped by
+/// the identity count): the mailbox code is one.
+fn reset_needed<U: UserStore, S: SessionStore, E: EmailSender>(state: &AppState<U, S, E>, user_id: UserId) -> Result<u32, BrokerError> {
+    let policy = crate::account_auth::account_policy(state.user_store.as_ref(), user_id)?;
+    let identities = crate::account_auth::identity_count(state.user_store.as_ref(), user_id)?;
+    Ok(policy.proofs.unwrap_or(browserid_registrar::policy::BASELINE_PROOFS).min(identities.max(1)))
+}
+
+fn masked_hints<U: UserStore, S: SessionStore, E: EmailSender>(state: &AppState<U, S, E>, user_id: UserId, proven: &[String]) -> Result<Vec<String>, BrokerError> {
+    Ok(crate::membership::roster(state.user_store.as_ref(), user_id)?
+        .into_iter()
+        .filter(|(i, s)| *s == "active" && !proven.iter().any(|p| p.eq_ignore_ascii_case(i)))
+        .map(|(i, _)| super::registry_login::mask_address(&i))
+        .collect())
+}
+
+/// The existing-account branch: a reset is one ceremony that meets the
+/// account's proof bar before anything changes (bean yz4y). The mailbox
+/// code is the first proof; when it is the only one wanted (a single-
+/// identity account, or a policy asking for one), the reset applies now.
+/// Otherwise a recovery attempt records it and the client continues with
+/// presentations at `/wsapi/recovery_proofs`.
+fn begin_reset<U, S, E>(
     state: &AppState<U, S, E>,
-    user_id: crate::store::UserId,
+    user_id: UserId,
     pending: &PendingVerification,
-) -> Result<(), BrokerError>
+) -> Result<Option<RecoveryInfo>, BrokerError>
 where
     U: UserStore,
     S: SessionStore,
@@ -203,26 +240,141 @@ where
         .password_hash
         .clone()
         .ok_or(BrokerError::InvalidVerificationCode)?;
-    state.user_store.update_password(user_id, &password_hash)?;
+    let proven = vec![pending.email.to_lowercase()];
+    let needed = reset_needed(state, user_id)?;
+    if proven.len() as u32 >= needed {
+        apply_reset(state, user_id, &password_hash, &proven)?;
+        return Ok(None);
+    }
+    let id = crate::crypto::generate_salt_b64() + &crate::crypto::generate_salt_b64();
+    let now = Utc::now();
+    state.user_store.create_recovery(RecoveryAttempt {
+        id: id.clone(),
+        user_id,
+        email: pending.email.to_lowercase(),
+        password_hash,
+        proven: proven.clone(),
+        created_at: now,
+        expires_at: now + chrono::Duration::seconds(RECOVERY_SECONDS),
+    })?;
+    tracing::info!(needed, "reset: waiting for more identity proofs");
+    Ok(Some(RecoveryInfo { hints: masked_hints(state, user_id, &proven)?, id, proven, needed }))
+}
 
-    // Re-verification fence (kgb9): control of ONE inbox + a reset must not
-    // pivot to minting the account's OTHER SMTP addresses.
-    let reset_addr = pending.email.to_lowercase();
+/// The parent identity an agent row derives from: its recorded parent,
+/// else the address before the `+tag`.
+fn agent_parent(e: &crate::store::Email) -> Option<String> {
+    if let Some(p) = &e.parent_email {
+        return Some(p.to_lowercase());
+    }
+    let (local, domain) = browserid_core::identity::email_parts(&e.email)?;
+    let base = local.split('+').next()?;
+    Some(format!("{base}@{domain}").to_lowercase())
+}
+
+/// What a completed reset does (draft, "Reset the password"): the new
+/// password; every plain mailbox not proven in this ceremony unverified;
+/// agent identities of unproven parents unverified until the parent is
+/// re-proven; every browser session ended and every login key revoked, so
+/// each device passes the add-a-device bar again.
+pub(super) fn apply_reset<U, S, E>(
+    state: &AppState<U, S, E>,
+    user_id: UserId,
+    password_hash: &str,
+    proven: &[String],
+) -> Result<(), BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    state.user_store.update_password(user_id, password_hash)?;
+    let is_proven = |e: &str| proven.iter().any(|p| p.eq_ignore_ascii_case(e));
     for e in state.user_store.list_emails(user_id)? {
-        if e.email_type == EmailType::Secondary
-            && e.proof == ProofMethod::Smtp
-            && e.email.to_lowercase() != reset_addr
-        {
-            state.user_store.unverify_email(&e.email)?;
+        match e.email_type {
+            EmailType::Secondary if e.proof == ProofMethod::Smtp => {
+                if is_proven(&e.email) { state.user_store.verify_email(&e.email)?; }
+                else { state.user_store.unverify_email(&e.email)?; }
+            }
+            EmailType::Agent => {
+                let parent_ok = agent_parent(&e).is_some_and(|p| is_proven(&p));
+                if !parent_ok { state.user_store.unverify_email(&e.email)?; }
+            }
+            _ => {}
         }
     }
-    // The reset address itself: freshly proven, whatever its history.
-    state.user_store.verify_email(&pending.email)?;
-
-    // Session eviction (audit H2): a reset is the recovery path, so it cuts
-    // off an attacker who already holds a session. The dialog immediately
-    // re-authenticates with the new password.
+    // Session eviction (audit H2) and every login key (draft): a reset is
+    // the recovery path, so it cuts off whoever already holds a device.
     state.session_store.delete_by_user(user_id)?;
-
+    for k in state.user_store.list_login_certs(user_id)? {
+        if k.revoked_at.is_none() {
+            state.user_store.revoke_login_cert(user_id, k.id)?;
+        }
+        state.user_store.end_sessions_on_login_key(user_id, k.id).ok();
+    }
+    tracing::info!(proofs = proven.len(), "reset: applied");
     Ok(())
 }
+
+/// Re-verify the agent identities that derive from `parent` (it was just
+/// re-proven at its issuer; they were unverified with it by a reset).
+pub(super) fn reverify_agents_of<U: UserStore>(store: &U, user_id: UserId, parent: &str) -> Result<(), BrokerError> {
+    for e in store.list_emails(user_id)? {
+        if e.email_type == EmailType::Agent && !e.verified && agent_parent(&e).is_some_and(|p| p.eq_ignore_ascii_case(parent)) {
+            store.verify_email(&e.email)?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct RecoveryProofsRequest {
+    pub id: String,
+    pub presentations: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct RecoveryProofsResponse {
+    pub success: bool,
+    /// The reset applied.
+    pub reset: bool,
+    pub hints: Vec<String>,
+    pub proven: Vec<String>,
+    pub needed: u32,
+}
+
+/// POST /wsapi/recovery_proofs — presentations for this origin's own
+/// audience, one per identity; the reset applies when enough distinct
+/// identities are proven.
+pub async fn recovery_proofs<U, S, E>(
+    State(state): State<Arc<AppState<U, S, E>>>,
+    Json(req): Json<RecoveryProofsRequest>,
+) -> Result<Json<RecoveryProofsResponse>, BrokerError>
+where
+    U: UserStore,
+    S: SessionStore,
+    E: EmailSender,
+{
+    let rec = state
+        .user_store
+        .get_recovery(&req.id)?
+        .filter(|r| r.expires_at > Utc::now())
+        .ok_or(BrokerError::InvalidVerificationCode)?;
+    let fresh = super::registry_login::proven_identities(&state, rec.user_id, &req.presentations).await?;
+    let mut proven = rec.proven.clone();
+    for p in fresh {
+        if !proven.iter().any(|x| x.eq_ignore_ascii_case(&p)) {
+            proven.push(p);
+        }
+    }
+    let needed = reset_needed(&state, rec.user_id)?;
+    if proven.len() as u32 >= needed {
+        apply_reset(&state, rec.user_id, &rec.password_hash, &proven)?;
+        state.user_store.delete_recovery(&rec.id)?;
+        return Ok(Json(RecoveryProofsResponse { success: true, reset: true, hints: vec![], proven, needed }));
+    }
+    state.user_store.set_recovery_proven(&rec.id, &proven)?;
+    let hints = masked_hints(&state, rec.user_id, &proven)?;
+    Ok(Json(RecoveryProofsResponse { success: true, reset: false, hints, proven, needed }))
+}
+

@@ -137,7 +137,7 @@ fn count_failure<U: UserStore, S: SessionStore, E: EmailSender>(state: &AppState
 
 /// Verify presentations for this origin's own audience and keep those
 /// naming an active identity of `user_id`: the distinct identities proven.
-async fn proven_identities<U: UserStore, S: SessionStore, E: EmailSender>(
+pub(super) async fn proven_identities<U: UserStore, S: SessionStore, E: EmailSender>(
     state: &AppState<U, S, E>,
     user_id: UserId,
     presentations: &[String],

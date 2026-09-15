@@ -403,6 +403,7 @@
           <div class="rtitle tight">Account settings</div>
           <div class="setlist">
             <button id="set-pass">Change password</button>
+            <button id="set-policy">How devices get in</button>
             <button id="set-signout-all">Sign out everywhere</button>
             <button id="set-delete" class="danger">Delete account</button>
           </div>
@@ -414,6 +415,21 @@
               <button class="btn-plain" id="cp-cancel">Cancel</button>
             </div>
             <p class="status" id="cp-status"></p>
+          </div>
+          <div id="policy-form" class="inform" hidden>
+            <div class="hint">A new browser or wallet joins this account by the password, by proving some of
+              your addresses, or by approval from a device already signed in. Tighten that here.</div>
+            <label class="hint" style="display:block;margin-top:8px">Addresses to prove (instead of the password)
+              <select class="inp" id="pol-proofs" style="margin:4px 0 0"></select></label>
+            <label class="hint" style="display:block;margin-top:8px"><input type="checkbox" id="pol-password"> Always require the password as well</label>
+            <label class="hint" style="display:block;margin-top:6px"><input type="checkbox" id="pol-approval"> Let a signed-in device approve a new one</label>
+            <label class="hint" style="display:block;margin-top:8px">Before a device can mint keys for your plain mailboxes on its own, it must have proven
+              <select class="inp" id="pol-mint" style="margin:4px 0 0"></select></label>
+            <div class="btnrow" style="margin-top:8px">
+              <button class="btn-dark" id="pol-go">Save</button>
+              <button class="btn-plain" id="pol-cancel">Cancel</button>
+            </div>
+            <p class="status" id="pol-status"></p>
           </div>
           <div id="del-form" class="inform" hidden>
             <div class="hint" style="color:#5c3a36">This deletes your account, addresses and every permission —
@@ -632,7 +648,7 @@ function buildActors() {
       })),
       addr: null, publicName: '', here: !!k.current, inactive: false,
       since: k.enrolled_at || '', external: false, holders: [...new Set(holders)],
-      keyOnly: certs.length === 0,
+      keyOnly: certs.length === 0, enrolledBy: k.enrolled_by || null,
     });
   }
   const fold = (h, ns) => {
@@ -766,6 +782,8 @@ function actorRowHtml(actor, perms) {
   const loginOnly = actor.ids.filter(i => !i.trusted).map(i => i.email);
   if (actor.kind === 'browser' && actor.keyOnly) badges.push('<span class="badge b-gray">account page only</span>');
   else if (actor.kind === 'browser' && !trusted.length) badges.push('<span class="badge b-gray">sign-in only</span>');
+  if (actor.kind === 'browser' && actor.enrolledBy === 'approval') badges.push('<span class="badge b-gray">let in by another device</span>');
+  else if (actor.kind === 'browser' && actor.enrolledBy === 'proofs') badges.push('<span class="badge b-gray">joined by proving addresses</span>');
   const pub = actor.kind === 'agent' && actor.publicName
     ? ` <span class="apub">· appears publicly as “${escapeHtml(actor.publicName)}”</span>` : '';
   let sub;
@@ -1062,7 +1080,10 @@ function renderDetail() {
 
   const kindPhrase = actor.kind === 'browser' ? 'A browser of yours'
     : actor.kind === 'agent' ? 'An agent of yours' : 'An outside service';
-  const metaLine = `${kindPhrase}${actor.since ? ' since ' + fmtDate(actor.since) : ''}`;
+  const howIn = actor.kind === 'browser' && actor.enrolledBy
+    ? ({ password: ', added with your password', approval: ', let in by another of your devices', proofs: ', added by proving your addresses' }[actor.enrolledBy] || '')
+    : '';
+  const metaLine = `${kindPhrase}${actor.since ? ' since ' + fmtDate(actor.since) : ''}${howIn}`;
 
   const callouts = {
     browser: 'A browser is you. When it’s trusted for an address, it can sign in and approve new permissions for that address. Cutting it off signs it out everywhere within minutes.',
@@ -1473,10 +1494,39 @@ $('ae-setpass').onclick = async () => {
 
 // -------- rail: account settings --------
 function toggleForm(id) {
-  for (const f of ['pass-form', 'del-form']) $(f).hidden = (f === id) ? !$(id).hidden : true;
+  for (const f of ['pass-form', 'del-form', 'policy-form']) $(f).hidden = (f === id) ? !$(id).hidden : true;
   $('set-status').textContent = '';
 }
 $('set-pass').onclick = () => { toggleForm('pass-form'); if (!$('pass-form').hidden) $('cp-old').focus(); };
+// -------- how devices get in (registry-api-v1 §5.2.7, bean svs7) --------
+async function loadPolicyForm() {
+  $('pol-status').textContent = '';
+  if (!account.registry) { $('pol-status').textContent = 'Sign in with your password on this browser to change this.'; return; }
+  let p; try { p = await reg('GET', '/api/v1/account/policy'); } catch (e) { $('pol-status').textContent = e.message; return; }
+  const n = Math.max(1, p.identities || 1);
+  const opt = (v, t) => `<option value="${v}">${escapeHtml(t)}</option>`;
+  $('pol-proofs').innerHTML = Array.from({ length: n }, (_, i) => i + 1).map(k => opt(k, k === 1 ? 'any one address' : `${k} of your ${n} addresses`)).join('');
+  $('pol-proofs').value = String(p.effective.proofs);
+  $('pol-password').checked = !!p.effective.password_required;
+  $('pol-password').disabled = !p.has_password;
+  $('pol-approval').checked = !!p.effective.approval;
+  $('pol-mint').innerHTML = [opt(0, 'nothing — joining is enough')].concat(Array.from({ length: n }, (_, i) => i + 1).map(k => opt(k, `${k} address${k === 1 ? '' : 'es'} on that device`))).join('');
+  $('pol-mint').value = String(p.effective.mint_proven || 0);
+}
+$('set-policy').onclick = async () => { toggleForm('policy-form'); if (!$('policy-form').hidden) await loadPolicyForm(); };
+$('pol-cancel').onclick = () => toggleForm(null);
+$('pol-go').onclick = async () => {
+  const body = {
+    proofs: Number($('pol-proofs').value),
+    password_required: $('pol-password').checked,
+    approval: $('pol-approval').checked,
+    mint_proven: Number($('pol-mint').value),
+  };
+  try {
+    await reg('PUT', '/api/v1/account/policy', body);
+    $('pol-status').textContent = 'Saved.';
+  } catch (e) { $('pol-status').textContent = e.message || 'That did not work.'; }
+};
 $('cp-cancel').onclick = () => { $('pass-form').hidden = true; };
 $('cp-go').onclick = async () => {
   const status = $('cp-status'); status.className = 'status muted'; status.textContent = 'Changing…';
@@ -1678,7 +1728,14 @@ $('signin-form').onsubmit = async (e) => {
     }
     if (siMode === 'create-code') {
       siMuted('Confirming…');
-      await post('/wsapi/complete_signin_code', { email, token: $('si-code').value.trim() });
+      const done = await post('/wsapi/complete_signin_code', { email, token: $('si-code').value.trim() });
+      if (done && done.recovery) {
+        // A reset on a multi-identity account waits for more proofs (yz4y);
+        // the sign-in dialog finishes it — sign in with one of these there.
+        const hints = (done.recovery.hints || []).join(', ');
+        siErr(`To finish resetting your password, also sign in with ${hints} using the browserid sign-in on any site, within 30 minutes.`);
+        return;
+      }
       await post('/wsapi/authenticate_user', { email, pass: siPendingPass, ephemeral: false });
       await registryLoginWithPassword(siPendingPass);
       location.reload(); return;

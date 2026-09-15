@@ -455,6 +455,73 @@
     return t.data.login;
   }
 
+  // A password reset waiting for more identity proofs (bean yz4y). Held
+  // identities matching the hints are proven at once; what is missing shows
+  // on the prove screen, and the attempt stays in `state.recovery` so that
+  // signing in with one of those identities here finishes it.
+  async function continueRecovery(recovery) {
+    const brokerOrigin = window.location.origin;
+    const post = async (path, body) => {
+      const r = await fetch(path, { method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body) });
+      return { ok: r.ok, data: await r.json().catch(() => ({})) };
+    };
+    let hints = recovery.hints || [], proven = recovery.proven || [];
+    const held = await heldPairs();
+    const presentations = [];
+    for (const hint of hints) {
+      const m = held.find(x => maskOf(x.email) === hint && !proven.includes(x.email));
+      if (!m) continue;
+      try {
+        const mintUrl = await WalletSigner.mintUrlFor(m.email, m.issuer);
+        presentations.push(await buildPresentation(m.pair, m.issuer, mintUrl, m.email, brokerOrigin, true));
+      } catch (e) { console.warn('recovery proof for', m.email, 'failed:', e.message || e); }
+    }
+    if (presentations.length) {
+      const r = await post('/wsapi/recovery_proofs', { id: recovery.id, presentations });
+      if (r.ok && r.data.reset) { state.recovery = null; return true; }
+      if (r.ok) { hints = r.data.hints || hints; proven = r.data.proven || proven; }
+    }
+    state.recovery = { id: recovery.id, hints, proven, pass: state.pendingCreatePass || null };
+    await new Promise((resolve) => {
+      provePending = { resolve };
+      document.getElementById('prove-lead').textContent =
+        'To finish resetting your password, also sign in with one of these addresses. Signing in with it here completes the reset.';
+      const list = document.getElementById('prove-list');
+      list.innerHTML = '';
+      for (const hint of hints) {
+        const row = document.createElement('div');
+        row.className = 'consent-card';
+        row.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:13px;margin:6px 0';
+        row.textContent = hint;
+        list.appendChild(row);
+      }
+      showScreen('proveIdentities');
+    });
+    showScreen('email');
+    return false;
+  }
+  // After certs land for `email`: if a reset is waiting on it, finish.
+  async function maybeFinishRecovery(issuer, email, pair) {
+    const rec = state.recovery;
+    if (!rec || !(rec.hints || []).includes(maskOf(email))) return;
+    try {
+      const mintUrl = await WalletSigner.mintUrlFor(email, issuer);
+      const presentation = await buildPresentation(pair, issuer, mintUrl, email, window.location.origin, true);
+      const r = await fetch('/wsapi/recovery_proofs', { method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ id: rec.id, presentations: [presentation] }) });
+      const data = await r.json().catch(() => ({}));
+      if (r.ok && data.reset) {
+        state.recovery = null;
+        if (rec.pass) state.typedPassword = rec.pass;
+        showScreen('loading', 'Password reset. Finishing sign-in...');
+      } else if (r.ok) {
+        state.recovery = { ...rec, hints: data.hints || rec.hints, proven: data.proven || rec.proven };
+      }
+    } catch (e) { console.warn('recovery continuation failed:', e.message || e); }
+  }
+
   let managedConsentPending = null;
   function managedDisclosure(issuer, email) {
     return new Promise((resolve, reject) => {
@@ -486,6 +553,10 @@
     });
     await Keystore.putDevice(issuer, email, 'config', {
       publicKeyX: keys.config.publicKeyX, privateKey: keys.config.privateKey, cert: certs.config_cert
+    });
+    await maybeFinishRecovery(issuer, email, {
+      device: { cert: certs.device_cert, privateKey: keys.device.privateKey },
+      config: { cert: certs.config_cert, privateKey: keys.config.privateKey },
     });
   }
 
@@ -2875,7 +2946,14 @@
       showScreen('loading');
 
       try {
-        await apiCall(API.completeSigninCode, 'POST', { email: state.email, token: code });
+        const done = await apiCall(API.completeSigninCode, 'POST', { email: state.email, token: code });
+        // A reset on a multi-identity account waits for more proofs (bean
+        // yz4y): prove what this browser already holds; otherwise say what
+        // is missing and keep the attempt so a later sign-in can finish it.
+        if (done && done.recovery) {
+          const finished = await continueRecovery(done.recovery);
+          if (!finished) return;
+        }
         // Completion set the staged password on the (new or existing)
         // account but minted no session — sign in with it for a Full
         // session so the E3 mint proceeds. Fall through on failure:

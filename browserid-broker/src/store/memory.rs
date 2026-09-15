@@ -8,7 +8,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    LoginApproval, LoginCert, LoginToken, RegistrySession, SuspendedIdentity,
+    LoginApproval, LoginCert, LoginToken, RecoveryAttempt, RegistrySession, SuspendedIdentity,
     DeviceCertRecord, Email, EmailType, ManagementPolicy, Namespace, PendingVerification, ProofMethod, RosterEntry,
     RosterState, Session, SessionId, SessionLevel, WarrantRecord, WarrantRequestRecord, WarrantRequestStatus,
     SessionStore, StoreResult, Tenant, TenantStatus, User, UserId, UserStore, VerificationType,
@@ -54,6 +54,7 @@ pub struct InMemoryUserStore {
     account_ids: RwLock<HashMap<UserId, String>>,
     account_policies: RwLock<HashMap<UserId, String>>,
     login_approvals: RwLock<HashMap<String, LoginApproval>>,
+    recoveries: RwLock<HashMap<String, RecoveryAttempt>>,
     login_certs: RwLock<HashMap<u64, LoginCert>>,
     next_login_cert_id: AtomicU64,
     login_tokens: RwLock<HashMap<String, LoginToken>>,
@@ -87,6 +88,7 @@ impl InMemoryUserStore {
             account_ids: RwLock::new(HashMap::new()),
             account_policies: RwLock::new(HashMap::new()),
             login_approvals: RwLock::new(HashMap::new()),
+            recoveries: RwLock::new(HashMap::new()),
             login_certs: RwLock::new(HashMap::new()),
             next_login_cert_id: AtomicU64::new(1),
             login_tokens: RwLock::new(HashMap::new()),
@@ -689,6 +691,22 @@ impl UserStore for InMemoryUserStore {
 
     fn take_login_approval_token(&self, id: &str) -> StoreResult<Option<String>> {
         Ok(self.login_approvals.write().unwrap().get_mut(id).and_then(|a| a.token.take()))
+    }
+
+    fn create_recovery(&self, rec: RecoveryAttempt) -> StoreResult<()> {
+        self.recoveries.write().unwrap().insert(rec.id.clone(), rec);
+        Ok(())
+    }
+    fn get_recovery(&self, id: &str) -> StoreResult<Option<RecoveryAttempt>> {
+        Ok(self.recoveries.read().unwrap().get(id).cloned())
+    }
+    fn set_recovery_proven(&self, id: &str, proven: &[String]) -> StoreResult<()> {
+        if let Some(r) = self.recoveries.write().unwrap().get_mut(id) { r.proven = proven.to_vec(); }
+        Ok(())
+    }
+    fn delete_recovery(&self, id: &str) -> StoreResult<()> {
+        self.recoveries.write().unwrap().remove(id);
+        Ok(())
     }
 
     fn get_account_policy(&self, user_id: UserId) -> StoreResult<Option<String>> {
