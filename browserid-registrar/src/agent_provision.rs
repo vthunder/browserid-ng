@@ -187,7 +187,7 @@ pub struct Handles {
 pub struct GrantReq {
     pub audience: String,
     #[serde(default)]
-    pub scopes: Vec<String>,
+    pub scopes: Vec<browserid_core::ScopeEntry>,
 }
 
 #[derive(Deserialize)]
@@ -775,7 +775,13 @@ pub async fn prepare(
         .filter(|r| !r.is_expired() && r.status == Status::Pending)
         .ok_or(RegistrarError::ProvisionRequestNotFound)?;
     for g in &mut rec.grants {
-        let idx = crate::consent::live_status_index(&*state.store, user.user_id, &agent_email, &g.audience, &g.scopes)?;
+        let idx = crate::consent::live_status_index(
+            &*state.store,
+            user.user_id,
+            &agent_email,
+            &g.audience,
+            &crate::consent::scope_strings(&g.scopes),
+        )?;
         g.status_idx = Some(idx);
     }
     rec.holder = Some(holder.clone());

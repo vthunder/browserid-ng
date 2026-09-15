@@ -693,8 +693,9 @@ struct ApiAllocateStatusRequest {
     /// The identity that will present the warrant (§5.4).
     grantee: String,
     audience: String,
+    /// Scope entries or bare strings; keyed by scope string (§5 rule 1).
     #[serde(default)]
-    scopes: Vec<String>,
+    scopes: Vec<browserid_core::ScopeEntry>,
 }
 
 #[derive(Serialize)]

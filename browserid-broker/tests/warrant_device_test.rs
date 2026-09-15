@@ -378,3 +378,111 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
     assert_ne!(r.status_code(), 200, "a warrant with someone else's status index must be refused");
     assert!(r.text().contains("status ref"), "{}", r.text());
 }
+
+/// Scope ENTRIES with parameters (spec §5: cap / counterparties /
+/// max_duration, audience-enforced) ride the filed lane verbatim: the inbox
+/// shows the entry, `respond` refuses a record that dropped the parameter,
+/// accepts the exact record, and the registry lists the entry as signed.
+#[tokio::test]
+async fn filed_warrant_request_preserves_scope_parameters_verbatim() {
+    use browserid_core::device::{BindingSet, Binding, ScopeEntry, ScopeParams, Cap};
+    let (server, sender, idp_kp) = make_server();
+    let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
+    let sess = common::registry::api_login(&server, &session, "testpassword").await;
+
+    let agent_holder = Holder::new("ag.bot").unwrap();
+    let agent_kp = KeyPair::generate();
+    let agent_cert = DeviceCert::create(
+        DOMAIN, &agent_kp.public_key(), Purpose::Authentication, agent_holder.clone(),
+        vec![AGENT.to_string()], Duration::days(90), &idp_kp, None,
+    )
+    .unwrap();
+    let config_kp = KeyPair::generate();
+    let config_cert = DeviceCert::create(
+        DOMAIN, &config_kp.public_key(), Purpose::Authorization, Holder::new("br.main").unwrap(),
+        vec![DELEGATOR.to_string(), "alice+*@example.com".to_string()],
+        Duration::days(90), &idp_kp, None,
+    )
+    .unwrap();
+
+    let entry = json!({ "scope": "pay:transfer",
+        "cap": { "amount": "20.00", "currency": "USD", "window": "P30D" },
+        "counterparties": ["*@acme.example"] });
+    let custodian = "https://pay.example";
+
+    // Malformed parameters are refused at request time (never signed into a
+    // record nobody can honor).
+    for bad in [
+        json!({ "scope": "pay:transfer", "cap": { "amount": "1e3", "currency": "USD" } }),
+        json!({ "scope": "pay:transfer", "cap": { "amount": "1", "currency": "usd" } }),
+        json!({ "scope": "pay:transfer", "cap": { "amount": "1", "currency": "USD", "window": "30 days" } }),
+        json!({ "scope": "pay:transfer", "max_per_day": 3 }),
+        json!({ "scope": "contract:agreement", "counterparties": ["not-an-email"] }),
+        json!({ "scope": "contract:agreement", "max_duration": "P" }),
+    ] {
+        let r = server
+            .post("/warrant/request")
+            .json(&json!({ "device_cert": agent_cert.encoded(), "identity": AGENT,
+                "grants": [{ "audience": custodian, "scopes": [bad] }] }))
+            .await;
+        assert_ne!(r.status_code(), 200, "malformed parameter must be refused: {bad}");
+    }
+
+    let r = server
+        .post("/warrant/request")
+        .json(&json!({ "device_cert": agent_cert.encoded(), "identity": AGENT,
+            "grants": [{ "audience": custodian, "scopes": [entry.clone(), "read"] }], "label": "spender" }))
+        .await;
+    assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
+    let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
+
+    // The inbox carries the entry verbatim (the card renders it from the
+    // wallet-owned label table).
+    let listed: Value = common::registry::api_get(&server, &sess, "/api/v1/requests").await.json();
+    let grant = &listed["requests"][0]["grants"][0];
+    assert_eq!(grant["scopes"][0], entry, "inbox: {listed}");
+    assert_eq!(grant["scopes"][1], "read");
+    let status_idx = grant["status_idx"].as_u64().unwrap();
+    let status_uri = listed["status_uri"].as_str().unwrap().to_string();
+    let status = StatusRef { uri: status_uri, idx: status_idx };
+
+    let signed = |scopes: Vec<ScopeEntry>| {
+        browserid_core::device::Warrant::create_v2(
+            AGENT, AGENT,
+            BindingSet::One(Binding::Holder { matcher: HolderMatcher::new("ag.bot").unwrap() }),
+            custodian, scopes, Duration::days(90), &config_kp, status.clone(),
+        )
+        .unwrap()
+    };
+    let _c = csrf(&server, &session).await;
+
+    // A record that DROPPED the parameters is not the grant that was asked for.
+    let loose = signed(vec!["pay:transfer".into(), "read".into()]);
+    let r = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({
+        "code": code, "approve": true, "warrants": [loose.encoded()], "config_cert": config_cert.encoded() })).await;
+    assert_ne!(r.status_code(), 200, "loosened record must be refused");
+    assert!(r.text().contains("scope_mismatch"), "{:?}", r.text());
+
+    // The exact record is accepted...
+    let exact = signed(vec![
+        ScopeEntry::Parameterized(ScopeParams {
+            scope: "pay:transfer".into(), mode: None,
+            cap: Some(Cap { amount: "20.00".into(), currency: "USD".into(), window: Some("P30D".into()) }),
+            counterparties: Some(vec!["*@acme.example".into()]), max_duration: None,
+        }),
+        "read".into(),
+    ]);
+    let r = common::registry::api_post(&server, &sess, "/api/v1/requests/respond", json!({
+        "code": code, "approve": true, "warrants": [exact.encoded()], "config_cert": config_cert.encoded() })).await;
+    assert_eq!(r.status_code(), 200, "respond: {:?}", r.text());
+
+    // ...delivered verbatim to the agent, and listed with its parameters in
+    // the delegator's registry.
+    let poll: Value = server.post("/warrant/poll").json(&json!({ "code": code })).await.json();
+    let tail = poll["grants"][0]["warrant"].as_str().unwrap();
+    let delivered = browserid_core::device::Warrant::parse(tail.split('~').next().unwrap()).unwrap();
+    assert_eq!(delivered.claims().scopes[0].cap().unwrap().amount, "20.00");
+    assert_eq!(delivered.claims().scopes[0].counterparties(), Some(&["*@acme.example".to_string()][..]));
+    let warrants: Value = common::registry::api_get(&server, &sess, "/api/v1/warrants").await.json();
+    assert_eq!(warrants["warrants"][0]["scopes"][0], entry, "registry: {warrants}");
+}

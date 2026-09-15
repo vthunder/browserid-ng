@@ -107,6 +107,13 @@ pub fn assign_holder_id(prefix: &str) -> String {
     format!("{prefix}.{suffix}")
 }
 
+/// Project scope entries to their identity strings (spec §5 rule 1: an
+/// entry's identity is its scope string; parameters ride along and never
+/// enter fingerprints or status subjects).
+pub fn scope_strings(entries: &[browserid_core::ScopeEntry]) -> Vec<String> {
+    entries.iter().map(|e| e.scope().to_string()).collect()
+}
+
 pub fn scope_fingerprint(scopes: &[String]) -> String {
     use sha2::{Digest, Sha256};
     let mut sorted: Vec<&str> = scopes.iter().map(String::as_str).collect();
@@ -298,7 +305,7 @@ async fn surface_record_request(
                         user_id,
                         g.grantee.as_deref().unwrap_or_default(),
                         &g.audience,
-                        &g.scopes,
+                        &scope_strings(&g.scopes),
                     ),
                 };
                 g.status_idx = Some(state.store.get_or_allocate_status("warrant", &subject)?);
@@ -581,10 +588,13 @@ fn respond_record(
         if claims.audience != grant.audience {
             return Err(vfail("audience_mismatch", "record audience does not match its grant"));
         }
+        // Entries must match EXACTLY — scope strings and parameters alike
+        // (§5: a parameter is a restriction; a record that dropped or
+        // loosened one is not the grant that was requested).
         let mut want = grant.scopes.clone();
-        let mut got = claims.scope_strings();
-        want.sort_unstable();
-        got.sort_unstable();
+        let mut got = claims.scopes.clone();
+        want.sort_by(|a, b| a.scope().cmp(b.scope()));
+        got.sort_by(|a, b| a.scope().cmp(b.scope()));
         if want != got {
             return Err(vfail("scope_mismatch", "record scopes do not match the requested grant"));
         }
@@ -732,6 +742,18 @@ pub(crate) fn validate_grant_warrants(
                 "warrant grantee does not match the requested actor",
             ));
         }
+        // Scope entries must match the grant EXACTLY — strings and parameters
+        // (§5): a record that dropped or loosened a cap is not the grant the
+        // agent asked for and the approver saw on the card.
+        {
+            let mut want = grant.scopes.clone();
+            let mut got = claims.scopes.clone();
+            want.sort_by(|a, b| a.scope().cmp(b.scope()));
+            got.sort_by(|a, b| a.scope().cmp(b.scope()));
+            if want != got {
+                return Err(vfail("scope_mismatch", "warrant scopes do not match the requested grant"));
+            }
+        }
         // This flow signs PRESENTATION grants for an agent, so the record must
         // be holder-bound (a connection-bound record is admission-only and is
         // minted by the broker's own consent surface, never supplied here).
@@ -843,7 +865,10 @@ pub(crate) fn validate_return_url(
 
 /// Shape check on one requested grant (audience + opaque scopes) — shared by
 /// `warrant_request` and `agent_provision::request`.
-pub(crate) fn validate_grant_shape(audience: &str, scopes: &[String]) -> Result<(), RegistrarError> {
+pub(crate) fn validate_grant_shape(
+    audience: &str,
+    scopes: &[browserid_core::ScopeEntry],
+) -> Result<(), RegistrarError> {
     if audience.is_empty()
         || audience.contains('*')
         || audience.len() > 512
@@ -851,8 +876,52 @@ pub(crate) fn validate_grant_shape(audience: &str, scopes: &[String]) -> Result<
     {
         return Err(RegistrarError::ValidationError("bad audience".into()));
     }
-    if scopes.len() > 32 || scopes.iter().any(|s| s.len() > 128) {
+    if scopes.len() > 32 || scopes.iter().any(|s| s.scope().len() > 128) {
         return Err(RegistrarError::ValidationError("bad scopes".into()));
+    }
+    for e in scopes {
+        validate_scope_params(e)?;
+    }
+    Ok(())
+}
+
+/// Shape check on one entry's parameters (spec §5). The registrar never
+/// interprets scopes, but a parameter it cannot even parse would be signed
+/// into a record no consumer can honor — refuse it here, at request time.
+pub(crate) fn validate_scope_params(e: &browserid_core::ScopeEntry) -> Result<(), RegistrarError> {
+    let bad = |m: &str| RegistrarError::ValidationError(format!("bad scope parameter: {m}"));
+    let Some(p) = e.params() else { return Ok(()) };
+    if let Some(cap) = &p.cap {
+        if cap.amount.len() > 32 || cap.amount_minor().is_none() {
+            return Err(bad("cap.amount must be a decimal string with at most two fraction digits"));
+        }
+        if cap.currency.len() != 3 || !cap.currency.chars().all(|c| c.is_ascii_uppercase()) {
+            return Err(bad("cap.currency must be an ISO 4217 code"));
+        }
+        if let Some(w) = &cap.window {
+            if w.len() > 32 || browserid_core::device::parse_iso_duration_secs(w).is_none() {
+                return Err(bad("cap.window must be an ISO-8601 duration"));
+            }
+        }
+    }
+    if let Some(list) = &p.counterparties {
+        if list.is_empty() || list.len() > 32 {
+            return Err(bad("counterparties must name 1..32 entries"));
+        }
+        for c in list {
+            let ok = c.len() <= 254
+                && !c.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+                && (c.strip_prefix("*@").is_some_and(|d| !d.is_empty() && !d.contains('@'))
+                    || (c.matches('@').count() == 1 && !c.starts_with('@') && !c.ends_with('@')));
+            if !ok {
+                return Err(bad("counterparties entries must be exact emails or *@domain"));
+            }
+        }
+    }
+    if let Some(d) = &p.max_duration {
+        if d.len() > 32 || browserid_core::device::parse_iso_duration_secs(d).is_none() {
+            return Err(bad("max_duration must be an ISO-8601 duration"));
+        }
     }
     Ok(())
 }
@@ -902,7 +971,10 @@ pub struct WarrantInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<browserid_core::StatusRef>,
     pub audience: String,
-    pub scopes: Vec<String>,
+    /// Scope entries as signed into the record (parameters included), so
+    /// the ledger can label them; falls back to the stored strings when the
+    /// JWS does not parse.
+    pub scopes: Vec<browserid_core::ScopeEntry>,
     /// The signed JWS — the delegator's own copy (paste into an agent)
     pub warrant: String,
     /// Present iff the warrant carries a status claim (revocable per-grant)
@@ -973,7 +1045,9 @@ pub(crate) fn list_warrants_core(
                 delegator_email: r.delegator_email,
                 agent_email: r.agent_email,
                 audience: r.audience,
-                scopes: r.scopes,
+                scopes: Warrant::parse(&r.warrant)
+                    .map(|w| w.claims().scopes.clone())
+                    .unwrap_or_else(|_| r.scopes.into_iter().map(browserid_core::ScopeEntry::from).collect()),
                 warrant: r.warrant,
                 status_idx: r.status_idx,
                 revoked,
@@ -1115,8 +1189,13 @@ pub(crate) fn allocate_status_core(
     user_id: u64,
     agent_email: &str,
     audience: &str,
-    scopes: &[String],
+    scopes: &[browserid_core::ScopeEntry],
 ) -> Result<(String, u64), RegistrarError> {
+    for e in scopes {
+        validate_scope_params(e)?;
+    }
+    let scopes = scope_strings(scopes);
+    let scopes = scopes.as_slice();
     if audience.is_empty()
         || audience.contains('*')
         || audience.len() > 512
@@ -1173,8 +1252,10 @@ fn new_poll_code() -> String {
 #[derive(Deserialize)]
 pub struct WarrantRequestGrant {
     pub audience: String,
+    /// Scope entries (spec §5): bare strings or `{ scope, …parameters }`,
+    /// signed into the warrant verbatim.
     #[serde(default)]
-    pub scopes: Vec<String>,
+    pub scopes: Vec<browserid_core::ScopeEntry>,
 }
 
 #[derive(Deserialize)]
@@ -1359,7 +1440,7 @@ pub async fn warrant_request(
         .grants
         .iter()
         .map(|g| {
-            let idx = live_status_index(&*state.store, user_id, &identity, &g.audience, &g.scopes)?;
+            let idx = live_status_index(&*state.store, user_id, &identity, &g.audience, &scope_strings(&g.scopes))?;
             Ok(WarrantGrantItem {
                 audience: g.audience.clone(),
                 scopes: g.scopes.clone(),
@@ -1461,7 +1542,7 @@ pub struct AuthoringGrantItem {
     pub grantee: String,
     pub audience: String,
     #[serde(default)]
-    pub scopes: Vec<String>,
+    pub scopes: Vec<browserid_core::ScopeEntry>,
 }
 
 #[derive(Deserialize)]
@@ -1471,7 +1552,7 @@ pub struct RecordRequestBody {
     // --- connection ---
     pub audience: Option<String>,
     #[serde(default)]
-    pub scopes: Vec<String>,
+    pub scopes: Vec<browserid_core::ScopeEntry>,
     pub client: Option<RecordClientInfo>,
     /// Connection only, OPTIONAL: pin the identity the record must be
     /// signed by/for (the resource authenticated the connecting user first —

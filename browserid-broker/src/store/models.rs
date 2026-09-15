@@ -332,8 +332,9 @@ pub struct WarrantRequestRecord {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WarrantGrantItem {
     pub audience: String,
+    /// Scope entries (spec §5), verbatim — see the registrar's model.
     #[serde(default)]
-    pub scopes: Vec<String>,
+    pub scopes: Vec<browserid_core::ScopeEntry>,
     /// Status index allocated for this grant (egr7) — the consent page
     /// embeds it in the warrant it signs
     #[serde(default)]
