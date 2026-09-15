@@ -210,14 +210,23 @@ pub struct LoginCert {
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub status_idx: Option<u64>,
+    /// How the key was enrolled (§4.2): `password`, `proofs`, `approval`.
+    pub enrolled_by: String,
+    /// The identities proven (JSON array) or the approving key's kid.
+    pub enrolled_with: Option<String>,
 }
 
-/// A one-time token the registry's login page hands a wallet (§4.2).
+/// A one-time token the registry's login page hands a wallet (§4.2),
+/// remembering how the page authenticated the user so the key it enrols
+/// records that (bean noqd).
 #[derive(Debug, Clone)]
 pub struct LoginToken {
     pub token_hash: String,
     pub user_id: UserId,
     pub expires_at: DateTime<Utc>,
+    /// `password` | `proofs` | `approval`.
+    pub method: String,
+    pub detail: Option<String>,
 }
 
 /// A pending email verification

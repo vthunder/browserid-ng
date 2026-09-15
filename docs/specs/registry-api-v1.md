@@ -182,10 +182,27 @@ two, and a registry MUST offer both:
 call that opens a session: `accounts` (§5.2.1) and `login`. The
 registry **enrols** the key on the account the first time it sees it
 pass a login, keeping `{ id, kid, pubkey, label, holder?, enrolled_at,
-expires_at, revoked_at? }`, and issues nothing: it is the only party
-that ever checks a login key. `holder` is the device's holder, set
-when certs are recorded under a session on this key (§5.2.4), and is
-what lets forgetting a device (§5.6) log it out. Expiry is registry
+expires_at, revoked_at?, enrolled_by, enrolled_with? }`, and issues
+nothing: it is the only party that ever checks a login key. `holder`
+is the device's holder, set when certs are recorded under a session on
+this key (§5.2.4), and is what lets forgetting a device (§5.6) log it
+out. `enrolled_by` is how the key got in — `password`, `proofs` (the
+identities proven, listed in `enrolled_with`), or `approval` (the
+approving key's `kid` in `enrolled_with`) — recorded so the account's
+policy (below) can judge the device later.
+
+**The account's policy.** Which combinations of checks let a device in
+is the registry's business, and v1 gives it a shape: a requirement is
+a list of alternatives, each a set of conditions, evaluated against
+what the login page's ceremony collected. The baseline enrol rule is
+*the account password, or proofs of two of the account's identities
+(capped by how many it has), or approval from a device already
+enrolled*. An account tightens it at §5.2.7 — more proofs, the
+password in every alternative, approval off — never below the
+baseline's floors. The same policy object carries the mint rule an
+issuer that is also this registry applies before minting on a login
+key (fallback-IdP API §3.3): baseline *enrolled*, tightenable to
+*enrolled and proven k identities on this device*. Expiry is registry
 policy, RECOMMENDED 90 days from the last login through the page.
 Login keys are listed and revoked at §5.2.3; a re-enrolment of a key
 the registry already knows — expired or revoked — restores its record,
@@ -411,8 +428,9 @@ Enrolment happens at login (§4.2); there is no separate call.
 
 **`GET /api/v1/login-keys`** — The account's login keys: `id`, `kid`,
 `label`, `holder?`, `enrolled_at`, `expires_at`, `revoked`, `current`
-(`true` on the key this session is bound to). Revoked ones stay
-listed.
+(`true` on the key this session is bound to), `enrolled_by`,
+`enrolled_with` (§4.2: the identities proven, or the approving `kid`,
+else `null`). Revoked ones stay listed.
 
 **`POST /api/v1/login-keys/rename`** — Relabels a device. Request
 `{ "id", "label" }` (label per §3). Response `204`; an unknown or
@@ -481,6 +499,33 @@ records on hold), and the account is dropped after the hold. Request
 forever; indexes are never reused (§8). This is the ability to leave a
 registry; it does not touch the identities at their issuers. Exporting
 warrants and holders for use at another registry is a v2 concern.
+
+#### 5.2.7 Policy — `/api/v1/account/policy`
+
+The account's authentication policy (§4.2): the knobs stored on top of
+the baseline, and what they resolve to.
+
+**`GET /api/v1/account/policy`** — Response:
+
+```json
+{ "policy": { "proofs"?: 2, "password_required"?: false, "approval"?: true,
+              "mint_proven"?: 0, "mint_proven_identities"?: [] },
+  "effective": { "proofs": 1, "password_required": false, "approval": true,
+                 "mint_proven": 0, "mint_proven_identities": [] },
+  "identities": 1, "has_password": true }
+```
+
+`policy` is exactly what was stored (absent knobs mean baseline);
+`effective` is the resolved rule, with `proofs` capped by
+`identities`.
+
+**`PUT /api/v1/account/policy`** — Replaces the stored knobs. Request:
+the `policy` object above; unknown keys are refused. Floors, each
+`400 invalid_request`: `proofs` at least 1 and at most `identities`;
+`password_required` only on an account with a password; `mint_proven`
+at most `identities`; `mint_proven_identities` addresses. Response: as
+`GET`. A policy can only tighten the baseline; nothing here makes
+enrolment satisfiable by nothing.
 
 ### 5.3 Consent inbox
 

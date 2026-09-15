@@ -145,6 +145,11 @@ pub trait RegistrarHost: Send + Sync {
         Err(RegistrarError::Internal("membership not supported by this host".into()))
     }
 
+    /// Whether the account has a password (a policy floor input, §4.2).
+    fn account_has_password(&self, _user_id: u64) -> Result<bool, RegistrarError> {
+        Ok(false)
+    }
+
     /// The account's roster (§4.5): `(identity, "active" | "suspended")`.
     fn roster(&self, _user_id: u64) -> Result<Vec<(String, &'static str)>, RegistrarError> {
         Err(RegistrarError::Internal("membership not supported by this host".into()))

@@ -3,7 +3,7 @@
 
 use crate::error::RegistrarError;
 use crate::models::{
-    DeviceCertRecord, NamespaceRecord, WarrantRecord, WarrantRequestRecord, SessionRecord, LoginCertRecord,
+    DeviceCertRecord, NamespaceRecord, WarrantRecord, WarrantRequestRecord, SessionRecord, LoginCertRecord, LoginTokenRecord,
 };
 
 pub type StoreResult<T> = Result<T, RegistrarError>;
@@ -157,9 +157,20 @@ pub trait RegistrarStore: Send + Sync {
     fn revoke_login_certs_for_holder(&self, _user_id: u64, _holder: &str) -> StoreResult<Vec<u64>> {
         Ok(Vec::new())
     }
-    /// Take (spend) a login-page token: the account it was minted for.
-    fn take_login_token(&self, _token_hash: &str) -> StoreResult<Option<u64>> {
+    /// Take (spend) a login-page token: the account it was minted for and
+    /// how the page authenticated the user.
+    fn take_login_token(&self, _token_hash: &str) -> StoreResult<Option<LoginTokenRecord>> {
         Err(RegistrarError::Internal("login tokens not supported by this host".into()))
+    }
+
+    // --- Account policy (registry-api-v1 §4.2, bean noqd) ---
+
+    /// The account's stored policy JSON, if any.
+    fn get_account_policy(&self, _user_id: u64) -> StoreResult<Option<String>> {
+        Ok(None)
+    }
+    fn set_account_policy(&self, _user_id: u64, _policy_json: &str) -> StoreResult<()> {
+        Err(RegistrarError::Internal("account policy not supported by this host".into()))
     }
 
     // --- Device certs (DC Phase 3/4): durable, revocable IdP-signed certs ---

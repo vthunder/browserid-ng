@@ -389,3 +389,56 @@ fn test_unclaimed_record_request_insertable() {
     assert_eq!(rec.user_id, UserId(1));
     assert_eq!(rec.grants[0].status_idx, Some(7));
 }
+
+/// Bean noqd: login-key provenance and the account policy round-trip
+/// through SQLite (the registry integration tests run on the memory store;
+/// this is the schema's own check).
+#[test]
+fn login_key_provenance_and_account_policy_round_trip() {
+    use browserid_broker::store::{LoginCert, LoginToken, UserId};
+    let (store, _dir) = create_test_store();
+    let user_id = store.create_user("hash").unwrap();
+    let now = chrono::Utc::now();
+    let id = store
+        .insert_login_cert(LoginCert {
+            id: 0,
+            user_id,
+            kid: "kid-1".into(),
+            pubkey: "pk".into(),
+            label: None,
+            holder: None,
+            cert: String::new(),
+            issued_at: now,
+            expires_at: now + chrono::Duration::days(90),
+            revoked_at: None,
+            status_idx: None,
+            enrolled_by: "proofs".into(),
+            enrolled_with: Some("[\"a@x.org\",\"b@y.org\"]".into()),
+        })
+        .unwrap();
+    let got = store.get_login_cert_by_kid("kid-1").unwrap().unwrap();
+    assert_eq!(got.id, id);
+    assert_eq!(got.enrolled_by, "proofs");
+    assert_eq!(got.enrolled_with.as_deref(), Some("[\"a@x.org\",\"b@y.org\"]"));
+
+    store
+        .create_login_token(LoginToken {
+            token_hash: "h".into(),
+            user_id,
+            expires_at: now + chrono::Duration::minutes(5),
+            method: "approval".into(),
+            detail: Some("kid-2".into()),
+        })
+        .unwrap();
+    let t = store.take_login_token("h").unwrap().unwrap();
+    assert_eq!(t.method, "approval");
+    assert_eq!(t.detail.as_deref(), Some("kid-2"));
+    assert!(store.take_login_token("h").unwrap().is_none(), "one-time");
+
+    assert!(store.get_account_policy(user_id).unwrap().is_none());
+    store.set_account_policy(user_id, "{\"proofs\":1}").unwrap();
+    assert_eq!(store.get_account_policy(user_id).unwrap().as_deref(), Some("{\"proofs\":1}"));
+    store.set_account_policy(user_id, "{}").unwrap();
+    assert_eq!(store.get_account_policy(user_id).unwrap().as_deref(), Some("{}"));
+    let _ = UserId(0);
+}

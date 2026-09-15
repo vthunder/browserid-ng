@@ -16,6 +16,7 @@ use serde::Deserialize;
 
 use crate::api::{ApiError, ApiUser};
 use crate::models::{DeviceCertRecord, LoginCertRecord};
+use crate::policy;
 use crate::session::{b64url_sha256, header_proof, kid_of, replay_check, BodyHash, Proof};
 use crate::RegistrarState;
 
@@ -259,6 +260,8 @@ fn enroll(
     user_id: u64,
     key: &BroughtKey,
     holder: Option<&str>,
+    enrolled_by: &str,
+    enrolled_with: Option<String>,
 ) -> Result<LoginCertRecord, ApiError> {
     let existing = state
         .store
@@ -282,6 +285,8 @@ fn enroll(
         expires_at: now + Duration::days(LOGIN_KEY_DAYS),
         revoked_at: None,
         status_idx: None,
+        enrolled_by: enrolled_by.to_string(),
+        enrolled_with,
     };
     let id = state
         .store
@@ -358,14 +363,14 @@ pub async fn create(
             // issuer that also runs this registry revokes only the old
             // account's remaining certs for the identity (hg2j).
             let fresh_account = state.host.create_empty_account().map_err(host_err)?;
-            let k = enroll(&state, fresh_account, &key, Some(&carried[0].holder))?;
+            let k = enroll(&state, fresh_account, &key, Some(&carried[0].holder), policy::ENROLLED_BY_PROOFS, Some(json_ids(&[identity.clone()])))?;
             record(&state, &headers, fresh_account, &identity, &carried, k.id).await?;
             state.host.transfer_identity(a, fresh_account, &identity, "taken_over").map_err(host_err)?;
             tracing::info!(%identity, "accounts: takeover into a new account");
             return Ok(Json(crate::session::open(&state, fresh_account, &k).await?));
         }
     };
-    let k = enroll(&state, user_id, &key, Some(&carried[0].holder))?;
+    let k = enroll(&state, user_id, &key, Some(&carried[0].holder), policy::ENROLLED_BY_PROOFS, Some(json_ids(&[identity.clone()])))?;
     record(&state, &headers, user_id, &identity, &carried, k.id).await?;
     tracing::info!(%identity, "accounts: created");
     Ok(Json(crate::session::open(&state, user_id, &k).await?))
@@ -461,8 +466,9 @@ pub async fn login(
                 .take_login_token(&b64url_sha256(token.as_bytes()))
                 .map_err(|e| ApiError::Internal(format!("login token: {e}")))?;
             match (spent, account) {
-                (Some(uid), Some(acct)) if uid == acct => {
-                    let k = enroll(&state, acct, &key, None)?;
+                (Some(t), Some(acct)) if t.user_id == acct => {
+                    let k = enroll(&state, acct, &key, None, &t.method, t.detail)?;
+                    tracing::info!(method = %k.enrolled_by, "login: key enrolled through the page");
                     Ok(Json(crate::session::open(&state, acct, &k).await?))
                 }
                 _ => Err(rejected("login refused")),
@@ -497,6 +503,68 @@ pub async fn login(
     }
 }
 
+fn json_ids(ids: &[String]) -> String {
+    serde_json::to_string(ids).unwrap_or_else(|_| "[]".into())
+}
+
+// ---------------------------------------------------------------------------
+// §4.2 account policy (bean noqd)
+// ---------------------------------------------------------------------------
+
+fn policy_inputs(state: &RegistrarState, user_id: u64) -> Result<(u32, bool), ApiError> {
+    let identities = state
+        .host
+        .roster(user_id)
+        .map_err(|e| ApiError::Internal(format!("roster: {e}")))?
+        .iter()
+        .filter(|(_, s)| *s == "active")
+        .count() as u32;
+    let has_password = state.host.account_has_password(user_id).map_err(host_err)?;
+    Ok((identities, has_password))
+}
+
+/// The account's effective policy: stored knobs, resolved values, and the
+/// floor inputs (bean noqd). Public to the host so its own chokepoints
+/// (the login page backend, the issuer's mint check) evaluate the same
+/// policy the API exposes.
+pub fn account_policy(state: &RegistrarState, user_id: u64) -> Result<policy::AccountPolicy, ApiError> {
+    let stored = state
+        .store
+        .get_account_policy(user_id)
+        .map_err(|e| ApiError::Internal(format!("policy: {e}")))?;
+    Ok(policy::parse(stored.as_deref()))
+}
+
+/// `GET /api/v1/account/policy`.
+pub async fn get_policy(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let p = account_policy(&state, user.user_id)?;
+    let (identities, has_password) = policy_inputs(&state, user.user_id)?;
+    Ok(Json(policy::describe(&p, identities, has_password)))
+}
+
+/// `PUT /api/v1/account/policy`: the whole knob set replaces the stored
+/// one, within the floors (`422 invalid_request` otherwise).
+pub async fn put_policy(
+    State(state): State<Arc<RegistrarState>>,
+    user: ApiUser,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let p: policy::AccountPolicy = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::InvalidRequest(format!("bad policy: {e}")))?;
+    let (identities, has_password) = policy_inputs(&state, user.user_id)?;
+    p.validate(identities, has_password).map_err(ApiError::InvalidRequest)?;
+    let json = serde_json::to_string(&p).map_err(|e| ApiError::Internal(e.to_string()))?;
+    state
+        .store
+        .set_account_policy(user.user_id, &json)
+        .map_err(|e| ApiError::Internal(format!("policy: {e}")))?;
+    tracing::info!("policy: updated");
+    Ok(Json(policy::describe(&p, identities, has_password)))
+}
+
 // ---------------------------------------------------------------------------
 // §5.2.3 login-keys
 // ---------------------------------------------------------------------------
@@ -517,6 +585,8 @@ pub async fn list_login_keys(
             "enrolled_at": k.issued_at.to_rfc3339(), "expires_at": k.expires_at.to_rfc3339(),
             "revoked": k.revoked_at.is_some(),
             "current": k.id == user.login_key_id,
+            "enrolled_by": k.enrolled_by,
+            "enrolled_with": k.enrolled_with.as_deref().and_then(|w| serde_json::from_str::<serde_json::Value>(w).ok()).unwrap_or(serde_json::Value::Null),
         }))
         .collect();
     Ok(Json(serde_json::json!({ "login_keys": items })))

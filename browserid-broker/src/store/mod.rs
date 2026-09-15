@@ -224,6 +224,12 @@ pub trait UserStore: Send + Sync {
     /// Take (delete) a login token; `None` when unknown.
     fn take_login_token(&self, token_hash: &str) -> StoreResult<Option<LoginToken>>;
 
+    // --- Account authentication policy (registry-api-v1 §4.2, bean noqd) ---
+
+    /// The account's stored policy JSON, if any.
+    fn get_account_policy(&self, user_id: UserId) -> StoreResult<Option<String>>;
+    fn set_account_policy(&self, user_id: UserId, policy_json: &str) -> StoreResult<()>;
+
     // --- Public account ids (registry-api-v1 §3: opaque, ≥128 bits) ---
 
     /// The account's public id, minted on first use.

@@ -1,24 +1,23 @@
 //! The registry login page's backend (registry-api-v1 §4.2 `login_page`):
 //! the page at `/registry-login` posts the account password here and
 //! gets a one-time login token, which the wallet spends at
-//! `POST /api/v1/login`. This registry's check is the account password;
-//! nothing else is offered yet. Never reveals whether an account exists —
-//! every refusal is the same 403.
+//! `POST /api/v1/login`. The password is one way through the account's
+//! enrol rule (`account_auth`, bean noqd); the token it mints records that
+//! so the registry enrols the key as `password`. Never reveals whether an
+//! account exists — every refusal is the same 403.
 
 use std::sync::Arc;
 
 use axum::extract::State;
 use axum::Json;
-use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::account_auth::{self, Proof};
 use crate::email::EmailSender;
 use crate::error::BrokerError;
 use crate::state::AppState;
-use crate::store::{LoginToken, SessionStore, UserStore};
+use crate::store::{SessionStore, UserStore};
 
-/// Login tokens live this long.
-const LOGIN_TOKEN_SECONDS: i64 = 300;
 const LOGIN_MAX_FAILURES: u32 = 10;
 const LOGIN_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
 
@@ -77,11 +76,7 @@ where
     {
         return Err(fail());
     }
-    let token = crate::crypto::generate_salt_b64() + &crate::crypto::generate_salt_b64();
-    state.user_store.create_login_token(LoginToken {
-        token_hash: browserid_registrar::session::b64url_sha256_pub(token.as_bytes()),
-        user_id,
-        expires_at: Utc::now() + Duration::seconds(LOGIN_TOKEN_SECONDS),
-    })?;
+    let token = account_auth::login_token_for(state.user_store.as_ref(), user_id, &[Proof::Password])
+        .map_err(|_| fail())?;
     Ok(Json(LoginResponse { login: token }))
 }

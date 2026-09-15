@@ -52,6 +52,7 @@ pub struct InMemoryUserStore {
     registry_sessions: RwLock<HashMap<String, RegistrySession>>,
     /// user -> public account id
     account_ids: RwLock<HashMap<UserId, String>>,
+    account_policies: RwLock<HashMap<UserId, String>>,
     login_certs: RwLock<HashMap<u64, LoginCert>>,
     next_login_cert_id: AtomicU64,
     login_tokens: RwLock<HashMap<String, LoginToken>>,
@@ -83,6 +84,7 @@ impl InMemoryUserStore {
             interactive_proofs: RwLock::new(HashMap::new()),
             registry_sessions: RwLock::new(HashMap::new()),
             account_ids: RwLock::new(HashMap::new()),
+            account_policies: RwLock::new(HashMap::new()),
             login_certs: RwLock::new(HashMap::new()),
             next_login_cert_id: AtomicU64::new(1),
             login_tokens: RwLock::new(HashMap::new()),
@@ -653,6 +655,15 @@ impl UserStore for InMemoryUserStore {
 
     fn take_login_token(&self, token_hash: &str) -> StoreResult<Option<LoginToken>> {
         Ok(self.login_tokens.write().unwrap().remove(token_hash))
+    }
+
+    fn get_account_policy(&self, user_id: UserId) -> StoreResult<Option<String>> {
+        Ok(self.account_policies.read().unwrap().get(&user_id).cloned())
+    }
+
+    fn set_account_policy(&self, user_id: UserId, policy_json: &str) -> StoreResult<()> {
+        self.account_policies.write().unwrap().insert(user_id, policy_json.to_string());
+        Ok(())
     }
 
     fn account_public_id(&self, user_id: UserId) -> StoreResult<String> {

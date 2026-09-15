@@ -923,3 +923,71 @@ async fn accounts_attach_takeover_detach_and_delete() {
     let (status, _, _) = session_call(&l, &login_kp3, &token3, "GET", "/api/v1/requests", None).await;
     assert_eq!(status, 401);
 }
+
+/// Bean noqd (registry-api-v1 §4.2): every enrolled key records how it got
+/// in — `password` through the page, `proofs` when `accounts` created the
+/// account around a proven identity — and the account's authentication
+/// policy is readable and editable under a session, within its floors.
+#[tokio::test]
+async fn login_keys_record_how_they_were_enrolled_and_policy_has_floors() {
+    let l = live_broker().await;
+    let email = "policy-owner@gmail.com";
+    let (_pres, config_kp, _dc, config_cert) = broker_presentation(&l, email, vec!["registry".into()]).await;
+    let (token, _account, login_kp) = login_session(&l, email, &config_kp, &config_cert).await;
+
+    // The page enrolled this key with the password.
+    let (status, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/login-keys", None).await;
+    assert_eq!(status, 200, "{body}");
+    let keys = body["login_keys"].as_array().unwrap();
+    let mine = keys.iter().find(|k| k["current"] == true).expect("the current key lists");
+    assert_eq!(mine["enrolled_by"], "password", "{mine}");
+    assert!(mine["enrolled_with"].is_null());
+
+    // A single-identity account: the effective proof count is capped at 1,
+    // the password exists, and nothing is stored yet.
+    let (status, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/account/policy", None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["effective"]["proofs"], 1);
+    assert_eq!(body["effective"]["approval"], true);
+    assert_eq!(body["has_password"], true);
+    assert_eq!(body["identities"], 1);
+    assert_eq!(body["policy"], json!({}));
+
+    // Floors: more proofs than identities is refused; approval off is fine.
+    let put = |body: Value, kp: &KeyPair, token: &str| {
+        let htu = format!("{}/api/v1/account/policy", l.base);
+        let bytes = body.to_string().into_bytes();
+        let proof = browserid_registrar::session::build_proof_now("PUT", &htu, Some(&bytes), kp);
+        l.client.put(&htu).header("authorization", format!("Bearer {token}")).header("proof", proof)
+            .header("content-type", "application/json").body(bytes).send()
+    };
+    let r = put(json!({ "proofs": 3 }), &login_kp, &token).await.unwrap();
+    assert_eq!(r.status(), 400, "{}", r.text().await.unwrap());
+    let r = put(json!({ "proofs": 0 }), &login_kp, &token).await.unwrap();
+    assert_eq!(r.status(), 400);
+    let r = put(json!({ "approval": false, "proofs": 1 }), &login_kp, &token).await.unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let (status, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/account/policy", None).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["policy"], json!({ "approval": false, "proofs": 1 }));
+    assert_eq!(body["effective"]["approval"], false);
+    // Unknown knobs are refused, so a typo cannot silently mean "baseline".
+    let r = put(json!({ "nope": 1 }), &login_kp, &token).await.unwrap();
+    assert_eq!(r.status(), 400);
+
+    // A key that created its account through `accounts` was enrolled by
+    // proofs of that identity (a takeover into a fresh account, since the
+    // sign-up already made one).
+    let other = "policy-creator@gmail.com";
+    let _ = broker_presentation(&l, other, vec!["registry".into()]).await;
+    let (dc, cc, dkp, ckp) = issue_keys(&l, other).await;
+    let creator_kp = KeyPair::generate();
+    let (status, body) = accounts_create(&l, &[(&dc, &dkp), (&cc, &ckp)], &creator_kp, other, true).await;
+    assert_eq!(status, 200, "{body}");
+    let t2 = body["token"].as_str().unwrap().to_string();
+    let (status, body, _) = session_call(&l, &creator_kp, &t2, "GET", "/api/v1/login-keys", None).await;
+    assert_eq!(status, 200, "{body}");
+    let mine = body["login_keys"].as_array().unwrap().iter().find(|k| k["current"] == true).unwrap().clone();
+    assert_eq!(mine["enrolled_by"], "proofs", "{mine}");
+    assert_eq!(mine["enrolled_with"], json!([other]));
+}

@@ -16,7 +16,7 @@ use crate::error::BrokerError;
 use std::collections::HashMap;
 
 /// Current schema version
-const SCHEMA_VERSION: i32 = 43;
+const SCHEMA_VERSION: i32 = 44;
 
 /// SQLite-based store implementing both UserStore and SessionStore
 pub struct SqliteStore {
@@ -192,6 +192,9 @@ impl SqliteStore {
             }
             if current_version < 43 {
                 Self::migrate_v43(conn)?;
+            }
+            if current_version < 44 {
+                Self::migrate_v44(conn)?;
             }
 
             // Update schema version
@@ -993,9 +996,11 @@ fn login_cert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoginCert> {
         revoked_at: parse_ts_opt(row.get(8)?),
         status_idx: status_idx.map(|i| i as u64),
         holder: row.get(10)?,
+        enrolled_by: row.get::<_, Option<String>>(11)?.unwrap_or_else(|| "password".into()),
+        enrolled_with: row.get(12)?,
     })
 }
-const LOGIN_CERT_COLUMNS: &str = "id, user_id, kid, pubkey, label, cert, issued_at, expires_at, revoked_at, status_idx, holder";
+const LOGIN_CERT_COLUMNS: &str = "id, user_id, kid, pubkey, label, cert, issued_at, expires_at, revoked_at, status_idx, holder, enrolled_by, enrolled_with";
 
 impl SqliteStore {
     fn migrate_v36(conn: &Connection) -> Result<(), BrokerError> {
@@ -1058,6 +1063,27 @@ impl SqliteStore {
                 expires_at TEXT NOT NULL
             );
             ALTER TABLE registry_sessions ADD COLUMN login_key_id INTEGER;
+            "#,
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_v44(conn: &Connection) -> Result<(), BrokerError> {
+        // Login-key provenance + the account authentication policy (bean
+        // noqd, registry-api-v1 §4.2). Every key enrolled so far passed the
+        // password page: `enrolled_by = 'password'`.
+        conn.execute_batch(
+            r#"
+            ALTER TABLE login_certs ADD COLUMN enrolled_by TEXT NOT NULL DEFAULT 'password';
+            ALTER TABLE login_certs ADD COLUMN enrolled_with TEXT;
+            ALTER TABLE login_tokens ADD COLUMN method TEXT NOT NULL DEFAULT 'password';
+            ALTER TABLE login_tokens ADD COLUMN detail TEXT;
+            CREATE TABLE IF NOT EXISTS account_policies (
+                user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                policy TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             "#,
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2161,16 +2187,18 @@ impl UserStore for SqliteStore {
     fn insert_login_cert(&self, rec: LoginCert) -> StoreResult<u64> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO login_certs (user_id, kid, pubkey, label, cert, issued_at, expires_at, revoked_at, status_idx, holder)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO login_certs (user_id, kid, pubkey, label, cert, issued_at, expires_at, revoked_at, status_idx, holder, enrolled_by, enrolled_with)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(kid) DO UPDATE SET
                user_id = excluded.user_id, pubkey = excluded.pubkey, label = excluded.label,
                cert = excluded.cert, issued_at = excluded.issued_at, expires_at = excluded.expires_at,
-               revoked_at = excluded.revoked_at, status_idx = excluded.status_idx, holder = excluded.holder",
+               revoked_at = excluded.revoked_at, status_idx = excluded.status_idx, holder = excluded.holder,
+               enrolled_by = excluded.enrolled_by, enrolled_with = excluded.enrolled_with",
             params![
                 rec.user_id.0 as i64, rec.kid, rec.pubkey, rec.label, rec.cert,
                 rec.issued_at.to_rfc3339(), rec.expires_at.to_rfc3339(),
                 rec.revoked_at.map(|t| t.to_rfc3339()), rec.status_idx.map(|i| i as i64), rec.holder,
+                rec.enrolled_by, rec.enrolled_with,
             ],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
@@ -2269,8 +2297,8 @@ impl UserStore for SqliteStore {
     fn create_login_token(&self, rec: LoginToken) -> StoreResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO login_tokens (token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)",
-            params![rec.token_hash, rec.user_id.0 as i64, rec.expires_at.to_rfc3339()],
+            "INSERT OR REPLACE INTO login_tokens (token_hash, user_id, expires_at, method, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![rec.token_hash, rec.user_id.0 as i64, rec.expires_at.to_rfc3339(), rec.method, rec.detail],
         )
         .map_err(|e| BrokerError::Internal(e.to_string()))?;
         conn.execute("DELETE FROM login_tokens WHERE expires_at < ?1", params![Utc::now().to_rfc3339()]).ok();
@@ -2281,11 +2309,17 @@ impl UserStore for SqliteStore {
         let conn = self.conn.lock().unwrap();
         let rec = conn
             .query_row(
-                "SELECT token_hash, user_id, expires_at FROM login_tokens WHERE token_hash = ?1",
+                "SELECT token_hash, user_id, expires_at, method, detail FROM login_tokens WHERE token_hash = ?1",
                 params![token_hash],
                 |r| {
                     let uid: i64 = r.get(1)?;
-                    Ok(LoginToken { token_hash: r.get(0)?, user_id: UserId(uid as u64), expires_at: parse_ts_opt(r.get(2)?).unwrap_or_else(Utc::now) })
+                    Ok(LoginToken {
+                        token_hash: r.get(0)?,
+                        user_id: UserId(uid as u64),
+                        expires_at: parse_ts_opt(r.get(2)?).unwrap_or_else(Utc::now),
+                        method: r.get::<_, Option<String>>(3)?.unwrap_or_else(|| "password".into()),
+                        detail: r.get(4)?,
+                    })
                 },
             )
             .optional()
@@ -2295,6 +2329,28 @@ impl UserStore for SqliteStore {
                 .map_err(|e| BrokerError::Internal(e.to_string()))?;
         }
         Ok(rec)
+    }
+
+    fn get_account_policy(&self, user_id: UserId) -> StoreResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT policy FROM account_policies WHERE user_id = ?1",
+            params![user_id.0 as i64],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| BrokerError::Internal(e.to_string()))
+    }
+
+    fn set_account_policy(&self, user_id: UserId, policy_json: &str) -> StoreResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO account_policies (user_id, policy, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(user_id) DO UPDATE SET policy = excluded.policy, updated_at = excluded.updated_at",
+            params![user_id.0 as i64, policy_json, Utc::now().to_rfc3339()],
+        )
+        .map_err(|e| BrokerError::Internal(e.to_string()))?;
+        Ok(())
     }
 
     fn account_public_id(&self, user_id: UserId) -> StoreResult<String> {
@@ -3757,6 +3813,12 @@ impl UserStore for std::sync::Arc<SqliteStore> {
     }
     fn account_public_id(&self, user_id: UserId) -> StoreResult<String> {
         (**self).account_public_id(user_id)
+    }
+    fn get_account_policy(&self, user_id: UserId) -> StoreResult<Option<String>> {
+        (**self).get_account_policy(user_id)
+    }
+    fn set_account_policy(&self, user_id: UserId, policy_json: &str) -> StoreResult<()> {
+        (**self).set_account_policy(user_id, policy_json)
     }
     fn user_for_public_id(&self, public_id: &str) -> StoreResult<Option<UserId>> {
         (**self).user_for_public_id(public_id)

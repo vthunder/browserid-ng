@@ -48,6 +48,7 @@ pub mod error;
 pub mod holders;
 pub mod host;
 pub mod models;
+pub mod policy;
 pub mod registry;
 mod store;
 
@@ -211,6 +212,7 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         .route("/api/v1/account/attach", post(account::attach))
         .route("/api/v1/account/detach", post(account::detach))
         .route("/api/v1/account/delete", post(account::delete))
+        .route("/api/v1/account/policy", get(account::get_policy).put(account::put_policy))
         .route("/api/v1/requests", get(api::list_requests).post(api::file_request))
         .route("/api/v1/requests/:code", get(api::poll_request))
         .route("/api/v1/requests/claim", post(api::claim_request))

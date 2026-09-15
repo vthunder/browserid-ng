@@ -158,6 +158,8 @@ fn to_reg_login_cert(c: crate::store::LoginCert) -> reg::LoginCertRecord {
         expires_at: c.expires_at,
         revoked_at: c.revoked_at,
         status_idx: c.status_idx,
+        enrolled_by: c.enrolled_by,
+        enrolled_with: c.enrolled_with,
     }
 }
 
@@ -323,6 +325,8 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
                 expires_at: rec.expires_at,
                 revoked_at: rec.revoked_at,
                 status_idx: rec.status_idx,
+                enrolled_by: rec.enrolled_by,
+                enrolled_with: rec.enrolled_with,
             })
             .map_err(to_reg_err)
     }
@@ -361,13 +365,21 @@ impl<U: UserStore> RegistrarStore for BrokerRegistrarStore<U> {
         self.user_store.revoke_login_certs_for_holder(UserId(user_id), holder).map_err(to_reg_err)
     }
 
-    fn take_login_token(&self, token_hash: &str) -> Result<Option<u64>, RegistrarError> {
+    fn take_login_token(&self, token_hash: &str) -> Result<Option<reg::LoginTokenRecord>, RegistrarError> {
         Ok(self
             .user_store
             .take_login_token(token_hash)
             .map_err(to_reg_err)?
             .filter(|t| t.expires_at > chrono::Utc::now())
-            .map(|t| t.user_id.0))
+            .map(|t| reg::LoginTokenRecord { user_id: t.user_id.0, method: t.method, detail: t.detail }))
+    }
+
+    fn get_account_policy(&self, user_id: u64) -> Result<Option<String>, RegistrarError> {
+        self.user_store.get_account_policy(UserId(user_id)).map_err(to_reg_err)
+    }
+
+    fn set_account_policy(&self, user_id: u64, policy_json: &str) -> Result<(), RegistrarError> {
+        self.user_store.set_account_policy(UserId(user_id), policy_json).map_err(to_reg_err)
     }
 
     fn get_or_allocate_status(&self, kind: &str, subject: &str) -> Result<u64, RegistrarError> {
@@ -693,6 +705,10 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
 
     fn roster(&self, user_id: u64) -> Result<Vec<(String, &'static str)>, RegistrarError> {
         crate::membership::roster(self.user_store.as_ref(), UserId(user_id)).map_err(to_reg_err)
+    }
+
+    fn account_has_password(&self, user_id: u64) -> Result<bool, RegistrarError> {
+        self.user_store.has_password(UserId(user_id)).map_err(to_reg_err)
     }
 
     fn sweep_holds(&self) -> Result<(), RegistrarError> {

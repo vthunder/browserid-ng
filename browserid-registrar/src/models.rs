@@ -238,6 +238,20 @@ pub struct LoginCertRecord {
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub status_idx: Option<u64>,
+    /// How the key was enrolled (§4.2): `password`, `proofs`, `approval`.
+    pub enrolled_by: String,
+    /// What that was: the identities proven (JSON array) or the approving
+    /// key's kid.
+    pub enrolled_with: Option<String>,
+}
+
+/// A one-time login-page token as the registry sees it: the account it
+/// is bound to and how the page authenticated the user.
+#[derive(Debug, Clone)]
+pub struct LoginTokenRecord {
+    pub user_id: u64,
+    pub method: String,
+    pub detail: Option<String>,
 }
 
 impl LoginCertRecord {
