@@ -2475,18 +2475,10 @@
   // Scope → words. A wallet-owned label table (request-kinds README): the
   // requester never supplies card prose. Unknown scopes render raw, capped,
   // control and bidi characters stripped.
-  function scopeVerb(entry) {
-    const scope = String(typeof entry === 'string' ? entry : (entry && entry.scope) || '');
-    const prompt = typeof entry === 'object' && entry && entry.mode === 'prompt';
-    if (scope.indexOf('sign:sbo:') === 0) {
-      const kind = scope.replace(/^sign:sbo:/, '');
-      const noun = { post: 'posts', delete: 'deletions' }[kind] || (kind + ' actions');
-      return 'sign ' + noun + (prompt ? ' — you approve each one' : ' — signed automatically');
-    }
-    if (scope === 'login') return 'sign you in';
-    const raw = scope.replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '').slice(0, 64);
-    return raw + (prompt ? ' — you approve each one' : '');
-  }
+  // The table itself lives in common/js/scope-labels.js (shared with the
+  // consent, authorize and account pages) so every surface says the same
+  // sentence for the same entry — parameters included.
+  function scopeVerb(entry) { return window.BrowserIDScopeLabels.label(entry); }
   const sboScopeVerb = scopeVerb;
 
   // The one warrant card (spec decision: the SBO grant has no wording of
@@ -2529,11 +2521,11 @@
       if (seen[g.audience]) return null;
       seen[g.audience] = true;
       if (!Array.isArray(g.scopes) || !g.scopes.length || g.scopes.length > 32) return null;
+      // Entries: a scope name, or { scope, mode?, cap?, counterparties?,
+      // max_duration? } — well-formed or refused (scope-labels.js `valid`).
+      // Passed through VERBATIM: a parameter is the grantor's restriction.
       for (const sc of g.scopes) {
-        const name = typeof sc === 'string' ? sc : (sc && typeof sc === 'object' && sc.scope);
-        if (typeof name !== 'string' || !/^[a-z0-9_:.-]{1,64}$/.test(name)) return null;
-        if (typeof sc === 'object' && !Object.keys(sc).every(k => k === 'scope' || k === 'mode')) return null;
-        if (typeof sc === 'object' && sc.mode !== undefined && sc.mode !== 'auto' && sc.mode !== 'prompt') return null;
+        if (!window.BrowserIDScopeLabels.valid(sc)) return null;
       }
       grants.push({ audience: g.audience, scopes: g.scopes });
     }
@@ -2598,8 +2590,7 @@
       if (typeof s === 'string') return s.indexOf('sign:sbo:') === 0;
       return !!s && typeof s === 'object' &&
         typeof s.scope === 'string' && s.scope.indexOf('sign:sbo:') === 0 &&
-        Object.keys(s).every(k => k === 'scope' || k === 'mode') &&
-        (s.mode === undefined || s.mode === 'auto' || s.mode === 'prompt');
+        window.BrowserIDScopeLabels.valid(s);
     };
     if (!audiences.length || audiences.length > 4 ||
         !scopes.length || scopes.length > 8 || !scopes.every(scopeOk)) {

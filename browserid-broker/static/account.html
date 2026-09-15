@@ -466,6 +466,7 @@
 <p class="foot"><a href="/">browserid.me</a></p>
 
 <script src="/common/js/keystore.js"></script>
+<script src="/common/js/scope-labels.js"></script>
 <script src="/common/js/registry-session.js"></script>
 <script type="module">
 const $ = (id) => document.getElementById(id);
@@ -580,12 +581,10 @@ function isBrokerOrigin(aud) {
     return u.origin === location.origin && (u.pathname === '/' || u.pathname === '');
   } catch (e) { return false; }
 }
-// sign:sbo:<action> scopes read as verbs on the ledger row.
-function prettyScope(s) {
-  const m = /^sign:sbo:(.+)$/.exec(s);
-  if (!m) return s;
-  return 'sign ' + ({ post: 'posts', delete: 'deletions' }[m[1]] || m[1]);
-}
+// Scope entries read as verbs on the ledger row — the wallet-owned label
+// table (common/js/scope-labels.js): parameters (caps, counterparties,
+// durations) are part of the sentence.
+function prettyScope(s) { return BrowserIDScopeLabels.label(s); }
 function allPerms() {
   const out = [];
   for (const w of account.warrants) {
@@ -601,7 +600,7 @@ function allPerms() {
       site: requester
         ? requester + ' ↔ ' + (w.audience || '—')
         : (w.audience || '—').replace(/^https?:\/\//, '').replace(/\/+$/, ''),
-      scopes: (w.scopes || []).filter(s => s !== 'login').map(prettyScope),
+      scopes: (w.scopes || []).filter(s => BrowserIDScopeLabels.name(s) !== 'login').map(prettyScope),
       as: w.grantee || w.agent_email, by: w.grantor || w.delegator_email,
       // Connection records (spec §5) are custody-channel grants, not
       // device grants: the sentinel holder keeps them off every actor row
