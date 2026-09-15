@@ -5,7 +5,7 @@ status: draft
 type: epic
 priority: high
 created_at: 2026-09-14T20:25:25Z
-updated_at: 2026-09-15T00:12:21Z
+updated_at: 2026-09-15T01:19:46Z
 parent: browserid-ng-9yyk
 ---
 
@@ -23,3 +23,7 @@ Review decisions 2026-09-14: password is the account's own credential, not an id
 3. browserid-ng-d26p identity proofs as a login method (needs e98a: mediator in the embedded window)
 4. browserid-ng-yz4y reset as a multi-proof ceremony (needs browserid-ng-d26p's proof collection)
 5. svs7 account page policy editor + devices list
+
+## Status 2026-09-15
+
+All six build beans completed and deployed to browserid.me (commits eabbc6f, a9ae7fc, 924b106, cd7df48, 2e515db; schema 43→46). Left open for a follow-up: native approvals of inbox requests (e98a's first item); Playwright coverage of the dialog's two-identity proofs chooser (needs a non-password second identity); the dialog's mid-flow sign-in for a missing identity is opportunistic (finishes on a later sign-in with it). Dan to try in prod: phone-joins-by-approval, a bridged sign-in enrolling this browser without the login page, the policy editor.
