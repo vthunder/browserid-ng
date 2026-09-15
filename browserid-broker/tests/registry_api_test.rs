@@ -1073,6 +1073,17 @@ async fn a_new_device_joins_by_approval_from_an_enrolled_one() {
     let p: Value = get_json(format!("/api/v1/approvals/{id2}")).await.unwrap().json().await.unwrap();
     assert_eq!(p["status"], "denied");
 
+    // The opener cancels (it finished another way): no longer listed, and
+    // approving it afterwards is a miss.
+    let opened4: Value = post_json("/api/v1/approvals", json!({ "account": account })).await.unwrap().json().await.unwrap();
+    let id4 = opened4["id"].as_str().unwrap().to_string();
+    let r = l.client.post(format!("{}/api/v1/approvals/{id4}/cancel", l.base)).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let (_, body, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/approvals", None).await;
+    assert!(body["approvals"].as_array().unwrap().iter().all(|a| a["id"] != id4), "{body}");
+    let (status, _, _) = session_call(&l, &login_kp, &token, "POST", "/api/v1/approvals/approve", Some(json!({ "id": id4, "code": opened4["code"] }))).await;
+    assert_eq!(status, 404);
+
     // Policy: approval off → the laptop's approve is refused.
     let htu = format!("{}/api/v1/account/policy", l.base);
     let bytes = json!({ "approval": false }).to_string().into_bytes();

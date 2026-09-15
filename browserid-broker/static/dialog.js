@@ -502,11 +502,16 @@
           headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body) });
         return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
       };
-      let timer = null, approvalId = null, done = false;
+      let timer = null, approvalId = null, done = false, approvalUsed = false;
       const finish = (fn, v) => {
         if (done) return; done = true;
         if (timer) clearTimeout(timer);
         enrolPending = null;
+        // Finished another way, or gave up: nothing stays waiting on the
+        // account's other devices.
+        if (approvalId && !approvalUsed) {
+          fetch('/api/v1/approvals/' + encodeURIComponent(approvalId) + '/cancel', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+        }
         fn(v);
       };
       enrolPending = { cancel: () => finish(reject, new Error('cancelled')) };
@@ -515,10 +520,12 @@
       document.getElementById('enrol-code').textContent = '···-···';
       document.getElementById('enrol-error').textContent = '';
       document.getElementById('enrol-password').value = '';
-      const hintsEl = document.getElementById('enrol-hints');
-      hintsEl.hidden = !hints.length;
-      hintsEl.textContent = hints.length
-        ? 'Or sign in here with ' + hints.join(' or ') + ' as well, and try again.' : '';
+      // Lead with the code (Dan, 2026-09-15); the password waits behind a
+      // link. Missing addresses are not named here: the login page's own
+      // proofs method covers native wallets, and a line about it in the
+      // dialog is noise the person cannot act on.
+      document.getElementById('enrol-password-form').hidden = true;
+      document.getElementById('enrol-other').parentElement.hidden = false;
       showScreen('enrol');
       // Approval by code.
       const poll = async () => {
@@ -526,7 +533,7 @@
         try {
           const r = await fetch('/api/v1/approvals/' + encodeURIComponent(approvalId), { credentials: 'same-origin', headers: { accept: 'application/json' } });
           const j = await r.json().catch(() => ({}));
-          if (j.status === 'approved' && j.login) return finish(resolve, j.login);
+          if (j.status === 'approved' && j.login) { approvalUsed = true; return finish(resolve, j.login); }
           if (j.status === 'denied') { document.getElementById('enrol-wait').textContent = 'That device said no.'; return; }
           if (j.status === 'expired') { document.getElementById('enrol-wait').textContent = 'That code expired. Cancel and sign in again.'; return; }
         } catch (err) { /* keep polling */ }
@@ -3316,6 +3323,12 @@
     document.getElementById('enrol-password-form').addEventListener('submit', (e) => {
       e.preventDefault();
       if (enrolPending && enrolPending.password) enrolPending.password(document.getElementById('enrol-password').value);
+    });
+    document.getElementById('enrol-other').addEventListener('click', (e) => {
+      e.preventDefault();
+      document.getElementById('enrol-password-form').hidden = false;
+      document.getElementById('enrol-other').parentElement.hidden = true;
+      document.getElementById('enrol-password').focus();
     });
     document.getElementById('enrol-cancel').addEventListener('click', () => {
       if (enrolPending) enrolPending.cancel();

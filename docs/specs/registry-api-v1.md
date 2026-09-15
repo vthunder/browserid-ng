@@ -549,6 +549,10 @@ Response `200 { "status" }` with `pending`, `approved`, `denied`, or
 for `login_page` (§4.2), never repeated. An unknown id polls as
 `pending`.
 
+**`POST /api/v1/approvals/:id/cancel`** — Public, by the handle. The
+opener finished another way or gave up; the approval reads `denied`
+from then on and stops listing. Always `200`.
+
 **`GET /api/v1/approvals`** — Session. The account's open approvals:
 `id`, `label`, `created_at`, `expires_at`. The code is not listed.
 

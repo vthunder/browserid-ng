@@ -80,17 +80,26 @@
     $("password-err").textContent = "";
     postJson("/wsapi/registry_login", { account: account, password: $("password").value }).then(function (r) {
       btn.disabled = false;
-      if (r.ok && r.data.login) { finish("login=" + encodeURIComponent(r.data.login)); return; }
+      if (r.ok && r.data.login) { dropApproval(); finish("login=" + encodeURIComponent(r.data.login)); return; }
       $("password-err").textContent = r.status === 429 ? "Too many attempts. Try again later." : "That didn't work. Check the password and try again.";
     });
   });
-  $("password-cancel").addEventListener("click", function () { fail("cancelled"); });
+  $("password-cancel").addEventListener("click", function () { dropApproval(); fail("cancelled"); });
 
   // --- Method 2: approval from a device already signed in (§5.2.8) --------
   var approval = { id: null, timer: null, deadline: 0 };
   function stopPolling() { if (approval.timer) { clearTimeout(approval.timer); approval.timer = null; } }
-  function showPassword() {
+  // Leaving the approval any way but through it: cancel so no device keeps
+  // seeing a request that can no longer matter.
+  function dropApproval() {
     stopPolling();
+    if (approval.id) {
+      fetch("/api/v1/approvals/" + encodeURIComponent(approval.id) + "/cancel", { method: "POST", credentials: "same-origin" }).catch(function () {});
+      approval.id = null;
+    }
+  }
+  function showPassword() {
+    dropApproval();
     $("approval").classList.add("hidden");
     $("proofs").classList.add("hidden");
     $("password-form").classList.remove("hidden");
@@ -122,7 +131,7 @@
       .then(function (r) { return r.json().catch(function () { return {}; }); })
       .then(function (j) {
         if (!approval.id) return;
-        if (j.status === "approved" && j.login) { stopPolling(); finish("login=" + encodeURIComponent(j.login)); return; }
+        if (j.status === "approved" && j.login) { stopPolling(); approval.id = null; finish("login=" + encodeURIComponent(j.login)); return; }
         if (j.status === "denied") { stopPolling(); approval.id = null; $("approval-wait").classList.add("hidden"); $("approval-err").textContent = "That device said no."; return; }
         if (j.status === "expired") { expired(); return; }
         approval.timer = setTimeout(poll, 2000);
@@ -135,7 +144,7 @@
   }
   $("to-approval").addEventListener("click", showApproval);
   $("to-password").addEventListener("click", showPassword);
-  $("approval-cancel").addEventListener("click", function () { stopPolling(); fail("cancelled"); });
+  $("approval-cancel").addEventListener("click", function () { dropApproval(); fail("cancelled"); });
 
   // --- Method 3: proofs of the account's identities (bean d26p) ---------
   // The page asks the wallet (navigator.id, answered by the native wallet

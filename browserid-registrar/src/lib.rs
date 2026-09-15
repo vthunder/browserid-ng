@@ -216,6 +216,7 @@ pub fn router(state: Arc<RegistrarState>) -> Router {
         .route("/api/v1/account/policy", get(account::get_policy).put(account::put_policy))
         .route("/api/v1/approvals", get(approvals::list).post(approvals::open))
         .route("/api/v1/approvals/:id", get(approvals::poll))
+        .route("/api/v1/approvals/:id/cancel", post(approvals::cancel))
         .route("/api/v1/approvals/approve", post(approvals::approve))
         .route("/api/v1/approvals/deny", post(approvals::deny))
         .route("/api/v1/requests", get(api::list_requests).post(api::file_request))

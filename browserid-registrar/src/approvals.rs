@@ -152,6 +152,21 @@ pub async fn list(
     Ok(Json(serde_json::json!({ "approvals": items })))
 }
 
+/// `POST /api/v1/approvals/:id/cancel` — public, by the secret handle only
+/// the opener holds: the new device finished another way (the password) or
+/// gave up, so nothing is left waiting on the account's other devices.
+pub async fn cancel(
+    State(state): State<Arc<RegistrarState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if let Some(rec) = state.store.get_approval(&id).map_err(|e| ApiError::Internal(format!("approvals: {e}")))? {
+        if rec.approved_by.is_none() && !rec.denied {
+            state.store.resolve_approval(&rec.id, None, None).map_err(|e| ApiError::Internal(format!("approvals: {e}")))?;
+        }
+    }
+    Ok(Json(serde_json::json!({ "cancelled": true })))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApproveRequest {

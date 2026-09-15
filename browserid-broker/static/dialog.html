@@ -376,18 +376,20 @@
           <div id="enrol-code" style="font:600 26px/1.2 ui-monospace,Menlo,monospace;letter-spacing:.12em;text-align:center;padding:8px 0">···-···</div>
           <div id="enrol-wait" style="font-size:12px;color:#6b6b74">Open the account page or your wallet on that device. Waiting…</div>
         </div>
-        <form id="enrol-password-form">
+        <p class="link-row" style="margin:0 0 10px"><a href="#" id="enrol-other">Other ways to add this browser</a></p>
+        <form id="enrol-password-form" hidden>
           <div class="form-group">
-            <label for="enrol-password">Or type your browserid.me password</label>
+            <label for="enrol-password">Your browserid.me password</label>
             <input type="password" id="enrol-password" placeholder="browserid.me password" autocomplete="current-password">
             <div class="error" id="enrol-error"></div>
           </div>
           <div class="button-row">
             <button type="submit" class="primary">Add with password</button>
-            <button type="button" id="enrol-cancel" class="secondary">Cancel</button>
           </div>
         </form>
-        <div id="enrol-hints" style="font-size:12px;color:#6b6b74;margin-top:8px" hidden></div>
+        <div class="button-row">
+          <button type="button" id="enrol-cancel" class="secondary">Cancel</button>
+        </div>
       </div>
     </section>
 
