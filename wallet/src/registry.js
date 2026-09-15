@@ -317,7 +317,8 @@ function startInboxWatch({ notify }) {
           continue;
         }
         const who = req.label || req.grantee || req.agent_email || 'An agent';
-        const what = (req.grants || []).map((g) => `${(g.scopes || []).join(',')} @ ${g.audience}`).join('; ');
+        const scopeName = (s) => (typeof s === 'string' ? s : (s && s.scope) || '');
+        const what = (req.grants || []).map((g) => `${(g.scopes || []).map(scopeName).join(',')} @ ${g.audience}`).join('; ');
         notify(`Approval requested: ${who}`, what || 'wants access', () =>
           require('./consent').hostConsent({ code: req.code }).catch((e) => console.warn('[wallet] consent window:', e.message || e))
         );

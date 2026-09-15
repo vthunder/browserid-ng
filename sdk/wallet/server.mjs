@@ -223,6 +223,19 @@ async function ensureWarrant(agent, audience, scopes, message, grantor) {
 // re-asking.
 const lastDenial = new Map();
 
+// A scope ENTRY (protocol §5): a bare scope string, or an object carrying
+// parameters — attenuations the AUDIENCE enforces (a custodian for pay: /
+// contract: caps). Passed to the registry verbatim; the human's consent card
+// renders them as a sentence ("spend up to $20.00 every 30 days").
+const SCOPE_ENTRY = z.object({
+  scope: z.string(),
+  mode: z.enum(["auto", "prompt"]).optional(),
+  cap: z.object({ amount: z.string(), currency: z.string(), window: z.string().optional() }).strict().optional(),
+  counterparties: z.array(z.string()).optional(),
+  max_duration: z.string().optional(),
+}).strict();
+const scopeText = (s) => (typeof s === "string" ? s : JSON.stringify(s));
+
 const server = new McpServer({ name: "browserid-wallet", version: "0.1.0" });
 
 server.registerTool(
@@ -338,7 +351,7 @@ server.registerTool(
     description: "Ask the human to grant this agent an audience + scopes. Returns an APPROVE_URL (or READY). Pass a one-sentence `message` saying what you'll do with the access — it's shown to the human (quoted, unverified) and helps them decide. `grantor` pins who the actions are attributed to ('self' = you, an email of the human's, or a handle identity like <handle>@bsky.browserid.me); if you already hold a warrant for the audience under a DIFFERENT grantor, it is replaced — a fresh approval is requested. Use this to redo a grant with a different on-behalf-of identity. NOTE: pass a grantor the human GAVE you verbatim (e.g. a Bluesky-handle identity <handle>@bsky.browserid.me) EXACTLY — do not 'normalise' it to their email; the attribution and the provenance badge are that literal string, and an email is a different person as far as the badge is concerned.",
     inputSchema: {
       audience: z.string(),
-      scopes: z.array(z.string()).optional(),
+      scopes: z.array(z.union([z.string(), SCOPE_ENTRY])).optional(),
       message: z.string().optional().describe("one sentence on what you'll do with this access — shown to the human, unverified"),
       grantor: z.string().optional().describe("pin attribution, passed through VERBATIM: 'self' (you act as yourself), one of the human's emails, or a handle identity such as <handle>@bsky.browserid.me (posts to Bluesky are attributed to exactly this). Omit = the human chooses. Do not rewrite a handle identity into an email."),
       replace: z.boolean().optional().describe("drop any held warrant for this audience first and request a fresh one — use when the held warrant is revoked or stale"),
@@ -468,7 +481,7 @@ server.registerTool(
         const c = grantClaims(g.grant) || {};
         const rel = c.grantor === c.grantee ? "as itself" : `on behalf of ${c.grantor}`;
         const exp = c.exp ? new Date(c.exp * 1000).toISOString().slice(0, 10) : "?";
-        return `${g.audience}\n  scopes: ${(c.scopes || []).join(", ") || "(none)"} · acting ${rel} · expires ${exp}`;
+        return `${g.audience}\n  scopes: ${(c.scopes || []).map(scopeText).join(", ") || "(none)"} · acting ${rel} · expires ${exp}`;
       }).join("\n"));
     } catch (e) {
       return explain(e) || text("ERROR: " + e.message);

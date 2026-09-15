@@ -17,7 +17,7 @@ export { requestProvision, PendingProvision, requestWarrants, PendingWarrants, D
 // The legacy provisioning-cert path. The broker no longer serves the
 // endpoints this uses (`/provision/endorse` → 404); kept only for older
 // deployments, and not what a new integration should reach for.
-export { Agent } from "./src/agent.mjs";
+export { Agent, scopeName, scopeEntryEq } from "./src/agent.mjs";
 export { Credential } from "./src/credential.mjs";
 
 // Key primitives, so a consumer can verify a signature the agent made — or

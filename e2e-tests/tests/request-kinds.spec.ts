@@ -18,7 +18,10 @@ import { requestProvision } from '../../sdk/agent/src/device.mjs';
 
 const BROKER = process.env.BROKER_URL || 'http://localhost:3000';
 const AUDIENCE = 'sbo+raw://avail:turing:506/';
-const GRANTS = [{ audience: AUDIENCE, scopes: ['sign:sbo:post', { scope: 'sign:sbo:delete', mode: 'prompt' }] }];
+// The third entry carries a `cap` parameter (spec §5, audience-enforced):
+// it must ride through the dialog VERBATIM and read as a sentence on the card.
+const PAY_ENTRY = { scope: 'pay:transfer', cap: { amount: '20.00', currency: 'USD', window: 'P30D' } };
+const GRANTS = [{ audience: AUDIENCE, scopes: ['sign:sbo:post', { scope: 'sign:sbo:delete', mode: 'prompt' }, PAY_ENTRY] }];
 
 function envelope(action: string, owner?: string) {
   return {
@@ -82,6 +85,7 @@ test.describe('request(kind, args)', () => {
     await expect(popup.locator('#sbo-consent-audiences')).toContainText(AUDIENCE);
     await expect(popup.locator('#sbo-consent-scopes')).toContainText('signed automatically');
     await expect(popup.locator('#sbo-consent-scopes')).toContainText('approve each one');
+    await expect(popup.locator('#sbo-consent-scopes')).toContainText('spend up to $20.00 every 30 days');
     await popup.click('#sbo-consent-allow');
     const w = await outcome('__w');
     expect(w.ok, JSON.stringify(w)).toBeTruthy();
@@ -138,6 +142,12 @@ test.describe('request(kind, args)', () => {
     expect((await outcome('__s6')).err?.error).toBe('unsupported_kind');
     await start('warrant', { grants: [] }, '__s7');
     expect((await outcome('__s7')).err?.error).toBe('bad_request');
+    // A parameter the wallet does not know is a restriction it cannot honor:
+    // refused at the door, never stripped (spec §6.6 invariant 14).
+    await start('warrant', { grants: [{ audience: AUDIENCE, scopes: [{ scope: 'pay:transfer', max_per_day: 3 }] }] }, '__s8');
+    expect((await outcome('__s8')).err?.error).toBe('bad_request');
+    await start('warrant', { grants: [{ audience: AUDIENCE, scopes: [{ scope: 'pay:transfer', cap: { amount: '1e3', currency: 'USD' } }] }] }, '__s9');
+    expect((await outcome('__s9')).err?.error).toBe('bad_request');
   });
 
   test('admission: the resource files, the page hands over the code, the record arrives by poll', async ({ page, request }) => {

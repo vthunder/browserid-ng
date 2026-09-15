@@ -1,3 +1,24 @@
+/**
+ * A warrant scope ENTRY (protocol §5): a bare scope string, or an object
+ * carrying parameters — attenuations, stricter-wins. `mode` is
+ * wallet-enforced (sign: scopes); `cap`, `counterparties` and `max_duration`
+ * are AUDIENCE-enforced (a custodian) — never by the wallet.
+ */
+export type ScopeEntry =
+  | string
+  | {
+      scope: string;
+      mode?: "auto" | "prompt";
+      /** Decimal `amount` (never a float), ISO 4217 `currency`, optional ISO-8601 `window` rolling from the warrant's iat. */
+      cap?: { amount: string; currency: string; window?: string };
+      /** Exact emails or `*@domain`. */
+      counterparties?: string[];
+      /** ISO-8601 duration. */
+      max_duration?: string;
+    };
+export function scopeName(e: ScopeEntry): string | undefined;
+export function scopeEntryEq(a: ScopeEntry, b: ScopeEntry): boolean;
+
 // Type definitions for @browserid-ng/agent
 
 export interface ReservedIdentity {
@@ -87,15 +108,15 @@ export class Agent {
 
   /** Audiences this agent currently holds warrants for. */
   warrantedAudiences(): string[];
-  /** Whether a held warrant covers this audience + scopes. */
-  warrantCovers(audience: string, scopes?: string[] | null): boolean;
+  /** Whether a held warrant covers this audience + scopes (entries compare by scope string AND parameters). */
+  warrantCovers(audience: string, scopes?: ScopeEntry[] | null): boolean;
 
   /** Raise a consent request; returns an approve URL + an `approved` promise. */
-  requestWarrant(audience: string, scopes?: string[] | null): Promise<WarrantRequest>;
+  requestWarrant(audience: string, scopes?: ScopeEntry[] | null): Promise<WarrantRequest>;
   /** Raise consent, surface the URL via the callback, and await approval. */
   obtainWarrant(
     audience: string,
-    scopes: string[] | null,
+    scopes: ScopeEntry[] | null,
     onApproveUrl?: (url: string) => void
   ): Promise<void>;
 
@@ -140,7 +161,7 @@ export interface StoredGrant {
 
 export interface GrantRequest {
   audience: string;
-  scopes?: string[];
+  scopes?: ScopeEntry[];
 }
 
 export class PendingProvision {

@@ -62,6 +62,18 @@ function resolveName(cred, explicit) {
   return id.generated ? generatedName(id.prefix) : id.name;
 }
 
+/** The scope string of an entry (string | { scope, ...params }). */
+export const scopeName = (e) => (typeof e === "string" ? e : e && typeof e === "object" ? e.scope : undefined);
+/** Two entries are equal iff same scope string and same parameters (a bare
+ *  string equals `{ scope }` with no parameters). */
+export function scopeEntryEq(a, b) {
+  if (scopeName(a) !== scopeName(b)) return false;
+  const pa = typeof a === "object" && a ? a : { scope: scopeName(a) };
+  const pb = typeof b === "object" && b ? b : { scope: scopeName(b) };
+  const keys = [...new Set([...Object.keys(pa), ...Object.keys(pb)])].filter((k) => k !== "scope").sort();
+  return keys.every((k) => JSON.stringify(pa[k] ?? null) === JSON.stringify(pb[k] ?? null));
+}
+
 export class Agent {
   #cred; #key; #cert; #email; #warrants; #http;
 
@@ -220,13 +232,20 @@ export class Agent {
 
   warrantedAudiences() { return [...this.#warrants.keys()]; }
 
-  /** A held warrant covers a request iff same audience and its scopes ⊇ wanted. */
+  /**
+   * A held warrant covers a request iff same audience and its scopes ⊇ wanted.
+   * Scopes are ENTRIES — a bare string or `{ scope, ...parameters }` (spec §5);
+   * an entry's identity is its scope string, so coverage compares names.
+   * Parameters (cap, counterparties, max_duration) are audience-enforced
+   * attenuations: a held entry with a different parameter set does not
+   * cover a request that asks for one.
+   */
   warrantCovers(audience, scopes) {
     const w = this.#warrants.get(audience);
     if (!w) return false;
     if (!scopes || scopes.length === 0) return true;
     const held = w.scopes || [];
-    return scopes.every((s) => held.includes(s));
+    return scopes.every((want) => held.some((h) => scopeEntryEq(h, want)));
   }
 
   #addWarrant(encoded) {

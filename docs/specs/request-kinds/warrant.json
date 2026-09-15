@@ -12,7 +12,34 @@
         "type": "object",
         "properties": {
           "audience": { "type": "string" },
-          "scopes": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+          "scopes": {
+            "type": "array", "minItems": 1, "maxItems": 32,
+            "items": {
+              "oneOf": [
+                { "type": "string", "pattern": "^[a-z0-9_:.-]{1,64}$" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "scope": { "type": "string", "pattern": "^[a-z0-9_:.-]{1,64}$" },
+                    "mode": { "enum": ["auto", "prompt"] },
+                    "cap": {
+                      "type": "object",
+                      "properties": {
+                        "amount": { "type": "string", "pattern": "^(\\d+(\\.\\d{0,2})?|\\.\\d{1,2})$", "description": "Decimal string, never a float." },
+                        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+                        "window": { "type": "string", "description": "ISO-8601 duration, rolling from the warrant's iat; absent = lifetime cap." }
+                      },
+                      "required": ["amount", "currency"], "additionalProperties": false
+                    },
+                    "counterparties": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "type": "string", "description": "An exact email or *@domain." } },
+                    "max_duration": { "type": "string", "description": "ISO-8601 duration." }
+                  },
+                  "required": ["scope"], "additionalProperties": false,
+                  "description": "A scope entry with parameters (protocol §5): attenuations, stricter-wins, preserved verbatim into the signed warrant. `mode` is wallet-enforced (sign: scopes); `cap`, `counterparties`, `max_duration` are AUDIENCE-enforced (a custodian) — never by the wallet."
+                }
+              ]
+            }
+          }
         },
         "required": ["audience", "scopes"], "additionalProperties": false
       },

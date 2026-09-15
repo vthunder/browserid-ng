@@ -19,6 +19,34 @@ const broker = require('./broker');
 const { generateKey, jws, decodeJws, nowS } = require('./crypto');
 
 const SCOPE_RE = /^[a-z0-9_:.-]{1,64}$/;
+// The same entry shape check the web dialog runs (broker
+// common/js/scope-labels.js `valid`): a scope name, or { scope, mode?, cap?,
+// counterparties?, max_duration? } with well-formed values. Entries pass
+// through VERBATIM — a parameter is the grantor's restriction.
+const ISO_RE = /^P(?!$)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?(T(?!$)(\d+H)?(\d+M)?(\d+S)?)?$/;
+const ENTRY_KEYS = ['scope', 'mode', 'cap', 'counterparties', 'max_duration'];
+function scopeEntryValid(sc) {
+  if (typeof sc === 'string') return SCOPE_RE.test(sc);
+  if (!sc || typeof sc !== 'object' || Array.isArray(sc)) return false;
+  if (typeof sc.scope !== 'string' || !SCOPE_RE.test(sc.scope)) return false;
+  if (!Object.keys(sc).every((k) => ENTRY_KEYS.includes(k))) return false;
+  if (sc.mode !== undefined && sc.mode !== 'auto' && sc.mode !== 'prompt') return false;
+  if (sc.cap !== undefined) {
+    const c = sc.cap;
+    if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
+    if (!Object.keys(c).every((k) => k === 'amount' || k === 'currency' || k === 'window')) return false;
+    if (typeof c.amount !== 'string' || c.amount.length > 32 || !/^(\d+(\.\d{0,2})?|\.\d{1,2})$/.test(c.amount)) return false;
+    if (typeof c.currency !== 'string' || !/^[A-Z]{3}$/.test(c.currency)) return false;
+    if (c.window !== undefined && (typeof c.window !== 'string' || c.window.length > 32 || !ISO_RE.test(c.window))) return false;
+  }
+  if (sc.counterparties !== undefined) {
+    const l = sc.counterparties;
+    if (!Array.isArray(l) || !l.length || l.length > 32) return false;
+    if (!l.every((x) => typeof x === 'string' && x.length <= 254 && /^(\*@[^@\s]+|[^@\s]+@[^@\s]+)$/.test(x))) return false;
+  }
+  if (sc.max_duration !== undefined && (typeof sc.max_duration !== 'string' || sc.max_duration.length > 32 || !ISO_RE.test(sc.max_duration))) return false;
+  return true;
+}
 
 function scopeName(e) { return typeof e === 'string' ? e : (e && e.scope); }
 function scopeMode(e) { return (e && typeof e === 'object' && e.mode) || 'auto'; }
@@ -43,11 +71,7 @@ function normalizeGrants(v) {
     seen.add(g.audience);
     if (!Array.isArray(g.scopes) || !g.scopes.length || g.scopes.length > 32) return null;
     for (const sc of g.scopes) {
-      const name = scopeName(sc);
-      if (typeof name !== 'string' || !SCOPE_RE.test(name)) return null;
-      if (typeof sc === 'object' && !Object.keys(sc).every((k) => k === 'scope' || k === 'mode')) return null;
-      const mode = typeof sc === 'object' ? sc.mode : undefined;
-      if (mode !== undefined && mode !== 'auto' && mode !== 'prompt') return null;
+      if (!scopeEntryValid(sc)) return null;
     }
     out.push({ audience: g.audience, scopes: g.scopes });
   }

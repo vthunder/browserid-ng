@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { readFile, writeFile, rm } from "node:fs/promises";
 import { statSync } from "node:fs";
 
-import { Agent, Credential, AmbiguousNameError, NoWarrantError } from "./index.mjs";
+import { Agent, Credential, AmbiguousNameError, NoWarrantError, scopeName, scopeEntryEq } from "./index.mjs";
 import { KeyPair, publicKeyField, decodeJwtClaims, verifyJws, PublicKey, b64u } from "./src/crypto.mjs";
 import { nowS, parseCert, backedPresentation } from "./src/protocol.mjs";
 
@@ -342,4 +342,17 @@ test("save / open round-trips identity + warrants", async () => {
   } finally {
     await rm(path, { force: true });
   }
+});
+
+test("scope entries: identity is the scope string, parameters must match exactly", () => {
+  const cap = { scope: "pay:transfer", cap: { amount: "20.00", currency: "USD", window: "P30D" } };
+  assert.equal(scopeName("pay:transfer"), "pay:transfer");
+  assert.equal(scopeName(cap), "pay:transfer");
+  assert.equal(scopeName(null), undefined);
+  assert.ok(scopeEntryEq("post", "post"));
+  assert.ok(scopeEntryEq("post", { scope: "post" }));
+  assert.ok(scopeEntryEq(cap, { ...cap }));
+  assert.ok(!scopeEntryEq(cap, "pay:transfer"), "a bare entry does not cover a capped ask");
+  assert.ok(!scopeEntryEq(cap, { scope: "pay:transfer", cap: { amount: "10.00", currency: "USD", window: "P30D" } }));
+  assert.ok(!scopeEntryEq(cap, { scope: "pay:x402", cap: cap.cap }));
 });

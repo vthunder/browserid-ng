@@ -561,6 +561,28 @@ constraints until the verifiers it cares about conform.
   where verifiers trust the authenticator's word (see the honesty tier
   above).
 
+  Three further parameters, defined 2026-09-15 for the `pay:` and
+  `contract:` scope families (the custodian / agreements work), all
+  **audience-enforced** — the stateful party the audience names (a
+  custodian holding the money) checks them; a wallet never does, because an
+  agent's own wallet cannot bound the agent (see Known limits in
+  warrant-use-cases). Each is an attenuation with a stricter-wins order:
+
+  | parameter | value | stricter |
+  |---|---|---|
+  | `cap` | `{ amount, currency, window? }` — a decimal string (never a float), an ISO 4217 code, and an optional ISO-8601 duration measured **rolling from the warrant's `iat`**; absent window ⇒ lifetime | smaller amount, then shorter window (a lifetime window is the loosest); a different currency is incomparable |
+  | `counterparties` | exact emails or `*@<domain>` matchers | a subset |
+  | `max_duration` | an ISO-8601 duration | shorter |
+
+  A consumer that does not implement one of these MUST refuse the entry
+  (invariant 14). Signing surfaces pass entries through **verbatim** and the
+  registry compares a signed record's entries to the requested grant
+  **exactly**, parameters included — a record that dropped or loosened one
+  is not the grant that was requested. The consent card renders each entry
+  through the wallet-owned label table (request-kinds README) as one
+  sentence — "spend up to $20.00 every 30 days", "enter agreements up to
+  $50.00 each with anyone at acme.example lasting at most 30 days".
+
   **The `sign:` scope namespace.** `sign:<kind>` scopes — disjoint from
   resource scopes — name **what a wallet may be asked to sign**: the scope
   determines what the wallet will sign, the consent-card verb, and the
