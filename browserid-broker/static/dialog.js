@@ -83,6 +83,7 @@
     claimContinue: document.getElementById('claim-continue-screen'),
     managedConsent: document.getElementById('managed-consent-screen'),
     proveIdentities: document.getElementById('prove-identities-screen'),
+    enrol: document.getElementById('enrol-screen'),
     takeover: document.getElementById('takeover-screen'),
     sboConsent: document.getElementById('sbo-consent-screen'),
     signPrompt: document.getElementById('sign-prompt-screen'),
@@ -434,12 +435,10 @@
       catch (e) { console.warn('proof for', m.email, 'failed:', e.message || e); }
     }
     if (proven.length < needed) {
-      // Not enough from what this browser holds. The registry step is
-      // best-effort and must never hold the sign-in (or the issuer's popup)
-      // hostage: give up quietly; the next sign-in with a missing identity
-      // here, or the account page, can finish it.
-      console.warn('registry login: identity proofs short —', proven.length, 'of', needed, '; missing', hints.join(', '));
-      throw new Error('more identity proofs are needed');
+      // Not enough from what this browser holds: the add-a-device step, as
+      // part of the sign-in (Dan, 2026-09-15): approval from a signed-in
+      // device or the password; a missing address is named as a hint.
+      return await enrolStep(account, currentEmail, hints.filter(x => !proven.some(p => maskOf(p) === x)));
     }
     const t = await post('/wsapi/registry_login_proofs', { account, presentations });
     if (!(t.ok && t.data.login)) throw new Error('the registry refused the proofs');
@@ -492,6 +491,67 @@
     showScreen('email');
     return false;
   }
+  // The add-a-device step (registry-api-v1 §4.2, §5.2.8): resolves with a
+  // login-page token, or rejects when the person cancels. An approval is
+  // opened at once and polled; the password is the other way in.
+  let enrolPending = null;
+  function enrolStep(account, email, hints) {
+    return new Promise((resolve, reject) => {
+      const post = async (path, body) => {
+        const r = await fetch(path, { method: 'POST', credentials: 'same-origin',
+          headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body) });
+        return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
+      };
+      let timer = null, approvalId = null, done = false;
+      const finish = (fn, v) => {
+        if (done) return; done = true;
+        if (timer) clearTimeout(timer);
+        enrolPending = null;
+        fn(v);
+      };
+      enrolPending = { cancel: () => finish(reject, new Error('cancelled')) };
+      const e = screens.enrol.querySelector('.email-display');
+      if (e) e.textContent = email;
+      document.getElementById('enrol-code').textContent = '···-···';
+      document.getElementById('enrol-error').textContent = '';
+      document.getElementById('enrol-password').value = '';
+      const hintsEl = document.getElementById('enrol-hints');
+      hintsEl.hidden = !hints.length;
+      hintsEl.textContent = hints.length
+        ? 'Or sign in here with ' + hints.join(' or ') + ' as well, and try again.' : '';
+      showScreen('enrol');
+      // Approval by code.
+      const poll = async () => {
+        if (done || !approvalId) return;
+        try {
+          const r = await fetch('/api/v1/approvals/' + encodeURIComponent(approvalId), { credentials: 'same-origin', headers: { accept: 'application/json' } });
+          const j = await r.json().catch(() => ({}));
+          if (j.status === 'approved' && j.login) return finish(resolve, j.login);
+          if (j.status === 'denied') { document.getElementById('enrol-wait').textContent = 'That device said no.'; return; }
+          if (j.status === 'expired') { document.getElementById('enrol-wait').textContent = 'That code expired. Cancel and sign in again.'; return; }
+        } catch (err) { /* keep polling */ }
+        timer = setTimeout(poll, 2000);
+      };
+      post('/api/v1/approvals', { account }).then((r) => {
+        if (done) return;
+        if (r.ok && r.data.id && r.data.code) {
+          approvalId = r.data.id;
+          document.getElementById('enrol-code').textContent = r.data.code;
+          poll();
+        } else {
+          document.getElementById('enrol-wait').textContent = 'Approval by code is not available right now.';
+        }
+      });
+      // The password.
+      enrolPending.password = async (password) => {
+        document.getElementById('enrol-error').textContent = '';
+        const r = await post('/wsapi/registry_login', { account, password });
+        if (r.ok && r.data.login) return finish(resolve, r.data.login);
+        document.getElementById('enrol-error').textContent = r.status === 429 ? 'Too many attempts. Try again later.' : "That didn't work. Check the password and try again.";
+      };
+    });
+  }
+
   // After certs land for `email`: if a reset is waiting on it, finish.
   async function maybeFinishRecovery(issuer, email, pair) {
     const rec = state.recovery;
@@ -675,11 +735,22 @@
         proveIdentities: (account) => proveIdentities(account, email, pair, issuer)
       });
       state.registryLoginToken = null;
+      // The registry step is PART of the sign-in (Dan, 2026-09-15): a
+      // browser that cannot be added to the account — the bar not met, or
+      // the registry unreachable — does not sign in, and the certs it was
+      // just issued are dropped so nothing unrecorded is left behind.
       let registry = false;
       try {
         await Registry.ensure();
         registry = true;
-      } catch (e) { console.warn('registry session unavailable:', e.message || e); }
+      } catch (e) {
+        console.warn('registry session unavailable:', e.message || e);
+        try { await Keystore.delDevice(issuer, email, 'device'); await Keystore.delDevice(issuer, email, 'config'); } catch (x) { /* best-effort */ }
+        const cancelled = /cancelled/i.test(String(e.message || e));
+        throw new Error(cancelled
+          ? 'This browser was not added to your account, so the sign-in was cancelled.'
+          : 'This browser could not be added to your browserid account (' + (e.message || e) + '). Try again.');
+      }
       if (registry) {
         try {
           const alloc = await Registry.call('POST', '/api/v1/warrants/allocate_status', {
@@ -3229,6 +3300,13 @@
       const p = takeoverPending; takeoverPending = null;
       showScreen('loading', 'Moving…');
       if (p) p.resolve(true);
+    });
+    document.getElementById('enrol-password-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (enrolPending && enrolPending.password) enrolPending.password(document.getElementById('enrol-password').value);
+    });
+    document.getElementById('enrol-cancel').addEventListener('click', () => {
+      if (enrolPending) enrolPending.cancel();
     });
     document.getElementById('prove-skip').addEventListener('click', () => {
       const p = provePending; provePending = null;
