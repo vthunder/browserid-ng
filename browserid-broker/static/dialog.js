@@ -84,6 +84,7 @@
     managedConsent: document.getElementById('managed-consent-screen'),
     proveIdentities: document.getElementById('prove-identities-screen'),
     enrol: document.getElementById('enrol-screen'),
+    newAccount: document.getElementById('new-account-screen'),
     takeover: document.getElementById('takeover-screen'),
     sboConsent: document.getElementById('sbo-consent-screen'),
     signPrompt: document.getElementById('sign-prompt-screen'),
@@ -514,7 +515,12 @@
         }
         fn(v);
       };
-      enrolPending = { cancel: () => finish(reject, new Error('cancelled')) };
+      enrolPending = {
+        cancel: () => finish(reject, new Error('cancelled')),
+        // "Not your account?": the registry client creates a new account
+        // around the certs just proven (confirm_takeover).
+        newAccount: () => { const err = new Error('new account'); err.newAccount = true; finish(reject, err); },
+      };
       const e = screens.enrol.querySelector('.email-display');
       if (e) e.textContent = email;
       document.getElementById('enrol-code').textContent = '···-···';
@@ -754,6 +760,7 @@
       } catch (e) {
         console.warn('registry session unavailable:', e.message || e);
         try { await Keystore.delDevice(issuer, email, 'device'); await Keystore.delDevice(issuer, email, 'config'); } catch (x) { /* best-effort */ }
+        showScreen('loading');
         const cancelled = /cancelled/i.test(String(e.message || e));
         throw new Error(cancelled
           ? 'This browser was not added to your account, so the sign-in was cancelled.'
@@ -3332,6 +3339,18 @@
     });
     document.getElementById('enrol-cancel').addEventListener('click', () => {
       if (enrolPending) enrolPending.cancel();
+    });
+    document.getElementById('enrol-not-mine').addEventListener('click', (e) => {
+      e.preventDefault();
+      const em = screens.newAccount.querySelector('.email-display');
+      const src = screens.enrol.querySelector('.email-display');
+      if (em && src) em.textContent = src.textContent;
+      showScreen('newAccount');
+    });
+    document.getElementById('new-account-back').addEventListener('click', () => showScreen('enrol'));
+    document.getElementById('new-account-go').addEventListener('click', () => {
+      showScreen('loading', 'Setting up your account...');
+      if (enrolPending) enrolPending.newAccount();
     });
     document.getElementById('prove-skip').addEventListener('click', () => {
       const p = provePending; provePending = null;

@@ -85,3 +85,21 @@ test('deny from the account page ends the new device\'s wait', async ({ browser,
   await expect(dev.locator('#approval-err')).toContainText('said no', { timeout: 10000 });
   await fresh.close();
 });
+
+test('the login page offers "Not your account?" and answers new_account', async ({ browser, page, request }) => {
+  const { email, pass } = await createAccount(request);
+  await page.goto(`${baseUrl}/account`);
+  await signIn(page, email, pass);
+  const account: string = await page.evaluate(() => fetch('/wsapi/session_context', { credentials: 'same-origin' }).then(r => r.json()).then(j => j.account));
+  const fresh = await browser.newContext();
+  const dev = await fresh.newPage();
+  const returnUrl = `${baseUrl}/registry-login-return`;
+  await dev.goto(`${baseUrl}/registry-login#account=${encodeURIComponent(account)}&identity=${encodeURIComponent(email)}&return_origin=${encodeURIComponent(baseUrl)}&return_url=${encodeURIComponent(returnUrl)}`);
+  await dev.click('#to-not-mine');
+  await expect(dev.locator('#not-mine')).toBeVisible();
+  await expect(dev.locator('#not-mine-email')).toHaveText(email);
+  await dev.click('#not-mine-go');
+  await dev.waitForURL((u) => u.toString().startsWith(returnUrl), { timeout: 10000 });
+  expect(new URL(dev.url()).hash).toContain('login_error=new_account');
+  await fresh.close();
+});

@@ -262,6 +262,7 @@ function loginHop({ url: loginUrl, account, testPassword, testMethod }) {
     });
     const url = loginUrl +
       '#account=' + encodeURIComponent(account) +
+      '&identity=' + encodeURIComponent(store.state().identity || '') +
       '&return_origin=' + encodeURIComponent(broker.ORIGIN) +
       '&return_url=' + encodeURIComponent(RETURN_URL);
     const timeout = setTimeout(() => { win.close(); reject(new Error('registry login timed out')); }, 5 * 60 * 1000);

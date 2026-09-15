@@ -171,10 +171,10 @@
 
   // §5.2.1: a new account around the identity; the pair recorded and the
   // login key enrolled by creation.
-  async function createAccount() {
+  async function createAccount(confirmTakeover) {
     var path = "/api/v1/accounts";
     loginKey = await freshLoginKey();
-    var w = await withCerts(path, {}, loginKey, true);
+    var w = await withCerts(path, confirmTakeover ? { confirm_takeover: true } : {}, loginKey, true);
     var r = await postRaw(path, w.bodyStr, { proof: w.header });
     if (r.ok && r.data.token) { took(r.data); await storeLoginKey(account, loginKey); return; }
     throw error(r, path);
@@ -219,9 +219,18 @@
       earned = lr.data.login;
     } else if (url.origin === window.location.origin && proveIdentities) {
       // No password: prove the account's identities from what this wallet
-      // holds (the dialog's own certs), falling back to the page.
+      // holds (the dialog's own certs), or the dialog's add-a-device step.
       try { earned = await proveIdentities(acct); }
-      catch (e) { console.warn('identity proofs did not log in:', e.message || e); throw e; }
+      catch (e) {
+        if (e && e.newAccount && pair) {
+          // "Not your account?": a new account around the certs just
+          // proven; the identity leaves the old one (registry §4.1 rule 1).
+          await createAccount(true);
+          rememberWallet(account);
+          return;
+        }
+        console.warn('identity proofs did not log in:', e.message || e); throw e;
+      }
     } else {
       // No password at hand (a remembered session), or a foreign registry:
       // the page itself asks.

@@ -17,6 +17,7 @@
   var returnUrl = params.get("return_url") || "";
   var returnOriginRaw = params.get("return_origin") || "";
   var startWith = params.get("method") || "";
+  var identityHint = params.get("identity") || "";
   try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
 
   // Same-origin rule between return_origin and return_url (§4.2). No
@@ -225,6 +226,18 @@
   $("to-password-2").addEventListener("click", showPassword);
   $("proofs-start").addEventListener("click", function () { askWallet(null); });
   $("proofs-cancel").addEventListener("click", function () { fail("cancelled"); });
+  // --- Not your account? (registry §4.1 rule 1) --------------------------
+  // The wallet holds the proven certs; the page only answers new_account
+  // and the wallet creates the account around them.
+  function showNotMine() {
+    dropApproval();
+    ["password-form", "approval", "proofs"].forEach(function (id) { $(id).classList.add("hidden"); });
+    $("not-mine-email").textContent = identityHint || "This address";
+    $("not-mine").classList.remove("hidden");
+  }
+  $("to-not-mine").addEventListener("click", function (e) { e.preventDefault(); showNotMine(); });
+  $("not-mine-back").addEventListener("click", function () { $("not-mine").classList.add("hidden"); showPassword(); });
+  $("not-mine-go").addEventListener("click", function () { fail("new_account"); });
   if (startWith === "approval") showApproval();
   if (startWith === "proofs") showProofs();
 })();

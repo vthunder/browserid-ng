@@ -75,9 +75,9 @@ async function lookupAccount() {
 
 // §5.2.1: a new account around the identity (the pair recorded and the
 // login key enrolled by creation).
-async function createAccount() {
+async function createAccount(confirmTakeover) {
   const path = '/api/v1/accounts';
-  const w = await withCerts(path, {}, await loginKey(), true);
+  const w = await withCerts(path, confirmTakeover ? { confirm_takeover: true } : {}, await loginKey(), true);
   const r = await postRaw(path, w.bodyStr, { proof: w.header });
   if (r.ok && r.data.token) { took(r.data); return; }
   throw apiError('POST', path, r);
@@ -179,7 +179,14 @@ async function ensure({ openPage, pageToken } = {}) {
     await createAccount();
     return token;
   }
-  await loginPage(account, openPage, pageToken);
+  try {
+    await loginPage(account, openPage, pageToken);
+  } catch (e) {
+    // "Not your account?" on the page: a new account around this wallet's
+    // certs; the identity leaves the old one (registry §4.1 rule 1).
+    if (/new_account/.test(String(e.message || ''))) { await createAccount(true); return token; }
+    throw e;
+  }
   await attach();
   return token;
 }

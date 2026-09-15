@@ -51,8 +51,15 @@
       <button type="button" class="secondary" id="to-password-2">Use the password instead</button>
       <button type="button" class="secondary" id="proofs-cancel">Cancel</button>
     </div>
+    <div id="not-mine" class="hidden">
+      <p><span id="not-mine-email" style="font-family:ui-monospace,Menlo,monospace;color:#17171a"></span> is currently connected to a browserid account. If it's not
+        your account, you can transfer this email to a new account. The previous owner will no longer be able to sign in with it.</p>
+      <button type="button" id="not-mine-go">Transfer to a new account</button>
+      <button type="button" class="secondary" id="not-mine-back">Back</button>
+      <p class="muted">Is it your account but you forgot your password? <a href="/account">Reset it here</a></p>
+    </div>
     <div id="fatal" class="hidden"><div class="err" id="fatal-msg"></div></div>
-    <p class="muted"><a href="/account">Forgot your browserid.me password?</a></p>
+    <p class="muted"><a href="/account">Forgot your browserid.me password?</a> · <a href="#" id="to-not-mine">Not your account?</a></p>
   </div>
   <script src="/include.js"></script>
   <script src="/common/js/registry-login.js"></script>

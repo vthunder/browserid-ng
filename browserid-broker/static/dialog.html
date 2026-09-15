@@ -390,6 +390,26 @@
         <div class="button-row">
           <button type="button" id="enrol-cancel" class="secondary">Cancel</button>
         </div>
+        <p class="link-row" style="margin:10px 0 0"><a href="#" id="enrol-not-mine">Not your account?</a></p>
+      </div>
+    </section>
+
+    <!-- The address is proven but the account it sits on is not the
+         person's: transfer it to a new account (registry-api-v1 §4.1 rule 1).
+         Reachable only from the enrol screen, never a default. -->
+    <section id="new-account-screen" class="screen">
+      <div class="content">
+        <div class="brand-row"><div class="brand-mark"></div><span>browserid</span></div>
+        <h2 style="margin-bottom:10px">Not your account?</h2>
+        <div class="consent-card"><span class="email-display"></span> is currently connected to a browserid
+          account. If it's not your account, you can transfer this email to a new account. The previous
+          owner will no longer be able to sign in with it.</div>
+        <div class="button-row">
+          <button type="button" id="new-account-go" class="primary">Transfer to a new account</button>
+          <button type="button" id="new-account-back" class="secondary">Back</button>
+        </div>
+        <p class="link-row" style="margin-bottom:0">Is it your account but you forgot your password?
+          <a href="/account" target="_blank" rel="noopener">Reset it here</a></p>
       </div>
     </section>
 
