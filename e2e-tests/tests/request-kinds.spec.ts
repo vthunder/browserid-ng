@@ -21,7 +21,8 @@ const AUDIENCE = 'sbo+raw://avail:turing:506/';
 // The third entry carries a `cap` parameter (spec §5, audience-enforced):
 // it must ride through the dialog VERBATIM and read as a sentence on the card.
 const PAY_ENTRY = { scope: 'pay:transfer', cap: { amount: '20.00', currency: 'USD', window: 'P30D' } };
-const GRANTS = [{ audience: AUDIENCE, scopes: ['sign:sbo:post', { scope: 'sign:sbo:delete', mode: 'prompt' }, PAY_ENTRY] }];
+const DEAL_ENTRY = { scope: 'contract:agreement', cap: { amount: '200.00', currency: 'USD', window: 'P30D' }, min_reputation: { indexer: 'https://index.dsp.fyi', score: 70 } };
+const GRANTS = [{ audience: AUDIENCE, scopes: ['sign:sbo:post', { scope: 'sign:sbo:delete', mode: 'prompt' }, PAY_ENTRY, DEAL_ENTRY] }];
 
 function envelope(action: string, owner?: string) {
   return {
@@ -86,6 +87,7 @@ test.describe('request(kind, args)', () => {
     await expect(popup.locator('#sbo-consent-scopes')).toContainText('signed automatically');
     await expect(popup.locator('#sbo-consent-scopes')).toContainText('approve each one');
     await expect(popup.locator('#sbo-consent-scopes')).toContainText('spend up to $20.00 every 30 days');
+    await expect(popup.locator('#sbo-consent-scopes')).toContainText('with any agent rated 70 or better at index.dsp.fyi');
     await popup.click('#sbo-consent-allow');
     const w = await outcome('__w');
     expect(w.ok, JSON.stringify(w)).toBeTruthy();
@@ -148,6 +150,8 @@ test.describe('request(kind, args)', () => {
     expect((await outcome('__s8')).err?.error).toBe('bad_request');
     await start('warrant', { grants: [{ audience: AUDIENCE, scopes: [{ scope: 'pay:transfer', cap: { amount: '1e3', currency: 'USD' } }] }] }, '__s9');
     expect((await outcome('__s9')).err?.error).toBe('bad_request');
+    await start('warrant', { grants: [{ audience: AUDIENCE, scopes: [{ scope: 'contract:agreement', min_reputation: { indexer: 'http://index.dsp.fyi', score: 70 } }] }] }, '__s10');
+    expect((await outcome('__s10')).err?.error).toBe('bad_request');
   });
 
   test('admission: the resource files, the page hands over the code, the record arrives by poll', async ({ page, request }) => {

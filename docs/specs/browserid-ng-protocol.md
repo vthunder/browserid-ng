@@ -573,6 +573,7 @@ constraints until the verifiers it cares about conform.
   | `cap` | `{ amount, currency, window? }` — a decimal string (never a float), an ISO 4217 code, and an optional ISO-8601 duration measured **rolling from the warrant's `iat`**; absent window ⇒ lifetime | smaller amount, then shorter window (a lifetime window is the loosest); a different currency is incomparable |
   | `counterparties` | exact emails or `*@<domain>` matchers | a subset |
   | `max_duration` | an ISO-8601 duration | shorter |
+  | `min_reputation` | `{ indexer, score }` — one https origin the **grantor** chose, and 0–100; the grantee may deal only with accounts that indexer rates at least `score`. A subjective, off-chain view (the Attestation-spec rule); the audience queries that indexer, never the wallet | higher score at the same indexer; a different indexer is incomparable |
 
   A consumer that does not implement one of these MUST refuse the entry
   (invariant 14). Signing surfaces pass entries through **verbatim** and the

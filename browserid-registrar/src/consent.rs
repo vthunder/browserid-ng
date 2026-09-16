@@ -918,6 +918,11 @@ pub(crate) fn validate_scope_params(e: &browserid_core::ScopeEntry) -> Result<()
             }
         }
     }
+    if let Some(m) = &p.min_reputation {
+        if !m.is_well_formed() {
+            return Err(bad("min_reputation must be { indexer: https origin, score: 0..100 }"));
+        }
+    }
     if let Some(d) = &p.max_duration {
         if d.len() > 32 || browserid_core::device::parse_iso_duration_secs(d).is_none() {
             return Err(bad("max_duration must be an ISO-8601 duration"));

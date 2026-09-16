@@ -233,6 +233,7 @@ const SCOPE_ENTRY = z.object({
   cap: z.object({ amount: z.string(), currency: z.string(), window: z.string().optional() }).strict().optional(),
   counterparties: z.array(z.string()).optional(),
   max_duration: z.string().optional(),
+  min_reputation: z.object({ indexer: z.string().url(), score: z.number().int().min(0).max(100) }).strict().optional(),
 }).strict();
 const scopeText = (s) => (typeof s === "string" ? s : JSON.stringify(s));
 

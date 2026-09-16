@@ -32,10 +32,19 @@
                       "required": ["amount", "currency"], "additionalProperties": false
                     },
                     "counterparties": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "type": "string", "description": "An exact email or *@domain." } },
-                    "max_duration": { "type": "string", "description": "ISO-8601 duration." }
+                    "max_duration": { "type": "string", "description": "ISO-8601 duration." },
+                    "min_reputation": {
+                      "type": "object",
+                      "properties": {
+                        "indexer": { "type": "string", "pattern": "^https://[^/?#\\s]+$", "description": "The one indexer (https origin) whose scorecard the grantor trusts." },
+                        "score": { "type": "integer", "minimum": 0, "maximum": 100 }
+                      },
+                      "required": ["indexer", "score"], "additionalProperties": false,
+                      "description": "Deal only with accounts rated at least `score` at `indexer`. Audience-enforced; a subjective off-chain view, never a protocol score."
+                    }
                   },
                   "required": ["scope"], "additionalProperties": false,
-                  "description": "A scope entry with parameters (protocol §5): attenuations, stricter-wins, preserved verbatim into the signed warrant. `mode` is wallet-enforced (sign: scopes); `cap`, `counterparties`, `max_duration` are AUDIENCE-enforced (a custodian) — never by the wallet."
+                  "description": "A scope entry with parameters (protocol §5): attenuations, stricter-wins, preserved verbatim into the signed warrant. `mode` is wallet-enforced (sign: scopes); `cap`, `counterparties`, `max_duration`, `min_reputation` are AUDIENCE-enforced (a custodian) — never by the wallet."
                 }
               ]
             }

@@ -780,6 +780,7 @@ impl Fixture {
                     cap: None,
                     counterparties: None,
                     max_duration: None,
+                    min_reputation: None,
                 }),
             ],
             status: status("https://browserid.me/.well-known/browserid-status", 171),
@@ -1027,7 +1028,7 @@ fn identity_glob_is_domain_anchored() {
 }
 
 mod scope_params {
-    use super::super::{parse_iso_duration_secs, parse_money_minor, Cap, ScopeEntry, ScopeMode, ScopeParams};
+    use super::super::{parse_iso_duration_secs, parse_money_minor, Cap, MinReputation, ScopeEntry, ScopeMode, ScopeParams};
 
     #[test]
     fn money_parses_exactly() {
@@ -1100,6 +1101,7 @@ mod scope_params {
             cap: Some(cap("50", None)),
             counterparties: Some(vec!["*@acme.example".into(), "b@x.example".into()]),
             max_duration: Some("P30D".into()),
+            min_reputation: Some(MinReputation { indexer: "https://index.dsp.fyi".into(), score: 50 }),
         };
         let tighter = ScopeParams {
             scope: "contract:agreement".into(),
@@ -1107,6 +1109,7 @@ mod scope_params {
             cap: Some(cap("10", Some("P7D"))),
             counterparties: Some(vec!["b@x.example".into()]),
             max_duration: Some("P7D".into()),
+            min_reputation: Some(MinReputation { indexer: "https://index.dsp.fyi".into(), score: 70 }),
         };
         assert!(tighter.is_at_least_as_strict_as(&base));
         assert!(!base.is_at_least_as_strict_as(&tighter));
@@ -1116,5 +1119,27 @@ mod scope_params {
         let mut no_cap = tighter.clone();
         no_cap.cap = None;
         assert!(!no_cap.is_at_least_as_strict_as(&base));
+        // min_reputation: a lower score or another indexer is not stricter.
+        let mut lower = tighter.clone();
+        lower.min_reputation = Some(MinReputation { indexer: "https://index.dsp.fyi".into(), score: 40 });
+        assert!(!lower.is_at_least_as_strict_as(&base));
+        let mut elsewhere = tighter.clone();
+        elsewhere.min_reputation = Some(MinReputation { indexer: "https://other.example".into(), score: 99 });
+        assert!(!elsewhere.is_at_least_as_strict_as(&base));
+    }
+
+    #[test]
+    fn min_reputation_round_trips_and_rejects_unknown_keys() {
+        let json = r#"{"scope":"contract:agreement","cap":{"amount":"200","currency":"USD","window":"P30D"},"min_reputation":{"indexer":"https://index.dsp.fyi","score":70}}"#;
+        let e: ScopeEntry = serde_json::from_str(json).unwrap();
+        let m = e.min_reputation().unwrap();
+        assert_eq!(m.indexer, "https://index.dsp.fyi");
+        assert_eq!(m.score, 70);
+        assert!(m.is_well_formed());
+        assert_eq!(serde_json::to_string(&e).unwrap(), json);
+        assert!(serde_json::from_str::<ScopeEntry>(r#"{"scope":"contract:agreement","min_reputation":{"indexer":"https://i","score":70,"extra":1}}"#).is_err());
+        assert!(!MinReputation { indexer: "http://index.dsp.fyi".into(), score: 70 }.is_well_formed());
+        assert!(!MinReputation { indexer: "https://index.dsp.fyi/v1".into(), score: 70 }.is_well_formed());
+        assert!(!MinReputation { indexer: "https://index.dsp.fyi".into(), score: 101 }.is_well_formed());
     }
 }

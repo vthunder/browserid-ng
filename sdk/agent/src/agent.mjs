@@ -236,7 +236,7 @@ export class Agent {
    * A held warrant covers a request iff same audience and its scopes ⊇ wanted.
    * Scopes are ENTRIES — a bare string or `{ scope, ...parameters }` (spec §5);
    * an entry's identity is its scope string, so coverage compares names.
-   * Parameters (cap, counterparties, max_duration) are audience-enforced
+   * Parameters (cap, counterparties, max_duration, min_reputation) are audience-enforced
    * attenuations: a held entry with a different parameter set does not
    * cover a request that asks for one.
    */

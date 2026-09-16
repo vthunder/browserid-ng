@@ -25,7 +25,8 @@ const SCOPE_RE = /^[a-z0-9_:.\-\/*@+]{1,128}$/;
 // counterparties?, max_duration? } with well-formed values. Entries pass
 // through VERBATIM — a parameter is the grantor's restriction.
 const ISO_RE = /^P(?!$)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?(T(?!$)(\d+H)?(\d+M)?(\d+S)?)?$/;
-const ENTRY_KEYS = ['scope', 'mode', 'cap', 'counterparties', 'max_duration'];
+const ENTRY_KEYS = ['scope', 'mode', 'cap', 'counterparties', 'max_duration', 'min_reputation'];
+const ORIGIN_RE = /^https:\/\/[^\/?#\s]+$/;
 function scopeEntryValid(sc) {
   if (typeof sc === 'string') return SCOPE_RE.test(sc);
   if (!sc || typeof sc !== 'object' || Array.isArray(sc)) return false;
@@ -46,6 +47,13 @@ function scopeEntryValid(sc) {
     if (!l.every((x) => typeof x === 'string' && x.length <= 254 && /^(\*@[^@\s]+|[^@\s]+@[^@\s]+)$/.test(x))) return false;
   }
   if (sc.max_duration !== undefined && (typeof sc.max_duration !== 'string' || sc.max_duration.length > 32 || !ISO_RE.test(sc.max_duration))) return false;
+  if (sc.min_reputation !== undefined) {
+    const m = sc.min_reputation;
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return false;
+    if (!Object.keys(m).every((k) => k === 'indexer' || k === 'score')) return false;
+    if (typeof m.indexer !== 'string' || m.indexer.length > 256 || !ORIGIN_RE.test(m.indexer)) return false;
+    if (!Number.isInteger(m.score) || m.score < 0 || m.score > 100) return false;
+  }
   return true;
 }
 

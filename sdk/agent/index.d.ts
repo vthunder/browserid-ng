@@ -1,7 +1,7 @@
 /**
  * A warrant scope ENTRY (protocol §5): a bare scope string, or an object
  * carrying parameters — attenuations, stricter-wins. `mode` is
- * wallet-enforced (sign: scopes); `cap`, `counterparties` and `max_duration`
+ * wallet-enforced (sign: scopes); `cap`, `counterparties`, `max_duration` and `min_reputation`
  * are AUDIENCE-enforced (a custodian) — never by the wallet.
  */
 export type ScopeEntry =
@@ -15,6 +15,8 @@ export type ScopeEntry =
       counterparties?: string[];
       /** ISO-8601 duration. */
       max_duration?: string;
+      /** Deal only with accounts rated at least `score` (0..100) by the one https `indexer` the grantor chose. Audience-enforced. */
+      min_reputation?: { indexer: string; score: number };
     };
 export function scopeName(e: ScopeEntry): string | undefined;
 export function scopeEntryEq(a: ScopeEntry, b: ScopeEntry): boolean;

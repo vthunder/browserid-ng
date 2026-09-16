@@ -468,7 +468,7 @@ async fn filed_warrant_request_preserves_scope_parameters_verbatim() {
         ScopeEntry::Parameterized(ScopeParams {
             scope: "pay:transfer".into(), mode: None,
             cap: Some(Cap { amount: "20.00".into(), currency: "USD".into(), window: Some("P30D".into()) }),
-            counterparties: Some(vec!["*@acme.example".into()]), max_duration: None,
+            counterparties: Some(vec!["*@acme.example".into()]), max_duration: None, min_reputation: None,
         }),
         "read".into(),
     ]);

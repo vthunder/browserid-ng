@@ -877,6 +877,40 @@ pub struct ScopeParams {
     /// Stricter: shorter. Audience-enforced.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_duration: Option<String>,
+    /// The `min_reputation` parameter (§5): the grantee may deal only with
+    /// accounts rated at least `score` by the one `indexer` the grantor
+    /// chose — a subjective, off-chain view (browserid-pay reputation
+    /// design). Audience-enforced: the custodian / SDK query that indexer.
+    /// Stricter: a higher score at the same indexer; a different indexer is
+    /// not comparable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_reputation: Option<MinReputation>,
+}
+
+/// `{ indexer, score }` — `indexer` an https origin, `score` 0..=100.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MinReputation {
+    pub indexer: String,
+    pub score: u8,
+}
+
+impl MinReputation {
+    /// Well-formed: an `https://` origin with no path/query/fragment and a
+    /// score within 0..=100.
+    pub fn is_well_formed(&self) -> bool {
+        let i = &self.indexer;
+        i.len() <= 256
+            && i.starts_with("https://")
+            && !i["https://".len()..].is_empty()
+            && !i["https://".len()..].contains(['/', '?', '#', ' '])
+            && self.score <= 100
+    }
+
+    /// Stricter-wins: same indexer, higher-or-equal score.
+    pub fn is_at_least_as_strict_as(&self, other: &MinReputation) -> bool {
+        self.indexer == other.indexer && self.score >= other.score
+    }
 }
 
 /// The `cap` parameter's value (§5). `amount` is a decimal string
@@ -1031,6 +1065,12 @@ impl ScopeParams {
                 None => return false,
             }
         }
+        if let Some(om) = &other.min_reputation {
+            match &self.min_reputation {
+                Some(sm) if sm.is_at_least_as_strict_as(om) => {}
+                _ => return false,
+            }
+        }
         true
     }
 }
@@ -1073,6 +1113,9 @@ impl ScopeEntry {
     }
     pub fn max_duration(&self) -> Option<&str> {
         self.params().and_then(|p| p.max_duration.as_deref())
+    }
+    pub fn min_reputation(&self) -> Option<&MinReputation> {
+        self.params().and_then(|p| p.min_reputation.as_ref())
     }
 }
 

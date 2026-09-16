@@ -28,7 +28,7 @@ pub use assertion::Assertion;
 pub use admission::{RecordBundle, ValidatedRecord};
 pub use device::{
     AccessCert, AccessPresentation, AccessRequest, Binding, BindingSet, ConnectionProtocol,
-    Cap, DeviceCert, Holder, HolderMatcher, Purpose, ScopeEntry, ScopeMode, ScopeParams,
+    Cap, DeviceCert, Holder, HolderMatcher, Purpose, ScopeEntry, ScopeMode, ScopeParams, MinReputation,
     VerifiedAccess,
 };
 pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
