@@ -116,30 +116,37 @@ Note the asymmetry: the cookie lane checks `return_origin` only "when supplied".
 
 ## 5. Decisions (2026-11-01)
 
-Dan accepted the proposed fixes for **S1, S2, S5, S6, S9, S10, S13**. Tracked
-in bean `browserid-ng-kgjr` (see epic). **S3** decided: no sunset, drop v1 outright. `browserid-warrant-v2` is
-required everywhere; verifiers reject `browserid-warrant-v1`; the compat path
-in core is deleted. Prerequisite: the signers that still emit v1 for login
-warrants (`browserid-broker/static/dialog.js:796`, `wallet/src/login.js:29`,
-`wallet/src/mediator.js:53`, `scripts/e2e/smoke-prod-dc.mjs:58`,
-`prototypes/menubar-wallet`) move to v2 with a `holder` binding entry and a
-status ref from `allocate_status`; `test-vectors/device-cert-v1.json`
-regenerated. **S4** decided: **no RP registry allowlist.** The registry is the grantor's
-agent and any DNSSEC-publishing domain may run one; pinning would gatekeep new
-registries for no security gain (a stolen config key signs fresh warrants
-anyway; only IdP-side config-cert revocation stops it, independent of registry).
-S4 narrows to two §6.3 rules: the §7.5 safe-fetch rules apply to every status
-fetch, and a list at `uri` is valid only when signed by the DNSSEC-published
-key of `uri`'s host. **S7** decided: core §5 keeps only the generic parameter *mechanism* (object
-entries, identity = scope string, stricter-wins attenuation, each parameter
-declares an **enforcing role**, relays pass entries through verbatim and reject
-what they cannot represent, enforcers fail closed on their own class, a
-parameter in no class is refused by everyone) and defines one parameter,
-`mode` (wallet-enforced). The pay parameters (`cap`, `counterparties`,
-`max_duration`, `min_reputation`) move to a browserid-pay spec as
-audience-enforced, mirroring §10's external-module pattern; the core parser
-becomes name-agnostic. Fixes D7 by the relay rule and removes the
-wallet-refuses-`cap` paradox (D12's parameter clause is then correct
-behaviour). Still open, no decision yet:  (warrant `status.uri` constraints),
-**S7** (who enforces scope parameters), **S8** (fb §4 rewrite), **S11**
-(existence oracles), **S12** (second-device approval for issuance).
+Tracked in bean `browserid-ng-kgjr`. Accepted as proposed: **S1, S2, S5, S6,
+S9, S10, S13**.
+
+- **S3** — drop v1 outright, no sunset. `browserid-warrant-v2` is required
+  everywhere; verifiers reject `browserid-warrant-v1`; the core compat path is
+  deleted. Prerequisite: the signers still emitting v1 for login warrants
+  (`browserid-broker/static/dialog.js:796`, `wallet/src/login.js:29`,
+  `wallet/src/mediator.js:53`, `scripts/e2e/smoke-prod-dc.mjs:58`,
+  `prototypes/menubar-wallet`) move to v2 with a `holder` binding entry and a
+  status ref from `allocate_status`; `test-vectors/device-cert-v1.json`
+  regenerated.
+- **S4** — no RP registry allowlist. The registry is the grantor's agent and
+  any DNSSEC-publishing domain may run one; pinning would gatekeep new
+  registries for no security gain (a stolen config key signs fresh warrants
+  anyway; only IdP-side config-cert revocation stops it, independent of
+  registry). S4 narrows to two §6.3 rules: the §7.5 safe-fetch rules apply to
+  every status fetch, and a list at `uri` is valid only when signed by the
+  DNSSEC-published key of `uri`'s host.
+- **S7** — core §5 keeps only the generic parameter mechanism (object entries,
+  identity = scope string, stricter-wins attenuation, each parameter declares an
+  enforcing role, relays pass entries through verbatim and reject what they
+  cannot represent, enforcers fail closed on their own class, a parameter in no
+  class is refused by everyone) and defines one parameter, `mode`
+  (wallet-enforced). The pay parameters (`cap`, `counterparties`,
+  `max_duration`, `min_reputation`) move to a browserid-pay spec as
+  audience-enforced, mirroring §10's external-module pattern; the core parser
+  becomes name-agnostic. Fixes D7 by the relay rule and removes the
+  wallet-refuses-`cap` paradox (D12's parameter clause is then correct).
+- **S8** — doc drift, confirmed deliberate on the spec side (`/api/v1/token`
+  deleted in a8337d1; `devices/register` merged into `attach`). Rewrite fb §4
+  and its pointers; clean two stale code comments.
+
+Still open: **S11** (existence oracles), **S12** (second-device approval for
+issuance).
