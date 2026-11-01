@@ -99,3 +99,17 @@ WS5 code check the epic asks for.
   bindings, malformed identities (`a@b@c`, `@x`), mixed-case local parts,
   future `iat`, refless v1 warrant, `constraints` present, scope entries with
   parameters, a bundle verified by all six verifiers.
+
+## Appendix: every endpoint that issues a cert (reviewer's table)
+
+| Endpoint | Who can call | Bar enforced | Holder source | Identities |
+|---|---|---|---|---|
+| `POST /device/issue` (cookie form) `routes/device.rs:230` | Broker session + CSRF; same-origin dialog or `/device-authorize` | Unadmitted session may issue only an identity it proved (`:268`); `authorize_mint` (`mint.rs:85`): E3/agent need Full session, E2 need live bridge grant, primary refused; stale SMTP proof → reverify; `return_origin` checked server-side when supplied (`:273-277`) | Caller-supplied if prefix is the account's `browsers` namespace, else fresh (`:300-313`) | Auth cert exact; config cert always `local+*@domain` (`:325-328`) |
+| `POST /device/issue` (Bearer + Proof form) `device.rs:246-257,280-287` | Wallet on an enrolled registry login key | Registrar §4.4 proof + `mint_rule_met` (`account_auth.rs:125`); bridged/primary never (`mint.rs:130`); no `return_origin` check (wallet is the caller) | Same | Same |
+| `POST /idp/device_cert` `routes/hosted_idp.rs:346` | Tenant user with `/idp` cookie (roster password) | Cookie identity == requested email; `must_change` blocks; roster Active; `return_origin` checked (`:371-373`) | **Verbatim passthrough from caller**, else fresh (`:396-403`) — D3 | Config cert always `local+*@domain` (`:432`); `managed` from tenant policy |
+| `POST /access/mint` `device.rs:407` | Anyone holding an auth device cert + signed access request | Own signature, iss, unexpired, purpose, own-list revocation, jti single-use (in-memory), domain pin, holder == cert holder | Copied from device cert | Via `authorizes_identity` — D1 widening |
+| `POST /idp/access_cert` `hosted_idp.rs:493` | Same, tenant-issued cert | Tenant key sig, tenant-list revocation, jti, domain, holder, roster Active; `audience` honored only when cert is `managed` (`:560-600`) | Copied from device cert | Via `authorizes_identity` — D1 widening |
+| `POST /fedcm/assertion` `routes/fedcm.rs:296-310` | Browser FedCM (Sec-Fetch-Dest gate `:59`) with FedCM session cookie | `authorize_mint == Allow` only (`:240`); silent token needs prior interactive opt-in (`:252-268`) | Fresh browsers-namespace holder; warrant matcher `<prefix>.*` | Access cert + throwaway config cert + warrant all signed server-side, no status refs — D19 |
+| `POST /agent-provision/complete` `browserid-registrar/src/agent_provision.rs:885,1391` | Approving user (registry session) | User approval; two-stage identity/grants | Assigned from account namespace (`:1225-1233`); requester picks only the namespace name | Auth cert, single exact identity; quota counts agent identities (50), not certs (spec 25) |
+
+Note the asymmetry: the cookie lane checks `return_origin` only "when supplied". WS5 should confirm an absent `return_origin` cannot reach the issuance handler from a page context (fb §3.1 says the check MUST be at the endpoint).
