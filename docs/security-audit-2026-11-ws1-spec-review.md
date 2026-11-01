@@ -153,4 +153,11 @@ S9, S10, S13**.
   foreign-login-key refusal becomes generic. Both leak only a yes/no about an
   opaque identifier, never a mailbox.
 
-Still open: **S12** (second-device approval for issuance).
+- **S12** — deferred, accepted risk. Issuance stays without second-device
+  approval; the ceremony proves the password, not which wallet asked, so
+  loopback squatting (needs code already on the machine) and consent phishing
+  that adds an attacker device remain possible, with the device list and
+  revocation as the recovery path. Recorded in the threat model; revisit after
+  WS8.
+
+All thirteen spec findings are now decided.

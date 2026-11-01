@@ -168,7 +168,16 @@ can turn it into a check. Derived from the boundaries above.
 - I28. Reset, creation, add-email, and sign-in codes burn after N attempts and
   are IP-throttled (July C1); password guessing is rate-limited (July M6).
 
-## 6. Out of scope for this audit
+## 6. Accepted risks
+
+- **Issuance without second-device approval** (fb §3.1; audit S12, deferred
+  2026-11-01). The ceremony proves the password, not which wallet asked. A
+  local process squatting a loopback origin (A9), or a lure that gets the user
+  to complete a ceremony for an attacker device (A1), obtains a config cert
+  bound to attacker keys. Recovery is the device list plus revocation.
+  Extending reg §5.2.8 approvals to issuance is the known mitigation.
+
+## 7. Out of scope for this audit
 
 Compromise of the user's device OS; cryptanalysis of Ed25519; DNSSEC root
 compromise; the SBO ledger's own consensus. A compromised wallet origin (A6) is
