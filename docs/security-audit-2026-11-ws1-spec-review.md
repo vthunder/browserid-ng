@@ -130,6 +130,16 @@ registries for no security gain (a stolen config key signs fresh warrants
 anyway; only IdP-side config-cert revocation stops it, independent of registry).
 S4 narrows to two §6.3 rules: the §7.5 safe-fetch rules apply to every status
 fetch, and a list at `uri` is valid only when signed by the DNSSEC-published
-key of `uri`'s host. Still open, no decision yet:  (warrant `status.uri` constraints),
+key of `uri`'s host. **S7** decided: core §5 keeps only the generic parameter *mechanism* (object
+entries, identity = scope string, stricter-wins attenuation, each parameter
+declares an **enforcing role**, relays pass entries through verbatim and reject
+what they cannot represent, enforcers fail closed on their own class, a
+parameter in no class is refused by everyone) and defines one parameter,
+`mode` (wallet-enforced). The pay parameters (`cap`, `counterparties`,
+`max_duration`, `min_reputation`) move to a browserid-pay spec as
+audience-enforced, mirroring §10's external-module pattern; the core parser
+becomes name-agnostic. Fixes D7 by the relay rule and removes the
+wallet-refuses-`cap` paradox (D12's parameter clause is then correct
+behaviour). Still open, no decision yet:  (warrant `status.uri` constraints),
 **S7** (who enforces scope parameters), **S8** (fb §4 rewrite), **S11**
 (existence oracles), **S12** (second-device approval for issuance).
