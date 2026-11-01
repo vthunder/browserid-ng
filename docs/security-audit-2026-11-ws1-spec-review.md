@@ -124,6 +124,12 @@ warrants (`browserid-broker/static/dialog.js:796`, `wallet/src/login.js:29`,
 `wallet/src/mediator.js:53`, `scripts/e2e/smoke-prod-dc.mjs:58`,
 `prototypes/menubar-wallet`) move to v2 with a `holder` binding entry and a
 status ref from `allocate_status`; `test-vectors/device-cert-v1.json`
-regenerated. Still open, no decision yet: **S4** (warrant `status.uri` constraints),
+regenerated. **S4** decided: **no RP registry allowlist.** The registry is the grantor's
+agent and any DNSSEC-publishing domain may run one; pinning would gatekeep new
+registries for no security gain (a stolen config key signs fresh warrants
+anyway; only IdP-side config-cert revocation stops it, independent of registry).
+S4 narrows to two §6.3 rules: the §7.5 safe-fetch rules apply to every status
+fetch, and a list at `uri` is valid only when signed by the DNSSEC-published
+key of `uri`'s host. Still open, no decision yet:  (warrant `status.uri` constraints),
 **S7** (who enforces scope parameters), **S8** (fb §4 rewrite), **S11**
 (existence oracles), **S12** (second-device approval for issuance).
