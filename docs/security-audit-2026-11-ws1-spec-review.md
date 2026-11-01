@@ -113,3 +113,11 @@ WS5 code check the epic asks for.
 | `POST /agent-provision/complete` `browserid-registrar/src/agent_provision.rs:885,1391` | Approving user (registry session) | User approval; two-stage identity/grants | Assigned from account namespace (`:1225-1233`); requester picks only the namespace name | Auth cert, single exact identity; quota counts agent identities (50), not certs (spec 25) |
 
 Note the asymmetry: the cookie lane checks `return_origin` only "when supplied". WS5 should confirm an absent `return_origin` cannot reach the issuance handler from a page context (fb §3.1 says the check MUST be at the endpoint).
+
+## 5. Decisions (2026-11-01)
+
+Dan accepted the proposed fixes for **S1, S2, S5, S6, S9, S10, S13**. Tracked
+in bean `browserid-ng-kgjr` (see epic). Still open, no decision yet:
+**S3** (refless v1 sunset), **S4** (warrant `status.uri` constraints),
+**S7** (who enforces scope parameters), **S8** (fb §4 rewrite), **S11**
+(existence oracles), **S12** (second-device approval for issuance).
