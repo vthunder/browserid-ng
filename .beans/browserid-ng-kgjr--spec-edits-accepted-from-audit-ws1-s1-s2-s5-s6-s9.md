@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: high
 created_at: 2026-11-01T18:45:03Z
-updated_at: 2026-11-01T18:45:03Z
+updated_at: 2026-11-01T18:48:44Z
 parent: browserid-ng-ag1l
 ---
 
@@ -18,3 +18,5 @@ Spec changes Dan accepted 2026-11-01 from docs/security-audit-2026-11-ws1-spec-r
 - [ ] S9 one scope grammar, in registry-api-v1 §3, matching shipped SBO scope names (/ * @ +, <=128 bytes); update request-kinds/warrant.json; wallet and server regexes converge. 
 - [ ] S10 registry-api-v1 §5.2.4 restore path: when another account holds the identity, require confirm_takeover and a fresh config cert, matching §2/§5.2.1. Code: WS5.
 - [ ] S13 editorial pass: assertion typ, resolver transport failure in §3, cert ref uri host == iss in §6.3, PUT vs POST, claim of agent code, binding_id minting point, holder_mismatch name collision, §8 rule 1 wording, refless v1 revocation note in §6.4 1e.
+
+- [ ] S3 (decided 2026-11-01): drop v1 warrants, no sunset. Spec §5: remove the v1 compatibility paragraph; §6.1 step 1 and §6.4 1a accept only browserid-warrant-v2. Code order: (1) switch login-warrant signers to v2 + holder binding + allocate_status ref: broker static/dialog.js:796, wallet/src/login.js:29, wallet/src/mediator.js:53, scripts/e2e/smoke-prod-dc.mjs:58, prototypes/menubar-wallet/app/ceremony.js:238; (2) verifiers reject v1 (core device.rs TYP_WARRANT + v1 sugar at ~1145, hosted /verify, sdk/js, python, mcp-auth, gate); (3) regenerate test-vectors/device-cert-v1.json; (4) run Playwright locally (CI does not run e2e) before deploying dialog.js. Removes S3's unrevocable-record risk and closes D-class refless-v1 note in §6.4.

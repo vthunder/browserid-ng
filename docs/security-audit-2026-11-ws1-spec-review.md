@@ -117,7 +117,13 @@ Note the asymmetry: the cookie lane checks `return_origin` only "when supplied".
 ## 5. Decisions (2026-11-01)
 
 Dan accepted the proposed fixes for **S1, S2, S5, S6, S9, S10, S13**. Tracked
-in bean `browserid-ng-kgjr` (see epic). Still open, no decision yet:
-**S3** (refless v1 sunset), **S4** (warrant `status.uri` constraints),
+in bean `browserid-ng-kgjr` (see epic). **S3** decided: no sunset, drop v1 outright. `browserid-warrant-v2` is
+required everywhere; verifiers reject `browserid-warrant-v1`; the compat path
+in core is deleted. Prerequisite: the signers that still emit v1 for login
+warrants (`browserid-broker/static/dialog.js:796`, `wallet/src/login.js:29`,
+`wallet/src/mediator.js:53`, `scripts/e2e/smoke-prod-dc.mjs:58`,
+`prototypes/menubar-wallet`) move to v2 with a `holder` binding entry and a
+status ref from `allocate_status`; `test-vectors/device-cert-v1.json`
+regenerated. Still open, no decision yet: **S4** (warrant `status.uri` constraints),
 **S7** (who enforces scope parameters), **S8** (fb §4 rewrite), **S11**
 (existence oracles), **S12** (second-device approval for issuance).
