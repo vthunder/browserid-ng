@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: high
 created_at: 2026-11-01T18:45:03Z
-updated_at: 2026-11-01T19:25:25Z
+updated_at: 2026-11-01T19:27:03Z
 parent: browserid-ng-ag1l
 ---
 
@@ -24,3 +24,5 @@ Spec changes Dan accepted 2026-11-01 from docs/security-audit-2026-11-ws1-spec-r
 - [ ] S4 (decided 2026-11-01): NO RP-side registry allowlist (keeps registries permissionless). Core §6.3: (a) the §7.5 safe-fetch rules apply to every status-list fetch (no redirects, public unicast only, bounded size/time, fail-closed); (b) a status list at uri is valid only when signed by the DNSSEC-published key of uri's host. Code: browserid-rp status path (D15) and registrar validity bar must enforce (b); hosted verifier already does.
 
 - [ ] S7 (decided 2026-11-01): core §5 = generic parameter mechanism only (object entries, scope-string identity, stricter-wins, enforcing-role column, relay pass-through verbatim or reject, enforcers fail closed on own class, unknown-class params refused by all) + the single core parameter mode (wallet-enforced). Remove cap/counterparties/max_duration/min_reputation definitions from core §5; §6.1 step 9 returns scope ENTRIES verbatim. Code: core device.rs parser name-agnostic (keep shape validation + verbatim pass-through); hosted /verify and /validate-record return entries (D7); sdk/js, python, mcp-auth, gate surface entries; wallet label table sourced per scope family. Follow-up in ~/src/browserid-pay: write the pay-parameters spec (audience-enforced, orders, custodian checks) — create that bean in the pay repo when starting.
+
+- [ ] S8 (decided 2026-11-01, doc drift confirmed: /api/v1/token deleted deliberately in a8337d1, devices/register merged into attach): rewrite fallback-idp-api-v1 §4 as accounts/login/attach, fix the §3.3 and §7 decision-5 pointers; update stale comments naming devices/register in browserid-registrar/src/api.rs:62,165 and browserid-broker/src/registrar_glue.rs:1052.
