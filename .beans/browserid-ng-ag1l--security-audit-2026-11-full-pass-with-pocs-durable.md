@@ -5,7 +5,7 @@ status: todo
 type: epic
 priority: normal
 created_at: 2026-11-01T12:40:56Z
-updated_at: 2026-11-01T19:27:03Z
+updated_at: 2026-11-01T19:34:52Z
 ---
 
 Full-pass security audit of browserid-ng (not differential: July-29 baseline is not trusted as complete). Ordering: never-audited surface first, July ledger re-verified as a checklist. PoCs against a LOCAL broker only for High+ findings. Fuzz harnesses, test vectors, and authz matrix land in repo + CI; the report is one-off at docs/security-audit-2026-11.md. Fold in open items: oawf (deferred July findings), jvcl (skipped cert-leak e2e), d259 (on-chain verifier conformance).
@@ -29,4 +29,4 @@ Discrepancy to resolve in WS5: oawf says ytjn/dw35/7ww7 are still open in code, 
 Threat model: docs/design/threat-model.md. Report: docs/security-audit-2026-11-ws1-spec-review.md. Spec decisions needed from Dan before code changes: S1 (login_page return-origin gating), S10 (restore path confirmation), S3 (v1 refless sunset), S4 (warrant status.uri constraints), S7 (who enforces scope parameters).
 
 ## Spec decisions 2026-11-01
-Accepted S1 S2 S5 S6 S9 S10 S13 -> bean browserid-ng-kgjr. S3 decided: drop v1 warrants outright (in kgjr). S4 decided: no registry allowlist, safe-fetch + list-signer rule (in kgjr). S7 decided: generic mechanism in core, pay params move to browserid-pay (in kgjr). S8 decided: doc drift, editorial (in kgjr). Open: S11 S12.
+Accepted S1 S2 S5 S6 S9 S10 S13 -> bean browserid-ng-kgjr. S3 decided: drop v1 warrants outright (in kgjr). S4 decided: no registry allowlist, safe-fetch + list-signer rule (in kgjr). S7 decided: generic mechanism in core, pay params move to browserid-pay (in kgjr). S8 decided: doc drift, editorial (in kgjr). S11 decided: same-answer fixes, low (in kgjr). Open: S12.

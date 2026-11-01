@@ -148,5 +148,9 @@ S9, S10, S13**.
   deleted in a8337d1; `devices/register` merged into `attach`). Rewrite fb §4
   and its pointers; clean two stale code comments.
 
-Still open: **S11** (existence oracles), **S12** (second-device approval for
-issuance).
+- **S11** — low; accepted. Answer identically whether or not the account or
+  key exists: the approvals cap returns the unknown-account shape, and the
+  foreign-login-key refusal becomes generic. Both leak only a yes/no about an
+  opaque identifier, never a mailbox.
+
+Still open: **S12** (second-device approval for issuance).
