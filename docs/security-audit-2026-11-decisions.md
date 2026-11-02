@@ -53,7 +53,7 @@ rather than a test.
 - (a) Fix now on the branch, PoC later against the fixed code's parent commit.
 - (b) Hold until WS8 PoCs it against a local broker, then fix.
 
-**Recommend (b)**: WS8 is next anyway and the PoC takes under an hour; nothing is deployed from the branch until the PR.
+**Decided 2026-11-02: (b).**
 
 ### Q2. D14 resolver transport failure (Medium)
 
@@ -66,7 +66,7 @@ login failures.
 - (b) Retry once with a short budget (reference 2 s), then reject.
 - (c) Retry against a second configured resolver, then reject.
 
-**Recommend (b)**; (c) if a second resolver is already configured in prod.
+**Decided 2026-11-02: (b).** No second resolver exists.
 
 ### Q3. D15 browserid-rp pinned status path (Medium)
 
@@ -77,7 +77,7 @@ DNSSEC path in the same crate reuses the hosted verifier's guard and is clean.
 - (a) Fix the pinned path to reuse the guard.
 - (b) Deprecate `refresh`/`refresh_status` and route everything through `verify_dnssec`.
 
-**Recommend (b)**: one implementation of the fetch rules, less code.
+**Decided 2026-11-02: (b).**
 
 ### Q4. W5-4 password change vs login keys (Medium)
 
@@ -89,7 +89,7 @@ changes their password after a compromise does not log the attacker out.
 - (b) Password change retires all login keys except the one making the change.
 - (c) Leave as is; the device list is the recovery path.
 
-**Recommend (a)**; it matches what users expect "change password" to do without logging out approved devices.
+**Decided 2026-11-02: (a).**
 
 ### Q5. D8 rate limiting on /api/v1 (Medium)
 
@@ -101,7 +101,7 @@ cost.
 - (a) Blanket per-source and per-account limiter on all of `/api/v1`, before any network fetch, as registry-api-v1 §3 says.
 - (b) Targeted limiters on `accounts`, `accounts/lookup`, `login`, `approvals`, `requests/claim`, `requests/respond` only.
 
-**Recommend (a)** with generous defaults; the spec already promises it and a blanket limiter is harder to forget on new routes.
+**Decided 2026-11-02: (a)** with generous defaults.
 
 ### Q6. W5-7 agent-provision mint bar (Medium)
 
@@ -112,7 +112,24 @@ grant, mint policy) is enforced. Every other issuance lane passes through it.
 - (a) Intended exemption: the user's approval in the provisioning card is the bar. Document it in fallback-idp-api-v1 §3.2.
 - (b) Not intended: route through `authorize_mint` under the approving session.
 
-**Recommend (b)** unless you remember choosing (a); one chokepoint is the point of having it.
+**Leaning (b), pending Dan's confirmation.** Dan does not recall choosing
+(a) and asked whether `authorize_mint` gives the right answer here. Case
+by case, with the minted identity as input:
+
+| identity_mode | identity minted | `authorize_mint` says | Right? |
+|---|---|---|---|
+| handle / standalone | `user+handle@d` (EmailType::Agent) | Full session, else NeedPassword | Yes. This is the bar W5-7 asks for. |
+| self, parent is E3 (mailbox-proofed) | the parent address | Full session; Reverify if the SMTP proof is older than 90 d | Yes. |
+| self, parent is E2 (Google / Bluesky bridged) | the parent address | Delegate(bridge) | Policy says yes, but it is a behaviour change: today the registrar signs as-you agents for bridged addresses with no bridge proof, and it has no hook to run one. Either refuse (consistent with every other lane) or add a bridge re-proof hop like the primary hop. |
+| self, parent is E1 (primary) | the parent address | Delegate(Primary) | Already handled: the page hops to the primary and hands back a primary-signed cert; the registrar signs nothing. Only the registrar-signed branch needs the check. |
+
+Plumbing: the registrar crate sees only `user_id` and the CSRF token, and
+`authorize_mint` lives in the broker, so this is a new host-trait method
+implemented in `registrar_glue.rs` with the session level. For a handle or
+standalone agent the Agent email row does not exist until after signing,
+so the glue applies the Agent rule from the parent's record rather than
+looking one up. Recommend (b) with E2-self refused; check browserid-bsky
+for anything that provisions as-you agents under a bridged address first.
 
 ### Q7. W5-6 X-Forwarded-For (infra check)
 
@@ -123,7 +140,7 @@ address and dodge every per-IP limit.
 - (a) Confirm in sandmill-infra that the proxy sets the header from the connection address; nothing to change in the repo.
 - (b) Change the broker to take the last hop, or a configured trusted-proxy count.
 
-**Recommend (a) first**, then (b) regardless so the repo does not depend on proxy config.
+**Decided 2026-11-02: both.** Confirm the proxy in sandmill-infra and change the broker so it never depends on proxy config.
 
 ## 3. Already settled by the spec edits (no decision needed)
 
