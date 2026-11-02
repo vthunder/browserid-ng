@@ -19,7 +19,8 @@
 | WS4 agent/MCP, wallet, hosted IdP, OIDC bridge | Done (8e4ab00). D3, D5, D6, D13, D17, D19, D20 confirmed; D12 refuted. 17 new findings W4-10..44 (2 Medium: W4-22 wallet-service admits delegated presentations as the human, W4-30 hosted-tenant onboarding squat). Tests: broker 13/7, mcp-auth 12/8, gate 11/6, python 7/2, wallet 6/2, wallet-service 7/3, agent 5/5. |
 | WS2 conformance vectors | Done (d72d53a). 177 vectors, 6 runners (core, hosted, sdk/js, python, mcp-auth, gate) green in CI with expected-fail tables. Only 4 cross-verifier disagreements: D7 (core keeps scope parameters, everything behind HTTP flattens), W2-1 (resource-shaped SDKs strip trailing slash from the audience), D5 and D17 in mcp-auth. Everything else is the stack agreeing with itself against the spec; the core fix resolves it for all six. New: W2-1, W2-5 (sdk/js omits holder/grantee_issuer), W2-6 (duplicate TXT field takes the last value). |
 | WS3 fuzz + proptest | Done (8de10d6, 63cc96b). proptest: core 34 pass / 4 ignored, registrar 3 / 1, allocator 1 / 1. 7 cargo-fuzz targets in a standalone `fuzz/` workspace, 90 s each, 0 crashes; `make fuzz-smoke`. Findings W3-1..4: unchecked `exp - iat` and `iat + ttl` arithmetic (overflow passes max-ttl / reads fresh forever), registrar does not enforce the scope grammar (Medium), unbounded status-list encoder index. |
-| WS8 PoCs, WS9 report + remediation beans | Blocked on the above. |
+| WS8 PoCs | Done (cb599cf), local broker / in-process only. Reproduced D1, D2, D3, W4-22, D5, W6-3/W5-8. D8 takeover refuted; ~20k req/s with no 429 quantifies the missing limiter. S1 phishing shape written up. |
+| WS9 report + remediation beans | Running. |
 
 **Highs confirmed so far**
 
