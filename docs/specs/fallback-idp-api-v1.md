@@ -177,32 +177,28 @@ when asked (`want_login`) and takes the registry session form.
 
 ## 4. Registration
 
-Issuance yields certs. The wallet then registers them at its
-configured registry:
+Issuance yields certs. The wallet then records them at its configured
+registry through the registry's own account API (registry-api-v1 §5.2);
+there is no issuance-specific registration call:
 
-1. `POST /api/v1/token` (registry-api-v1 §3.1) with a presentation
-   built from the new certs — resolves or creates the account and
-   binds the token to the config cert's key.
-2. `POST /api/v1/devices/register { device_cert, config_cert }` —
-   records the device.
+1. `POST /api/v1/accounts/lookup` with the new certs and their
+   possession proofs — which account, if any, holds the identity.
+2. No account: `POST /api/v1/accounts` with the fresh config cert, the
+   wallet's login key, and the certs — creates the account, records
+   the certs, and opens the first session. An account: open a session
+   with `POST /api/v1/login` — spending the `login` token the ceremony
+   returned (§3.3), the registry's login page, or a stored login key.
+3. Under that session, `POST /api/v1/account/attach { identity, certs }`
+   — records both certs under the session's login key. (`accounts`
+   already recorded them in the no-account case.)
 
-`devices/register` is a new registry-api-v1 §5.3 endpoint (the token
-exchange verifies only the presentation's config and access certs,
-not the sibling authentication `device_cert`, so registration must
-verify it explicitly). It MUST require, and reject otherwise:
-
-- both certs verify against an issuer the registry accepts for their
-  identity — the domain's own DNSSEC-published IdP (core §3/§6), or,
-  for a domain without one, a fallback issuer in the registry
-  operator's configured accepted-fallback set (the registry-side
-  mirror of the RP rule, core §8.1; the reference registry's default
-  set is its own domain) — and are unexpired and unrevoked;
-- their identity is one the token's account owns (§3.1 resolution);
-- both share one holder, and the config cert is the one the token is
-  bound to.
-
-Idempotent: re-registering an already-recorded device (matched on
-public key) is a no-op success.
+The registry applies its validity bar to each cert (registry-api-v1
+§7.1): the issuer is the domain's DNSSEC-published IdP or one in the
+registry operator's accepted-fallback set (the registry-side mirror of
+the RP rule, core §8.1; the reference registry's default set is its
+own domain), the signature verifies, the cert is unexpired and
+unrevoked, both certs share one holder, and the identity is one the
+account holds. Attach is idempotent on public key.
 
 Rules:
 
@@ -253,7 +249,9 @@ Resolved (2026-08-28 review):
    never the ceremony page's session state.
 5. **Registration is always wallet-driven** through the registry
    API; issuer-side recording is an internal convenience nothing may
-   depend on. Requires `devices/register` in registry-api-v1 §5.3.
+   depend on. The calls are registry-api-v1 §5.2 `accounts`, `login`,
+   and `attach` (§4; an earlier draft named a `devices/register`
+   endpoint that was folded into `attach`).
 6. **Fallback choice is bounded by RP acceptance** (core §8.1),
    enforced at verification. Gap: the native wallet lane does not
    yet forward the RP's `acceptedFallbacks`.

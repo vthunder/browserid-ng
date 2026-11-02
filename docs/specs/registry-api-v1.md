@@ -52,7 +52,7 @@ The flows, at a glance (the wallet's side; RP login itself is core
 | **Registry** | The service implementing this API. |
 | **Wallet** | The client: holds the user's device keys, builds presentations, renders consent UI. |
 | **Issuer** | The identity provider for an address's domain, or an accepted fallback: it issues the device certs a wallet presents here (core §4). |
-| **Identity** | An email-shaped address a cert names; a *derived agent identity* (`dan+cal@…`) is one carved from it for an agent (core §4.6). Identities compare after lowercasing; a derived identity is held wherever its root is. |
+| **Identity** | An email-shaped address a cert names; a *derived agent identity* (`dan+cal@…`) is one carved from it for an agent (core §4.6). Identities compare by core §5's one rule (domain lowercased A-label, local part byte-exact); a derived identity is held wherever its root is. |
 | **Device cert** | A cert an issuer signs over a wallet's key for an identity (core §4.1): an **auth cert** (`purpose: authentication`) mints the short-lived *access certs* a login presents; a **config cert** (`purpose: authorization`) signs warrants (§4.3). A cert is **fresh** when issued within the last 300 s. |
 | **Warrant** | A grant the user's config cert signs for an audience, with scopes and a holder matcher, checked by relying parties against the registry's status list (core §5, §6.3). |
 | **Presentation** | What a login shows an RP: `access_cert~assertion~warrant~config_cert` (core §5). |
@@ -80,14 +80,17 @@ The flows, at a glance (the wallet's side; RP login itself is core
 - Unknown request fields MUST be rejected (`400 invalid_request`);
   unknown response fields MUST be ignored (additive evolution, §8).
   Unknown query parameters are ignored.
-- GETs are pure; every mutation is a POST. Mutations are idempotent
+- GETs are pure; every mutation is a POST, except the whole-object
+  replace `PUT /api/v1/account/policy` (§5.2.7). Mutations are idempotent
   where §5 says so (attach on pubkey, revokes sticky); a wallet
   retrying an ambiguous failure repeats the call.
 - Timestamps: RFC 3339 UTC; JWS claims keep epoch seconds.
 - No pagination in v1; response shapes leave room to add it.
 - Limits: bodies ≤ 64 KiB (`400 invalid_request` above); labels 1–64
-  Unicode characters, one line; `scopes` 1–32 tokens of `[a-z0-9_:.-]`,
-  ≤ 64 bytes each; `audience` non-empty, no `*`, no whitespace or
+  Unicode characters, one line; `scopes` 1–32 entries whose scope string
+  matches `^[a-z0-9_:.\-/*@+]{1,128}$` — **the one scope grammar**, which
+  core §5, request-kinds, wallets, and SDKs reference rather than restate;
+  `audience` non-empty, no `*`, no whitespace or
   control characters, ≤ 512 bytes; `?wait` ignored when `?code` is
   given.
 - Rate limits: `429 slow_down` + `Retry-After`, per source address,
@@ -171,9 +174,15 @@ two, and a registry MUST offer both:
   logged in, proof of another identity on the account obtained through
   the request mediator (core §7.3) as any site would. The page MUST
   require an explicit user action, MUST NOT complete on ambient
-  credentials alone, and MUST validate `return_origin` (same-origin
-  with `return_url`; no allowlist — whoever holds the token still needs
-  the account, and the token is one-time, short-lived, and bound to it).
+  credentials alone, and MUST deliver the token only to an **accepted
+  return origin** exactly as the issuer sign-in page does (fallback-IdP
+  API §3.1): a loopback or custom-scheme origin, or an http(s) origin on
+  the registry's trusted-wallet list, with `return_url` same-origin to
+  it. The check lives in the handler that mints the token, not only in
+  the page. The token enrols the login key the opener brought, which is
+  a full account session, so an open `return_url` would hand the account
+  to any page that can get the user to type a password into the real
+  login page.
 - **`stored_key`** — possession of a login key enrolled on this
   account, unexpired and unrevoked; no human involved.
 
@@ -463,7 +472,7 @@ is the only way a key becomes recorded.
 |---|---|
 | `Proof` header | REQUIRED. Signed by the session's login key (§4.4). |
 | `identity` | REQUIRED. The identity this call concerns. |
-| `certs` | REQUIRED, 1–2 entries. `[{ "cert": "<JWS>", "proof": "<JWS>" }]`: the identity's auth cert, config cert, or both, each with a possession proof (§4.4) signed by its own key; every cert MUST name `identity` and both MUST carry one holder (`422 invalid_cert/holder_mismatch`). A cert naming further identities is recorded for those only where they are already on the account and its issuer is accepted for them; a bare `*` glob is refused (`422 invalid_cert/glob_identity`). |
+| `certs` | REQUIRED, 1–2 entries. `[{ "cert": "<JWS>", "proof": "<JWS>" }]`: the identity's auth cert, config cert, or both, each with a possession proof (§4.4) signed by its own key; every cert MUST name `identity` and both MUST carry one holder (`422 invalid_cert/holders_differ`). A cert naming further identities is recorded for those only where they are already on the account and its issuer is accepted for them; a bare `*` glob is refused (`422 invalid_cert/glob_identity`). |
 | `confirm_takeover` | OPTIONAL, default `false`. The user's explicit choice to take the identity away from the account that holds it. |
 
 Checks, in order: every cert against the validity bar
@@ -476,7 +485,11 @@ filed.
 - *Active on this account* → recorded. Idempotent on pubkey; a
   re-attached cert keeps its record and holder label.
 - *Suspended on this account* → **restored** (§4.1): the identity
-  leaves wherever it is active and returns. Fresh certs required.
+  returns. Fresh certs required. When another account holds it active,
+  the restore is also a takeover and needs what a takeover needs: a
+  config cert among the carried certs and `confirm_takeover`, else
+  `409 conflict/identity_held` — a suspended copy never pulls an
+  identity off the account that now holds it silently.
 - *Held by no account* → joins; a config cert among the carried
   certs (`config_required`). Fresh certs required.
 - *Held by another account* → **transferred**: leaves there (§4.1) and
@@ -545,9 +558,10 @@ login token.
 (`label` the new device's name, else derived from its User-Agent).
 Response `200 { "id", "code", "expires_at" }`: `id` a secret handle,
 `code` six characters from an unambiguous alphabet shown as `ABC-234`,
-expiry RECOMMENDED 5 minutes. An unknown account gets the same answer
-and is never approved. `403 forbidden/login_rejected` when the account
-already has its cap of open approvals.
+expiry RECOMMENDED 5 minutes. An unknown account, and an account at its
+cap of open approvals, get the same `200` answer and are never approved:
+the endpoint MUST NOT reveal whether an account exists or how busy it
+is.
 
 **`GET /api/v1/approvals/:id`** — Public, the new device's poll.
 Response `200 { "status" }` with `pending`, `approved`, `denied`, or
@@ -641,7 +655,7 @@ present:
 | `holder` — the holder id the grant binds to | ✓ | | ✓ | |
 | `grants` — `[{ audience, scopes, status_idx?, grantee? }]`, one warrant per entry, in order; `grantee` absent means the request's | ✓ | ✓ | ✓ | |
 | `label`, `display_name?`, `message?`, `client_host?`, `client_name?`, `agent_created_at?`, `known` (the grantee already holds a warrant here) | ✓ | ✓ | ✓ | |
-| `binding_id` — the connection's broker-minted binding (core §7.5) | | ✓ | | |
+| `binding_id` — the connection's registry-minted binding (core §7.5); present once the request is claimed | | ✓ | | |
 | `notice` — `{ identity, reason, at }`; `reason` `"left"` (transferred, taken over, or detached) or `"returned"`; no response, expires after the hold | | | | ✓ |
 | `external`, `created_at`, `expires_at` | ✓ | ✓ | ✓ | ✓ |
 
@@ -659,9 +673,12 @@ carries a ref (core §5). Request: `{ "code": …, "page_origin"? }`.
 of the page that handed the wallet this code — equal to the audience origin
 (exact: scheme, host, port) it IS the audience proof and no fetch runs;
 any other value is ignored. Response `200`: the
-request item as `GET requests` shows it. Otherwise the request's
-core §7.5 audience proof MUST validate at claim time (a fresh fetch is
-RECOMMENDED); failing that, `422 invalid_warrant/audience_unproven`.
+request item as `GET requests` shows it. Otherwise, for `connection`
+and `authoring` requests, the request's core §7.5 audience proof MUST
+validate at claim time (a fresh fetch is RECOMMENDED); failing that,
+`422 invalid_warrant/audience_unproven`. An `agent` request carries no
+audience proof — the filer is authenticated by its device key — so its
+claim only binds the request to this account and allocates indices.
 Idempotent per account; a code that is unknown, expired, or claimed by
 another account answers `404 not_found`.
 
@@ -890,7 +907,7 @@ And the **membership rules** (`422`, `accounts` and `attach`):
 | `cert_not_fresh` | A cert creating an account or moving an identity was issued more than 300 s ago (§5.2.1, §5.2.4). |
 | `config_required` | Creating an account, or moving an identity, with no config cert (§5.2.1, §5.2.4). |
 | `glob_identity` | The cert's `identities` contain a bare `*` (§5.2.4). |
-| `holder_mismatch` | The two certs carry different holders (§5.2.4). |
+| `holders_differ` | The two certs carry different holders (§5.2.4). (Renamed 2026-11 from `holder_mismatch`, which collides with the `invalid_warrant` reason.) |
 
 With `conflict` (`409`):
 
@@ -907,9 +924,10 @@ breaking changes get `/api/v2/`. The proof `typ` is versioned
 independently, rejected fail-closed on mismatch. Beyond the rules of
 §4 and §5, a conformant registry upholds:
 
-1. No anonymous operations. Discovery (§5.1) is public; every other
-   call is proven by a device-cert key, mutations signed down to their
-   body bytes.
+1. No anonymous operations. Discovery (§5.1) and the public approval
+   calls (§5.2.8) aside, every call is proven by a key — the session's
+   login key (§4.4), or a cert's own key where a call carries one
+   (§5.2.1) — mutations signed down to their body bytes.
 2. Login is the account's boundary. A key joins an account only under
    a session on it, and only a login opens one; from outside an account
    nothing is observable but that an address is in use. Whoever takes

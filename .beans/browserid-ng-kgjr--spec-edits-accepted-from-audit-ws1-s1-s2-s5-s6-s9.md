@@ -1,11 +1,11 @@
 ---
 # browserid-ng-kgjr
 title: 'Spec edits accepted from audit WS1: S1 S2 S5 S6 S9 S10 S13'
-status: todo
+status: in-progress
 type: task
 priority: high
 created_at: 2026-11-01T18:45:03Z
-updated_at: 2026-11-01T19:34:52Z
+updated_at: 2026-11-02T10:20:09Z
 parent: browserid-ng-ag1l
 ---
 

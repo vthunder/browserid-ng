@@ -88,7 +88,11 @@ for an IdP's identity key.**
   It MUST be fetched over an authenticated channel — **DNS-over-TLS**, EDNS `DO`
   bit set — and accepted only when the resolver's **AD** flag is set. `SERVFAIL`
   is treated as **Bogus → hard reject** (a broken DNSSEC chain is an attack
-  signal, not a fall-through). An **insecure** (AD-unset) result means the
+  signal, not a fall-through). A **transport failure** — the DoT resolver
+  unreachable, a timeout, a malformed answer — is indistinguishable from an
+  attack and is likewise a **hard reject**: it MUST NOT be read as "insecure"
+  and MUST NOT demote a domain to the fallback path. An **insecure**
+  (AD-unset) result — a validated answer with no DNSSEC chain — means the
   domain is not a primary → the identity is issued by the wallet's configured
   fallback IdP (§8). The fallback IdP's *own* key is likewise DNSSEC-resolved;
   a fallback without DNSSEC is a hard error.
@@ -119,7 +123,10 @@ the mint endpoint is published as `access-cert`, not `mint`.
 ## 4. Certificates
 
 Every credential is an Ed25519 JWS whose `typ` domain-separates it. A verifier
-MUST reject a token whose `typ` it does not recognize.
+MUST reject a token whose `typ` it does not recognize. (One exception: the
+assertion (§5) carries no claim-level `typ`; it is domain-separated by its
+key, since the fresh access key signs nothing else. Giving it a `typ` is a
+versioned change.)
 
 There is one certificate type — the **device cert** — factored along a
 **`purpose` axis** plus an opaque **`holder`** id, both carried in the cert:
@@ -324,7 +331,16 @@ connection), but the loop is the same short one.
 it does not implement MUST reject the presentation. Constraints are
 restrictions; ignoring one is escaping it. (This is also what keeps future
 vocabulary additions safe: verifiers predating a key reject rather than
-silently waive it.)
+silently waive it.) It follows that a verifier which implements **none** of
+this section MUST reject any presented cert carrying a `constraints` claim at
+all, whatever its keys. No verifier in the reference implementation
+implements this section as of 2026-11; a conforming implementation that does
+MUST say so in its documentation.
+
+**`scopes` and scope-less warrants.** A warrant without a `scopes` claim
+carries the empty set, which every allowlist contains; the `scopes`
+constraint therefore never restricts a plain login warrant. A domain that
+wants to restrict where its identities may *log in* uses `aud`, not `scopes`.
 
 **User-agent duties.** A UA/broker encountering `managed: true` SHOULD:
 disclose, before storing the certs, that the identity is managed — its domain
@@ -418,7 +434,7 @@ constraints until the verifiers it cares about conform.
 
   | `kind` | Fields | Pins | Subject authenticated by |
   |---|---|---|---|
-  | `holder` | `matcher` — `*` (any holder), `<ns>.*` (a namespace), or `<id>` (one holder) | which **device holders** of the grantee (v1 semantics verbatim), checked against the grantee's access-cert holder (anti-fungibility) or login holder | key possession — access cert + assertion (§6.1) — or a browserid login carrying a holder (§6.4) |
+  | `holder` | `matcher` — `*` (any holder), `<ns>.*` (a namespace), or `<id>` (one holder) | which **device holders** of the grantee, checked against the grantee's access-cert holder (anti-fungibility) or login holder | key possession — access cert + assertion (§6.1) — or a browserid login carrying a holder (§6.4) |
   | `connection` | `protocol`, `id`, `client_host`, `client_name` | which **custody channel** of the grantee | per `protocol` — for `"oauth"`: authorization codes released only to the registered redirect URI, PKCE binding the exchange to the authorize initiator |
   | `requester` | `origin` — one web origin, exact | which **requesting channel** may ask the grantor's **wallet** to sign under the grant (prose below) | the wallet authenticates the request's source itself — for a website, the browser-verified message origin, unforgeable by page JS — and stamps it into the assertion (`req_origin`) for downstream re-checking |
 
@@ -502,9 +518,9 @@ constraints until the verifiers it cares about conform.
   future hardware-backed wallet, out of reach for a JS one.
 
   **Multi-entry sets are self-grant-only.** On a delegated record (grantor ≠
-  grantee) the binding set MUST be exactly one `holder` entry — v1 channel
-  semantics verbatim. Nothing is *incoherent* about richer sets on delegated
-  records; each known combination is one specific unsolved problem, so each
+  grantee) the binding set MUST be exactly one `holder` entry. Nothing is
+  *incoherent* about richer sets on delegated records; each known
+  combination is one specific unsolved problem, so each
   stays a labeled door: **(1)** a `requester` entry on a delegated grant
   inverts the enforcement point — the rule would be enforced by the
   *grantee's* wallet, the constrained party policing itself and
@@ -535,21 +551,41 @@ constraints until the verifiers it cares about conform.
   widens who matches. `grantor` is never a matcher — it is attribution, exact
   and signed-for.
 
-  **Identity comparison.** Wherever this spec matches identities "exactly"
-  (§6.1 step 6, §6.4 step 3), the comparison is: domain part lowercased and
-  in A-label (punycode) form, local part byte-exact, no other normalization.
-  Issuers and signing surfaces MUST emit identity strings already in this
-  form. A `*@<domain>` matcher compares `<domain>` under the same rule
-  against the subject's entire domain part — subdomains do not match — and
+  **Identity comparison (the one rule).** Wherever this spec, or a companion
+  spec (registry-api-v1, fallback-idp-api-v1), matches identities "exactly"
+  (§6.1 step 6, §6.4 step 3, a cert's `identities` list against a grantor or
+  a holder's address), the comparison is: domain part lowercased and in
+  A-label (punycode) form, local part byte-exact, no other normalization.
+  There is no second rule: a component that lowercases the local part, or
+  compares domains without A-label conversion, is non-conforming. Issuers
+  and signing surfaces MUST emit identity strings already in this form. A
+  `*@<domain>` matcher compares `<domain>` under the same rule against the
+  subject's entire domain part — subdomains do not match — and
   covers any local part, subaddressed (§4.6) ones included.
 
-  **Scope entries & parameters.** Three rules: **(1)** everywhere the system
-  treats scopes as identifiers — constraint checks (§4.7, §6.1 step 7), scope
-  intersection (§6.5's S ∩ S′) — an entry's identity is its scope *string*;
-  parameters ride along. **(2)** Parameters are **attenuations** with a
-  defined stricter-wins order; a consumer MUST refuse an entry carrying a
-  parameter it does not implement (§6.6 invariant 14). **(3)** `mode` is the
-  first parameter, defined on `sign:` scopes: `"prompt"` makes the wallet
+  **Scope entries & parameters.** This spec defines the *mechanism* and one
+  parameter; scope families define their own parameters in their own specs.
+  **(1)** Everywhere the system treats scopes as identifiers — constraint
+  checks (§4.7, §6.1 step 7), scope intersection (§6.5's S ∩ S′), the
+  registry's grant comparison — an entry's identity is its scope *string*;
+  parameters ride along. The grammar of the string is registry-api-v1 §3.
+  **(2)** Parameters are **attenuations**, each with a defined stricter-wins
+  order, and each is declared with the **role that enforces it**: `wallet`
+  (checked at dispatch, §6.6 invariant 9) or `audience` (checked by the
+  stateful party the audience names). **(3)** Everyone else is a **relay** —
+  registries, verifiers, SDKs, hosted services between the signer and the
+  enforcer — and a relay MUST carry entries through **verbatim** (parameters
+  included) or reject the record; it MUST NOT flatten an entry to its string
+  (§6.1 step 9). **(4)** An enforcer MUST refuse an entry carrying a
+  parameter of its own role that it does not implement; every consumer,
+  relay or enforcer, MUST refuse a parameter whose family spec it cannot
+  identify at all (§6.6 invariant 14). The registry compares a signed
+  record's entries to the requested grant **exactly**, parameters included —
+  a record that dropped or loosened one is not the grant that was requested.
+  The consent card renders each entry through the wallet-owned label table
+  (request-kinds README), sourced per scope family. **(5)** `mode` is the
+  one parameter this spec defines, on `sign:` scopes, enforced by the
+  **wallet**: `"prompt"` makes the wallet
   render the object to be signed in its own UI and wait for approval before
   signing; absent ⇒ `"auto"` — the grant's baseline is standing silent
   authority, prompt is the explicit tightening (`prompt` > `auto`).
@@ -561,28 +597,16 @@ constraints until the verifiers it cares about conform.
   where verifiers trust the authenticator's word (see the honesty tier
   above).
 
-  Three further parameters, defined 2026-09-15 for the `pay:` and
-  `contract:` scope families (the custodian / agreements work), all
-  **audience-enforced** — the stateful party the audience names (a
-  custodian holding the money) checks them; a wallet never does, because an
-  agent's own wallet cannot bound the agent (see Known limits in
-  warrant-use-cases). Each is an attenuation with a stricter-wins order:
+  | parameter | family | value | stricter | enforced by |
+  |---|---|---|---|---|
+  | `mode` | `sign:` | `"auto"` (default) or `"prompt"` | `prompt` | wallet |
 
-  | parameter | value | stricter |
-  |---|---|---|
-  | `cap` | `{ amount, currency, window? }` — a decimal string (never a float), an ISO 4217 code, and an optional ISO-8601 duration measured **rolling from the warrant's `iat`**; absent window ⇒ lifetime | smaller amount, then shorter window (a lifetime window is the loosest); a different currency is incomparable |
-  | `counterparties` | exact emails or `*@<domain>` matchers | a subset |
-  | `max_duration` | an ISO-8601 duration | shorter |
-  | `min_reputation` | `{ indexer, score }` — one https origin the **grantor** chose, and 0–100; the grantee may deal only with accounts that indexer rates at least `score`. A subjective, off-chain view (the Attestation-spec rule); the audience queries that indexer, never the wallet | higher score at the same indexer; a different indexer is incomparable |
-
-  A consumer that does not implement one of these MUST refuse the entry
-  (invariant 14). Signing surfaces pass entries through **verbatim** and the
-  registry compares a signed record's entries to the requested grant
-  **exactly**, parameters included — a record that dropped or loosened one
-  is not the grant that was requested. The consent card renders each entry
-  through the wallet-owned label table (request-kinds README) as one
-  sentence — "spend up to $20.00 every 30 days", "enter agreements up to
-  $50.00 each with anyone at acme.example lasting at most 30 days".
+  Other families register their parameters in their own specs under the
+  same rules, with the same table columns; the `pay:` and `contract:`
+  families (`cap`, `counterparties`, `max_duration`, `min_reputation`, all
+  audience-enforced by a custodian) are specified in browserid-pay, and
+  until 2026-11 were listed here. A relay needs no family knowledge beyond
+  the shape rule of this section; an enforcer needs its own family's spec.
 
   **The `sign:` scope namespace.** `sign:<kind>` scopes — disjoint from
   resource scopes — name **what a wallet may be asked to sign**: the scope
@@ -624,12 +648,12 @@ constraints until the verifiers it cares about conform.
     "status": { "uri": "https://browserid.me/.well-known/browserid-status", "idx": 171 } }
   ```
 
-  **`status` is REQUIRED** on v2 records. In v1 it is optional because a
-  leaked warrant is inert without the grantee's key; a connection-bound record
-  authorizes with no grantee key in the picture, so the registrar bit is the
-  kill switch and a record without one is malformed. (Requiring it on all v2
-  records also makes the registry's revocation ledger complete by
-  construction.)
+  **`status` is REQUIRED.** A leaked holder-bound warrant is inert without
+  the grantee's key, but a connection-bound record authorizes with no grantee
+  key in the picture, so the registry bit is the kill switch and a record
+  without one is malformed. Requiring it on every record also makes the
+  registry's revocation ledger complete by construction: there is no record
+  a user cannot revoke from their registry.
 
   A holder-bound warrant is **over the grantor/grantee + holder-matcher, not
   bound to any device/access key**, so it is signed **once** by a config cert,
@@ -646,14 +670,11 @@ constraints until the verifiers it cares about conform.
   via the v2 client descriptor, which hosts a user connects through: the same
   class of metadata.
 
-  **v1 compatibility.** `browserid-warrant-v1` — the same claims with a
-  top-level `holder` matcher in place of `binding`, and `status` OPTIONAL —
-  remains valid indefinitely and is interpreted as a v2 record with
-  `binding: { "kind": "holder", "matcher": <holder claim> }`. New signing
-  surfaces SHOULD emit v2; verifiers accept both. Conforming v1 verifiers
-  already reject v2 objects (unknown `typ` ⇒ reject, §6.1 step 1), so
-  downgrade protection at every deployed verifier holds by existing rule
-  (§6.6).
+  **`browserid-warrant-v1` is retired** (2026-11; it carried a top-level
+  `holder` matcher in place of `binding` and an OPTIONAL `status`). It is an
+  unrecognized `typ`: signing surfaces MUST NOT emit it and verifiers MUST
+  reject it (§6.1 step 1, §6.6 invariant 2). A refless record would be
+  unrevocable at the registry, which is why no sunset window is offered.
 
   **Grantor and grantee are independent identities.** In a self-login they
   coincide. In a delegation they differ — and may belong to **different IdPs**: an
@@ -712,10 +733,11 @@ config-cert / grantor) may differ.
 
 1. Parse the bundle into exactly `access_cert ~ assertion ~ warrant ~
    config_cert` (§5). Reject any other shape, and any object bearing an
-   unrecognized `typ` or `purpose` — fail-closed. The warrant is
-   `browserid-warrant-v2`, or v1 interpreted as its holder-binding sugar (§5).
-   A v2 warrant missing `binding` or `status`, with an empty binding set, or
-   with any binding entry whose `kind` is unimplemented, ⇒ reject (§5).
+   unrecognized `typ` or `purpose` — fail-closed. The warrant's `typ` is
+   `browserid-warrant-v2`; any other value, including the retired
+   `browserid-warrant-v1`, ⇒ reject (§5). A warrant missing `binding` or
+   `status`, with an empty binding set, or with any binding entry whose
+   `kind` is unimplemented, ⇒ reject (§5).
    **Presentation requires a channel set satisfiable in op P and an exact
    grantee:** the set MUST contain a `holder` entry and MUST NOT contain a
    `connection` entry (unsatisfiable in P, §5's kind × operation table); a
@@ -732,17 +754,17 @@ config-cert / grantor) may differ.
    in a domain it is authoritative for. Keys come only from DNSSEC (§3).
    *(The optional host-cert intermediate (§4.4) hooks in here when implemented.)*
 3. Verify the **access cert** and the **config cert** under their respective IdP
-   keys; reject if either is expired.
+   keys; reject if either fails the time bounds below.
 4. Verify the **assertion** under the access cert's fresh `public-key`; check
-   `aud` == the RP audience and not expired.
+   `aud` == the RP audience and the time bounds below.
 5. Verify the **config cert authorizes the grantor**: `purpose == authorization`
    and its `identities` match `warrant.grantor`.
-6. Verify the **warrant** under the config cert's `public-key`; check it is
-   unexpired and that the join holds: `warrant.grantee == access_cert.identity`
+6. Verify the **warrant** under the config cert's `public-key`; check the time
+   bounds below and that the join holds: `warrant.grantee == access_cert.identity`
    (exact, per §5's identity comparison — a grantee matcher never satisfies
    this join), **every** binding entry evaluates satisfied per §5's kind ×
-   operation table — the holder matcher (the v2 `holder` entry; v1 `holder`
-   claim) covers `access_cert.holder`; a `requester` entry requires the
+   operation table — the holder matcher (the `holder` entry) covers
+   `access_cert.holder`; a `requester` entry requires the
    assertion's `req_origin` to be present and equal to its `origin`
    (invariant 13) — and `warrant.audience` == the RP audience.
 7. **Enforce constraints** (§4.7). For each presented cert carrying a
@@ -755,7 +777,20 @@ config-cert / grantor) may differ.
    index), the **config cert** (→ its IdP), and the **warrant** (→ the warrant
    registry its own `status.uri` names). All three checks are **fail-closed** (§6.3).
 9. Return the attributed identity (grantor), the grantee (actor of record), the
-   grantor and grantee issuers, the `holder`, and the scopes.
+   grantor and grantee issuers, the `holder`, and the scope **entries**
+   verbatim — parameters included (§5). A verifier MUST NOT flatten entries
+   to bare scope strings: a dropped parameter is a loosened grant, and the
+   party that enforces it may sit behind the verifier.
+
+**Time bounds (steps 3, 4, 6, and §6.3).** For every signed object the
+verifier checks — both certs, the assertion, the warrant, and each status
+list — reject unless `iat ≤ exp` (where the object carries `exp`),
+`iat ≤ now + skew`, and `exp > now` (`now + skew` for `exp` is the same
+allowance in the other direction). `skew` is the verifier's clock-skew
+allowance, reference 300 s; a verifier MUST NOT accept an `iat` further in
+the future than that. Without the lower bound a signer can post-date an
+object so that it stays "fresh" (§7.1's 300 s freshness, a status list's
+`ttl`) for as long as it likes.
 
 A conforming verifier performs **every** step. In particular, accepting anything
 but exactly the four-object bundle (step 1), skipping the per-identity issuer
@@ -807,6 +842,19 @@ revocation of live sessions. A ref carries:
   LSB-first, zlib-compressed, base64url — carried in this protocol's usual
   claim-level-`typ` JWS (`browserid-status-list-v1`, claims `iss`/`sub` (the
   list URI)/`iat`/`ttl`/`status_list{bits,lst}`).
+- **Who may sign a list.** A list served at `uri` is valid only when it
+  verifies under the DNSSEC-published `_browserid` key (§3) of `uri`'s host
+  and its `sub` equals `uri`; a cert's `status.uri` host MUST additionally
+  equal the cert's `iss`. A warrant's `status.uri` is signer-chosen (the
+  registry that allocated the index), so the host-key rule is what stops a
+  stolen config cert from pointing warrants at an attacker-run list: the
+  attacker would also need that host's DNSSEC key. Registries are otherwise
+  permissionless — a verifier does not maintain a registry allowlist.
+- **How a list is fetched.** The safe-fetch rules of §7.5 apply to every
+  status-list fetch: no redirects, connections only to public unicast
+  addresses, bounded time and size, and the list's own time bounds (§6.1:
+  `iat ≤ now + skew`, `now ≤ iat + ttl`, no uncapped grace). Any failure is
+  "cannot prove unrevoked" (below).
 - Verifiers SHOULD fetch and cache the list (reference cache: 5 minutes) and
   treat a set bit as **revoked → reject**. Fetching the whole list reveals
   nothing about which subject is being checked (no OCSP-style privacy leak).
@@ -849,10 +897,10 @@ presents the warrant — it is the row an independently authenticated subject is
 matched against. Three steps, each fail-closed:
 
 1. **Validate the record** (on acquisition; status re-checked per use, below):
-   a. parse; `typ` is `browserid-warrant-v2` (or v1, as a holder-binding
-      record, §5); a non-empty `binding` set, every entry of an implemented
+   a. parse; `typ` is `browserid-warrant-v2` (any other, v1 included, ⇒
+      reject); a non-empty `binding` set, every entry of an implemented
       kind (and, for `connection`, an implemented `protocol`); `status`
-      present (v2);
+      present;
    b. resolve `config_cert.iss` **via the authenticated DNSSEC record** (§3);
       require it authoritative for the grantor's domain (§8.1 fallbacks apply
       as in §6.1 step 2); verify the config cert (unexpired, `purpose ==
@@ -867,8 +915,7 @@ matched against. Three steps, each fail-closed:
       `max-ttl`; a constraint key the verifier does not implement ⇒ reject;
    e. check the revocation ref on each chain object that carries one, each
       check **fail-closed** (§6.3): the config cert (→ its IdP) and the
-      warrant (→ its warrant registry, per its `status.uri`; the warrant's
-      ref is always present on v2, optional on v1).
+      warrant (→ its warrant registry, per its `status.uri`).
 2. **Authenticate the subject** by the binding's method: the custody
    protocol's dance (`connection` — e.g. the OAuth redirect-URI + PKCE
    mechanics, §5), or a browserid login (`holder`). The authenticated
@@ -1015,9 +1062,10 @@ A conforming implementation MUST uphold all of these:
    `connection`-bound or matcher-grantee record MUST NOT verify in a
    four-object bundle. (Mechanically guaranteed — no holder matcher ⇒ §6.1
    step 6 cannot pass — and stated explicitly at §6.1 step 1.)
-2. Conforming v1 verifiers already reject v2 objects (unknown `typ` ⇒ reject,
-   §6.1 step 1): downgrade protection at every deployed verifier is by
-   explicit rule.
+2. `browserid-warrant-v1` is retired (2026-11): no signing surface emits
+   it and every verifier rejects it (§6.1 step 1), so no record can exist
+   without a registry status ref. Downgrade protection in both directions
+   is by the explicit unknown-`typ` rule, never by inference.
 3. A v2 record without `status`, without a non-empty `binding` set, or with
    any binding entry of an unimplemented `kind` (or connection `protocol`)
    MUST be rejected. Signing surfaces MUST refuse to mint such records, and
@@ -1040,8 +1088,8 @@ A conforming implementation MUST uphold all of these:
    Bindings are never identities and appear nowhere identities live.
 9. A **wallet** (§5) MUST NOT sign for an external request except under a
    stored, valid, unrevoked record whose channel set, `grantee`, `audience`,
-   and `sign:` scope all cover the request, honoring the scope entry's
-   parameters. No covering record, an unevaluable check, an unclassifiable
+   and `sign:` scope all cover the request, honoring every wallet-enforced
+   parameter on the entry (§5). No covering record, an unevaluable check, an unclassifiable
    object, or a prompt-mode scope on a wallet with no interactive surface ⇒
    refuse.
 10. A signing grant is a self-grant (`grantor == grantee`) with an exact
