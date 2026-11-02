@@ -17,7 +17,8 @@
 | WS5 broker HTTP surface | Done. 8 candidates: 4 confirmed, 2 partial, 2 refuted. 15 new findings (W5-1..W5-15). Authz matrix: 10 pass / 15 ignored. July items re-verified; H1 still open for discovery fetch and /status/proxy. |
 | WS7 supply chain, build, deploy, secrets | Done (c0acdd7). 16 Rust advisories (14 close with `cargo update`), npm all patched within ranges, 1 Python pin. New CI gate `supply-chain.yml` (cargo-audit, npm audit, pip-audit, gitleaks). 12 findings W7-1..12; no secret ever committed; July M8 holds. |
 | WS4 agent/MCP, wallet, hosted IdP, OIDC bridge | Done (8e4ab00). D3, D5, D6, D13, D17, D19, D20 confirmed; D12 refuted. 17 new findings W4-10..44 (2 Medium: W4-22 wallet-service admits delegated presentations as the human, W4-30 hosted-tenant onboarding squat). Tests: broker 13/7, mcp-auth 12/8, gate 11/6, python 7/2, wallet 6/2, wallet-service 7/3, agent 5/5. |
-| WS2, WS3 | Running. |
+| WS2 conformance vectors | Done (d72d53a). 177 vectors, 6 runners (core, hosted, sdk/js, python, mcp-auth, gate) green in CI with expected-fail tables. Only 4 cross-verifier disagreements: D7 (core keeps scope parameters, everything behind HTTP flattens), W2-1 (resource-shaped SDKs strip trailing slash from the audience), D5 and D17 in mcp-auth. Everything else is the stack agreeing with itself against the spec; the core fix resolves it for all six. New: W2-1, W2-5 (sdk/js omits holder/grantee_issuer), W2-6 (duplicate TXT field takes the last value). |
+| WS3 fuzz + proptest | Running (smoke run in flight). |
 | WS8 PoCs, WS9 report + remediation beans | Blocked on the above. |
 
 **Highs confirmed so far**
@@ -292,6 +293,33 @@ wallet-service drops status refs, refreshes for 30 days with no re-check, has no
 - W4-13 Lane A bearer outlives the warrant: fold the `/verify` expiry field into the D7 scope-parameter work. **Recommend yes.**
 - W4-44 legacy `Agent`/`Credential` lane in `@browserid-ng/agent` is dead but exported: delete (breaking) or leave documented. **Recommend delete at the next major.**
 - D12 stored-grant signature check in the wallet: refuted as a finding; add the check as defence in depth or record as accepted. **Recommend add; it is cheap.**
+
+### Q24. S5 direction: §4.7 constraints (spec vs core)
+
+§4.7 now says nothing implements constraints, so any `constraints` claim
+rejects. But core already enforces `aud`, `scopes`, `max-ttl` and fails
+closed on unknown keys (WS6 S5 tests, WS2 vectors P-CONS-01/06).
+
+- (a) Amend §4.7 to name core as implementing those three keys; the two vectors flip to accept.
+- (b) Strip the core implementation so any constraints claim rejects.
+
+**Recommend (a)**; the code is tested and fail-closed, and throwing it away buys nothing.
+
+### Q25. W2-1 SDKs normalize the `resource` audience (Low)
+
+python-mcp-auth, mcp-auth and gate strip trailing slashes and send the altered audience to `/verify`, so a record for `sbo+raw://avail:turing:506/` never verifies through them.
+
+- (a) Stop normalizing; spec §5 is byte-exact.
+- (b) Keep normalizing and document it.
+
+**Recommend (a)**.
+
+### Q26. W2-4 gate allowlists lowercase the whole email (Low)
+
+- (a) Byte-exact comparison per spec (domain lowercased only).
+- (b) Normalize at config time with a warning.
+
+**Recommend (a)**; same rule as everywhere else, and it is the D17 fix.
 
 ## 3. Already settled by the spec edits (no decision needed)
 
