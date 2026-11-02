@@ -199,13 +199,11 @@ passes today). The WS1 note "define that an allowlist applies to logins as
 | W6-4 | **CONFIRMED** (against the 2026-11 §6.3 text) | Medium | `browserid-verifier/src/verify.rs:754-771`, `:575-594` — a cert's `status.uri` host is never compared to the cert's `iss`; a primary's certs pointing at the broker's own list verify via the own-list shortcut | `w6_4_cert_status_uri_host_must_equal_cert_iss` (ignored, fails today) |
 | W6-3 | Informational | Low | `status.rs:914-926` — `StatusList::decode` reads the whole inflate output before applying the 4 MiB cap, so a crafted list allocates up to the transport cap × compression ratio before rejecting | none (hosted path bounds the body at 4 MiB; a zlib bomb within that still inflates fully) |
 
-W6-4 was an I9 wording question in the first draft; the updated §6.3 now
-states the rule, so it is a gap. Note the tension with hosted primaries
-(bean g5qt): their lists live on the provider's `host=` and so a hosted
-tenant's cert cannot satisfy "URI host == iss" literally. The fix should
-accept the issuer's DNSSEC-declared `host=` as well, as `uri_matches_issuer`
-already does for the list signer, and the spec sentence should say so.
-Remediation: in `verify_access_core` and `validate_record_with_dns`, before
+W6-4 was an I9 wording question in the first draft; §6.3 now states the
+rule, including the hosted-primary case (the URI host may be the cert's
+`iss` or the `host=` its `_browserid` record delegates to), so it is a plain
+gap with no decision attached. Remediation (match `uri_matches_issuer`'s
+`host=` handling): in `verify_access_core` and `validate_record_with_dns`, before
 the status loop, require `uri_matches_issuer(cert.status.uri, cert.iss,
 serving_host)` for the access and config certs; warrants stay signer-chosen.
 
@@ -284,11 +282,7 @@ the one typed-signing inconsistency left. W6-3: wrap the decoder in
 2. **S5 login corner.** Should a non-empty `scopes` allowlist refuse a
    scope-less login warrant, or is a login always inside every allowlist?
    The test pins the latter today.
-3. **W6-4 and hosted primaries.** The new §6.3 cert-URI-host rule is
-   unimplemented, and read literally it breaks hosted tenants whose lists
-   live on the provider's `host=`. Confirm the fix may accept the DNSSEC
-   `host=` as an alternate, and amend the sentence.
-4. **D14 remediation shape.** Hard reject on transport failure makes resolver
+3. **D14 remediation shape.** Hard reject on transport failure makes resolver
    outages into login failures; decide whether `lookup` retries once first.
-5. **D15 scope.** Fix the pinned path or deprecate `refresh`/`refresh_status`
+4. **D15 scope.** Fix the pinned path or deprecate `refresh`/`refresh_status`
    and point RPs at `verify_dnssec` only.
