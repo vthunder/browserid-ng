@@ -20,7 +20,7 @@
 | WS2 conformance vectors | Done (d72d53a). 177 vectors, 6 runners (core, hosted, sdk/js, python, mcp-auth, gate) green in CI with expected-fail tables. Only 4 cross-verifier disagreements: D7 (core keeps scope parameters, everything behind HTTP flattens), W2-1 (resource-shaped SDKs strip trailing slash from the audience), D5 and D17 in mcp-auth. Everything else is the stack agreeing with itself against the spec; the core fix resolves it for all six. New: W2-1, W2-5 (sdk/js omits holder/grantee_issuer), W2-6 (duplicate TXT field takes the last value). |
 | WS3 fuzz + proptest | Done (8de10d6, 63cc96b). proptest: core 34 pass / 4 ignored, registrar 3 / 1, allocator 1 / 1. 7 cargo-fuzz targets in a standalone `fuzz/` workspace, 90 s each, 0 crashes; `make fuzz-smoke`. Findings W3-1..4: unchecked `exp - iat` and `iat + ttl` arithmetic (overflow passes max-ttl / reads fresh forever), registrar does not enforce the scope grammar (Medium), unbounded status-list encoder index. |
 | WS8 PoCs | Done (cb599cf), local broker / in-process only. Reproduced D1, D2, D3, W4-22, D5, W6-3/W5-8. D8 takeover refuted; ~20k req/s with no 429 quantifies the missing limiter. S1 phishing shape written up. |
-| WS9 report + remediation beans | Running. |
+| WS9 ledger + remediation beans | Done (9b7a98f). `docs/security-audit-2026-11.md`: 3 High, 29 Medium, 44 Low, 5 Info confirmed; 8 leads refuted. 63 beans under the epic (57 bug, 6 task), all `todo`, remediation order in ledger §5. |
 
 **Highs confirmed so far**
 
@@ -365,5 +365,5 @@ Four places do unchecked time arithmetic (`exp - iat`, `iat + ttl + grace`).
 
 ## 4. Next
 
-WS8 PoCs (local broker only) are running; WS9 then consolidates the
-ignored tests into remediation beans. Work stays on `audit-2026-11`; a PR opens when you say.
+Audit phase complete. Remediation proceeds from the beans in the ledger's
+§5 order; the PR from `audit-2026-11` opens when Dan says. Work stays on `audit-2026-11`; a PR opens when you say.
