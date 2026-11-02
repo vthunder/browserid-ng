@@ -1,11 +1,11 @@
 ---
 # browserid-ng-kgjr
 title: 'Spec edits accepted from audit WS1: S1 S2 S5 S6 S9 S10 S13'
-status: in-progress
+status: completed
 type: task
 priority: high
 created_at: 2026-11-01T18:45:03Z
-updated_at: 2026-11-02T10:43:26Z
+updated_at: 2026-11-02T10:43:49Z
 parent: browserid-ng-ag1l
 ---
 
@@ -28,3 +28,7 @@ Spec changes Dan accepted 2026-11-01 from docs/security-audit-2026-11-ws1-spec-r
 - [x] S8 spec + stale comments done — (decided 2026-11-01, doc drift confirmed: /api/v1/token deleted deliberately in a8337d1, devices/register merged into attach): rewrite fallback-idp-api-v1 §4 as accounts/login/attach, fix the §3.3 and §7 decision-5 pointers; update stale comments naming devices/register in browserid-registrar/src/api.rs:62,165 and browserid-broker/src/registrar_glue.rs:1052.
 
 - [x] S11 spec side done d221cb3; code rides with WS5 — (decided 2026-11-01, low): answer identically whether or not the thing exists. registry-api-v1 §5.2.8: at the open-approvals cap return the same 200 shape as an unknown account (never approve); code: the 'login key on another account' refusal in registrar account.rs:266-274 becomes a generic refusal. Code side rides with WS5.
+
+## Summary of Changes
+
+All thirteen WS1 spec findings applied (commit d221cb3, §6.3 host= follow-up fbca180, registrar comment cleanup b5a4a53): core protocol §3/§4/§4.7/§5/§6.1/§6.3/§6.4/§6.6, registry-api-v1 §2/§3/§4.2/§5.2.4/§5.2.8/§5.3/§7.1/§8, fallback-idp-api-v1 §4/§7, request-kinds/warrant.json. Code sides are tracked in the owning workstreams' ignored AUDIT-2026-11 tests; pay parameters spec is browserid-pay-al56.
