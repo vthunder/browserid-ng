@@ -15,7 +15,8 @@
 | WS1 threat model + spec review | Done. 13 spec findings decided 2026-11-01; all spec edits landed (bean kgjr). |
 | WS6 core / verifier / DNSSEC | Done. 7 candidates: 6 confirmed, 1 refuted. 5 new findings (W6-1..W6-5). Tests: core 18 pass / 10 ignored, verifier 6 / 4, dnssec 0 / 2, rp 0 / 2. |
 | WS5 broker HTTP surface | Done. 8 candidates: 4 confirmed, 2 partial, 2 refuted. 15 new findings (W5-1..W5-15). Authz matrix: 10 pass / 15 ignored. July items re-verified; H1 still open for discovery fetch and /status/proxy. |
-| WS2, WS3, WS4, WS7 | Ready, not started. |
+| WS7 supply chain, build, deploy, secrets | Done (c0acdd7). 16 Rust advisories (14 close with `cargo update`), npm all patched within ranges, 1 Python pin. New CI gate `supply-chain.yml` (cargo-audit, npm audit, pip-audit, gitleaks). 12 findings W7-1..12; no secret ever committed; July M8 holds. |
+| WS2, WS3, WS4 | Running. |
 | WS8 PoCs, WS9 report + remediation beans | Blocked on the above. |
 
 **Highs confirmed so far**
@@ -144,6 +145,69 @@ address and dodge every per-IP limit.
 - (b) Change the broker to take the last hop, or a configured trusted-proxy count.
 
 **Decided 2026-11-02: both.** Confirm the proxy in sandmill-infra and change the broker so it never depends on proxy config.
+
+### Q8. WS7: supply-chain gate is red until the bumps land
+
+The new gate fails on main today: `cargo update` (R7-1), `npm audit fix`
+in 7 packages plus redeploy of 3 services and republish of gate/wallet
+(R7-2), fastmcp pin to 3.4.10 (R7-3).
+
+- (a) Land the bumps on the branch now so the gate is green at PR time.
+- (b) Pre-fill the ignore lists and bump later.
+
+**Recommend (a)**; the MCP SDK memory-exhaustion items are reachable on every StreamableHTTP service.
+
+### Q9. W7-8 containers run as root (Medium)
+
+Broker (root key + db) and all Node/Python images have no `USER`, no
+healthcheck, no read-only fs. Fix needs a storage-dir chown on each dokku
+host, so it is infra-coordinated.
+
+- (a) Add non-root users to the Dockerfiles and a chown step in sandmill-infra, one app at a time, broker first.
+- (b) Leave as is.
+
+**Recommend (a)**.
+
+### Q10. W7-11 / W7-10 identifiers in logs (Medium)
+
+Registrar access log prints raw paths (single-use filer codes, approval
+ids); consent/device/account logs print delegator email + audience and
+agent identity, enough to reconstruct the RP-user association the spec
+treats as metadata.
+
+- (a) Opaque ids in log lines (hashed email, record id instead of audience) and path redaction for `requests/:code`.
+- (b) A separate PII log target, off in prod.
+
+**Recommend (a)**; (b) tends to get switched on during incidents.
+
+### Q11. W7-2 GitHub Actions pinned by mutable tag (Medium)
+
+All 9 workflows, including `publish.yml` with `id-token: write`. WS7 resolved the SHAs but did not apply them to deploy recipes.
+
+- (a) Apply the SHA pins now and add Dependabot for actions only.
+- (b) Apply the pins only; bump by hand.
+
+**Recommend (a)**; Dependabot limited to `github-actions` is low noise.
+
+### Q12. W7-9 one age recipient for every secret (Low, infra)
+
+- (a) Add a second recipient (recovery key kept offline) and a rotation note in sandmill-infra.
+- (b) Leave as is.
+
+**Recommend (a)**.
+
+### Q13. PostHog ids are unsalted sha256 (Low)
+
+- (a) Salt with a server secret.
+- (b) Leave as is.
+
+**Recommend (a)**; cheap, and it closes the rainbow-table argument.
+
+Also from WS7, no decision needed: X-Forwarded-For is overwritten with
+the connection address by dokku's shipped nginx template, so W5-6 is not
+exploitable today; the value should be declared in `id.conf` and asserted
+by `audit-host.sh` (infra), and the broker last-hop change stays a
+remediation bean per Q7.
 
 ## 3. Already settled by the spec edits (no decision needed)
 
