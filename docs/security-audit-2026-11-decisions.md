@@ -112,9 +112,12 @@ grant, mint policy) is enforced. Every other issuance lane passes through it.
 - (a) Intended exemption: the user's approval in the provisioning card is the bar. Document it in fallback-idp-api-v1 §3.2.
 - (b) Not intended: route through `authorize_mint` under the approving session.
 
-**Leaning (b), pending Dan's confirmation.** Dan does not recall choosing
-(a) and asked whether `authorize_mint` gives the right answer here. Case
-by case, with the minted identity as input:
+**Decided 2026-11-02: (b), and as-you agents for bridged (E2) parents
+must keep working** via the existing bridge-grant mechanism: the approval
+page runs `/oidc/claim` (or the Bluesky attestation) when the chokepoint
+answers Delegate(bridge), the ceremony records a bridge grant, and
+`complete` redeems it like `/device/issue` does; the cert TTL is the
+bridge's. Analysis that led here, with the minted identity as input:
 
 | identity_mode | identity minted | `authorize_mint` says | Right? |
 |---|---|---|---|
@@ -123,13 +126,13 @@ by case, with the minted identity as input:
 | self, parent is E2 (Google / Bluesky bridged) | the parent address | Delegate(bridge) | Policy says yes, but it is a behaviour change: today the registrar signs as-you agents for bridged addresses with no bridge proof, and it has no hook to run one. Either refuse (consistent with every other lane) or add a bridge re-proof hop like the primary hop. |
 | self, parent is E1 (primary) | the parent address | Delegate(Primary) | Already handled: the page hops to the primary and hands back a primary-signed cert; the registrar signs nothing. Only the registrar-signed branch needs the check. |
 
-Plumbing: the registrar crate sees only `user_id` and the CSRF token, and
+Remediation bean should cover the page hop plus a test for the E2-self
+lane. Plumbing: the registrar crate sees only `user_id` and the CSRF token, and
 `authorize_mint` lives in the broker, so this is a new host-trait method
 implemented in `registrar_glue.rs` with the session level. For a handle or
 standalone agent the Agent email row does not exist until after signing,
 so the glue applies the Agent rule from the parent's record rather than
-looking one up. Recommend (b) with E2-self refused; check browserid-bsky
-for anything that provisions as-you agents under a bridged address first.
+looking one up.
 
 ### Q7. W5-6 X-Forwarded-For (infra check)
 
