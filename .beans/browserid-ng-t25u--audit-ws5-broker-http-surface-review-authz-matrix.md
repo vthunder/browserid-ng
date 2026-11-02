@@ -5,7 +5,7 @@ status: completed
 type: task
 priority: normal
 created_at: 2026-11-01T12:40:56Z
-updated_at: 2026-11-02T10:42:20Z
+updated_at: 2026-11-02T10:44:40Z
 parent: browserid-ng-ag1l
 ---
 
@@ -28,3 +28,7 @@ D2 respond never checks config cert recorded/signed (consent.rs:457-465,551-561)
 - `browserid-broker/tests/authz_matrix_test.rs`: route x principal matrix (anon, user, other user, tenant admin) over the cookie surface and all of /api/v1; CSRF, return_origin (I15), proof replay (I22), policy floor (I25) guards. 10 passing. 11 `#[ignore]` tests tagged `AUDIT-2026-11` encode confirmed findings and fail today.
 - `docs/security-audit-2026-11-ws5-http-surface.md`: verdicts — D2 CONFIRMED High (respond never checks issuer signature/recording of the config cert), D4 CONFIRMED Medium (unsigned JIT filing), D8 PARTIAL (no 429 on /api/v1; approval-code brute force refuted as takeover vector), D9 PARTIAL Low, D10 REFUTED, D11 CONFIRMED Low (SqliteStore test), D18 CONFIRMED Low, appendix return_origin REFUTED (holds), S1/S11 confirmed as decided. New W5-1..9 incl. W5-2 hosted IdP no throttle, W5-4 password change leaves login keys live (decision), W5-7 agent-provision/complete bypasses authorize_mint, W5-8 zlib decode-before-cap (to WS6). July table: C1/H2/M1/M3/M4/M5/M6/M7/M8/M9 fixed or fixed-with-residual; H1 open for discovery fetch and /status/proxy.
 - oawf resolved: ytjn/dw35/7ww7 are fixed in code; bean re-pointed at the residual items.
+
+
+## Addendum (spec d221cb3 re-check)
+Four more ignored encodings added: W5-10 registry_login mints tokens with no return-origin check (S1, High); W5-11 scope grammar not enforced; W5-12 approvals cap answers 403 not the unknown-account 200; W5-13 claim refuses agent codes. W5-14 (restore over a holding account needs config + confirm_takeover; code requires only fresh) and W5-15 (holder_mismatch vs holders_differ) confirmed by code read. Report §2a.

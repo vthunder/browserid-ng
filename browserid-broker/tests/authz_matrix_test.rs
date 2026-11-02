@@ -950,3 +950,82 @@ async fn policy_put_is_owner_only_and_only_tightens() {
     let resp = api_put(&r.server, &sess, "/api/v1/account/policy", json!({"proofs": 0})).await;
     assert!(!is_2xx(&resp), "policy loosened below the floor: {}", resp.text());
 }
+
+// ===========================================================================
+// 7. Divergences from the spec as amended by WS1 (commit d221cb3)
+// ===========================================================================
+
+/// AUDIT-2026-11 W5-10: fails today. Reg §4.2 (amended): the login-page
+/// token is delivered only to an accepted return origin, and "the check
+/// lives in the handler that mints the token". `/wsapi/registry_login`
+/// takes no return origin at all — a foreign one rides along unexamined
+/// and the token is minted.
+#[tokio::test]
+#[ignore]
+async fn registry_login_token_minting_checks_the_return_origin() {
+    let r = rig();
+    let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
+    let ctx: Value = cookie_call(&r.server, "GET", "/wsapi/session_context", Some(&cookie), None).await.json();
+    let account = ctx["account"].as_str().unwrap().to_string();
+    let resp = r
+        .server
+        .post("/wsapi/registry_login")
+        .json(&json!({"account": account, "password": PASSWORD, "return_origin": "https://evil.example", "return_url": "https://evil.example/steal"}))
+        .await;
+    assert_ne!(resp.status_code(), 200, "token minted for a foreign return origin: {}", resp.text());
+}
+
+/// AUDIT-2026-11 W5-11: fails today. Reg §3 (amended) names one scope
+/// grammar `^[a-z0-9_:.\-/*@+]{1,128}$`; `validate_grant_shape` checks
+/// only count and length, so spaces, uppercase and punctuation pass.
+#[tokio::test]
+#[ignore]
+async fn filed_scopes_must_match_the_one_scope_grammar() {
+    let r = rig();
+    let _cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
+    let agent_kp = KeyPair::generate();
+    let cert = agent_cert(&r.idp, &agent_kp, "ag.bot");
+    for bad in ["Post", "read write", "x;y", "émoji", ""] {
+        let resp = r
+            .server
+            .post("/warrant/request")
+            .json(&json!({"device_cert": cert.encoded(), "identity": ALICE_BOT,
+                "grants": [{"audience": AUDIENCE, "scopes": [bad]}]}))
+            .await;
+        assert_ne!(resp.status_code(), 200, "scope {bad:?} accepted: {}", resp.text());
+    }
+}
+
+/// AUDIT-2026-11 W5-12: fails today. Reg §5.2.8 (amended): an account at
+/// its cap of open approvals answers the same 200 as an unknown account.
+/// Today the sixth open answers `403 login_rejected`, which tells the
+/// caller both that the account exists and that it is busy.
+#[tokio::test]
+#[ignore]
+async fn approvals_at_the_cap_answer_like_an_unknown_account() {
+    let r = rig();
+    let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
+    let sess = common::registry::api_login(&r.server, &cookie, PASSWORD).await;
+    for _ in 0..5 {
+        let resp = api_anon(&r.server, "POST", "/api/v1/approvals", json!({"account": sess.account})).await;
+        assert_eq!(resp.status_code(), 200, "{}", resp.text());
+    }
+    let sixth = api_anon(&r.server, "POST", "/api/v1/approvals", json!({"account": sess.account})).await;
+    assert_eq!(sixth.status_code(), 200, "cap leaks existence: {} {}", sixth.status_code(), sixth.text());
+    assert!(sixth.json::<Value>()["code"].is_string());
+}
+
+/// AUDIT-2026-11 W5-13: fails today. Reg §5.3 (amended): `claim` claims a
+/// pending agent request too (binds it to the account, allocates indices).
+/// `claim_core` answers 404 for every `agent`-kind request.
+#[tokio::test]
+#[ignore]
+async fn claim_accepts_a_pending_agent_request() {
+    let r = rig();
+    let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
+    let sess = common::registry::api_login(&r.server, &cookie, PASSWORD).await;
+    let agent_kp = KeyPair::generate();
+    let code = file_agent_request(&r, &agent_kp).await;
+    let resp = api_post(&r.server, &sess, "/api/v1/requests/claim", json!({"code": code})).await;
+    assert_eq!(resp.status_code(), 200, "claim of an agent code: {} {}", resp.status_code(), resp.text());
+}

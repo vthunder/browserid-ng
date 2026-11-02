@@ -20,7 +20,7 @@ network on the existing-account path and were confirmed by code reading
 only; they stay ignored until the ordering is fixed.
 
 Run: `cargo test -p browserid-broker --test authz_matrix_test` (10 pass,
-11 ignored). Findings: `-- --include-ignored --skip lookup_checks --skip
+15 ignored). Findings: `-- --include-ignored --skip lookup_checks --skip
 record_device_cert`.
 
 ## 1. Verdicts on WS1 candidates
@@ -51,6 +51,20 @@ record_device_cert`.
 | **W5-7** | `/agent-provision/complete` signs a 90-day auth cert without `authorize_mint`: `owns_verified_email` only, no session-level check. With `identity_mode:"self"` a Lightweight or unadmitted session gets a broker-signed cert for the account's own E2/E3 address. Not one of the documented exemptions in `mint.rs:25-31`. | Medium | `browserid-registrar/src/agent_provision.rs:885-892`, `:1391` | — (flow is long; see `mint_chokepoint_test` for the harness) | Route through `authorize_mint` with the session level, or add it to the documented exemptions with a stated rationale. |
 | **W5-8** | Status-list decode inflates before capping. `StatusList::decode` runs `read_to_end` on zlib data and checks the 4 MiB cap afterwards; a ~4 MiB compressed bomb (the body cap) inflates to gigabytes before rejection, reachable unauthenticated through `/status/proxy`. Core issue; **handed to WS6**. | High (DoS) | `browserid-core/src/status.rs:96-108` | — (WS6) | `take(4 MiB + 1)` on the decoder before `read_to_end`. |
 | **W5-9** | Anonymous-by-design v1 routes worth a second look: `POST /api/v1/approvals` (anyone opens approvals for any account id; floods to `MAX_PENDING`), `POST /api/v1/approvals/:id/cancel` (anyone holding the id cancels). Ids are 256-bit, so this is the opener's own channel; recorded, not a finding. | Info | `approvals.rs:57-104`, `:155-167` | pinned in `anon_is_refused_on_every_api_v1_session_route` | Rate-limit opens per IP (D8). |
+
+## 2a. Divergences from the spec as amended by WS1 (commit d221cb3)
+
+Re-checked after the spec edits landed. Code that followed the old text
+is now a confirmed divergence; each has an ignored encoding test.
+
+| # | Spec (amended) | Code today | Severity | Where | Test |
+|---|---|---|---|---|---|
+| **W5-10** | Reg §4.2: the login-page token goes only to an accepted return origin, checked "in the handler that mints the token" (S1). | `/wsapi/registry_login` takes no return origin; a foreign one is ignored and the token minted. | High | `routes/registry_login.rs:34-78`; page delivery in `static/common/js/registry-login.js` | `registry_login_token_minting_checks_the_return_origin` |
+| **W5-11** | Reg §3: one scope grammar `^[a-z0-9_:.\-/*@+]{1,128}$`. | Only count ≤ 32 and length ≤ 128 are checked; `Post`, `read write`, `x;y`, `émoji`, `""` are all accepted. | Low | `browserid-registrar/src/consent.rs:870-885` (`validate_grant_shape`) | `filed_scopes_must_match_the_one_scope_grammar` |
+| **W5-12** | Reg §5.2.8: an account at its approvals cap answers the same `200` as an unknown account (S11). | Sixth open → `403 login_rejected "too many open approvals"`. | Low | `browserid-registrar/src/approvals.rs:74-85` | `approvals_at_the_cap_answer_like_an_unknown_account` |
+| **W5-13** | Reg §5.3: `claim` also claims a pending `agent` request (binds to the account, allocates indices). | `claim_core` answers 404 for every `agent`-kind request. | Low (conformance) | `consent.rs:337-343` | `claim_accepts_a_pending_agent_request` |
+| **W5-14** | Reg §5.2.4: restoring a suspended identity that another account now holds needs a config cert and `confirm_takeover` (S10), else `409 identity_held`. | The suspended → `Transfer` branch requires only fresh certs: no config cert, no `confirm_takeover`. | Medium | `browserid-registrar/src/account.rs:704-709` | — (code read; the flow needs two accounts and a suspension, see §5.2.4; add when fixing) |
+| **W5-15** | Reg §7.1: membership reason renamed `holders_differ`. | `holder_mismatch` is still emitted on `accounts`/`lookup`/`attach` and in the consent lane. | Low (wire name) | `account.rs:124`, `consent.rs:771` | — |
 
 ## 3. Matrix results (what holds today)
 
@@ -138,6 +152,6 @@ oracles), W5-6 (`X-Forwarded-For` hop). oawf is updated accordingly.
 
 ## 7. Routing
 
-- D2, D4, D8, D11, D18, W5-1..4, W5-7 → remediation beans under the epic.
+- D2, D4, D8, D11, D18, W5-1..4, W5-7, W5-10..15 → remediation beans under the epic.
 - W5-5, W5-8 → WS6 (verifier/core fetch and decode).
-- S1, S11 → spec change already accepted (kgjr); code follows.
+- S1, S11 → spec now amended (d221cb3); the code side is W5-10 and W5-12.
