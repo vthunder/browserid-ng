@@ -153,5 +153,9 @@ oracles), W5-6 (`X-Forwarded-For` hop). oawf is updated accordingly.
 ## 7. Routing
 
 - D2, D4, D8, D11, D18, W5-1..4, W5-7, W5-10..15 → remediation beans under the epic.
-- W5-5, W5-8 → WS6 (verifier/core fetch and decode).
+- W5-5 (discovery fetch) and W5-8 → WS6, confirmed there as W6-5 (Medium)
+  and W6-3 (High) in `docs/security-audit-2026-11-ws6-core-verifier.md`
+  with ignored tests. The `/status/proxy` half of W5-5 stays here: put it
+  behind `rate_limit::verification_api`, return a generic error instead of
+  the guard's text, and constrain `uri` to the issuer's status-list path.
 - S1, S11 → spec now amended (d221cb3); the code side is W5-10 and W5-12.
