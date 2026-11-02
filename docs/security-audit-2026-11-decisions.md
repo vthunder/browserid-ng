@@ -1,6 +1,6 @@
 # Security audit 2026-11: open decisions
 
-> **Status: for Dan's review, 2026-11-02.** Findings from WS5 (broker HTTP
+> **Status: all 29 decisions settled 2026-11-02** (Q8–Q29 per the recommendations). Kept as the record. Findings from WS5 (broker HTTP
 > surface) and WS6 (crypto core and verifiers) that need a product or
 > design call before remediation. Everything else confirmed by those
 > workstreams has a clear fix and is encoded as an `#[ignore]`d
@@ -158,7 +158,7 @@ in 7 packages plus redeploy of 3 services and republish of gate/wallet
 - (a) Land the bumps on the branch now so the gate is green at PR time.
 - (b) Pre-fill the ignore lists and bump later.
 
-**Recommend (a)**; the MCP SDK memory-exhaustion items are reachable on every StreamableHTTP service.
+**Decided 2026-11-02: (a).**; the MCP SDK memory-exhaustion items are reachable on every StreamableHTTP service.
 
 ### Q9. W7-8 containers run as root (Medium)
 
@@ -169,7 +169,7 @@ host, so it is infra-coordinated.
 - (a) Add non-root users to the Dockerfiles and a chown step in sandmill-infra, one app at a time, broker first.
 - (b) Leave as is.
 
-**Recommend (a)**.
+**Decided 2026-11-02: (a).**.
 
 ### Q10. W7-11 / W7-10 identifiers in logs (Medium)
 
@@ -181,7 +181,7 @@ treats as metadata.
 - (a) Opaque ids in log lines (hashed email, record id instead of audience) and path redaction for `requests/:code`.
 - (b) A separate PII log target, off in prod.
 
-**Recommend (a)**; (b) tends to get switched on during incidents.
+**Decided 2026-11-02: (a).**; (b) tends to get switched on during incidents.
 
 ### Q11. W7-2 GitHub Actions pinned by mutable tag (Medium)
 
@@ -190,21 +190,21 @@ All 9 workflows, including `publish.yml` with `id-token: write`. WS7 resolved th
 - (a) Apply the SHA pins now and add Dependabot for actions only.
 - (b) Apply the pins only; bump by hand.
 
-**Recommend (a)**; Dependabot limited to `github-actions` is low noise.
+**Decided 2026-11-02: (a).**; Dependabot limited to `github-actions` is low noise.
 
 ### Q12. W7-9 one age recipient for every secret (Low, infra)
 
 - (a) Add a second recipient (recovery key kept offline) and a rotation note in sandmill-infra.
 - (b) Leave as is.
 
-**Recommend (a)**.
+**Decided 2026-11-02: (a).**.
 
 ### Q13. PostHog ids are unsalted sha256 (Low)
 
 - (a) Salt with a server secret.
 - (b) Leave as is.
 
-**Recommend (a)**; cheap, and it closes the rainbow-table argument.
+**Decided 2026-11-02: (a).**; cheap, and it closes the rainbow-table argument.
 
 Also from WS7, no decision needed: X-Forwarded-For is overwritten with
 the connection address by dokku's shipped nginx template, so W5-6 is not
@@ -219,7 +219,7 @@ The self-hosted gateway keeps last-known-good rows; a thrown fetch fails open (u
 - (a) Fail closed on any status failure, keep last-known rows only for the console diff, and never delete a row on 5xx. Spec §6.4.
 - (b) Allow last-known-good admission for a bounded window (e.g. 10 min) for availability.
 
-**Recommend (a)**; the 5xx row deletion must go either way.
+**Decided 2026-11-02: (a).**; the 5xx row deletion must go either way.
 
 ### Q15. D5 policy-row bindings in mcp-auth and gate (Medium)
 
@@ -228,7 +228,7 @@ They filter policy rows by grantee only; a narrowed holder matcher or requester 
 - (a) Refuse to store any policy record whose binding is not exactly `{holder, "*"}`.
 - (b) Implement full binding evaluation.
 
-**Recommend (a)** now, (b) when a wallet actually authors narrowed records.
+**Decided 2026-11-02: (a).** now, (b) when a wallet actually authors narrowed records.
 
 ### Q16. W4-22 hosted wallet admits delegated presentations as the human (Medium)
 
@@ -244,7 +244,7 @@ recurrence in a layer never audited before).
 - (a) Hosted wallet is human-only: reject delegated and non-login presentations.
 - (b) Document that an as-you agent may own a wallet tenant.
 
-**Recommend (a)**.
+**Decided 2026-11-02: (a).**.
 
 ### Q17. W4-30 hosted-tenant onboarding squat (Medium)
 
@@ -253,14 +253,14 @@ Pending tenant rows never expire; the real owner gets 409.
 - (a) Expire pending rows (e.g. 7 days) and let a DNSSEC-validated record for a different key replace a pending row.
 - (b) Expiry only.
 
-**Recommend (a)**.
+**Decided 2026-11-02: (a).**.
 
 ### Q18. W4-34 bridge grant redeemable by any session of the account (Low)
 
 - (a) Bind the grant to the proving session.
 - (b) Leave account-wide.
 
-**Recommend (a)**; it also matters for Q6, where agent-provision will redeem grants.
+**Decided 2026-11-02: (a).**; it also matters for Q6, where agent-provision will redeem grants.
 
 ### Q19. W4-40 assertions carry no `iat` (spec gap)
 
@@ -269,7 +269,7 @@ Amended §6.1 puts a lower bound on `iat` for every object, but assertions have 
 - (a) Add `iat` to assertions (spec §5, core, Rust agent, JS SDK).
 - (b) Scope §6.1's lower bound to objects that carry `iat`.
 
-**Recommend (a)**; one rule for every object.
+**Decided 2026-11-02: (a).**; one rule for every object.
 
 ### Q20. D19 FedCM objects without status refs (Low)
 
@@ -278,7 +278,7 @@ Every FedCM object expires in 5 min.
 - (a) Accept as the documented exception; say so in core §6.3 and fb §3.2.
 - (b) Allocate broker-list refs for both throwaway keys.
 
-**Recommend (a)**.
+**Decided 2026-11-02: (a).**.
 
 ### Q21. D13 hosted wallet revoke/disconnect (Low)
 
@@ -287,20 +287,20 @@ wallet-service drops status refs, refreshes for 30 days with no re-check, has no
 - (a) In scope: keep refs, re-check status on refresh, add disconnect.
 - (b) Accept RP-session semantics for now.
 
-**Recommend (a)**, after the Mediums.
+**Decided 2026-11-02: (a).**, after the Mediums.
 
 ### Q22. W4-21 loopback-page pairing with the wallet in release builds (Low)
 
 - (a) Gate on `WALLET_TEST` and pin the extension id.
 - (b) Keep the allowance.
 
-**Recommend (a)**.
+**Decided 2026-11-02: (a).**.
 
 ### Q23. Small ones (Low / Info)
 
-- W4-13 Lane A bearer outlives the warrant: fold the `/verify` expiry field into the D7 scope-parameter work. **Recommend yes.**
-- W4-44 legacy `Agent`/`Credential` lane in `@browserid-ng/agent` is dead but exported: delete (breaking) or leave documented. **Recommend delete at the next major.**
-- D12 stored-grant signature check in the wallet: refuted as a finding; add the check as defence in depth or record as accepted. **Recommend add; it is cheap.**
+- W4-13 Lane A bearer outlives the warrant: fold the `/verify` expiry field into the D7 scope-parameter work. **Decided 2026-11-02: yes.**
+- W4-44 legacy `Agent`/`Credential` lane in `@browserid-ng/agent` is dead but exported: delete (breaking) or leave documented. **Decided 2026-11-02: delete at the next major.**
+- D12 stored-grant signature check in the wallet: refuted as a finding; add the check as defence in depth or record as accepted. **Decided 2026-11-02: add; it is cheap.**
 
 ### Q24. S5 direction: §4.7 constraints (spec vs core)
 
@@ -311,7 +311,7 @@ closed on unknown keys (WS6 S5 tests, WS2 vectors P-CONS-01/06).
 - (a) Amend §4.7 to name core as implementing those three keys; the two vectors flip to accept.
 - (b) Strip the core implementation so any constraints claim rejects.
 
-**Recommend (a)**; the code is tested and fail-closed, and throwing it away buys nothing.
+**Decided 2026-11-02: (a).**; the code is tested and fail-closed, and throwing it away buys nothing.
 
 ### Q25. W2-1 SDKs normalize the `resource` audience (Low)
 
@@ -320,14 +320,14 @@ python-mcp-auth, mcp-auth and gate strip trailing slashes and send the altered a
 - (a) Stop normalizing; spec §5 is byte-exact.
 - (b) Keep normalizing and document it.
 
-**Recommend (a)**.
+**Decided 2026-11-02: (a).**.
 
 ### Q26. W2-4 gate allowlists lowercase the whole email (Low)
 
 - (a) Byte-exact comparison per spec (domain lowercased only).
 - (b) Normalize at config time with a warning.
 
-**Recommend (a)**; same rule as everywhere else, and it is the D17 fix.
+**Decided 2026-11-02: (a).**; same rule as everywhere else, and it is the D17 fix.
 
 ### Q27. W3-3 registrar does not enforce the scope grammar (Medium)
 
@@ -339,7 +339,7 @@ the card and signs, does not.
 - (a) Put the grammar check in core and have the registrar (and every other Rust signer) call it. Medium.
 - (b) Registrar-only check.
 
-**Recommend (a)**.
+**Decided 2026-11-02: (a).**.
 
 ### Q28. One clock rule for S6 / D16 / W3-1 / W3-2
 
@@ -348,14 +348,14 @@ Four places do unchecked time arithmetic (`exp - iat`, `iat + ttl + grace`).
 - (a) One normative rule in the spec and one core helper: `iat <= exp`, `iat <= now + skew`, `ttl >= 0`, checked arithmetic; every verifier calls it.
 - (b) Four local patches.
 
-**Recommend (a)**; it is what the amended §6.1 "Time bounds" paragraph already implies.
+**Decided 2026-11-02: (a).**; it is what the amended §6.1 "Time bounds" paragraph already implies.
 
 ### Q29. Fuzzing cadence (Info)
 
 - (a) Weekly launchd run of `make fuzz-smoke` on the dev box, like the cargo-sweep agent, failures mailed or written to a log you check.
 - (b) Manual smoke only, when parsers change.
 
-**Recommend (a)**; it is already set up and costs nothing.
+**Decided 2026-11-02: (a).**; it is already set up and costs nothing.
 
 ## 3. Already settled by the spec edits (no decision needed)
 
