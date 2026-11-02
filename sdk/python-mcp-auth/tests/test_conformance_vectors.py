@@ -32,6 +32,9 @@ VECTORS = json.loads((ROOT / "conformance-2026-11.json").read_text())
 HOSTED = json.loads((ROOT / "conformance-2026-11.hosted.json").read_text())["responses"]
 
 EXPECTED_FAIL = {
+    # AUDIT-2026-11 W4-14: an object scope entry (what a D7-fixed verifier returns) makes handle_token
+    # raise TypeError from " ".join(scopes) (__init__.py:235) — an unhandled 500, not a refusal.
+    "P-OK-08/entries": "W4-14",
     # AUDIT-2026-11 W2-1: McpAuth strips trailing slashes from `resource`, so a warrant audience
     # ending in `/` (non-web audiences such as sbo+raw://…/) is sent to the verifier altered.
     # AUDIT-2026-11 D7: scope entries arrive flattened and the package can only carry strings.
@@ -63,9 +66,15 @@ def _post_for(v, diverged):
             intact = "intact" if body.get("presentation") == v["bundle"] else "altered"
             diverged.append(f"audience sent {body.get('audience')!r}, presentation {intact}")
             return 200, {"status": "failure", "reason": "runner: request diverged from the vector"}
-        return 200, HOSTED[v["id"]]
+        return 200, v.get("hosted_override") or HOSTED[v["id"]]
 
     return post
+
+
+def _with_entries(v):
+    """The hosted response a D7-fixed verifier would return: the vector's
+    expected scope entries verbatim, objects included (W4-14 probe)."""
+    return {**v, "id": v["id"] + "/entries", "hosted_override": {**HOSTED[v["id"]], "scopes": v["expect"]["scopes"]}}
 
 
 def _run(v):
@@ -76,6 +85,8 @@ def _run(v):
         out = auth.handle_token({"grant_type": JWT_BEARER_GRANT, "assertion": v["bundle"]})
     except McpAuthError as e:
         return False, None, None, None, str(e), diverged
+    except Exception as e:  # noqa: BLE001 — an unhandled exception is a 500 at the AS, not a refusal
+        return False, None, None, None, f"UNHANDLED {type(e).__name__}: {e}", diverged
     ctx = auth.authenticate("Bearer " + out["access_token"])
     return True, ctx.grantor, ctx.grantee, ctx.scopes, None, diverged
 
@@ -102,7 +113,8 @@ class ConformanceVectors(unittest.TestCase):
     def test_vectors(self):
         n_pass = n_xfail = skipped = 0
         unexpected, fixed = [], []
-        for v in VECTORS["vectors"]:
+        probes = [_with_entries(v) for v in VECTORS["vectors"] if v["id"] == "P-OK-08"]
+        for v in VECTORS["vectors"] + probes:
             if v["op"] != "P":
                 skipped += 1
                 continue

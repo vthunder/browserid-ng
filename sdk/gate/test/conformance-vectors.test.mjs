@@ -27,6 +27,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createMount } from "../src/mount.mjs";
+import { createPolicyStore } from "@browserid-ng/mcp-auth";
 
 const VECTORS = JSON.parse(readFileSync(new URL("../../../test-vectors/conformance-2026-11.json", import.meta.url), "utf8"));
 const HOSTED = JSON.parse(readFileSync(new URL("../../../test-vectors/conformance-2026-11.hosted.json", import.meta.url), "utf8")).responses;
@@ -66,7 +67,38 @@ const EXPECTED_FAIL = {
   "P-OK-10/case": "D17",
   "P-OK-11/case": "D17",
   "P-OK-13/case": "D17",
+  // --- op A, policy mode (held record in the mount's policy store, subject = the bearer's grantor) ---
+  // AUDIT-2026-11 D5 (= W2-2): the entitlement lookup filters rows by granteeCovers only (mount.mjs:82);
+  // requester entries, connection entries and holder matchers are never evaluated.
+  "A-REJ-01": "D5",
+  "A-REJ-02": "D5",
+  "A-REJ-03": "D5",
+  "A-REJ-04": "D5",
+  "A-REJ-05": "D5",
+  // AUDIT-2026-11 D17 (= W2-3/W2-4): malformed subjects covered by `*`/`*@domain`; grantor lowercased (mount.mjs:318).
+  "A-REJ-07": "D17",
+  "A-REJ-08": "D17",
+  "A-REJ-09": "D17",
+  "A-REJ-10": "D17",
+  // AUDIT-2026-11 D6: the single-server mount's default entitlement reads the policy store without ever
+  // validating the record (mount.mjs:76-85): expiry, revocation, signature, issuer, constraints, v1,
+  // missing status and unknown parameters all admit.
+  "A-REJ-13": "D6",
+  "A-REJ-20": "D6",
+  "A-REJ-21": "D6",
+  "A-REJ-22": "D6",
+  "A-REJ-23": "D6",
+  "A-REJ-24": "D6",
+  "A-REJ-25": "D6",
+  "A-REJ-26": "D6",
+  "A-REJ-27": "D6",
+  "A-REJ-28": "D6",
+  "A-REJ-29": "D6",
+  "A-REJ-30": "D6",
+  "A-REJ-31": "D6",
 };
+
+const OWNER = "owner@example.com";
 
 const BROKER = "https://broker.test";
 const fakeClient = {
@@ -131,6 +163,42 @@ async function drive(v, allow, diverged) {
   }
 }
 
+/** Op A in policy mode: the vector's record is a held policy row; the subject
+ *  arrives as a jwt-bearer whose /verify answer (synthetic, no crypto — the
+ *  record is what is under test) names the subject as grantor. admitted =
+ *  tools/list answers 200, refused = the grantor gate's 403. */
+async function driveA(v) {
+  const w = v.objects.warrant;
+  const store = createPolicyStore();
+  await store.put({ record: v.bundle, grantor: w.grantor, grantee: w.grantee, audience: w.audience, scopes: ["tool:ping"], exp: w.exp });
+  const subject = v.subject;
+  const fetchA = async (url) => {
+    if (url.endsWith("/status/check")) return { ok: true, status: 200, json: async () => ({ ok: true, revoked: false }) };
+    return { ok: true, status: 200, json: async () => ({ status: "okay", email: subject.identity, grantee: subject.identity, holder: subject.holder, issuer: "browserid.me", scopes: ["tool:ping"], status_refs: [] }) };
+  };
+  const mount = await createMount({ resource: v.audience, broker: BROKER, name: "vectors", owners: [OWNER], policyStore: store, client: fakeClient, fetch: fetchA });
+  const server = createServer(async (rq, res) => {
+    const url = new URL(rq.url, "http://127.0.0.1");
+    try {
+      if (!(await mount.handle(rq, res, { subpath: url.pathname, url }))) { res.writeHead(404); res.end(); }
+    } catch (e) { res.writeHead(500); res.end(String(e)); }
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const tok = await fetch(`${base}/token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: "a~b~c~d" }) });
+    const tj = await tok.json();
+    if (!tok.ok) return { ok: false, reason: `/token ${tok.status}: ${tj.error_description || tj.error}` };
+    const rpc = await fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${tj.access_token}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+    const text = await rpc.text();
+    if (!rpc.ok) return { ok: false, reason: `/mcp ${rpc.status}: ${text.slice(0, 100)}` };
+    return { ok: true, email: w.grantor, grantee: w.grantee, scopes: ["tool:ping"] };
+  } finally {
+    await new Promise((r) => server.close(r));
+    await mount.close();
+  }
+}
+
 function mismatch(e, r) {
   const wantAccept = e.verdict === "accept";
   if (wantAccept && !r.ok) return `expected accept, got reject: ${r.reason}`;
@@ -153,6 +221,16 @@ test("gate conformance vectors", async () => {
     else { console.log(`FIXED ${id.padEnd(14)} [${fid}] now agrees — remove it from EXPECTED_FAIL`); fixed.push(`${id} [${fid}]`); }
   };
   for (const v of VECTORS.vectors) {
+    if (v.op === "A") {
+      if (!v.subject) { skipped++; continue; } // connection records: no login subject to admit
+      const r = await driveA(v);
+      const e = v.expect;
+      const why = e.verdict === "accept"
+        ? (r.ok ? null : `expected admit, got refuse: ${r.reason}`)
+        : (r.ok ? `expected refuse (${e.reason_class}), got admit` : null);
+      judge(v.id, why, r.ok ? `admit ${v.subject.identity}` : `refuse: ${r.reason}`);
+      continue;
+    }
     if (v.op !== "P") { skipped++; continue; }
     // Allowlist the grantor the bundle itself names, so the grantor gate never
     // masks the verifier's verdict (a reject vector must reject at /token,
@@ -169,7 +247,7 @@ test("gate conformance vectors", async () => {
       judge(`${v.id}/case`, pwhy, probe.ok ? `accept ${probe.email}` : `reject: ${probe.reason}`);
     }
   }
-  console.log(`\ngate: ${pass} pass, ${xfail} expected-fail, ${skipped} skipped (op A/T), ${unexpected.length} unexpected, ${fixed.length} fixed`);
+  console.log(`\ngate: ${pass} pass, ${xfail} expected-fail, ${skipped} skipped (op A without subject, op T), ${unexpected.length} unexpected, ${fixed.length} fixed`);
   assert.deepEqual(unexpected, [], "vectors disagreeing with the gate");
   assert.deepEqual(fixed, [], "vectors now passing; drop them from EXPECTED_FAIL");
 });

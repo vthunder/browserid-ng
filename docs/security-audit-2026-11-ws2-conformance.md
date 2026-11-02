@@ -48,10 +48,18 @@ so there is no wallet runner; D12's unverified-stored-grant signing is WS4's.
 |---|---|---|---|---|---|
 | Rust core (`verify_at` + `validate` + `matches_login` + `DnsRecord::parse`, with the resolver and status obligations core documents) | 177 | 163 | 14 | 0 | 0 |
 | Hosted (in-process; op A stops at record validation) | 159 | 143 | 16 | 18 (op T: the TXT parser is core's) | 0 |
-| sdk/js | 116 (P only) | 103 | 13 | 61 (no record API, no parser) | 0 |
-| python-mcp-auth | 116 (P only) | 103 | 13 | 61 (no record API, no parser) | 0 |
-| mcp-auth | 159 | 135 | 24 | 18 (op T) | 0 |
-| gate | 116 + 11 allowlist case probes | 103 | 24 | 61 (records go through mcp-auth) | 0 |
+| sdk/js | 116 (P only) + 1 entries probe | 104 | 13 | 61 (no record API, no parser) | 0 |
+| python-mcp-auth | 116 (P only) + 1 entries probe | 103 | 14 | 61 (no record API, no parser) | 0 |
+| mcp-auth | 159 + 2 entries probes | 137 | 24 | 18 (op T) | 0 |
+| gate | 116 P + 11 allowlist case probes + 38 op-A records in policy mode | 119 | 46 | 23 (op A without a login subject, op T) | 0 |
+
+Two probe kinds were added at WS4's request (2026-11-02): `<id>/entries`
+replays the hosted response a D7-fixed verifier would return (scope entries
+as objects) through sdk/js, python and mcp-auth; and the gate runner feeds
+every op-A vector that has a login subject into a policy-mode mount
+(`owners` + `policyStore` holding the vector's record, the subject arriving
+as a jwt-bearer whose synthetic `/verify` answer names it), so the gate's own
+admission path — not mcp-auth's — is what admits or refuses.
 
 Every runner is green in CI today with its expected-fail table; the tables
 are the open-findings ledger.
@@ -68,6 +76,8 @@ WS1 candidate; W2-n are new or newly pinned.
 | **W2-3** (= D17, mcp-auth half) | **CONFIRMED** | Low | `sdk/mcp-auth/index.mjs:71-94` — `splitEmail` splits on the *last* `@`; `granteeCovers("*", s)` is `s.includes("@")` | A-REJ-07, -08, -09 |
 | **W2-4** (= D17, gate half) | **CONFIRMED** | Low | `sdk/gate/src/mount.mjs:61,318` — allowlist and verified grantor both lowercased before comparison | every `P-OK-nn/case` probe |
 | **W2-5** | NEW (conformance) | Low | `sdk/js/index.mjs:116-125` — the result omits `holder` and `grantee_issuer` that §6.1 step 9 requires a verifier to return | P-OK-01 (field absent, not compared) |
+| W4-14 | **CONFIRMED** | Low | `sdk/python-mcp-auth/browserid_mcp_auth/__init__.py:235` — an object scope entry raises `TypeError` in `" ".join(scopes)`; sdk/js and mcp-auth carry the objects through | P-OK-08/entries |
+| D6 | **CONFIRMED** (single-server mount) | Medium | `sdk/gate/src/mount.mjs:76-85` — the default entitlement reads policy rows with `granteeCovers` only and never validates the record: expired, revoked, mis-signed, wrong-issuer, constraint-violating, v1, status-less and unknown-parameter records all admit | A-REJ-13, -20…-31 (gate) |
 | **W2-6** | NEW | Low | `browserid-core/src/dns.rs:30-45` — `DnsRecord::parse` keeps the last of duplicated fields, so a `_browserid` record naming two `public-key` values resolves to the second | T-REJ-11 |
 | D7 | **CONFIRMED** across the whole SDK tree | Medium | hosted `verify.rs:122,487` flattens entries; every SDK relays strings | P-OK-07, P-OK-08, A-OK-08 |
 | D16 / S6 | CONFIRMED everywhere | Medium | no `iat` bound in core → every verifier | P-TIME-05…09, A-REJ-21 |
@@ -167,6 +177,10 @@ divergence. "inh." = inherited from the hosted response.
 | A-REJ-07…09 (malformed subjects) | reject at match | ✓ | n/a | n/a | n/a | **W2-3 / D17** (admits) | via mcp-auth |
 | A-REJ-06, -10…12, -32, -33 (subject not covered) | reject at match | ✓ | n/a | n/a | n/a | ✓ | via mcp-auth |
 | `P-OK-nn/case` probes (allowlist differs in local-part case) | reject | — | — | — | — | — | **W2-4 / D17** (admits) |
+| A-REJ-01…05 in gate policy mode | refuse | — | — | — | — | — | **D5** (admits) |
+| A-REJ-07…10 in gate policy mode | refuse | — | — | — | — | — | **D17** (admits) |
+| A-REJ-13, -20…-31 in gate policy mode (record never validated) | refuse | — | — | — | — | — | **D6** (admits) |
+| P-OK-08/entries, A-OK-08/entries (object scope entries from a D7-fixed hosted) | accept, entries verbatim | — | — | ✓ | **W4-14** (500) | ✓ | — |
 | T-OK-01…05, T-REJ-01…10, -12, -13 (TXT record grammar) | per §3 | ✓ | n/a (calls core) | n/a | n/a | n/a | n/a |
 | T-REJ-11 (two `public-key` fields) | reject | **W2-6** (last wins) | n/a | n/a | n/a | n/a | n/a |
 

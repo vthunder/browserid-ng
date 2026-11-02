@@ -78,8 +78,14 @@ function fetchFor(v, diverged) {
       return { ok: true, status: 200, json: async () => ({ status: "failure", reason: "runner: request diverged from the vector" }) };
     }
     if (url.endsWith("/status/check")) return { ok: true, status: 200, json: async () => ({ ok: true, revoked: false }) };
-    return { ok: true, status: 200, json: async () => HOSTED[v.id] };
+    return { ok: true, status: 200, json: async () => v.hostedOverride || HOSTED[v.id] };
   };
+}
+
+/** The hosted response a D7-fixed verifier would return: the vector's
+ *  expected scope entries verbatim, objects included (W4-14 probe). */
+function withEntries(v) {
+  return { ...v, id: `${v.id}/entries`, hostedOverride: { ...HOSTED[v.id], scopes: v.expect.scopes } };
 }
 
 async function runP(v, diverged) {
@@ -126,7 +132,8 @@ function mismatch(v, r) {
 test("mcp-auth conformance vectors", async () => {
   let pass = 0, xfail = 0, skipped = 0;
   const unexpected = [], fixed = [];
-  for (const v of VECTORS.vectors) {
+  const probes = VECTORS.vectors.filter((v) => v.id === "P-OK-08" || v.id === "A-OK-08").map(withEntries);
+  for (const v of [...VECTORS.vectors, ...probes]) {
     if (v.op !== "P" && v.op !== "A") { skipped++; continue; }
     const diverged = [];
     const r = v.op === "P" ? await runP(v, diverged) : await runA(v, diverged);

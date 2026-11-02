@@ -57,8 +57,14 @@ function fetchFor(v, diverged) {
       diverged.push(`audience sent ${JSON.stringify(body.audience)}, presentation ${body.presentation === v.bundle ? "intact" : "altered"}`);
       return { ok: true, status: 200, json: async () => ({ status: "failure", reason: "runner: request diverged from the vector" }) };
     }
-    return { ok: true, status: 200, json: async () => HOSTED[v.id] };
+    return { ok: true, status: 200, json: async () => v.hostedOverride || HOSTED[v.id] };
   };
+}
+
+/** The hosted response a D7-fixed verifier would return: the vector's
+ *  expected scope entries verbatim, objects included (W4-14 probe). */
+function withEntries(v) {
+  return { ...v, id: `${v.id}/entries`, hostedOverride: { ...HOSTED[v.id], scopes: v.expect.scopes } };
 }
 
 function mismatch(expect, r) {
@@ -76,7 +82,8 @@ function mismatch(expect, r) {
 test("sdk/js conformance vectors", async () => {
   let pass = 0, xfail = 0, skipped = 0;
   const unexpected = [], fixed = [];
-  for (const v of VECTORS.vectors) {
+  const probes = VECTORS.vectors.filter((v) => v.id === "P-OK-08").map(withEntries);
+  for (const v of [...VECTORS.vectors, ...probes]) {
     if (v.op !== "P") { skipped++; continue; }
     const diverged = [];
     const r = await createVerifier({ fetch: fetchFor(v, diverged) }).verify(v.bundle, v.audience);
