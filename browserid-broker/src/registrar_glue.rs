@@ -1049,7 +1049,7 @@ where
         })
     }
 
-    /// The §5.3 per-cert bar behind `devices/register` — the same pipeline
+    /// The §7.1 validity bar behind `attach` (§5.2.4) — the same pipeline
     /// as the cookie lane's `record_device_cert` (issuer-conformant key from
     /// DNSSEC discovery, signature, fail-closed status at the cert's own
     /// authority), with distinguishable refusals for §7.1's `invalid_cert`
