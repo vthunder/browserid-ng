@@ -5,7 +5,7 @@ status: completed
 type: task
 priority: normal
 created_at: 2026-11-01T12:40:56Z
-updated_at: 2026-11-02T10:32:08Z
+updated_at: 2026-11-02T10:34:10Z
 parent: browserid-ng-ag1l
 ---
 
@@ -40,3 +40,6 @@ through Warrant::validate_claims; status-less v1 verifies); S5 REFUTED for the R
 enforced). New: W6-1 (Low, grantor match skips §5 domain normalization, stricter), W6-2 (info, Assertion::verify has no alg pin),
 W6-3 (info, status-list inflate cap applied after full read). July H1/M3 hold on the hosted path, open on rp pinned path.
 Needs Dan: D1 ordering vs WS8 PoC; S5 login-allowlist corner; I9 wording vs S4; D14 retry-before-reject; D15 fix-or-deprecate.
+
+
+Follow-up after spec commit d221cb3: added W6-4 (Medium, confirmed) — hosted verifier never checks a cert's status.uri host == cert iss, now required by §6.3; test w6_4_cert_status_uri_host_must_equal_cert_iss (ignored). Flagged the hosted-primary host= tension for Dan.

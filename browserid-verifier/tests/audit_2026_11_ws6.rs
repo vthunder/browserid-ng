@@ -319,3 +319,23 @@ async fn i9_foreign_status_on_a_private_or_plain_http_host_is_never_fetched() {
         assert!(!reason.contains("fetch "), "{uri}: the guard must trip before any request: {reason}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// W6-4 — §6.3 (2026-11 text): a CERT's `status.uri` host MUST equal its `iss`.
+// ---------------------------------------------------------------------------
+
+/// The hosted verifier binds a LIST's `iss` to the URI host, but never checks
+/// a cert's `status.uri` host against the cert's own `iss`. Here a primary's
+/// access and config certs point at the broker's own list (`browserid.me`),
+/// which the own-list shortcut answers locally — and the bundle verifies.
+#[tokio::test]
+#[ignore] // AUDIT-2026-11 W6-4: fails today — no cert `status.uri` host == `iss` check (verify.rs:754-771, :575-594)
+async fn w6_4_cert_status_uri_host_must_equal_cert_iss() {
+    let idp = key(1);
+    let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()) };
+    let alice = Party { email: "alice@example.com", iss: "example.com", idp: &idp };
+    let st = Status::new();
+    // `bundle(.., None)` puts every ref on OWN_LIST = https://browserid.me/…
+    let r = verify_access_with_dns(&bundle(&alice, &alice, vec![], None), AUD, &disc, &[], st.ctx()).await;
+    assert_eq!(r.status, "failure", "example.com's certs must not point at browserid.me's list");
+}

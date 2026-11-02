@@ -4,7 +4,10 @@
 
 # Security audit 2026-11 — WS6: crypto core, verifier, DNSSEC re-verification
 
-**Status:** skeptic pass complete, 2026-11-02. Epic `browserid-ng-ag1l`, bean
+**Status:** skeptic pass complete, 2026-11-02; re-checked against the WS1
+spec edits (commit d221cb3: v1 retired, normative time bounds, §3 transport
+failure hard-rejects, §6.3 list-signer and cert-URI-host rules, §6.1 step 9
+verbatim scope entries). Epic `browserid-ng-ag1l`, bean
 `browserid-ng-p5vc`. Scope: `browserid-core` (jws, keys, assertion,
 attestation, admission, device certs, status, identity, discovery, dns),
 `browserid-verifier`, `browserid-dnssec`, plus the `browserid-rp` status path
@@ -22,7 +25,7 @@ the audit re-verified. No production code was changed.
 | Crate | Test file | Pass | Ignored (fail today) |
 |---|---|---|---|
 | browserid-core | `browserid-core/tests/audit_2026_11_ws6.rs` | 17 | 9 |
-| browserid-verifier | `browserid-verifier/tests/audit_2026_11_ws6.rs` | 6 | 2 |
+| browserid-verifier | `browserid-verifier/tests/audit_2026_11_ws6.rs` | 6 | 3 |
 | browserid-dnssec | `browserid-dnssec/tests/audit_2026_11_ws6.rs` | 0 | 2 |
 | browserid-rp | `browserid-rp/tests/audit_2026_11_ws6.rs` | 0 | 2 |
 
@@ -193,7 +196,18 @@ passes today). The WS1 note "define that an allowlist applies to logins as
 |---|---|---|---|---|
 | W6-1 | PARTIAL (stricter than spec) | Low | `device.rs:73-74`, `:107` — exact and subaddress branches of `identity_matches` compare the domain byte-exact, not under §5 | `w6_1_grantor_match_uses_spec_domain_comparison` (ignored, fails today) |
 | W6-2 | Informational | Low | `assertion.rs:570-582` — `Assertion::verify` never reads the JOSE header; every other object pins `alg == EdDSA` in `jws_verify` | `w6_2_assertion_without_a_valid_ed25519_signature_rejects_regardless_of_header` (passes) |
+| W6-4 | **CONFIRMED** (against the 2026-11 §6.3 text) | Medium | `browserid-verifier/src/verify.rs:754-771`, `:575-594` — a cert's `status.uri` host is never compared to the cert's `iss`; a primary's certs pointing at the broker's own list verify via the own-list shortcut | `w6_4_cert_status_uri_host_must_equal_cert_iss` (ignored, fails today) |
 | W6-3 | Informational | Low | `status.rs:914-926` — `StatusList::decode` reads the whole inflate output before applying the 4 MiB cap, so a crafted list allocates up to the transport cap × compression ratio before rejecting | none (hosted path bounds the body at 4 MiB; a zlib bomb within that still inflates fully) |
+
+W6-4 was an I9 wording question in the first draft; the updated §6.3 now
+states the rule, so it is a gap. Note the tension with hosted primaries
+(bean g5qt): their lists live on the provider's `host=` and so a hosted
+tenant's cert cannot satisfy "URI host == iss" literally. The fix should
+accept the issuer's DNSSEC-declared `host=` as well, as `uri_matches_issuer`
+already does for the list signer, and the spec sentence should say so.
+Remediation: in `verify_access_core` and `validate_record_with_dns`, before
+the status loop, require `uri_matches_issuer(cert.status.uri, cert.iss,
+serving_host)` for the access and config certs; warrants stay signer-chosen.
 
 W6-1 is fail-closed: a config cert for `user@example.com` does not cover a
 grantor written `user@EXAMPLE.com`, where §5 says it should. Unreachable in
@@ -228,10 +242,9 @@ the one typed-signing inconsistency left. W6-3: wrap the decoder in
 - **I8** see S5.
 - **I9** uncheckable own-list ref rejects; a foreign ref on `http`, loopback,
   link-local, or `::1` is refused before any request is sent (verifier
-  `i9_*`). Note the hosted verifier binds the *list's* `iss` to the URI host
-  (the S4 decision's rule) and does not check a *cert's* `status.uri` host
-  against the cert's `iss`; I9's last clause is therefore stricter than the
-  decided spec and is not implemented anywhere. Recommend aligning I9 to S4.
+  `i9_*`). The list-signer rule (list `iss` == URI host, key from that host's
+  DNSSEC record) holds on the hosted path. The cert-side clause the updated
+  §6.3 adds (cert `status.uri` host == cert `iss`) is not implemented — W6-4.
 - **I10** confirmed as stated (status-less v1 verifies today); resolved by S3.
 - **I13** the authorization half holds
   (`i13_authorization_cert_for_base_identity_covers_subaddressed_grantor`);
@@ -271,10 +284,10 @@ the one typed-signing inconsistency left. W6-3: wrap the decoder in
 2. **S5 login corner.** Should a non-empty `scopes` allowlist refuse a
    scope-less login warrant, or is a login always inside every allowlist?
    The test pins the latter today.
-3. **I9 wording.** Align the threat model's "a cert `status.uri` host equals
-   its `iss`" to the S4 decision (list `iss` == URI host, signed by that
-   host's DNSSEC key), or ask for the stricter cert-side check too; nothing
-   implements the stricter one.
+3. **W6-4 and hosted primaries.** The new §6.3 cert-URI-host rule is
+   unimplemented, and read literally it breaks hosted tenants whose lists
+   live on the provider's `host=`. Confirm the fix may accept the DNSSEC
+   `host=` as an alternate, and amend the sentence.
 4. **D14 remediation shape.** Hard reject on transport failure makes resolver
    outages into login failures; decide whether `lookup` retries once first.
 5. **D15 scope.** Fix the pinned path or deprecate `refresh`/`refresh_status`
