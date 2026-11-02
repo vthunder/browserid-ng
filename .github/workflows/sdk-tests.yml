@@ -7,10 +7,12 @@ on:
     branches: [main]
     paths:
       - "sdk/**"
+      - "test-vectors/**"
       - ".github/workflows/sdk-tests.yml"
   pull_request:
     paths:
       - "sdk/**"
+      - "test-vectors/**"
   workflow_dispatch: {}
 
 jobs:
@@ -21,9 +23,19 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      # Security audit 2026-11 WS2: every SDK verifier runs the conformance
+      # vector suite (test-vectors/) against the hosted responses recorded by
+      # the Rust CI job; per-runner expected-fail lists carry
+      # `AUDIT-2026-11 <finding>`. docs/security-audit-2026-11-ws2-conformance.md.
+      - name: verify (sdk/js) tests + conformance vectors
+        working-directory: sdk/js
+        run: node --test
       - name: mcp-auth tests
         working-directory: sdk/mcp-auth
         run: npm install --no-audit --no-fund && node --test test/*.test.mjs
+      - name: gate conformance vectors
+        working-directory: sdk/gate
+        run: npm install --no-audit --no-fund && node --test test/conformance-vectors.test.mjs
       - name: nextauth tests
         working-directory: sdk/nextauth
         run: npm install --no-audit --no-fund && node --test test/*.test.mjs

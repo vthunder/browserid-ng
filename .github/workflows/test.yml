@@ -18,6 +18,9 @@ on:
       - "browserid-broker/**"
       - "browserid-agent/**"
       - "browserid-rp/**"
+      - "browserid-verifier/**"
+      - "browserid-dnssec/**"
+      - "test-vectors/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/test.yml"
@@ -28,6 +31,9 @@ on:
       - "browserid-broker/**"
       - "browserid-agent/**"
       - "browserid-rp/**"
+      - "browserid-verifier/**"
+      - "browserid-dnssec/**"
+      - "test-vectors/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/test.yml"
@@ -58,6 +64,18 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      # Security audit 2026-11 WS2: the conformance vector suite
+      # (test-vectors/conformance-2026-11.json) is regenerated and diffed, then
+      # run through the Rust core and the in-process hosted verifier (which
+      # also diffs the recorded hosted responses the SDK runners replay).
+      # Vectors a verifier gets wrong today are pinned per runner under
+      # `AUDIT-2026-11 <finding>`; un-listing one is the acceptance test for
+      # the fix. docs/security-audit-2026-11-ws2-conformance.md.
+      - name: Conformance vectors (core + hosted verifier)
+        run: |
+          cargo test -p browserid-core --test audit_2026_11_ws2_generate --test audit_2026_11_ws2_runner -- --nocapture
+          cargo test -p browserid-verifier --test audit_2026_11_ws2_runner -- --nocapture
 
   # fmt + clippy are deliberately NOT gated yet: the tree is not currently
   # rustfmt-clean and has a few dead-code warnings, so enabling `--check` /
