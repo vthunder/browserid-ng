@@ -22,7 +22,7 @@
 
 | ID | Finding | Where |
 |---|---|---|
-| D1 | An auth cert for `user@d` mints access certs for `user+tag@d`; the subaddress rule is purpose-blind. | `browserid-core/src/device.rs` identity_matches; both mint routes |
+| D1 | An auth cert for `user@d` mints access certs for `user+tag@d`; the subaddress rule is purpose-blind. Direction settled 2026-11-02: spec §4.6 stands, code moves. Downgraded to Medium (holder-pinned warrants unaffected). | `browserid-core/src/device.rs` identity_matches; both mint routes |
 | D2 | Consent `respond` never checks the config cert: no issuer signature, not checked as recorded on the account, no status check. | `browserid-registrar/src/consent.rs` |
 | W6-3 / W5-8 | Status-list decoder inflates the whole zlib stream before the 4 MiB cap; 256 KiB in, ~768 MiB allocated; reachable unauthenticated via `/status/proxy`. | `browserid-core/src/status.rs` |
 | W5-10 | Registry login endpoint mints the login-page token with no return-origin check (code side of S1). | `browserid-broker/src/routes/registry_login.rs` |
@@ -32,11 +32,23 @@
 Each item: what was found, the options, and my recommendation. Reply per
 item number.
 
-### Q1. D1 fix ordering (High)
+### Q1. D1 fix ordering (Medium)
 
-The fix is two lines in core plus flipping one unit test that currently
-pins the wrong behaviour. WS6 recommends letting WS8 demonstrate the live
-mint first so the report carries a shown impact rather than a test.
+**Direction decided 2026-11-02 (Dan):** spec §4.6 stands. An auth cert
+issued for `user@d` mints for `user@d` exactly; speaking as `user+tag@d`
+needs an auth cert issued for that sub-identity. A config cert for
+`user@d` keeps signing warrants for `user+tag@d`. The code's wide mint was
+deliberate (comment in `identity_matches`) but incomplete: the user's own
+config cert can sign the self-login warrant for `user+tag@d`, so a base
+auth key could log in as any sub-identity and present under any `*`-holder
+agent warrant, which breaks attribution, the per-agent revocation axis,
+and widens browser-key compromise. Holder-pinned warrants are unaffected,
+hence Medium.
+
+Still open: ordering. The fix is two lines in core plus flipping one unit
+test that currently pins the wrong behaviour. WS6 recommends letting WS8
+demonstrate the live mint first so the report carries a shown impact
+rather than a test.
 
 - (a) Fix now on the branch, PoC later against the fixed code's parent commit.
 - (b) Hold until WS8 PoCs it against a local broker, then fix.

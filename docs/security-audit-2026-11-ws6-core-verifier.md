@@ -36,7 +36,7 @@ Only dev-dependencies changed (`browserid-verifier/Cargo.toml`: chrono, serde_js
 
 | ID | Verdict | Severity | Where | Test |
 |---|---|---|---|---|
-| D1 | **CONFIRMED** | High | `browserid-core/src/device.rs:96-111` (`identity_matches`, subaddress branch); gates both mints: `browserid-broker/src/routes/device.rs:455`, `routes/hosted_idp.rs:536` via `DeviceCert::authorizes_identity` | `d1_authentication_cert_for_base_identity_does_not_authorize_subaddress` |
+| D1 | **CONFIRMED** | Medium (was High; see §1.1 note) | `browserid-core/src/device.rs:96-111` (`identity_matches`, subaddress branch); gates both mints: `browserid-broker/src/routes/device.rs:455`, `routes/hosted_idp.rs:536` via `DeviceCert::authorizes_identity` | `d1_authentication_cert_for_base_identity_does_not_authorize_subaddress` |
 | D7 | **CONFIRMED** | Medium | `browserid-verifier/src/verify.rs:122` (`AccessVerificationResult.scopes: Vec<String>`), `:487`, `:602`, `:689` | `d7_verify_response_carries_scope_parameters`, `d7_validate_record_response_carries_scope_parameters` |
 | D14 | **CONFIRMED** | Medium | `browserid-dnssec/src/dns.rs:139-184` (`lookup`: connect error, send error, no response, bad name → `insecure()`), `:273-276` and `lib.rs:268` (`Insecure → NotPrimary`); `dns.rs:545-548` (`Refused`/other rcodes → insecure) | `d14_transport_failure_is_not_an_insecure_answer`, `d14_resolve_idp_key_does_not_report_not_primary_on_transport_failure` |
 | D15 | **CONFIRMED** (pinned-table path only) | Medium | `browserid-rp/src/lib.rs:272-290` (`refresh_status`: `reqwest::get`, no host==iss), `:723` (`StatusCache::refresh`), `:779` (`verdict`: `is_fresh(600)` uncapped) | `d15_pinned_status_refresh_refuses_redirects_and_private_hosts`, `d15_pinned_status_cache_caps_the_issuer_declared_ttl` |
@@ -44,7 +44,12 @@ Only dev-dependencies changed (`browserid-verifier/Cargo.toml`: chrono, serde_js
 | S3 | **CONFIRMED open** (decision: drop v1) | Medium | accept paths listed in §1.3 | `s3_v1_warrant_rejects_in_presentation`, `s3_v1_record_rejects_in_admission` |
 | S5 | **REFUTED for the Rust path** — core already fails closed on unknown keys and enforces `aud`/`scopes`/`max-ttl`; one corner flagged | — | `device.rs:287-320` | `s5_*` (4, all passing) |
 
-### 1.1 D1 — subaddress widening at the mint (High)
+### 1.1 D1 — subaddress widening at the mint (Medium)
+
+> **2026-11-02:** Dan confirmed spec §4.6 is the intended rule; the code
+> moves. Downgraded from High: holder-pinned warrants are unaffected, so
+> the exposure is attribution, the per-agent revocation axis, and the
+> blast radius of a browser-key compromise via `*`-holder warrants.
 
 `identity_matches` has three branches: exact, single-`*` glob, and an
 unconditional "base identity authorizes `base+anything@domain`" rule. The
@@ -293,9 +298,9 @@ attacker's choosing before a single signature is checked.
 
 ## 5. What needs Dan's decision
 
-1. **D1 severity and ordering.** It is the one High in this workstream and a
-   two-line core change plus a flipped unit test; WS8 should PoC it against
-   the live mint first so the fix is measured.
+1. **D1 ordering.** Direction settled 2026-11-02 (spec stands, code
+   moves; Medium). Still open: a two-line core change plus a flipped unit
+   test now, or WS8 PoC against the live mint first so the fix is measured.
 2. **S5 login corner.** Should a non-empty `scopes` allowlist refuse a
    scope-less login warrant, or is a login always inside every allowlist?
    The test pins the latter today.
