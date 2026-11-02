@@ -845,7 +845,8 @@ revocation of live sessions. A ref carries:
 - **Who may sign a list.** A list served at `uri` is valid only when it
   verifies under the DNSSEC-published `_browserid` key (§3) of `uri`'s host
   and its `sub` equals `uri`; a cert's `status.uri` host MUST additionally
-  equal the cert's `iss`. A warrant's `status.uri` is signer-chosen (the
+  be the cert's `iss` or the `host=` the `iss` domain's `_browserid` record
+  delegates to (§3; a hosted primary's list lives on its provider). A warrant's `status.uri` is signer-chosen (the
   registry that allocated the index), so the host-key rule is what stops a
   stolen config cert from pointing warrants at an attacker-run list: the
   attacker would also need that host's DNSSEC key. Registries are otherwise
