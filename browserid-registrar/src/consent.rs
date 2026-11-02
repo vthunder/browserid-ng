@@ -2081,3 +2081,7 @@ mod tests {
         assert!(!pinned_ok("danmills+bsky@sandmill.org", "danmills@sandmill.org"));
     }
 }
+
+// Audit 2026-11 WS3 property tests (dev-only): docs/security-audit-2026-11-ws3-fuzz-proptest.md
+#[cfg(test)]
+mod audit_2026_11_ws3_proptest;

@@ -1,0 +1,1 @@
+{"scope":"pay:send","cap":{"amount":"20.00","currency":"USD","window":"P30D"},"counterparties":["a@b.example"],"max_duration":"P1Y","min_reputation":{"indexer":"https://idx.example","score":70},"mode":"prompt"}

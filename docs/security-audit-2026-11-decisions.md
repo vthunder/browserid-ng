@@ -229,9 +229,16 @@ They filter policy rows by grantee only; a narrowed holder matcher or requester 
 
 **Recommend (a)** now, (b) when a wallet actually authors narrowed records.
 
-### Q16. W4-22 wallet-service admits delegated presentations as the human (Medium)
+### Q16. W4-22 hosted wallet admits delegated presentations as the human (Medium)
 
-One approved consent card for the wallet origin yields custody of the agent key (July M2 recurrence).
+The wallet-service is the hosted wallet (`wallet-service/`, the remote MCP
+connector claude.ai uses): it custodies an agent's device key server-side
+and its OAuth sign-in page is a browserid relying party. That sign-in never
+checks that the grantee is the human or that the login scope is present, so
+any identity holding a warrant for the wallet origin, including an agent
+the user delegated to, signs in as the human and takes over the custodied
+key. One approved consent card for the wallet origin is enough (July M2
+recurrence in a layer never audited before).
 
 - (a) Hosted wallet is human-only: reject delegated and non-login presentations.
 - (b) Document that an as-you agent may own a wallet tenant.

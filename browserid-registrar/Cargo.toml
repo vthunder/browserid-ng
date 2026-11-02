@@ -20,3 +20,7 @@ sha2 = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+# Audit 2026-11 WS3 property tests (src/consent/audit_2026_11_ws3_proptest.rs)
+proptest = "1"

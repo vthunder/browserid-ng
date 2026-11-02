@@ -3,6 +3,7 @@
 #   make build            compile the whole workspace
 #   make test             run the Rust + SDK test suites
 #   make audit            cargo-audit + npm audit + pip-audit + gitleaks (CI: supply-chain.yml)
+#   make fuzz-smoke       run every cargo-fuzz target for FUZZ_SECS (default 60) — see fuzz/README.md
 #   make push             push HEAD to origin (triggers the CI image builds)
 #   make watch            watch CI runs for HEAD until they all finish
 #   make release          release HEAD's images to dokku (all apps)
@@ -21,7 +22,7 @@ HOST ?= dokku@browserid.me
 SSH  := ssh -i $(HOME)/.ssh/mini-ops -o StrictHostKeyChecking=accept-new
 REG  := ghcr.io/vthunder/browserid-ng
 
-.PHONY: build test audit push watch release deploy publish-status \
+.PHONY: build test audit fuzz-smoke push watch release deploy publish-status \
         release-broker release-www release-wallet release-mcp-demo \
         release-python-mcp-demo release-guestbook
 
@@ -34,6 +35,11 @@ test:
 # Same script and ignore lists as .github/workflows/supply-chain.yml.
 audit:
 	scripts/supply-chain-audit.sh
+
+# Needs nightly + cargo-fuzz; standalone workspace under fuzz/ (not built by
+# `make build`/CI/Docker). On the dev box: ssh localtest 'make fuzz-smoke'.
+fuzz-smoke:
+	scripts/fuzz-smoke.sh
 
 # Publish-state oracle for the SDK packages: local vs registry version, plus a
 # content diff when versions match (catches "changed code, same version").

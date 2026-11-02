@@ -1,0 +1,1 @@
+{"kind":"warrant","grants":[{"audience":"https://rp.example","scopes":["read",{"scope":"pay:send","mode":"prompt","cap":{"amount":"1","currency":"USD"}}]}],"message":"hi","grantee":"agent@example.com","holder":"ag.1","grantor":"*","return_url":"https://rp.example/cb"}
