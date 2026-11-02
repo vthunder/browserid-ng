@@ -5,7 +5,7 @@ status: completed
 type: task
 priority: normal
 created_at: 2026-11-01T12:40:56Z
-updated_at: 2026-11-02T10:34:10Z
+updated_at: 2026-11-02T10:43:53Z
 parent: browserid-ng-ag1l
 ---
 
@@ -43,3 +43,6 @@ Needs Dan: D1 ordering vs WS8 PoC; S5 login-allowlist corner; I9 wording vs S4; 
 
 
 Follow-up after spec commit d221cb3: added W6-4 (Medium, confirmed) — hosted verifier never checks a cert's status.uri host == cert iss, now required by §6.3; test w6_4_cert_status_uri_host_must_equal_cert_iss (ignored). Flagged the hosted-primary host= tension for Dan.
+
+
+WS5 handoffs folded in: W6-3 upgraded to High (= W5-8; bomb test shows 768 MiB inflated before the cap) and W6-5 added (= W5-5; discovery .well-known fetch follows redirects to another host, no address guard, uncapped body). Both ignored tests in place.

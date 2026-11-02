@@ -24,8 +24,8 @@ the audit re-verified. No production code was changed.
 
 | Crate | Test file | Pass | Ignored (fail today) |
 |---|---|---|---|
-| browserid-core | `browserid-core/tests/audit_2026_11_ws6.rs` | 17 | 9 |
-| browserid-verifier | `browserid-verifier/tests/audit_2026_11_ws6.rs` | 6 | 3 |
+| browserid-core | `browserid-core/tests/audit_2026_11_ws6.rs`, `audit_2026_11_ws6_bomb.rs` | 18 | 10 |
+| browserid-verifier | `browserid-verifier/tests/audit_2026_11_ws6.rs` | 6 | 4 |
 | browserid-dnssec | `browserid-dnssec/tests/audit_2026_11_ws6.rs` | 0 | 2 |
 | browserid-rp | `browserid-rp/tests/audit_2026_11_ws6.rs` | 0 | 2 |
 
@@ -197,7 +197,8 @@ passes today). The WS1 note "define that an allowlist applies to logins as
 | W6-1 | PARTIAL (stricter than spec) | Low | `device.rs:73-74`, `:107` — exact and subaddress branches of `identity_matches` compare the domain byte-exact, not under §5 | `w6_1_grantor_match_uses_spec_domain_comparison` (ignored, fails today) |
 | W6-2 | Informational | Low | `assertion.rs:570-582` — `Assertion::verify` never reads the JOSE header; every other object pins `alg == EdDSA` in `jws_verify` | `w6_2_assertion_without_a_valid_ed25519_signature_rejects_regardless_of_header` (passes) |
 | W6-4 | **CONFIRMED** (against the 2026-11 §6.3 text) | Medium | `browserid-verifier/src/verify.rs:754-771`, `:575-594` — a cert's `status.uri` host is never compared to the cert's `iss`; a primary's certs pointing at the broker's own list verify via the own-list shortcut | `w6_4_cert_status_uri_host_must_equal_cert_iss` (ignored, fails today) |
-| W6-3 | Informational | Low | `status.rs:914-926` — `StatusList::decode` reads the whole inflate output before applying the 4 MiB cap, so a crafted list allocates up to the transport cap × compression ratio before rejecting | none (hosted path bounds the body at 4 MiB; a zlib bomb within that still inflates fully) |
+| W6-3 (= WS5 W5-8) | **CONFIRMED** | High (DoS) | `browserid-core/src/status.rs:96-108` — `StatusList::decode` runs `read_to_end` on the zlib stream and compares to the 4 MiB cap afterwards; a <1 MiB body inflates to hundreds of MiB first. Reachable unauthenticated via `/status/proxy` and every foreign status fetch. | `w6_3_oversized_status_list_is_rejected_without_inflating_it` (ignored, fails today; counting allocator measures peak) |
+| W6-5 (= WS5 W5-5) | **CONFIRMED** | Medium | `browserid-verifier/src/discovery.rs:15-27,193-202`, `verify.rs:25-47` — the `.well-known` discovery fetch is a default `reqwest::blocking` client: redirects followed, no address check, uncapped body; target is the attacker-choosable DNS `host=`; runs on every verification of a primary-issued bundle, before any signature check | `w6_5_discovery_fetch_refuses_redirects_and_private_hosts` (ignored, fails today) |
 
 W6-4 was an I9 wording question in the first draft; §6.3 now states the
 rule, including the hosted-primary case (the URI host may be the cert's
@@ -213,8 +214,24 @@ practice because issuers emit lowercase A-labels, but it is the same
 parser-differential class as July L1. Fix by routing the exact branch through
 `identity::identity_eq` and the subaddress branch through `domain_eq`. W6-2
 is not exploitable (Ed25519 still has to verify under the access key) but is
-the one typed-signing inconsistency left. W6-3: wrap the decoder in
-`.take(4 MiB + 1)`.
+the one typed-signing inconsistency left.
+
+W6-3 was rated informational in the first draft; WS5's reachability note
+(unauthenticated `/status/proxy`, July M4's 4 MiB body cap applied to the
+*compressed* bytes) makes it a High DoS. The test compresses 256 MiB of
+zeros into ~256 KiB and shows `decode` allocating the full 256 MiB before
+rejecting. Fix: `ZlibDecoder::new(..).take(4 MiB + 1)` before `read_to_end`,
+then reject on `> 4 MiB`.
+
+W6-5 is the July H1 class on the second fetcher. The verify path does not
+need the support document at all (the key comes from the DNSSEC record and
+`resolve_idp_key` already skips the fetch), so the cleanest fix is to stop
+fetching `.well-known` in `FallbackFetcher::discover` for verification and
+leave endpoint discovery to issuance. Short of that, route `HttpFetcher`
+through `validate_status_url`'s address check, `redirect::Policy::none()`,
+and `read_capped`. This also tightens I2: today an attacker's DNSSEC domain
+in any bundle makes the verifier issue an HTTP request to a host of the
+attacker's choosing before a single signature is checked.
 
 ## 3. Invariants re-verified (passing tests)
 
@@ -263,9 +280,9 @@ the one typed-signing inconsistency left. W6-3: wrap the decoder in
 
 | July | Then | Now |
 |---|---|---|
-| H1 blind SSRF in foreign status fetch | fixed in hosted verifier | **Holds** on `verify_access_core` / `fetch_foreign_status_list` (`i9_foreign_status_on_a_private_or_plain_http_host_is_never_fetched`). **Still open** on the `browserid-rp` pinned path — D15. The TOCTOU note in `validate_status_url` (resolve-then-connect) is unchanged. |
+| H1 blind SSRF in foreign status fetch | fixed in hosted verifier | **Holds** on `verify_access_core` / `fetch_foreign_status_list` (`i9_foreign_status_on_a_private_or_plain_http_host_is_never_fetched`). **Still open** on the `browserid-rp` pinned path (D15) and on the `.well-known` discovery fetch (W6-5). The TOCTOU note in `validate_status_url` (resolve-then-connect) is unchanged. |
 | M3 uncapped foreign `ttl` | fixed via `is_fresh_capped` | **Holds** on the hosted path; **open** on `browserid-rp::StatusCache` (D15) and bypassable everywhere by a future `iat` (D16). |
-| M4 unbounded cache / body / no negative cache | fixed | **Holds**: 1024-entry caps, 4 MiB `read_capped`, 30 s negative cache (read; not re-encoded). |
+| M4 unbounded cache / body / no negative cache | fixed | **Holds** for the transport body: 1024-entry caps, 4 MiB `read_capped`, 30 s negative cache. The cap is on compressed bytes; the inflate is unbounded (W6-3). |
 | M5 malformed-but-signed record demotes primary | fixed | **Holds** (existing dnssec unit tests). The sibling demotion on transport failure is D14. |
 | L1 parser differential | fixed with `identity::email_parts` | **Holds** for grantee/grantor well-formedness and the glob branch; the exact/subaddress branches of `identity_matches` still bypass `domain_eq` (W6-1). |
 | L4 cross-issuer safety as caller precondition | documented | **Holds**: `verify_access_core` resolves both issuers under their own domains (`i3_grantor_and_grantee_issuers_are_checked_independently`). |

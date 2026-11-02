@@ -339,3 +339,55 @@ async fn w6_4_cert_status_uri_host_must_equal_cert_iss() {
     let r = verify_access_with_dns(&bundle(&alice, &alice, vec![], None), AUD, &disc, &[], st.ctx()).await;
     assert_eq!(r.status, "failure", "example.com's certs must not point at browserid.me's list");
 }
+
+// ---------------------------------------------------------------------------
+// W6-5 (WS5 W5-5) — the `.well-known` discovery fetch lacks the H1 guard.
+// ---------------------------------------------------------------------------
+
+/// `HttpFetcher` (used by `resolve_with_dnssec_key` on every verification of
+/// a primary-issued bundle) is a default `reqwest::blocking` client: it
+/// follows redirects, does no post-resolution address check, and reads the
+/// body uncapped. The target host is the DNS `host=` value, which an
+/// attacker who runs a DNSSEC-signed domain chooses. Here a loopback server
+/// redirects to a second loopback server, and the fetch returns its JSON.
+/// (`allow_http()` is needed to reach loopback without TLS; the production
+/// `new()` client shares the redirect policy and address handling, so an
+/// `https` first hop redirecting to `http://169.254.169.254/…` is followed.)
+#[test]
+#[ignore] // AUDIT-2026-11 W6-5: fails today — discovery.rs:15-27,193-202 / verify.rs:25-47 use an unguarded client
+fn w6_5_discovery_fetch_refuses_redirects_and_private_hosts() {
+    use browserid_core::discovery::SupportDocumentFetcher;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    // Accept forever: the fetcher tries https first (a TLS handshake this
+    // plain server answers with garbage), then falls back to http.
+    fn serve(listener: TcpListener, make: impl Fn() -> String + Send + 'static) {
+        std::thread::spawn(move || {
+            for sock in listener.incoming() {
+                let Ok(mut sock) = sock else { break };
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let _ = sock.write_all(make().as_bytes());
+            }
+        });
+    }
+    let hop = TcpListener::bind("127.0.0.1:0").unwrap();
+    let hop_addr = hop.local_addr().unwrap();
+    serve(hop, || {
+        let body = r#"{"authentication":"/pwned"}"#;
+        format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+    });
+    let front = TcpListener::bind("127.0.0.1:0").unwrap();
+    let front_addr = front.local_addr().unwrap();
+    serve(front, move || {
+        format!("HTTP/1.1 302 Found\r\nLocation: http://{hop_addr}/internal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    });
+
+    let r = browserid_verifier::HttpFetcher::allow_http().fetch(&front_addr.to_string());
+    assert!(
+        r.is_err(),
+        "discovery followed a redirect to another host and accepted its document: {:?}",
+        r.map(|d| d.authentication)
+    );
+}
