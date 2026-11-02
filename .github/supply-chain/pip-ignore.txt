@@ -1,0 +1,7 @@
+# pip-audit allowlist (audit 2026-11 WS7). One id per line (GHSA-… or
+# PYSEC-…), then the reason and a review date. Read by
+# scripts/supply-chain-audit.sh and passed as --ignore-vuln.
+#
+# Format:  GHSA-xxxx-xxxx-xxxx  reason ... (review YYYY-MM-DD)
+#
+# (empty: fastmcp 3.4.6 -> 3.4.10 is a pin bump in python-mcp-demo/requirements.txt)

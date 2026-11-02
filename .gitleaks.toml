@@ -1,0 +1,23 @@
+# gitleaks configuration (audit 2026-11 WS7). Run by the supply-chain
+# workflow over the full history and by `make audit` when gitleaks is on PATH.
+# Everything allowlisted here was reviewed on 2026-11-02 and is test material,
+# not a credential; see docs/security-audit-2026-11-ws7-supply-chain.md §4.
+
+title = "browserid-ng"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Reviewed test fixtures and documents that are not credentials"
+paths = [
+    # Published conformance vectors: throwaway seeds (0x03.., 0x04..) and the
+    # JWS certs they sign. Deliberately public.
+    '''^test-vectors/.*\.json$''',
+    # Throwaway RSA key for the OIDC JWKS tests, generated for the tests and
+    # never used to sign anything outside them.
+    '''^browserid-broker/src/oidc/tests\.rs$''',
+    '''^browserid-broker/tests/oidc_claim_test\.rs$''',
+    # Issue notes; the one hit is the literal placeholder "phc_...".
+    '''^\.beans/.*\.md$''',
+]

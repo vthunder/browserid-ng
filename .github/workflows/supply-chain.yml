@@ -1,0 +1,72 @@
+# Standing supply-chain gate (security audit 2026-11, WS7). Runs the same
+# script as `make audit` so local and CI results cannot drift:
+#   scripts/supply-chain-audit.sh  (policy + ignore files documented there)
+#
+# Ignore lists, each entry with a reason and a review date:
+#   .cargo/audit.toml                       RUSTSEC ids
+#   .github/supply-chain/npm-ignore.txt     GHSA ids (prod deps, high/critical)
+#   .github/supply-chain/pip-ignore.txt     GHSA/PYSEC ids
+#   .gitleaks.toml                          reviewed test fixtures
+#
+# Third-party actions are pinned by commit SHA (tag in the comment); bump by
+# resolving the new tag, never by editing the tag alone.
+name: supply-chain
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a new advisory against an unchanged tree still surfaces.
+    - cron: "17 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@cfcaf53ba4c621917ec7f78a66bff7a8848ddad4 # 1.85.0
+      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2
+        with:
+          tool: cargo-audit
+      - run: scripts/supply-chain-audit.sh rust
+
+  node:
+    name: npm audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+      - run: scripts/supply-chain-audit.sh node
+
+  python:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - run: scripts/supply-chain-audit.sh python
+
+  secrets:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0 # full history: the scan covers every commit
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_ENABLE_SUMMARY: "false"
