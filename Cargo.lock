@@ -376,8 +376,10 @@ version = "0.1.0"
 dependencies = [
  "browserid-core",
  "browserid-dnssec",
+ "chrono",
  "reqwest",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
 ]
