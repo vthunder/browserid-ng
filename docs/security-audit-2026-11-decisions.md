@@ -16,7 +16,8 @@
 | WS6 core / verifier / DNSSEC | Done. 7 candidates: 6 confirmed, 1 refuted. 5 new findings (W6-1..W6-5). Tests: core 18 pass / 10 ignored, verifier 6 / 4, dnssec 0 / 2, rp 0 / 2. |
 | WS5 broker HTTP surface | Done. 8 candidates: 4 confirmed, 2 partial, 2 refuted. 15 new findings (W5-1..W5-15). Authz matrix: 10 pass / 15 ignored. July items re-verified; H1 still open for discovery fetch and /status/proxy. |
 | WS7 supply chain, build, deploy, secrets | Done (c0acdd7). 16 Rust advisories (14 close with `cargo update`), npm all patched within ranges, 1 Python pin. New CI gate `supply-chain.yml` (cargo-audit, npm audit, pip-audit, gitleaks). 12 findings W7-1..12; no secret ever committed; July M8 holds. |
-| WS2, WS3, WS4 | Running. |
+| WS4 agent/MCP, wallet, hosted IdP, OIDC bridge | Done (8e4ab00). D3, D5, D6, D13, D17, D19, D20 confirmed; D12 refuted. 17 new findings W4-10..44 (2 Medium: W4-22 wallet-service admits delegated presentations as the human, W4-30 hosted-tenant onboarding squat). Tests: broker 13/7, mcp-auth 12/8, gate 11/6, python 7/2, wallet 6/2, wallet-service 7/3, agent 5/5. |
+| WS2, WS3 | Running. |
 | WS8 PoCs, WS9 report + remediation beans | Blocked on the above. |
 
 **Highs confirmed so far**
@@ -208,6 +209,89 @@ the connection address by dokku's shipped nginx template, so W5-6 is not
 exploitable today; the value should be declared in `id.conf` and asserted
 by `audit-host.sh` (infra), and the broker last-hop change stays a
 remediation bean per Q7.
+
+### Q14. D6 gate admission during a broker outage (Medium)
+
+The self-hosted gateway keeps last-known-good rows; a thrown fetch fails open (unreachable today), while a 5xx is read as a definitive `invalid_grant` and the gate deletes signed rows (W4-12).
+
+- (a) Fail closed on any status failure, keep last-known rows only for the console diff, and never delete a row on 5xx. Spec §6.4.
+- (b) Allow last-known-good admission for a bounded window (e.g. 10 min) for availability.
+
+**Recommend (a)**; the 5xx row deletion must go either way.
+
+### Q15. D5 policy-row bindings in mcp-auth and gate (Medium)
+
+They filter policy rows by grantee only; a narrowed holder matcher or requester entry still admits.
+
+- (a) Refuse to store any policy record whose binding is not exactly `{holder, "*"}`.
+- (b) Implement full binding evaluation.
+
+**Recommend (a)** now, (b) when a wallet actually authors narrowed records.
+
+### Q16. W4-22 wallet-service admits delegated presentations as the human (Medium)
+
+One approved consent card for the wallet origin yields custody of the agent key (July M2 recurrence).
+
+- (a) Hosted wallet is human-only: reject delegated and non-login presentations.
+- (b) Document that an as-you agent may own a wallet tenant.
+
+**Recommend (a)**.
+
+### Q17. W4-30 hosted-tenant onboarding squat (Medium)
+
+Pending tenant rows never expire; the real owner gets 409.
+
+- (a) Expire pending rows (e.g. 7 days) and let a DNSSEC-validated record for a different key replace a pending row.
+- (b) Expiry only.
+
+**Recommend (a)**.
+
+### Q18. W4-34 bridge grant redeemable by any session of the account (Low)
+
+- (a) Bind the grant to the proving session.
+- (b) Leave account-wide.
+
+**Recommend (a)**; it also matters for Q6, where agent-provision will redeem grants.
+
+### Q19. W4-40 assertions carry no `iat` (spec gap)
+
+Amended §6.1 puts a lower bound on `iat` for every object, but assertions have none.
+
+- (a) Add `iat` to assertions (spec §5, core, Rust agent, JS SDK).
+- (b) Scope §6.1's lower bound to objects that carry `iat`.
+
+**Recommend (a)**; one rule for every object.
+
+### Q20. D19 FedCM objects without status refs (Low)
+
+Every FedCM object expires in 5 min.
+
+- (a) Accept as the documented exception; say so in core §6.3 and fb §3.2.
+- (b) Allocate broker-list refs for both throwaway keys.
+
+**Recommend (a)**.
+
+### Q21. D13 hosted wallet revoke/disconnect (Low)
+
+wallet-service drops status refs, refreshes for 30 days with no re-check, has no revoke.
+
+- (a) In scope: keep refs, re-check status on refresh, add disconnect.
+- (b) Accept RP-session semantics for now.
+
+**Recommend (a)**, after the Mediums.
+
+### Q22. W4-21 loopback-page pairing with the wallet in release builds (Low)
+
+- (a) Gate on `WALLET_TEST` and pin the extension id.
+- (b) Keep the allowance.
+
+**Recommend (a)**.
+
+### Q23. Small ones (Low / Info)
+
+- W4-13 Lane A bearer outlives the warrant: fold the `/verify` expiry field into the D7 scope-parameter work. **Recommend yes.**
+- W4-44 legacy `Agent`/`Credential` lane in `@browserid-ng/agent` is dead but exported: delete (breaking) or leave documented. **Recommend delete at the next major.**
+- D12 stored-grant signature check in the wallet: refuted as a finding; add the check as defence in depth or record as accepted. **Recommend add; it is cheap.**
 
 ## 3. Already settled by the spec edits (no decision needed)
 
