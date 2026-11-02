@@ -18,7 +18,7 @@
 | WS7 supply chain, build, deploy, secrets | Done (c0acdd7). 16 Rust advisories (14 close with `cargo update`), npm all patched within ranges, 1 Python pin. New CI gate `supply-chain.yml` (cargo-audit, npm audit, pip-audit, gitleaks). 12 findings W7-1..12; no secret ever committed; July M8 holds. |
 | WS4 agent/MCP, wallet, hosted IdP, OIDC bridge | Done (8e4ab00). D3, D5, D6, D13, D17, D19, D20 confirmed; D12 refuted. 17 new findings W4-10..44 (2 Medium: W4-22 wallet-service admits delegated presentations as the human, W4-30 hosted-tenant onboarding squat). Tests: broker 13/7, mcp-auth 12/8, gate 11/6, python 7/2, wallet 6/2, wallet-service 7/3, agent 5/5. |
 | WS2 conformance vectors | Done (d72d53a). 177 vectors, 6 runners (core, hosted, sdk/js, python, mcp-auth, gate) green in CI with expected-fail tables. Only 4 cross-verifier disagreements: D7 (core keeps scope parameters, everything behind HTTP flattens), W2-1 (resource-shaped SDKs strip trailing slash from the audience), D5 and D17 in mcp-auth. Everything else is the stack agreeing with itself against the spec; the core fix resolves it for all six. New: W2-1, W2-5 (sdk/js omits holder/grantee_issuer), W2-6 (duplicate TXT field takes the last value). |
-| WS3 fuzz + proptest | Running (smoke run in flight). |
+| WS3 fuzz + proptest | Done (8de10d6, 63cc96b). proptest: core 34 pass / 4 ignored, registrar 3 / 1, allocator 1 / 1. 7 cargo-fuzz targets in a standalone `fuzz/` workspace, 90 s each, 0 crashes; `make fuzz-smoke`. Findings W3-1..4: unchecked `exp - iat` and `iat + ttl` arithmetic (overflow passes max-ttl / reads fresh forever), registrar does not enforce the scope grammar (Medium), unbounded status-list encoder index. |
 | WS8 PoCs, WS9 report + remediation beans | Blocked on the above. |
 
 **Highs confirmed so far**
@@ -328,6 +328,34 @@ python-mcp-auth, mcp-auth and gate strip trailing slashes and send the altered a
 
 **Recommend (a)**; same rule as everywhere else, and it is the D17 fix.
 
+### Q27. W3-3 registrar does not enforce the scope grammar (Medium)
+
+`validate_grant_shape` only checks length ≤ 128, so empty, uppercase,
+whitespace, control/bidi and non-ASCII scope strings are signed into
+warrants. The wallet JS enforces the grammar; the registrar, which renders
+the card and signs, does not.
+
+- (a) Put the grammar check in core and have the registrar (and every other Rust signer) call it. Medium.
+- (b) Registrar-only check.
+
+**Recommend (a)**.
+
+### Q28. One clock rule for S6 / D16 / W3-1 / W3-2
+
+Four places do unchecked time arithmetic (`exp - iat`, `iat + ttl + grace`).
+
+- (a) One normative rule in the spec and one core helper: `iat <= exp`, `iat <= now + skew`, `ttl >= 0`, checked arithmetic; every verifier calls it.
+- (b) Four local patches.
+
+**Recommend (a)**; it is what the amended §6.1 "Time bounds" paragraph already implies.
+
+### Q29. Fuzzing cadence (Info)
+
+- (a) Weekly launchd run of `make fuzz-smoke` on the dev box, like the cargo-sweep agent, failures mailed or written to a log you check.
+- (b) Manual smoke only, when parsers change.
+
+**Recommend (a)**; it is already set up and costs nothing.
+
 ## 3. Already settled by the spec edits (no decision needed)
 
 - S5 corner: a `scopes` allowlist never restricts a scope-less login; use `aud`.
@@ -336,6 +364,5 @@ python-mcp-auth, mcp-auth and gate strip trailing slashes and send the altered a
 
 ## 4. Next
 
-On your go: WS2, WS3, WS4, WS7 in parallel (independent), then WS8 PoCs
-(local broker only), then WS9 consolidates the ignored tests into
-remediation beans. Work stays on `audit-2026-11`; a PR opens when you say.
+WS8 PoCs (local broker only) are running; WS9 then consolidates the
+ignored tests into remediation beans. Work stays on `audit-2026-11`; a PR opens when you say.
