@@ -46,8 +46,11 @@ if (result.ok) {
 }
 ```
 
-`result` is either `{ ok: true, email, issuer, subject, scopes, statusRefs }`
-or `{ ok: false, reason }`. There is no status string to remember to check — a
+`result` is either `{ ok: true, email, grantee, holder, issuer, granteeIssuer,
+scopes, statusRefs }` or `{ ok: false, reason }`. `holder` is the id of the
+device or agent that presented (for your attribution line: "grantee, held by
+holder, for email"); `granteeIssuer` is the grantee's IdP domain. Both are
+`null` when the verifier did not return them. There is no status string to remember to check — a
 truthy `.ok` is the only success signal, and every error path (including network
 failures and malformed responses) resolves to `ok: false`.
 

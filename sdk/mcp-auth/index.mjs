@@ -68,27 +68,47 @@ const bearerToken = () => `bat_${randomBytes(32).toString("base64url")}`;
 // authenticated email. Permission, never attribution.
 // ---------------------------------------------------------------------------
 
-function splitEmail(s) {
-  const at = typeof s === "string" ? s.lastIndexOf("@") : -1;
-  if (at < 0) return null;
-  return [s.slice(0, at), s.slice(at + 1).toLowerCase()];
+/**
+ * The ONE identity rule (spec §5, core `identity::email_parts`; audit
+ * 2026-11 D17 / decision Q26 (a)): an identity is `local@domain` with exactly
+ * one `@` and non-empty parts; the domain is case-folded, the local part is
+ * byte-exact. Returns `{ local, domain }` (domain lowercased) or null for
+ * anything that is not an identity — `a@b@c`, `@x`, `nobody@`, non-strings.
+ * Every comparison in this package and in @browserid-ng/gate goes through
+ * here; nothing else may fold or split an identity.
+ */
+export function parseIdentity(s) {
+  if (typeof s !== "string") return null;
+  const at = s.indexOf("@");
+  if (at <= 0 || at !== s.lastIndexOf("@") || at === s.length - 1) return null;
+  return { local: s.slice(0, at), domain: s.slice(at + 1).toLowerCase() };
+}
+
+/** The canonical spelling of an identity under the §5 rule (domain folded,
+ *  local part untouched), or null when `s` is not an identity. Use it as a
+ *  map/set key; never compare raw strings. */
+export function canonicalIdentity(s) {
+  const p = parseIdentity(s);
+  return p ? `${p.local}@${p.domain}` : null;
 }
 
 /** Exact identity comparison under the §5 rule. */
 export function identityEq(a, b) {
-  const pa = splitEmail(a);
-  const pb = splitEmail(b);
-  return !!pa && !!pb && pa[0] === pb[0] && pa[1] !== "" && pa[1] === pb[1];
+  const pa = parseIdentity(a);
+  const pb = parseIdentity(b);
+  return !!pa && !!pb && pa.local === pb.local && pa.domain === pb.domain;
 }
 
 /** Does a grantee (exact email or `*` / `*@<domain>` matcher) cover an
- *  authenticated subject identity? (spec §6.4 step 3) */
+ *  authenticated subject identity? (spec §6.4 step 3). A subject that is
+ *  not an identity is covered by nothing, not even `*`. */
 export function granteeCovers(grantee, subject) {
-  if (grantee === "*") return typeof subject === "string" && subject.includes("@");
+  const ps = parseIdentity(subject);
+  if (!ps) return false;
+  if (grantee === "*") return true;
   if (typeof grantee === "string" && grantee.startsWith("*@")) {
     const domain = grantee.slice(2).toLowerCase();
-    const ps = splitEmail(subject);
-    return !!ps && domain !== "" && ps[1] === domain;
+    return domain !== "" && !domain.includes("@") && ps.domain === domain;
   }
   return identityEq(grantee, subject);
 }
@@ -101,12 +121,42 @@ export function granteeCovers(grantee, subject) {
 // predecessor (policy edit = revoke-old + sign-new).
 // ---------------------------------------------------------------------------
 
-/** In-memory policy store (single process). Swap for a db in production. */
+/**
+ * The binding a resource-held POLICY record may carry (spec §6.4 step 3,
+ * audit 2026-11 D5 / decision Q15 (a)): exactly one holder entry with the
+ * open matcher `*`. Any other entry — a requester entry (unsatisfiable in
+ * operation A), a connection entry (not a login), a narrowed holder matcher
+ * (nothing here evaluates it yet) — is refused, naming the entry, at store
+ * time AND at admission. Returns the normalized single entry.
+ */
+export function assertPolicyBinding(binding) {
+  const entries = binding == null ? [] : Array.isArray(binding) ? binding : [binding];
+  if (entries.length !== 1) {
+    throw new McpAuthError(
+      "invalid_grant",
+      `unsupported policy binding: expected exactly one {kind:"holder", matcher:"*"} entry, got ${entries.length === 0 ? "none" : `${entries.length} entries ${JSON.stringify(entries)}`}`
+    );
+  }
+  const e = entries[0];
+  if (!e || typeof e !== "object" || e.kind !== "holder" || e.matcher !== "*") {
+    throw new McpAuthError(
+      "invalid_grant",
+      `unsupported policy binding entry ${JSON.stringify(e)}: only {kind:"holder", matcher:"*"} is admitted`
+    );
+  }
+  return e;
+}
+
+/** In-memory policy store (single process). Swap for a db in production.
+ *  Refuses to store a row whose binding is not the one policy binding
+ *  (`assertPolicyBinding`); a row without a binding field (pre-D5 rows) is
+ *  kept and judged at admission, where the record is revalidated. */
 export function createPolicyStore() {
   const rows = new Map();
   const key = (r) => `${r.grantor}|${r.grantee}|${r.audience}`;
   return {
     async put(row) {
+      if (row.binding !== undefined) assertPolicyBinding(row.binding);
       rows.set(key(row), row);
     },
     async list(audience = null) {
@@ -156,7 +206,11 @@ export class McpAuthError extends Error {
  * @param {typeof fetch} [opts.fetch]  Injectable fetch (tests).
  */
 export function createMcpAuth(opts) {
-  const resource = req(opts, "resource").replace(/\/+$/, "");
+  // The resource is the audience the records name, BYTE-EXACT (spec §5;
+  // audit 2026-11 W2-1 / decision Q25 (a)): never normalized here. Configure
+  // it exactly as it appears in the warrants (web resources: no trailing
+  // slash; non-web audiences such as sbo+raw://host/ keep theirs).
+  const resource = req(opts, "resource");
   const broker = (opts.broker || "https://browserid.me").replace(/\/+$/, "");
   const scopesForTool = opts.scopesForTool || {};
   const tokenTtlS = opts.tokenTtlS ?? 3600;
@@ -238,6 +292,11 @@ export function createMcpAuth(opts) {
         }),
       });
       verified = await res.json().catch(() => ({}));
+      // A 5xx / 429 is an outage, not a verdict (same classing as the
+      // record validator, audit 2026-11 W4-12).
+      if (res.status >= 500 || res.status === 429) {
+        throw new McpAuthError("temporarily_unavailable", `verifier HTTP ${res.status}`, 503);
+      }
       if (!res.ok) {
         throw new McpAuthError("invalid_grant", `verifier HTTP ${res.status}`);
       }
@@ -263,7 +322,15 @@ export function createMcpAuth(opts) {
     }
 
     const token = bearerToken();
-    const exp = nowS() + tokenTtlS;
+    // The bearer never outlives what it was minted from (audit 2026-11
+    // W4-13): capped at the verifier's `expires_at` (the earliest of access
+    // cert, warrant and config cert, per bean oa6s) when it is returned;
+    // the tokenTtlS cap alone when the verifier predates that field.
+    const presentedExp = Number.isFinite(verified.expires_at) ? verified.expires_at : Infinity;
+    if (presentedExp <= nowS()) {
+      throw new McpAuthError("invalid_grant", "presentation expired");
+    }
+    const exp = Math.min(nowS() + tokenTtlS, presentedExp);
     await store.put(token, {
       grantor: verified.email || null, // attributed identity (human)
       grantee: verified.grantee || verified.email || null, // acting identity (agent)
@@ -285,7 +352,7 @@ export function createMcpAuth(opts) {
     return {
       access_token: token,
       token_type: "Bearer",
-      expires_in: tokenTtlS,
+      expires_in: exp - nowS(),
       scope: scopes.join(" "),
     };
   }
@@ -314,6 +381,12 @@ export function createMcpAuth(opts) {
         }),
       });
       v = await res.json().catch(() => ({}));
+      // A 5xx or 429 is an OUTAGE, not a verdict (audit 2026-11 W4-12): it
+      // must never read as a definitive invalid_grant, or a held policy row
+      // would be deleted during a broker incident.
+      if (res.status >= 500 || res.status === 429) {
+        throw new McpAuthError("temporarily_unavailable", `record validator HTTP ${res.status}`, 503);
+      }
       if (!res.ok) {
         throw new McpAuthError("invalid_grant", `record validator HTTP ${res.status}`);
       }
@@ -592,6 +665,19 @@ export function createAuthCodeLane(opts) {
   const codes = new Map(); // code -> { mode, clientId, redirectUri, codeChallenge, grant|record, exp }
   const proofs = new Map(); // request_id -> { body, exp }
   const refreshTokens = new Map(); // token -> { familyId, clientId, redirectUri, record, bindingId, scope, client, exp, rotatedTo }
+  // §6.6 invariant 5, resource side (audit 2026-11 D20): one binding.id is
+  // held for exactly ONE record. A second validated record naming an id
+  // already bound to a different record is refused at code release and at
+  // every mint/refresh — a double-minting registry cannot fan one
+  // connection out into two.
+  const boundRecords = new Map(); // binding.id -> record
+  function bindRecord(bindingId, record) {
+    const held = boundRecords.get(bindingId);
+    if (held !== undefined && held !== record) {
+      throw new McpAuthError("invalid_grant", `binding.id '${bindingId}' is already bound to another record`);
+    }
+    boundRecords.set(bindingId, record);
+  }
 
   const sweep = (map) => {
     const t = nowS();
@@ -910,7 +996,7 @@ export function createAuthCodeLane(opts) {
     }
     const grants = (args?.grants || []).map((g) => ({
       grantee: req(g, "grantee"),
-      audience: (g.audience || resource).replace(/\/+$/, ""),
+      audience: g.audience || resource, // byte-exact (Q25 (a))
       scopes: g.scopes || [],
     }));
     if (!grants.length) throw new McpAuthError("invalid_request", "authoring needs at least one grant");
@@ -988,6 +1074,9 @@ export function createAuthCodeLane(opts) {
               if (v.grantee !== g.grantee) {
                 throw new McpAuthError("invalid_grant", "record grantee does not match the requested grant");
               }
+              // D5 / Q15 (a): a policy row is held only with the one
+              // supported binding; refused here, before it is ever stored.
+              const entry = assertPolicyBinding(v.binding);
               const row = {
                 record: d.warrant,
                 grantor: v.grantor,
@@ -995,6 +1084,7 @@ export function createAuthCodeLane(opts) {
                 audience: g.audience,
                 scopes: v.scopes || [],
                 exp: v.expires_at ?? null,
+                binding: entry,
               };
               await policy.store.put(row);
               rows.push(row);
@@ -1040,6 +1130,7 @@ export function createAuthCodeLane(opts) {
       .filter((r) => granteeCovers(r.grantee, subject))
       .sort((a, b) => (a.grantee === subject ? -1 : 0) - (b.grantee === subject ? -1 : 0));
     let lastErr = null;
+    let bindingErr = null;
     for (const row of rows) {
       let pv;
       try {
@@ -1049,6 +1140,15 @@ export function createAuthCodeLane(opts) {
         continue;
       }
       if (!granteeCovers(pv.grantee, subject)) continue;
+      // §6.4 step 3 under D5 / Q15 (a): the row admits only with the one
+      // supported binding (holder "*"); a narrowed holder matcher, a
+      // requester entry or a connection entry never admits a subject here.
+      try {
+        assertPolicyBinding(pv.binding);
+      } catch (e) {
+        bindingErr = e;
+        continue;
+      }
       return {
         scopes: base.scopes.filter((s) => (pv.scopes || []).includes(s)),
         statusRefs: [...base.statusRefs, ...(pv.status_refs || [])],
@@ -1060,6 +1160,7 @@ export function createAuthCodeLane(opts) {
       };
     }
     if (lastErr instanceof McpAuthError && lastErr.httpStatus === 503) throw lastErr;
+    if (bindingErr) throw bindingErr;
     throw new McpAuthError("invalid_grant", `no grant covers '${subject}' at this resource`);
   }
 
@@ -1141,6 +1242,11 @@ export function createAuthCodeLane(opts) {
       if (rec.grantorPin && !identityEq(v.grantor, rec.grantorPin)) {
         return errorRedirect(rec.redirectUri, rec.hostState, "access_denied", "record identity does not match the signed-in user");
       }
+      try {
+        bindRecord(binding.id, grant.warrant);
+      } catch (e) {
+        return errorRedirect(rec.redirectUri, rec.hostState, "access_denied", e.message);
+      }
       const code = `oac_${randomBytes(32).toString("base64url")}`;
       codes.set(code, {
         mode: "connection",
@@ -1199,7 +1305,7 @@ export function createAuthCodeLane(opts) {
    */
   async function handleToken(params) {
     const p = params || {};
-    if (p.grant_type === JWT_BEARER_GRANT) return mcpAuth.handleToken(p);
+    if (p.grant_type === JWT_BEARER_GRANT) return handleJwtBearer(p);
     if (p.grant_type === REFRESH_GRANT) return handleRefresh(p);
     if (p.grant_type !== AUTH_CODE_GRANT) {
       throw new McpAuthError(
@@ -1269,6 +1375,7 @@ export function createAuthCodeLane(opts) {
     if (binding.kind !== "connection" || !binding.id || binding.client_host !== redirectHost) {
       throw new McpAuthError("invalid_grant", "record does not match this connection");
     }
+    bindRecord(binding.id, rec.record);
     // §6.5: conjoin with the policy layer (owner, or a covering policy
     // record revalidated fresh) — effective scopes S ∩ S′, both records'
     // status refs on the bearer, expiry the earlier of the two.
@@ -1302,6 +1409,40 @@ export function createAuthCodeLane(opts) {
     return { ...tokens, refresh_token: refreshToken };
   }
 
+  /**
+   * Lane A through a lane-enabled server (audit 2026-11 W4-10): the
+   * presentation mints through `mcpAuth.handleToken` as before, and when a
+   * policy is configured the §6.5 conjunction applies to it too — the
+   * presentation's grantor must be an owner or covered by a live policy
+   * row; the bearer carries S ∩ S′, both records' status refs, the earlier
+   * expiry and `permittedBy`. No covering row ⇒ the bearer is withdrawn
+   * and the exchange refused: a self-signed warrant is not an entitlement.
+   */
+  async function handleJwtBearer(p) {
+    const out = await mcpAuth.handleToken(p);
+    if (!policy) return out;
+    const grant = await mcpAuth.store.get(out.access_token);
+    if (!grant) throw new McpAuthError("invalid_grant", "bearer vanished before admission");
+    let c;
+    try {
+      c = await conjoinPolicy({
+        grantor: grant.grantor,
+        scopes: grant.scopes,
+        status_refs: grant.statusRefs,
+        expires_at: grant.exp,
+      });
+    } catch (e) {
+      await mcpAuth.store.del(out.access_token);
+      throw e;
+    }
+    grant.scopes = c.scopes;
+    grant.statusRefs = c.statusRefs;
+    if (c.expiresAt != null && c.expiresAt < grant.exp) grant.exp = c.expiresAt;
+    grant.permittedBy = c.permittedBy;
+    await mcpAuth.store.put(out.access_token, grant);
+    return { ...out, expires_in: Math.max(0, grant.exp - nowS()), scope: c.scopes.map((s) => (typeof s === "string" ? s : s?.scope)).join(" ") };
+  }
+
   /** `grant_type=refresh_token` — connection mode only, rotation on use,
    *  family burn on reuse (a replayed refresh token is theft evidence). */
   async function handleRefresh(p) {
@@ -1320,7 +1461,12 @@ export function createAuthCodeLane(opts) {
       }
       throw new McpAuthError("invalid_grant", "refresh token reuse detected — connection revoked locally");
     }
-    if (p.client_id != null && p.client_id !== rt.clientId) {
+    // OAuth 2.1 §4.3.1: a public client MUST send its client_id (audit
+    // 2026-11 W4-11) — and it must be the one the token was issued to.
+    if (typeof p.client_id !== "string" || !p.client_id) {
+      throw new McpAuthError("invalid_request", "missing 'client_id' (required for a public client)");
+    }
+    if (p.client_id !== rt.clientId) {
       throw new McpAuthError("invalid_grant", "refresh token was not issued to this client");
     }
     // Narrow-only: a refresh may request a subset of the original scope.

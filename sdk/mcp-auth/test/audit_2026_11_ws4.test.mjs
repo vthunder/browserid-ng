@@ -145,12 +145,12 @@ test("D17 pin: identityEq is local-part byte-exact and domain case-insensitive",
   assert.equal(granteeCovers("*", "not-an-email"), false);
 });
 
-test("D17: a string with two '@' is not an identity (core rejects; splitEmail splits on the last '@')", { skip: "AUDIT-2026-11 D17: fails today" }, () => {
+test("D17: a string with two '@' is not an identity (core rejects; splitEmail splits on the last '@')", () => {
   assert.equal(identityEq("a@b@example.com", "a@b@example.com"), false);
   assert.equal(granteeCovers("*@example.com", "a@b@example.com"), false);
 });
 
-test("D17: granteeCovers('*') must not admit a malformed subject", { skip: "AUDIT-2026-11 D17: fails today" }, () => {
+test("D17: granteeCovers('*') must not admit a malformed subject", () => {
   assert.equal(granteeCovers("*", "@"), false);
   assert.equal(granteeCovers("*", "@example.com"), false);
   assert.equal(granteeCovers("*", "nobody@"), false);
@@ -179,7 +179,7 @@ test("D5 pin: a holder:'*' policy row admits a connection subject with S ∩ S�
   assert.deepEqual(ctx.scopes, ["notes:read"]);
 });
 
-test("D5: a policy row narrowed to one holder must not admit a holder-less connection subject (§6.4 step 3 fail-closed)", { skip: "AUDIT-2026-11 D5: fails today" }, async () => {
+test("D5: a policy row narrowed to one holder must not admit a holder-less connection subject (§6.4 step 3 fail-closed)", async () => {
   const { lane } = policyLane({
     validate: { [MEMBER_CONN]: connectionResult(MEMBER, "cn_m"), [POLICY_NARROW]: policyResult(MEMBER, { kind: "holder", matcher: "agents.one-specific-holder" }) },
     deliver: () => [{ audience: RESOURCE, warrant: MEMBER_CONN }],
@@ -188,7 +188,7 @@ test("D5: a policy row narrowed to one holder must not admit a holder-less conne
   await assert.rejects(connect(lane, { scope: "notes:read" }), (e) => e instanceof McpAuthError && e.oauthError === "invalid_grant");
 });
 
-test("D5: a policy row carrying a requester entry is unsatisfiable in operation A and must refuse", { skip: "AUDIT-2026-11 D5: fails today" }, async () => {
+test("D5: a policy row carrying a requester entry is unsatisfiable in operation A and must refuse", async () => {
   const { lane } = policyLane({
     validate: {
       [MEMBER_CONN]: connectionResult(MEMBER, "cn_m"),
@@ -204,7 +204,7 @@ test("D5: a policy row carrying a requester entry is unsatisfiable in operation 
 // W4-10 — the policy layer does not reach Lane A (jwt-bearer) bearers
 // ===========================================================================
 
-test("W4-10: with policy configured, a jwt-bearer presentation from a non-owner with no covering row must not mint", { skip: "AUDIT-2026-11 W4-10: fails today" }, async () => {
+test("W4-10: with policy configured, a jwt-bearer presentation from a non-owner with no covering row must not mint", async () => {
   const { lane } = policyLane({ validate: {}, deliver: () => [], policyRows: [] });
   // okVerify is MEMBER (not an owner) and the policy store holds no row.
   await assert.rejects(
@@ -213,19 +213,24 @@ test("W4-10: with policy configured, a jwt-bearer presentation from a non-owner 
   );
 });
 
-test("W4-10 pin: today the Lane A mint ignores the policy layer entirely (the gate re-checks at /mcp)", async () => {
-  const { lane, mcpAuth } = policyLane({ validate: {}, deliver: () => [], policyRows: [] });
+test("W4-10: a jwt-bearer presentation from a covered non-owner mints S ∩ S′ under the permitter's grant", async () => {
+  const { lane, mcpAuth } = policyLane({
+    validate: { [POLICY_OPEN]: policyResult(MEMBER, { kind: "holder", matcher: "*" }) },
+    deliver: () => [], policyRows: [row(POLICY_OPEN)],
+  });
   const t = await lane.handleToken({ grant_type: JWT_BEARER_GRANT, assertion: "AC~AS~WR~CC" });
+  assert.equal(t.scope, "notes:read", "S ∩ S′: the policy row grants notes:read only");
   const ctx = await mcpAuth.authenticate(`Bearer ${t.access_token}`);
   assert.equal(ctx.grantor, MEMBER);
-  assert.equal(ctx.permittedBy, null);
+  assert.equal(ctx.permittedBy, OWNER);
+  assert.deepEqual(ctx.scopes, ["notes:read"]);
 });
 
 // ===========================================================================
 // D20 — binding.id is not held 1:1 with its record (spec §6.6 invariant 5)
 // ===========================================================================
 
-test("D20: a second record naming an already-bound binding.id must be refused", { skip: "AUDIT-2026-11 D20: fails today" }, async () => {
+test("D20: a second record naming an already-bound binding.id must be refused", async () => {
   const CONN_A = record({ grantor: OWNER, grantee: OWNER, audience: RESOURCE, scopes: ["notes:read"], binding: { kind: "connection", protocol: "oauth", id: "cn_dup", client_host: "claude.ai" }, status: { uri: `${BROKER}/status`, idx: 1 } });
   const CONN_B = record({ grantor: OWNER, grantee: OWNER, audience: RESOURCE, scopes: ["notes:read"], binding: { kind: "connection", protocol: "oauth", id: "cn_dup", client_host: "claude.ai" }, status: { uri: `${BROKER}/status`, idx: 2 } });
   let which = CONN_A;
@@ -237,7 +242,9 @@ test("D20: a second record naming an already-bound binding.id must be refused", 
   const first = await connect(lane, { scope: "notes:read" });
   assert.ok(first.access_token);
   which = CONN_B;
-  await assert.rejects(connect(lane, { scope: "notes:read" }), (e) => e instanceof McpAuthError);
+  // Refused at code release: the lane answers an access_denied redirect naming the conflict
+  // (the connect helper surfaces it as "no code: <redirect>"); a mint-time conflict throws.
+  await assert.rejects(connect(lane, { scope: "notes:read" }), (e) => e instanceof McpAuthError || /already(\+|%20| )bound/.test(e.message));
 });
 
 // ===========================================================================
@@ -253,23 +260,16 @@ test("D6 pin: conjoinPolicy fails closed when the validator answers HTTP 503", a
   await assert.rejects(connect(lane, { scope: "notes:read" }), (e) => e instanceof McpAuthError);
 });
 
-// W4-12: validateRecord maps an HTTP 5xx from the validator to
-// `invalid_grant` (400) — a definitive-looking verdict — instead of
-// `temporarily_unavailable` (503); only a THROWN fetch is classed 503. The
-// gate's isRowLive keys on httpStatus === 503, so an HTTP 503 deletes the
-// signed policy row (grantsDiff custodial delete) while a connection failure
-// keeps it live (D6's fail-open branch).
-test("W4-12: an HTTP 5xx from /validate-record is 'temporarily_unavailable', not a definitive invalid_grant", { skip: "AUDIT-2026-11 W4-12: fails today" }, async () => {
+// W4-12: an HTTP 5xx (or 429) from the validator is an outage, classed
+// `temporarily_unavailable` (503) like a thrown fetch — never a definitive
+// `invalid_grant` that would let the gate delete a signed policy row.
+test("W4-12: an HTTP 5xx from /validate-record is 'temporarily_unavailable', not a definitive invalid_grant", async () => {
   const broker = fakeBroker({ validate: { [POLICY_OPEN]: { __status: 503, status: "failure", reason: "down" } } });
   const mcp = createMcpAuth({ resource: RESOURCE, broker: BROKER, fetch: broker.fetch });
   await assert.rejects(mcp.validateRecord(POLICY_OPEN), (e) => e instanceof McpAuthError && e.httpStatus === 503 && e.oauthError === "temporarily_unavailable");
 });
 
-test("W4-12 pin: today an HTTP 503 from the validator reads as invalid_grant (400)", async () => {
-  const broker = fakeBroker({ validate: { [POLICY_OPEN]: { __status: 503, status: "failure", reason: "down" } } });
-  const mcp = createMcpAuth({ resource: RESOURCE, broker: BROKER, fetch: broker.fetch });
-  await assert.rejects(mcp.validateRecord(POLICY_OPEN), (e) => e instanceof McpAuthError && e.httpStatus === 400 && e.oauthError === "invalid_grant");
-  // …while a thrown fetch is correctly classed 503.
+test("W4-12 pin: a thrown fetch (connection refused) is classed 503 too", async () => {
   const down = createMcpAuth({ resource: RESOURCE, broker: BROKER, fetch: async () => { throw new Error("ECONNREFUSED"); } });
   await assert.rejects(down.validateRecord(POLICY_OPEN), (e) => e.httpStatus === 503);
 });
@@ -294,10 +294,25 @@ test("D6 pin: a bearer minted from a record never outlives the record", async ()
 });
 
 // ===========================================================================
+// W4-13 — a Lane A bearer never outlives the presented warrant
+// ===========================================================================
+
+test("W4-13: a jwt-bearer bearer is capped at the verifier's expires_at (bean oa6s field), and falls back to tokenTtlS without it", async () => {
+  const soon = nowS() + 30;
+  const capped = createMcpAuth({ resource: RESOURCE, broker: BROKER, fetch: fakeBroker({ verify: { ...okVerify, expires_at: soon } }).fetch });
+  const t = await capped.handleToken({ grant_type: JWT_BEARER_GRANT, assertion: "AC~AS~WR~CC" });
+  assert.ok(t.expires_in > 0 && t.expires_in <= 30, `expires_in ${t.expires_in}`);
+  const legacy = createMcpAuth({ resource: RESOURCE, broker: BROKER, fetch: fakeBroker({ verify: okVerify }).fetch });
+  assert.equal((await legacy.handleToken({ grant_type: JWT_BEARER_GRANT, assertion: "AC~AS~WR~CC" })).expires_in, 3600);
+  const dead = createMcpAuth({ resource: RESOURCE, broker: BROKER, fetch: fakeBroker({ verify: { ...okVerify, expires_at: nowS() - 1 } }).fetch });
+  await assert.rejects(dead.handleToken({ grant_type: JWT_BEARER_GRANT, assertion: "AC~AS~WR~CC" }), (e) => e.oauthError === "invalid_grant");
+});
+
+// ===========================================================================
 // W4-11 — refresh_token exchange does not require client_id (public client)
 // ===========================================================================
 
-test("W4-11: a refresh without client_id must be refused for a public client (RFC 6749 §4.1.3 / OAuth 2.1 §4.3.1)", { skip: "AUDIT-2026-11 W4-11: fails today" }, async () => {
+test("W4-11: a refresh without client_id must be refused for a public client (RFC 6749 §4.1.3 / OAuth 2.1 §4.3.1)", async () => {
   const { lane } = policyLane({
     validate: { [MEMBER_CONN]: connectionResult(OWNER, "cn_o") },
     deliver: () => [{ audience: RESOURCE, warrant: MEMBER_CONN }],
@@ -320,12 +335,12 @@ test("pin: a replayed jwt-bearer assertion mints again (no AS-side jti cache; th
   assert.equal(broker.calls.verify, 2, "each redemption re-verifies at the broker, audience-pinned");
 });
 
-test("pin: /verify is always called with audience == this resource and the accepted fallbacks", async () => {
+test("pin: /verify is always called with audience == this resource BYTE-EXACT (W2-1 / Q25 (a): no trailing-slash normalization) and the accepted fallbacks", async () => {
   let seen;
   const broker = fakeBroker({ verify: (b) => { seen = b; return okVerify; } });
   const mcp = createMcpAuth({ resource: RESOURCE + "/", broker: BROKER, fetch: broker.fetch });
   await mcp.handleToken({ grant_type: JWT_BEARER_GRANT, assertion: "AC~AS~WR~CC" });
-  assert.equal(seen.audience, RESOURCE);
+  assert.equal(seen.audience, RESOURCE + "/");
   assert.deepEqual(seen.accepted_fallbacks, ["broker.example"]);
 });
 

@@ -67,7 +67,7 @@ cloudflared) and pass its URL as `--resource`.
 | `--console-local` | bind the console to `127.0.0.1` only (still funnel `/<mount>/*`) |
 | `--handle <slug>` | the gateway agent's identity handle (default `mcp-gateway`) |
 | `--port <n>` | local listen port (default: auto-pick) |
-| `--resource <url>` | public URL = the OAuth audience (default: tailscale funnel on 443; localhost fallback) |
+| `--resource <url>` | public URL = the OAuth audience, byte-exact (no trailing slash; default: tailscale funnel on 443; localhost fallback) |
 | `--broker <url>` | BrowserID broker (default `$BROWSERID_BROKER` or `https://browserid.me`) |
 
 > One-shot mode (`--allow … -- <cmd>`) was removed in v0.5 — the console is the
@@ -114,7 +114,7 @@ header's **"N staged" pill** opens a diff popover (`+`/`~`/`−` per change) wit
 
 - **`POST /admin/login`** verifies the presentation with `verifyPresentation(p,
   origin)` where the audience is **exactly the console origin** and the verified
-  `email` **exactly equals `--admin`** (no substring / domain / `+tag`
+  `email` **exactly equals `--admin`** under the spec §5 rule — domain case-folded, local part byte-exact (`Admin@` is not `admin@`); no substring / domain / `+tag`
   widening). Anything else → `403`.
 - **Session cookie**: a random nonce, **HMAC-signed** with a per-install secret
   persisted `0600` in `~/.browserid-gate/session-secret` (so restarts don't log

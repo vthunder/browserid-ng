@@ -90,11 +90,9 @@ class AudienceAndScopes(unittest.TestCase):
         self.assertEqual(body["audience"], RESOURCE)
         self.assertEqual(body["accepted_fallbacks"], ["broker.example"])
 
-    @unittest.skip("AUDIT-2026-11 W4-14: fails today")
     def test_parameterised_scope_entries_fail_closed(self):
         # S7 relay rule: an object entry rides verbatim (or is refused) and
-        # never satisfies a string tool scope. Today handle_token raises
-        # TypeError while rendering the token response (W4-14).
+        # never satisfies a string tool scope (W4-14).
         m, _ = make(verify={**OK, "scopes": [{"repo:read": {"mode": "prompt"}}, "issues:create"]})
         with self.assertRaises(McpAuthError) as c:
             m.handle_token({**REQ, "scope": "repo:read"})
@@ -105,17 +103,17 @@ class AudienceAndScopes(unittest.TestCase):
         self.assertEqual(c.exception.oauth_error, "insufficient_scope")
         self.assertEqual(m.authenticate("Bearer " + tok).scopes[0], {"repo:read": {"mode": "prompt"}})
 
-    def test_parameterised_scope_entries_crash_the_token_endpoint_today(self):
-        # W4-14 pin: a verifier response carrying an object scope entry makes
-        # handle_token raise TypeError (not McpAuthError) — an unhandled 500
-        # at the host's /token, not a clean refusal. The narrowing branch is
-        # fine (string never equals dict ⇒ invalid_scope).
-        m, _ = make(verify={**OK, "scopes": [{"repo:read": {"mode": "prompt"}}, "issues:create"]})
+    def test_parameterised_scope_entries_render_by_name_and_unrepresentable_ones_refuse(self):
+        # W4-14: the OAuth scope string carries the entry's name (never
+        # "[object Object]" or a TypeError); the wire form {"scope": name, ...}
+        # and the {name: params} form both render. An entry the AS cannot name
+        # is a clean invalid_grant refusal, not a 500.
+        m, _ = make(verify={**OK, "scopes": [{"repo:read": {"mode": "prompt"}}, {"scope": "pay:usd", "cap": {"amount": "1"}}, "issues:create"]})
+        self.assertEqual(m.handle_token(REQ)["scope"], "repo:read pay:usd issues:create")
+        m, _ = make(verify={**OK, "scopes": [{"mode": "prompt"}]})
         with self.assertRaises(McpAuthError) as c:
-            m.handle_token({**REQ, "scope": "repo:read"})
-        self.assertEqual(c.exception.oauth_error, "invalid_scope")
-        with self.assertRaises(TypeError):
             m.handle_token(REQ)
+        self.assertEqual(c.exception.oauth_error, "invalid_grant")
 
     def test_replayed_assertion_mints_again(self):
         # Observation (not a finding): the AS keeps no jti cache; every
@@ -128,17 +126,23 @@ class AudienceAndScopes(unittest.TestCase):
 
 
 class LaneABearerLifetime(unittest.TestCase):
-    @unittest.skip("AUDIT-2026-11 W4-13: fails today")
     def test_bearer_never_outlives_the_presented_warrant(self):
-        # /verify returns no expiry today (verifier side, cf. WS6 D7 class);
-        # once it does, the bearer must be capped at it like record bearers are.
+        # W4-13: /verify returns `expires_at` (bean oa6s); the bearer is
+        # capped at it like record bearers are.
         m, _ = make(verify={**OK, "expires_at": int(time.time()) + 30})
         res = m.handle_token(REQ)
         self.assertLessEqual(res["expires_in"], 30)
+        self.assertGreater(res["expires_in"], 0)
 
-    def test_bearer_lifetime_is_token_ttl_today(self):
-        m, _ = make(verify={**OK, "expires_at": int(time.time()) + 30})
+    def test_bearer_lifetime_falls_back_to_token_ttl_without_expires_at(self):
+        m, _ = make(verify=dict(OK))
         self.assertEqual(m.handle_token(REQ)["expires_in"], 3600)
+
+    def test_an_already_expired_presentation_never_mints(self):
+        m, _ = make(verify={**OK, "expires_at": int(time.time()) - 1})
+        with self.assertRaises(McpAuthError) as c:
+            m.handle_token(REQ)
+        self.assertEqual(c.exception.oauth_error, "invalid_grant")
 
 
 if __name__ == "__main__":

@@ -42,7 +42,7 @@ const nowS = () => Math.floor(Date.now() / 1000);
 const gatewayKp = KeyPair.generate();
 const credential = {
   device_key: Buffer.from(gatewayKp.seed).toString("base64url"),
-  agent_device_cert: fakeJws({ typ: "browserid-device-cert-v1", "public-key": { algorithm: "Ed25519", publicKey: gatewayKp.publicKeyB64 }, holder: "svc.gate1", identities: [GATEWAY], iat: nowS(), exp: nowS() + 8.64e6 }),
+  agent_device_cert: fakeJws({ typ: "browserid-device-cert-v1", iss: new URL(BROKER).host, "public-key": { algorithm: "Ed25519", publicKey: gatewayKp.publicKeyB64 }, holder: "svc.gate1", identities: [GATEWAY], iat: nowS(), exp: nowS() + 8.64e6 }),
   idp: BROKER, identity: GATEWAY,
 };
 
@@ -55,6 +55,8 @@ const broker = createServer(async (req, res) => {
   let raw = ""; for await (const c of req) raw += c;
   const body = raw ? JSON.parse(raw) : {};
   if (records.handle(new URL(req.url, BROKER).pathname, body, reply)) return;
+  // Bearers minted under a policy row carry the row's status refs (W4-10).
+  if (req.url === "/status/check") return reply(200, { ok: true, revoked: false });
   if (req.url === "/verify") {
     const email = EMAILS[body.presentation];
     if (!email) return reply(200, { status: "failure", reason: "verification failed" });
@@ -120,6 +122,23 @@ async function mcp(bearer, method, params) {
     body: JSON.stringify({ jsonrpc: "2.0", id: nextId++, method, params }),
   });
 }
+// A grantor the records do not cover is refused — since W4-10 at /token
+// already (the lane's own §6.5 conjunction, 400 invalid_grant), otherwise at
+// the grantor gate (/mcp 403). Either is the refusal these tests pin.
+async function expectRefused(presentation, msg) {
+  const res = await fetch(`${ORIGIN}/notes/token`, {
+    method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: presentation }),
+  });
+  if (res.status !== 200) {
+    assert.equal(res.status, 400, msg);
+    assert.equal((await res.json()).error, "invalid_grant", msg);
+    return;
+  }
+  const r = await mcp((await res.json()).access_token, "tools/call", { name: "list_directory", arguments: {} });
+  assert.equal(r.status, 403, msg);
+  assert.equal((await r.json()).error, "access_denied", msg);
+}
 async function callTool(bearer, name, args = {}) {
   const res = await mcp(bearer, "tools/call", { name, arguments: args });
   assert.equal(res.status, 200, `call HTTP ${res.status}`);
@@ -163,10 +182,7 @@ test("the admin identity has implicit full access (never in a role)", async () =
 });
 
 test("a grantor NO role reaches is refused (403) before any tool runs", async () => {
-  const bearer = await getBearer("pres-bob");
-  const res = await mcp(bearer, "tools/call", { name: "list_directory", arguments: {} });
-  assert.equal(res.status, 403);
-  assert.equal((await res.json()).error, "access_denied");
+  await expectRefused("pres-bob");
 });
 
 // --- admin API --------------------------------------------------------------
@@ -210,9 +226,7 @@ test("a broker-revoked grant resurfaces as PENDING (never a false 'in sync')", a
     );
     assert.ok(!g.signed.some((r) => r.grantee === ALICE), "the dead row is dropped from the store");
     // …and enforcement agrees while unsigned: alice is refused.
-    const bearer = await getBearer("pres-alice");
-    const res = await mcp(bearer, "tools/call", { name: "list_directory", arguments: {} });
-    assert.equal(res.status, 403);
+    await expectRefused("pres-alice");
   } finally {
     records.revokedGrantees.delete(ALICE);
     // Re-sign so later tests see the original state.
@@ -295,9 +309,7 @@ test("role + people edits are STAGED with diff entries; enforcement stays on the
   assert.equal(state.needsRestart, true);
 
   // Still refused live: the running gateway enforces the STARTUP roles.
-  const bearer = await getBearer("pres-bob");
-  const res = await mcp(bearer, "tools/call", { name: "list_directory", arguments: {} });
-  assert.equal(res.status, 403, "staged role edits don't change the running gateway");
+  await expectRefused("pres-bob", "staged role edits don't change the running gateway");
 
   // Cleanup: delete the staged role again (net-zero diff).
   const del = await fetch(`${ORIGIN}/admin/roles/${role.id}`, { method: "DELETE", headers: H(s) });
@@ -356,10 +368,10 @@ test("a legacy per-mount allow list migrates to a role granting every tool", () 
   const cfg = normalizeConfig({
     mounts: [{ id: "m1", name: "Notes", mount: "notes", command: ["echo"], allow: ["Friend@Example.com "] }],
   });
-  assert.ok(cfg.people.some((p) => p.email === "friend@example.com"), "allowlisted email lands in people");
+  assert.ok(cfg.people.some((p) => p.email === "Friend@example.com"), "allowlisted email lands in people (domain folded, local part byte-exact — spec §5)");
   const migrated = cfg.roles.find((r) => !r.builtin);
   assert.equal(migrated.name, "Notes");
-  assert.deepEqual(migrated.members, ["friend@example.com"]);
+  assert.deepEqual(migrated.members, ["Friend@example.com"]);
   assert.deepEqual(migrated.grants, [{ mountId: "m1", on: ["*"] }], "granted every tool ('*' until discovery)");
   assert.ok(cfg.roles.some((r) => r.builtin), "the built-in role is ensured");
   // Idempotent: a v2 doc (roles present) is NOT re-migrated.

@@ -7,27 +7,6 @@ export class AgentError extends Error {
   }
 }
 
-/** No credential file where one was expected. `path` is where to put it. */
-export class NeedCredentialError extends AgentError {
-  constructor(path) {
-    super(
-      `no agent identity yet — create an agent key at https://browserid.me/agents ` +
-        `and save the downloaded file as ${path}`
-    );
-    this.path = path;
-  }
-}
-
-export class InvalidCredentialError extends AgentError {}
-
-/** The credential reserves several names and none was chosen. */
-export class AmbiguousNameError extends AgentError {
-  constructor(names) {
-    super(`credential reserves several names (${names.join(", ")}); pass one explicitly`);
-    this.names = names;
-  }
-}
-
 /** A server call returned a failure. Carries the HTTP status and server reason. */
 export class RequestError extends AgentError {
   constructor(what, status, reason) {

@@ -33,69 +33,17 @@ const VECTORS = JSON.parse(readFileSync(new URL("../../../test-vectors/conforman
 const HOSTED = JSON.parse(readFileSync(new URL("../../../test-vectors/conformance-2026-11.hosted.json", import.meta.url), "utf8")).responses;
 
 const EXPECTED_FAIL = {
-  // AUDIT-2026-11 W2-1: createMount strips trailing slashes from `resource` (mount.mjs:55), so a
-  // warrant audience ending in `/` is sent to the verifier altered. AUDIT-2026-11 D7 (inherited).
-  "P-OK-07": "W2-1,D7",
-  "P-OK-08": "D7",
-  // AUDIT-2026-11 W6-1 (inherited from the hosted verifier).
-  "P-OK-12": "W6-1",
-  // AUDIT-2026-11 D16 (inherited): no lower bound on iat.
-  "P-TIME-05": "D16",
-  "P-TIME-06": "D16",
-  "P-TIME-07": "D16",
-  "P-TIME-08": "D16",
-  "P-TIME-09": "D16",
   // AUDIT-2026-11 S3 (inherited).
   "P-TYP-01": "S3",
   "P-TYP-02": "S3",
-  // AUDIT-2026-11 W6-4 (inherited).
-  "P-STAT-06": "W6-4",
-  // AUDIT-2026-11 S5 (inherited).
-  "P-CONS-01": "S5",
-  "P-CONS-06": "S5",
-  // AUDIT-2026-11 D17 (= W2-4): the grantor gate lowercases both the allowlist (mount.mjs:61) and the
-  // verified grantor (mount.mjs:318) before comparing, so an allowlist entry differing only in the
-  // local part's case admits.
-  "P-OK-01/case": "D17",
-  "P-OK-02/case": "D17",
-  "P-OK-03/case": "D17",
-  "P-OK-04/case": "D17",
-  "P-OK-05/case": "D17",
-  "P-OK-06/case": "D17",
-  "P-OK-08/case": "D17",
-  "P-OK-09/case": "D17",
-  "P-OK-10/case": "D17",
-  "P-OK-11/case": "D17",
-  "P-OK-13/case": "D17",
   // --- op A, policy mode (held record in the mount's policy store, subject = the bearer's grantor) ---
-  // AUDIT-2026-11 D5 (= W2-2): the entitlement lookup filters rows by granteeCovers only (mount.mjs:82);
-  // requester entries, connection entries and holder matchers are never evaluated.
-  "A-REJ-01": "D5",
-  "A-REJ-02": "D5",
-  "A-REJ-03": "D5",
-  "A-REJ-04": "D5",
-  "A-REJ-05": "D5",
-  // AUDIT-2026-11 D17 (= W2-3/W2-4): malformed subjects covered by `*`/`*@domain`; grantor lowercased (mount.mjs:318).
-  "A-REJ-07": "D17",
-  "A-REJ-08": "D17",
-  "A-REJ-09": "D17",
-  "A-REJ-10": "D17",
-  // AUDIT-2026-11 D6: the single-server mount's default entitlement reads the policy store without ever
-  // validating the record (mount.mjs:76-85): expiry, revocation, signature, issuer, constraints, v1,
-  // missing status and unknown parameters all admit.
-  "A-REJ-13": "D6",
-  "A-REJ-20": "D6",
-  "A-REJ-21": "D6",
-  "A-REJ-22": "D6",
-  "A-REJ-23": "D6",
-  "A-REJ-24": "D6",
-  "A-REJ-25": "D6",
-  "A-REJ-26": "D6",
-  "A-REJ-27": "D6",
-  "A-REJ-28": "D6",
-  "A-REJ-29": "D6",
-  "A-REJ-30": "D6",
-  "A-REJ-31": "D6",
+  // Decision Q15 (a) (audit 2026-11 D5): a held policy record admits only with the one binding
+  // {holder, "*"}; narrowed holder matchers are refused rather than evaluated until a wallet
+  // authors them (Q15 (b)). These two vectors expect the matcher to be evaluated.
+  "A-OK-02": "Q15a",
+  "A-OK-10": "Q15a",
+  // Inherited from the hosted validator (the row is revalidated at admission since D5/D6): S3.
+  "A-REJ-13": "S3",
 };
 
 const OWNER = "owner@example.com";
@@ -172,8 +120,15 @@ async function driveA(v) {
   const store = createPolicyStore();
   await store.put({ record: v.bundle, grantor: w.grantor, grantee: w.grantee, audience: w.audience, scopes: ["tool:ping"], exp: w.exp });
   const subject = v.subject;
-  const fetchA = async (url) => {
+  const fetchA = async (url, init) => {
     if (url.endsWith("/status/check")) return { ok: true, status: 200, json: async () => ({ ok: true, revoked: false }) };
+    if (url.endsWith("/validate-record")) {
+      // The held row is revalidated at admission (D6): answer with the recorded hosted verdict
+      // for THIS record, or a failure when the request diverged from the vector.
+      const body = JSON.parse(init.body);
+      if (body.record !== v.bundle || body.audience !== v.audience) return { ok: true, status: 200, json: async () => ({ status: "failure", reason: "runner: request diverged from the vector" }) };
+      return { ok: true, status: 200, json: async () => HOSTED[v.id] };
+    }
     return { ok: true, status: 200, json: async () => ({ status: "okay", email: subject.identity, grantee: subject.identity, holder: subject.holder, issuer: "browserid.me", scopes: ["tool:ping"], status_refs: [] }) };
   };
   const mount = await createMount({ resource: v.audience, broker: BROKER, name: "vectors", owners: [OWNER], policyStore: store, client: fakeClient, fetch: fetchA });

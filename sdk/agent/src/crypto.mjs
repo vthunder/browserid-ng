@@ -13,9 +13,13 @@ export const b64u = (buf) => Buffer.from(buf).toString("base64url");
 export const b64uJson = (obj) => b64u(Buffer.from(JSON.stringify(obj)));
 export const fromB64u = (s) => new Uint8Array(Buffer.from(s, "base64url"));
 
-/** A keypair backed by node KeyObjects, plus the raw/base64url public key. */
+/** A keypair backed by node KeyObjects, plus the raw/base64url public key.
+ *  The seed is a PRIVATE field (audit 2026-11 W4-42): `util.inspect`,
+ *  `console.log` and `JSON.stringify` print the public key only; the seed
+ *  is reachable solely through the explicit `seed` getter (persistence). */
 export class KeyPair {
   #priv;
+  #seed = null;
   constructor(privKeyObject, publicRaw) {
     this.#priv = privKeyObject;
     this.publicRaw = publicRaw; // Uint8Array(32)
@@ -29,18 +33,28 @@ export class KeyPair {
     const priv = createPrivateKey({ key: Buffer.concat([ED_PKCS8_PREFIX, s]), format: "der", type: "pkcs8" });
     const publicRaw = createPublicKey(priv).export({ format: "der", type: "spki" }).subarray(-32);
     const kp = new KeyPair(priv, new Uint8Array(publicRaw));
-    kp.seed = new Uint8Array(s); // retained so the key can be persisted + reloaded
+    kp.#seed = new Uint8Array(s); // retained so the key can be persisted + reloaded
     return kp;
   }
 
   /** A fresh random keypair (agent identity / assertion key). */
   static generate() {
-    // Derive a random seed, then reuse fromSeed so `seed` is recoverable for storage.
     const seed = new Uint8Array(32);
     globalThis.crypto.getRandomValues(seed);
-    const kp = KeyPair.fromSeed(seed);
-    kp.seed = seed;
-    return kp;
+    return KeyPair.fromSeed(seed);
+  }
+
+  /** The raw 32-byte seed — an explicit read, for persisting the key. A
+   *  copy: mutating it does not touch the key. */
+  get seed() {
+    return this.#seed ? new Uint8Array(this.#seed) : undefined;
+  }
+
+  toJSON() {
+    return { publicKeyB64: this.publicKeyB64 };
+  }
+  [Symbol.for("nodejs.util.inspect.custom")]() {
+    return `KeyPair { publicKeyB64: '${this.publicKeyB64}' }`;
   }
 
   /** Raw Ed25519 signature (Uint8Array) over `message` (string or bytes). */

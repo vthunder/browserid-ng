@@ -269,3 +269,15 @@ test("a managed identity mints per audience and caches per audience", async () =
   await agent.assertionFor(aud2);
   assert.equal(state.mints.length, 2, "no re-mint while both certs are fresh");
 });
+
+
+// ---- crypto parity with browserid-core (Rust) ------------------------------
+
+test("signing is byte-identical to the Rust core (known-answer vector)", () => {
+  // Same seed (1..32) + message, cross-checked against ed25519-dalek in
+  // browserid-core/src/keys.rs. Both are RFC 8032; this locks in the encoding.
+  const kp = KeyPair.fromSeed(new Uint8Array(32).map((_, i) => i + 1));
+  assert.equal(kp.publicKeyB64, "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ");
+  assert.equal(kp.sign("aGVhZGVy.cGF5bG9hZA"),
+    "XXPvOzV0JK3iY3oG_fHIaieC3Kd9sstOtCOl8jmQIW9p8f_tDHPXaHJ-Qab_HvHOAwR706iOUcxzrl0YMDEpAw");
+});

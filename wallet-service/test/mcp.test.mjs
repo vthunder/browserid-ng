@@ -19,7 +19,7 @@ const EMAIL = "dan@example.com";
 let service, accessToken;
 
 before(() => new Promise((resolve) => {
-  service = createWalletService({ verifyLogin: async () => ({ ok: true, email: EMAIL }) });
+  service = createWalletService({ verifyLogin: async () => ({ ok: true, email: EMAIL, grantee: EMAIL, scopes: ["login"], statusRefs: [] }) });
   service.server.listen(PORT, async () => {
     accessToken = await obtainToken();
     resolve();

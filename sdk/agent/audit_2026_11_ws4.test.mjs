@@ -5,15 +5,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inspect } from "node:util";
-import { mkdtemp, writeFile, stat, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import { requestProvision, DeviceAgent } from "./src/device.mjs";
-import { Agent } from "./src/agent.mjs";
-import { Credential } from "./src/credential.mjs";
 import { KeyPair, publicKeyField, decodeJwtClaims, b64u } from "./src/crypto.mjs";
-import { nowS, ASSERTION_VALIDITY_S, parseCert } from "./src/protocol.mjs";
+import { nowS, ASSERTION_VALIDITY_S } from "./src/protocol.mjs";
 
 const HDR = { alg: "EdDSA", typ: "JWT" };
 const BROKER = "https://broker.test";
@@ -78,14 +73,14 @@ async function provisioned(opts) {
 // (the raw seed), and `KeyPair.seed` is public too, so `console.log(agent)`,
 // util.inspect, or JSON.stringify of the agent prints the device key.
 // ---------------------------------------------------------------------------
-test("W4-42: inspecting a DeviceAgent does not print the device key seed", { skip: "AUDIT-2026-11 W4-42: fails today" }, async () => {
+test("W4-42: inspecting a DeviceAgent does not print the device key seed", async () => {
   const { credential, http } = await provisioned();
   const agent = new DeviceAgent(credential, { http });
   const dump = inspect(agent, { depth: 5 }) + JSON.stringify(agent);
   assert.ok(!dump.includes(credential.device_key), "device key seed leaked through inspect/JSON");
 });
 
-test("W4-42: inspecting a KeyPair does not print its seed", { skip: "AUDIT-2026-11 W4-42: fails today" }, () => {
+test("W4-42: inspecting a KeyPair does not print its seed", () => {
   const kp = KeyPair.generate();
   // The seed is a public Uint8Array property: inspect prints its bytes.
   assert.ok(!/seed/.test(inspect(kp)), "seed leaked through inspect");
@@ -100,7 +95,7 @@ test("W4-42: inspecting a KeyPair does not print its seed", { skip: "AUDIT-2026-
 // process and the request is unusable at the real IdP (it is pinned to the
 // wrong `domain`), so this is defence in depth, not an escalation.
 // ---------------------------------------------------------------------------
-test("W4-41: the agent mints only at the IdP that signed its device cert", { skip: "AUDIT-2026-11 W4-41: fails today" }, async () => {
+test("W4-41: the agent mints only at the IdP that signed its device cert", async () => {
   const { credential, http, state } = await provisioned({
     pollCredential: (dc) => ({ device_cert: dc, idp: EVIL, identity: EMAIL }),
   });
@@ -111,7 +106,7 @@ test("W4-41: the agent mints only at the IdP that signed its device cert", { ski
   assert.deepEqual(state.mintUrls, [], "no mint request may reach a host other than the cert's iss");
 });
 
-test("W4-41: a poll-supplied access_mint on another host or a cleartext scheme is refused", { skip: "AUDIT-2026-11 W4-41: fails today" }, async () => {
+test("W4-41: a poll-supplied access_mint on another host or a cleartext scheme is refused", async () => {
   for (const access_mint of [`${EVIL}/access/mint`, "http://idp.test/access/mint"]) {
     const { credential, http, state } = await provisioned({
       pollCredential: (dc) => ({ device_cert: dc, idp: IDP, identity: EMAIL, access_mint }),
@@ -178,54 +173,3 @@ test("W4-40 (pin): the assertion names the audience exactly, expires in <=5 min,
   assert.equal(c.typ, undefined, "assertion has no claim-level typ (spec §4)");
 });
 
-// ---------------------------------------------------------------------------
-// Pinned: the legacy `Agent` identity file is written 0600 and re-tightened
-// when it already existed with looser perms (July L10 class, re-verified).
-// ---------------------------------------------------------------------------
-function legacyCredential() {
-  const prov = KeyPair.generate();
-  const pcert = prov.jws(HDR, { typ: "browserid-provisioning-cert-v1", constraint: { names: ["bot"] } });
-  return new Credential({ secret_key: b64u(prov.seed), delegation: `ucert~${pcert}`, broker: BROKER, idp: IDP });
-}
-function legacyAgent(http) {
-  const key = KeyPair.generate();
-  const cert = KeyPair.generate().jws(HDR, {
-    typ: "browserid-agent-cert-v1", iss: IDP_DOMAIN, exp: nowS() + 99999,
-    principal: { email: "bot@idp.test" }, "public-key": publicKeyField(key.publicKeyB64),
-  });
-  return { key, agent: new Agent(legacyCredential(), { email: "bot@idp.test", cert: parseCert(cert), keypair: key, http }) };
-}
-
-test("legacy Agent.save writes the key file 0600 and tightens a pre-existing 0644 file", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "ws4-"));
-  const path = join(dir, "identity.json");
-  await writeFile(path, "{}", { mode: 0o644 });
-  const { agent, key } = legacyAgent(fetch);
-  await agent.save(path);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
-  const stored = JSON.parse(await readFile(path, "utf8"));
-  assert.equal(stored.identities[0].key_seed, b64u(key.seed), "seed stored in cleartext (by design, L10)");
-});
-
-// ---------------------------------------------------------------------------
-// W4-44 (drift, pinned) — the exported legacy `Agent` warrant lane speaks a
-// protocol the registrar does not: it posts a provisioning-key-signed
-// `request_bundle` where `/warrant/request` expects `device_cert`+`identity`
-// +`grants`, and on poll it reads `warrants` where the server sends `grants`,
-// so an approval is silently stored as nothing. Dead code that still keeps a
-// cleartext `secret_key` credential format alive; recommend deleting it.
-// ---------------------------------------------------------------------------
-test("W4-44 (pin): legacy Agent posts request_bundle and drops the server's `grants`", async () => {
-  const seen = {};
-  const http = async (url, init) => {
-    const body = JSON.parse(init.body);
-    if (url === `${BROKER}/warrant/request`) { seen.request = body; return json({ success: true, code: "w", verification_uri: `${BROKER}/v`, interval: 0 }); }
-    if (url === `${BROKER}/warrant/poll`) return json({ success: true, status: "approved", grants: [{ audience: AUD, warrant: "a.b.c~d.e.f" }] });
-    throw new Error(url);
-  };
-  const { agent } = legacyAgent(http);
-  const { approved } = await agent.requestWarrant(AUD, ["post"]);
-  await approved;
-  assert.ok(seen.request.request_bundle && !seen.request.device_cert, "legacy wire shape");
-  assert.deepEqual(agent.warrantedAudiences(), [], "the approval's grants are ignored");
-});

@@ -18,7 +18,7 @@ DNSSEC-rooted hosted verifier (`POST /verify`) and `POST /status/check`
 from browserid_mcp_auth import McpAuth, McpAuthError
 
 auth = McpAuth(
-    resource="https://mcp.example.com",           # this server (OAuth resource + audience)
+    resource="https://mcp.example.com",           # this server (OAuth resource + audience), byte-exact: no trailing slash
     scopes_for_tool={"create_issue": ["issues:create"]},
 )
 
@@ -32,6 +32,9 @@ auth = McpAuth(
 # 3. Gate a tool call:
 ctx = auth.require_warrant(authorization_header, "create_issue")
 # ctx.grantor (human), ctx.grantee (agent), ctx.holder, ctx.issuer, ctx.scopes
+# ctx.scopes carries the warrant's entries verbatim: bare names, or object
+# entries with parameters ({"scope": "pay:usd", "cap": {...}}); an object entry
+# never satisfies a string tool scope — read its parameters yourself.
 ```
 
 On failure `handle_token` / `require_warrant` raise `McpAuthError` with
@@ -50,7 +53,7 @@ prefer `httpx`/`requests` over the stdlib `urllib` default.
 ## API
 
 `McpAuth(resource, broker="https://browserid.me", scopes_for_tool=None,
-token_ttl_s=3600, status_cache_s=60, accepted_fallbacks=None, store=None,
+token_ttl_s=3600 (capped further at the verifier's expires_at when returned), status_cache_s=60, accepted_fallbacks=None, store=None,
 http_post=None)`; `handle_token(params)`, `authenticate(header)`,
 `require_warrant(header, tool_or_scopes)`, `protected_resource_metadata()`,
 `authorization_server_metadata()`, `challenge()`. MPL-2.0.

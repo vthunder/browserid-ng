@@ -23,48 +23,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createMcpAuth, granteeCovers, JWT_BEARER_GRANT, McpAuthError } from "../index.mjs";
+import { createMcpAuth, granteeCovers, assertPolicyBinding, JWT_BEARER_GRANT, McpAuthError } from "../index.mjs";
 
 const VECTORS = JSON.parse(readFileSync(new URL("../../../test-vectors/conformance-2026-11.json", import.meta.url), "utf8"));
 const HOSTED = JSON.parse(readFileSync(new URL("../../../test-vectors/conformance-2026-11.hosted.json", import.meta.url), "utf8")).responses;
 
 const EXPECTED_FAIL = {
-  // AUDIT-2026-11 W2-1: createMcpAuth strips trailing slashes from `resource` (index.mjs:159), so a
-  // warrant audience ending in `/` is sent to the verifier altered. AUDIT-2026-11 D7: scope entries
-  // arrive flattened and the bearer carries strings only.
-  "P-OK-07": "W2-1,D7",
-  "P-OK-08": "D7",
-  "A-OK-08": "D7",
-  // AUDIT-2026-11 W6-1 (inherited from the hosted verifier).
-  "P-OK-12": "W6-1",
-  // AUDIT-2026-11 D16 (inherited): no lower bound on iat.
-  "P-TIME-05": "D16",
-  "P-TIME-06": "D16",
-  "P-TIME-07": "D16",
-  "P-TIME-08": "D16",
-  "P-TIME-09": "D16",
-  "A-REJ-21": "D16",
   // AUDIT-2026-11 S3 (inherited): v1 records still verify/validate.
   "P-TYP-01": "S3",
   "P-TYP-02": "S3",
   "A-REJ-13": "S3",
-  // AUDIT-2026-11 W6-4 (inherited).
-  "P-STAT-06": "W6-4",
-  // AUDIT-2026-11 S5 (inherited).
-  "P-CONS-01": "S5",
-  "P-CONS-06": "S5",
-  // AUDIT-2026-11 D5 (= W2-2): admission ignores binding entries — a requester entry, a connection
-  // entry, or a holder matcher the login does not satisfy still admits (index.mjs:1040, :1051).
-  "A-REJ-01": "D5",
-  "A-REJ-02": "D5",
-  "A-REJ-03": "D5",
-  "A-REJ-04": "D5",
-  "A-REJ-05": "D5",
-  // AUDIT-2026-11 D17 (= W2-3): granteeCovers("*") admits any string containing "@" and splitEmail
-  // splits on the LAST "@", so malformed subjects (a@b@c, @x) are covered (index.mjs:71-94).
-  "A-REJ-07": "D17",
-  "A-REJ-08": "D17",
-  "A-REJ-09": "D17",
+  // Decision Q15 (a) (audit 2026-11 D5): a held policy record admits only with the one binding
+  // {holder, "*"}; narrowed holder matchers are refused rather than evaluated until a wallet
+  // authors them (Q15 (b)). These two vectors expect the matcher to be evaluated.
+  "A-OK-02": "Q15a",
+  "A-OK-10": "Q15a",
 };
 
 const BROKER = "https://broker.test";
@@ -111,6 +84,10 @@ async function runA(v, diverged) {
   }
   if (v.subject && !granteeCovers(r.grantee, v.subject.identity)) {
     return { ok: false, reason: `subject ${v.subject.identity} not covered by grantee ${r.grantee}` };
+  }
+  if (v.subject) {
+    // Admission of a login subject under a held policy record (§6.4 step 3, Q15 (a)).
+    try { assertPolicyBinding(r.binding); } catch (e) { return { ok: false, reason: e.message }; }
   }
   return { ok: true, email: r.grantor, grantee: r.grantee, holder: v.subject?.holder ?? "", scopes: r.scopes };
 }

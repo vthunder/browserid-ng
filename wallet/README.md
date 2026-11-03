@@ -72,9 +72,12 @@ node e2e.mjs
 
 - Localhost bridge: 127.0.0.1 bind + native pairing confirm + bearer token,
   bound to the browser origin it was paired under. Browser callers are
-  allowlisted (the extension's `chrome-extension://` origin plus loopback
-  pages for the e2e harness); any other web origin is 403'd before the
-  pairing dialog can fire, and CORS reflects the specific caller — never `*`.
+  allowlisted: the extension's `chrome-extension://` origin (pinned to the
+  ids in `WALLET_EXTENSION_IDS=<id,id>` / `RELEASE_EXTENSION_IDS` in
+  `src/server.js` when set; any 32-letter id for unpacked dev builds) and,
+  ONLY under `WALLET_TEST=1`, loopback pages for the e2e harness. Any other
+  web origin — a local dev server included — is 403'd before the pairing
+  dialog can fire, and CORS reflects the specific caller — never `*`.
   Native local processes send no Origin and are gated by the pairing and
   per-login dialogs, which name the caller (and the identity in play) so the
   human isn't approving blind. Remaining hardening (per-caller token model,

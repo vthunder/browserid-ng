@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createVerifier } from "@browserid-ng/verify";
 import {
-  PORT, WALLET_ORIGIN, BROKER, VERIFIER_URL, DATABASE_PATH, KEK, PRODUCTION,
+  PORT, WALLET_ORIGIN, BROKER, VERIFIER_URL, DATABASE_PATH, KEK, PRODUCTION, TRUSTED_PROXIES,
 } from "./config.mjs";
 import { openDb } from "./db.mjs";
 import { EnvKeyWrapper } from "./custody.mjs";
@@ -21,18 +21,34 @@ import {
   protectedResourceMetadata, authorizationServerMetadata, registerClient, getClient,
   checkAuthorizeRequest, approveAuthorization, tokenGrant, authenticateBearer,
   wwwAuthenticate, signSession, verifySession, sessionCookie,
+  revokeToken, disconnectAll, listConnections,
 } from "./oauth.mjs";
 import { createWalletMcpServer } from "./mcp.mjs";
-import { authorizePage, landingPage } from "./pages.mjs";
+import { authorizePage, landingPage, accountPage } from "./pages.mjs";
 
-export function createWalletService({ verifyLogin } = {}) {
+export function createWalletService({ verifyLogin, checkStatus } = {}) {
   const db = openDb(DATABASE_PATH);
   const store = new WalletStore(db, new EnvKeyWrapper(KEK));
   const audit = new Audit(db);
   const verifier = createVerifier({ verifierUrl: VERIFIER_URL });
+  // The sign-in's revocation re-check (spec §6.4; audit 2026-11 D13): run
+  // before a session approves a connection and at every token refresh.
+  // Fail-closed by contract: anything but {ok:true, revoked:false} refuses.
+  const recheck = checkStatus || ((refs) => verifier.checkStatus(refs));
   // Injectable for tests; production verifies at the broker's hosted verifier.
-  // Human sign-in only: the default verifier rejects subject=agent.
+  // Human sign-in only (decision Q16 (a), audit 2026-11 W4-22): the verifier
+  // cannot tell humans from agents, so /oauth/login itself requires the
+  // presentation to be self-asserted (grantee == email) AND to carry the
+  // `login` scope. A delegated presentation never opens the human's tenant.
   const verify = verifyLogin || ((presentation) => verifier.verify(presentation, WALLET_ORIGIN));
+  const hasLoginScope = (scopes) =>
+    Array.isArray(scopes) &&
+    scopes.some((s) => s === "login" || (s && typeof s === "object" && s.scope === "login"));
+  const humanLoginRefusal = (r) => {
+    if (typeof r.grantee !== "string" || r.grantee !== r.email) return "delegated presentation: this wallet signs in the account holder only";
+    if (!hasLoginScope(r.scopes)) return "presentation does not carry the login scope";
+    return null;
+  };
 
   // -- tiny fixed-window rate limiter (per key per route class) --------------
   const buckets = new Map(); // key -> { windowStart, count }
@@ -73,8 +89,16 @@ export function createWalletService({ verifyLogin } = {}) {
       req.on("end", () => resolve(d));
       req.on("error", reject);
     });
-  const clientIp = (req) =>
-    (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket.remoteAddress || "?";
+  // The client address for the limiters and the audit log: the hop the
+  // TRUSTED_PROXIES-th proxy appended (W4-23), never a client-written hop.
+  // With 0 trusted proxies, or fewer hops than proxies, it is the socket.
+  const clientIp = (req) => {
+    const socket = req.socket.remoteAddress || "?";
+    if (TRUSTED_PROXIES === 0) return socket;
+    const hops = String(req.headers["x-forwarded-for"] || "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (hops.length < TRUSTED_PROXIES) return socket;
+    return hops[hops.length - TRUSTED_PROXIES] || socket;
+  };
   // Browser-facing state-changing endpoints: same-origin only (CSRF).
   const badOrigin = (req) => req.headers.origin && req.headers.origin !== WALLET_ORIGIN;
 
@@ -115,9 +139,14 @@ export function createWalletService({ verifyLogin } = {}) {
         try { ({ presentation } = JSON.parse(await readBody(req))); } catch {}
         const r = await verify(presentation);
         if (!r.ok) return json(res, 401, { reason: r.reason });
+        const refusal = humanLoginRefusal(r);
+        if (refusal) {
+          audit.log(r.email, "account.login_refused", { ip, detail: refusal });
+          return json(res, 401, { reason: refusal });
+        }
         store.ensureAccount(r.email);
         audit.log(r.email, "account.login", { ip });
-        return json(res, 200, { email: r.email }, { "set-cookie": sessionCookie(signSession(r.email)) });
+        return json(res, 200, { email: r.email }, { "set-cookie": sessionCookie(signSession(r.email, r.statusRefs)) });
       }
 
       if (req.method === "GET" && path === "/oauth/me") {
@@ -125,13 +154,25 @@ export function createWalletService({ verifyLogin } = {}) {
         return json(res, 200, s ? { email: s.email } : {});
       }
 
+      // A session may act (approve a connection, disconnect) only while the
+      // sign-in behind it is provably unrevoked.
+      const liveSession = async () => {
+        const s = verifySession(req.headers.cookie);
+        if (!s) return { error: "not signed in", status: 401 };
+        const st = await recheck(Array.isArray(s.refs) ? s.refs : []);
+        if (!st || st.ok !== true) return { error: "sign-in status unavailable (fail-closed)", status: 503 };
+        if (st.revoked === true) return { error: "sign-in revoked; sign in again", status: 401 };
+        return { session: s };
+      };
+
       if (req.method === "POST" && path === "/oauth/approve") {
         if (badOrigin(req)) return json(res, 403, { error: "cross-origin" });
-        const s = verifySession(req.headers.cookie);
-        if (!s) return json(res, 401, { error: "not signed in" });
+        const live = await liveSession();
+        if (!live.session) return json(res, live.status, { error: live.error });
+        const s = live.session;
         let params;
         try { params = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: "bad request" }); }
-        const out = approveAuthorization(db, s.email, params);
+        const out = approveAuthorization(db, s.email, params, s.refs);
         if (!out.ok) return json(res, out.status ?? 400, { error: out.error });
         audit.log(s.email, "oauth.connect", { clientId: params.client_id, ip });
         return json(res, 200, { redirect: out.redirect });
@@ -140,11 +181,37 @@ export function createWalletService({ verifyLogin } = {}) {
       if (req.method === "POST" && path === "/oauth/token") {
         if (limited(`token:${ip}`, 60)) return json(res, 429, { error: "rate_limited" });
         const form = Object.fromEntries(new URLSearchParams(await readBody(req)));
-        const out = tokenGrant(db, form);
+        const out = await tokenGrant(db, form, { checkStatus: recheck });
         if (out.error) return json(res, 400, out);
         const { account_email, ...body } = out;
         audit.log(account_email, "oauth.token", { clientId: form.client_id, ip, detail: form.grant_type });
         return json(res, 200, body);
+      }
+
+      // RFC 7009: a client (or the human holding a token) ends the connection.
+      if (req.method === "POST" && path === "/oauth/revoke") {
+        if (limited(`revoke:${ip}`, 60)) return json(res, 429, { error: "rate_limited" });
+        const form = Object.fromEntries(new URLSearchParams(await readBody(req)));
+        const out = revokeToken(db, form);
+        if (out.error) return json(res, 400, out);
+        if (out.account_email) audit.log(out.account_email, "oauth.revoke", { clientId: form.client_id, ip, detail: `${out.revoked} tokens` });
+        return json(res, 200, {});
+      }
+
+      // The tenant's own lever: see connected clients, disconnect them all.
+      if (req.method === "GET" && path === "/account") return html(res, 200, accountPage());
+      if (req.method === "GET" && path === "/oauth/connections") {
+        const s = verifySession(req.headers.cookie);
+        if (!s) return json(res, 401, { error: "not signed in" });
+        return json(res, 200, { email: s.email, connections: listConnections(db, s.email) });
+      }
+      if (req.method === "POST" && path === "/oauth/disconnect") {
+        if (badOrigin(req)) return json(res, 403, { error: "cross-origin" });
+        const live = await liveSession();
+        if (!live.session) return json(res, live.status, { error: live.error });
+        const out = disconnectAll(db, live.session.email);
+        audit.log(live.session.email, "oauth.disconnect_all", { ip, detail: `${out.revoked} tokens` });
+        return json(res, 200, { ok: true, revoked: out.revoked });
       }
 
       // ---- the MCP endpoint (RS) ----

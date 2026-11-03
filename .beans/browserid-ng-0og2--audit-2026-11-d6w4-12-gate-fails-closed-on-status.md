@@ -1,11 +1,11 @@
 ---
 # browserid-ng-0og2
 title: '[Audit 2026-11] D6/W4-12: gate fails closed on status (single-server validates; unreachable is not live; 5xx is temporarily_unavailable)'
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-11-02T22:43:20Z
-updated_at: 2026-11-02T22:43:20Z
+updated_at: 2026-11-03T08:15:17Z
 parent: browserid-ng-ag1l
 ---
 
@@ -21,3 +21,14 @@ Acceptance:
 - delete the D6 rows (A-REJ-13, -20..-31 in policy mode) from EXPECTED_FAIL in sdk/gate/test/conformance-vectors.test.mjs
 
 Reports: ws4 §1.3 and §2 (W4-12), ws2 §2. Ledger: docs/security-audit-2026-11.md. Decisions: docs/security-audit-2026-11-decisions.md.
+
+
+## Summary of Changes
+
+Decision Q14 (a): the gate fails closed on any status failure; last-known rows serve only the console diff; a 5xx never deletes a signed row.
+
+- sdk/gate/src/mount.mjs (landed with bean cjh3): the single-server default `entitlementFor` revalidates every covering policy row at `/validate-record` before admitting a jwt-bearer subject (exp checked, status fail-closed, binding asserted; positive results cached ≤ statusCacheS). A broker-revoked or expired row stops admitting.
+- sdk/gate/src/gateway.mjs: liveness split into two readers. `rowVerdict(row)` returns `{ok, definitive}`: an unreachable validator or a 5xx is non-definitive (last-known `ok` for the console, `false` when none). `isRowLive` (enforcement) is live only on a definitive OK — the `cached?.ok ?? true` fail-open is gone, and "no mount to validate with" is not live. `grantsDiff` deletes a signed row only on a definitive invalidity, never during an outage.
+- sdk/mcp-auth/index.mjs: `validateRecord` (and `redeemPresentation`'s `/verify` call) classes HTTP 5xx and 429 as `temporarily_unavailable` (503) before the generic non-2xx → `invalid_grant` branch, so `conjoinPolicy`'s 503 rethrow fires and the gate's diff keeps the row.
+
+Tests: un-skipped the three D6 tests in sdk/gate/test/audit_2026_11_ws4.test.mjs (revoked row, expired row, unreachable validator) and W4-12 in sdk/mcp-auth/test/audit_2026_11_ws4.test.mjs; the "today an unreachable validator ADMITS" pin was deleted and the "503 reads as invalid_grant" pin flipped. The D6 vectors (A-REJ-20, A-REJ-22..31) were un-listed from the gate runner in the cjh3 commit; A-REJ-13 / A-REJ-21 remain listed as the inherited hosted S3 / D16.

@@ -16,7 +16,7 @@ const fs = require('fs');
 const { pathToFileURL } = require('url');
 const store = require('./store');
 const broker = require('./broker');
-const { generateKey, jws, decodeJws, nowS } = require('./crypto');
+const { generateKey, jws, verifyJws, decodeJws, nowS } = require('./crypto');
 
 // Scope names include SBO dimensions (`path:/a/**`, `as:user@host`).
 const SCOPE_RE = /^[a-z0-9_:.\-\/*@+]{1,128}$/;
@@ -59,6 +59,37 @@ function scopeEntryValid(sc) {
 
 function scopeName(e) { return typeof e === 'string' ? e : (e && e.scope); }
 function scopeMode(e) { return (e && typeof e === 'object' && e.mode) || 'auto'; }
+
+// The native consent card renders scope entries through the wallet-owned
+// label table (BrowserIDScopeLabels, shared with the web dialog) — never
+// through requester prose — and says what each entry binds (audit 2026-11
+// W4-20; spec §5 / §7.5): an auto-mode signing scope is STANDING authority
+// (no further prompts), a prompt-mode one asks each time; parameters (caps,
+// counterparties, durations) are part of the label.
+let scopeLabels = null;
+function loadScopeLabels() {
+  if (scopeLabels) return scopeLabels;
+  try {
+    const dir = process.env.WALLET_SBO_DIR
+      || path.join(__dirname, '..', '..', 'browserid-broker', 'static', 'common', 'js');
+    scopeLabels = require(path.join(dir, 'scope-labels.js'));
+  } catch {
+    // Fallback: the raw name with parameters rendered as JSON.
+    scopeLabels = { label: (e) => (typeof e === 'string' ? e : `${e.scope} ${JSON.stringify({ ...e, scope: undefined })}`) };
+  }
+  return scopeLabels;
+}
+function describeEntry(e) {
+  const name = scopeName(e);
+  const text = String(loadScopeLabels().label(e) || name).replace(/[\u0000-\u001f\u007f‎‏‪-‮⁦-⁩]/g, '').slice(0, 160);
+  let mode = '';
+  if (typeof name === 'string' && name.startsWith('sign:')) {
+    mode = scopeMode(e) === 'prompt'
+      ? ' [prompt mode: asks you each time]'
+      : ' [auto mode: standing authority — signed without asking again until revoked]';
+  }
+  return `${name} — ${text}${mode}`;
+}
 function matcherCovers(matcher, holder) {
   if (!matcher || !holder) return false;
   if (matcher === '*') return true;
@@ -117,7 +148,7 @@ async function warrant({ origin, args, caller, approve }) {
 
   const ok = process.env.WALLET_AUTO_APPROVE === '1' || (await approve({
     kind: 'warrant', origin, email: s.identity, caller,
-    lines: grants.map((g) => `${g.audience}: ${g.scopes.map(scopeName).join(', ')}`),
+    lines: grants.flatMap((g) => [`${g.audience}:`, ...g.scopes.map((e) => `  • ${describeEntry(e)}`)]),
   }));
   if (!ok) return { error: 'denied' };
 
@@ -162,6 +193,11 @@ function coveringRecord(origin, audience, action) {
   const stored = storedGrant(origin, audience);
   const refuse = (error, message) => ({ error, message });
   if (!stored) return refuse('no_grant', `no signing grant for ${origin} → ${audience}`);
+  // Defence in depth (audit 2026-11 D12): the stored record must carry THIS
+  // wallet's config-key signature before any of its claims are believed.
+  if (!s.configKey || !s.configKey.x || !verifyJws(stored, s.configKey.x)) {
+    return refuse('no_grant', 'stored record is not signed by this wallet\'s config key');
+  }
   let c;
   try { c = decodeJws(stored); } catch { c = null; }
   if (!c || c.typ !== 'browserid-warrant-v2') return refuse('no_grant', 'stored record is malformed');
@@ -253,10 +289,13 @@ async function signature({ origin, args, caller, approve }) {
   }
 
   if (rec.mode === 'prompt') {
-    const summary = { action, path: envelope.path, id: envelope.id };
-    if (envelope.payload != null) {
-      const body = String(envelope.payload);
-      summary.payload = body.length > 400 ? body.slice(0, 400) + '…' : body;
+    // Every envelope field is signed (signingBytes), so every field is shown
+    // (audit 2026-11 W4-20); long values are truncated for the card only.
+    const summary = { action };
+    for (const [k, v] of Object.entries(envelope)) {
+      if (k === 'action') continue;
+      const str = typeof v === 'string' ? v : JSON.stringify(v);
+      summary[k] = str != null && str.length > 400 ? str.slice(0, 400) + '…' : v;
     }
     const ok = process.env.WALLET_AUTO_APPROVE === '1' || (await approve({
       kind: 'signature', origin, email: s.identity, caller,
