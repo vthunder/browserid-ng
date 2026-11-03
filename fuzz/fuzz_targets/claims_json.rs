@@ -79,11 +79,6 @@ fuzz_target!(|input: Input| {
                 let _ = w.verify(&k.config.public_key());
                 let bs = w.claims().binding_set();
                 let _ = (bs.has_holder(), bs.has_connection(), bs.has_requester(), bs.holder_matcher(), bs.requester_origin(), bs.connection());
-                let wc = w.claims();
-                // AUDIT-2026-11 W3-1 guard (`exp - iat` unchecked in Constraints::check):
-                // the fixture certs carry no constraints, so the bundle path is safe;
-                // keep the guard documented for when constraints are fuzzed too.
-                let _ = wc.exp.checked_sub(wc.iat);
                 let p = AccessPresentation { access_cert: fx::access_cert(), assertion: fx::assertion(), warrant: w.clone(), config_cert: fx::config_cert() };
                 let pk = k.idp.public_key();
                 let _ = p.verify_at(AUD, AT, |_| Ok(pk.clone()));
@@ -96,11 +91,9 @@ fuzz_target!(|input: Input| {
             if let Ok(t) = StatusListToken::parse(&s) {
                 let _ = t.verify(&k.idp.public_key(), fx::STATUS);
                 let _ = t.is_revoked(0);
-                let c = t.claims();
-                // AUDIT-2026-11 W3-2 guard: `iat + ttl + grace` unchecked.
-                if c.iat.checked_add(c.ttl).and_then(|x| x.checked_add(3600)).is_some() {
-                    let _ = t.is_fresh_capped(60, 3600);
-                }
+                // Freshness arithmetic is checked (W3-2 fixed, bean gdo0).
+                let _ = t.is_fresh_capped(60, 3600);
+                let _ = t.is_fresh_capped_at(AT, 60, 3600);
             }
         }
     }

@@ -167,7 +167,6 @@ fn fixture_bundle_verifies() {
 /// `routes/hosted_idp.rs` `/idp/access_cert`) gate on this predicate, so it
 /// is the mint's whole identity check.
 #[test]
-#[ignore] // AUDIT-2026-11 D1: fails today — `identity_matches` widens every base identity to its `+tag` subaddresses regardless of purpose (device.rs:96-111)
 fn d1_authentication_cert_for_base_identity_does_not_authorize_subaddress() {
     let f = Fx::new();
     let auth = f.device_cert(Purpose::Authentication, |_| {});
@@ -214,7 +213,6 @@ fn subaddress_never_widens_upward_or_sideways() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // AUDIT-2026-11 S6: fails today — no `iat <= exp` check on any object (device.rs verify_at)
 fn s6_warrant_with_iat_after_exp_rejects() {
     let f = Fx::new();
     let mut p = f.bundle();
@@ -223,7 +221,6 @@ fn s6_warrant_with_iat_after_exp_rejects() {
 }
 
 #[test]
-#[ignore] // AUDIT-2026-11 S6: fails today — no `iat <= now + skew` check (device.rs verify_at)
 fn s6_access_cert_issued_in_the_future_rejects() {
     let f = Fx::new();
     let mut p = f.bundle();
@@ -235,7 +232,6 @@ fn s6_access_cert_issued_in_the_future_rejects() {
 }
 
 #[test]
-#[ignore] // AUDIT-2026-11 S6: fails today — admission `validate` has no iat check either (admission.rs)
 fn s6_admission_record_issued_in_the_future_rejects() {
     let f = Fx::new();
     let t = now();
@@ -256,7 +252,6 @@ fn s6_admission_record_issued_in_the_future_rejects() {
 /// `max-ttl` is computed as `exp - iat`; with a future `iat` the difference
 /// goes negative and the constraint is vacuous (D16).
 #[test]
-#[ignore] // AUDIT-2026-11 D16: fails today — `exp - iat` is unchecked for sign (device.rs Constraints::check)
 fn d16_future_iat_defeats_max_ttl() {
     let f = Fx::new();
     let p = AccessPresentation {
@@ -300,7 +295,6 @@ fn max_ttl_bounds_an_honestly_dated_warrant() {
 }
 
 #[test]
-#[ignore] // AUDIT-2026-11 D16: fails today — `is_fresh_capped` bounds `ttl` but not `iat` (status.rs:1015)
 fn d16_status_list_with_future_iat_is_not_fresh() {
     let k = key(9);
     let list = browserid_core::StatusList::from_revoked([], 8);
@@ -547,13 +541,10 @@ fn i5_grantee_join_uses_spec_comparison() {
     assert!(f.verify(&p).is_err(), "a subaddress is a different grantee");
 }
 
-/// The config-cert `identities` ↔ grantor match goes through
-/// `identity_matches`, whose exact and subaddress branches compare the domain
-/// BYTE-exact (device.rs:73, :107), not under §5. Stricter than spec (fail-
-/// closed), so no security impact; recorded as W6-1. Issuers emit lowercase
-/// A-labels, so it is unreachable in practice.
+/// The config-cert `identities` ↔ grantor match (`authorizes_grantor`)
+/// compares the domain under §5 in its exact and subaddress branches too
+/// (W6-1, fixed in bean j84h).
 #[test]
-#[ignore] // AUDIT-2026-11 W6-1: fails today — `identity_matches` exact/subaddress branches skip §5 domain normalization
 fn w6_1_grantor_match_uses_spec_domain_comparison() {
     let f = Fx::new();
     let mut p = f.bundle();
@@ -598,11 +589,8 @@ fn alg_header_is_pinned_to_eddsa_on_typed_objects() {
     assert!(forged.verify(&f.config.public_key()).is_err());
 }
 
-/// W6-2: `Assertion::verify` does not read the JOSE header at all — it goes
-/// straight to Ed25519 over `header.payload`. A forged header therefore does
-/// NOT bypass anything (the signature must still verify under the access
-/// key), but the object lacks the alg pin every other object has. Passes
-/// today; recorded for the typed-signing consistency item.
+/// W6-2: a forged header never bypasses the Ed25519 check — the signature
+/// must still verify under the access key.
 #[test]
 fn w6_2_assertion_without_a_valid_ed25519_signature_rejects_regardless_of_header() {
     let f = Fx::new();
@@ -613,6 +601,34 @@ fn w6_2_assertion_without_a_valid_ed25519_signature_rejects_regardless_of_header
     assert!(Assertion::parse(&unsigned).and_then(|a| a.verify(&f.access.public_key())).is_err());
     let wrong_key = raw_jws(r#"{"alg":"EdDSA","typ":"JWT"}"#, &claims, &f.config);
     assert!(Assertion::parse(&wrong_key).unwrap().verify(&f.access.public_key()).is_err());
+}
+
+/// W6-2 (fixed in bean hgxv): `Assertion::verify` pins `alg == EdDSA` like
+/// every other typed object — an assertion re-signed under a tampered
+/// header, with a signature that IS valid over the tampered bytes under the
+/// right key, still rejects; the honest header verifies.
+#[test]
+fn w6_2_assertion_alg_header_is_pinned_to_eddsa() {
+    let f = Fx::new();
+    let claims = json!({"aud": AUD, "exp": AT + 300});
+    for header in [r#"{"alg":"none","typ":"JWT"}"#, r#"{"alg":"HS256","typ":"JWT"}"#, r#"{"typ":"JWT"}"#, r#"{"alg":"eddsa"}"#] {
+        let forged = Assertion::parse(&raw_jws(header, &claims, &f.access)).unwrap();
+        assert!(forged.verify(&f.access.public_key()).is_err(), "header {header} must be refused");
+        // And through the bundle verifier, where the header gate is the
+        // assertion's only one.
+        let mut p = f.bundle();
+        p.assertion = forged;
+        assert!(f.verify(&p).is_err());
+    }
+    let honest = Assertion::parse(&raw_jws(r#"{"alg":"EdDSA","typ":"JWT"}"#, &claims, &f.access)).unwrap();
+    assert!(honest.verify(&f.access.public_key()).is_ok());
+    // A header that is not base64 / not JSON rejects at verify, never panics.
+    let c = B64.encode(claims.to_string());
+    for h in ["!!!", &B64.encode("not json")] {
+        let msg = format!("{h}.{c}");
+        let sig = B64.encode(f.access.sign(msg.as_bytes()));
+        assert!(Assertion::parse(&format!("{msg}.{sig}")).unwrap().verify(&f.access.public_key()).is_err());
+    }
 }
 
 // ---------------------------------------------------------------------------

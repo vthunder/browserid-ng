@@ -19,10 +19,11 @@ struct Input {
     matcher: String,
 }
 
-/// Reference: spec §4.3 glob + §4.6 subaddressing as `device.rs` documents it
-/// (domain byte-exact in the exact and subaddress branches — W6-1).
+/// Reference: spec §4.3 glob + §4.6 subaddressing for a CONFIG cert, with
+/// the §5 domain comparison in every branch (W6-1 fixed, bean j84h) and the
+/// local part byte-exact.
 fn reference(pattern: &str, email: &str) -> bool {
-    if pattern == email {
+    if identity_eq(pattern, email) {
         return true;
     }
     let (Some((pl, pd)), Some((el, ed))) = (email_parts(pattern), email_parts(email)) else { return false };
@@ -32,7 +33,7 @@ fn reference(pattern: &str, email: &str) -> bool {
         if post.contains('*') { return false; }
         return el.len() >= pre.len() + post.len() && el.starts_with(pre) && el.ends_with(post);
     }
-    pd == ed && el.len() > pl.len() && el.starts_with(pl) && el.as_bytes()[pl.len()] == b'+'
+    domain_eq(pd, ed) && el.len() > pl.len() && el.starts_with(pl) && el.as_bytes()[pl.len()] == b'+'
 }
 
 fuzz_target!(|input: Input| {

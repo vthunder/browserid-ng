@@ -1,6 +1,8 @@
-//! WS8 PoC — W6-3 / W5-8: the status-list decoder inflates the whole zlib
-//! stream before the 4 MiB cap. In-process; the same `StatusList::decode` is
-//! reached unauthenticated via the broker's GET /status/proxy (WS5).
+//! WS8 PoC — W6-3 / W5-8: the status-list decoder used to inflate the whole
+//! zlib stream before the 4 MiB cap. In-process; the same `StatusList::decode`
+//! is reached unauthenticated via the broker's GET /status/proxy (WS5).
+//! Flipped with the fix (bean rn46): the same bomb now rejects with process
+//! RSS staying near the cap.
 use browserid_core::StatusList;
 use flate2::{write::ZlibEncoder, Compression};
 use std::io::Write;
@@ -17,8 +19,7 @@ fn rss_kib() -> u64 {
 }
 
 #[test]
-#[ignore] // AUDIT-2026-11 W6-3/W5-8: PoC, passes today (RSS spikes past the 4 MiB cap); flips when decode caps before inflate
-fn w6_3_poc_zlib_bomb_allocates_past_the_cap() {
+fn w6_3_poc_zlib_bomb_is_rejected_without_allocating_past_the_cap() {
     // Craft a small base64url(zlib(...)) that inflates to ~768 MiB of zeros.
     const INFLATED: usize = 768 * 1024 * 1024;
     let mut enc = ZlibEncoder::new(Vec::new(), Compression::best());
@@ -55,12 +56,15 @@ fn w6_3_poc_zlib_bomb_allocates_past_the_cap() {
 
     let peak_mib = peak.load(Ordering::Relaxed) / 1024;
     let base_mib = base / 1024;
+    let grew = peak_mib.saturating_sub(base_mib);
     println!(
-        "[W6-3] decode returned {:?}; process RSS {} MiB -> peak {} MiB (grew {} MiB on a {}-byte request, past the 4 MiB cap)",
+        "[W6-3] decode returned {:?}; process RSS {} MiB -> peak {} MiB (grew {} MiB on a {}-byte request; 4 MiB cap)",
         res.as_ref().map(|_| "Ok").map_err(|e| e.to_string()),
-        base_mib, peak_mib, peak_mib.saturating_sub(base_mib), lst.len()
+        base_mib, peak_mib, grew, lst.len()
     );
-    // The cap rejects AFTER the allocation: decode errors, but RSS already spiked.
+    // The cap now bounds the inflate itself: decode errors AND the process
+    // never grows past a few multiples of the cap (the 768 MiB inflate is
+    // never performed).
     assert!(res.is_err(), "the 4 MiB cap rejects the oversized list");
-    assert!(peak_mib - base_mib > 100, "PoC: RSS spiked well past the cap before rejection");
+    assert!(grew < 32, "RSS grew {grew} MiB past the cap on a rejected list");
 }

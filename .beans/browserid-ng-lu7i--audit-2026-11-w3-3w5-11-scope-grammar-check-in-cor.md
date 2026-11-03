@@ -1,11 +1,11 @@
 ---
 # browserid-ng-lu7i
 title: '[Audit 2026-11] W3-3/W5-11: scope grammar check in core, enforced by the registrar at filing and authoring'
-status: todo
+status: in-progress
 type: bug
 priority: high
 created_at: 2026-11-02T22:43:20Z
-updated_at: 2026-11-02T22:43:20Z
+updated_at: 2026-11-03T08:24:52Z
 parent: browserid-ng-ag1l
 ---
 
@@ -18,3 +18,11 @@ Change: one scope_grammar(&str) -> bool in browserid-core (identity.rs is the an
 Acceptance (un-ignore): browserid-registrar/src/consent/audit_2026_11_ws3_proptest.rs: grant_shape_accepts_exactly_the_scope_grammar; browserid-broker/tests/authz_matrix_test.rs: filed_scopes_must_match_the_one_scope_grammar.
 
 Reports: ws3 §3 (W3-3), ws5 §2a (W5-11). Ledger: docs/security-audit-2026-11.md. Decisions: docs/security-audit-2026-11-decisions.md.
+
+
+
+## Summary of Changes (core half — bean stays open for the registrar/broker half)
+
+- New module `browserid_core::scope` with `pub fn validate_scope_string(s: &str) -> bool` (re-exported at the crate root as `browserid_core::validate_scope_string`), plus `scope::SCOPE_MAX_BYTES` (128) and `scope::SCOPE_GRAMMAR_REGEX`. Byte-level check of `^[a-z0-9_:.\-/*@+]{1,128}$`, no regex engine, total on any input; doc comment names the callers that must use it (registrar validate_grant_shape, warrant_to_record, admission AuthoringGrantItem).
+- WS3 property `scope_grammar_reference_matches_the_spec_regex` now also pins core's predicate against the spec regex.
+- Still to do (other agent): call `browserid_core::validate_scope_string` from browserid-registrar validate_grant_shape / warrant_to_record and the broker admission authoring path, reject with 400 invalid_request, and un-ignore the two acceptance tests named above.

@@ -36,9 +36,7 @@ that reproduces gets minimised (`cargo +nightly fuzz tmin`), copied into
 `seeds/<target>/crash-<id>`, and an `#[ignore]`d regression test in the
 owning crate.
 
-Known, guarded findings: `jws_parse` and `claims_json` skip the
-`Constraints::check` / `is_fresh*` calls on inputs that would overflow
-`exp − iat` or `iat + ttl` (W3-1 / W3-2 in the WS3 report); remove the
-guards when those land. `seeds/status_list/bomb_32mib` inflates to 32 MiB
-on purpose (W6-3): it stays under the 2 GiB RSS limit, so the run does not
-crash on it, but it keeps the inflate-before-cap path hot.
+`seeds/status_list/bomb_32mib` inflates to 32 MiB
+on purpose (W6-3, fixed in bean rn46: `decode` now bounds the inflate at
+the 4 MiB cap, so the seed exercises the bounded path and a regression to
+inflate-before-cap would show up as RSS growth under the fuzzer).

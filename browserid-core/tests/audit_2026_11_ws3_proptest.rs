@@ -48,8 +48,9 @@ fn local() -> impl Strategy<Value = String> {
 fn tag() -> impl Strategy<Value = String> {
     "[a-z0-9]{1,8}"
 }
-/// Lowercase ASCII domains — the §5 comparison is byte-exact in
-/// `identity_matches` (WS6 W6-1), so mixed case is deliberately not generated here.
+/// Lowercase ASCII domains, so that the §5 comparison (case-insensitive
+/// A-label) coincides with byte equality and the identity properties can
+/// compare strings directly.
 fn domain() -> impl Strategy<Value = String> {
     "[a-z][a-z0-9-]{0,7}\\.(com|org|example)"
 }
@@ -573,7 +574,6 @@ proptest! {
 
     /// Spec §4.6 / D1: an AUTHENTICATION cert for `l@d` mints for `l@d` exactly.
     #[test]
-    #[ignore] // AUDIT-2026-11 D1: fails today — `identity_matches` widens every base identity to its `+tag` subaddresses regardless of purpose (device.rs:96-111)
     fn auth_cert_identity_is_exact(l in local(), t in tag(), d in domain()) {
         let base = format!("{}@{}", l, d);
         let tagged = format!("{}+{}@{}", l, t, d);
@@ -707,7 +707,6 @@ proptest! {
     /// it panics under debug assertions and wraps in release, where a wrapped
     /// negative difference passes any `max-ttl`).
     #[test]
-    #[ignore] // AUDIT-2026-11 W3-1: fails today — `warrant.exp - warrant.iat` is unchecked i64 arithmetic (device.rs Constraints::check)
     fn max_ttl_check_never_overflows(iat in any::<i64>(), exp in any::<i64>(), max in 0i64..(1 << 40)) {
         let cons = Constraints { aud: None, scopes: None, max_ttl: Some(max), unknown: Default::default() };
         let w = WarrantClaims { typ: TYP_WARRANT_V2.into(), iat, exp, grantor: "u@example.com".into(), grantee: "u@example.com".into(), holder: None, binding: None, audience: AUD.into(), scopes: vec![], status: None, unknown: Default::default() };
@@ -730,7 +729,6 @@ proptest! {
     /// S6 generalised: a warrant with `iat > exp`, or an `iat` in the future
     /// of the verification instant, never verifies.
     #[test]
-    #[ignore] // AUDIT-2026-11 S6: fails today — no `iat <= exp` / `iat <= now + skew` check on any object (device.rs verify_at); WS6 holds the point tests
     fn warrant_iat_is_bounded_by_exp_and_now(iat in (AT + 3600)..(AT + 10 * DAY), exp_after in 1i64..DAY, inverted in any::<bool>()) {
         // Inverted: not yet expired at AT, but issued after it expires.
         let (iat_w, exp_w) = if inverted { (AT + exp_after + 1, AT + 1) } else { (iat, iat + exp_after) };
@@ -756,7 +754,6 @@ proptest! {
     /// assertions; in release it wraps negative, which happens to fail
     /// closed). `ttl` is capped by `is_fresh_capped` but `iat` is not.
     #[test]
-    #[ignore] // AUDIT-2026-11 W3-2: fails today — `claims.iat + ttl + grace` is unchecked i64 arithmetic (status.rs is_fresh / is_fresh_capped)
     fn status_list_freshness_never_overflows(iat in any::<i64>(), ttl in any::<i64>(), grace in 0i64..3600, max_ttl in 1i64..100_000) {
         let k = KeyPair::from_seed(&[5; 32]).unwrap();
         let claims = serde_json::json!({ "typ": browserid_core::TYP_STATUS_LIST, "iss": "example.com", "sub": STATUS, "iat": iat, "ttl": ttl, "status_list": { "bits": 1, "lst": StatusList::from_revoked([], 8).encode().unwrap() } });
@@ -831,9 +828,11 @@ proptest! {
         if let Ok(r) = DnsRecord::parse(&lossy) {
             prop_assert_eq!(r.version.as_str(), "browserid1");
             prop_assert_eq!(r.algorithm.as_str(), "Ed25519");
-            // The parser keeps the LAST `public-key=` field.
-            let field = lossy.split(';').map(str::trim).filter_map(|p| p.split_once('=')).filter(|(k, _)| k.trim() == "public-key").last().map(|(_, v)| v.trim().to_string()).unwrap();
-            prop_assert_eq!(r.public_key.to_base64(), field);
+            // Exactly ONE `public-key=` field (a repeat rejects — W2-6,
+            // bean zsi1), and the key is byte-equal to it.
+            let fields: Vec<String> = lossy.split(';').map(str::trim).filter_map(|p| p.split_once('=')).filter(|(k, _)| k.trim() == "public-key").map(|(_, v)| v.trim().to_string()).collect();
+            prop_assert_eq!(fields.len(), 1);
+            prop_assert_eq!(r.public_key.to_base64(), fields[0].clone());
         }
         // A well-formed record round-trips its key; dropping any required
         // field, or any other version/algorithm, rejects.
@@ -851,6 +850,11 @@ proptest! {
             format!("v=browserid2; public-key-algorithm=Ed25519; public-key={}", pk),
             format!("v=browserid1; public-key-algorithm=RSA; public-key={}", pk),
             format!("v=browserid1; public-key-algorithm=Ed25519; public-key={}", &pk[..pk.len() - 2]),
+            // Repeated fields are ambiguous (W2-6), even when the values agree.
+            format!("v=browserid1; public-key-algorithm=Ed25519; public-key={pk}; public-key={pk}"),
+            format!("v=browserid1; v=browserid1; public-key-algorithm=Ed25519; public-key={pk}"),
+            format!("v=browserid1; public-key-algorithm=Ed25519; public-key-algorithm=Ed25519; public-key={pk}"),
+            format!("v=browserid1; public-key-algorithm=Ed25519; public-key={pk}; host=a.example; host=b.example"),
         ];
         for b in &bad {
             prop_assert!(DnsRecord::parse(b).is_err(), "accepted malformed record {:?}", b);
@@ -879,26 +883,31 @@ proptest! {
         prop_assert!(serde_json::from_value::<ScopeEntry>(v).is_err());
     }
 
-    /// Core does not implement the scope-string grammar; this pins the
-    /// reference predicate the registrar and fuzz targets share and records
-    /// that `ScopeEntry` accepts strings outside it (the grammar is enforced
-    /// at request time, registry-api-v1 §3 — see W3-3 for the gap there).
+    /// The one scope grammar lives in core as
+    /// `browserid_core::validate_scope_string` (W3-3 / Q27, bean lu7i); this
+    /// pins it against the spec regex and a local reference predicate, and
+    /// records that `ScopeEntry` itself stays grammar-agnostic (signers and
+    /// filers call the predicate; the parser does not).
     #[test]
     fn scope_grammar_reference_matches_the_spec_regex(s in "\\PC{0,140}", g in scope_string()) {
         prop_assert!(scope_grammar(&g));
-        let by_regex = regex::Regex::new(r"^[a-z0-9_:.\-/*@+]{1,128}$").unwrap().is_match(&s);
+        let by_regex = regex::Regex::new(browserid_core::scope::SCOPE_GRAMMAR_REGEX).unwrap().is_match(&s);
         prop_assert_eq!(scope_grammar(&s), by_regex);
+        // Core's predicate (bean lu7i, Q27) is the same grammar.
+        prop_assert_eq!(browserid_core::validate_scope_string(&s), by_regex);
+        prop_assert!(browserid_core::validate_scope_string(&g));
         // ScopeEntry::Bare is grammar-agnostic.
         prop_assert!(serde_json::from_value::<ScopeEntry>(serde_json::Value::String(s)).is_ok());
     }
 }
 
-/// Sanity: the ignored properties do fail today, for the reason stated.
+/// The W3-1 reproducer, inverted with the fix (bean gdo0): the overflowing
+/// `exp − iat` neither panics (debug) nor wraps to a passing width (release)
+/// — it is a max-ttl violation.
 #[test]
 fn w3_1_max_ttl_overflow_reproducer() {
     let cons = Constraints { aud: None, scopes: None, max_ttl: Some(DAY), unknown: Default::default() };
     let w = WarrantClaims { typ: TYP_WARRANT_V2.into(), iat: i64::MIN, exp: 1, grantor: "u@example.com".into(), grantee: "u@example.com".into(), holder: None, binding: None, audience: AUD.into(), scopes: vec![], status: None, unknown: Default::default() };
     let r = std::panic::catch_unwind(|| cons.check("config cert", AUD, &w).is_ok());
-    // Debug build: panic. Release build: wraps negative and PASSES max-ttl.
-    assert!(r.is_err() || r.unwrap(), "fixed? un-ignore max_ttl_check_never_overflows");
+    assert_eq!(r.ok(), Some(false), "an overflowing validity width must be a max-ttl violation");
 }
