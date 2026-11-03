@@ -138,12 +138,9 @@ test("D1 (client mirror): an auth cert for the base identity does not authorize 
 
 // ---------------------------------------------------------------------------
 // Pinned: the access request and assertion carry what the spec requires.
-// W4-40 (spec, not SDK): the assertion carries no `iat` — not in the JS SDK,
-// not in browserid-core's AssertionClaims, not in the Rust agent — while the
-// amended §6.1 time bounds say every signed object incl. the assertion is
-// checked for `iat ≤ exp` / `iat ≤ now + skew`. §5's claim table lists only
-// aud/exp/req_origin. One of the two spec sections has to give; this test
-// pins today's wire shape so the decision is visible.
+// W4-40 (Q19 (a), bean b18d): the assertion carries `iat` like every other
+// signed object, so the amended §6.1 time bounds (`iat ≤ exp`,
+// `iat ≤ now + skew`) apply to it; §5's claim table lists it.
 // ---------------------------------------------------------------------------
 test("access request: 10-min window, jti, holder from the cert, domain = cert iss", async () => {
   const { credential, http } = await provisioned();
@@ -161,7 +158,7 @@ test("access request: 10-min window, jti, holder from the cert, domain = cert is
   void agent;
 });
 
-test("W4-40 (pin): the assertion names the audience exactly, expires in <=5 min, and carries no iat", async () => {
+test("W4-40 (fixed): the assertion names the audience exactly, expires in <=5 min, and carries iat", async () => {
   const { credential, http } = await provisioned();
   const agent = new DeviceAgent(credential, { http });
   for (const g of (await provisioned()).grants) agent.addGrant(g.grant);
@@ -169,7 +166,8 @@ test("W4-40 (pin): the assertion names the audience exactly, expires in <=5 min,
   const c = decodeJwtClaims(assertion);
   assert.equal(c.aud, AUD);
   assert.ok(c.exp <= nowS() + ASSERTION_VALIDITY_S && c.exp > nowS());
-  assert.equal(c.iat, undefined, "today's wire shape; see W4-40");
+  assert.ok(Number.isInteger(c.iat) && c.iat <= nowS(), "iat is set at signing (W4-40)");
+  assert.equal(c.exp - c.iat, ASSERTION_VALIDITY_S);
   assert.equal(c.typ, undefined, "assertion has no claim-level typ (spec §4)");
 });
 

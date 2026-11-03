@@ -381,6 +381,7 @@ constraints until the verifiers it cares about conform.
 
   | Claim | Meaning |
   |---|---|
+  | `iat` | Issuance instant. Signers MUST set it; verifiers apply the §6.1 time bounds to it like every other object. *Transition:* an assertion without `iat` (pre-2026-11 signers) is accepted on `exp` alone until **2027-02-01T00:00:00Z**, rejected after. |
   | `aud` | The RP origin the assertion is for. |
   | `exp` | Expiry (short). |
   | `req_origin` | OPTIONAL. The **requesting channel**: the authenticated origin the signing request arrived from, stamped by the wallet at dispatch. Present iff the presented warrant carries a `requester` binding entry (§5); matched by verifiers fail-closed (§6.6 invariant 13). |
@@ -797,7 +798,9 @@ allowance in the other direction). `skew` is the verifier's clock-skew
 allowance, reference 300 s; a verifier MUST NOT accept an `iat` further in
 the future than that. Without the lower bound a signer can post-date an
 object so that it stays "fresh" (§7.1's 300 s freshness, a status list's
-`ttl`) for as long as it likes.
+`ttl`) for as long as it likes. The one exception is the assertion's
+transition window (§5): until 2027-02-01 an assertion without `iat` is
+judged on `exp` alone.
 
 A conforming verifier performs **every** step. In particular, accepting anything
 but exactly the four-object bundle (step 1), skipping the per-identity issuer

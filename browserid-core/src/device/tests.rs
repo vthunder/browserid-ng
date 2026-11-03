@@ -110,16 +110,9 @@ impl Fixture {
         .unwrap()
     }
     fn assertion(&self) -> Assertion {
-        // Assertion::create uses Utc::now; build via the fresh access key with a
-        // far-future expiry so the vector doesn't age out.
-        use crate::assertion::AssertionClaims;
-        // Assertion has no from_claims; sign the 2-claim JWS directly is internal,
-        // so create() then override is not possible — use create() with a long
-        // validity from a fixed "now" is also not possible. Instead, the assertion
-        // is the one non-deterministic-time object; vectors pin the OTHER three and
-        // the assertion is regenerated live (its exp is checked, not byte-frozen).
-        let _ = AssertionClaims { exp: 0, aud: String::new(), req_origin: None }; // keep import honest
-        Assertion::create(self.audience(), chrono::Duration::days(3650), &self.access_key).unwrap()
+        // Deterministic like the other three objects: issued at the fixed
+        // epoch with a far-future expiry (W4-40: assertions carry `iat`).
+        Assertion::create_at(self.audience(), None, IAT, IAT + 3650 * DAY, &self.access_key).unwrap()
     }
     fn presentation(&self) -> AccessPresentation {
         AccessPresentation {
@@ -824,13 +817,7 @@ impl Fixture {
         Warrant::from_claims(claims, &self.config_key).unwrap()
     }
     fn stamped_assertion(&self, req_origin: Option<&str>) -> Assertion {
-        Assertion::create_with_req_origin(
-            self.audience(),
-            req_origin,
-            chrono::Duration::days(3650),
-            &self.access_key,
-        )
-        .unwrap()
+        Assertion::create_at(self.audience(), req_origin, IAT, IAT + 3650 * DAY, &self.access_key).unwrap()
     }
 }
 
@@ -1018,7 +1005,10 @@ fn verify_at_judges_expiry_at_the_given_instant_not_the_wall_clock() {
     // expiry-wise: at an instant after its exp.
     let f = Fixture::new();
     // Assertion that expired 10 minutes ago (wall clock).
-    let stale = Assertion::create(f.audience(), chrono::Duration::minutes(-10), &f.access_key).unwrap();
+    // Issued 15 min ago, expired 10 min ago (W4-40: `iat ≤ exp` must hold
+    // or the assertion rejects at EVERY instant).
+    let now = chrono::Utc::now().timestamp();
+    let stale = Assertion::create_at(f.audience(), None, now - 900, now - 600, &f.access_key).unwrap();
     let authored = stale.claims().exp - 60; // a valid instant during its life
     // Certs/warrant dated before `authored` (the §6.1 clock rule rejects an
     // object post-dated past `at + skew`, so the 2027 fixtures cannot be

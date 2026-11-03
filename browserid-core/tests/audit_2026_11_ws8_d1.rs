@@ -80,7 +80,7 @@ fn d1_poc_base_auth_cert_no_longer_mints_as_subaddress() {
     };
     let p = AccessPresentation {
         access_cert,
-        assertion: Assertion::create(AUD, chrono::Duration::days(3650), &access).unwrap(),
+        assertion: Assertion::create_at(AUD, None, IAT, IAT + 3650 * 86_400, &access).unwrap(),
         warrant, config_cert,
     };
     let v = p.verify_at(AUD, AT, |_| Ok(idp_pub.clone())).expect("PoC: verifier accepts the subaddress presentation");

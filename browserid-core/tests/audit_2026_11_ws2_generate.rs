@@ -175,7 +175,7 @@ fn warrant_claims(grantor: &str, grantee: &str) -> Value {
 }
 
 fn assertion_claims(aud: &str) -> Value {
-    json!({ "aud": aud, "exp": EXP })
+    json!({ "iat": IAT, "aud": aud, "exp": EXP })
 }
 
 fn set(v: &mut Value, k: &str, val: Value) {
@@ -546,6 +546,22 @@ fn build() -> Vec<Vec_> {
     {
         let b = P::as_you(&k).w(|c| del(c, "exp"));
         v.push(p("P-TIME-10", "I2", "warrant without exp", &b, reject("shape")));
+    }
+    // W4-40 / Q19 (a): the assertion carries `iat` and the same rule applies.
+    {
+        let b = P::as_you(&k).assertion(|c| { set(c, "iat", json!(FUTURE)); set(c, "exp", json!(FUTURE + 86_400)); });
+        v.push(p("P-TIME-11", "I2", "assertion post-dated (iat far in the future)", &b, reject("future_iat")).known(&["W4-40"]));
+    }
+    {
+        let b = P::as_you(&k).assertion(|c| set(c, "iat", json!(EXP + 1)));
+        v.push(p("P-TIME-12", "I2", "assertion iat > exp", &b, reject("iat_after_exp")).known(&["W4-40"]));
+    }
+    {
+        // Transition (W4-40): a pre-audit assertion without `iat` is accepted
+        // on `exp` alone until `browserid_core::assertion::IAT_SUNSET`
+        // (2027-02-01); this vector flips to reject("shape") at the sunset.
+        let b = P::as_you(&k).assertion(|c| del(c, "iat"));
+        v.push(p("P-TIME-13", "I2", "assertion without iat (pre-sunset transition: accepted on exp alone)", &b, accept(U, U, "br.main", json!([]))).known(&["W4-40"]));
     }
 
     // ===================================================================

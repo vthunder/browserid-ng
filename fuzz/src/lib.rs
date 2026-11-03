@@ -95,12 +95,9 @@ pub fn warrant() -> Warrant {
 }
 
 pub fn assertion() -> Assertion {
-    Assertion::create(AUD, chrono_days(3650), &keys().access).unwrap()
+    Assertion::create_at(AUD, None, IAT, IAT + 3650 * DAY, &keys().access).unwrap()
 }
 
-fn chrono_days(d: i64) -> chrono::Duration {
-    chrono::Duration::days(d)
-}
 
 pub fn bundle() -> AccessPresentation {
     AccessPresentation {
