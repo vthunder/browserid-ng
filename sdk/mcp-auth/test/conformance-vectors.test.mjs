@@ -23,7 +23,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createMcpAuth, granteeCovers, JWT_BEARER_GRANT, McpAuthError } from "../index.mjs";
+import { createMcpAuth, granteeCovers, assertPolicyBinding, JWT_BEARER_GRANT, McpAuthError } from "../index.mjs";
 
 const VECTORS = JSON.parse(readFileSync(new URL("../../../test-vectors/conformance-2026-11.json", import.meta.url), "utf8"));
 const HOSTED = JSON.parse(readFileSync(new URL("../../../test-vectors/conformance-2026-11.hosted.json", import.meta.url), "utf8")).responses;
@@ -53,13 +53,11 @@ const EXPECTED_FAIL = {
   // AUDIT-2026-11 S5 (inherited).
   "P-CONS-01": "S5",
   "P-CONS-06": "S5",
-  // AUDIT-2026-11 D5 (= W2-2): admission ignores binding entries — a requester entry, a connection
-  // entry, or a holder matcher the login does not satisfy still admits (index.mjs:1040, :1051).
-  "A-REJ-01": "D5",
-  "A-REJ-02": "D5",
-  "A-REJ-03": "D5",
-  "A-REJ-04": "D5",
-  "A-REJ-05": "D5",
+  // Decision Q15 (a) (audit 2026-11 D5): a held policy record admits only with the one binding
+  // {holder, "*"}; narrowed holder matchers are refused rather than evaluated until a wallet
+  // authors them (Q15 (b)). These two vectors expect the matcher to be evaluated.
+  "A-OK-02": "Q15a",
+  "A-OK-10": "Q15a",
   // AUDIT-2026-11 D17 (= W2-3): granteeCovers("*") admits any string containing "@" and splitEmail
   // splits on the LAST "@", so malformed subjects (a@b@c, @x) are covered (index.mjs:71-94).
   "A-REJ-07": "D17",
@@ -111,6 +109,10 @@ async function runA(v, diverged) {
   }
   if (v.subject && !granteeCovers(r.grantee, v.subject.identity)) {
     return { ok: false, reason: `subject ${v.subject.identity} not covered by grantee ${r.grantee}` };
+  }
+  if (v.subject) {
+    // Admission of a login subject under a held policy record (§6.4 step 3, Q15 (a)).
+    try { assertPolicyBinding(r.binding); } catch (e) { return { ok: false, reason: e.message }; }
   }
   return { ok: true, email: r.grantor, grantee: r.grantee, holder: v.subject?.holder ?? "", scopes: r.scopes };
 }

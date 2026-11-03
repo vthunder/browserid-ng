@@ -53,6 +53,12 @@ export function identityEq(a: unknown, b: unknown): boolean;
  *  authenticated subject? (spec §6.4 step 3) */
 export function granteeCovers(grantee: unknown, subject: unknown): boolean;
 
+/** The one binding a held policy record may carry: exactly one
+ *  `{kind:"holder", matcher:"*"}` entry (spec §6.4 step 3, decision Q15 (a)).
+ *  Throws McpAuthError("invalid_grant") naming the unsupported entry
+ *  otherwise; returns the normalized entry. */
+export function assertPolicyBinding(binding: unknown): { kind: "holder"; matcher: "*" };
+
 /** A resource-held policy row (spec §6.5): an owner-signed record granting
  *  `grantee` at `audience`. */
 export interface PolicyRow {
@@ -63,6 +69,9 @@ export interface PolicyRow {
   audience: string;
   scopes: string[];
   exp: number | null;
+  /** The record's binding as validated when the row was stored (absent on
+   *  rows stored before 0.6; the record is revalidated at admission). */
+  binding?: { kind: "holder"; matcher: "*" };
 }
 
 export interface PolicyStore {

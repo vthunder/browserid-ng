@@ -17,7 +17,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createMcpAuth, createAuthCodeLane, McpAuthError, identityEq, granteeCovers } from "@browserid-ng/mcp-auth";
+import { createMcpAuth, createAuthCodeLane, McpAuthError, identityEq, granteeCovers, assertPolicyBinding } from "@browserid-ng/mcp-auth";
 
 /**
  * Build (and connect) a mount around a stdio MCP child.
@@ -81,8 +81,41 @@ export async function createMount(opts) {
           if (!store) return null;
           const rows = (await store.list(resource)).filter((r) => granteeCovers(r.grantee, email));
           if (!rows.length) return null;
-          return [...new Set(rows.flatMap((r) => r.scopes || []))];
+          // Every covering row is judged on FRESH evidence (spec §6.4,
+          // audit 2026-11 D5/D6): unexpired, revalidated at the broker
+          // (status included, fail-closed), carrying the one supported
+          // policy binding, and its validated grantee still covering the
+          // subject. Scopes come from the validation, never the stored row.
+          const live = [];
+          for (const r of rows) {
+            const pv = await liveRow(r);
+            if (pv && granteeCovers(pv.grantee, email)) live.push(pv);
+          }
+          if (!live.length) return null;
+          return [...new Set(live.flatMap((pv) => pv.scopes || []))];
         };
+  // Single-server liveness: a positive validation is reused for at most
+  // statusCacheS (the same bound as the bearer's status re-check); anything
+  // else — expired, revoked, unsupported binding, validator unreachable or
+  // 5xx — is "not live" right now. Never cached.
+  const liveRows = new Map(); // record -> { at, pv }
+  async function liveRow(row) {
+    const t = Math.floor(Date.now() / 1000);
+    if (row.exp != null && row.exp <= t) return null;
+    const cached = liveRows.get(row.record);
+    if (cached && t - cached.at < statusCacheS) return cached.pv;
+    let pv;
+    try {
+      pv = await mcpAuth.validateRecord(row.record, row.audience);
+      assertPolicyBinding(pv.binding);
+    } catch (e) {
+      log(`[gate] policy row for ${row.grantee} not live: ${e.message}`);
+      return null;
+    }
+    if (pv.expires_at != null && pv.expires_at <= t) return null;
+    liveRows.set(row.record, { at: t, pv });
+    return pv;
+  }
 
   // --- 1. connect to the wrapped stdio child --------------------------------
   let child = opts.client || null;

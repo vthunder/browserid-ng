@@ -101,12 +101,42 @@ export function granteeCovers(grantee, subject) {
 // predecessor (policy edit = revoke-old + sign-new).
 // ---------------------------------------------------------------------------
 
-/** In-memory policy store (single process). Swap for a db in production. */
+/**
+ * The binding a resource-held POLICY record may carry (spec §6.4 step 3,
+ * audit 2026-11 D5 / decision Q15 (a)): exactly one holder entry with the
+ * open matcher `*`. Any other entry — a requester entry (unsatisfiable in
+ * operation A), a connection entry (not a login), a narrowed holder matcher
+ * (nothing here evaluates it yet) — is refused, naming the entry, at store
+ * time AND at admission. Returns the normalized single entry.
+ */
+export function assertPolicyBinding(binding) {
+  const entries = binding == null ? [] : Array.isArray(binding) ? binding : [binding];
+  if (entries.length !== 1) {
+    throw new McpAuthError(
+      "invalid_grant",
+      `unsupported policy binding: expected exactly one {kind:"holder", matcher:"*"} entry, got ${entries.length === 0 ? "none" : `${entries.length} entries ${JSON.stringify(entries)}`}`
+    );
+  }
+  const e = entries[0];
+  if (!e || typeof e !== "object" || e.kind !== "holder" || e.matcher !== "*") {
+    throw new McpAuthError(
+      "invalid_grant",
+      `unsupported policy binding entry ${JSON.stringify(e)}: only {kind:"holder", matcher:"*"} is admitted`
+    );
+  }
+  return e;
+}
+
+/** In-memory policy store (single process). Swap for a db in production.
+ *  Refuses to store a row whose binding is not the one policy binding
+ *  (`assertPolicyBinding`); a row without a binding field (pre-D5 rows) is
+ *  kept and judged at admission, where the record is revalidated. */
 export function createPolicyStore() {
   const rows = new Map();
   const key = (r) => `${r.grantor}|${r.grantee}|${r.audience}`;
   return {
     async put(row) {
+      if (row.binding !== undefined) assertPolicyBinding(row.binding);
       rows.set(key(row), row);
     },
     async list(audience = null) {
@@ -988,6 +1018,9 @@ export function createAuthCodeLane(opts) {
               if (v.grantee !== g.grantee) {
                 throw new McpAuthError("invalid_grant", "record grantee does not match the requested grant");
               }
+              // D5 / Q15 (a): a policy row is held only with the one
+              // supported binding; refused here, before it is ever stored.
+              const entry = assertPolicyBinding(v.binding);
               const row = {
                 record: d.warrant,
                 grantor: v.grantor,
@@ -995,6 +1028,7 @@ export function createAuthCodeLane(opts) {
                 audience: g.audience,
                 scopes: v.scopes || [],
                 exp: v.expires_at ?? null,
+                binding: entry,
               };
               await policy.store.put(row);
               rows.push(row);
@@ -1040,6 +1074,7 @@ export function createAuthCodeLane(opts) {
       .filter((r) => granteeCovers(r.grantee, subject))
       .sort((a, b) => (a.grantee === subject ? -1 : 0) - (b.grantee === subject ? -1 : 0));
     let lastErr = null;
+    let bindingErr = null;
     for (const row of rows) {
       let pv;
       try {
@@ -1049,6 +1084,15 @@ export function createAuthCodeLane(opts) {
         continue;
       }
       if (!granteeCovers(pv.grantee, subject)) continue;
+      // §6.4 step 3 under D5 / Q15 (a): the row admits only with the one
+      // supported binding (holder "*"); a narrowed holder matcher, a
+      // requester entry or a connection entry never admits a subject here.
+      try {
+        assertPolicyBinding(pv.binding);
+      } catch (e) {
+        bindingErr = e;
+        continue;
+      }
       return {
         scopes: base.scopes.filter((s) => (pv.scopes || []).includes(s)),
         statusRefs: [...base.statusRefs, ...(pv.status_refs || [])],
@@ -1060,6 +1104,7 @@ export function createAuthCodeLane(opts) {
       };
     }
     if (lastErr instanceof McpAuthError && lastErr.httpStatus === 503) throw lastErr;
+    if (bindingErr) throw bindingErr;
     throw new McpAuthError("invalid_grant", `no grant covers '${subject}' at this resource`);
   }
 

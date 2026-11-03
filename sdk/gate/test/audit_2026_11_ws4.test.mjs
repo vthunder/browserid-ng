@@ -208,7 +208,7 @@ test("D6 pin: gateway signed mode — an HTTP 503 from the validator is read as 
 // D5 — the policy row's holder matcher is never evaluated at the gate
 // ===========================================================================
 
-test("D5: a policy row narrowed to another holder must not admit a jwt-bearer login with a different holder (§6.4 step 3)", { skip: "AUDIT-2026-11 D5: fails today" }, async () => {
+test("D5: a policy row narrowed to another holder must not admit a jwt-bearer login with a different holder (§6.4 step 3)", async () => {
   const k = `${OWNER}|${MEMBER}|${SINGLE}`;
   const live = singleStore.raw.get(k);
   singleStore.raw.set(k, rowFor(SINGLE_NARROW));

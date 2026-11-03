@@ -151,5 +151,14 @@ curl -s -X POST http://localhost:8787/token \
   `lane.handleAuthorize(query)`, `lane.handleAuthorizeReturn(query)`,
   `lane.handleToken(params)`.
 - `verifyPkceS256(verifier, challenge)` — RFC 7636 S256 check.
+- `identityEq(a, b)` / `granteeCovers(grantee, subject)` — the spec §5
+  identity rule (exactly one `@`, non-empty parts, domain case-folded, local
+  part byte-exact) and the `*` / `*@domain` admission matchers.
+- `assertPolicyBinding(binding)` — the one binding a held policy record may
+  carry: exactly one `{kind:"holder", matcher:"*"}` entry. Any other entry
+  (a requester entry, a connection entry, a narrowed holder matcher) is
+  refused with an error naming it — at `requestAuthoring` before the row is
+  stored, by the policy stores on `put`, and at admission after the record
+  is revalidated (spec §6.4 step 3; decision Q15 (a) of the 2026-11 audit).
 
 MPL-2.0.

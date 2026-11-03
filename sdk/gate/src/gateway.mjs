@@ -36,7 +36,7 @@ import { createFilePolicyStore } from "./policystore.mjs";
 import { createConnectAuth } from "./connectauth.mjs";
 import { sharedPage } from "./sharedpage.mjs";
 import { gateHome } from "./credential.mjs";
-import { identityEq, granteeCovers } from "@browserid-ng/mcp-auth";
+import { identityEq, granteeCovers, assertPolicyBinding } from "@browserid-ng/mcp-auth";
 import { loadConfig, saveConfig, normalizeConfig, normalizeMountDef, normalizePersonDef, normalizeGrants } from "./config.mjs";
 import { ensureFunnel } from "./tunnel.mjs";
 
@@ -91,7 +91,7 @@ export function createGateway(opts) {
   // card. Shared across mounts (one origin, one ceremony) and persisted —
   // records survive restarts.
   const policyStore = opts.policyStore
-    || createFilePolicyStore(join(gateHome(), "policy.json"));
+    || createFilePolicyStore(join(gateHome(), "policy.json"), { log });
   // Member sessions for the identity-first connect flow (origin-wide, so a
   // second mount connects without another login).
   let userSessions = createSessionManager({
@@ -216,7 +216,10 @@ export function createGateway(opts) {
     if (!anyMount) return true; // nothing to validate with; leave the row be
     let ok = true;
     try {
-      await anyMount.mcpAuth.validateRecord(row.record, row.audience);
+      const pv = await anyMount.mcpAuth.validateRecord(row.record, row.audience);
+      // D5 / Q15 (a): a row whose record carries any binding but the one
+      // supported policy binding never admits.
+      assertPolicyBinding(pv.binding);
     } catch (e) {
       if (e?.httpStatus === 503) return cached?.ok ?? true; // unreachable
       ok = false; // revoked / expired / invalid — definitive

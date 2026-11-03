@@ -179,7 +179,7 @@ test("D5 pin: a holder:'*' policy row admits a connection subject with S ∩ S�
   assert.deepEqual(ctx.scopes, ["notes:read"]);
 });
 
-test("D5: a policy row narrowed to one holder must not admit a holder-less connection subject (§6.4 step 3 fail-closed)", { skip: "AUDIT-2026-11 D5: fails today" }, async () => {
+test("D5: a policy row narrowed to one holder must not admit a holder-less connection subject (§6.4 step 3 fail-closed)", async () => {
   const { lane } = policyLane({
     validate: { [MEMBER_CONN]: connectionResult(MEMBER, "cn_m"), [POLICY_NARROW]: policyResult(MEMBER, { kind: "holder", matcher: "agents.one-specific-holder" }) },
     deliver: () => [{ audience: RESOURCE, warrant: MEMBER_CONN }],
@@ -188,7 +188,7 @@ test("D5: a policy row narrowed to one holder must not admit a holder-less conne
   await assert.rejects(connect(lane, { scope: "notes:read" }), (e) => e instanceof McpAuthError && e.oauthError === "invalid_grant");
 });
 
-test("D5: a policy row carrying a requester entry is unsatisfiable in operation A and must refuse", { skip: "AUDIT-2026-11 D5: fails today" }, async () => {
+test("D5: a policy row carrying a requester entry is unsatisfiable in operation A and must refuse", async () => {
   const { lane } = policyLane({
     validate: {
       [MEMBER_CONN]: connectionResult(MEMBER, "cn_m"),
