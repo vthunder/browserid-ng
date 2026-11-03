@@ -72,8 +72,9 @@ async fn test_lookup_dnssec_enabled_domain() {
 /// (no TLS) and sets AD=1 must NOT be trusted as Secure. Before the
 /// DNS-over-TLS fix, the fetcher sent plaintext UDP and trusted the AD bit,
 /// so any on-path attacker could claim DNSSEC validation. Now the TLS
-/// handshake fails against a non-TLS server and the lookup degrades to
-/// Insecure (broker fallback) — never Secure.
+/// handshake fails against a non-TLS server and the lookup is a transport
+/// failure — a hard reject (Bogus, audit 2026-11 D14; it used to degrade to
+/// Insecure, the broker fallback) — never Secure.
 #[tokio::test]
 async fn test_forged_ad_over_plaintext_is_not_secure() {
     // A fake "resolver" that accepts TCP and immediately writes a plaintext
@@ -97,8 +98,8 @@ async fn test_forged_ad_over_plaintext_is_not_secure() {
 
     assert_eq!(
         result.dnssec_status,
-        DnssecStatus::Insecure,
-        "plaintext server forging AD=1 must not produce Secure"
+        DnssecStatus::Bogus,
+        "plaintext server forging AD=1 must not produce Secure (nor Insecure: no authenticated answer is a hard reject)"
     );
     assert!(result.record.is_none());
 }

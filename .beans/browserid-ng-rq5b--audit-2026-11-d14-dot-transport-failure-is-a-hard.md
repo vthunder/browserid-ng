@@ -5,7 +5,7 @@ status: completed
 type: bug
 priority: high
 created_at: 2026-11-02T22:43:19Z
-updated_at: 2026-11-03T08:25:05Z
+updated_at: 2026-11-03T08:31:43Z
 parent: browserid-ng-ag1l
 ---
 
@@ -28,3 +28,6 @@ Reports: ws6 §1.4. Ledger: docs/security-audit-2026-11.md. Decisions: docs/secu
 - browserid-verifier/src/discovery.rs: `fallback_to_broker` short-circuits for a localhost dev broker (`dev_local_broker`) and reads the loopback broker's `.well-known` key without any DoT lookup — the pre-existing dev path, but it used to be reached only through an Insecure answer, which an offline dev box would now get as a hard reject. Real domains are unchanged.
 - Acceptance: `d14_transport_failure_is_not_an_insecure_answer`, `d14_resolve_idp_key_does_not_report_not_primary_on_transport_failure` un-ignored (resolver = 127.0.0.1:1, connection refused, no network); new `d14_retry_once_within_budget_then_reject` bounds the lookup time. dnssec: 18 unit + 3 integration pass.
 - Side effect to note: the hosted-IdP domain probe (browserid-broker/src/routes/hosted_idp.rs:979) now reports "bogus" instead of "insecure" when the DoT resolver is unreachable, which is the honest reading.
+
+
+- Follow-up commit: browserid-broker/tests/dns_fetcher_test.rs `test_forged_ad_over_plaintext_is_not_secure` pinned the old Insecure degrade for a TLS-handshake failure; it now expects Bogus. Full broker suite after all five beans: 391 passed, 0 failed, 23 ignored.
