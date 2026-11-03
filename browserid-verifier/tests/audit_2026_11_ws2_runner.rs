@@ -36,15 +36,6 @@ const EXPECTED_FAIL: &[(&str, &str)] = &[
     ("P-TYP-01", "S3"),
     ("P-TYP-02", "S3"),
     ("A-REJ-13", "S3"),
-    // AUDIT-2026-11 D16/S6: no lower bound on iat.
-    ("P-TIME-05", "D16"),
-    ("P-TIME-06", "D16"),
-    ("P-TIME-07", "D16"),
-    ("P-TIME-08", "D16"),
-    ("P-TIME-09", "D16"),
-    ("A-REJ-21", "D16"),
-    // AUDIT-2026-11 W6-1: grantor domain compared byte-exact in core.
-    ("P-OK-12", "W6-1"),
 ];
 
 struct Mock {

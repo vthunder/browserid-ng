@@ -556,26 +556,8 @@
       "status": "failure"
     },
     "A-REJ-21": {
-      "binding": {
-        "kind": "holder",
-        "matcher": "*"
-      },
-      "expires_at": 4000086400,
-      "grantee": "user@example.com",
-      "grantor": "user@example.com",
-      "issuer": "browserid.me",
-      "scopes": [],
-      "status": "okay",
-      "status_refs": [
-        {
-          "idx": 2,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        },
-        {
-          "idx": 42,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        }
-      ]
+      "reason": "Invalid provisioning material: warrant: issued in the future (iat > now + skew)",
+      "status": "failure"
     },
     "A-REJ-22": {
       "reason": "warrant revoked",
@@ -1200,8 +1182,27 @@
       ]
     },
     "P-OK-12": {
-      "reason": "Invalid provisioning material: config cert: not authorized for the warrant grantor",
-      "status": "failure"
+      "email": "user@EXAMPLE.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
     },
     "P-OK-13": {
       "email": "user@example.com",
@@ -1351,119 +1352,24 @@
       "status": "failure"
     },
     "P-TIME-05": {
-      "email": "user@example.com",
-      "grantee": "user@example.com",
-      "grantee_issuer": "browserid.me",
-      "holder": "br.main",
-      "issuer": "browserid.me",
-      "scopes": [],
-      "status": "okay",
-      "status_refs": [
-        {
-          "idx": 7,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        },
-        {
-          "idx": 2,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        },
-        {
-          "idx": 42,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        }
-      ]
+      "reason": "Invalid provisioning material: access cert: issued in the future (iat > now + skew)",
+      "status": "failure"
     },
     "P-TIME-06": {
-      "email": "user@example.com",
-      "grantee": "user@example.com",
-      "grantee_issuer": "browserid.me",
-      "holder": "br.main",
-      "issuer": "browserid.me",
-      "scopes": [],
-      "status": "okay",
-      "status_refs": [
-        {
-          "idx": 7,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        },
-        {
-          "idx": 2,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        },
-        {
-          "idx": 42,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        }
-      ]
+      "reason": "Invalid provisioning material: warrant: issued in the future (iat > now + skew)",
+      "status": "failure"
     },
     "P-TIME-07": {
-      "email": "user@example.com",
-      "grantee": "user@example.com",
-      "grantee_issuer": "browserid.me",
-      "holder": "br.main",
-      "issuer": "browserid.me",
-      "scopes": [],
-      "status": "okay",
-      "status_refs": [
-        {
-          "idx": 7,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        },
-        {
-          "idx": 2,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        },
-        {
-          "idx": 42,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        }
-      ]
+      "reason": "Invalid provisioning material: config cert: issued in the future (iat > now + skew)",
+      "status": "failure"
     },
     "P-TIME-08": {
-      "email": "user@example.com",
-      "grantee": "user@example.com",
-      "grantee_issuer": "browserid.me",
-      "holder": "br.main",
-      "issuer": "browserid.me",
-      "scopes": [],
-      "status": "okay",
-      "status_refs": [
-        {
-          "idx": 7,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        },
-        {
-          "idx": 2,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        },
-        {
-          "idx": 42,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        }
-      ]
+      "reason": "Invalid provisioning material: access cert: issued after its expiry (iat > exp)",
+      "status": "failure"
     },
     "P-TIME-09": {
-      "email": "user@example.com",
-      "grantee": "user@example.com",
-      "grantee_issuer": "browserid.me",
-      "holder": "br.main",
-      "issuer": "browserid.me",
-      "scopes": [],
-      "status": "okay",
-      "status_refs": [
-        {
-          "idx": 7,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        },
-        {
-          "idx": 2,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        },
-        {
-          "idx": 42,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        }
-      ]
+      "reason": "Invalid provisioning material: warrant: issued after its expiry (iat > exp)",
+      "status": "failure"
     },
     "P-TIME-10": {
       "reason": "parse: JSON error: missing field `exp` at line 1 column 272",
