@@ -456,7 +456,7 @@ async fn validate_record_conformance_okay() {
     assert_eq!(r.grantor.as_deref(), Some("danmills@sandmill.org"));
     assert_eq!(r.grantee.as_deref(), Some("danmills@sandmill.org"));
     assert!(matches!(r.binding.as_ref().map(|b| b.entries()), Some([Binding::Connection { .. }])), "{:?}", r.binding);
-    assert_eq!(r.scopes.as_deref(), Some(&["tool:read_file".to_string()][..]));
+    assert_eq!(r.scopes.as_deref(), Some(&[browserid_core::ScopeEntry::from("tool:read_file".to_string())][..]));
     // The warrant's registry ref rides back for the resource's per-use re-checks.
     assert_eq!(r.status_refs.as_ref().map(|s| s.len()), Some(1));
     assert!(r.expires_at.is_some());

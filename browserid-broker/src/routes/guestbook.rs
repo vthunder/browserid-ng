@@ -260,7 +260,10 @@ where
     // docs/plans/2026-07-20-holder-authorization-model.md). Any authenticated
     // holder that carries the guestbook-sign scope below may sign; the
     // human/agent axis is no longer an RP-facing claim.
-    let scopes = result.scopes.clone().unwrap_or_default();
+    // Scope identity is the entry's scope string (§5); parameters ride along
+    // and are not the guestbook's concern.
+    let scopes: Vec<String> =
+        result.scopes.iter().flatten().map(|e| e.scope().to_string()).collect();
     if !scopes.iter().any(|s| s == REQUIRED_SCOPE || s == LEGACY_SCOPE) {
         return fail(
             StatusCode::FORBIDDEN,

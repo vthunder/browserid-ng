@@ -49,7 +49,7 @@ use rand::RngCore;
 
 use browserid_core::device::{AccessPresentation, Holder};
 use browserid_core::rp_auth::{TokenErrorResponse, GRANT_TYPE_ASSERTION};
-use browserid_core::{PublicKey, RpChallenge, StatusListToken, StatusRef, TokenRequest, TokenResponse};
+use browserid_core::{PublicKey, RpChallenge, ScopeEntry, StatusListToken, StatusRef, TokenRequest, TokenResponse};
 
 pub use browserid_core::rp_auth;
 
@@ -109,9 +109,15 @@ pub struct VerifiedIdentity {
     /// The opaque broker-assigned holder that acted (which of the user's
     /// things); advisory — authorization keys off email + scopes, not this.
     pub holder: Holder,
-    /// The warrant's scopes, verbatim; [`exchange`] applies the RP scope
-    /// policy (intersection) when issuing a token
+    /// The warrant's scopes projected to their identity strings (§5);
+    /// [`exchange`] applies the RP scope policy (intersection) when issuing
+    /// a token. Parameters (a `cap` on `pay:`, `mode` on `sign:`, …) are in
+    /// [`scope_entries`](Self::scope_entries).
     pub scopes: Vec<String>,
+    /// The warrant's scope entries, **verbatim** (spec §5; audit 2026-11 D7):
+    /// a parameterized entry keeps its parameters so the RP — the audience
+    /// that enforces them — sees every attenuation the grantor wrote.
+    pub scope_entries: Vec<ScopeEntry>,
     /// The warrant's revocation ref, for RPs that re-check long-lived
     /// sessions out of band (the verify itself already checked it)
     pub warrant_status: Option<StatusRef>,
@@ -373,6 +379,7 @@ impl Verifier {
             grantee_issuer: verified.grantee_issuer,
             holder: verified.holder,
             scopes: verified.scopes,
+            scope_entries: verified.scope_entries,
             warrant_status: verified.warrant_status,
         })
     }
@@ -448,6 +455,7 @@ impl Verifier {
             grantee_issuer: verified.grantee_issuer,
             holder: verified.holder,
             scopes: verified.scopes,
+            scope_entries: verified.scope_entries,
             warrant_status: verified.warrant_status,
         })
     }

@@ -175,7 +175,10 @@
       "issuer": "browserid.me",
       "scopes": [
         "sign:sbo:post",
-        "sign:sbo:delete"
+        {
+          "mode": "prompt",
+          "scope": "sign:sbo:delete"
+        }
       ],
       "status": "okay",
       "status_refs": [
@@ -1074,7 +1077,10 @@
       "issuer": "browserid.me",
       "scopes": [
         "sign:sbo:post",
-        "sign:sbo:delete"
+        {
+          "mode": "prompt",
+          "scope": "sign:sbo:delete"
+        }
       ],
       "status": "okay",
       "status_refs": [
@@ -1099,7 +1105,14 @@
       "holder": "br.main",
       "issuer": "browserid.me",
       "scopes": [
-        "pay:usd"
+        {
+          "cap": {
+            "amount": "20.00",
+            "currency": "USD",
+            "window": "P1D"
+          },
+          "scope": "pay:usd"
+        }
       ],
       "status": "okay",
       "status_refs": [

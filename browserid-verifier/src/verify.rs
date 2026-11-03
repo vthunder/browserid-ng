@@ -5,8 +5,8 @@
 
 use browserid_core::{
     discovery::{SupportDocument, SupportDocumentFetcher},
-    BindingSet, Error as CoreError, RecordBundle, Result as CoreResult, StatusListToken,
-    StatusRef,
+    BindingSet, Error as CoreError, RecordBundle, Result as CoreResult, ScopeEntry,
+    StatusListToken, StatusRef,
 };
 use reqwest::blocking::Client;
 use std::collections::HashMap;
@@ -118,8 +118,13 @@ pub struct AccessVerificationResult {
     /// things acted). Advisory; the old user/agent subject axis is gone.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holder: Option<String>,
+    /// The warrant's scope entries, **verbatim** (spec §5, audit 2026-11 D7 /
+    /// S7): a verifier is a relay for scope parameters, never a filter. On
+    /// the wire a parameterless entry is the bare scope string (unchanged
+    /// shape) and a parameterized entry is the object (`{"scope", …}`), so a
+    /// `cap` on a `pay:` entry reaches the audience that enforces it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scopes: Option<Vec<String>>,
+    pub scopes: Option<Vec<ScopeEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issuer: Option<String>,
     /// The grantee/actor's issuer (the access cert's `iss`). Equals `issuer`
@@ -483,8 +488,10 @@ pub struct RecordValidationResult {
     /// For `connection` entries, `client_name` is display-only and unverified.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binding: Option<BindingSet>,
+    /// The record's scope entries, verbatim — see
+    /// [`AccessVerificationResult::scopes`] for the wire shape.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scopes: Option<Vec<String>>,
+    pub scopes: Option<Vec<ScopeEntry>>,
     /// The grantor's IdP (the config cert's issuer).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issuer: Option<String>,
@@ -599,7 +606,7 @@ pub async fn validate_record_with_dns(
         grantor: Some(v.grantor),
         grantee: Some(v.grantee),
         binding: Some(v.binding),
-        scopes: Some(v.scopes),
+        scopes: Some(v.scope_entries),
         issuer: Some(v.grantor_issuer),
         status_refs: if status_refs.is_empty() { None } else { Some(status_refs) },
         expires_at: Some(bundle.warrant.claims().exp),
@@ -685,7 +692,7 @@ pub async fn verify_access_with_dns(
         email: Some(v.email),
         grantee: Some(v.grantee),
         holder: Some(v.holder.as_str().to_string()),
-        scopes: Some(v.scopes),
+        scopes: Some(v.scope_entries),
         issuer: Some(v.issuer),
         grantee_issuer: Some(v.grantee_issuer),
         status_refs: if status_refs.is_empty() { None } else { Some(status_refs) },

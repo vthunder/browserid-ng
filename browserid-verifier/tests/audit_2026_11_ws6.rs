@@ -195,11 +195,10 @@ async fn primary_issued_bundle_verifies() {
 // D7 — scope parameters are dropped at the HTTP boundary.
 // ---------------------------------------------------------------------------
 
-/// S7's relay rule: a verifier returns scope entries verbatim. The hosted
-/// `/verify` response carries `scopes: Vec<String>` only, so the `cap` on a
-/// `pay:` entry never reaches an SDK consumer.
+/// S7's relay rule: a verifier returns scope entries verbatim — the `cap` on
+/// a `pay:` entry must reach the SDK consumer through the hosted `/verify`
+/// response (audit 2026-11 D7, fixed: `scopes` is `Vec<ScopeEntry>`).
 #[tokio::test]
-#[ignore] // AUDIT-2026-11 D7: fails today — `AccessVerificationResult.scopes` is `Vec<String>` (verify.rs:122, :689)
 async fn d7_verify_response_carries_scope_parameters() {
     let idp = key(1);
     let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()) };
@@ -215,7 +214,6 @@ async fn d7_verify_response_carries_scope_parameters() {
 }
 
 #[tokio::test]
-#[ignore] // AUDIT-2026-11 D7: fails today — `RecordValidationResult.scopes` is `Vec<String>` (verify.rs:487, :602)
 async fn d7_validate_record_response_carries_scope_parameters() {
     let idp = key(1);
     let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()) };

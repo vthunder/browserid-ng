@@ -32,10 +32,6 @@ use serde_json::{json, Value};
 
 /// Vectors the hosted verifier gets wrong today, with the finding each pins.
 const EXPECTED_FAIL: &[(&str, &str)] = &[
-    // AUDIT-2026-11 D7: `AccessVerificationResult.scopes` / `RecordValidationResult.scopes` are `Vec<String>` (verify.rs:122, :487) — parameters dropped.
-    ("P-OK-07", "D7"),
-    ("P-OK-08", "D7"),
-    ("A-OK-08", "D7"),
     // AUDIT-2026-11 S3: v1 still parses (core device.rs:1304).
     ("P-TYP-01", "S3"),
     ("P-TYP-02", "S3"),
@@ -49,9 +45,6 @@ const EXPECTED_FAIL: &[(&str, &str)] = &[
     ("A-REJ-21", "D16"),
     // AUDIT-2026-11 W6-1: grantor domain compared byte-exact in core.
     ("P-OK-12", "W6-1"),
-    // AUDIT-2026-11 S5: core enforces §4.7 instead of rejecting any constraints claim.
-    ("P-CONS-01", "S5"),
-    ("P-CONS-06", "S5"),
     // AUDIT-2026-11 W6-4: cert status.uri host never compared to iss (verify.rs:754-771).
     ("P-STAT-06", "W6-4"),
 ];
