@@ -114,7 +114,15 @@ export function createVerifier(opts = {}) {
       // two; there is no human/agent flag (an "as-you" agent is
       // indistinguishable from its owner by design).
       grantee: json.grantee || json.email,
+      // The HOLDER (spec §6.1 step 9): the device/agent holder id that
+      // presented, as the access cert names it — the attribution line's
+      // third party ("agent X, held by H, on behalf of Y"). May be absent
+      // from older verifiers.
+      holder: typeof json.holder === "string" ? json.holder : null,
       issuer: json.issuer,
+      // The grantee's issuing IdP domain (differs from `issuer` only for a
+      // delegated presentation where the actor lives at another IdP).
+      granteeIssuer: typeof json.grantee_issuer === "string" ? json.grantee_issuer : null,
       scopes: json.scopes || [],
       // Revocation pointers ({uri, idx}) for later re-checks via
       // checkStatus() — retain these with the session; the presentation
@@ -186,8 +194,9 @@ export function verifyPresentation(presentation, audience, opts = {}) {
 }
 
 /**
- * @typedef {{ok: true, email: string, grantee: string, issuer?: string,
- *   scopes: string[],
+ * @typedef {{ok: true, email: string, grantee: string, holder: string|null,
+ *   issuer?: string, granteeIssuer: string|null,
+ *   scopes: Array<string|object>,
  *   statusRefs: {uri: string, idx: number}[]}
  *   | {ok: false, reason: string}} VerifyResult
  */

@@ -75,6 +75,8 @@ function mismatch(expect, r) {
   const d = [];
   if (r.email !== expect.email) d.push(`email ${expect.email} != ${r.email}`);
   if (r.grantee !== expect.grantee) d.push(`grantee ${expect.grantee} != ${r.grantee}`);
+  // W2-5: the SDK relays `holder` (the vectors' expected holder is "" for a holder-less subject).
+  if ((r.holder ?? "") !== expect.holder) d.push(`holder ${expect.holder} != ${r.holder}`);
   try { assert.deepEqual(r.scopes, expect.scopes); } catch { d.push(`scopes ${JSON.stringify(expect.scopes)} != ${JSON.stringify(r.scopes)}`); }
   return d.length ? d.join("; ") : null;
 }

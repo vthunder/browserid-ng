@@ -13,10 +13,17 @@ export type VerifyResult =
        *  human/agent flag (an "as-you" agent is indistinguishable from its
        *  owner by design). */
       grantee: string;
+      /** The holder id of the device/agent that presented (spec §6.1 step 9),
+       *  for the attribution line; null when the verifier did not return it. */
+      holder: string | null;
       /** The issuing IdP domain (the identity's IdP). */
       issuer?: string;
-      /** Scopes the warrant grants at this audience. */
-      scopes: string[];
+      /** The grantee's issuing IdP domain; null when not returned. Differs
+       *  from `issuer` only for a delegate living at another IdP. */
+      granteeIssuer: string | null;
+      /** Scope entries the warrant grants at this audience, verbatim: bare
+       *  names or parameterised object entries ({ scope, ...params }). */
+      scopes: Array<string | ScopeEntry>;
       /** Revocation pointers for later re-checks via checkStatus().
        *  Retain with the session; the presentation expires in minutes. */
       statusRefs: StatusRef[];
@@ -26,6 +33,12 @@ export type VerifyResult =
       /** Human-readable failure reason. */
       reason: string;
     };
+
+/** A parameterised scope entry, relayed verbatim from the warrant. */
+export interface ScopeEntry {
+  scope: string;
+  [parameter: string]: unknown;
+}
 
 /** A revocation pointer: where a credential's status bit lives (spec §6.4). */
 export interface StatusRef {

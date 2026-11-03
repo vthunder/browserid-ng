@@ -26,6 +26,18 @@ test("okay → ok:true with email/issuer/grantee/scopes", async () => {
   assert.equal(r.issuer, "b.com");
   assert.equal(r.grantee, "a@b.com"); // defaults to email (as-you)
   assert.deepEqual(r.scopes, ["login"]);
+  assert.equal(r.holder, null, "absent from this verifier's answer");
+  assert.equal(r.granteeIssuer, null);
+});
+
+test("holder and grantee_issuer are passed through (W2-5)", async () => {
+  const v = createVerifier({
+    fetch: stubFetch({ status: "okay", email: "a@b.com", grantee: "a+bot@c.com", holder: "br.main",
+      issuer: "b.com", grantee_issuer: "c.com", scopes: [] }),
+  });
+  const r = await v.verify(P, "https://app.example");
+  assert.equal(r.holder, "br.main");
+  assert.equal(r.granteeIssuer, "c.com");
 });
 
 test("failure status → ok:false with reason (fail closed)", async () => {
