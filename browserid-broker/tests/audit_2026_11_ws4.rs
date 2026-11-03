@@ -726,8 +726,6 @@ async fn w4_33_oidc_attaches_to_the_session_that_began_the_claim() {
 /// "a live bridge grant"; it does not say whose. Decision: bind the grant to
 /// the session that ran the ceremony (store the session id with it), or
 /// accept and document that a bridge proof is account-wide for 10 minutes.
-// AUDIT-2026-11 W4-34: fails today
-#[ignore]
 #[tokio::test]
 async fn w4_34_bridge_grant_is_redeemable_only_by_the_proving_session() {
     let (ctx, mock) = oidc_context().await;

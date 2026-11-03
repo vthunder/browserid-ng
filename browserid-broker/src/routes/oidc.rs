@@ -482,17 +482,16 @@ where
     // This ceremony IS the live bridge proof the chokepoint demands for an
     // E2 mint (pr3a): grant a single-use redemption at /device/issue with the
     // bridge's TTL decision (default ~1wk; OAuth hints may refine it later).
-    state.record_bridge_grant(
-        user_id,
-        email,
-        chrono::Duration::days(crate::state::BRIDGE_DEFAULT_TTL_DAYS),
-    );
+    // The grant belongs to the session that saw Google (audit 2026-11
+    // W4-34): the one in the browser, or the one a cold claim opens below.
+    let ttl = chrono::Duration::days(crate::state::BRIDGE_DEFAULT_TTL_DAYS);
 
     // A cold claim ends signed in, like completing an email verification —
     // but only Lightweight: the bridge proof shows no account password.
     if let Some(s) = session.as_ref() {
         // The session proved one more identity (bean 160l).
         state.session_store.add_proved_email(&s.id, email)?;
+        state.record_bridge_grant_for_session(user_id, email, ttl, &s.id.0);
     } else {
         let new_session = state
             .session_store
@@ -502,6 +501,7 @@ where
             &new_session.id.0,
             super::session::cookie_secure(&state.domain),
         );
+        state.record_bridge_grant_for_session(user_id, email, ttl, &new_session.id.0);
     }
 
     state.analytics.capture(

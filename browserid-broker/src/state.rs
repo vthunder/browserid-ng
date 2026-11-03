@@ -143,13 +143,17 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
 
 /// One live bridge proof (browserid-ng-pr3a): the voucher-decided cert TTL
 /// plus the grant's own redemption deadline.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct BridgeMintGrant {
     /// Cert TTL the voucher decided for this mint (E2 default ~1 week; a
     /// bridge may vary it per-address or from OAuth hints).
     pub ttl: chrono::Duration,
     /// When the unredeemed grant lapses and the bridge must be re-run.
     pub expires_at: chrono::DateTime<chrono::Utc>,
+    /// The broker session that ran the proving ceremony (audit 2026-11
+    /// W4-34, Q18 (a)): only it may redeem the grant. `None` = recorded by
+    /// a caller with no session (redeemable by `take_bridge_grant` only).
+    pub session_id: Option<String>,
 }
 
 /// How long a completed bridge proof stays redeemable at `/device/issue`.
@@ -250,11 +254,38 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
     /// Record a completed bridge proof (pr3a): `/device/issue` may redeem it
     /// once, within [`BRIDGE_GRANT_WINDOW_SECS`], to mint `email`'s certs
     /// with the voucher-decided `ttl`.
+    ///
+    /// Unbound form: no session owns the grant. The bridge legs record
+    /// through [`record_bridge_grant_for_session`] so only the session that
+    /// ran the ceremony redeems (W4-34).
     pub fn record_bridge_grant(
         &self,
         user_id: crate::store::UserId,
         email: &str,
         ttl: chrono::Duration,
+    ) {
+        self.insert_bridge_grant(user_id, email, ttl, None);
+    }
+
+    /// Record a completed bridge proof owned by `session_id`: the session
+    /// the ceremony ran in. `/device/issue` under any other session of the
+    /// account sees no grant (W4-34, Q18 (a)).
+    pub fn record_bridge_grant_for_session(
+        &self,
+        user_id: crate::store::UserId,
+        email: &str,
+        ttl: chrono::Duration,
+        session_id: &str,
+    ) {
+        self.insert_bridge_grant(user_id, email, ttl, Some(session_id.to_string()));
+    }
+
+    fn insert_bridge_grant(
+        &self,
+        user_id: crate::store::UserId,
+        email: &str,
+        ttl: chrono::Duration,
+        session_id: Option<String>,
     ) {
         let now = chrono::Utc::now();
         let mut grants = self.bridge_mint_grants.write().unwrap();
@@ -264,21 +295,55 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             BridgeMintGrant {
                 ttl,
                 expires_at: now + chrono::Duration::seconds(BRIDGE_GRANT_WINDOW_SECS),
+                session_id,
             },
         );
     }
 
     /// Redeem (consume) a live bridge grant for `(user_id, email)`, returning
     /// the voucher-decided TTL. `None` = no live proof; the bridge must run.
+    /// Redeems only an UNBOUND grant; a grant owned by a session needs
+    /// [`take_bridge_grant_for_session`]. (Signature kept for callers that
+    /// redeem outside a cookie session.)
     pub fn take_bridge_grant(
         &self,
         user_id: crate::store::UserId,
         email: &str,
     ) -> Option<chrono::Duration> {
+        self.remove_bridge_grant(user_id, email, None)
+    }
+
+    /// Redeem (consume) the live bridge grant for `(user_id, email)` from the
+    /// session that proved it. An unbound grant is redeemable too; a grant
+    /// owned by another session stays put and `None` is returned.
+    pub fn take_bridge_grant_for_session(
+        &self,
+        user_id: crate::store::UserId,
+        email: &str,
+        session_id: &str,
+    ) -> Option<chrono::Duration> {
+        self.remove_bridge_grant(user_id, email, Some(session_id))
+    }
+
+    fn remove_bridge_grant(
+        &self,
+        user_id: crate::store::UserId,
+        email: &str,
+        session_id: Option<&str>,
+    ) -> Option<chrono::Duration> {
         let now = chrono::Utc::now();
         let mut grants = self.bridge_mint_grants.write().unwrap();
         grants.retain(|_, g| g.expires_at > now);
-        grants.remove(&(user_id.0, email.to_lowercase())).map(|g| g.ttl)
+        let key = (user_id.0, email.to_lowercase());
+        let owned_by_caller = match (grants.get(&key)?.session_id.as_deref(), session_id) {
+            (None, _) => true,
+            (Some(owner), Some(caller)) => owner == caller,
+            (Some(_), None) => false,
+        };
+        if !owned_by_caller {
+            return None;
+        }
+        grants.remove(&key).map(|g| g.ttl)
     }
 
     /// Register a mock primary IdP for testing
