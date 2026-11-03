@@ -19,7 +19,7 @@ const EMAIL = "dan@example.com";
 
 let service;
 before(() => new Promise((r) => {
-  service = createWalletService({ verifyLogin: async (p) => (p === "good" ? { ok: true, email: EMAIL } : { ok: false, reason: "bad presentation" }) });
+  service = createWalletService({ verifyLogin: async (p) => (p === "good" ? { ok: true, email: EMAIL, grantee: EMAIL, scopes: ["login"], statusRefs: [] } : { ok: false, reason: "bad presentation" }) });
   service.server.listen(PORT, r);
 }));
 after(() => service.server.close());

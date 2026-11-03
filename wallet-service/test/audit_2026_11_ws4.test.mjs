@@ -83,23 +83,20 @@ const mcpProbe = (access) =>
 // ---------------------------------------------------------------------------
 // W4-22 — delegated (agent) presentations open a tenant as the human
 
-// server.mjs:34 says "Human sign-in only: the default verifier rejects
-// subject=agent" — but @browserid-ng/verify removed allowAgent (July M2) and
-// now tells RPs to compare grantee with email themselves. /oauth/login
-// never does, so an agent holding a login warrant for this wallet's origin
-// becomes the human's tenant: full control of the custodied agent key.
-test("W4-22: a delegated presentation (grantee != email) does not open the human's tenant", { skip: "AUDIT-2026-11 W4-22: fails today — /oauth/login keys the tenant on email and ignores grantee" }, async () => {
+// @browserid-ng/verify removed allowAgent (July M2) and tells RPs to compare
+// grantee with email themselves; /oauth/login does (Q16 (a)), so an agent
+// holding a login warrant for this wallet's origin never becomes the
+// human's tenant.
+test("W4-22: a delegated presentation (grantee != email) does not open the human's tenant", async () => {
   const r = await login("agent");
   assert.equal(r.status, 401);
 });
 
-test("W4-22 (pinned): a presentation without the login scope is still admitted today — no scope policy at /oauth/login", async () => {
-  // Pinned as observed behaviour, not as intended; see the report. The
-  // hosted verifier returns `scopes` and leaves scope policy to the RP
-  // (verify.rs:602), so neither layer requires `login` here: any warrant
-  // whose audience is this wallet's origin opens the tenant.
+test("W4-22: a presentation without the login scope is refused (Q16 (a): the wallet is human-only)", async () => {
+  // The hosted verifier returns `scopes` and leaves scope policy to the RP
+  // (verify.rs:602); /oauth/login requires `login` itself.
   const r = await login("noscope");
-  assert.equal(r.status, 200);
+  assert.equal(r.status, 401);
 });
 
 // ---------------------------------------------------------------------------

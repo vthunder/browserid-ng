@@ -31,8 +31,19 @@ export function createWalletService({ verifyLogin } = {}) {
   const audit = new Audit(db);
   const verifier = createVerifier({ verifierUrl: VERIFIER_URL });
   // Injectable for tests; production verifies at the broker's hosted verifier.
-  // Human sign-in only: the default verifier rejects subject=agent.
+  // Human sign-in only (decision Q16 (a), audit 2026-11 W4-22): the verifier
+  // cannot tell humans from agents, so /oauth/login itself requires the
+  // presentation to be self-asserted (grantee == email) AND to carry the
+  // `login` scope. A delegated presentation never opens the human's tenant.
   const verify = verifyLogin || ((presentation) => verifier.verify(presentation, WALLET_ORIGIN));
+  const hasLoginScope = (scopes) =>
+    Array.isArray(scopes) &&
+    scopes.some((s) => s === "login" || (s && typeof s === "object" && s.scope === "login"));
+  const humanLoginRefusal = (r) => {
+    if (typeof r.grantee !== "string" || r.grantee !== r.email) return "delegated presentation: this wallet signs in the account holder only";
+    if (!hasLoginScope(r.scopes)) return "presentation does not carry the login scope";
+    return null;
+  };
 
   // -- tiny fixed-window rate limiter (per key per route class) --------------
   const buckets = new Map(); // key -> { windowStart, count }
@@ -115,6 +126,11 @@ export function createWalletService({ verifyLogin } = {}) {
         try { ({ presentation } = JSON.parse(await readBody(req))); } catch {}
         const r = await verify(presentation);
         if (!r.ok) return json(res, 401, { reason: r.reason });
+        const refusal = humanLoginRefusal(r);
+        if (refusal) {
+          audit.log(r.email, "account.login_refused", { ip, detail: refusal });
+          return json(res, 401, { reason: refusal });
+        }
         store.ensureAccount(r.email);
         audit.log(r.email, "account.login", { ip });
         return json(res, 200, { email: r.email }, { "set-cookie": sessionCookie(signSession(r.email)) });
