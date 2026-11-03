@@ -30,9 +30,6 @@ const EXPECTED_FAIL: &[(&str, &str)] = &[
     ("P-TYP-01", "S3"),
     ("P-TYP-02", "S3"),
     ("A-REJ-13", "S3"),
-    // AUDIT-2026-11 S5: core implements §4.7 (aud/scopes/max-ttl) while the spec says no reference verifier does; a satisfied constraint verifies.
-    ("P-CONS-01", "S5"),
-    ("P-CONS-06", "S5"),
     // AUDIT-2026-11 W6-4: cert `status.uri` host is never compared to the cert's `iss` (a verifier rule, §6.3; core surfaces the ref only).
     ("P-STAT-06", "W6-4"),
 ];

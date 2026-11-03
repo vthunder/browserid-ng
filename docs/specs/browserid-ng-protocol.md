@@ -274,8 +274,12 @@ issued — not by an existing device silently speaking as it.
 
 ### 4.7 Constraints & managed identities
 
-> **Planned extension — not yet implemented.** The design is settled; this
-> section specifies the target.
+> **Implementation status (2026-11).** The three constraint keys below —
+> `aud`, `scopes`, `max-ttl` — are implemented and enforced by
+> **browserid-core**, and therefore by every verifier built on it: the
+> hosted `/verify` and `/validate-record`, `browserid-rp`, and the
+> conformance runners. The managed-identity marker and the user-agent
+> duties remain a planned extension.
 
 A **managed identity** is declared by its IdP at issuance: every device cert of
 a managed identity carries `managed: true` (§4.1). The marker — not the
@@ -333,9 +337,12 @@ restrictions; ignoring one is escaping it. (This is also what keeps future
 vocabulary additions safe: verifiers predating a key reject rather than
 silently waive it.) It follows that a verifier which implements **none** of
 this section MUST reject any presented cert carrying a `constraints` claim at
-all, whatever its keys. No verifier in the reference implementation
-implements this section as of 2026-11; a conforming implementation that does
-MUST say so in its documentation.
+all, whatever its keys. The reference implementation (browserid-core, and
+every verifier built on it) implements exactly the three keys of the table
+above: a presentation whose constraints are all satisfied verifies, an empty
+`constraints` object verifies (nothing to enforce), and any other key
+rejects. A conforming implementation that implements a different set MUST
+say so in its documentation.
 
 **`scopes` and scope-less warrants.** A warrant without a `scopes` claim
 carries the empty set, which every allowlist contains; the `scopes`
