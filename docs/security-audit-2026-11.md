@@ -349,3 +349,33 @@ another.
 Before deploying anything in groups 1, 4 or 5 that touches `dialog.js`, the
 wallet or the hosted-IdP pages, run the Playwright e2e locally against a warm
 broker (CI does not run e2e). Verify production after every deploy.
+
+## 7. Remediation status (2026-11-03)
+
+69 of 75 beans under the epic are completed on branch `audit-2026-11`,
+landed as five worktree merges (core 1f974ad, verifiers 5e76307, SDKs
+f98cc05, registrar 509e46c, broker routes 2133bea) plus supply chain
+e5fff75 and assertion `iat` / fuzz cadence b9e4224. Every `AUDIT-2026-11`
+acceptance test and WS2 vector for a completed bean is un-ignored and
+passing; the supply-chain gate is green with zero advisories.
+
+Still open:
+
+| Bean | Why |
+|---|---|
+| 3zpa S3 drop v1 warrants | Six signers still emit v1 (dialog.js, wallet login/mediator, FedCM, core `Warrant::create`); the wallet's registry-login warrant is deliberately refless and v2 requires `status`. Needs a decision: spec exception for issuer-registry login warrants, or pre-allocated refs. Then signers → v2, deploy, expire, delete the arm. |
+| 4c8h W7-8 non-root containers | Blocked on infra chown (u3q7). |
+| u3q7, afn5, zthh | sandmill-infra tasks (chown, second age recipient, declare `x-forwarded-for-value`). |
+| ubk3 | hosted `/verify` `expires_at`; sdk/agent D1 mirror. |
+
+Discovered during remediation (fixed, bean 0246): hosted-tenant agents
+minted through the D1 wide mint; `/idp/device_cert` now issues sub-identity
+auth certs. Deploy notes gathered from the merges: run Playwright e2e
+locally before deploying (dialog.js, registry-login/session, idp-device-
+authorize, authorize.html changed); existing `/idp` cookies stop
+validating; hosted IdP and agent SDK deploy together and the github-mcp
+demo agent is re-provisioned; publish agent 1.0.0 / mcp-auth 0.6.0 /
+verify 0.4.0 / gate 0.11.0 before regenerating SDK lockfiles from the
+registry; MCP resource configs must have no trailing slash; set
+`POSTHOG_ID_SALT` and keep `TRUSTED_PROXIES=1` in the broker env;
+wallet-service and hosted wallet redeploy.
