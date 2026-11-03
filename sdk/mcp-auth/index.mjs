@@ -665,6 +665,19 @@ export function createAuthCodeLane(opts) {
   const codes = new Map(); // code -> { mode, clientId, redirectUri, codeChallenge, grant|record, exp }
   const proofs = new Map(); // request_id -> { body, exp }
   const refreshTokens = new Map(); // token -> { familyId, clientId, redirectUri, record, bindingId, scope, client, exp, rotatedTo }
+  // §6.6 invariant 5, resource side (audit 2026-11 D20): one binding.id is
+  // held for exactly ONE record. A second validated record naming an id
+  // already bound to a different record is refused at code release and at
+  // every mint/refresh — a double-minting registry cannot fan one
+  // connection out into two.
+  const boundRecords = new Map(); // binding.id -> record
+  function bindRecord(bindingId, record) {
+    const held = boundRecords.get(bindingId);
+    if (held !== undefined && held !== record) {
+      throw new McpAuthError("invalid_grant", `binding.id '${bindingId}' is already bound to another record`);
+    }
+    boundRecords.set(bindingId, record);
+  }
 
   const sweep = (map) => {
     const t = nowS();
@@ -1229,6 +1242,11 @@ export function createAuthCodeLane(opts) {
       if (rec.grantorPin && !identityEq(v.grantor, rec.grantorPin)) {
         return errorRedirect(rec.redirectUri, rec.hostState, "access_denied", "record identity does not match the signed-in user");
       }
+      try {
+        bindRecord(binding.id, grant.warrant);
+      } catch (e) {
+        return errorRedirect(rec.redirectUri, rec.hostState, "access_denied", e.message);
+      }
       const code = `oac_${randomBytes(32).toString("base64url")}`;
       codes.set(code, {
         mode: "connection",
@@ -1357,6 +1375,7 @@ export function createAuthCodeLane(opts) {
     if (binding.kind !== "connection" || !binding.id || binding.client_host !== redirectHost) {
       throw new McpAuthError("invalid_grant", "record does not match this connection");
     }
+    bindRecord(binding.id, rec.record);
     // §6.5: conjoin with the policy layer (owner, or a covering policy
     // record revalidated fresh) — effective scopes S ∩ S′, both records'
     // status refs on the bearer, expiry the earlier of the two.

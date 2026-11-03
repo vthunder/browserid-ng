@@ -225,7 +225,7 @@ test("W4-10 pin: today the Lane A mint ignores the policy layer entirely (the ga
 // D20 — binding.id is not held 1:1 with its record (spec §6.6 invariant 5)
 // ===========================================================================
 
-test("D20: a second record naming an already-bound binding.id must be refused", { skip: "AUDIT-2026-11 D20: fails today" }, async () => {
+test("D20: a second record naming an already-bound binding.id must be refused", async () => {
   const CONN_A = record({ grantor: OWNER, grantee: OWNER, audience: RESOURCE, scopes: ["notes:read"], binding: { kind: "connection", protocol: "oauth", id: "cn_dup", client_host: "claude.ai" }, status: { uri: `${BROKER}/status`, idx: 1 } });
   const CONN_B = record({ grantor: OWNER, grantee: OWNER, audience: RESOURCE, scopes: ["notes:read"], binding: { kind: "connection", protocol: "oauth", id: "cn_dup", client_host: "claude.ai" }, status: { uri: `${BROKER}/status`, idx: 2 } });
   let which = CONN_A;
@@ -237,7 +237,9 @@ test("D20: a second record naming an already-bound binding.id must be refused", 
   const first = await connect(lane, { scope: "notes:read" });
   assert.ok(first.access_token);
   which = CONN_B;
-  await assert.rejects(connect(lane, { scope: "notes:read" }), (e) => e instanceof McpAuthError);
+  // Refused at code release: the lane answers an access_denied redirect naming the conflict
+  // (the connect helper surfaces it as "no code: <redirect>"); a mint-time conflict throws.
+  await assert.rejects(connect(lane, { scope: "notes:read" }), (e) => e instanceof McpAuthError || /already(\+|%20| )bound/.test(e.message));
 });
 
 // ===========================================================================
