@@ -383,8 +383,15 @@ fn subaddressing_is_a_grantor_rule_only() {
     // implies downward, never upward/sideways).
     assert!(!as_grantor("dan+claude@mingo.place", "dan@mingo.place"));
     assert!(!as_grantor("dan+claude@mingo.place", "dan+other@mingo.place"));
-    // Domain must match.
+    // Domain must match — under the §5 comparison (case-insensitive A-label,
+    // W6-1); the local part stays byte-exact.
     assert!(!as_grantor("dan@mingo.place", "dan+x@evil.place"));
+    assert!(as_grantor("dan@mingo.place", "dan+x@MINGO.place"));
+    assert!(as_grantor("dan@mingo.place", "dan@Mingo.PLACE"));
+    assert!(identity_matches("dan@mingo.place", "dan@Mingo.PLACE"));
+    assert!(!as_grantor("dan@mingo.place", "Dan@mingo.place"));
+    // Non-emails never match, even byte-equal ones (fail-closed).
+    assert!(!identity_matches("not-an-email", "not-an-email"));
     // Degenerate empty tag ("dan+@") matches the base rule — harmless: the
     // warrant identifier still pins the exact presentable identity.
     assert!(as_grantor("dan@mingo.place", "dan+@mingo.place"));

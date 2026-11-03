@@ -48,8 +48,9 @@ fn local() -> impl Strategy<Value = String> {
 fn tag() -> impl Strategy<Value = String> {
     "[a-z0-9]{1,8}"
 }
-/// Lowercase ASCII domains — the §5 comparison is byte-exact in
-/// `identity_matches` (WS6 W6-1), so mixed case is deliberately not generated here.
+/// Lowercase ASCII domains, so that the §5 comparison (case-insensitive
+/// A-label) coincides with byte equality and the identity properties can
+/// compare strings directly.
 fn domain() -> impl Strategy<Value = String> {
     "[a-z][a-z0-9-]{0,7}\\.(com|org|example)"
 }

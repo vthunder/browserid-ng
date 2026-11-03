@@ -1,11 +1,11 @@
 ---
 # browserid-ng-j84h
 title: '[Audit 2026-11] W6-1: identity_matches exact and subaddress branches use the §5 domain comparison'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-11-02T22:43:20Z
-updated_at: 2026-11-02T22:44:00Z
+updated_at: 2026-11-03T08:22:56Z
 parent: browserid-ng-ag1l
 blocked_by:
     - browserid-ng-v8s0
@@ -24,3 +24,12 @@ Acceptance:
 The JS half of the identity rule (D17 / W2-3 / W2-4) is its own draft bean under Q26.
 
 Reports: ws6 §2, ws2 §2. Ledger: docs/security-audit-2026-11.md. Decisions: docs/security-audit-2026-11-decisions.md.
+
+
+
+## Summary of Changes
+
+- browserid-core/src/device.rs: `identity_matches` exact branch now uses `identity::identity_eq` (so a malformed/non-email operand never matches, fail-closed) and the subaddress branch in `identity_matches_as_grantor` uses `identity::domain_eq`; the glob branch already did. A config cert for user@example.com now covers a grantor written user@EXAMPLE.com.
+- Un-ignored ws6 `w6_1_grantor_match_uses_spec_domain_comparison`; P-OK-12 removed from EXPECTED_FAIL in browserid-core's WS2 runner (now agrees; vector file unchanged).
+- fuzz/fuzz_targets/identity.rs reference updated to the §5 comparison in every branch; WS3 proptest domain-strategy note updated. Unit test gained domain-case / non-email cases.
+- Not done here: the W6-1 rows in browserid-verifier's runner and the SDK conformance tests (other crates).

@@ -76,7 +76,9 @@ fn expired_at(exp: i64, at: i64) -> bool {
 /// and the unanchored form let `admin*` cover `admin@any-other-domain`.
 /// Malformed (multi-`@`) emails never match — fail-closed (audit L1).
 fn identity_matches(pattern: &str, email: &str) -> bool {
-    if pattern == email {
+    // Exact under the §5 identity comparison (domain lowercased A-label,
+    // local part byte-exact; a malformed operand never matches) — W6-1.
+    if crate::identity::identity_eq(pattern, email) {
         return true;
     }
     if pattern.contains('*') {
@@ -119,7 +121,8 @@ fn identity_matches_as_grantor(pattern: &str, grantor: &str) -> bool {
     if let (Some((p_local, p_domain)), Some((e_local, e_domain))) =
         (crate::identity::email_parts(pattern), crate::identity::email_parts(grantor))
     {
-        return p_domain == e_domain
+        // Domain under the §5 comparison (W6-1); local part byte-exact.
+        return crate::identity::domain_eq(p_domain, e_domain)
             && e_local.len() > p_local.len()
             && e_local.starts_with(p_local)
             && e_local.as_bytes()[p_local.len()] == b'+';

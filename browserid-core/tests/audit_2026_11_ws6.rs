@@ -541,13 +541,10 @@ fn i5_grantee_join_uses_spec_comparison() {
     assert!(f.verify(&p).is_err(), "a subaddress is a different grantee");
 }
 
-/// The config-cert `identities` ↔ grantor match goes through
-/// `identity_matches`, whose exact and subaddress branches compare the domain
-/// BYTE-exact (device.rs:73, :107), not under §5. Stricter than spec (fail-
-/// closed), so no security impact; recorded as W6-1. Issuers emit lowercase
-/// A-labels, so it is unreachable in practice.
+/// The config-cert `identities` ↔ grantor match (`authorizes_grantor`)
+/// compares the domain under §5 in its exact and subaddress branches too
+/// (W6-1, fixed in bean j84h).
 #[test]
-#[ignore] // AUDIT-2026-11 W6-1: fails today — `identity_matches` exact/subaddress branches skip §5 domain normalization
 fn w6_1_grantor_match_uses_spec_domain_comparison() {
     let f = Fx::new();
     let mut p = f.bundle();
