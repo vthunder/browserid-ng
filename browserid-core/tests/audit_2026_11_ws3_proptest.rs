@@ -876,15 +876,19 @@ proptest! {
         prop_assert!(serde_json::from_value::<ScopeEntry>(v).is_err());
     }
 
-    /// Core does not implement the scope-string grammar; this pins the
-    /// reference predicate the registrar and fuzz targets share and records
-    /// that `ScopeEntry` accepts strings outside it (the grammar is enforced
-    /// at request time, registry-api-v1 §3 — see W3-3 for the gap there).
+    /// The one scope grammar lives in core as
+    /// `browserid_core::validate_scope_string` (W3-3 / Q27, bean lu7i); this
+    /// pins it against the spec regex and a local reference predicate, and
+    /// records that `ScopeEntry` itself stays grammar-agnostic (signers and
+    /// filers call the predicate; the parser does not).
     #[test]
     fn scope_grammar_reference_matches_the_spec_regex(s in "\\PC{0,140}", g in scope_string()) {
         prop_assert!(scope_grammar(&g));
-        let by_regex = regex::Regex::new(r"^[a-z0-9_:.\-/*@+]{1,128}$").unwrap().is_match(&s);
+        let by_regex = regex::Regex::new(browserid_core::scope::SCOPE_GRAMMAR_REGEX).unwrap().is_match(&s);
         prop_assert_eq!(scope_grammar(&s), by_regex);
+        // Core's predicate (bean lu7i, Q27) is the same grammar.
+        prop_assert_eq!(browserid_core::validate_scope_string(&s), by_regex);
+        prop_assert!(browserid_core::validate_scope_string(&g));
         // ScopeEntry::Bare is grammar-agnostic.
         prop_assert!(serde_json::from_value::<ScopeEntry>(serde_json::Value::String(s)).is_ok());
     }
