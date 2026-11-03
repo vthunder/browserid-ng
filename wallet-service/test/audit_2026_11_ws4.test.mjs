@@ -33,10 +33,14 @@ const VERDICTS = {
   noscope: { ok: true, email: "dan@example.com", grantee: "dan@example.com", scopes: ["guestbook-sign"], statusRefs: [] },
 };
 
+// The stubbed status re-check (D13): switchable per test, records the refs asked about.
+let statusVerdict = { ok: true, revoked: false };
+const statusCalls = [];
 let service;
 before(() => new Promise((r) => {
   service = createWalletService({
     verifyLogin: async (p) => VERDICTS[p] || { ok: false, reason: "bad presentation" },
+    checkStatus: async (refs) => { statusCalls.push(refs); return statusVerdict; },
   });
   service.server.listen(PORT, r);
 }));
@@ -102,18 +106,19 @@ test("W4-22: a presentation without the login scope is refused (Q16 (a): the wal
 // ---------------------------------------------------------------------------
 // D13 — status refs dropped; session and refresh tokens outlive the login
 
-test("D13 (pinned): the verifier's status refs are not retained anywhere the service could re-check them", async () => {
-  await login("human");
-  const cols = service.db.prepare("PRAGMA table_info(accounts)").all().map((c) => c.name);
-  assert.deepEqual(cols, ["email", "created_at"], "accounts carry no status refs");
-  const tables = service.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((t) => t.name);
-  assert.ok(!tables.some((t) => /status|ref/i.test(t)), "no status-ref table");
+test("D13: the sign-in's status refs ride into the connection's tokens (Q21 (a))", async () => {
+  const clientId = await registerClient();
+  const { cookie } = await login("human");
+  await tokens({ clientId, cookie });
+  const rows = service.db.prepare("SELECT status_refs FROM oauth_tokens WHERE client_id = ?").all(clientId);
+  assert.ok(rows.length >= 2);
+  for (const r of rows) assert.deepEqual(JSON.parse(r.status_refs), VERDICTS.human.statusRefs);
 });
 
 // RFC 7009 token revocation is the smallest tenant-side lever: with it the
 // human (or the client) can end a connection before the 30-day refresh
-// family dies. Today there is no revoke, no logout, and no status re-check.
-test("D13: a tenant can revoke a connection (RFC 7009 /oauth/revoke)", { skip: "AUDIT-2026-11 D13: fails today — no revocation endpoint, no logout, no status re-check on refresh" }, async () => {
+// family dies.
+test("D13: a tenant can revoke a connection (RFC 7009 /oauth/revoke)", async () => {
   const clientId = await registerClient();
   const { cookie } = await login("human");
   const t = await tokens({ clientId, cookie });
@@ -123,18 +128,40 @@ test("D13: a tenant can revoke a connection (RFC 7009 /oauth/revoke)", { skip: "
   assert.equal((await mcpProbe(t.access_token)).status, 401);
 });
 
-test("D13 (pinned): refresh re-mints without any verifier contact", async () => {
+test("D13: refresh re-checks the sign-in's status fail-closed (revoked burns the connection; unreachable refuses)", async () => {
+  const refreshWith = (t, clientId) => post("/oauth/token", new URLSearchParams({ grant_type: "refresh_token", refresh_token: t.refresh_token, client_id: clientId }).toString(),
+    { "content-type": "application/x-www-form-urlencoded" });
   const clientId = await registerClient();
   const { cookie } = await login("human");
   const t = await tokens({ clientId, cookie });
-  let verifierCalls = 0;
-  const orig = service.store.ensureAccount.bind(service.store);
-  service.store.ensureAccount = (...a) => { verifierCalls++; return orig(...a); };
-  const r = await post("/oauth/token", new URLSearchParams({ grant_type: "refresh_token", refresh_token: t.refresh_token, client_id: clientId }).toString(),
-    { "content-type": "application/x-www-form-urlencoded" });
-  service.store.ensureAccount = orig;
+  statusCalls.length = 0;
+  let r = await refreshWith(t, clientId);
+  assert.equal(r.status, 200, "live login refreshes");
+  assert.deepEqual(statusCalls, [VERDICTS.human.statusRefs], "the verifier was asked with the login's refs");
+  const t2 = await r.json();
+  statusVerdict = { ok: false, reason: "down" };
+  r = await refreshWith(t2, clientId);
+  assert.equal(r.status, 400, "unreachable verifier: refused, not minted");
+  statusVerdict = { ok: true, revoked: true };
+  r = await refreshWith(t2, clientId);
+  assert.equal(r.status, 400, "revoked login: refused");
+  assert.equal((await mcpProbe(t2.access_token)).status, 401, "…and the connection is burned");
+  statusVerdict = { ok: true, revoked: false };
+});
+
+test("D13: /account's disconnect-all ends every connection of the signed-in tenant", async () => {
+  const c1 = await registerClient();
+  const c2 = await registerClient();
+  const { cookie } = await login("human");
+  const t1 = await tokens({ clientId: c1, cookie });
+  const t2 = await tokens({ clientId: c2, cookie });
+  const list = await fetch(`${ORIGIN}/oauth/connections`, { headers: { cookie } });
+  const ids = (await list.json()).connections.map((c) => c.client_id);
+  assert.ok(ids.includes(c1) && ids.includes(c2), "both new connections are listed (earlier tests may have left others)");
+  const r = await post("/oauth/disconnect", {}, { cookie });
   assert.equal(r.status, 200);
-  assert.equal(verifierCalls, 0);
+  assert.equal((await mcpProbe(t1.access_token)).status, 401);
+  assert.equal((await mcpProbe(t2.access_token)).status, 401);
 });
 
 // ---------------------------------------------------------------------------

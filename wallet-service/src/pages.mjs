@@ -80,6 +80,57 @@ refresh();
 </script>`;
 }
 
+/** GET /account — the tenant's connections, and the lever to end them all
+ *  (audit 2026-11 D13). Sign-in is the same browserid ceremony as /authorize. */
+export function accountPage() {
+  return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Your browserid wallet — connections</title>${STYLE}
+<h1>browserid wallet — connections</h1>
+<div class=card>
+  <p id=state>checking session…</p>
+  <button id=login class=primary hidden>Sign in with browserid</button>
+  <ul id=list></ul>
+  <button id=disconnect hidden>Disconnect all clients</button>
+  <p class=muted>Signed-in identity: <code id=who>–</code></p>
+</div>
+<p class=muted>Disconnecting ends every app's access to this wallet's agent; the agent's
+own warrants and identity are managed at ${esc(BROKER)}/account.</p>
+<script src="${esc(BROKER)}/include.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let email = null;
+async function refresh() {
+  const r = await fetch('/oauth/connections');
+  if (r.status === 401) { email = null; $('who').textContent = '–'; $('login').hidden = false; $('disconnect').hidden = true; $('state').textContent = 'Sign in to see your connections.'; return; }
+  const j = await r.json();
+  email = j.email; $('who').textContent = email; $('login').hidden = true;
+  const list = $('list'); list.textContent = '';
+  for (const c of j.connections) { const li = document.createElement('li'); li.textContent = (c.name || c.client_id) + ' — connected ' + new Date(c.since * 1000).toLocaleString(); list.appendChild(li); }
+  $('disconnect').hidden = j.connections.length === 0;
+  $('state').textContent = j.connections.length ? j.connections.length + ' connected client(s).' : 'No connected clients.';
+}
+navigator.id.watch({
+  loggedInUser: null,
+  onlogin: async (presentation) => {
+    $('state').textContent = 'verifying…';
+    const r = await fetch('/oauth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ presentation }) });
+    if (!r.ok) { $('state').textContent = 'sign-in failed: ' + (await r.json()).reason; return; }
+    await refresh();
+  },
+  onlogout: () => {},
+});
+$('login').onclick = () => navigator.id.request({ siteName: 'browserid wallet' });
+$('disconnect').onclick = async () => {
+  $('state').textContent = 'disconnecting…';
+  const r = await fetch('/oauth/disconnect', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  const j = await r.json();
+  $('state').textContent = r.ok ? 'Disconnected ' + j.revoked + ' token(s).' : 'failed: ' + (j.error || 'unknown error');
+  await refresh();
+};
+refresh();
+</script>`;
+}
+
 /** GET / — what this host is. */
 export function landingPage() {
   return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">

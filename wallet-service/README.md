@@ -20,8 +20,14 @@ is a remote connector.
 - **OAuth 2.1** AS+RS in one service: PKCE (S256 only), dynamic client
   registration (RFC 7591), discovery (RFC 9728 + RFC 8414), resource binding
   (RFC 8707), `iss` in the authorization response (RFC 9207), rotating refresh
-  tokens with reuse detection. The authorize page's sign-in step **is**
-  browserid — the wallet is its own relying party.
+  tokens with reuse detection, revocation (RFC 7009 `/oauth/revoke`). The
+  authorize page's sign-in step **is** browserid — the wallet is its own
+  relying party, human-only (`grantee == email`, `login` scope required).
+- **Sign-in liveness**: the sign-in's status refs ride with the session and
+  into every connection it approves; a refresh re-checks them at the verifier
+  fail-closed (revoked login ⇒ the connection is burned; unreachable ⇒ refused
+  for now). `/account` lists a tenant's connected clients and disconnects
+  them all in one click.
 - **Custody**: per-tenant Ed25519 device keys, AES-256-GCM envelope under a
   KEK held outside the database (`EnvKeyWrapper`; swap for a KMS behind the
   same interface). The wallet holds **authentication-purpose material only**:

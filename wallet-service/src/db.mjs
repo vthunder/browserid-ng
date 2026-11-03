@@ -43,6 +43,9 @@ export function openDb(path) {
       created_at    INTEGER NOT NULL
     );
 
+    -- status_refs: the sign-in's revocation pointers (JSON [{uri, idx}]),
+    -- carried from the login session into the connection it approves so a
+    -- refresh can re-check the login fail-closed (audit 2026-11 D13).
     CREATE TABLE IF NOT EXISTS oauth_codes (
       code           TEXT PRIMARY KEY,  -- sha256 hex of the code
       client_id      TEXT NOT NULL,
@@ -52,7 +55,8 @@ export function openDb(path) {
       scope          TEXT NOT NULL,
       resource       TEXT,
       expires_at     INTEGER NOT NULL,
-      used           INTEGER NOT NULL DEFAULT 0
+      used           INTEGER NOT NULL DEFAULT 0,
+      status_refs    TEXT
     );
 
     -- Access and refresh tokens, stored hashed. rotated_from links a refresh
@@ -66,7 +70,8 @@ export function openDb(path) {
       expires_at    INTEGER NOT NULL,
       revoked       INTEGER NOT NULL DEFAULT 0,
       rotated_from  TEXT,
-      created_at    INTEGER NOT NULL
+      created_at    INTEGER NOT NULL,
+      status_refs   TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_tokens_account ON oauth_tokens(account_email, client_id);
 
@@ -83,6 +88,13 @@ export function openDb(path) {
     );
     CREATE INDEX IF NOT EXISTS idx_audit_account ON audit_log(account_email, ts);
   `);
+  // Databases created before D13 lack the status_refs columns: add them.
+  // A pre-existing refresh token then carries no refs and is refused at
+  // refresh (fail-closed) — the human reconnects once.
+  for (const table of ["oauth_codes", "oauth_tokens"]) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes("status_refs")) db.exec(`ALTER TABLE ${table} ADD COLUMN status_refs TEXT`);
+  }
   return db;
 }
 
