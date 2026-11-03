@@ -813,7 +813,7 @@
     }
 
     // 3. Assertion for the RP's audience, signed by the fresh access key.
-    const assertion = await signJws(access.privateKey, { exp: nowS() + 300, aud: audience });
+    const assertion = await signJws(access.privateKey, { iat: nowS(), exp: nowS() + 300, aud: audience });
 
     // Self-healing registry (fire-and-forget): re-register this device's
     // pair over the token lane so the account view converges to reality on

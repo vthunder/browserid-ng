@@ -11,8 +11,9 @@ export const nowS = () => Math.floor(Date.now() / 1000);
 
 /** A short-lived assertion for `audience`, signed by the agent key. */
 export function assertion(agentKey, audience) {
-  const exp = nowS() + ASSERTION_VALIDITY_S;
-  return agentKey.jws(HEADER, { exp, aud: audience });
+  const iat = nowS();
+  const exp = iat + ASSERTION_VALIDITY_S;
+  return agentKey.jws(HEADER, { iat, exp, aud: audience });
 }
 
 // ---- device-cert path (the current protocol) -------------------------------

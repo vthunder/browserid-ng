@@ -162,12 +162,17 @@ mod assertion_format {
             "'aud' should match the audience"
         );
 
-        // Should have only these required fields (exp, aud)
+        // Must have 'iat' (W4-40: every signed object carries it)
+        let iat = components.payload.get("iat");
+        assert!(iat.is_some(), "payload must have 'iat' field");
+        assert!(iat.unwrap().is_number(), "'iat' should be a number (Unix timestamp)");
+
+        // Should have only these required fields (iat, exp, aud)
         let payload_obj = components.payload.as_object().unwrap();
         assert_eq!(
             payload_obj.len(),
-            2,
-            "assertion payload should have exactly 2 fields (exp, aud)"
+            3,
+            "assertion payload should have exactly 3 fields (iat, exp, aud)"
         );
     }
 

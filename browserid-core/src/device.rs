@@ -1636,9 +1636,9 @@ impl AccessPresentation {
 
         // Assertion signed by the access cert's fresh key, for this audience.
         self.assertion.verify(&ac.access_key)?;
-        if self.assertion.is_expired_at(at) {
-            return Err(invalid("assertion", "expired"));
-        }
+        // The same §6.1 clock rule for the assertion (W4-40; `iat`-less
+        // assertions tolerated until `assertion::IAT_SUNSET`).
+        self.assertion.check_window_at(at)?;
         if self.assertion.audience() != expected_audience {
             return Err(invalid("assertion", "audience mismatch"));
         }

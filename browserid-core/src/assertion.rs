@@ -1,17 +1,37 @@
 //! Identity assertions for BrowserID-NG
 //!
-//! The minimal 2-claim `{aud, exp}` JWS, signed by a certified key. In the
+//! The minimal `{iat, aud, exp}` JWS, signed by a certified key. In the
 //! device-cert model it is signed by the fresh ACCESS key and presented
 //! inside an `AccessPresentation` (`device.rs`).
+//!
+//! Time bounds (spec §5, §6.1; audit 2026-11 W4-40 / Q19): the assertion
+//! carries `iat` like every other signed object and is judged by the one
+//! clock rule in [`crate::time::check_window`]. **Transition:** signers
+//! that predate the audit emit no `iat`; such an assertion is still accepted
+//! (expiry-only) until the sunset date [`IAT_SUNSET`], after which the claim
+//! becomes required. New signers MUST set it.
 
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::jws::invalid;
+use crate::time::{check_window, CLOCK_SKEW_SECONDS};
 use crate::{Error, KeyPair, PublicKey, Result};
+
+/// Sunset for assertions without `iat` (2027-02-01T00:00:00Z): a verifier
+/// judging an `iat`-less assertion at or after this instant rejects it.
+/// Before it, the assertion is accepted on its `exp` alone (the pre-audit
+/// wire shape; W4-40 transition window).
+pub const IAT_SUNSET: i64 = 1_801_526_400;
 
 /// Claims in an identity assertion
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssertionClaims {
+    /// Issuance time (Unix timestamp). Required of new signers (spec §5);
+    /// absent only on pre-audit assertions, tolerated until [`IAT_SUNSET`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iat: Option<i64>,
+
     /// Expiration time (Unix timestamp)
     pub exp: i64,
 
@@ -57,9 +77,24 @@ impl Assertion {
     ) -> Result<Self> {
         let now = Utc::now();
         let exp = now + validity;
+        Self::create_at(audience, req_origin, now.timestamp(), exp.timestamp(), user_key)
+    }
 
+    /// Create and sign an assertion with an explicit `iat`/`exp` window —
+    /// for deterministic signers and fixtures that must not consult the wall
+    /// clock (the counterpart of [`AccessPresentation::verify_at`]).
+    ///
+    /// [`AccessPresentation::verify_at`]: crate::device::AccessPresentation::verify_at
+    pub fn create_at(
+        audience: &str,
+        req_origin: Option<&str>,
+        iat: i64,
+        exp: i64,
+        user_key: &KeyPair,
+    ) -> Result<Self> {
         let claims = AssertionClaims {
-            exp: exp.timestamp(),
+            iat: Some(iat),
+            exp,
             aud: audience.to_string(),
             req_origin: req_origin.map(str::to_string),
         };
@@ -78,9 +113,29 @@ impl Assertion {
         })
     }
 
-    /// Verify the assertion signature against a public key
+    /// Verify the assertion signature against a public key. Signature only:
+    /// the time bounds are a separate, clock-dependent question —
+    /// [`Self::check_window_at`] — that `AccessPresentation::verify_at` asks
+    /// right after this.
     pub fn verify(&self, public_key: &PublicKey) -> Result<()> {
         Self::verify_signature(&self.encoded, public_key)
+    }
+
+    /// The §6.1 time bounds at the instant `at` (the one clock rule,
+    /// [`check_window`]): `iat ≤ exp`, `iat ≤ at + skew`, unexpired. An
+    /// assertion without `iat` (pre-audit signer) is accepted on `exp`
+    /// alone while `at < IAT_SUNSET`, rejected from the sunset on.
+    pub fn check_window_at(&self, at: i64) -> Result<()> {
+        match self.claims.iat {
+            Some(iat) => check_window("assertion", iat, self.claims.exp, at, CLOCK_SKEW_SECONDS),
+            None if at >= IAT_SUNSET => Err(invalid("assertion", "no iat (required since 2027-02-01)")),
+            None => {
+                if self.is_expired_at(at) {
+                    return Err(invalid("assertion", "expired"));
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Check if the assertion has expired

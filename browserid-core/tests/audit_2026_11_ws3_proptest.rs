@@ -319,7 +319,7 @@ proptest! {
             audience: AUD.into(), scopes: scopes.clone(), status: Some(StatusRef { uri: STATUS.into(), idx: 3 }),
             unknown: Default::default(),
         }, &config).unwrap();
-        let p = AccessPresentation { access_cert: ac, assertion: Assertion::create(AUD, chrono::Duration::days(3650), &access).unwrap(), warrant: w, config_cert: cc };
+        let p = AccessPresentation { access_cert: ac, assertion: Assertion::create_at(AUD, None, IAT, IAT + 3650 * 86_400, &access).unwrap(), warrant: w, config_cert: cc };
         let enc = p.encode();
         let back = AccessPresentation::parse(&enc).unwrap();
         prop_assert_eq!(back.encode(), enc);
@@ -647,7 +647,7 @@ proptest! {
         let cc = DeviceCert::from_claims(DeviceCertClaims { purpose: Purpose::Authorization, public_key: config.public_key(), identities: vec![identity.clone()], iat: IAT, exp: IAT + DAY, ..dc.clone() }, &idp).unwrap();
         let ac = AccessCert::from_claims(AccessCertClaims { typ: TYP_ACCESS_CERT.into(), iss: dc.iss.clone(), iat: IAT, exp: IAT + DAY, identity: identity.clone(), holder: dev.holder().clone(), access_key: access.public_key(), status: None, constraints: None }, &idp).unwrap();
         let w = Warrant::from_claims(WarrantClaims { typ: TYP_WARRANT_V2.into(), iat: IAT, exp: IAT + DAY, grantor: identity.clone(), grantee: identity, holder: None, binding: Some(Binding::Holder { matcher: m.clone() }.into()), audience: AUD.into(), scopes: vec![], status: Some(StatusRef { uri: STATUS.into(), idx: 0 }), unknown: Default::default() }, &config).unwrap();
-        let p = AccessPresentation { access_cert: ac, assertion: Assertion::create(AUD, chrono::Duration::days(3650), &access).unwrap(), warrant: w, config_cert: cc };
+        let p = AccessPresentation { access_cert: ac, assertion: Assertion::create_at(AUD, None, IAT, IAT + 3650 * 86_400, &access).unwrap(), warrant: w, config_cert: cc };
         let k = idp.public_key();
         let r = p.verify_at(AUD, AT, |_| Ok(k.clone()));
         let expected = m.matches(dev.holder());
@@ -697,7 +697,7 @@ fn fx_bundle(iat_w: i64, exp_w: i64) -> (AccessPresentation, KeyPair) {
     let ac = AccessCert::from_claims(AccessCertClaims { typ: TYP_ACCESS_CERT.into(), iss: "example.com".into(), iat: IAT, exp: IAT + DAY, identity: user.into(), holder: h.clone(), access_key: access.public_key(), status: None, constraints: None }, &idp).unwrap();
     let cc = DeviceCert::from_claims(DeviceCertClaims { typ: TYP_DEVICE_CERT.into(), iss: "example.com".into(), iat: IAT, exp: IAT + 90 * DAY, purpose: Purpose::Authorization, holder: h, identities: vec![user.into()], public_key: config.public_key(), status: None, managed: None, constraints: None, prov: None }, &idp).unwrap();
     let w = Warrant::from_claims(WarrantClaims { typ: TYP_WARRANT_V2.into(), iat: iat_w, exp: exp_w, grantor: user.into(), grantee: user.into(), holder: None, binding: Some(Binding::Holder { matcher: HolderMatcher::new("*").unwrap() }.into()), audience: AUD.into(), scopes: vec![], status: Some(StatusRef { uri: STATUS.into(), idx: 0 }), unknown: Default::default() }, &config).unwrap();
-    (AccessPresentation { access_cert: ac, assertion: Assertion::create(AUD, chrono::Duration::days(3650), &access).unwrap(), warrant: w, config_cert: cc }, idp)
+    (AccessPresentation { access_cert: ac, assertion: Assertion::create_at(AUD, None, IAT, IAT + 3650 * 86_400, &access).unwrap(), warrant: w, config_cert: cc }, idp)
 }
 
 proptest! {

@@ -114,7 +114,7 @@ impl Fx {
         Warrant::from_claims(c, &self.config).unwrap()
     }
     fn assertion(&self, aud: &str) -> Assertion {
-        Assertion::create(aud, chrono::Duration::days(3650), &self.access).unwrap()
+        Assertion::create_at(aud, None, IAT, IAT + 3650 * 86_400, &self.access).unwrap()
     }
     fn bundle(&self) -> AccessPresentation {
         AccessPresentation {

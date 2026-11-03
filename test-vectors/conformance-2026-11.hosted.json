@@ -1256,7 +1256,7 @@
       "status": "failure"
     },
     "P-SHAPE-03": {
-      "reason": "parse: JSON error: missing field `typ` at line 1 column 45",
+      "reason": "parse: JSON error: missing field `typ` at line 1 column 62",
       "status": "failure"
     },
     "P-SHAPE-04": {
@@ -1374,6 +1374,37 @@
     "P-TIME-10": {
       "reason": "parse: JSON error: missing field `exp` at line 1 column 272",
       "status": "failure"
+    },
+    "P-TIME-11": {
+      "reason": "Invalid provisioning material: assertion: issued in the future (iat > now + skew)",
+      "status": "failure"
+    },
+    "P-TIME-12": {
+      "reason": "Invalid provisioning material: assertion: issued after its expiry (iat > exp)",
+      "status": "failure"
+    },
+    "P-TIME-13": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
     },
     "P-TYP-01": {
       "email": "user@example.com",

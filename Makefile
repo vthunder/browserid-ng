@@ -4,6 +4,7 @@
 #   make test             run the Rust + SDK test suites
 #   make audit            cargo-audit + npm audit + pip-audit + gitleaks (CI: supply-chain.yml)
 #   make fuzz-smoke       run every cargo-fuzz target for FUZZ_SECS (default 60) — see fuzz/README.md
+#   make fuzz-smoke-install  (dev box) install the weekly launchd agent org.sandmill.fuzz-smoke
 #   make push             push HEAD to origin (triggers the CI image builds)
 #   make watch            watch CI runs for HEAD until they all finish
 #   make release          release HEAD's images to dokku (all apps)
@@ -22,7 +23,7 @@ HOST ?= dokku@browserid.me
 SSH  := ssh -i $(HOME)/.ssh/mini-ops -o StrictHostKeyChecking=accept-new
 REG  := ghcr.io/vthunder/browserid-ng
 
-.PHONY: build test audit fuzz-smoke push watch release deploy publish-status \
+.PHONY: build test audit fuzz-smoke fuzz-smoke-install push watch release deploy publish-status \
         release-broker release-www release-wallet release-mcp-demo \
         release-python-mcp-demo release-guestbook
 
@@ -40,6 +41,20 @@ audit:
 # `make build`/CI/Docker). On the dev box: ssh localtest 'make fuzz-smoke'.
 fuzz-smoke:
 	scripts/fuzz-smoke.sh
+
+# Dev-box only (audit 2026-11 Q29): weekly fuzz-smoke via launchd, Sundays
+# 13:00, through `ssh localtest`, log /tmp/fuzz-smoke.log. Re-run after
+# editing scripts/launchd/org.sandmill.fuzz-smoke.plist. Check with
+# `launchctl list | grep fuzz` (from a login/ssh shell; a sandboxed shell
+# lists only its own session, use `launchctl print gui/$$(id -u)/...`);
+# kick one off now with
+# `launchctl kickstart gui/$$(id -u)/org.sandmill.fuzz-smoke`.
+FUZZ_PLIST = org.sandmill.fuzz-smoke.plist
+fuzz-smoke-install:
+	cp scripts/launchd/$(FUZZ_PLIST) $(HOME)/Library/LaunchAgents/$(FUZZ_PLIST)
+	-launchctl bootout gui/$$(id -u)/org.sandmill.fuzz-smoke 2>/dev/null
+	launchctl bootstrap gui/$$(id -u) $(HOME)/Library/LaunchAgents/$(FUZZ_PLIST)
+	launchctl print gui/$$(id -u)/org.sandmill.fuzz-smoke | head -3
 
 # Publish-state oracle for the SDK packages: local vs registry version, plus a
 # content diff when versions match (catches "changed code, same version").
