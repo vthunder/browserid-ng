@@ -1,11 +1,11 @@
 ---
 # browserid-ng-uphh
 title: '[Audit 2026-11] D11: attaching a key active on another account refuses or moves the whole row; stores agree'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-11-02T22:43:20Z
-updated_at: 2026-11-02T22:43:20Z
+updated_at: 2026-11-03T08:47:41Z
 parent: browserid-ng-ag1l
 ---
 
@@ -18,3 +18,10 @@ Change: in carried_certs refuse when existing.user_id != caller (cert_recorded_e
 Acceptance (un-ignore): browserid-broker/tests/authz_matrix_test.rs: sqlite_upsert_of_a_key_active_on_another_account_keeps_the_row_coherent (SqliteStore).
 
 Reports: ws5 §1. Ledger: docs/security-audit-2026-11.md. Decisions: docs/security-audit-2026-11-decisions.md.
+
+
+## Summary of Changes
+
+- SqliteStore `insert_device_cert` upsert now sets `user_id = excluded.user_id` (broker `store/sqlite.rs`, outside registrar_glue — flagged), so a re-recorded key moves whole with the recording account, as the memory store already did; the two stores agree.
+- Registrar: `carried_certs` reports the account a carried key is already active on (`recorded_on`); `accounts` (plain creation) and `attach` refuse `422 invalid_cert/cert_recorded_elsewhere` unless the identity is moving with it (takeover / transfer), in which case the row moves in the same recording.
+- Un-ignored `sqlite_upsert_of_a_key_active_on_another_account_keeps_the_row_coherent` (SqliteStore).

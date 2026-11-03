@@ -49,11 +49,18 @@ struct Carried {
     identities: Vec<String>,
     status_uri: Option<String>,
     status_idx: Option<u64>,
+    /// The account this key is already recorded (and active) on, if any
+    /// (D11): recording it elsewhere must move the whole row with its
+    /// identity, never leave a row straddling two accounts.
+    recorded_on: Option<u64>,
 }
 
-/// The shared bar for carried certs (§5.2.1, §5.2.4): parse, identity
-/// naming, no bare glob, the host's verification, the retired-key rule,
-/// the possession proof (same jti, no bh); then the holder rule.
+/// The shared bar for carried certs (§5.2.1, §5.2.4), cheap and local
+/// first (I2, audit 2026-11 D9): parse, identity naming, no bare glob, the
+/// possession proof under the cert's own key (same jti as the header, no
+/// bh), its claims and replay; only then the host's verification (issuer
+/// discovery is a network fetch) and the retired-key rule; then the holder
+/// rule.
 async fn carried_certs(
     state: &RegistrarState,
     hp: &Proof,
@@ -83,10 +90,25 @@ async fn carried_certs(
             browserid_core::device::Purpose::Authentication => "authentication",
             browserid_core::device::Purpose::Authorization => "authorization",
         };
+        // Possession, locally, before anything fetches: the proof under the
+        // key the cert names, its claims, and its jti spent for that key.
+        let pubkey = claims.public_key.to_base64();
+        let kid = kid_of(&pubkey).ok_or_else(|| invalid_cert("cert_malformed", format!("{which}: bad key")))?;
+        let p = Proof::parse(&cp.proof)?;
+        if p.jti != hp.jti {
+            return Err(ApiError::InvalidProof("proofs in one request must share a jti".into()));
+        }
+        if p.kid != kid {
+            return Err(ApiError::InvalidProof(format!("{which}: possession proof kid does not match the cert")));
+        }
+        p.verify(&pubkey)?;
+        p.check_claims(state, "POST", path, None)?;
+        replay_check(state, &kid, &hp.jti)?;
         let v = verifier
             .verify_device_cert(&cp.cert, purpose)
             .await
             .map_err(|r| r.into_api_error(&which))?;
+        let mut recorded_on = None;
         if let Some(existing) = state
             .store
             .get_device_cert_by_pubkey(&v.pubkey)
@@ -95,17 +117,8 @@ async fn carried_certs(
             if !existing.is_active() {
                 return Err(invalid_cert("cert_revoked", format!("{which}: this key was retired here")));
             }
+            recorded_on = Some(existing.user_id);
         }
-        let kid = kid_of(&v.pubkey).ok_or_else(|| invalid_cert("cert_malformed", format!("{which}: bad key")))?;
-        let p = Proof::parse(&cp.proof)?;
-        if p.jti != hp.jti {
-            return Err(ApiError::InvalidProof("proofs in one request must share a jti".into()));
-        }
-        if p.kid != kid {
-            return Err(ApiError::InvalidProof(format!("{which}: possession proof kid does not match the cert")));
-        }
-        p.verify(&v.pubkey)?;
-        p.check_claims(state, "POST", path, None)?;
         out.push(Carried {
             kid,
             pubkey: v.pubkey,
@@ -117,11 +130,14 @@ async fn carried_certs(
             identities: v.identities,
             status_uri: v.status_uri,
             status_idx: v.status_idx,
+            recorded_on,
         });
     }
     if out.len() == 2 {
         if out[0].holder != out[1].holder {
-            return Err(invalid_cert("holder_mismatch", "the two certs carry different holders"));
+            // `holders_differ` (reg §7.1, renamed 2026-11 from `holder_mismatch`,
+            // which is an `invalid_warrant` reason).
+            return Err(invalid_cert("holders_differ", "the two certs carry different holders"));
         }
         if out[0].purpose == out[1].purpose {
             return Err(ApiError::InvalidRequest("certs must be one auth cert and/or one config cert".into()));
@@ -137,6 +153,20 @@ fn fresh(carried: &[Carried]) -> bool {
 
 fn host_err(e: crate::error::RegistrarError) -> ApiError {
     ApiError::Internal(format!("membership: {e}"))
+}
+
+/// A carried key active on another account is recorded here only when the
+/// identity is moving with it (a takeover or transfer) — then the stores
+/// move the whole row; otherwise `422 invalid_cert/cert_recorded_elsewhere`
+/// (D11: no row may name one account's user_id with another's holder and
+/// identities).
+fn refuse_foreign_rows(carried: &[Carried], user_id: u64, moving: bool) -> Result<(), ApiError> {
+    for c in carried {
+        if c.recorded_on.is_some_and(|u| u != user_id) && !moving {
+            return Err(invalid_cert("cert_recorded_elsewhere", "this key is an active cert of another account"));
+        }
+    }
+    Ok(())
 }
 
 /// Record carried certs on `user_id`; returns the recorded row ids. A
@@ -269,7 +299,9 @@ fn enroll(
         .map_err(|e| ApiError::Internal(format!("login key: {e}")))?;
     if let Some(e) = &existing {
         if e.user_id != user_id {
-            return Err(ApiError::InvalidRequest("this key is a login key on another account".into()));
+            // The same refusal a bad token gets (S11, audit 2026-11): a
+            // distinct answer told the caller the key is live elsewhere.
+            return Err(ApiError::Forbidden { reason: "login_rejected", description: "login refused".into() });
         }
     }
     let now = Utc::now();
@@ -324,8 +356,9 @@ fn header_by_carried(state: &RegistrarState, hp: &Proof, carried: &[Carried], pa
         .find(|c| c.kid == hp.kid)
         .ok_or_else(|| ApiError::InvalidProof("the Proof key is not one of the carried certs".into()))?;
     hp.verify(&signer.pubkey)?;
-    hp.check_claims(state, "POST", path, Some(bh))?;
-    replay_check(state, &hp.kid, &hp.jti)
+    // The jti was spent for this key by its possession proof in
+    // `carried_certs` (same jti, same key), so no second replay check.
+    hp.check_claims(state, "POST", path, Some(bh))
 }
 
 /// `POST /api/v1/accounts` (§5.2.1).
@@ -351,7 +384,12 @@ pub async fn create(
     let holder = state.host.identity_holder(&identity).map_err(host_err)?;
     let iss = carried[0].iss.clone();
     let user_id = match holder {
-        None => state.host.create_account_with_identity(&identity, &iss).map_err(host_err)?,
+        None => {
+            // Nothing moves on a plain creation: a key active elsewhere
+            // stays there (D11).
+            refuse_foreign_rows(&carried, 0, false)?;
+            state.host.create_account_with_identity(&identity, &iss).map_err(host_err)?
+        }
         Some(_) if !req.confirm_takeover => {
             return Err(ApiError::Conflict {
                 reason: "identity_held",
@@ -739,6 +777,7 @@ pub async fn attach(
         require_fresh()?;
         Some(Pending::Transfer(holder.unwrap()))
     };
+    refuse_foreign_rows(&carried, acct, matches!(pending, Some(Pending::Transfer(_))))?;
     let ids = record(&state, &headers, acct, &identity, &carried, key.id).await?;
     match pending {
         Some(Pending::Transfer(from)) => state.host.transfer_identity(from, acct, &identity, "transferred").map_err(host_err)?,

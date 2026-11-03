@@ -402,20 +402,20 @@ async fn respond_over_sessions_is_a_signing_ceremony() {
     use browserid_core::StatusRef;
     let l = live_broker().await;
     let email = "approver@gmail.com";
-    let (_pres, config_kp, device_cert, config_cert) =
+    let (_pres, config_kp, _dc, config_cert) =
         broker_presentation(&l, email, vec!["registry".into()]).await;
     let (token, _account, login_kp) = login_session(&l, email, &config_kp, &config_cert).await;
     let respond = |body: Value| session_call(&l, &login_kp, &token, "POST", "/api/v1/requests/respond", Some(body));
+    let (device_cert, _cc, device_kp, _ck) = issue_keys(&l, email).await;
 
-    // The device cert raises a consent request for the account's own email.
-    let r = l.client.post(format!("{}/warrant/request", l.base))
-        .json(&json!({
-            "device_cert": device_cert, "identity": email,
-            "grants": [ { "audience": "https://rp.example.com", "scopes": ["events:read"] } ],
-        }))
-        .send().await.unwrap();
-    assert_eq!(r.status(), 200);
-    let code = r.json::<Value>().await.unwrap()["code"].as_str().unwrap().to_string();
+    // The device cert raises a consent request for the account's own email,
+    // signed by the device key (audit 2026-11 D4).
+    let (status, body) = warrant_request(&l, &device_kp, json!({
+        "device_cert": device_cert, "identity": email,
+        "grants": [ { "audience": "https://rp.example.com", "scopes": ["events:read"] } ],
+    })).await;
+    assert_eq!(status, 200, "{body}");
+    let code = body["code"].as_str().unwrap().to_string();
 
     let (status, inbox, _) = session_call(&l, &login_kp, &token, "GET", "/api/v1/requests", None).await;
     assert_eq!(status, 200, "{inbox}");
@@ -439,10 +439,8 @@ async fn respond_over_sessions_is_a_signing_ceremony() {
     assert_eq!(poll["status"], "approved", "{poll}");
     assert!(poll["grants"][0]["warrant"].as_str().unwrap().starts_with(&format!("{signed}~")));
 
-    let r = l.client.post(format!("{}/warrant/request", l.base))
-        .json(&json!({ "device_cert": device_cert, "identity": email, "grants": [ { "audience": "https://rp2.example.com" } ] }))
-        .send().await.unwrap();
-    let code2 = r.json::<Value>().await.unwrap()["code"].as_str().unwrap().to_string();
+    let (_, body) = warrant_request(&l, &device_kp, json!({ "device_cert": device_cert, "identity": email, "grants": [ { "audience": "https://rp2.example.com" } ] })).await;
+    let code2 = body["code"].as_str().unwrap().to_string();
     let (status, body, _) = respond(json!({ "code": code2, "approve": false })).await;
     assert_eq!(status, 200, "deny: {body}");
     assert_eq!(body, json!({}));
@@ -561,6 +559,16 @@ fn proofs_for(htu: &str, certs: &[(&str, &KeyPair)], signer: &KeyPair, body_fn: 
     let bytes = body_fn(entries).to_string().into_bytes();
     let header = browserid_registrar::session::build_proof("POST", htu, Some(&bytes), signer, now, &jti);
     (bytes, header)
+}
+
+/// `POST /warrant/request` as the agent holding `device_kp`: the `Proof`
+/// header the device key signs over the body (audit 2026-11 D4).
+async fn warrant_request(l: &Live, device_kp: &KeyPair, body: Value) -> (reqwest::StatusCode, Value) {
+    let path = "/warrant/request";
+    let htu = format!("{}{path}", l.base);
+    let bytes = body.to_string().into_bytes();
+    let header = browserid_registrar::session::build_proof_now("POST", &htu, Some(&bytes), device_kp);
+    post_proven(l, path, bytes, header, None).await
 }
 
 async fn post_proven(l: &Live, path: &str, bytes: Vec<u8>, header: String, bearer: Option<&str>) -> (reqwest::StatusCode, Value) {
@@ -972,6 +980,17 @@ async fn restoring_a_suspended_identity_held_elsewhere_is_a_takeover() {
     let (status, body) = attach_call(&l, &login_kp, &token, &[(&auth, &akp)], email, true).await;
     assert_eq!(status, 422, "{body}");
     assert_eq!(body["reason"], "config_required", "{body}");
+
+    // Two certs with different holders are not one device: `holders_differ`
+    // (reg §7.1, renamed from `holder_mismatch`; audit 2026-11 W5-15).
+    let (okp, ) = (KeyPair::generate(),);
+    let other_holder = browserid_core::device::DeviceCert::create(
+        &l.domain, &okp.public_key(), browserid_core::device::Purpose::Authorization, browserid_core::device::Holder::new("br.other").unwrap(),
+        vec![email.to_string()], Duration::days(90), &l.idp, None,
+    ).unwrap().encoded().to_string();
+    let (status, body) = attach_call(&l, &login_kp, &token, &[(&auth, &akp), (&other_holder, &okp)], email, true).await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["reason"], "holders_differ", "{body}");
 
     // A config cert the issuer never signed: the validity bar refuses it.
     let rogue = KeyPair::generate();
