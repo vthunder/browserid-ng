@@ -320,7 +320,7 @@ where
         }
         persist(&entries);
     }
-    tracing::info!(agent = %agent_email, "guestbook signed");
+    tracing::info!(agent = %crate::crypto::log_id(&agent_email), "guestbook signed");
 
     // Funnel: an agent signed the guestbook. Keyed by the agent identity (which
     // itself attributes the human). No raw emails/codes leave the process.

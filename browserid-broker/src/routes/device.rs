@@ -377,7 +377,7 @@ where
         _ => None,
     };
     if let IssueCaller::Key { key, .. } = &caller {
-        tracing::info!(kid = %key.kid, %email, "device/issue: minted on a login key");
+        tracing::info!(kid = %key.kid, identity = %crate::crypto::log_id(&email), "device/issue: minted on a login key");
     }
     Ok(Json(DeviceIssueResponse {
         success: true,

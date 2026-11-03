@@ -145,7 +145,7 @@ impl EmailSender for SmtpEmailSender {
         );
 
         self.send_email(email, subject, &body)?;
-        tracing::info!(email = %email, "Verification email sent");
+        tracing::info!(identity = %crate::crypto::log_id(email), "Verification email sent");
         Ok(())
     }
 
@@ -160,7 +160,7 @@ impl EmailSender for SmtpEmailSender {
         );
 
         self.send_email(email, subject, &body)?;
-        tracing::info!(email = %email, "Password reset email sent");
+        tracing::info!(identity = %crate::crypto::log_id(email), "Password reset email sent");
         Ok(())
     }
 }

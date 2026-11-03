@@ -555,7 +555,7 @@ where
         (Ok(d), Ok(c)) => (d, c),
         (Err(e), _) | (_, Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("cert: {e}")),
     };
-    tracing::info!(email = %email, tenant = %tenant.domain, "hosted primary: issued device + config certs");
+    tracing::info!(identity = %crate::crypto::log_id(&email), tenant = %tenant.domain, "hosted primary: issued device + config certs");
     (
         StatusCode::OK,
         Json(json!({
@@ -1142,7 +1142,7 @@ where
             Err(e) => tracing::warn!(domain = %domain, "revoke prior certs failed: {e}"),
         }
         state.analytics.capture("tenant_activated", crate::analytics::distinct_id_for_email(&tenant.created_by), serde_json::json!({}));
-        tracing::info!(domain = %domain, admin = %tenant.created_by, "hosted primary: tenant activated");
+        tracing::info!(domain = %domain, admin = %crate::crypto::log_id(&tenant.created_by), "hosted primary: tenant activated");
     }
     let tenant = state
         .user_store
@@ -1202,7 +1202,7 @@ where
     state
         .user_store
         .create_roster_entry(tenant.id, &local, &hash, must_change, &admin)?;
-    tracing::info!(tenant = %domain, local = %local, "hosted primary: roster user created");
+    tracing::info!(tenant = %domain, user = %crate::crypto::log_id(&local), "hosted primary: roster user created");
     Ok(Json(json!({"success": true, "email": format!("{local}@{domain}")})))
 }
 
@@ -1402,7 +1402,7 @@ where
         ));
     }
     state.user_store.remove_tenant_admin(&domain, &identity)?;
-    tracing::info!(tenant = %domain, removed = %identity, by = %admin, "hosted primary: admin removed");
+    tracing::info!(tenant = %domain, removed = %crate::crypto::log_id(&identity), by = %crate::crypto::log_id(&admin), "hosted primary: admin removed");
     Ok(Json(json!({"success": true})))
 }
 
@@ -1434,7 +1434,7 @@ where
         .ok_or(BrokerError::TenantNotFound)?;
     let mut revoked = state.user_store.tenant_status_revoke_all(tenant.id)?;
     revoked += state.user_store.revoke_domain_device_certs(&domain)?;
-    tracing::info!(tenant = %domain, by = %admin, revoked,
+    tracing::info!(tenant = %domain, by = %crate::crypto::log_id(&admin), revoked,
         "hosted primary: revoked all outstanding credentials");
     Ok(Json(json!({"success": true, "revoked": revoked})))
 }
@@ -1470,7 +1470,7 @@ where
     }
     let admin = session_admin_identity(state.as_ref(), &cookies, &req.csrf, &domain)?;
     state.user_store.delete_tenant(&domain)?;
-    tracing::info!(tenant = %domain, by = %admin, "hosted primary: tenant deleted");
+    tracing::info!(tenant = %domain, by = %crate::crypto::log_id(&admin), "hosted primary: tenant deleted");
     Ok(Json(json!({"success": true})))
 }
 
@@ -1598,10 +1598,10 @@ where
     if req.revoke_now || (policy.enabled && !was_enabled) {
         revoked = state.user_store.tenant_status_revoke_all(tenant.id)?;
         revoked += state.user_store.revoke_domain_device_certs(&domain)?;
-        tracing::info!(tenant = %domain, by = %admin, revoked,
+        tracing::info!(tenant = %domain, by = %crate::crypto::log_id(&admin), revoked,
             "management enabled: revoked outstanding certs for re-issue with managed marker");
     } else {
-        tracing::info!(tenant = %domain, by = %admin, enabled = policy.enabled,
+        tracing::info!(tenant = %domain, by = %crate::crypto::log_id(&admin), enabled = policy.enabled,
             "management policy updated");
     }
     Ok(Json(json!({"success": true, "revoked": revoked})))

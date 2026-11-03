@@ -404,13 +404,13 @@ pub async fn create(
             let k = enroll(&state, fresh_account, &key, Some(&carried[0].holder), policy::ENROLLED_BY_PROOFS, Some(json_ids(&[identity.clone()])))?;
             record(&state, &headers, fresh_account, &identity, &carried, k.id).await?;
             state.host.transfer_identity(a, fresh_account, &identity, "taken_over").map_err(host_err)?;
-            tracing::info!(%identity, "accounts: takeover into a new account");
+            tracing::info!(identity = %&crate::session::b64url_sha256_pub(identity.to_lowercase().as_bytes())[..12], "accounts: takeover into a new account");
             return Ok(Json(crate::session::open(&state, fresh_account, &k).await?));
         }
     };
     let k = enroll(&state, user_id, &key, Some(&carried[0].holder), policy::ENROLLED_BY_PROOFS, Some(json_ids(&[identity.clone()])))?;
     record(&state, &headers, user_id, &identity, &carried, k.id).await?;
-    tracing::info!(%identity, "accounts: created");
+    tracing::info!(identity = %&crate::session::b64url_sha256_pub(identity.to_lowercase().as_bytes())[..12], "accounts: created");
     Ok(Json(crate::session::open(&state, user_id, &k).await?))
 }
 
@@ -788,7 +788,7 @@ pub async fn attach(
     if key.holder.is_none() {
         state.store.set_login_cert_holder(acct, key.id, &carried[0].holder).ok();
     }
-    tracing::info!(%identity, "attach: recorded {} cert(s)", ids.len());
+    tracing::info!(identity = %&crate::session::b64url_sha256_pub(identity.to_lowercase().as_bytes())[..12], "attach: recorded {} cert(s)", ids.len());
     Ok(Json(serde_json::json!({ "recorded": ids })))
 }
 
