@@ -935,7 +935,7 @@ pub async fn complete(
     }
 
     if stage == CompleteStage::Grants {
-        return complete_grants_stage(&state, &user, &req, snapshot);
+        return complete_grants_stage(&state, &user, &req, snapshot).await;
     }
 
     // Enforce the GRANTOR pin against the approver's chosen identity (both paths).
@@ -982,7 +982,7 @@ enum CompleteStage {
 /// validate and record the page-signed warrants under the grantor the
 /// permission screens chose — the agent itself, or an owned identity —
 /// honoring the request's grantor pin, then complete the request.
-fn complete_grants_stage(
+async fn complete_grants_stage(
     state: &Arc<RegistrarState>,
     user: &AuthedUser,
     req: &CompleteBody,
@@ -1054,6 +1054,8 @@ fn complete_grants_stage(
         }
     }
     let warrants = validate_grant_warrants(
+        state,
+        user.user_id,
         warrant_jwss,
         config_jws,
         &grantor,
@@ -1061,7 +1063,8 @@ fn complete_grants_stage(
         &holder,
         &snapshot.grants,
         &status_list_uri(&state.domain),
-    )?;
+    )
+    .await?;
     for (warrant, jws) in warrants.iter().zip(warrant_jwss) {
         state.store.upsert_warrant(warrant_to_record(
             user.user_id, &delegator, warrant, jws, config_jws,
@@ -1125,6 +1128,8 @@ async fn complete_delegated_warrant(
         RegistrarError::ValidationError("approve requires the signing config cert".into())
     })?;
     let warrants = validate_grant_warrants(
+        state,
+        user.user_id,
         warrant_jwss,
         config_jws,
         &grantor,
@@ -1132,7 +1137,8 @@ async fn complete_delegated_warrant(
         &holder,
         &snapshot.grants,
         &status_list_uri(&state.domain),
-    )?;
+    )
+    .await?;
 
     // Record each warrant in the approver's registry (an "external service").
     for (warrant, jws) in warrants.iter().zip(warrant_jwss) {
@@ -1275,6 +1281,8 @@ async fn complete_device_cert(
             &identity_email
         };
         let warrants = validate_grant_warrants(
+            state,
+            user.user_id,
             warrant_jwss,
             config_jws,
             grantor,
@@ -1282,7 +1290,8 @@ async fn complete_device_cert(
             &holder_id,
             &snapshot.grants,
             &status_list_uri(&state.domain),
-        )?;
+        )
+        .await?;
         Some((warrant_jwss.to_vec(), config_jws.to_string(), warrants))
     };
 

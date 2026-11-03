@@ -567,13 +567,12 @@ async fn proof_jti_replay_is_rejected() {
 // 6. Findings that fail today (AUDIT-2026-11). Un-ignore when fixed.
 // ===========================================================================
 
-/// AUDIT-2026-11 D2: fails today. `respond` accepts a "config cert" that no
-/// issuer signed: it checks purpose, expiry, identity and that the warrant
-/// is signed by the cert's key, but never the issuer signature, nor that
-/// the key is a recorded, unretired cert of the account (I20, B4). The
-/// approval is stored and delivered to the filer.
+/// D2 (audit 2026-11, fixed in bean 0fy3): `respond` refuses a "config
+/// cert" no issuer signed. It used to check purpose, expiry, identity and
+/// that the warrant was signed by the cert's key, but never the issuer
+/// signature, nor that the key is a recorded, unretired cert of the
+/// account (I20, B4) — and the approval was delivered to the filer.
 #[tokio::test]
-#[ignore]
 async fn respond_refuses_a_config_cert_the_issuer_never_signed() {
     let r = rig();
     let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
@@ -609,12 +608,11 @@ async fn respond_refuses_a_config_cert_the_issuer_never_signed() {
     assert_ne!(poll["status"], "approved", "forged approval delivered: {poll}");
 }
 
-/// AUDIT-2026-11 D2 (variant): fails today. A config cert the issuer DID
-/// sign but which this registry has never recorded under the account — or
-/// has retired — signs approvals all the same. Here: a cert minted for a
-/// different holder than any the account has, never attached.
+/// D2 variant (fixed in bean 0fy3): a config cert the issuer DID sign but
+/// which this registry has never recorded under the account — or has
+/// retired — is refused `config_cert_not_recorded`. Here: a cert minted for
+/// a different holder than any the account has, never attached.
 #[tokio::test]
-#[ignore]
 async fn respond_refuses_a_config_cert_not_recorded_on_the_account() {
     let r = rig();
     let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
@@ -644,6 +642,7 @@ async fn respond_refuses_a_config_cert_not_recorded_on_the_account() {
     )
     .await;
     assert_ne!(resp.status_code(), 200, "unrecorded config cert accepted: {}", resp.text());
+    assert_eq!(resp.json::<Value>()["reason"], "config_cert_not_recorded", "{}", resp.text());
 }
 
 /// AUDIT-2026-11 D4: fails today. `/warrant/request` takes the agent's

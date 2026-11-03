@@ -556,7 +556,7 @@ pub async fn respond(
         grantor: req.grantor,
     };
     let return_url =
-        crate::consent::respond_core(&state, user.user_id, &core).map_err(consent_err)?;
+        crate::consent::respond_core(&state, user.user_id, &core).await.map_err(consent_err)?;
     let mut resp = serde_json::Map::new();
     if let Some(url) = return_url {
         resp.insert("return_url".into(), serde_json::Value::String(url));
@@ -656,6 +656,7 @@ pub async fn register_warrant(
         Some(_) => {}
     }
     crate::consent::register_warrant_core(&state, user.user_id, &req.warrant, &req.config_cert)
+        .await
         .map_err(consent_err)?;
     let id = state
         .store

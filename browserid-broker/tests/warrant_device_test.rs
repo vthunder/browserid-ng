@@ -26,19 +26,20 @@ const AUDIENCE: &str = "https://notes.example.com";
 
 /// A test server whose IdP keypair we keep, so the test can mint the agent's
 /// device cert exactly as `/agent-provision/complete` would.
-fn make_server() -> (TestServer, MockEmailSender, KeyPair) {
+fn make_server() -> (TestServer, MockEmailSender, KeyPair, Arc<InMemoryUserStore>) {
     let keypair = KeyPair::generate();
     let email_sender = Arc::new(MockEmailSender::new());
+    let store = Arc::new(InMemoryUserStore::new());
     let mut state = AppState::new_with_arcs(
         keypair.clone(),
         DOMAIN.to_string(),
-        Arc::new(InMemoryUserStore::new()),
+        store.clone(),
         Arc::new(InMemorySessionStore::new()),
         email_sender.clone(),
     );
     state.agent_provisioning_enabled = true;
     let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
-    (server, MockEmailSender { sent: email_sender.sent.clone() }, keypair)
+    (server, MockEmailSender { sent: email_sender.sent.clone() }, keypair, store)
 }
 
 async fn csrf(server: &TestServer, session: &str) -> String {
@@ -54,7 +55,7 @@ async fn csrf(server: &TestServer, session: &str) -> String {
 
 #[tokio::test]
 async fn agent_warrant_request_consent_poll_and_full_presentation() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
@@ -77,6 +78,7 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
         Duration::days(90), &idp_kp, None,
     )
     .unwrap();
+    common::record_config_cert(&store, DELEGATOR, &config_cert);
 
     // 1. The agent raises a consent request.
     let r = server
@@ -194,7 +196,7 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
 /// warrant is validly signed for the right identifier + audience.
 #[tokio::test]
 async fn respond_rejects_overbroad_or_foreign_holder() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
@@ -212,6 +214,7 @@ async fn respond_rejects_overbroad_or_foreign_holder() {
         Duration::days(90), &idp_kp, None,
     )
     .unwrap();
+    common::record_config_cert(&store, DELEGATOR, &config_cert);
 
     // Raise a request; grab its code + status ref.
     let listed_code = {
@@ -263,7 +266,7 @@ async fn respond_rejects_overbroad_or_foreign_holder() {
 /// provably the grant's own.
 #[tokio::test]
 async fn revoked_subject_reactivates_on_fresh_consent_approval() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
@@ -281,6 +284,7 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
         Duration::days(90), &idp_kp, None,
     )
     .unwrap();
+    common::record_config_cert(&store, DELEGATOR, &config_cert);
 
     // One full consent round: request → sign → approve → deliver.
     let round = |label: &'static str| {
@@ -386,7 +390,7 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
 #[tokio::test]
 async fn filed_warrant_request_preserves_scope_parameters_verbatim() {
     use browserid_core::device::{BindingSet, Binding, ScopeEntry, ScopeParams, Cap};
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
@@ -404,6 +408,7 @@ async fn filed_warrant_request_preserves_scope_parameters_verbatim() {
         Duration::days(90), &idp_kp, None,
     )
     .unwrap();
+    common::record_config_cert(&store, DELEGATOR, &config_cert);
 
     let entry = json!({ "scope": "pay:transfer",
         "cap": { "amount": "20.00", "currency": "USD", "window": "P30D" },

@@ -393,7 +393,7 @@ pub(crate) struct RespondCore {
 /// the cookie lane (`/wsapi/warrant_respond`) and the token lane
 /// (`POST /api/v1/requests/respond`), so the two validation bars can never
 /// drift. Returns the request's origin-validated `return_url`.
-pub(crate) fn respond_core(
+pub(crate) async fn respond_core(
     state: &Arc<RegistrarState>,
     user_id: u64,
     req: &RespondCore,
@@ -411,7 +411,7 @@ pub(crate) fn respond_core(
     // approver signed v2 admission records (a connection self-grant, or
     // policy rows), not agent presentation warrants.
     if rec.kind != RequestKind::Agent {
-        return respond_record(state, user_id, req, rec);
+        return respond_record(state, user_id, req, rec).await;
     }
 
     if !req.approve {
@@ -455,6 +455,8 @@ pub(crate) fn respond_core(
         ));
     }
     let warrants = validate_grant_warrants(
+        state,
+        user_id,
         warrant_jwss,
         config_jws,
         &grantor,
@@ -462,7 +464,8 @@ pub(crate) fn respond_core(
         &rec.holder,
         &rec.grants,
         &status_list_uri(&state.domain),
-    )?;
+    )
+    .await?;
     // Re-authorization (status bleed, 2026-07-27): the warrant status index is
     // stable per (user, agent, audience, scopes), so a revoked grant — or a
     // forgotten holder's grants — leaves its bit SET. A fresh approval of the
@@ -507,7 +510,7 @@ pub(crate) fn respond_core(
 /// keystore, and validation pins every claim to the pending request — the
 /// broker-minted binding.id, the client descriptor, audiences, scopes, and
 /// the allocated status refs. All-or-nothing, grant order.
-fn respond_record(
+async fn respond_record(
     state: &Arc<RegistrarState>,
     user_id: u64,
     req: &RespondCore,
@@ -548,17 +551,6 @@ fn respond_record(
         ));
     }
 
-    let config_cert = DeviceCert::parse(config_jws)
-        .map_err(|e| vfail("config_cert_invalid", format!("bad config cert: {e}")))?;
-    if config_cert.purpose() != Purpose::Authorization {
-        return Err(vfail("config_cert_wrong_purpose", "config cert is not an authorization cert"));
-    }
-    if config_cert.is_expired() {
-        return Err(vfail("config_cert_expired", "config cert expired"));
-    }
-    if !config_cert.authorizes_identity(&grantor) {
-        return Err(vfail("grantor_not_authorized", "config cert does not authorize the grantor"));
-    }
     if warrant_jwss.len() != rec.grants.len() {
         return Err(vfail(
             "warrant_count_mismatch",
@@ -568,6 +560,10 @@ fn respond_record(
                 warrant_jwss.len()
             ),
         ));
+    }
+    let config_cert = recorded_config_cert(state, user_id, config_jws).await?;
+    if !config_cert.authorizes_identity(&grantor) {
+        return Err(vfail("grantor_not_authorized", "config cert does not authorize the grantor"));
     }
 
     let status_uri = status_list_uri(&state.domain);
@@ -675,7 +671,78 @@ fn respond_record(
 /// matcher must actually cover the agent's holder (`<id>` isolation, or its
 /// `<ns>.*` prefix) — defense-in-depth against a malformed or over-broad
 /// consent. Returns the parsed warrants in grant order.
-pub(crate) fn validate_grant_warrants(
+/// The config cert an approval signs with, checked in registry-api-v1 §7.1
+/// order (audit 2026-11, D2): parse (`config_cert_invalid`), purpose,
+/// expiry, the ISSUER's signature — this registrar's key for its own
+/// domain, the domain's discovered key for a primary-issued cert (also
+/// `config_cert_invalid`) — then `config_cert_not_recorded` unless the key
+/// is a recorded, unretired cert of THIS account whose status bit is clear.
+/// One bar for `respond`, `respond_record`, `register` and the provisioning
+/// approvals, so none of them accepts a cert the issuer never signed or
+/// that the account never enrolled (WS8 PoC: a self-minted config cert
+/// signed approvals and was delivered to the filer).
+pub(crate) async fn recorded_config_cert(
+    state: &RegistrarState,
+    user_id: u64,
+    config_jws: &str,
+) -> Result<DeviceCert, RegistrarError> {
+    let config_cert = DeviceCert::parse(config_jws)
+        .map_err(|e| vfail("config_cert_invalid", format!("bad config cert: {e}")))?;
+    if config_cert.purpose() != Purpose::Authorization {
+        return Err(vfail(
+            "config_cert_wrong_purpose",
+            "signing cert is not an authorization (config) cert",
+        ));
+    }
+    if config_cert.is_expired() {
+        return Err(vfail("config_cert_expired", "config cert expired"));
+    }
+    let iss = config_cert.iss().to_string();
+    if iss == state.domain {
+        config_cert
+            .verify(&state.keypair.public_key())
+            .map_err(|_| vfail("config_cert_invalid", "config cert is not signed by this registrar's IdP"))?;
+    } else {
+        let resolver = state.issuer_resolver.as_ref().ok_or_else(|| {
+            vfail("config_cert_invalid", "primary-issued config certs are not accepted here (no issuer discovery)")
+        })?;
+        let key = resolver
+            .resolve_issuer_key(&iss)
+            .await
+            .map_err(|e| vfail("config_cert_invalid", format!("config cert issuer: {e}")))?;
+        config_cert
+            .verify(&key)
+            .map_err(|_| vfail("config_cert_invalid", "config cert is not signed by its domain's IdP"))?;
+    }
+    let not_recorded = || vfail("config_cert_not_recorded", "the config cert is not an unretired cert of this account");
+    let recorded = state
+        .store
+        .get_device_cert_by_pubkey(&config_cert.public_key().to_base64())?
+        .ok_or_else(not_recorded)?;
+    if recorded.user_id != user_id || !recorded.is_active() || !recorded.iss.eq_ignore_ascii_case(&iss) {
+        return Err(not_recorded());
+    }
+    if let Some(st) = &config_cert.claims().status {
+        let revoked = if st.uri == status_list_uri(&state.domain) {
+            state.store.is_status_revoked_idx(st.idx)?
+        } else {
+            // A foreign list: fail-closed through the host's verifier.
+            match state.presentation_verifier.as_ref() {
+                Some(v) => v.check_status_ref(&st.uri, st.idx).await.unwrap_or(true),
+                None => true,
+            }
+        };
+        if revoked {
+            return Err(not_recorded());
+        }
+    }
+    Ok(config_cert)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn validate_grant_warrants(
+    state: &RegistrarState,
+    user_id: u64,
     warrant_jwss: &[String],
     config_jws: &str,
     grantor: &str,
@@ -694,17 +761,7 @@ pub(crate) fn validate_grant_warrants(
             ),
         ));
     }
-    let config_cert = DeviceCert::parse(config_jws)
-        .map_err(|e| vfail("config_cert_invalid", format!("bad config cert: {e}")))?;
-    if config_cert.purpose() != Purpose::Authorization {
-        return Err(vfail(
-            "config_cert_wrong_purpose",
-            "signing cert is not an authorization (config) cert",
-        ));
-    }
-    if config_cert.is_expired() {
-        return Err(vfail("config_cert_expired", "config cert expired"));
-    }
+    let config_cert = recorded_config_cert(state, user_id, config_jws).await?;
     // The config cert must be authoritative for the GRANTOR (the attributed
     // identity that authorizes the grant) — NOT the grantee, which may be a
     // distinct/foreign service in a delegated grant.
@@ -1082,7 +1139,7 @@ pub struct RegisterWarrantBody {
 
 /// Record an externally-minted warrant — the shared core behind the cookie
 /// lane and `POST /api/v1/warrants/register` (registry-api-v1 §5.2).
-pub(crate) fn register_warrant_core(
+pub(crate) async fn register_warrant_core(
     state: &Arc<RegistrarState>,
     user_id: u64,
     warrant_jws: &str,
@@ -1090,14 +1147,7 @@ pub(crate) fn register_warrant_core(
 ) -> Result<(), RegistrarError> {
     let warrant = Warrant::parse(warrant_jws)
         .map_err(|e| vfail("warrant_invalid", format!("bad warrant: {e}")))?;
-    let config_cert = DeviceCert::parse(config_jws)
-        .map_err(|e| vfail("config_cert_invalid", format!("bad config cert: {e}")))?;
-    if config_cert.purpose() != Purpose::Authorization {
-        return Err(vfail(
-            "config_cert_wrong_purpose",
-            "signing cert is not an authorization (config) cert",
-        ));
-    }
+    let config_cert = recorded_config_cert(state, user_id, config_jws).await?;
     warrant
         .verify(config_cert.public_key())
         .map_err(|_| vfail(
@@ -1868,7 +1918,8 @@ pub async fn warrant_poll(
             // A resolved request delivers immediately regardless.
             if let Some(last) = state.store.touch_warrant_poll(&req.code)? {
                 if Utc::now() - last < Duration::seconds(POLL_INTERVAL_SECONDS) {
-                    return Err(bad("slow_down: poll at most every 5 seconds"));
+                    // 429 (threat model I18; audit 2026-11 W5-1), not a 400.
+                    return Err(RegistrarError::PollTooFast);
                 }
             }
             Ok(Json(WarrantPollResponse {

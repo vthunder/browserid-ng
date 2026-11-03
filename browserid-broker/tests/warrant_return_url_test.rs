@@ -24,19 +24,20 @@ const AGENT: &str = "alice+gate@example.com";
 const AUDIENCE: &str = "https://mcp.example.com";
 const RETURN_URL: &str = "https://mcp.example.com/authorize/return?st=abc123";
 
-fn make_server() -> (TestServer, MockEmailSender, KeyPair) {
+fn make_server() -> (TestServer, MockEmailSender, KeyPair, Arc<InMemoryUserStore>) {
     let keypair = KeyPair::generate();
     let email_sender = Arc::new(MockEmailSender::new());
+    let store = Arc::new(InMemoryUserStore::new());
     let mut state = AppState::new_with_arcs(
         keypair.clone(),
         DOMAIN.to_string(),
-        Arc::new(InMemoryUserStore::new()),
+        store.clone(),
         Arc::new(InMemorySessionStore::new()),
         email_sender.clone(),
     );
     state.agent_provisioning_enabled = true;
     let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
-    (server, MockEmailSender { sent: email_sender.sent.clone() }, keypair)
+    (server, MockEmailSender { sent: email_sender.sent.clone() }, keypair, store)
 }
 
 async fn csrf(server: &TestServer, session: &str) -> String {
@@ -125,10 +126,11 @@ async fn approve(
 /// delivers over the normal poll.
 #[tokio::test]
 async fn return_url_persisted_and_echoed_on_approval() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (agent_cert, _agent_kp, config_cert, config_kp) = certs(&idp_kp);
+    common::record_config_cert(&store, DELEGATOR, &config_cert);
 
     let r = raise(&server, &agent_cert, Some(RETURN_URL)).await;
     assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
@@ -151,10 +153,11 @@ async fn return_url_persisted_and_echoed_on_approval() {
 /// A request without a return_url responds without one (no field at all).
 #[tokio::test]
 async fn no_return_url_means_none_echoed() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (agent_cert, _agent_kp, config_cert, config_kp) = certs(&idp_kp);
+    common::record_config_cert(&store, DELEGATOR, &config_cert);
 
     let r = raise(&server, &agent_cert, None).await;
     assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
@@ -169,7 +172,7 @@ async fn no_return_url_means_none_echoed() {
 /// the whole request up front.
 #[tokio::test]
 async fn foreign_return_url_is_refused() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, _store) = make_server();
     let _session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let _sess = common::registry::api_login(&server, &_session, "testpassword").await;
     let (agent_cert, _agent_kp, _config_cert, _config_kp) = certs(&idp_kp);
@@ -195,7 +198,7 @@ async fn foreign_return_url_is_refused() {
 /// shape).
 #[tokio::test]
 async fn identity_domain_return_url_is_accepted() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, _store) = make_server();
     let _session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let _sess = common::registry::api_login(&server, &_session, "testpassword").await;
     let (agent_cert, _agent_kp, _config_cert, _config_kp) = certs(&idp_kp);
@@ -209,7 +212,7 @@ async fn identity_domain_return_url_is_accepted() {
 /// return link; it never auto-navigates on deny).
 #[tokio::test]
 async fn denial_echoes_return_url() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, _store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (agent_cert, _agent_kp, _config_cert, _config_kp) = certs(&idp_kp);

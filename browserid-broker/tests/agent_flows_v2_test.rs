@@ -28,19 +28,20 @@ const DOMAIN: &str = "localhost:3000";
 const DELEGATOR: &str = "alice@example.com";
 const AUDIENCE: &str = "https://api.bsky.example";
 
-fn make_server() -> (TestServer, MockEmailSender, KeyPair) {
+fn make_server() -> (TestServer, MockEmailSender, KeyPair, Arc<InMemoryUserStore>) {
     let keypair = KeyPair::generate();
     let email_sender = Arc::new(MockEmailSender::new());
+    let store = Arc::new(InMemoryUserStore::new());
     let mut state = AppState::new_with_arcs(
         keypair.clone(),
         DOMAIN.to_string(),
-        Arc::new(InMemoryUserStore::new()),
+        store.clone(),
         Arc::new(InMemorySessionStore::new()),
         email_sender.clone(),
     );
     state.agent_provisioning_enabled = true;
     let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
-    (server, MockEmailSender { sent: email_sender.sent.clone() }, keypair)
+    (server, MockEmailSender { sent: email_sender.sent.clone() }, keypair, store)
 }
 
 async fn csrf(server: &TestServer, session: &str) -> String {
@@ -78,12 +79,13 @@ fn agent_cert(idp_kp: &KeyPair, agent: &str, holder: &str) -> (KeyPair, DeviceCe
 
 #[tokio::test]
 async fn warrant_request_grantor_pin_and_unknown_agent_reason() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let agent = "alice+bot@example.com";
     let (_akp, acert) = agent_cert(&idp_kp, agent, "ag.bot");
     let (config_kp, config_cert) = config_cert_for_alice(&idp_kp);
+    common::record_config_cert(&store, DELEGATOR, &config_cert);
 
     // An unsatisfiable grantor pin fails the REQUEST, not the approval.
     let r = server
@@ -167,10 +169,11 @@ async fn warrant_request_grantor_pin_and_unknown_agent_reason() {
 /// the poll delivers both — and the agent is then KNOWN to the account.
 #[tokio::test]
 async fn two_stage_provision_then_known_agent() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (config_kp, config_cert) = config_cert_for_alice(&idp_kp);
+    common::record_config_cert(&store, DELEGATOR, &config_cert);
 
     // 1. The agent's bundled request: identity + one grant, name + message.
     let device_kp = KeyPair::generate();
@@ -307,7 +310,7 @@ async fn two_stage_provision_then_known_agent() {
 /// real and delivered; the grants are not, and the agent is told why.
 #[tokio::test]
 async fn grants_stage_decline_still_delivers_the_credential() {
-    let (server, sender, _idp_kp) = make_server();
+    let (server, sender, _idp_kp, _store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let _sess = common::registry::api_login(&server, &session, "testpassword").await;
 

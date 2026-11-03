@@ -21,19 +21,20 @@ use serde_json::{json, Value};
 const DOMAIN: &str = "localhost:3000";
 const USER: &str = "alice@example.com";
 
-fn make_server() -> (TestServer, MockEmailSender, KeyPair) {
+fn make_server() -> (TestServer, MockEmailSender, KeyPair, Arc<InMemoryUserStore>) {
     let keypair = KeyPair::generate();
     let email_sender = Arc::new(MockEmailSender::new());
+    let store = Arc::new(InMemoryUserStore::new());
     let mut state = AppState::new_with_arcs(
         keypair.clone(),
         DOMAIN.to_string(),
-        Arc::new(InMemoryUserStore::new()),
+        store.clone(),
         Arc::new(InMemorySessionStore::new()),
         email_sender.clone(),
     );
     state.agent_provisioning_enabled = true;
     let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
-    (server, MockEmailSender { sent: email_sender.sent.clone() }, keypair)
+    (server, MockEmailSender { sent: email_sender.sent.clone() }, keypair, store)
 }
 
 async fn csrf(server: &TestServer, session: &str) -> String {
@@ -99,7 +100,7 @@ fn config_material(identity: &str, idp: &KeyPair) -> (KeyPair, DeviceCert) {
 
 #[tokio::test]
 async fn connection_grant_request_end_to_end() {
-    let (server, sender, idp) = make_server();
+    let (server, sender, idp, store) = make_server();
     let session = create_user(&server, &sender, USER, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (origin, proofs) = spawn_resource().await;
@@ -144,6 +145,7 @@ async fn connection_grant_request_end_to_end() {
 
     // 3. The page signs the v2 self-grant record with the config key.
     let (config_key, config_cert) = config_material(USER, &idp);
+    common::record_config_cert(&store, USER, &config_cert);
     let record = Warrant::create_v2(
         USER,
         USER,
@@ -205,7 +207,7 @@ async fn connection_grant_request_end_to_end() {
 
 #[tokio::test]
 async fn connection_respond_rejects_wrong_binding_id() {
-    let (server, sender, idp) = make_server();
+    let (server, sender, idp, store) = make_server();
     let session = create_user(&server, &sender, USER, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (origin, proofs) = spawn_resource().await;
@@ -233,6 +235,7 @@ async fn connection_respond_rejects_wrong_binding_id() {
     // A record carrying a DIFFERENT binding.id than the broker minted (§6.6
     // invariant 5) must be refused.
     let (config_key, config_cert) = config_material(USER, &idp);
+    common::record_config_cert(&store, USER, &config_cert);
     let record = Warrant::create_v2(
         USER,
         USER,
@@ -263,7 +266,7 @@ async fn connection_respond_rejects_wrong_binding_id() {
 
 #[tokio::test]
 async fn proof_mismatch_never_surfaces_the_request() {
-    let (server, sender, _idp) = make_server();
+    let (server, sender, _idp, _store) = make_server();
     let session = create_user(&server, &sender, USER, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (origin, proofs) = spawn_resource().await;
@@ -289,7 +292,7 @@ async fn proof_mismatch_never_surfaces_the_request() {
 
 #[tokio::test]
 async fn authoring_ceremony_end_to_end() {
-    let (server, sender, idp) = make_server();
+    let (server, sender, idp, store) = make_server();
     let session = create_user(&server, &sender, USER, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (origin, proofs) = spawn_resource().await;
@@ -322,6 +325,7 @@ async fn authoring_ceremony_end_to_end() {
 
     // The grantor signs one v2 policy record per row (holder-`*` binding).
     let (config_key, config_cert) = config_material(USER, &idp);
+    common::record_config_cert(&store, USER, &config_cert);
     let mut signed = Vec::new();
     for g in req["grants"].as_array().unwrap() {
         let record = Warrant::create_v2(
@@ -369,7 +373,7 @@ async fn authoring_ceremony_end_to_end() {
 
 #[tokio::test]
 async fn support_document_advertises_record_grants() {
-    let (server, _sender, _idp) = make_server();
+    let (server, _sender, _idp, _store) = make_server();
     let doc = server.get("/.well-known/browserid").await.json::<Value>();
     assert_eq!(doc["record-grants"], "/warrant/record-request");
 }
@@ -382,7 +386,7 @@ async fn support_document_advertises_record_grants() {
 /// closed. The resource polls over `GET /api/v1/requests/<code>`.
 #[tokio::test]
 async fn present_lane_admission_over_generic_endpoints() {
-    let (server, sender, idp) = make_server();
+    let (server, sender, idp, store) = make_server();
     let session = create_user(&server, &sender, USER, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let (origin, _proofs) = spawn_resource().await; // proof map left EMPTY on purpose
@@ -428,6 +432,7 @@ async fn present_lane_admission_over_generic_endpoints() {
 
     // 5. Sign + respond, then the resource picks the record up by the generic poll.
     let (config_key, config_cert) = config_material(USER, &idp);
+    common::record_config_cert(&store, USER, &config_cert);
     let record = Warrant::create_v2(
         USER, USER,
         Binding::Connection {
@@ -457,7 +462,7 @@ async fn present_lane_admission_over_generic_endpoints() {
 
 #[tokio::test]
 async fn generic_file_rejects_unknown_kind() {
-    let (server, _sender, _idp) = make_server();
+    let (server, _sender, _idp, _store) = make_server();
     let resp = server.post("/api/v1/requests").json(&json!({ "kind": "bogus" })).await;
     assert_eq!(resp.status_code(), 400);
     assert!(resp.text().contains("unsupported_kind"), "{}", resp.text());

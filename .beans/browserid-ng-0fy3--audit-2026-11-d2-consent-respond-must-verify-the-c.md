@@ -1,11 +1,11 @@
 ---
 # browserid-ng-0fy3
 title: '[Audit 2026-11] D2: consent respond must verify the config cert (issuer signature, recorded on account, status)'
-status: todo
+status: in-progress
 type: bug
 priority: high
 created_at: 2026-11-02T22:36:28Z
-updated_at: 2026-11-02T22:36:28Z
+updated_at: 2026-11-03T08:10:50Z
 parent: browserid-ng-ag1l
 ---
 
