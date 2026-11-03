@@ -32,9 +32,6 @@ VECTORS = json.loads((ROOT / "conformance-2026-11.json").read_text())
 HOSTED = json.loads((ROOT / "conformance-2026-11.hosted.json").read_text())["responses"]
 
 EXPECTED_FAIL = {
-    # AUDIT-2026-11 W4-14: an object scope entry (what a D7-fixed verifier returns) makes handle_token
-    # raise TypeError from " ".join(scopes) (__init__.py:235) — an unhandled 500, not a refusal.
-    "P-OK-08/entries": "W4-14",
     # AUDIT-2026-11 D7: scope entries arrive flattened and the package can only carry strings.
     "P-OK-07": "D7",
     "P-OK-08": "D7",

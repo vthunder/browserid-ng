@@ -32,6 +32,9 @@ auth = McpAuth(
 # 3. Gate a tool call:
 ctx = auth.require_warrant(authorization_header, "create_issue")
 # ctx.grantor (human), ctx.grantee (agent), ctx.holder, ctx.issuer, ctx.scopes
+# ctx.scopes carries the warrant's entries verbatim: bare names, or object
+# entries with parameters ({"scope": "pay:usd", "cap": {...}}); an object entry
+# never satisfies a string tool scope — read its parameters yourself.
 ```
 
 On failure `handle_token` / `require_warrant` raise `McpAuthError` with
