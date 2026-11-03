@@ -143,7 +143,11 @@ satisfy:
   permitted ONLY when the ceremony reached the password / session
   bar above. A weaker bar (e.g. mailbox proof alone) MUST issue an
   exact-address config cert (the 7ww7 blast-radius rule).
-- **Per-key status refs** on both certs (core §6.3).
+- **Per-key status refs** on both certs (core §6.3). One documented
+  exception: the browser-mediated FedCM path (core §6.3) mints a
+  throwaway config cert and login warrant for a presentation that
+  expires within five minutes; those carry no status ref, since the
+  objects outlive nothing a ref could revoke.
 
 ### 3.3 Co-located issuer and registry
 

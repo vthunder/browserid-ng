@@ -475,17 +475,14 @@ async fn fedcm_token(ctx: &TestContext, session: &str, email: &str) -> String {
     res.json::<Value>()["token"].as_str().unwrap().to_string()
 }
 
-/// Core §6.3 / fb §3.2: per-key status refs on both certs; S3 (decided):
-/// every warrant carries a status ref. The FedCM mint signs a throwaway
-/// config cert and the login warrant server-side with `status: None`, and
-/// registers the warrant with `status_idx: None` — so "forget this site"
-/// cannot revoke it. Mitigation today: the whole presentation lives 5 min
-/// (pinned below). Decision for Dan: accept as the documented FedCM
-/// exception (and say so in core §6.3), or allocate refs on the broker list.
-// AUDIT-2026-11 D19: fails today
-#[ignore]
+/// D19, decided Q20 (a): the FedCM mint's throwaway config cert and login
+/// warrant are the ONE documented exception to the per-key status refs of
+/// core §6.3 / fb §3.2 — they carry no ref because the whole presentation
+/// expires within five minutes (the pin below), so a ref would revoke
+/// nothing the expiry does not. This pin documents the exception; if the
+/// FedCM mint ever allocates refs (Q20 (b)), flip the assertions.
 #[tokio::test]
-async fn d19_fedcm_config_cert_and_warrant_carry_status_refs() {
+async fn d19_pin_fedcm_throwaway_objects_are_the_documented_status_ref_exception() {
     let ctx = common::create_test_context();
     let session = create_user(&ctx.server, &ctx.email_sender, "alice@example.com", "Password123!").await;
     let token = fedcm_token(&ctx, &session, "alice@example.com").await;
@@ -493,8 +490,8 @@ async fn d19_fedcm_config_cert_and_warrant_carry_status_refs() {
     assert_eq!(parts.len(), 4, "access~assertion~warrant~config");
     let warrant = Warrant::parse(parts[2]).unwrap();
     let config = DeviceCert::parse(parts[3]).unwrap();
-    assert!(config.claims().status.is_some(), "config cert has no status ref");
-    assert!(warrant.claims().status.is_some(), "login warrant has no status ref");
+    assert!(config.claims().status.is_none(), "throwaway config cert: documented exception (core §6.3)");
+    assert!(warrant.claims().status.is_none(), "throwaway login warrant: documented exception (core §6.3)");
 }
 
 /// Pin (passes today): the FedCM presentation is short-lived end to end —

@@ -834,7 +834,13 @@ step 8):
 
 Because every access cert is **IdP-gated online at mint** (§4.2), the
 authentication path is already fresh at issuance; the status refs give sub-TTL
-revocation of live sessions. A ref carries:
+revocation of live sessions. **FedCM exception.** The browser-mediated
+auto-reauthentication path (§7.3) mints a throwaway config cert and login
+warrant whose presentation expires within five minutes; those two objects
+MAY omit `status` — a ref would revoke nothing the expiry does not — and a
+verifier treats their absence there as the documented exception, not as a
+missing-ref failure. Every other config cert and warrant carries a ref. A ref
+carries:
 
 ```json
 "status": { "uri": "https://<authority>/.well-known/browserid-status", "idx": 42 }
