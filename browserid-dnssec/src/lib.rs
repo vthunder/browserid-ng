@@ -21,8 +21,10 @@ pub enum ResolveError {
     /// No DNSSEC-validated `_browserid` record — the domain is not a primary
     /// IdP (AD-unset / NXDOMAIN). A verifier MUST NOT trust it as an issuer.
     NotPrimary,
-    /// The DNSSEC chain is broken (SERVFAIL / Bogus) — an attack signal, hard
-    /// reject rather than fall through.
+    /// The DNSSEC chain is broken (SERVFAIL / Bogus), or no authenticated
+    /// answer could be obtained at all (DoT transport failure after one
+    /// retry, unexpected rcode) — an attack signal either way: hard reject
+    /// rather than fall through (spec §3, audit 2026-11 D14).
     Bogus,
 }
 
@@ -32,7 +34,7 @@ impl std::fmt::Display for ResolveError {
             ResolveError::NotPrimary => {
                 write!(f, "no DNSSEC-validated _browserid record (not a primary IdP)")
             }
-            ResolveError::Bogus => write!(f, "DNSSEC validation failed (bogus chain)"),
+            ResolveError::Bogus => write!(f, "DNSSEC validation failed (bogus chain or no authenticated answer)"),
         }
     }
 }
