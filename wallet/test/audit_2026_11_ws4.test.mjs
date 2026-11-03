@@ -98,7 +98,7 @@ test('D12 (pinned, S7): a parameterised entry signs — parameters outside the w
 // Defence in depth only: whoever can write the encrypted store already holds
 // the config key that would sign a fresh record, so an unverified stored
 // record buys the attacker nothing the store did not already give them.
-test('D12 (defence in depth): a stored record whose signature is not the config key\'s is refused', { skip: 'AUDIT-2026-11 D12: fails today — stored grant is payload-decoded, signature never checked' }, async () => {
+test('D12 (defence in depth): a stored record whose signature is not the config key\'s is refused', async () => {
   await seed();
   const stranger = await generateKey();
   await storeGrant(grantClaims(), { ...stranger.privJwk, x: stranger.x });
@@ -148,7 +148,7 @@ test('warrant lane (pinned): only self-grants, ≤8 grants, unique audiences, no
 // consent card MUST say so in its verb ... prompt-mode scopes called out";
 // §7.5 "a verb per scope, prompt-mode scopes called out". main.js
 // approveRequest renders request.js's `lines`, which carry bare scope names.
-test('W4-20: the native warrant prompt distinguishes a standing (auto) grant from a prompt-mode one', { skip: 'AUDIT-2026-11 W4-20: fails today — lines carry bare scope names; mode and parameters are not rendered' }, async () => {
+test('W4-20: the native warrant prompt distinguishes a standing (auto) grant from a prompt-mode one', async () => {
   await seed();
   let shown;
   const approve = async (p) => { shown = p; return false; };
@@ -173,7 +173,8 @@ test('W4-20 (pinned): what the warrant prompt does show — the browser-verified
   assert.equal(r.error, 'denied');
   assert.equal(shown.origin, ORIGIN);
   assert.equal(shown.email, 'dan@example.com');
-  assert.match(shown.lines[0], new RegExp(`^${AUD.replace(/[+./]/g, '\\$&')}: sign:sbo:post$`));
+  assert.match(shown.lines[0], new RegExp(`^${AUD.replace(/[+./]/g, '\\$&')}:$`), 'the audience heads its entries');
+  assert.match(shown.lines[1], /^\s+• sign:sbo:post — sign posts/, 'the entry renders through the scope-label table');
 });
 
 // ---------------------------------------------------------------------------
@@ -233,11 +234,34 @@ test('bridge (pinned): a web page origin is refused before the pairing dialog; a
 // (A9, loopback) can therefore open the pairing dialog, and once paired it
 // forwards whatever `origin` it likes on /request — the requester channel
 // every self-grant binds to. Gate the loopback-page allowance on WALLET_TEST.
-test('W4-21: a loopback web page cannot pair with the bridge outside WALLET_TEST', { skip: 'AUDIT-2026-11 W4-21: fails today — ALLOWED_ORIGIN admits localhost pages in production' }, async (t) => {
+test('W4-21: a loopback web page cannot pair with the bridge outside WALLET_TEST', async (t) => {
   const b = await bridge();
   if (!b) return t.skip('port 8873 is held by a running wallet');
   delete process.env.WALLET_TEST;
   const r = await b.post('/pair', {}, { origin: 'http://localhost:5173' });
   assert.equal(r.status, 403);
   assert.equal(b.calls.length, 0);
+});
+
+
+// The same rule, unit-level, so it is checked even while a real wallet holds
+// port 8873 (the bridge tests above skip then).
+test('W4-21: originAllowed admits loopback pages only under WALLET_TEST and honours a pinned extension id', () => {
+  const { originAllowed } = require('../src/server');
+  const saved = { t: process.env.WALLET_TEST, ids: process.env.WALLET_EXTENSION_IDS };
+  try {
+    delete process.env.WALLET_TEST; delete process.env.WALLET_EXTENSION_IDS;
+    assert.equal(originAllowed('http://localhost:5173'), false);
+    assert.equal(originAllowed('http://127.0.0.1:8080'), false);
+    assert.equal(originAllowed('https://evil.example'), false);
+    assert.equal(originAllowed('chrome-extension://' + 'a'.repeat(32)), true, 'unpinned dev build: any 32-letter id');
+    process.env.WALLET_TEST = '1';
+    assert.equal(originAllowed('http://localhost:5173'), true, 'the e2e harness');
+    process.env.WALLET_EXTENSION_IDS = 'b'.repeat(32);
+    assert.equal(originAllowed('chrome-extension://' + 'a'.repeat(32)), false, 'pinned: other ids refused');
+    assert.equal(originAllowed('chrome-extension://' + 'b'.repeat(32)), true);
+  } finally {
+    if (saved.t === undefined) delete process.env.WALLET_TEST; else process.env.WALLET_TEST = saved.t;
+    if (saved.ids === undefined) delete process.env.WALLET_EXTENSION_IDS; else process.env.WALLET_EXTENSION_IDS = saved.ids;
+  }
 });
