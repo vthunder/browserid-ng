@@ -46,6 +46,19 @@ async fn main() -> Result<()> {
     let config = Config::from_env();
     tracing::info!(?config, "Loaded configuration");
 
+    // How many fronting proxies append to X-Forwarded-For (default 1: dokku's
+    // nginx). Every per-IP throttle keys on the hop they appended; `0` means
+    // the broker is reached directly and the peer address is the client.
+    let trusted_proxies: usize = match std::env::var("TRUSTED_PROXIES") {
+        Ok(v) => v
+            .trim()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("TRUSTED_PROXIES must be a small non-negative integer, got {v:?}"))?,
+        Err(_) => browserid_broker::routes::DEFAULT_TRUSTED_PROXIES,
+    };
+    browserid_broker::routes::set_trusted_proxies(trusted_proxies);
+    tracing::info!(trusted_proxies, "Client addresses taken from the trusted X-Forwarded-For hop");
+
     // Load or generate keypair
     let keypair = load_or_generate_keypair(&config.key_file)?;
     tracing::info!(
@@ -237,7 +250,11 @@ async fn main() -> Result<()> {
     tracing::info!("Broker listening on http://{}", addr);
     tracing::info!("Support document at http://{}/.well-known/browserid", config.domain);
 
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

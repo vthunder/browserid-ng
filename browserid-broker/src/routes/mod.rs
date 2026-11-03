@@ -2,6 +2,7 @@
 
 mod account;
 mod auth;
+pub use auth::{set_trusted_proxies, DEFAULT_TRUSTED_PROXIES};
 mod code_guard;
 mod device;
 mod email;
@@ -403,6 +404,9 @@ where
         // (the winchan relay); the consent page especially
         // must never render in an iframe (its one-click Approve signs a warrant).
         .layer(axum::middleware::from_fn(security_headers))
+        // Outermost of all: the client address every throttle keys on, from
+        // the trusted proxy hop (or the peer address), never a client header.
+        .layer(axum::middleware::from_fn(auth::resolve_client_ip))
 }
 
 /// sha256 hashes of the *inline* `<script>` blocks on the auth-origin pages, so

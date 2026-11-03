@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::response::Response;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use tower_cookies::Cookies;
@@ -41,23 +42,84 @@ pub struct AuthenticateResponse {
 const LOGIN_MAX_FAILURES: u32 = 10;
 const LOGIN_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Best-effort client IP behind nginx/dokku (X-Forwarded-For's first hop, then
-/// X-Real-IP). Falls back to a shared bucket when absent — still bounds a
-/// header-less attacker, just coarsely.
+/// How many fronting proxies append to `X-Forwarded-For` before the
+/// request reaches the broker (`TRUSTED_PROXIES`, default 1: dokku's nginx).
+/// The client address is the hop that many from the END of the list — a
+/// client-supplied prefix is never trusted (audit 2026-11 W5-6). `0` means
+/// the broker is reached directly: the header is ignored and the peer
+/// address (`ConnectInfo`) is the client.
+static TRUSTED_PROXIES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Default when `TRUSTED_PROXIES` is unset: one proxy (dokku's nginx).
+pub const DEFAULT_TRUSTED_PROXIES: usize = 1;
+
+/// Configure the trusted-proxy count once at startup (`main.rs`). Later
+/// calls are ignored; tests and the default get [`DEFAULT_TRUSTED_PROXIES`].
+pub fn set_trusted_proxies(n: usize) {
+    let _ = TRUSTED_PROXIES.set(n);
+}
+
+pub(crate) fn trusted_proxies() -> usize {
+    *TRUSTED_PROXIES.get().unwrap_or(&DEFAULT_TRUSTED_PROXIES)
+}
+
+/// The header `resolve_client_ip` stamps with the address it worked out.
+/// Stripped from every incoming request, so only the middleware sets it.
+pub(crate) const RESOLVED_CLIENT_IP: &str = "x-browserid-client-ip";
+
+/// The client address according to `X-Forwarded-For` with `trusted` proxies
+/// in front: the hop `trusted` from the end (the one the outermost trusted
+/// proxy appended). `None` when there is nothing to trust (no proxies, or
+/// no header). With fewer hops than proxies the first hop is taken — the
+/// whole list was written by the proxies.
+pub(crate) fn forwarded_client_ip(headers: &axum::http::HeaderMap, trusted: usize) -> Option<String> {
+    if trusted == 0 {
+        return None;
+    }
+    let hops: Vec<&str> = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())?
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if hops.is_empty() {
+        return None;
+    }
+    Some(hops[hops.len().saturating_sub(trusted)].to_string())
+}
+
+/// The client IP every throttle keys on. Prefers the address
+/// `resolve_client_ip` stamped (which knows the peer address); otherwise the
+/// trusted `X-Forwarded-For` hop; otherwise a shared `unknown` bucket, which
+/// still bounds a header-less attacker, just coarsely.
 pub(crate) fn client_ip(headers: &axum::http::HeaderMap) -> String {
     headers
-        .get("x-forwarded-for")
+        .get(RESOLVED_CLIENT_IP)
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
         .map(|s| s.trim().to_string())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.trim().to_string())
-        })
         .filter(|s| !s.is_empty())
+        .or_else(|| forwarded_client_ip(headers, trusted_proxies()))
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Outermost middleware: work the client address out once per request and
+/// carry it in [`RESOLVED_CLIENT_IP`]. Any such header a client sent is
+/// dropped first. Behind proxies the trusted `X-Forwarded-For` hop; reached
+/// directly (`TRUSTED_PROXIES=0`) the connection's peer address.
+pub(crate) async fn resolve_client_ip(mut req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    req.headers_mut().remove(RESOLVED_CLIENT_IP);
+    let forwarded = forwarded_client_ip(req.headers(), trusted_proxies());
+    let peer = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip().to_string());
+    if let Some(ip) = forwarded.or(peer) {
+        if let Ok(v) = axum::http::HeaderValue::from_str(&ip) {
+            req.headers_mut().insert(RESOLVED_CLIENT_IP, v);
+        }
+    }
+    next.run(req).await
 }
 
 /// A real bcrypt hash of an unguessable random value, computed once per
@@ -374,4 +436,46 @@ where
         success: true,
         reason: None,
     }))
+}
+
+#[cfg(test)]
+mod client_ip_tests {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    fn h(xff: Option<&str>) -> HeaderMap {
+        let mut m = HeaderMap::new();
+        if let Some(v) = xff {
+            m.insert("x-forwarded-for", v.parse().unwrap());
+        }
+        m
+    }
+
+    #[test]
+    fn takes_the_hop_the_trusted_proxy_appended_not_a_spoofed_prefix() {
+        // The client sent `X-Forwarded-For: 1.2.3.4`; nginx appended the
+        // connection address. One trusted proxy → the appended hop wins.
+        assert_eq!(forwarded_client_ip(&h(Some("1.2.3.4, 203.0.113.7")), 1).as_deref(), Some("203.0.113.7"));
+        assert_eq!(forwarded_client_ip(&h(Some("203.0.113.7")), 1).as_deref(), Some("203.0.113.7"));
+        // Two proxies: the hop the outer one appended.
+        assert_eq!(forwarded_client_ip(&h(Some("1.2.3.4, 203.0.113.7, 10.0.0.2")), 2).as_deref(), Some("203.0.113.7"));
+        // Fewer hops than proxies: the whole list is the proxies' — first hop.
+        assert_eq!(forwarded_client_ip(&h(Some("203.0.113.7")), 2).as_deref(), Some("203.0.113.7"));
+    }
+
+    #[test]
+    fn direct_exposure_ignores_the_header_entirely() {
+        assert_eq!(forwarded_client_ip(&h(Some("1.2.3.4")), 0), None);
+        assert_eq!(forwarded_client_ip(&h(None), 1), None);
+        assert_eq!(client_ip(&h(None)), "unknown");
+    }
+
+    #[test]
+    fn x_real_ip_is_not_trusted_and_the_resolved_header_wins() {
+        let mut m = h(Some("1.2.3.4, 203.0.113.7"));
+        m.insert("x-real-ip", "9.9.9.9".parse().unwrap());
+        assert_eq!(client_ip(&m), "203.0.113.7");
+        m.insert(RESOLVED_CLIENT_IP, "198.51.100.3".parse().unwrap());
+        assert_eq!(client_ip(&m), "198.51.100.3");
+    }
 }
