@@ -20,7 +20,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@browserid-ng/agent": "^0.4.1"
+    "@browserid-ng/agent": "^1.0.0"
   },
   "engines": {
     "node": ">=18"

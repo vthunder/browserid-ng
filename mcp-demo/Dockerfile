@@ -2,7 +2,10 @@
 #   docker build -f mcp-demo/Dockerfile -t mcp-demo .
 # It bundles the local @browserid-ng/mcp-auth package (a file: dependency), so
 # the build context must include sdk/mcp-auth.
-FROM node:24-bookworm-slim
+# Base image pinned by digest (audit 2026-11 W7-7): the tag names the
+# version a human chose, the digest makes the build reproducible. Bump by
+# re-resolving the tag (multi-arch manifest list, 2026-11-03).
+FROM node:24-bookworm-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c
 
 WORKDIR /app
 

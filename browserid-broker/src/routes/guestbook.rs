@@ -326,7 +326,7 @@ where
     // itself attributes the human). No raw emails/codes leave the process.
     state.analytics.capture(
         "guestbook_signed",
-        crate::analytics::distinct_id_for_email(&agent_email),
+        state.analytics.distinct_id(&agent_email),
         serde_json::json!({
             "is_agent": true,
             "agent_domain": crate::analytics::email_domain(&agent_email),

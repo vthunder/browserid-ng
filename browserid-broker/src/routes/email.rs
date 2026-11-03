@@ -515,7 +515,7 @@ where
     // Funnel: an additional email was verified and added to an existing account.
     state.analytics.capture(
         "email_verified",
-        crate::analytics::distinct_id_for_email(&pending.email),
+        state.analytics.distinct_id(&pending.email),
         serde_json::json!({ "email_domain": crate::analytics::email_domain(&pending.email) }),
     );
 

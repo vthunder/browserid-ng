@@ -20,4 +20,11 @@ paths = [
     '''^browserid-broker/tests/oidc_claim_test\.rs$''',
     # Issue notes; the one hit is the literal placeholder "phc_...".
     '''^\.beans/.*\.md$''',
+    # Fuzz corpus seeds (audit 2026-11 WS3): JWS tokens signed under the
+    # fixture keys in fuzz/, deliberately committed as parser inputs.
+    # Reviewed 2026-11-03.
+    '''^fuzz/seeds/.*''',
+    # Audit 2026-11 WS4 broker tests reuse the same throwaway OIDC JWKS test
+    # key as browserid-broker/src/oidc/tests.rs. Reviewed 2026-11-03.
+    '''^browserid-broker/tests/audit_2026_11_ws4\.rs$''',
 ]

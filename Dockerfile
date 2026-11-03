@@ -1,5 +1,8 @@
 # Stage 1: Build
-FROM rust:1.85-bookworm AS builder
+# Base image pinned by digest (audit 2026-11 W7-7): the tag names the
+# version a human chose, the digest makes the build reproducible. Bump by
+# re-resolving the tag (multi-arch manifest list, 2026-11-03).
+FROM rust:1.85-bookworm@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4 AS builder
 
 WORKDIR /build
 
@@ -42,7 +45,7 @@ RUN touch browserid-core/src/lib.rs browserid-dnssec/src/lib.rs browserid-regist
     cargo build --release --package browserid-broker
 
 # Stage 2: Runtime
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

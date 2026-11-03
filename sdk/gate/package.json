@@ -29,9 +29,9 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@browserid-ng/agent": "^0.4.1",
-    "@browserid-ng/mcp-auth": "^0.5.0",
-    "@browserid-ng/verify": "^0.2.0",
+    "@browserid-ng/agent": "^1.0.0",
+    "@browserid-ng/mcp-auth": "^0.6.0",
+    "@browserid-ng/verify": "^0.4.0",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "keywords": [
