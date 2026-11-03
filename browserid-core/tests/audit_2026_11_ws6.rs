@@ -214,7 +214,6 @@ fn subaddress_never_widens_upward_or_sideways() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // AUDIT-2026-11 S6: fails today — no `iat <= exp` check on any object (device.rs verify_at)
 fn s6_warrant_with_iat_after_exp_rejects() {
     let f = Fx::new();
     let mut p = f.bundle();
@@ -223,7 +222,6 @@ fn s6_warrant_with_iat_after_exp_rejects() {
 }
 
 #[test]
-#[ignore] // AUDIT-2026-11 S6: fails today — no `iat <= now + skew` check (device.rs verify_at)
 fn s6_access_cert_issued_in_the_future_rejects() {
     let f = Fx::new();
     let mut p = f.bundle();
@@ -235,7 +233,6 @@ fn s6_access_cert_issued_in_the_future_rejects() {
 }
 
 #[test]
-#[ignore] // AUDIT-2026-11 S6: fails today — admission `validate` has no iat check either (admission.rs)
 fn s6_admission_record_issued_in_the_future_rejects() {
     let f = Fx::new();
     let t = now();
@@ -256,7 +253,6 @@ fn s6_admission_record_issued_in_the_future_rejects() {
 /// `max-ttl` is computed as `exp - iat`; with a future `iat` the difference
 /// goes negative and the constraint is vacuous (D16).
 #[test]
-#[ignore] // AUDIT-2026-11 D16: fails today — `exp - iat` is unchecked for sign (device.rs Constraints::check)
 fn d16_future_iat_defeats_max_ttl() {
     let f = Fx::new();
     let p = AccessPresentation {
@@ -300,7 +296,6 @@ fn max_ttl_bounds_an_honestly_dated_warrant() {
 }
 
 #[test]
-#[ignore] // AUDIT-2026-11 D16: fails today — `is_fresh_capped` bounds `ttl` but not `iat` (status.rs:1015)
 fn d16_status_list_with_future_iat_is_not_fresh() {
     let k = key(9);
     let list = browserid_core::StatusList::from_revoked([], 8);

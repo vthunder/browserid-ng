@@ -22,7 +22,9 @@ use crate::device::{Binding, BindingSet, DeviceCert, Holder, Purpose, ScopeEntry
 use crate::identity;
 use crate::jws::invalid;
 use crate::status::StatusRef;
+use crate::time::{check_window, CLOCK_SKEW_SECONDS};
 use crate::{PublicKey, Result};
+use chrono::Utc;
 
 /// The two-object record bundle: `warrant ~ config_cert`.
 pub struct RecordBundle {
@@ -90,16 +92,25 @@ impl RecordBundle {
     where
         F: Fn(&str) -> Result<PublicKey>,
     {
+        self.validate_at(audience, Utc::now().timestamp(), get_idp_key)
+    }
+
+    /// [`RecordBundle::validate`] with the time bounds judged at the explicit
+    /// instant `at` instead of the wall clock — for deterministic validators
+    /// (and tests). The §6.1 clock rule applies to both objects: `iat ≤ exp`,
+    /// `iat ≤ at + skew`, unexpired at `at`.
+    pub fn validate_at<F>(&self, audience: &str, at: i64, get_idp_key: F) -> Result<ValidatedRecord>
+    where
+        F: Fn(&str) -> Result<PublicKey>,
+    {
         let cc = self.config_cert.claims();
         let wc = self.warrant.claims();
 
-        // 1b: config cert under its IdP key; unexpired; an authorization cert
-        // whose identities cover the grantor.
+        // 1b: config cert under its IdP key; within its time bounds; an
+        // authorization cert whose identities cover the grantor.
         let idp_key = get_idp_key(&cc.iss)?;
         self.config_cert.verify(&idp_key)?;
-        if self.config_cert.is_expired() {
-            return Err(invalid("config cert", "expired"));
-        }
+        check_window("config cert", cc.iat, cc.exp, at, CLOCK_SKEW_SECONDS)?;
         if cc.purpose != Purpose::Authorization {
             return Err(invalid("config cert", "not an authorization cert"));
         }
@@ -111,9 +122,7 @@ impl RecordBundle {
         // (same normalization as assertion `aud`). The connection self-grant
         // rule (§5) is enforced structurally at `Warrant::parse`.
         self.warrant.verify(&cc.public_key)?;
-        if self.warrant.is_expired() {
-            return Err(invalid("warrant", "expired"));
-        }
+        check_window("warrant", wc.iat, wc.exp, at, CLOCK_SKEW_SECONDS)?;
         if wc.audience != audience {
             return Err(invalid("warrant", "audience mismatch"));
         }
@@ -143,12 +152,16 @@ impl RecordBundle {
     /// (or, for a minting resource, at every bearer mint/refresh — §6.4
     /// freshness-backed minting).
     pub fn recheck_live(&self) -> Result<()> {
-        if self.warrant.is_expired() {
-            return Err(invalid("warrant", "expired"));
-        }
-        if self.config_cert.is_expired() {
-            return Err(invalid("config cert", "expired"));
-        }
+        self.recheck_live_at(Utc::now().timestamp())
+    }
+
+    /// [`RecordBundle::recheck_live`] at an explicit instant (the same §6.1
+    /// clock rule as validation: `iat ≤ exp`, `iat ≤ at + skew`, unexpired).
+    pub fn recheck_live_at(&self, at: i64) -> Result<()> {
+        let wc = self.warrant.claims();
+        let cc = self.config_cert.claims();
+        check_window("warrant", wc.iat, wc.exp, at, CLOCK_SKEW_SECONDS)?;
+        check_window("config cert", cc.iat, cc.exp, at, CLOCK_SKEW_SECONDS)?;
         Ok(())
     }
 }
@@ -232,6 +245,11 @@ mod tests {
 
     const IAT: i64 = 1_800_000_000;
     const DAY: i64 = 86_400;
+    /// The fixtures are dated 2027 (shared with the golden vectors); judge
+    /// them at an instant inside their window. `validate`/`recheck_live`
+    /// (wall clock) would reject them as post-dated until then — the §6.1
+    /// clock rule at work, covered by `expiry_is_a_live_bound`.
+    const AT: i64 = IAT + 60;
 
     fn seed_key(byte: u8) -> KeyPair {
         KeyPair::from_seed(&[byte; 32]).unwrap()
@@ -328,7 +346,7 @@ mod tests {
     #[test]
     fn validate_happy_path() {
         let f = Fx::new();
-        let v = f.bundle().validate(f.audience(), |iss| {
+        let v = f.bundle().validate_at(f.audience(), AT, |iss| {
             assert_eq!(iss, "example.com");
             Ok(f.idp_pub())
         }).unwrap();
@@ -350,7 +368,7 @@ mod tests {
     #[test]
     fn validate_rejects_wrong_audience() {
         let f = Fx::new();
-        assert!(f.bundle().validate("https://other.example", |_| Ok(f.idp_pub())).is_err());
+        assert!(f.bundle().validate_at("https://other.example", AT, |_| Ok(f.idp_pub())).is_err());
     }
 
     #[test]
@@ -366,9 +384,9 @@ mod tests {
             },
             config_cert: f.config_cert(None),
         };
-        assert!(b.validate(f.audience(), |_| Ok(f.idp_pub())).is_err());
+        assert!(b.validate_at(f.audience(), AT, |_| Ok(f.idp_pub())).is_err());
         // Config cert that doesn't verify under the resolved IdP key.
-        assert!(f.bundle().validate(f.audience(), |_| Ok(rogue.public_key())).is_err());
+        assert!(f.bundle().validate_at(f.audience(), AT, |_| Ok(rogue.public_key())).is_err());
     }
 
     #[test]
@@ -378,12 +396,12 @@ mod tests {
             warrant: f.connection_warrant(),
             config_cert: f.config_cert_claims(|c| c.purpose = Purpose::Authentication),
         };
-        assert!(b.validate(f.audience(), |_| Ok(f.idp_pub())).is_err());
+        assert!(b.validate_at(f.audience(), AT, |_| Ok(f.idp_pub())).is_err());
         let b = RecordBundle {
             warrant: f.connection_warrant(),
             config_cert: f.config_cert_claims(|c| c.identities = vec!["someone-else@example.com".into()]),
         };
-        assert!(b.validate(f.audience(), |_| Ok(f.idp_pub())).is_err());
+        assert!(b.validate_at(f.audience(), AT, |_| Ok(f.idp_pub())).is_err());
     }
 
     #[test]
@@ -397,17 +415,17 @@ mod tests {
             unknown: Default::default(),
         };
         let b = RecordBundle { warrant: f.connection_warrant(), config_cert: f.config_cert(Some(c)) };
-        assert!(b.validate(f.audience(), |_| Ok(f.idp_pub())).is_err());
+        assert!(b.validate_at(f.audience(), AT, |_| Ok(f.idp_pub())).is_err());
         // Unknown constraint key → reject fail-closed.
         let mut unknown = std::collections::BTreeMap::new();
         unknown.insert("cosign".to_string(), serde_json::json!("x"));
         let c = Constraints { aud: None, scopes: None, max_ttl: None, unknown };
         let b = RecordBundle { warrant: f.connection_warrant(), config_cert: f.config_cert(Some(c)) };
-        assert!(b.validate(f.audience(), |_| Ok(f.idp_pub())).is_err());
+        assert!(b.validate_at(f.audience(), AT, |_| Ok(f.idp_pub())).is_err());
         // max-ttl below the record's validity → reject.
         let c = Constraints { aud: None, scopes: None, max_ttl: Some(DAY), unknown: Default::default() };
         let b = RecordBundle { warrant: f.connection_warrant(), config_cert: f.config_cert(Some(c)) };
-        assert!(b.validate(f.audience(), |_| Ok(f.idp_pub())).is_err());
+        assert!(b.validate_at(f.audience(), AT, |_| Ok(f.idp_pub())).is_err());
         // aud allowlist that permits this audience → pass.
         let salt = "c2FsdHktc2FsdA";
         let c = Constraints {
@@ -420,14 +438,14 @@ mod tests {
             unknown: Default::default(),
         };
         let b = RecordBundle { warrant: f.connection_warrant(), config_cert: f.config_cert(Some(c)) };
-        assert!(b.validate(f.audience(), |_| Ok(f.idp_pub())).is_ok());
+        assert!(b.validate_at(f.audience(), AT, |_| Ok(f.idp_pub())).is_ok());
     }
 
     #[test]
     fn expiry_is_a_live_bound() {
         let f = Fx::new();
-        // Expiry compares against wall-clock now (a live bound), so an expired
-        // record needs a genuinely past exp — the fixture IAT is a fixed
+        // `validate`/`recheck_live` judge at wall-clock now (a live bound);
+        // the `_at` forms at an explicit instant. The fixture IAT is a fixed
         // FUTURE epoch (2027) shared with the golden vectors.
         const PAST_EXP: i64 = 1_600_000_000; // 2020-09-13
         // An expired warrant fails validate AND the per-use re-check.
@@ -435,17 +453,39 @@ mod tests {
             warrant: f.warrant(|w| { w.iat = PAST_EXP - DAY; w.exp = PAST_EXP; }),
             config_cert: f.config_cert(None),
         };
-        assert!(b.validate(f.audience(), |_| Ok(f.idp_pub())).is_err());
+        assert!(b.validate_at(f.audience(), AT, |_| Ok(f.idp_pub())).is_err());
+        assert!(b.recheck_live_at(AT).is_err());
         assert!(b.recheck_live().is_err());
         // An expired config cert likewise.
         let b = RecordBundle {
             warrant: f.connection_warrant(),
             config_cert: f.config_cert_claims(|c| { c.iat = PAST_EXP - DAY; c.exp = PAST_EXP; }),
         };
-        assert!(b.validate(f.audience(), |_| Ok(f.idp_pub())).is_err());
+        assert!(b.validate_at(f.audience(), AT, |_| Ok(f.idp_pub())).is_err());
+        assert!(b.recheck_live_at(AT).is_err());
         assert!(b.recheck_live().is_err());
-        // A live record passes the re-check.
-        assert!(f.bundle().recheck_live().is_ok());
+        // A live record passes the re-check at an instant inside its window…
+        assert!(f.bundle().recheck_live_at(AT).is_ok());
+        // …and an `iat > exp` record never does (§6.1 clock rule).
+        let b = RecordBundle {
+            warrant: f.warrant(|w| { w.iat = w.exp + 1; }),
+            config_cert: f.config_cert(None),
+        };
+        assert!(b.validate_at(f.audience(), AT, |_| Ok(f.idp_pub())).is_err());
+        assert!(b.recheck_live_at(AT).is_err());
+        // The wall clock rejects a record dated more than `skew` ahead of it
+        // (the 2027 fixture, until 2027), and accepts one dated now.
+        let now = Utc::now().timestamp();
+        if now + crate::time::CLOCK_SKEW_SECONDS < IAT {
+            assert!(f.bundle().recheck_live().is_err());
+            assert!(f.bundle().validate(f.audience(), |_| Ok(f.idp_pub())).is_err());
+        }
+        let b = RecordBundle {
+            warrant: f.warrant(|w| { w.iat = now - 60; w.exp = now + DAY; }),
+            config_cert: f.config_cert_claims(|c| { c.iat = now - DAY; c.exp = now + 90 * DAY; }),
+        };
+        assert!(b.validate(f.audience(), |_| Ok(f.idp_pub())).is_ok());
+        assert!(b.recheck_live().is_ok());
     }
 
     #[test]
@@ -462,7 +502,7 @@ mod tests {
             }),
             config_cert: f.config_cert(None),
         };
-        let v = b.validate(f.audience(), |_| Ok(f.idp_pub())).unwrap();
+        let v = b.validate_at(f.audience(), AT, |_| Ok(f.idp_pub())).unwrap();
         assert!(matches!(v.binding.entries(), [Binding::Holder { .. }]));
         assert_eq!(v.status_refs().len(), 1); // config cert's only
     }
@@ -502,7 +542,7 @@ mod tests {
     #[test]
     fn matches_login_rejects_connection_bound_records() {
         let f = Fx::new();
-        let v = f.bundle().validate(f.audience(), |_| Ok(f.idp_pub())).unwrap();
+        let v = f.bundle().validate_at(f.audience(), AT, |_| Ok(f.idp_pub())).unwrap();
         assert!(v.matches_login(f.email(), None).is_err());
     }
 }

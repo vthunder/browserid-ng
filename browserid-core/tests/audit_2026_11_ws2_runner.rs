@@ -30,13 +30,6 @@ const EXPECTED_FAIL: &[(&str, &str)] = &[
     ("P-TYP-01", "S3"),
     ("P-TYP-02", "S3"),
     ("A-REJ-13", "S3"),
-    // AUDIT-2026-11 D16/S6: no `iat ≤ exp`, `iat ≤ now + skew` bound anywhere in core.
-    ("P-TIME-05", "D16"),
-    ("P-TIME-06", "D16"),
-    ("P-TIME-07", "D16"),
-    ("P-TIME-08", "D16"),
-    ("P-TIME-09", "D16"),
-    ("A-REJ-21", "D16"),
     // AUDIT-2026-11 W6-1: `identity_matches` compares the grantor's domain byte-exact (device.rs:73-74).
     ("P-OK-12", "W6-1"),
     // AUDIT-2026-11 S5: core implements §4.7 (aud/scopes/max-ttl) while the spec says no reference verifier does; a satisfied constraint verifies.

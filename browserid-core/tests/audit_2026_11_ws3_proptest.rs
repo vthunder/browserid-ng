@@ -707,7 +707,6 @@ proptest! {
     /// it panics under debug assertions and wraps in release, where a wrapped
     /// negative difference passes any `max-ttl`).
     #[test]
-    #[ignore] // AUDIT-2026-11 W3-1: fails today — `warrant.exp - warrant.iat` is unchecked i64 arithmetic (device.rs Constraints::check)
     fn max_ttl_check_never_overflows(iat in any::<i64>(), exp in any::<i64>(), max in 0i64..(1 << 40)) {
         let cons = Constraints { aud: None, scopes: None, max_ttl: Some(max), unknown: Default::default() };
         let w = WarrantClaims { typ: TYP_WARRANT_V2.into(), iat, exp, grantor: "u@example.com".into(), grantee: "u@example.com".into(), holder: None, binding: None, audience: AUD.into(), scopes: vec![], status: None, unknown: Default::default() };
@@ -730,7 +729,6 @@ proptest! {
     /// S6 generalised: a warrant with `iat > exp`, or an `iat` in the future
     /// of the verification instant, never verifies.
     #[test]
-    #[ignore] // AUDIT-2026-11 S6: fails today — no `iat <= exp` / `iat <= now + skew` check on any object (device.rs verify_at); WS6 holds the point tests
     fn warrant_iat_is_bounded_by_exp_and_now(iat in (AT + 3600)..(AT + 10 * DAY), exp_after in 1i64..DAY, inverted in any::<bool>()) {
         // Inverted: not yet expired at AT, but issued after it expires.
         let (iat_w, exp_w) = if inverted { (AT + exp_after + 1, AT + 1) } else { (iat, iat + exp_after) };
@@ -756,7 +754,6 @@ proptest! {
     /// assertions; in release it wraps negative, which happens to fail
     /// closed). `ttl` is capped by `is_fresh_capped` but `iat` is not.
     #[test]
-    #[ignore] // AUDIT-2026-11 W3-2: fails today — `claims.iat + ttl + grace` is unchecked i64 arithmetic (status.rs is_fresh / is_fresh_capped)
     fn status_list_freshness_never_overflows(iat in any::<i64>(), ttl in any::<i64>(), grace in 0i64..3600, max_ttl in 1i64..100_000) {
         let k = KeyPair::from_seed(&[5; 32]).unwrap();
         let claims = serde_json::json!({ "typ": browserid_core::TYP_STATUS_LIST, "iss": "example.com", "sub": STATUS, "iat": iat, "ttl": ttl, "status_list": { "bits": 1, "lst": StatusList::from_revoked([], 8).encode().unwrap() } });
@@ -893,12 +890,13 @@ proptest! {
     }
 }
 
-/// Sanity: the ignored properties do fail today, for the reason stated.
+/// The W3-1 reproducer, inverted with the fix (bean gdo0): the overflowing
+/// `exp − iat` neither panics (debug) nor wraps to a passing width (release)
+/// — it is a max-ttl violation.
 #[test]
 fn w3_1_max_ttl_overflow_reproducer() {
     let cons = Constraints { aud: None, scopes: None, max_ttl: Some(DAY), unknown: Default::default() };
     let w = WarrantClaims { typ: TYP_WARRANT_V2.into(), iat: i64::MIN, exp: 1, grantor: "u@example.com".into(), grantee: "u@example.com".into(), holder: None, binding: None, audience: AUD.into(), scopes: vec![], status: None, unknown: Default::default() };
     let r = std::panic::catch_unwind(|| cons.check("config cert", AUD, &w).is_ok());
-    // Debug build: panic. Release build: wraps negative and PASSES max-ttl.
-    assert!(r.is_err() || r.unwrap(), "fixed? un-ignore max_ttl_check_never_overflows");
+    assert_eq!(r.ok(), Some(false), "an overflowing validity width must be a max-ttl violation");
 }

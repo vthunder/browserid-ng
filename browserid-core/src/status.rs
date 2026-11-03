@@ -236,9 +236,10 @@ impl StatusListToken {
     }
 
     /// Whether the token is within its advertised cache lifetime (plus
-    /// `grace` seconds of slack).
+    /// `grace` seconds of slack) at wall-clock now. See
+    /// [`StatusListToken::is_fresh_at`] for the rule.
     pub fn is_fresh(&self, grace: i64) -> bool {
-        Utc::now().timestamp() <= self.claims.iat + self.claims.ttl + grace
+        self.is_fresh_at(Utc::now().timestamp(), grace)
     }
 
     /// Freshness with a consumer-imposed ceiling on the issuer-declared `ttl`.
@@ -246,8 +247,35 @@ impl StatusListToken {
     /// so a malicious/compromised issuer cannot set `ttl` arbitrarily large and
     /// pin a cached all-clear list past a real revocation (audit M3).
     pub fn is_fresh_capped(&self, grace: i64, max_ttl: i64) -> bool {
-        let ttl = self.claims.ttl.min(max_ttl);
-        Utc::now().timestamp() <= self.claims.iat + ttl + grace
+        self.is_fresh_capped_at(Utc::now().timestamp(), grace, max_ttl)
+    }
+
+    /// [`StatusListToken::is_fresh`] at an explicit instant. The §6.1 clock
+    /// rule (spec §6.3 "the list's own time bounds"): a list is fresh iff
+    /// `ttl ≥ 0`, `iat ≤ at + skew` (a post-dated list is not fresh — it
+    /// would otherwise stay "fresh" past any cap, D16), and
+    /// `at ≤ iat + ttl + grace`. Checked arithmetic: an overflow is stale
+    /// (W3-2), never a wrap that reads fresh forever.
+    pub fn is_fresh_at(&self, at: i64, grace: i64) -> bool {
+        Self::fresh(self.claims.iat, self.claims.ttl, at, grace)
+    }
+
+    /// [`StatusListToken::is_fresh_capped`] at an explicit instant.
+    pub fn is_fresh_capped_at(&self, at: i64, grace: i64, max_ttl: i64) -> bool {
+        Self::fresh(self.claims.iat, self.claims.ttl.min(max_ttl), at, grace)
+    }
+
+    fn fresh(iat: i64, ttl: i64, at: i64, grace: i64) -> bool {
+        if ttl < 0 || grace < 0 {
+            return false;
+        }
+        if iat > at.saturating_add(crate::time::CLOCK_SKEW_SECONDS) {
+            return false;
+        }
+        match iat.checked_add(ttl).and_then(|d| d.checked_add(grace)) {
+            Some(deadline) => at <= deadline,
+            None => false,
+        }
     }
 
     pub fn is_revoked(&self, idx: u64) -> bool {
@@ -296,6 +324,38 @@ mod tests {
         assert!(!small.is_revoked(u64::MAX));
         // Capacity arithmetic is checked across the whole u64 range.
         let _ = StatusList::from_revoked([u64::MAX], u64::MAX - 1);
+    }
+
+    #[test]
+    fn freshness_follows_the_clock_rule() {
+        let key = KeyPair::generate();
+        let uri = "https://broker.example/.well-known/browserid-status";
+        let tok = |iat: i64, ttl: i64| {
+            let claims = StatusListClaims {
+                typ: TYP_STATUS_LIST.into(),
+                iss: "broker.example".into(),
+                sub: uri.into(),
+                iat,
+                ttl,
+                status_list: StatusListPayload { bits: 1, lst: StatusList::from_revoked([], 8).encode().unwrap() },
+            };
+            StatusListToken::parse(&jws_sign(&claims, &key).unwrap()).unwrap()
+        };
+        let at = 1_000_000;
+        // Within ttl (+ grace): fresh; past it: stale.
+        assert!(tok(at - 100, 300).is_fresh_at(at, 0));
+        assert!(!tok(at - 400, 300).is_fresh_at(at, 0));
+        assert!(tok(at - 400, 300).is_fresh_at(at, 100));
+        // A post-dated list is not fresh, however long its ttl (D16).
+        assert!(!tok(at + 301, 3600).is_fresh_at(at, 0));
+        assert!(!tok(at + 10 * 365 * 86_400, 300).is_fresh_capped_at(at, 0, 300));
+        assert!(tok(at + 300, 3600).is_fresh_at(at, 0)); // within skew: drift
+        // A negative ttl is stale; overflow is stale (W3-2), never fresh.
+        assert!(!tok(at, -1).is_fresh_at(at, 0));
+        assert!(!tok(i64::MAX - 10, i64::MAX).is_fresh_at(i64::MAX - 20, 0));
+        assert!(!tok(at, 300).is_fresh_at(at, -1));
+        // The cap still bounds an honest-but-long ttl.
+        assert!(!tok(at - 400, 3600).is_fresh_capped_at(at, 0, 300));
     }
 
     #[test]

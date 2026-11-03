@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::jws::{invalid, jws_decode, jws_sign, jws_verify};
 use crate::status::StatusRef;
+use crate::time::{check_window, validity_width, CLOCK_SKEW_SECONDS};
 use crate::{Assertion, KeyPair, PublicKey, Result};
 
 pub const TYP_DEVICE_CERT: &str = "browserid-device-cert-v1";
@@ -312,8 +313,12 @@ impl Constraints {
             }
         }
         if let Some(max) = self.max_ttl {
-            if warrant.exp - warrant.iat > max {
-                return Err(invalid(object, "warrant validity exceeds constraints max-ttl"));
+            // `exp − iat` under the one clock rule: an inverted window or an
+            // overflow is a violation, never a wrapped width that passes
+            // (D16 / W3-1).
+            match validity_width(warrant.iat, warrant.exp) {
+                Some(width) if width <= max => {}
+                _ => return Err(invalid(object, "warrant validity exceeds constraints max-ttl")),
             }
         }
         Ok(())
@@ -1582,12 +1587,10 @@ impl AccessPresentation {
             get_idp_key(&cc.iss)?
         };
         self.config_cert.verify(&config_idp_key)?;
-        if self.access_cert.is_expired_at(at) {
-            return Err(invalid("access cert", "expired"));
-        }
-        if self.config_cert.is_expired_at(at) {
-            return Err(invalid("config cert", "expired"));
-        }
+        // §6.1 time bounds (the one clock rule): iat ≤ exp, iat ≤ at + skew,
+        // unexpired at `at` — on both certs and, below, the warrant.
+        check_window("access cert", ac.iat, ac.exp, at, CLOCK_SKEW_SECONDS)?;
+        check_window("config cert", cc.iat, cc.exp, at, CLOCK_SKEW_SECONDS)?;
 
         // Assertion signed by the access cert's fresh key, for this audience.
         self.assertion.verify(&ac.access_key)?;
@@ -1610,9 +1613,7 @@ impl AccessPresentation {
 
         // Warrant signed by the config cert (so the grantor authorized it).
         self.warrant.verify(&cc.public_key)?;
-        if self.warrant.is_expired_at(at) {
-            return Err(invalid("warrant", "expired"));
-        }
+        check_window("warrant", wc.iat, wc.exp, at, CLOCK_SKEW_SECONDS)?;
         // The grantee is the actor: it must be the identity the access cert
         // certifies (and whose fresh key signed the assertion above). Exact,
         // per §5's identity comparison — matcher grantees were rejected above.

@@ -121,13 +121,14 @@ impl HandleAttestation {
                 actual: self.claims.aud.clone(),
             });
         }
+        // The §6.1 clock rule (iat ≤ exp, iat ≤ now + skew, unexpired), with
+        // this object's tighter 60 s skew: an iat further ahead is a clock
+        // lie, not drift we should absorb.
         let now = Utc::now().timestamp();
+        crate::time::check_window("attestation", self.claims.iat, self.claims.exp, now, 60)
+            .map_err(|e| invalid(e.to_string()))?;
         if now >= self.claims.exp {
             return Err(invalid("attestation expired"));
-        }
-        // An iat in the future is a clock lie, not skew we should absorb.
-        if self.claims.iat > now + 60 {
-            return Err(invalid("attestation issued in the future"));
         }
         Ok(())
     }

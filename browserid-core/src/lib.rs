@@ -20,6 +20,7 @@ pub mod identity;
 pub mod jws;
 pub mod rp_auth;
 pub mod status;
+pub mod time;
 
 pub use keys::{KeyPair, PublicKey};
 pub use assertion::Assertion;
