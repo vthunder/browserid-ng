@@ -74,6 +74,7 @@ npm test
 | `WALLET_KEK` | dev: generated file | **Required in production.** base64url, 32 bytes — wraps tenant keys |
 | `WALLET_SESSION_SECRET` | dev: generated file | **Required in production.** base64url, 32 bytes — signs authorize-page sessions |
 | `WALLET_ENV` | – | set `production` to require the secrets + Secure cookies |
+| `WALLET_TRUSTED_PROXIES` | `1` | reverse-proxy hops in front (dokku nginx = 1); the client IP for rate limits and the audit log is the hop that proxy appended to `X-Forwarded-For`. Set `0` when clients connect directly (header ignored). |
 
 Generate secrets: `node -e 'console.log(require("crypto").randomBytes(32).toString("base64url"))'`
 

@@ -13,6 +13,13 @@ export const VERIFIER_URL = process.env.VERIFIER_URL || `${BROKER}/verify`;
 export const GUESTBOOK_URL = process.env.GUESTBOOK_URL || `${BROKER}/guestbook`;
 export const DATABASE_PATH = process.env.WALLET_DATABASE_PATH || "wallet.db";
 export const PRODUCTION = process.env.WALLET_ENV === "production";
+/** How many trusted reverse-proxy hops front this service (audit 2026-11
+ *  W4-23, matching the broker's design): the client address is the hop
+ *  that proxy appended to X-Forwarded-For — the Nth from the end. 1 behind
+ *  dokku's nginx (the default); 0 when clients connect directly (the
+ *  header is then ignored entirely). Never the first hop: a client writes
+ *  that one. */
+export const TRUSTED_PROXIES = Math.max(0, Number.parseInt(process.env.WALLET_TRUSTED_PROXIES ?? "1", 10) || 0);
 
 /** Access/refresh token lifetimes (design doc §6). */
 export const ACCESS_TOKEN_TTL_S = 60 * 60;

@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createVerifier } from "@browserid-ng/verify";
 import {
-  PORT, WALLET_ORIGIN, BROKER, VERIFIER_URL, DATABASE_PATH, KEK, PRODUCTION,
+  PORT, WALLET_ORIGIN, BROKER, VERIFIER_URL, DATABASE_PATH, KEK, PRODUCTION, TRUSTED_PROXIES,
 } from "./config.mjs";
 import { openDb } from "./db.mjs";
 import { EnvKeyWrapper } from "./custody.mjs";
@@ -89,8 +89,16 @@ export function createWalletService({ verifyLogin, checkStatus } = {}) {
       req.on("end", () => resolve(d));
       req.on("error", reject);
     });
-  const clientIp = (req) =>
-    (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket.remoteAddress || "?";
+  // The client address for the limiters and the audit log: the hop the
+  // TRUSTED_PROXIES-th proxy appended (W4-23), never a client-written hop.
+  // With 0 trusted proxies, or fewer hops than proxies, it is the socket.
+  const clientIp = (req) => {
+    const socket = req.socket.remoteAddress || "?";
+    if (TRUSTED_PROXIES === 0) return socket;
+    const hops = String(req.headers["x-forwarded-for"] || "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (hops.length < TRUSTED_PROXIES) return socket;
+    return hops[hops.length - TRUSTED_PROXIES] || socket;
+  };
   // Browser-facing state-changing endpoints: same-origin only (CSRF).
   const badOrigin = (req) => req.headers.origin && req.headers.origin !== WALLET_ORIGIN;
 

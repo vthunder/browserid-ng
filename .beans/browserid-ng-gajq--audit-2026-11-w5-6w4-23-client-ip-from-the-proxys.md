@@ -1,11 +1,11 @@
 ---
 # browserid-ng-gajq
 title: '[Audit 2026-11] W5-6/W4-23: client IP from the proxy''s X-Forwarded-For hop (trusted-proxy count) in broker and wallet-service'
-status: todo
+status: in-progress
 type: bug
 priority: normal
 created_at: 2026-11-02T22:43:19Z
-updated_at: 2026-11-02T22:43:19Z
+updated_at: 2026-11-03T08:46:56Z
 parent: browserid-ng-ag1l
 ---
 
@@ -20,3 +20,11 @@ Acceptance: wallet-service/test/audit_2026_11_ws4.test.mjs: un-skip "W4-23: a cl
 Infra half (declare x-forwarded-for-value and assert it in audit-host.sh) is a separate task bean in sandmill-infra.
 
 Reports: ws5 §2 (W5-6), ws4 §2 (W4-23), ws7 §6. Ledger: docs/security-audit-2026-11.md. Decisions: docs/security-audit-2026-11-decisions.md.
+
+
+## Summary of Changes (wallet-service half only)
+
+- wallet-service/src/config.mjs: `TRUSTED_PROXIES` from `WALLET_TRUSTED_PROXIES` (default 1 — dokku's nginx; 0 for direct clients). wallet-service/src/server.mjs: `clientIp` takes the hop the TRUSTED_PROXIES-th proxy appended to `X-Forwarded-For` (the Nth from the end), never the client-written first hop; with 0 trusted proxies, or fewer hops than proxies, it is the socket address. Every limiter key and the audit-log `ip` use it. README documents the setting.
+- Tests: un-skipped "W4-23: a client cannot spend another address's login budget, nor reset its own, via X-Forwarded-For" in wallet-service/test/audit_2026_11_ws4.test.mjs; the test file sets `WALLET_TRUSTED_PROXIES=0` (it connects directly). 31 pass / 0 fail.
+
+Not in this bean: the broker half (browserid-broker/src/routes/auth.rs client_ip + unit test) belongs to the Rust agents; the infra half is a sandmill-infra task.

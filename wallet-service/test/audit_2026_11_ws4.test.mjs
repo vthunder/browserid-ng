@@ -14,6 +14,8 @@ process.env.PORT = String(PORT);
 process.env.WALLET_DATABASE_PATH = ":memory:";
 process.env.WALLET_KEK = randomBytes(32).toString("base64url");
 process.env.WALLET_SESSION_SECRET = randomBytes(32).toString("base64url");
+// These tests connect directly (no proxy): the X-Forwarded-For header is client-written and must be ignored (W4-23).
+process.env.WALLET_TRUSTED_PROXIES = "0";
 
 const { createWalletService } = await import("../src/server.mjs");
 
@@ -215,12 +217,12 @@ test("AS (pinned): client_name is attacker-chosen and rendered as the consenting
 // ---------------------------------------------------------------------------
 // W4-23 — rate-limit and audit keys trust X-Forwarded-For
 
-test("W4-23: a client cannot spend another address's login budget, nor reset its own, via X-Forwarded-For", { skip: "AUDIT-2026-11 W4-23: fails today — clientIp() takes the first XFF hop unconditionally (cf. W5-6)" }, async () => {
+test("W4-23: a client cannot spend another address's login budget, nor reset its own, via X-Forwarded-For", async () => {
   for (let i = 0; i < 25; i++) {
     await post("/oauth/login", { presentation: "nope" }, { "x-forwarded-for": `10.0.0.${i}` });
   }
   // Twenty-five bad logins from one socket must be throttled regardless of
-  // the header; today each distinct XFF value gets a fresh bucket.
+  // the header (TRUSTED_PROXIES=0 here: a direct client's header is noise).
   const r = await post("/oauth/login", { presentation: "nope" }, { "x-forwarded-for": "10.0.0.99" });
   assert.equal(r.status, 429);
 });
