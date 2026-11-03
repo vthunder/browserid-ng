@@ -1305,7 +1305,7 @@ export function createAuthCodeLane(opts) {
    */
   async function handleToken(params) {
     const p = params || {};
-    if (p.grant_type === JWT_BEARER_GRANT) return mcpAuth.handleToken(p);
+    if (p.grant_type === JWT_BEARER_GRANT) return handleJwtBearer(p);
     if (p.grant_type === REFRESH_GRANT) return handleRefresh(p);
     if (p.grant_type !== AUTH_CODE_GRANT) {
       throw new McpAuthError(
@@ -1409,6 +1409,40 @@ export function createAuthCodeLane(opts) {
     return { ...tokens, refresh_token: refreshToken };
   }
 
+  /**
+   * Lane A through a lane-enabled server (audit 2026-11 W4-10): the
+   * presentation mints through `mcpAuth.handleToken` as before, and when a
+   * policy is configured the §6.5 conjunction applies to it too — the
+   * presentation's grantor must be an owner or covered by a live policy
+   * row; the bearer carries S ∩ S′, both records' status refs, the earlier
+   * expiry and `permittedBy`. No covering row ⇒ the bearer is withdrawn
+   * and the exchange refused: a self-signed warrant is not an entitlement.
+   */
+  async function handleJwtBearer(p) {
+    const out = await mcpAuth.handleToken(p);
+    if (!policy) return out;
+    const grant = await mcpAuth.store.get(out.access_token);
+    if (!grant) throw new McpAuthError("invalid_grant", "bearer vanished before admission");
+    let c;
+    try {
+      c = await conjoinPolicy({
+        grantor: grant.grantor,
+        scopes: grant.scopes,
+        status_refs: grant.statusRefs,
+        expires_at: grant.exp,
+      });
+    } catch (e) {
+      await mcpAuth.store.del(out.access_token);
+      throw e;
+    }
+    grant.scopes = c.scopes;
+    grant.statusRefs = c.statusRefs;
+    if (c.expiresAt != null && c.expiresAt < grant.exp) grant.exp = c.expiresAt;
+    grant.permittedBy = c.permittedBy;
+    await mcpAuth.store.put(out.access_token, grant);
+    return { ...out, expires_in: Math.max(0, grant.exp - nowS()), scope: c.scopes.map((s) => (typeof s === "string" ? s : s?.scope)).join(" ") };
+  }
+
   /** `grant_type=refresh_token` — connection mode only, rotation on use,
    *  family burn on reuse (a replayed refresh token is theft evidence). */
   async function handleRefresh(p) {
@@ -1427,7 +1461,12 @@ export function createAuthCodeLane(opts) {
       }
       throw new McpAuthError("invalid_grant", "refresh token reuse detected — connection revoked locally");
     }
-    if (p.client_id != null && p.client_id !== rt.clientId) {
+    // OAuth 2.1 §4.3.1: a public client MUST send its client_id (audit
+    // 2026-11 W4-11) — and it must be the one the token was issued to.
+    if (typeof p.client_id !== "string" || !p.client_id) {
+      throw new McpAuthError("invalid_request", "missing 'client_id' (required for a public client)");
+    }
+    if (p.client_id !== rt.clientId) {
       throw new McpAuthError("invalid_grant", "refresh token was not issued to this client");
     }
     // Narrow-only: a refresh may request a subset of the original scope.

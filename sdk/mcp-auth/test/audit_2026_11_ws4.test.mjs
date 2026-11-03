@@ -204,7 +204,7 @@ test("D5: a policy row carrying a requester entry is unsatisfiable in operation 
 // W4-10 — the policy layer does not reach Lane A (jwt-bearer) bearers
 // ===========================================================================
 
-test("W4-10: with policy configured, a jwt-bearer presentation from a non-owner with no covering row must not mint", { skip: "AUDIT-2026-11 W4-10: fails today" }, async () => {
+test("W4-10: with policy configured, a jwt-bearer presentation from a non-owner with no covering row must not mint", async () => {
   const { lane } = policyLane({ validate: {}, deliver: () => [], policyRows: [] });
   // okVerify is MEMBER (not an owner) and the policy store holds no row.
   await assert.rejects(
@@ -213,12 +213,17 @@ test("W4-10: with policy configured, a jwt-bearer presentation from a non-owner 
   );
 });
 
-test("W4-10 pin: today the Lane A mint ignores the policy layer entirely (the gate re-checks at /mcp)", async () => {
-  const { lane, mcpAuth } = policyLane({ validate: {}, deliver: () => [], policyRows: [] });
+test("W4-10: a jwt-bearer presentation from a covered non-owner mints S ∩ S′ under the permitter's grant", async () => {
+  const { lane, mcpAuth } = policyLane({
+    validate: { [POLICY_OPEN]: policyResult(MEMBER, { kind: "holder", matcher: "*" }) },
+    deliver: () => [], policyRows: [row(POLICY_OPEN)],
+  });
   const t = await lane.handleToken({ grant_type: JWT_BEARER_GRANT, assertion: "AC~AS~WR~CC" });
+  assert.equal(t.scope, "notes:read", "S ∩ S′: the policy row grants notes:read only");
   const ctx = await mcpAuth.authenticate(`Bearer ${t.access_token}`);
   assert.equal(ctx.grantor, MEMBER);
-  assert.equal(ctx.permittedBy, null);
+  assert.equal(ctx.permittedBy, OWNER);
+  assert.deepEqual(ctx.scopes, ["notes:read"]);
 });
 
 // ===========================================================================
@@ -307,7 +312,7 @@ test("W4-13: a jwt-bearer bearer is capped at the verifier's expires_at (bean oa
 // W4-11 — refresh_token exchange does not require client_id (public client)
 // ===========================================================================
 
-test("W4-11: a refresh without client_id must be refused for a public client (RFC 6749 §4.1.3 / OAuth 2.1 §4.3.1)", { skip: "AUDIT-2026-11 W4-11: fails today" }, async () => {
+test("W4-11: a refresh without client_id must be refused for a public client (RFC 6749 §4.1.3 / OAuth 2.1 §4.3.1)", async () => {
   const { lane } = policyLane({
     validate: { [MEMBER_CONN]: connectionResult(OWNER, "cn_o") },
     deliver: () => [{ audience: RESOURCE, warrant: MEMBER_CONN }],

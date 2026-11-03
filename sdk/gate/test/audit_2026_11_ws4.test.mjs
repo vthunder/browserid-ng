@@ -122,14 +122,27 @@ after(async () => {
   broker.close();
 });
 
-async function bearer(base, presentation) {
-  const res = await fetch(`${base}/token`, {
+async function tokenRes(base, presentation) {
+  return fetch(`${base}/token`, {
     method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: presentation }),
   });
+}
+async function bearer(base, presentation) {
+  const res = await tokenRes(base, presentation);
   assert.equal(res.status, 200, `token HTTP ${res.status}`);
   return (await res.json()).access_token;
 }
+// A member's attempt end to end. Since W4-10 the lane's own §6.5 conjunction
+// runs at /token for jwt-bearer presentations too, so a refusal may land
+// there (400, or 503 when the validator is unreachable — fail-closed) or at the
+// grantor gate (/mcp 403): `refused` accepts any of them.
+async function attempt(base, presentation) {
+  const res = await tokenRes(base, presentation);
+  if (res.status !== 200) return res;
+  return mcp(base, (await res.json()).access_token);
+}
+const refused = (res) => assert.ok(res.status === 400 || res.status === 403 || res.status === 503, `expected a refusal, got HTTP ${res.status}`);
 let id = 1;
 const mcp = (base, tok) => fetch(`${base}/mcp`, {
   method: "POST",
@@ -142,15 +155,15 @@ const mcp = (base, tok) => fetch(`${base}/mcp`, {
 // ===========================================================================
 
 test("D6 pin: the member is admitted under the owner's live policy row (single-server)", async () => {
-  const res = await mcp(SINGLE, await bearer(SINGLE, "pres-member"));
+  const res = await attempt(SINGLE, "pres-member");
   assert.equal(res.status, 200);
 });
 
 test("D6: single-server — a policy row the broker reports REVOKED must stop admitting a jwt-bearer subject", async () => {
   validateMode.set(SINGLE_POLICY, "revoked");
   try {
-    const res = await mcp(SINGLE, await bearer(SINGLE, "pres-member"));
-    assert.equal(res.status, 403);
+    const res = await attempt(SINGLE, "pres-member");
+    refused(res);
   } finally { validateMode.delete(SINGLE_POLICY); }
 });
 
@@ -158,8 +171,8 @@ test("D6: single-server — an EXPIRED policy row must not admit", async () => {
   const live = singleStore.raw.get(`${OWNER}|${MEMBER}|${SINGLE}`);
   singleStore.raw.set(`${OWNER}|${MEMBER}|${SINGLE}`, { ...live, exp: nowS() - 10 });
   try {
-    const res = await mcp(SINGLE, await bearer(SINGLE, "pres-member"));
-    assert.equal(res.status, 403);
+    const res = await attempt(SINGLE, "pres-member");
+    refused(res);
   } finally { singleStore.raw.set(`${OWNER}|${MEMBER}|${SINGLE}`, live); }
 });
 
@@ -168,31 +181,31 @@ test("D6: single-server — an EXPIRED policy row must not admit", async () => {
 // ===========================================================================
 
 test("D6 pin: gateway signed mode — the member is admitted under the admin's live policy row (validated fresh)", async () => {
-  const res = await mcp(NOTES, await bearer(NOTES, "pres-member"));
+  const res = await attempt(NOTES, "pres-member");
   assert.equal(res.status, 200);
 });
 
 test("D6: gateway signed mode — an UNREACHABLE validator must fail closed (last-known-good is not fresh evidence)", async () => {
   validateMode.set(GW_POLICY, "reset");
   try {
-    const res = await mcp(NOTES, await bearer(NOTES, "pres-member"));
-    assert.equal(res.status, 403);
+    const res = await attempt(NOTES, "pres-member");
+    refused(res);
   } finally { validateMode.delete(GW_POLICY); }
 });
 
 test("D6 pin: gateway signed mode — a REVOKED policy row refuses the member (definitive answers are honored)", async () => {
   validateMode.set(GW_POLICY, "revoked");
   try {
-    const res = await mcp(NOTES, await bearer(NOTES, "pres-member"));
-    assert.equal(res.status, 403);
+    const res = await attempt(NOTES, "pres-member");
+    refused(res);
   } finally { validateMode.delete(GW_POLICY); }
 });
 
 test("D6 pin: gateway signed mode — an HTTP 503 from the validator is temporarily_unavailable and refuses (fail-closed; the row is kept, W4-12)", async () => {
   validateMode.set(GW_POLICY, "http503");
   try {
-    const res = await mcp(NOTES, await bearer(NOTES, "pres-member"));
-    assert.equal(res.status, 403);
+    const res = await attempt(NOTES, "pres-member");
+    refused(res);
   } finally { validateMode.delete(GW_POLICY); }
 });
 
@@ -205,8 +218,8 @@ test("D5: a policy row narrowed to another holder must not admit a jwt-bearer lo
   const live = singleStore.raw.get(k);
   singleStore.raw.set(k, rowFor(SINGLE_NARROW));
   try {
-    const res = await mcp(SINGLE, await bearer(SINGLE, "pres-member")); // holder agents.erin ≠ agents.someone-else
-    assert.equal(res.status, 403);
+    const res = await attempt(SINGLE, "pres-member"); // holder agents.erin ≠ agents.someone-else
+    refused(res);
   } finally { singleStore.raw.set(k, live); }
 });
 
@@ -225,8 +238,8 @@ test("D17: the admin gate must not fold the local part — Admin@ is not admin@ 
 });
 
 test("D17: the grantor gate must not fold the local part — a row for erin@ must not admit Erin@", async () => {
-  const res = await mcp(NOTES, await bearer(NOTES, "pres-member-cased"));
-  assert.equal(res.status, 403);
+  const res = await attempt(NOTES, "pres-member-cased");
+  refused(res);
 });
 
 // ===========================================================================

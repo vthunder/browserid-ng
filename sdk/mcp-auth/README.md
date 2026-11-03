@@ -95,6 +95,13 @@ per-call fail-closed status checks are identical across both lanes.
 
 `@browserid-ng/agent` is loaded lazily — Lane-A-only users never pull it in.
 
+With `policy: { owners, store? }` on the lane, the §6.5 conjunction applies
+to BOTH lanes: a connection record's subject and a jwt-bearer presentation's
+grantor must be an owner or covered by a live, owner-signed policy row, and
+the bearer carries S ∩ S′, both records' status refs and `permittedBy`. A
+self-signed warrant alone is never an entitlement at a policy-mode server.
+Refreshes require `client_id` (OAuth 2.1 public clients).
+
 ### curl walkthrough (local broker)
 
 ```sh
