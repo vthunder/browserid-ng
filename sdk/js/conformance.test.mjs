@@ -27,25 +27,9 @@ const VECTORS = JSON.parse(readFileSync(new URL("../../test-vectors/conformance-
 const HOSTED = JSON.parse(readFileSync(new URL("../../test-vectors/conformance-2026-11.hosted.json", import.meta.url), "utf8")).responses;
 
 const EXPECTED_FAIL = {
-  // AUDIT-2026-11 D7: the hosted response flattens scope entries to strings; the SDK relays them as-is (scopes: string[]).
-  "P-OK-07": "D7",
-  "P-OK-08": "D7",
-  // AUDIT-2026-11 W6-1 (inherited from the hosted verifier): grantor domain compared byte-exact.
-  "P-OK-12": "W6-1",
-  // AUDIT-2026-11 D16 (inherited): no lower bound on iat.
-  "P-TIME-05": "D16",
-  "P-TIME-06": "D16",
-  "P-TIME-07": "D16",
-  "P-TIME-08": "D16",
-  "P-TIME-09": "D16",
   // AUDIT-2026-11 S3 (inherited): v1 warrants still verify.
   "P-TYP-01": "S3",
   "P-TYP-02": "S3",
-  // AUDIT-2026-11 W6-4 (inherited): cert status.uri host never compared to iss.
-  "P-STAT-06": "W6-4",
-  // AUDIT-2026-11 S5 (inherited): a satisfied §4.7 constraint verifies although the spec says any constraints claim rejects.
-  "P-CONS-01": "S5",
-  "P-CONS-06": "S5",
 };
 
 /** fetch stub bound to one vector: answers the recorded hosted response only

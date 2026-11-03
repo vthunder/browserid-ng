@@ -29,28 +29,10 @@ const VECTORS = JSON.parse(readFileSync(new URL("../../../test-vectors/conforman
 const HOSTED = JSON.parse(readFileSync(new URL("../../../test-vectors/conformance-2026-11.hosted.json", import.meta.url), "utf8")).responses;
 
 const EXPECTED_FAIL = {
-  // AUDIT-2026-11 D7: scope entries arrive flattened and the bearer carries strings only.
-  "P-OK-07": "D7",
-  "P-OK-08": "D7",
-  "A-OK-08": "D7",
-  // AUDIT-2026-11 W6-1 (inherited from the hosted verifier).
-  "P-OK-12": "W6-1",
-  // AUDIT-2026-11 D16 (inherited): no lower bound on iat.
-  "P-TIME-05": "D16",
-  "P-TIME-06": "D16",
-  "P-TIME-07": "D16",
-  "P-TIME-08": "D16",
-  "P-TIME-09": "D16",
-  "A-REJ-21": "D16",
   // AUDIT-2026-11 S3 (inherited): v1 records still verify/validate.
   "P-TYP-01": "S3",
   "P-TYP-02": "S3",
   "A-REJ-13": "S3",
-  // AUDIT-2026-11 W6-4 (inherited).
-  "P-STAT-06": "W6-4",
-  // AUDIT-2026-11 S5 (inherited).
-  "P-CONS-01": "S5",
-  "P-CONS-06": "S5",
   // Decision Q15 (a) (audit 2026-11 D5): a held policy record admits only with the one binding
   // {holder, "*"}; narrowed holder matchers are refused rather than evaluated until a wallet
   // authors them (Q15 (b)). These two vectors expect the matcher to be evaluated.
