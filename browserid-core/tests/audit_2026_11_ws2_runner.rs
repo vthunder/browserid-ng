@@ -35,8 +35,6 @@ const EXPECTED_FAIL: &[(&str, &str)] = &[
     ("P-CONS-06", "S5"),
     // AUDIT-2026-11 W6-4: cert `status.uri` host is never compared to the cert's `iss` (a verifier rule, §6.3; core surfaces the ref only).
     ("P-STAT-06", "W6-4"),
-    // AUDIT-2026-11 W2-6: `DnsRecord::parse` keeps the LAST of duplicated fields (dns.rs:30-45); a record naming two keys resolves to the second instead of rejecting.
-    ("T-REJ-11", "W2-6"),
 ];
 
 struct Env {

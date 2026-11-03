@@ -828,9 +828,11 @@ proptest! {
         if let Ok(r) = DnsRecord::parse(&lossy) {
             prop_assert_eq!(r.version.as_str(), "browserid1");
             prop_assert_eq!(r.algorithm.as_str(), "Ed25519");
-            // The parser keeps the LAST `public-key=` field.
-            let field = lossy.split(';').map(str::trim).filter_map(|p| p.split_once('=')).filter(|(k, _)| k.trim() == "public-key").last().map(|(_, v)| v.trim().to_string()).unwrap();
-            prop_assert_eq!(r.public_key.to_base64(), field);
+            // Exactly ONE `public-key=` field (a repeat rejects — W2-6,
+            // bean zsi1), and the key is byte-equal to it.
+            let fields: Vec<String> = lossy.split(';').map(str::trim).filter_map(|p| p.split_once('=')).filter(|(k, _)| k.trim() == "public-key").map(|(_, v)| v.trim().to_string()).collect();
+            prop_assert_eq!(fields.len(), 1);
+            prop_assert_eq!(r.public_key.to_base64(), fields[0].clone());
         }
         // A well-formed record round-trips its key; dropping any required
         // field, or any other version/algorithm, rejects.
@@ -848,6 +850,11 @@ proptest! {
             format!("v=browserid2; public-key-algorithm=Ed25519; public-key={}", pk),
             format!("v=browserid1; public-key-algorithm=RSA; public-key={}", pk),
             format!("v=browserid1; public-key-algorithm=Ed25519; public-key={}", &pk[..pk.len() - 2]),
+            // Repeated fields are ambiguous (W2-6), even when the values agree.
+            format!("v=browserid1; public-key-algorithm=Ed25519; public-key={pk}; public-key={pk}"),
+            format!("v=browserid1; v=browserid1; public-key-algorithm=Ed25519; public-key={pk}"),
+            format!("v=browserid1; public-key-algorithm=Ed25519; public-key-algorithm=Ed25519; public-key={pk}"),
+            format!("v=browserid1; public-key-algorithm=Ed25519; public-key={pk}; host=a.example; host=b.example"),
         ];
         for b in &bad {
             prop_assert!(DnsRecord::parse(b).is_err(), "accepted malformed record {:?}", b);
