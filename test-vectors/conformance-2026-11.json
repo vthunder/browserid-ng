@@ -7599,14 +7599,14 @@
       "audience": "https://rp.example",
       "bundle": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJjb25zdHJhaW50cyI6eyJhdWQiOnsiaGFzaGVzIjpbIkQzZWRKbkhtYkFiR0hpU0d1QmtHR000c0FWNnh2Qk45UUMzQXdLZW5kX1EiXSwic2FsdCI6IkNRa0pDUWtKQ1FrSkNRa0pDUWtKQ1EifX0sImV4cCI6MjA3NTM2MDAwMCwiaG9sZGVyIjoiYnIubWFpbiIsImlhdCI6MTc2MDAwMDAwMCwiaWRlbnRpdHkiOiJ1c2VyQGV4YW1wbGUuY29tIiwiaXNzIjoiYnJvd3NlcmlkLm1lIiwicHVibGljLWtleSI6eyJhbGdvcml0aG0iOiJFZDI1NTE5IiwicHVibGljS2V5IjoiN1Vrb3hpalJ3c2JxNlFNNGtGbVZZU2xaSnpwY1lfazJOc0ZHRkt5SE45RSJ9LCJzdGF0dXMiOnsiaWR4Ijo3LCJ1cmkiOiJodHRwczovL2Jyb3dzZXJpZC5tZS8ud2VsbC1rbm93bi9icm93c2VyaWQtc3RhdHVzIn0sInR5cCI6ImJyb3dzZXJpZC1hY2Nlc3MtY2VydC12MSJ9.cCoKU_9neByc4O1FNzlHzhIf3SSD2W55WGWLLtOtxLAKH8hC3Tk3mBxN4KUin8KY-mJTWGFPGPfJ5Np7jopOAw~eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJodHRwczovL3JwLmV4YW1wbGUiLCJleHAiOjIwNzUzNjAwMDB9.rARKP3-XbAm2m1JEwo__ApFhqmkuHYfso1X_Q0PBVkRcR3vytDOAwy0DxcsZUHrb9Q2bQ9nZgKweUzKlJeK9DQ~eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhdWRpZW5jZSI6Imh0dHBzOi8vcnAuZXhhbXBsZSIsImJpbmRpbmciOnsia2luZCI6ImhvbGRlciIsIm1hdGNoZXIiOiJici4qIn0sImV4cCI6MjA3NTM2MDAwMCwiZ3JhbnRlZSI6InVzZXJAZXhhbXBsZS5jb20iLCJncmFudG9yIjoidXNlckBleGFtcGxlLmNvbSIsImlhdCI6MTc2MDAwMDAwMCwic2NvcGVzIjpbXSwic3RhdHVzIjp7ImlkeCI6NDIsInVyaSI6Imh0dHBzOi8vYnJvd3NlcmlkLm1lLy53ZWxsLWtub3duL2Jyb3dzZXJpZC1zdGF0dXMifSwidHlwIjoiYnJvd3NlcmlkLXdhcnJhbnQtdjIifQ.HRcHN6REHo4TwL4tOQfyMYwTgKzRfBKXXdLuoQllFkJPBzPw9Zx8g9Rjmgk41LWwGyGSZsYOiYr50UfUlRqIAg~eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJleHAiOjIwNzUzNjAwMDAsImhvbGRlciI6ImJyLm1haW4iLCJpYXQiOjE3NjAwMDAwMDAsImlkZW50aXRpZXMiOlsidXNlckBleGFtcGxlLmNvbSJdLCJpc3MiOiJicm93c2VyaWQubWUiLCJwdWJsaWMta2V5Ijp7ImFsZ29yaXRobSI6IkVkMjU1MTkiLCJwdWJsaWNLZXkiOiJ5cE9zRndVWWNISFdlNFBIX3c3LWdRam83RVV3VjExM0pvZVRNOXZhdm53In0sInB1cnBvc2UiOiJhdXRob3JpemF0aW9uIiwic3RhdHVzIjp7ImlkeCI6MiwidXJpIjoiaHR0cHM6Ly9icm93c2VyaWQubWUvLndlbGwta25vd24vYnJvd3NlcmlkLXN0YXR1cyJ9LCJ0eXAiOiJicm93c2VyaWQtZGV2aWNlLWNlcnQtdjEifQ.K1ULfayesUQakLZjJGpI6aRJoSByIYnu2_-4_4WjmcPG3keuhEl1l-fTsVStba4JPiNCztK6iCt15i-lEoCJAA",
       "expect": {
-        "reason_class": "constraints",
-        "verdict": "reject"
+        "email": "user@example.com",
+        "grantee": "user@example.com",
+        "holder": "br.main",
+        "scopes": [],
+        "verdict": "accept"
       },
       "id": "P-CONS-01",
       "invariant": "I8",
-      "known_findings": [
-        "S5"
-      ],
       "objects": {
         "access_cert": {
           "constraints": {
@@ -7674,7 +7674,7 @@
         }
       },
       "op": "P",
-      "title": "access cert carries a satisfied `aud` constraint; §4.7 says no reference verifier implements constraints, so any claim rejects"
+      "title": "access cert carries a satisfied `aud` constraint; §4.7 (2026-11): core implements aud/scopes/max-ttl, so a satisfied constraint verifies"
     },
     {
       "audience": "https://rp.example",
@@ -7984,14 +7984,14 @@
       "audience": "https://rp.example",
       "bundle": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJleHAiOjIwNzUzNjAwMDAsImhvbGRlciI6ImJyLm1haW4iLCJpYXQiOjE3NjAwMDAwMDAsImlkZW50aXR5IjoidXNlckBleGFtcGxlLmNvbSIsImlzcyI6ImJyb3dzZXJpZC5tZSIsInB1YmxpYy1rZXkiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInB1YmxpY0tleSI6IjdVa294aWpSd3NicTZRTTRrRm1WWVNsWkp6cGNZX2syTnNGR0ZLeUhOOUUifSwic3RhdHVzIjp7ImlkeCI6NywidXJpIjoiaHR0cHM6Ly9icm93c2VyaWQubWUvLndlbGwta25vd24vYnJvd3NlcmlkLXN0YXR1cyJ9LCJ0eXAiOiJicm93c2VyaWQtYWNjZXNzLWNlcnQtdjEifQ.bTMfwyWGCd0sIhXdCF-zrQOBhhouYm8CvCak7iilcpVsvRjEfQ-CbAh8Ig4OtYUrTUY2HNfk5fxw3E1vcPwrDA~eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJodHRwczovL3JwLmV4YW1wbGUiLCJleHAiOjIwNzUzNjAwMDB9.rARKP3-XbAm2m1JEwo__ApFhqmkuHYfso1X_Q0PBVkRcR3vytDOAwy0DxcsZUHrb9Q2bQ9nZgKweUzKlJeK9DQ~eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhdWRpZW5jZSI6Imh0dHBzOi8vcnAuZXhhbXBsZSIsImJpbmRpbmciOnsia2luZCI6ImhvbGRlciIsIm1hdGNoZXIiOiJici4qIn0sImV4cCI6MjA3NTM2MDAwMCwiZ3JhbnRlZSI6InVzZXJAZXhhbXBsZS5jb20iLCJncmFudG9yIjoidXNlckBleGFtcGxlLmNvbSIsImlhdCI6MTc2MDAwMDAwMCwic2NvcGVzIjpbXSwic3RhdHVzIjp7ImlkeCI6NDIsInVyaSI6Imh0dHBzOi8vYnJvd3NlcmlkLm1lLy53ZWxsLWtub3duL2Jyb3dzZXJpZC1zdGF0dXMifSwidHlwIjoiYnJvd3NlcmlkLXdhcnJhbnQtdjIifQ.HRcHN6REHo4TwL4tOQfyMYwTgKzRfBKXXdLuoQllFkJPBzPw9Zx8g9Rjmgk41LWwGyGSZsYOiYr50UfUlRqIAg~eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJjb25zdHJhaW50cyI6e30sImV4cCI6MjA3NTM2MDAwMCwiaG9sZGVyIjoiYnIubWFpbiIsImlhdCI6MTc2MDAwMDAwMCwiaWRlbnRpdGllcyI6WyJ1c2VyQGV4YW1wbGUuY29tIl0sImlzcyI6ImJyb3dzZXJpZC5tZSIsInB1YmxpYy1rZXkiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInB1YmxpY0tleSI6InlwT3NGd1VZY0hIV2U0UEhfdzctZ1FqbzdFVXdWMTEzSm9lVE05dmF2bncifSwicHVycG9zZSI6ImF1dGhvcml6YXRpb24iLCJzdGF0dXMiOnsiaWR4IjoyLCJ1cmkiOiJodHRwczovL2Jyb3dzZXJpZC5tZS8ud2VsbC1rbm93bi9icm93c2VyaWQtc3RhdHVzIn0sInR5cCI6ImJyb3dzZXJpZC1kZXZpY2UtY2VydC12MSJ9.0ZTwsvXedzn-tHkkFKlQqQRO5Wt3nZuzDfGHOzjf5ZEhW2WpNKED4KGm7ZX3Zhj_iVmCOMyXqjXHhndPZf9uCw",
       "expect": {
-        "reason_class": "constraints",
-        "verdict": "reject"
+        "email": "user@example.com",
+        "grantee": "user@example.com",
+        "holder": "br.main",
+        "scopes": [],
+        "verdict": "accept"
       },
       "id": "P-CONS-06",
       "invariant": "I8",
-      "known_findings": [
-        "S5"
-      ],
       "objects": {
         "access_cert": {
           "exp": 2075360000,
@@ -8052,7 +8052,7 @@
         }
       },
       "op": "P",
-      "title": "config cert with an empty constraints object"
+      "title": "config cert with an empty constraints object (no keys to enforce; §4.7 2026-11: core implements the section, so an empty object verifies)"
     },
     {
       "audience": "https://rp.example",

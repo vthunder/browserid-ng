@@ -147,6 +147,20 @@ impl FallbackFetcher {
     /// is a hard error, never a well-known downgrade.
     async fn fallback_to_broker(&self) -> Result<FallbackResult, VerifierError> {
         let broker = self.trusted_broker.clone();
+        if self.dev_local_broker {
+            // DEV (localhost): a loopback broker has no DNSSEC record to look
+            // up, and since a DoT transport failure is a hard reject (D14) an
+            // offline dev box must not depend on reaching the resolver at all.
+            // Trust the key the local broker serves at `.well-known/browserid`.
+            // Scoped to localhost/127.*, never a real domain.
+            let doc = fetch_blocking_http(&broker).await?;
+            return Ok(FallbackResult {
+                document: doc,
+                authoritative_domain: broker,
+                is_primary: false,
+                serving_host: None,
+            });
+        }
         let dns_result = self.dns_fetcher.lookup(&broker).await;
 
         match dns_result.dnssec_status {
@@ -166,24 +180,10 @@ impl FallbackFetcher {
                     broker
                 ))),
             },
-            DnssecStatus::Insecure => {
-                if self.dev_local_broker {
-                    // DEV (localhost): no DNSSEC/TLS locally — trust the broker's
-                    // own published key. Scoped to localhost, never a real domain.
-                    let doc = fetch_blocking_http(&broker).await?;
-                    Ok(FallbackResult {
-                        document: doc,
-                        authoritative_domain: broker,
-                        is_primary: false,
-                        serving_host: None,
-                    })
-                } else {
-                    Err(VerifierError::Discovery(format!(
-                        "trusted broker '{}' discovery is not DNSSEC-authenticated",
-                        broker
-                    )))
-                }
-            }
+            DnssecStatus::Insecure => Err(VerifierError::Discovery(format!(
+                "trusted broker '{}' discovery is not DNSSEC-authenticated",
+                broker
+            ))),
             DnssecStatus::Bogus => Err(VerifierError::DnssecValidationFailed { domain: broker }),
         }
     }

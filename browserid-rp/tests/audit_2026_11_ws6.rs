@@ -3,9 +3,8 @@
 //!
 //! `Verifier::verify_dnssec` runs the hosted verifier's SSRF-guarded,
 //! issuer-bound, ttl-capped fetch. The pinned-table path (`Verifier::verify`
-//! + `Verifier::refresh_status` / `StatusCache::refresh`) does not: it fetches
-//! with `reqwest::get` (redirects followed, any scheme, any host) and honours
-//! the issuer-declared `ttl` with no ceiling.
+//! + `Verifier::refresh_status` / `StatusCache::refresh`) is deprecated (Q3)
+//! and, until removal, made safe by construction: these tests pin that.
 //!
 //! Report: docs/security-audit-2026-11-ws6-core-verifier.md.
 
@@ -76,7 +75,6 @@ fn one_shot_server(status_line: &'static str, headers: Vec<String>, body: String
 /// cache keeps honouring it for the process lifetime (July M3, closed only on
 /// the hosted path with `is_fresh_capped`).
 #[test]
-#[ignore] // AUDIT-2026-11 D15: fails today — `StatusCache::verdict` uses `is_fresh(grace)` with no ttl ceiling (lib.rs StatusCache::verdict)
 fn d15_pinned_status_cache_caps_the_issuer_declared_ttl() {
     let key = KeyPair::generate();
     let uri = "https://browserid.example/.well-known/browserid-status";
@@ -98,7 +96,7 @@ fn d15_pinned_status_cache_caps_the_issuer_declared_ttl() {
 /// token's `sub` names the ORIGINAL uri. The hosted path refuses all three
 /// (no redirects, https only, no non-global hosts).
 #[test]
-#[ignore] // AUDIT-2026-11 D15: fails today — `reqwest::get(uri)` in StatusCache::refresh / Verifier::refresh_status (lib.rs ~272-290, ~723)
+#[allow(deprecated)]
 fn d15_pinned_status_refresh_refuses_redirects_and_private_hosts() {
     let key = KeyPair::generate();
     // Bind the redirecting server first so its uri is known before the list

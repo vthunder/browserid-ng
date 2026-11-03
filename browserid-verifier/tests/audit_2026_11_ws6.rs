@@ -18,7 +18,7 @@ use browserid_core::device::{
 };
 use browserid_core::discovery::SupportDocument;
 use browserid_core::{
-    Assertion, Cap, Holder, KeyPair, PublicKey, Purpose, ScopeEntry, ScopeParams,
+    Assertion, Cap, Holder, KeyPair, PublicKey, Purpose, ScopeEntry, ScopeParams, StatusList,
     StatusListToken, StatusRef,
 };
 use browserid_verifier::{
@@ -40,12 +40,19 @@ fn key(seed: u8) -> KeyPair {
 fn own(idx: u64) -> Option<StatusRef> {
     Some(StatusRef { uri: OWN_LIST.into(), idx })
 }
+/// The status list a cert issued by `host` must point at (§6.3: the cert's
+/// `iss`, or the `host=` it delegates to).
+fn list_uri(host: &str) -> String {
+    format!("https://{host}/.well-known/browserid-status")
+}
 
 /// Scripted discovery: `domain → (key, is_primary)`. A no-primary domain
 /// resolves to the fallback `browserid.me`'s key, as `FallbackFetcher` does.
+/// `delegates` is a primary's DNSSEC `host=` (a hosted primary's provider).
 struct Mock {
     primaries: HashMap<String, PublicKey>,
     fallback: (String, PublicKey),
+    delegates: HashMap<String, String>,
 }
 
 impl Mock {
@@ -58,7 +65,7 @@ impl Mock {
                 document: doc(k),
                 authoritative_domain: domain.to_string(),
                 is_primary: true,
-                serving_host: None,
+                serving_host: self.delegates.get(domain).cloned(),
             });
         }
         Ok(FallbackResult {
@@ -87,6 +94,15 @@ impl Status {
     fn new() -> Self {
         Self { cache: RwLock::new(HashMap::new()) }
     }
+    /// Pre-verify `iss`'s (empty) status list into the cache, as the hosted
+    /// verifier would after one authenticated fetch — so a primary-issued
+    /// cert's own-issuer ref resolves without touching the network.
+    fn seed(&self, iss: &str, key: &KeyPair) -> &Self {
+        let uri = list_uri(iss);
+        let tok = StatusListToken::create(iss, &uri, &StatusList::from_revoked([], 1024), key).unwrap();
+        self.cache.write().unwrap().insert(uri, tok);
+        self
+    }
     fn ctx(&self) -> StatusCtx<'_> {
         StatusCtx {
             own_uri: OWN_LIST.into(),
@@ -106,11 +122,18 @@ struct Party<'a> {
 
 /// Build `access_cert~assertion~warrant~config_cert` where `grantee` mints
 /// the access cert and `grantor` signs the warrant under its config cert.
-fn bundle(grantee: &Party, grantor: &Party, scopes: Vec<ScopeEntry>, status_uri: Option<&str>) -> String {
+/// Each cert's status ref points at its own issuer's list (§6.3) unless
+/// `access_uri` overrides the access cert's; the warrant's ref is on the
+/// registry's (own) list.
+fn bundle(grantee: &Party, grantor: &Party, scopes: Vec<ScopeEntry>, access_uri: Option<&str>) -> String {
+    let access_uri = access_uri.map(str::to_string).unwrap_or_else(|| list_uri(grantee.iss));
+    bundle_with(grantee, grantor, scopes, &access_uri, &list_uri(grantor.iss))
+}
+
+fn bundle_with(grantee: &Party, grantor: &Party, scopes: Vec<ScopeEntry>, access_uri: &str, config_uri: &str) -> String {
     let t = now();
     let access_key = key(3);
     let config_key = key(4);
-    let sref = |idx: u64| status_uri.map(|u| StatusRef { uri: u.into(), idx }).or_else(|| own(idx));
     let access = AccessCert::from_claims(
         AccessCertClaims {
             typ: TYP_ACCESS_CERT.into(),
@@ -120,7 +143,7 @@ fn bundle(grantee: &Party, grantor: &Party, scopes: Vec<ScopeEntry>, status_uri:
             identity: grantee.email.into(),
             holder: Holder::new("br.main").unwrap(),
             access_key: access_key.public_key(),
-            status: sref(7),
+            status: Some(StatusRef { uri: access_uri.into(), idx: 7 }),
             constraints: None,
         },
         grantee.idp,
@@ -136,7 +159,7 @@ fn bundle(grantee: &Party, grantor: &Party, scopes: Vec<ScopeEntry>, status_uri:
             holder: Holder::new("br.main").unwrap(),
             identities: vec![grantor.email.into()],
             public_key: config_key.public_key(),
-            status: sref(2),
+            status: Some(StatusRef { uri: config_uri.into(), idx: 2 }),
             managed: None,
             constraints: None,
             prov: None,
@@ -155,7 +178,7 @@ fn bundle(grantee: &Party, grantor: &Party, scopes: Vec<ScopeEntry>, status_uri:
             binding: Some(Binding::Holder { matcher: HolderMatcher::new("br.*").unwrap() }.into()),
             audience: AUD.into(),
             scopes,
-            status: sref(42),
+            status: own(42),
             unknown: Default::default(),
         },
         &config_key,
@@ -183,9 +206,10 @@ fn pay_scope() -> ScopeEntry {
 #[tokio::test]
 async fn primary_issued_bundle_verifies() {
     let idp = key(1);
-    let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()) };
+    let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()), delegates: HashMap::new() };
     let alice = Party { email: "alice@example.com", iss: "example.com", idp: &idp };
     let st = Status::new();
+    st.seed("example.com", &idp);
     let r = verify_access_with_dns(&bundle(&alice, &alice, vec![], None), AUD, &disc, &[], st.ctx()).await;
     assert_eq!(r.status, "okay", "{:?}", r.reason);
     assert_eq!(r.email.as_deref(), Some("alice@example.com"));
@@ -195,16 +219,16 @@ async fn primary_issued_bundle_verifies() {
 // D7 — scope parameters are dropped at the HTTP boundary.
 // ---------------------------------------------------------------------------
 
-/// S7's relay rule: a verifier returns scope entries verbatim. The hosted
-/// `/verify` response carries `scopes: Vec<String>` only, so the `cap` on a
-/// `pay:` entry never reaches an SDK consumer.
+/// S7's relay rule: a verifier returns scope entries verbatim — the `cap` on
+/// a `pay:` entry must reach the SDK consumer through the hosted `/verify`
+/// response (audit 2026-11 D7, fixed: `scopes` is `Vec<ScopeEntry>`).
 #[tokio::test]
-#[ignore] // AUDIT-2026-11 D7: fails today — `AccessVerificationResult.scopes` is `Vec<String>` (verify.rs:122, :689)
 async fn d7_verify_response_carries_scope_parameters() {
     let idp = key(1);
-    let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()) };
+    let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()), delegates: HashMap::new() };
     let alice = Party { email: "alice@example.com", iss: "example.com", idp: &idp };
     let st = Status::new();
+    st.seed("example.com", &idp);
     let r = verify_access_with_dns(&bundle(&alice, &alice, vec![pay_scope()], None), AUD, &disc, &[], st.ctx()).await;
     assert_eq!(r.status, "okay", "{:?}", r.reason);
     let out = serde_json::to_value(&r).unwrap();
@@ -215,15 +239,15 @@ async fn d7_verify_response_carries_scope_parameters() {
 }
 
 #[tokio::test]
-#[ignore] // AUDIT-2026-11 D7: fails today — `RecordValidationResult.scopes` is `Vec<String>` (verify.rs:487, :602)
 async fn d7_validate_record_response_carries_scope_parameters() {
     let idp = key(1);
-    let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()) };
+    let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()), delegates: HashMap::new() };
     let alice = Party { email: "alice@example.com", iss: "example.com", idp: &idp };
     let full = bundle(&alice, &alice, vec![pay_scope()], None);
     let parts: Vec<&str> = full.split('~').collect();
     let record = format!("{}~{}", parts[2], parts[3]);
     let st = Status::new();
+    st.seed("example.com", &idp);
     let r = validate_record_with_dns(&record, AUD, &disc, &[], st.ctx()).await;
     assert_eq!(r.status, "okay", "{:?}", r.reason);
     let out = serde_json::to_value(&r).unwrap();
@@ -238,7 +262,7 @@ async fn d7_validate_record_response_carries_scope_parameters() {
 async fn i3_fallback_issued_cert_for_a_primary_domain_rejects() {
     let primary = key(1);
     let fallback = key(2);
-    let disc = Mock { primaries: HashMap::from([("example.com".into(), primary.public_key())]), fallback: ("browserid.me".into(), fallback.public_key()) };
+    let disc = Mock { primaries: HashMap::from([("example.com".into(), primary.public_key())]), fallback: ("browserid.me".into(), fallback.public_key()), delegates: HashMap::new() };
     // browserid.me (an accepted fallback) vouches for alice@example.com, which has a primary.
     let alice_via_fallback = Party { email: "alice@example.com", iss: "browserid.me", idp: &fallback };
     let st = Status::new();
@@ -250,7 +274,7 @@ async fn i3_fallback_issued_cert_for_a_primary_domain_rejects() {
 #[tokio::test]
 async fn i3_issuer_outside_the_accepted_set_rejects() {
     let fallback = key(2);
-    let disc = Mock { primaries: HashMap::new(), fallback: ("browserid.me".into(), fallback.public_key()) };
+    let disc = Mock { primaries: HashMap::new(), fallback: ("browserid.me".into(), fallback.public_key()), delegates: HashMap::new() };
     let bob = Party { email: "bob@noprimary.example", iss: "browserid.me", idp: &fallback };
     let st = Status::new();
     // Empty accepted set: primaries only.
@@ -269,9 +293,11 @@ async fn i3_grantor_and_grantee_issuers_are_checked_independently() {
     let disc = Mock {
         primaries: HashMap::from([("a.example".into(), a_idp.public_key()), ("b.example".into(), b_idp.public_key())]),
         fallback: ("browserid.me".into(), key(2).public_key()),
+        delegates: HashMap::new(),
     };
     let agent = Party { email: "agent@a.example", iss: "a.example", idp: &a_idp };
     let st = Status::new();
+    st.seed("a.example", &a_idp).seed("b.example", &b_idp);
 
     // Honest cross-issuer delegation: b.example's primary signs the grantor's config cert.
     let owner = Party { email: "owner@b.example", iss: "b.example", idp: &b_idp };
@@ -295,12 +321,14 @@ async fn i3_grantor_and_grantee_issuers_are_checked_independently() {
 
 #[tokio::test]
 async fn i9_uncheckable_own_status_rejects() {
-    let idp = key(1);
-    let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()) };
-    let alice = Party { email: "alice@example.com", iss: "example.com", idp: &idp };
+    // A broker-issued (fallback) identity: its certs legitimately point at
+    // the broker's own list (§6.3 — the list host is the cert's `iss`).
+    let fallback = key(2);
+    let disc = Mock { primaries: HashMap::new(), fallback: ("browserid.me".into(), fallback.public_key()), delegates: HashMap::new() };
+    let bob = Party { email: "bob@noprimary.example", iss: "browserid.me", idp: &fallback };
     let cache = RwLock::new(HashMap::new());
     let ctx = StatusCtx { own_uri: OWN_LIST.into(), is_own_revoked: &|_| Err("db down".into()), cache: &cache, allow_private_hosts: false };
-    let r = verify_access_with_dns(&bundle(&alice, &alice, vec![], None), AUD, &disc, &[], ctx).await;
+    let r = verify_access_with_dns(&bundle(&bob, &bob, vec![], None), AUD, &disc, &["browserid.me".into()], ctx).await;
     assert_eq!(r.status, "failure");
     assert!(r.reason.unwrap().contains("fail-closed"));
 }
@@ -308,15 +336,29 @@ async fn i9_uncheckable_own_status_rejects() {
 #[tokio::test]
 async fn i9_foreign_status_on_a_private_or_plain_http_host_is_never_fetched() {
     let idp = key(1);
-    let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()) };
+    let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()), delegates: HashMap::new() };
     let alice = Party { email: "alice@example.com", iss: "example.com", idp: &idp };
     for uri in ["https://127.0.0.1:1/list", "http://example.com/list", "https://169.254.169.254/latest/meta-data", "https://[::1]/list"] {
         let st = Status::new();
         let r = verify_access_with_dns(&bundle(&alice, &alice, vec![], Some(uri)), AUD, &disc, &[], st.ctx()).await;
         assert_eq!(r.status, "failure", "{uri}");
         let reason = r.reason.unwrap();
-        assert!(reason.contains("status unavailable (fail-closed)"), "{uri}: {reason}");
+        // Since W6-4 the host != iss rule rejects these before the SSRF
+        // guard is reached; either way no request may be made.
+        assert!(
+            reason.contains("status unavailable (fail-closed)") || reason.contains("status.uri host is not its issuer"),
+            "{uri}: {reason}"
+        );
         assert!(!reason.contains("fetch "), "{uri}: the guard must trip before any request: {reason}");
+    }
+}
+
+/// The SSRF guard itself (audit H1), pinned directly now that the W6-4 host
+/// rule rejects a cross-host ref before the guard runs.
+#[tokio::test]
+async fn i9_status_url_guard_refuses_private_and_plain_http() {
+    for uri in ["https://127.0.0.1:1/list", "http://example.com/list", "https://169.254.169.254/latest/meta-data", "https://[::1]/list", "https://10.0.0.8/list", "https://[fd00::1]/list"] {
+        assert!(browserid_verifier::verify::validate_status_url(uri, false).await.is_err(), "{uri}");
     }
 }
 
@@ -324,20 +366,69 @@ async fn i9_foreign_status_on_a_private_or_plain_http_host_is_never_fetched() {
 // W6-4 — §6.3 (2026-11 text): a CERT's `status.uri` host MUST equal its `iss`.
 // ---------------------------------------------------------------------------
 
-/// The hosted verifier binds a LIST's `iss` to the URI host, but never checks
-/// a cert's `status.uri` host against the cert's own `iss`. Here a primary's
+/// The hosted verifier binds a LIST's `iss` to the URI host; it must also
+/// bind a CERT's `status.uri` host to the cert's own `iss`. Here a primary's
 /// access and config certs point at the broker's own list (`browserid.me`),
-/// which the own-list shortcut answers locally — and the bundle verifies.
+/// which the own-list shortcut would answer locally — the bundle must not
+/// verify, and neither must the record on its own.
 #[tokio::test]
-#[ignore] // AUDIT-2026-11 W6-4: fails today — no cert `status.uri` host == `iss` check (verify.rs:754-771, :575-594)
 async fn w6_4_cert_status_uri_host_must_equal_cert_iss() {
     let idp = key(1);
-    let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()) };
+    let disc = Mock { primaries: HashMap::from([("example.com".into(), idp.public_key())]), fallback: ("browserid.me".into(), key(2).public_key()), delegates: HashMap::new() };
     let alice = Party { email: "alice@example.com", iss: "example.com", idp: &idp };
     let st = Status::new();
-    // `bundle(.., None)` puts every ref on OWN_LIST = https://browserid.me/…
-    let r = verify_access_with_dns(&bundle(&alice, &alice, vec![], None), AUD, &disc, &[], st.ctx()).await;
-    assert_eq!(r.status, "failure", "example.com's certs must not point at browserid.me's list");
+    st.seed("example.com", &idp);
+
+    // Access cert on the broker's list, config cert on its own issuer's.
+    let r = verify_access_with_dns(&bundle_with(&alice, &alice, vec![], OWN_LIST, &list_uri("example.com")), AUD, &disc, &[], st.ctx()).await;
+    assert_eq!(r.status, "failure", "example.com's access cert must not point at browserid.me's list");
+    assert!(r.reason.as_deref().unwrap().contains("access cert status.uri host is not its issuer 'example.com'"), "{:?}", r.reason);
+
+    // Config cert on the broker's list.
+    let full = bundle_with(&alice, &alice, vec![], &list_uri("example.com"), OWN_LIST);
+    let r = verify_access_with_dns(&full, AUD, &disc, &[], st.ctx()).await;
+    assert_eq!(r.status, "failure");
+    assert!(r.reason.as_deref().unwrap().contains("config cert status.uri host is not its issuer 'example.com'"), "{:?}", r.reason);
+
+    // …and the same config cert held as a record (operation A).
+    let parts: Vec<&str> = full.split('~').collect();
+    let r = validate_record_with_dns(&format!("{}~{}", parts[2], parts[3]), AUD, &disc, &[], st.ctx()).await;
+    assert_eq!(r.status, "failure");
+    assert!(r.reason.as_deref().unwrap().contains("config cert status.uri host is not its issuer 'example.com'"), "{:?}", r.reason);
+
+    // Any other third-party host is equally refused, even with a verified
+    // list for it in the cache.
+    st.seed("other.example", &key(9));
+    let r = verify_access_with_dns(&bundle(&alice, &alice, vec![], Some(&list_uri("other.example"))), AUD, &disc, &[], st.ctx()).await;
+    assert_eq!(r.status, "failure");
+    assert!(r.reason.as_deref().unwrap().contains("status.uri host is not its issuer"), "{:?}", r.reason);
+}
+
+/// A hosted primary (`host=` in its DNSSEC record) publishes no list at its
+/// own domain: its certs may point at the delegate host's list, and only
+/// that one (§6.3).
+#[tokio::test]
+async fn w6_4_hosted_primary_may_point_at_its_dnssec_delegate() {
+    let tenant_key = key(1);
+    let provider_key = key(6);
+    let disc = Mock {
+        primaries: HashMap::from([("tenant.example".into(), tenant_key.public_key()), ("idp.provider.example".into(), provider_key.public_key())]),
+        fallback: ("browserid.me".into(), key(2).public_key()),
+        delegates: HashMap::from([("tenant.example".into(), "idp.provider.example".into())]),
+    };
+    let alice = Party { email: "alice@tenant.example", iss: "tenant.example", idp: &tenant_key };
+    let st = Status::new();
+    st.seed("idp.provider.example", &provider_key);
+    let on_delegate = list_uri("idp.provider.example");
+    let r = verify_access_with_dns(&bundle_with(&alice, &alice, vec![], &on_delegate, &on_delegate), AUD, &disc, &[], st.ctx()).await;
+    assert_eq!(r.status, "okay", "{:?}", r.reason);
+
+    // The delegation is per issuer: a different provider's list is refused.
+    st.seed("idp.other.example", &key(7));
+    let elsewhere = list_uri("idp.other.example");
+    let r = verify_access_with_dns(&bundle_with(&alice, &alice, vec![], &elsewhere, &on_delegate), AUD, &disc, &[], st.ctx()).await;
+    assert_eq!(r.status, "failure");
+    assert!(r.reason.as_deref().unwrap().contains("status.uri host is not its issuer 'tenant.example'"), "{:?}", r.reason);
 }
 
 // ---------------------------------------------------------------------------

@@ -864,7 +864,7 @@ fn build() -> Vec<Vec_> {
         let salt = B64.encode([9u8; 16]);
         let h = AudConstraint::hash_audience(&salt, AUD).unwrap();
         let b = P::as_you(&k).ac(move |c| set(c, "constraints", json!({ "aud": { "salt": salt, "hashes": [h] } })));
-        v.push(p("P-CONS-01", "I8", "access cert carries a satisfied `aud` constraint; §4.7 says no reference verifier implements constraints, so any claim rejects", &b, reject("constraints")).known(&["S5"]));
+        v.push(p("P-CONS-01", "I8", "access cert carries a satisfied `aud` constraint; §4.7 (2026-11): core implements aud/scopes/max-ttl, so a satisfied constraint verifies", &b, as_you(&b)));
     }
     {
         let salt = B64.encode([9u8; 16]);
@@ -888,7 +888,7 @@ fn build() -> Vec<Vec_> {
     }
     {
         let b = P::as_you(&k).cc(|c| set(c, "constraints", json!({})));
-        v.push(p("P-CONS-06", "I8", "config cert with an empty constraints object", &b, reject("constraints")).known(&["S5"]));
+        v.push(p("P-CONS-06", "I8", "config cert with an empty constraints object (no keys to enforce; §4.7 2026-11: core implements the section, so an empty object verifies)", &b, as_you(&b)));
     }
 
     // ===================================================================

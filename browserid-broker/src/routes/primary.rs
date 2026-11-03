@@ -84,7 +84,7 @@ where
     // token lane's requirement that broker-audience warrants carry the
     // `registry` scope. dialog.js and the wallet mint it now; LOG scopeless
     // presentations through the deprecation window, enforce later.
-    if !result.scopes.as_deref().unwrap_or_default().iter().any(|s| s == "registry") {
+    if !result.scopes.iter().flatten().any(|s| s.scope() == "registry") {
         tracing::info!(
             email = result.email.as_deref().unwrap_or(""),
             "auth_with_presentation without the registry scope (ig9p migration: will be required)"
