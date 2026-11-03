@@ -156,6 +156,7 @@ pub struct CompleteSigninCodeRequest {
 /// and the response does not say which branch ran.
 pub async fn complete_signin_code<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<CompleteSigninCodeRequest>,
 ) -> Result<Json<SigninCodeResponse>, BrokerError>
 where
@@ -163,8 +164,10 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    // Code check with the brute-force guard (binds the guess to one record,
+    // Per-IP cap first (one client spraying many addresses), then the code
+    // check with the brute-force guard (binds the guess to one record,
     // burns after N wrong tries; expiry enforced inside).
+    super::code_guard::completion_ip_allowed(&state, &headers)?;
     let pending = super::code_guard::verify_pending_code(
         state.user_store.as_ref(),
         &req.email,

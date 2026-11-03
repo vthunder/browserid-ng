@@ -109,6 +109,11 @@ pub struct AppState<U: UserStore, S: SessionStore, E: EmailSender> {
     /// addresses. Same fixed-window shape as `login_attempts`; std RwLock:
     /// never held across an await.
     pub signin_code_attempts: std::sync::RwLock<HashMap<String, (std::time::Instant, u32)>>,
+    /// Per-client-IP cap on verification-code COMPLETION attempts (audit
+    /// 2026-11, July C1 residual): the per-target burn in `code_guard`
+    /// bounds guesses at one address; this bounds one client spraying many.
+    /// Same fixed-window shape; std RwLock: never held across an await.
+    pub code_completion_attempts: std::sync::RwLock<HashMap<String, (std::time::Instant, u32)>>,
     /// Hosted-primary tenant key sealing (bean g5qt). `None` = the keystore
     /// secret is not configured; tenant onboarding is refused, everything
     /// else is unaffected.
@@ -201,6 +206,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             foreign_status_lists: std::sync::RwLock::new(HashMap::new()),
             login_attempts: std::sync::RwLock::new(HashMap::new()),
             signin_code_attempts: std::sync::RwLock::new(HashMap::new()),
+            code_completion_attempts: std::sync::RwLock::new(HashMap::new()),
             tenant_keystore: None,
             idp_host: domain_for_idp,
             trusted_wallet_origins: crate::return_origin::DEFAULT_TRUSTED.iter().map(|s| s.to_string()).collect(),
@@ -242,6 +248,7 @@ impl<U: UserStore, S: SessionStore, E: EmailSender> AppState<U, S, E> {
             foreign_status_lists: std::sync::RwLock::new(HashMap::new()),
             login_attempts: std::sync::RwLock::new(HashMap::new()),
             signin_code_attempts: std::sync::RwLock::new(HashMap::new()),
+            code_completion_attempts: std::sync::RwLock::new(HashMap::new()),
             tenant_keystore: None,
             idp_host: domain_for_idp,
             trusted_wallet_origins: crate::return_origin::DEFAULT_TRUSTED.iter().map(|s| s.to_string()).collect(),
