@@ -695,12 +695,11 @@ async fn warrant_request_needs_a_signature_by_the_agent_key() {
     drop(agent_kp);
 }
 
-/// AUDIT-2026-11 D8: fails today. Nothing on `/api/v1` answers 429. Thirty
-/// wrong `login_page` tokens against one account from one IP never trip a
-/// limiter (I28; the token is high-entropy, so this is amplification and
-/// policy, not takeover — see report).
+/// AUDIT-2026-11 D8: thirty wrong `login_page` tokens against one account
+/// from one IP trip the registry's failures-only login bucket (reg §3:
+/// `429 slow_down`; the token is high-entropy, so this is amplification
+/// and policy, not takeover — see report).
 #[tokio::test]
-#[ignore]
 async fn api_v1_login_guessing_is_throttled() {
     let r = rig();
     let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;

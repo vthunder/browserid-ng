@@ -120,7 +120,11 @@ where
         },
     );
     let _ = state.registrar.set(registrar_state.clone());
-    let registrar = browserid_registrar::router(registrar_state);
+    let registrar = browserid_registrar::router(registrar_state)
+        // Registry API abuse controls (registry-api-v1 §3; audit 2026-11
+        // D8/W5-9): per-source and per-account buckets on /api/v1, answered
+        // before the handler and so before any network fetch.
+        .layer(axum::middleware::from_fn(rate_limit::api_v1));
 
     // Cross-origin surfaces (audit L9): CORS is granted per surface, never
     // globally — /wsapi/* and the registrar answer same-origin (and
