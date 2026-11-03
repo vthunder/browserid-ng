@@ -124,10 +124,9 @@ must('inbox names the status list', typeof inbox.status_uri === 'string' && inbo
 r = await wallet('/test/state', {});
 const st0 = await r.json();
 const fileRequest = async (audience) => {
-  const rr = await fetch(`${BROKER}/warrant/request`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ device_cert: st0.deviceCert, identity: email, grants: [{ audience, scopes: ['post'] }] }),
-  });
+  // Signed by the wallet's own device key (audit 2026-11 D4): the wallet
+  // files it, since /test/state redacts the key.
+  const rr = await wallet('/test/file_request', { audience, scopes: ['post'] });
   const j = await rr.json();
   must(`agent request filed for ${audience}`, rr.status === 200 && typeof j.code === 'string', JSON.stringify(j).slice(0, 120));
   return j.code;

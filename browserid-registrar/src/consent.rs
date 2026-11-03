@@ -317,30 +317,50 @@ async fn surface_record_request(
     Ok(Some(rec))
 }
 
-/// Claim a pending record request for `user_id` — the token lane's
-/// `POST /api/v1/requests/claim` (registry-api-v1 §5.1): the legacy GET's
-/// hidden side effect, made explicit. Verifies the audience proof
-/// (fail-closed; a fresh fetch when not yet proven) and binds the row,
-/// allocating each grant's status index. Idempotent for the same account; a
-/// request claimed by another account — or an agent-kind code, which is
-/// never claimable — is `WarrantRequestNotFound` (no existence leaks).
+/// Claim a pending request for `user_id` — the token lane's
+/// `POST /api/v1/requests/claim` (registry-api-v1 §5.3): the legacy GET's
+/// hidden side effect, made explicit. A record request has its audience
+/// proof verified (fail-closed; a fresh fetch when not yet proven) and the
+/// row bound, each grant's status index allocated. An agent request
+/// carries no audience proof — its filer was authenticated by its device
+/// key and it was bound to the delegator's account at filing, indices
+/// allocated — so its claim is that binding re-stated (W5-13, bean 1dy0).
+/// Idempotent for the same account; a request claimed by another account
+/// — or a notice — is `WarrantRequestNotFound` (no existence leaks).
 pub(crate) async fn claim_core(
     state: &Arc<RegistrarState>,
     user_id: u64,
     code: &str,
     page_origin: Option<&str>,
 ) -> Result<WarrantRequestRecord, RegistrarError> {
-    let rec = state
+    let mut rec = state
         .store
         .get_warrant_request(code)?
         .ok_or(RegistrarError::WarrantRequestNotFound)?;
-    if rec.kind == RequestKind::Agent
-        || rec.kind == RequestKind::Notice
+    if rec.kind == RequestKind::Notice
         || rec.status != WarrantRequestStatus::Pending
         || rec.is_expired()
         || (rec.user_id != 0 && rec.user_id != user_id)
     {
         return Err(RegistrarError::WarrantRequestNotFound);
+    }
+    if rec.kind == RequestKind::Agent {
+        if rec.user_id != user_id {
+            return Err(RegistrarError::WarrantRequestNotFound);
+        }
+        let mut changed = false;
+        for g in rec.grants.iter_mut() {
+            if g.status_idx.is_none() {
+                g.status_idx = Some(live_status_index(
+                    &*state.store, user_id, &rec.agent_email, &g.audience, &scope_strings(&g.scopes),
+                )?);
+                changed = true;
+            }
+        }
+        if changed {
+            state.store.update_warrant_request(&rec)?;
+        }
+        return Ok(rec);
     }
     surface_record_request(state, user_id, rec, page_origin)
         .await?
@@ -933,7 +953,11 @@ pub(crate) fn validate_grant_shape(
     {
         return Err(RegistrarError::ValidationError("bad audience".into()));
     }
-    if scopes.len() > 32 || scopes.iter().any(|s| s.scope().len() > 128) {
+    // The one scope grammar (registry-api-v1 §3, core `scope`): every scope
+    // string — bare or the `scope` of a parameterized entry — or the
+    // request is refused before anything is rendered or signed (audit
+    // 2026-11 W3-3 / W5-11).
+    if scopes.len() > 32 || scopes.iter().any(|s| !browserid_core::validate_scope_string(s.scope())) {
         return Err(RegistrarError::ValidationError("bad scopes".into()));
     }
     for e in scopes {
@@ -1154,6 +1178,11 @@ pub(crate) async fn register_warrant_core(
             "warrant_invalid",
             "warrant is not signed by the presented config cert",
         ))?;
+    // A warrant minted elsewhere still enters this registry only under the
+    // one scope grammar (W3-3): nothing outside it is ever recorded or shown.
+    if !warrant.claims().scopes.iter().all(|e| browserid_core::validate_scope_string(e.scope())) {
+        return Err(vfail("warrant_invalid", "a scope string is outside the scope grammar"));
+    }
     let grantor = &warrant.claims().grantor;
     if !config_cert.authorizes_identity(grantor) {
         return Err(vfail(
@@ -1380,18 +1409,67 @@ fn vfail(reason: &'static str, msg: impl Into<String>) -> RegistrarError {
     RegistrarError::WarrantValidation { reason, message: msg.into() }
 }
 
+/// Most grants one JIT filing may carry (registry-api-v1 request-kinds/warrant: 1–8).
+pub const MAX_WARRANT_REQUEST_GRANTS: usize = 8;
+
+/// The path a JIT filing's `Proof` header is bound to.
+pub const WARRANT_REQUEST_PATH: &str = "/warrant/request";
+
+/// A §4.4 proof failure on the JIT lane, in this lane's 400 shape.
+fn proof_err(e: crate::api::ApiError) -> RegistrarError {
+    match e {
+        crate::api::ApiError::InvalidProof(m) => bad(format!("request proof: {m}")),
+        other => RegistrarError::Internal(format!("request proof: {other:?}")),
+    }
+}
+
 /// POST /warrant/request — an agent raises a consent request, authenticated
-/// by its IdP-signed agent device cert. The delegator is derived from the
-/// agent identity (`+tag` stripped) and must be a verified email on a local
-/// account; the request then appears on that account's consent page.
+/// by its IdP-signed agent device cert AND a `Proof` header that cert's key
+/// signed over the body (registry-api-v1 §4.4 shape: `htm`/`htu`/`iat`/
+/// `jti`/`bh`, single-use `jti`; audit 2026-11 D4 — the cert alone is
+/// public, every audience it presented to has seen it). The delegator is
+/// derived from the agent identity (`+tag` stripped) and must be a verified
+/// email on a local account; the request then appears on that account's
+/// consent page.
 pub async fn warrant_request(
     State(state): State<Arc<RegistrarState>>,
-    Json(req): Json<WarrantRequestBody>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
 ) -> Result<Json<WarrantRequestResponse>, RegistrarError> {
-    require_enabled(&state)?;
+    let req: WarrantRequestBody = serde_json::from_slice(&body)
+        .map_err(|e| bad(format!("bad request body: {e}")))?;
+    warrant_request_core(&state, &headers, WARRANT_REQUEST_PATH, &body, req).await
+}
+
+/// The JIT filing behind `/warrant/request` and `kind: warrant` on
+/// `/api/v1/requests`: `path` is the endpoint the `Proof` header's `htu`
+/// must name and `body` the exact bytes its `bh` must hash.
+pub(crate) async fn warrant_request_core(
+    state: &Arc<RegistrarState>,
+    headers: &axum::http::HeaderMap,
+    path: &str,
+    body: &[u8],
+    req: WarrantRequestBody,
+) -> Result<Json<WarrantRequestResponse>, RegistrarError> {
+    require_enabled(state)?;
 
     let device_cert = DeviceCert::parse(&req.device_cert)
         .map_err(|e| bad(format!("bad device cert: {e}")))?;
+    // D4: possession first, locally — the filing is signed by the cert's
+    // key, over these exact body bytes, for this endpoint, now, once.
+    // Checked before any issuer discovery (a network fetch) can be
+    // triggered by an unsigned body.
+    {
+        let hp = crate::session::header_proof(headers).map_err(proof_err)?;
+        let kid = device_cert.public_key().kid();
+        if hp.kid != kid {
+            return Err(bad("request proof: the Proof header is not signed by the device cert's key"));
+        }
+        hp.verify(&device_cert.public_key().to_base64()).map_err(proof_err)?;
+        let bh = crate::session::b64url_sha256(body);
+        hp.check_claims(state, "POST", path, Some(&bh)).map_err(proof_err)?;
+        crate::session::replay_check(state, &kid, &hp.jti).map_err(proof_err)?;
+    }
     // Our own issuance verifies against our key. A PRIMARY IdP's issuance is
     // accepted too — verified against the issuer's published key, and only
     // when that issuer is the agent identity's own domain (the same rule the
@@ -1432,18 +1510,31 @@ pub async fn warrant_request(
         return Err(bad("device cert does not authorize this identity"));
     }
     // Revoked agents can't raise requests (their status bit is flipped).
+    // Our own list is answered locally; a primary's list is fetched through
+    // the host's verifier, fail-closed (audit 2026-11 D18: a foreign cert's
+    // status used to go unchecked here).
     if let Some(status) = &device_cert.claims().status {
-        if status.uri == status_list_uri(&state.domain)
-            && state.store.is_status_revoked_idx(status.idx)?
-        {
+        let revoked = if status.uri == status_list_uri(&state.domain) {
+            state.store.is_status_revoked_idx(status.idx)?
+        } else {
+            match state.presentation_verifier.as_ref() {
+                Some(v) => v.check_status_ref(&status.uri, status.idx).await.unwrap_or(true),
+                None => true,
+            }
+        };
+        if revoked {
             return Err(bad("device cert revoked"));
         }
     }
-    if req.grants.is_empty() || req.grants.len() > 10 {
-        return Err(bad("between 1 and 10 grants per request"));
+    if req.grants.is_empty() || req.grants.len() > MAX_WARRANT_REQUEST_GRANTS {
+        return Err(bad(format!("between 1 and {MAX_WARRANT_REQUEST_GRANTS} grants per request")));
     }
+    let mut audiences = std::collections::HashSet::new();
     for g in &req.grants {
         validate_grant_shape(&g.audience, &g.scopes)?;
+        if !audiences.insert(g.audience.as_str()) {
+            return Err(bad("one grant per audience: duplicate audience in the request"));
+        }
     }
     let message = req
         .message

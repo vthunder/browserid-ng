@@ -849,7 +849,7 @@ export function createAuthCodeLane(opts) {
       // /verify binds the bearer to. grantor "*": the approver picks
       // which of their identities delegates.
       pending = await requestWarrants(broker, {
-        deviceCert: agent.deviceCert,
+        agent,
         identity: agent.email,
         grants: [{ audience: resource, scopes }],
         label,

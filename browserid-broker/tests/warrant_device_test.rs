@@ -81,9 +81,7 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
     common::record_config_cert(&store, DELEGATOR, &config_cert);
 
     // 1. The agent raises a consent request.
-    let r = server
-        .post("/warrant/request")
-        .json(&json!({
+    let r = common::registry::warrant_request(&server, DOMAIN, &agent_kp, json!({
             "device_cert": agent_cert.encoded(),
             "identity": AGENT,
             "grants": [{ "audience": AUDIENCE, "scopes": ["post", "read"] }],
@@ -102,9 +100,7 @@ async fn agent_warrant_request_consent_poll_and_full_presentation() {
         vec![AGENT.to_string()], Duration::days(90), &rogue, None,
     )
     .unwrap();
-    let r = server
-        .post("/warrant/request")
-        .json(&json!({ "device_cert": rogue_cert.encoded(), "identity": AGENT,
+    let r = common::registry::warrant_request(&server, DOMAIN, &agent_kp, json!({ "device_cert": rogue_cert.encoded(), "identity": AGENT,
             "grants": [{ "audience": AUDIENCE }] }))
         .await;
     assert_ne!(r.status_code(), 200, "rogue-signed device cert must be refused");
@@ -218,9 +214,7 @@ async fn respond_rejects_overbroad_or_foreign_holder() {
 
     // Raise a request; grab its code + status ref.
     let listed_code = {
-        let r = server
-            .post("/warrant/request")
-            .json(&json!({ "device_cert": agent_cert.encoded(), "identity": AGENT,
+        let r = common::registry::warrant_request(&server, DOMAIN, &agent_kp, json!({ "device_cert": agent_cert.encoded(), "identity": AGENT,
                 "grants": [{ "audience": AUDIENCE, "scopes": ["post"] }], "label": "bot" }))
             .await;
         assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
@@ -292,12 +286,11 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
         let sess = &sess;
         let session = session.clone();
         let agent_cert = agent_cert.encoded().to_string();
+        let agent_kp = &agent_kp;
         let config_kp = &config_kp;
         let config_cert = config_cert.encoded().to_string();
         async move {
-            let r = server
-                .post("/warrant/request")
-                .json(&json!({ "device_cert": agent_cert, "identity": AGENT,
+            let r = common::registry::warrant_request(server, DOMAIN, agent_kp, json!({ "device_cert": agent_cert, "identity": AGENT,
                     "grants": [{ "audience": AUDIENCE, "scopes": ["post"] }], "label": label }))
                 .await;
             assert_eq!(r.status_code(), 200, "{label} request: {:?}", r.text());
@@ -358,9 +351,7 @@ async fn revoked_subject_reactivates_on_fresh_consent_approval() {
 
     // Forged ref: a warrant embedding a DIFFERENT index than the allocated
     // one is refused at respond — the ref arms the revoke lever.
-    let r = server
-        .post("/warrant/request")
-        .json(&json!({ "device_cert": agent_cert.encoded(), "identity": AGENT,
+    let r = common::registry::warrant_request(&server, DOMAIN, &agent_kp, json!({ "device_cert": agent_cert.encoded(), "identity": AGENT,
             "grants": [{ "audience": "https://third.example", "scopes": ["post"] }] }))
         .await;
     let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
@@ -425,17 +416,13 @@ async fn filed_warrant_request_preserves_scope_parameters_verbatim() {
         json!({ "scope": "contract:agreement", "counterparties": ["not-an-email"] }),
         json!({ "scope": "contract:agreement", "max_duration": "P" }),
     ] {
-        let r = server
-            .post("/warrant/request")
-            .json(&json!({ "device_cert": agent_cert.encoded(), "identity": AGENT,
+        let r = common::registry::warrant_request(&server, DOMAIN, &agent_kp, json!({ "device_cert": agent_cert.encoded(), "identity": AGENT,
                 "grants": [{ "audience": custodian, "scopes": [bad] }] }))
             .await;
         assert_ne!(r.status_code(), 200, "malformed parameter must be refused: {bad}");
     }
 
-    let r = server
-        .post("/warrant/request")
-        .json(&json!({ "device_cert": agent_cert.encoded(), "identity": AGENT,
+    let r = common::registry::warrant_request(&server, DOMAIN, &agent_kp, json!({ "device_cert": agent_cert.encoded(), "identity": AGENT,
             "grants": [{ "audience": custodian, "scopes": [entry.clone(), "read"] }], "label": "spender" }))
         .await;
     assert_eq!(r.status_code(), 200, "request: {:?}", r.text());

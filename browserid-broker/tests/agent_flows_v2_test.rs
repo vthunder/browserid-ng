@@ -83,14 +83,12 @@ async fn warrant_request_grantor_pin_and_unknown_agent_reason() {
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
     let agent = "alice+bot@example.com";
-    let (_akp, acert) = agent_cert(&idp_kp, agent, "ag.bot");
+    let (akp, acert) = agent_cert(&idp_kp, agent, "ag.bot");
     let (config_kp, config_cert) = config_cert_for_alice(&idp_kp);
     common::record_config_cert(&store, DELEGATOR, &config_cert);
 
     // An unsatisfiable grantor pin fails the REQUEST, not the approval.
-    let r = server
-        .post("/warrant/request")
-        .json(&json!({ "device_cert": acert.encoded(), "identity": agent,
+    let r = common::registry::warrant_request(&server, DOMAIN, &akp, json!({ "device_cert": acert.encoded(), "identity": agent,
             "grants": [{ "audience": AUDIENCE, "scopes": ["post"] }],
             "grantor": "bob@example.com" }))
         .await;
@@ -98,9 +96,7 @@ async fn warrant_request_grantor_pin_and_unknown_agent_reason() {
     assert!(r.text().contains("unsatisfiable grantor pin"), "{}", r.text());
 
     // `self` normalizes to the agent identity and is exposed to the page.
-    let r = server
-        .post("/warrant/request")
-        .json(&json!({ "device_cert": acert.encoded(), "identity": agent,
+    let r = common::registry::warrant_request(&server, DOMAIN, &akp, json!({ "device_cert": acert.encoded(), "identity": agent,
             "grants": [{ "audience": AUDIENCE, "scopes": ["post"] }],
             "grantor": "self", "message": "I post your daily summary." }))
         .await;
@@ -145,9 +141,7 @@ async fn warrant_request_grantor_pin_and_unknown_agent_reason() {
     assert_eq!(r.status_code(), 200, "pin-honoring approval: {:?}", r.text());
 
     // A denied request from an UNMET agent tells the requester why.
-    let r = server
-        .post("/warrant/request")
-        .json(&json!({ "device_cert": acert.encoded(), "identity": agent,
+    let r = common::registry::warrant_request(&server, DOMAIN, &akp, json!({ "device_cert": acert.encoded(), "identity": agent,
             "grants": [{ "audience": "https://other.example" }] }))
         .await;
     assert_eq!(r.status_code(), 200, "{:?}", r.text());
@@ -256,9 +250,7 @@ async fn two_stage_provision_then_known_agent() {
     // 5. The agent is now KNOWN: a later warrant request opens with the
     //    user-chosen name and the created date (the P card's "who").
     let device_cert = poll["credential"]["device_cert"].as_str().unwrap().to_string();
-    let r = server
-        .post("/warrant/request")
-        .json(&json!({ "device_cert": device_cert, "identity": agent_email,
+    let r = common::registry::warrant_request(&server, DOMAIN, &device_kp, json!({ "device_cert": device_cert, "identity": agent_email,
             "grants": [{ "audience": "https://more.example" }] }))
         .await;
     assert_eq!(r.status_code(), 200, "{:?}", r.text());

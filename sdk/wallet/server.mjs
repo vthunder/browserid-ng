@@ -199,7 +199,7 @@ async function ensureWarrant(agent, audience, scopes, message, grantor) {
     return { pending: true, approveUrl: inflight.approveUrl };
   }
   const pending = await requestWarrants(BROKER, {
-    deviceCert: agent.deviceCert,
+    agent,
     identity: agent.email,
     grants: [{ audience, scopes }],
     label: process.env.AGENT_NAME || "agent",
@@ -695,7 +695,7 @@ async function cliSignGuestbook(message) {
   if (!agent.warrantedAudiences().includes(GUESTBOOK_URL)) {
     if (!(await cliResumeWarrant(agent, GUESTBOOK_URL))) {
       const pending = await requestWarrants(BROKER, {
-        deviceCert: agent.deviceCert,
+        agent,
         identity: agent.email,
         grants: [{ audience: GUESTBOOK_URL, scopes: ["guestbook-sign"] }],
         label: "guestbook",

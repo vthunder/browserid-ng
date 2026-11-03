@@ -52,8 +52,7 @@ async fn d2_poc_respond_refuses_a_self_minted_config_cert() {
     ).unwrap();
 
     // File a request for a self-grant (grantor == grantee == agent).
-    let r = server.post("/warrant/request")
-        .json(&json!({ "device_cert": acert.encoded(), "identity": agent,
+    let r = common::registry::warrant_request(&server, DOMAIN, &agent_kp, json!({ "device_cert": acert.encoded(), "identity": agent,
             "grants": [{ "audience": AUDIENCE, "scopes": ["post"] }], "grantor": "self" }))
         .await;
     assert_eq!(r.status_code(), 200, "request: {:?}", r.text());

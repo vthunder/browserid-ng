@@ -1,11 +1,11 @@
 ---
 # browserid-ng-jvfr
 title: '[Audit 2026-11] D4/D18: JIT warrant_request needs a device-key signature; cap 8 grants, reject duplicate audiences, check foreign cert status'
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-11-02T22:43:19Z
-updated_at: 2026-11-02T22:43:19Z
+updated_at: 2026-11-03T08:47:41Z
 parent: browserid-ng-ag1l
 ---
 
@@ -20,3 +20,11 @@ Change:
 Acceptance (un-ignore) in browserid-broker/tests/authz_matrix_test.rs: warrant_request_needs_a_signature_by_the_agent_key, warrant_request_caps_grants_at_eight_and_rejects_duplicate_audiences. sdk/agent and the wallet must send the proof; update their tests.
 
 Reports: ws5 §1 (D4, D18). Ledger: docs/security-audit-2026-11.md. Decisions: docs/security-audit-2026-11-decisions.md.
+
+
+## Summary of Changes
+
+- D4: `/warrant/request` (and `kind: warrant` on `/api/v1/requests`, via the shared `warrant_request_core`) now takes the raw body plus a registry-api-v1 §4.4 `Proof` header signed by the device cert's key (`kid` = the cert key, `htm`/`htu` = this endpoint, `bh` over the exact body bytes, `iat` window, `jti` single-use through `api_replay`). Checked before any issuer discovery. No proof, a foreign key, other bytes, or a replay → 400 (`request proof: …`).
+- D18: grants capped at 8 (`MAX_WARRANT_REQUEST_GRANTS`), duplicate audiences in one filing refused; a primary-issued cert's status ref is checked through the host's `check_status_ref` (fail-closed) instead of only the registrar's own list. The `/access/mint` jti cache stays in-memory (broker `routes/device.rs`, not this bean's file): a restart reopens at most the ~10-minute access-request window, documented here rather than persisted.
+- Clients: `@browserid-ng/agent` `requestWarrants` takes `agent` (a `DeviceAgent`, which signs via the new `requestProof` method) or `deviceCert` + `deviceKey`, builds the proof header, and refuses to file unsigned; exported `requestProof`. `sdk/mcp-auth/index.mjs` and `sdk/wallet/server.mjs` pass the agent. Wallet: `/test/file_request` (WALLET_TEST lane) files with the device key; `wallet/e2e.mjs` uses it. README updated. Legacy `Agent.requestWarrant` (`request_bundle`) is the W4-44 pinned dead lane and is untouched.
+- Tests: `authz_matrix_test` D4 (no proof / foreign key / wrong bytes / replay) and D18 un-ignored; `common::registry::warrant_request` + a `registry_api_test` helper sign filings; every test that posted to `/warrant/request` now signs; SDK `device.test.mjs` verifies the header (`typ`, `kid`, `htu`, `bh`, signature). Wallet e2e not run here (Playwright lane).

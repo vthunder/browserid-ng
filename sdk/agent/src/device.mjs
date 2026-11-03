@@ -19,7 +19,8 @@
 // The device key never leaves the process; only signed requests cross the
 // wire. The assertion is signed with the ACCESS key (not the device key),
 // which is what binds a presentation to the cert the IdP just issued.
-import { KeyPair, fromB64u, b64u, publicKeyField, decodeJwtClaims } from "./crypto.mjs";
+import { KeyPair, fromB64u, b64u, b64uJson, publicKeyField, decodeJwtClaims } from "./crypto.mjs";
+import { createHash, randomBytes } from "node:crypto";
 import { accessRequest, assertion as makeAssertion, accessPresentation, nowS } from "./protocol.mjs";
 import { AgentError, RequestError, NoWarrantError } from "./errors.mjs";
 
@@ -29,14 +30,34 @@ const ACCESS_REFRESH_MARGIN_S = 60;
 const trim = (u) => String(u).replace(/\/$/, "");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function postJson(http, url, body) {
+async function postJson(http, url, body, headers = {}) {
   const res = await http(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    headers: { "content-type": "application/json", ...headers },
+    body: typeof body === "string" ? body : JSON.stringify(body),
   });
   const json = await res.json().catch(() => ({}));
   return { res, json };
+}
+
+const REQUEST_PROOF_TYP = "browserid-registry-proof-v1";
+const sha256b64u = (data) => createHash("sha256").update(data).digest("base64url");
+
+/**
+ * A registry-api-v1 §4.4 request proof, signed by `key`: a compact JWS
+ * (`typ: browserid-registry-proof-v1`, `kid` = base64url(SHA-256(raw public
+ * key))) over `{ htm, htu, iat, jti, bh }`, `bh` the base64url SHA-256 of
+ * the exact body bytes. `/warrant/request` requires one by the agent's
+ * device key (audit 2026-11 D4): the device cert alone is public — every
+ * audience it was presented to has seen it — so without this anyone could
+ * file consent requests in the agent's name.
+ */
+export function requestProof(key, method, htu, bodyBytes) {
+  const kid = sha256b64u(Buffer.from(key.publicRaw));
+  const claims = { htm: method, htu, iat: nowS(), jti: randomBytes(12).toString("hex") };
+  if (bodyBytes != null) claims.bh = sha256b64u(bodyBytes);
+  const signingInput = `${b64uJson({ alg: "EdDSA", typ: REQUEST_PROOF_TYP, kid })}.${b64uJson(claims)}`;
+  return `${signingInput}.${key.sign(signingInput)}`;
 }
 
 /** Host of a URL — the `domain` an access request is pinned to. */
@@ -218,9 +239,10 @@ export class PendingProvision {
  * identity's domain or a requested audience's origin — and refuses the whole
  * request otherwise.
  */
-export async function requestWarrants(broker, { deviceCert, identity, grants, label, message, grantor, returnUrl, http = fetch }) {
+export async function requestWarrants(broker, { agent, deviceCert = agent?.deviceCert, deviceKey, identity, grants, label, message, grantor, returnUrl, http = fetch }) {
   const base = trim(broker);
-  const { res, json } = await postJson(http, `${base}/warrant/request`, {
+  const url = `${base}/warrant/request`;
+  const body = JSON.stringify({
     device_cert: deviceCert,
     identity,
     grants: grants.map((g) => ({ audience: g.audience, scopes: g.scopes ?? [] })),
@@ -229,6 +251,14 @@ export async function requestWarrants(broker, { deviceCert, identity, grants, la
     ...(grantor ? { grantor } : {}),
     ...(returnUrl ? { return_url: returnUrl } : {}),
   });
+  // The filing is signed by the device key (audit 2026-11 D4): pass the
+  // `DeviceAgent` (it signs without exposing the key) or the `KeyPair`.
+  const bytes = Buffer.from(body, "utf8");
+  let proof;
+  if (agent) proof = agent.requestProof("POST", url, bytes);
+  else if (deviceKey) proof = requestProof(deviceKey, "POST", url, bytes);
+  else throw new AgentError("requestWarrants needs the agent (or its deviceKey) to sign the filing");
+  const { res, json } = await postJson(http, url, body, { proof });
   if (!res.ok || json.success !== true) {
     throw new RequestError("warrant request", res.status, json.reason || "no reason given");
   }
@@ -312,6 +342,11 @@ export class DeviceAgent {
       throw new AgentError(`device cert does not authorize '${credential.identity}'`);
     }
     this.idpDomain = urlHost(credential.idp);
+  }
+
+  /** A §4.4 request proof by this agent's device key (see `requestProof`). */
+  requestProof(method, htu, bodyBytes) {
+    return requestProof(this.#deviceKey, method, htu, bodyBytes);
   }
 
   /**

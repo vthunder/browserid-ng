@@ -12,7 +12,7 @@
 //   await agent.save("agent.identity.json");
 
 // The CURRENT protocol: device certs, access certs, four-part presentations.
-export { requestProvision, PendingProvision, requestWarrants, PendingWarrants, DeviceAgent } from "./src/device.mjs";
+export { requestProvision, PendingProvision, requestWarrants, PendingWarrants, DeviceAgent, requestProof } from "./src/device.mjs";
 
 // The legacy provisioning-cert path. The broker no longer serves the
 // endpoints this uses (`/provision/endorse` → 404); kept only for older
