@@ -589,11 +589,8 @@ fn alg_header_is_pinned_to_eddsa_on_typed_objects() {
     assert!(forged.verify(&f.config.public_key()).is_err());
 }
 
-/// W6-2: `Assertion::verify` does not read the JOSE header at all — it goes
-/// straight to Ed25519 over `header.payload`. A forged header therefore does
-/// NOT bypass anything (the signature must still verify under the access
-/// key), but the object lacks the alg pin every other object has. Passes
-/// today; recorded for the typed-signing consistency item.
+/// W6-2: a forged header never bypasses the Ed25519 check — the signature
+/// must still verify under the access key.
 #[test]
 fn w6_2_assertion_without_a_valid_ed25519_signature_rejects_regardless_of_header() {
     let f = Fx::new();
@@ -604,6 +601,34 @@ fn w6_2_assertion_without_a_valid_ed25519_signature_rejects_regardless_of_header
     assert!(Assertion::parse(&unsigned).and_then(|a| a.verify(&f.access.public_key())).is_err());
     let wrong_key = raw_jws(r#"{"alg":"EdDSA","typ":"JWT"}"#, &claims, &f.config);
     assert!(Assertion::parse(&wrong_key).unwrap().verify(&f.access.public_key()).is_err());
+}
+
+/// W6-2 (fixed in bean hgxv): `Assertion::verify` pins `alg == EdDSA` like
+/// every other typed object — an assertion re-signed under a tampered
+/// header, with a signature that IS valid over the tampered bytes under the
+/// right key, still rejects; the honest header verifies.
+#[test]
+fn w6_2_assertion_alg_header_is_pinned_to_eddsa() {
+    let f = Fx::new();
+    let claims = json!({"aud": AUD, "exp": AT + 300});
+    for header in [r#"{"alg":"none","typ":"JWT"}"#, r#"{"alg":"HS256","typ":"JWT"}"#, r#"{"typ":"JWT"}"#, r#"{"alg":"eddsa"}"#] {
+        let forged = Assertion::parse(&raw_jws(header, &claims, &f.access)).unwrap();
+        assert!(forged.verify(&f.access.public_key()).is_err(), "header {header} must be refused");
+        // And through the bundle verifier, where the header gate is the
+        // assertion's only one.
+        let mut p = f.bundle();
+        p.assertion = forged;
+        assert!(f.verify(&p).is_err());
+    }
+    let honest = Assertion::parse(&raw_jws(r#"{"alg":"EdDSA","typ":"JWT"}"#, &claims, &f.access)).unwrap();
+    assert!(honest.verify(&f.access.public_key()).is_ok());
+    // A header that is not base64 / not JSON rejects at verify, never panics.
+    let c = B64.encode(claims.to_string());
+    for h in ["!!!", &B64.encode("not json")] {
+        let msg = format!("{h}.{c}");
+        let sig = B64.encode(f.access.sign(msg.as_bytes()));
+        assert!(Assertion::parse(&format!("{msg}.{sig}")).unwrap().verify(&f.access.public_key()).is_err());
+    }
 }
 
 // ---------------------------------------------------------------------------

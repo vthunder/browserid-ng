@@ -141,13 +141,28 @@ impl Assertion {
         Ok(claims)
     }
 
-    // Internal: verify signature
+    // Internal: verify signature. The JOSE header is checked like every other
+    // typed object's (audit 2026-11 W6-2): `alg` MUST be exactly `EdDSA`
+    // — the protocol is Ed25519-only, so `alg: none`, `HS256`, or a missing
+    // header field is refused up front rather than relying on the signature
+    // check alone.
     fn verify_signature(encoded: &str, public_key: &PublicKey) -> Result<()> {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
         let parts: Vec<&str> = encoded.split('.').collect();
         if parts.len() != 3 {
             return Err(Error::InvalidAssertion("expected 3 JWT parts".into()));
+        }
+
+        let header_bytes = URL_SAFE_NO_PAD
+            .decode(parts[0])
+            .map_err(|e| Error::InvalidAssertion(format!("bad header b64: {e}")))?;
+        let header: serde_json::Value = serde_json::from_slice(&header_bytes)
+            .map_err(|e| Error::InvalidAssertion(format!("bad header: {e}")))?;
+        if header.get("alg").and_then(|a| a.as_str()) != Some("EdDSA") {
+            return Err(Error::InvalidAssertion(
+                "unexpected JWS alg (only EdDSA is accepted)".into(),
+            ));
         }
 
         let message = format!("{}.{}", parts[0], parts[1]);
