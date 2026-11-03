@@ -334,12 +334,13 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
     let status_idx = prep["grants"][0]["status_idx"].as_u64().unwrap();
 
     // The primary signs a cert over the request's key + PREPARED holder,
-    // naming the SESSION (base) identity — the standard user-mode hop. The
-    // protocol's subaddress rule (base covers its +tags) makes it authorize
-    // the named agent; no agent-mode issuance or glob is needed.
+    // naming the AGENT identity exactly: since audit 2026-11 D1 an auth
+    // cert authorizes exact identities only (subaddressing is the config
+    // cert's grantor rule), so the page's primary hop asks for the +tag
+    // sub-identity.
     let primary_cert = DeviceCert::create(
         PRIMARY, &device_kp.public_key(), Purpose::Authentication,
-        Holder::new(holder.clone()).unwrap(), vec![P_DELEGATOR.to_string()],
+        Holder::new(holder.clone()).unwrap(), vec![P_AGENT.to_string()],
         Duration::days(90), &primary_kp, None,
     )
     .unwrap();
@@ -531,7 +532,7 @@ async fn hosted_tenant_agent_cert_allows_the_serving_host_mint() {
 
     let tenant_cert = DeviceCert::create(
         TENANT, &device_kp.public_key(), Purpose::Authentication,
-        Holder::new(holder.clone()).unwrap(), vec![T_DELEGATOR.to_string()],
+        Holder::new(holder.clone()).unwrap(), vec![T_AGENT.to_string()],
         Duration::days(90), &tenant_kp, None,
     )
     .unwrap();

@@ -14,6 +14,48 @@ pub struct AuthedUser {
     /// The session's CSRF token; state-changing registrar endpoints require
     /// the caller to echo it.
     pub csrf_token: String,
+    /// Whether the account password was presented to open this session
+    /// (the host's "Full" level) — the bar broker-vouched identities mint
+    /// on (audit 2026-11 W5-7, decision Q6).
+    pub password_proven: bool,
+    /// Whether the registry admitted this browser (bound the session to an
+    /// enrolled login key); until then it is an identity session that may
+    /// do issuer work only for `proved_emails`.
+    pub admitted: bool,
+    /// The identities this session proved itself.
+    pub proved_emails: Vec<String>,
+}
+
+impl AuthedUser {
+    /// Whether this session proved `email` itself (case-insensitive).
+    pub fn proved(&self, email: &str) -> bool {
+        self.proved_emails.iter().any(|e| e.eq_ignore_ascii_case(email))
+    }
+}
+
+/// The host's mint-chokepoint verdict for an agent approval (audit 2026-11
+/// W5-7, decision Q6): may THIS session have the registrar sign a device
+/// cert for the identity `agent-provision/complete` is about to certify?
+/// Mirrors the host's own `/device/issue` outcomes so the two lanes answer
+/// alike.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MintVerdict {
+    /// Sign, for `ttl` — the host's own TTL for a broker-vouched identity,
+    /// the bridge's for a bridged (E2) parent whose live proof was redeemed.
+    Allow { ttl: chrono::Duration },
+    /// The session is not admitted and did not prove the parent identity.
+    NotAdmitted,
+    /// A password (Full) session is required first.
+    NeedPassword,
+    /// The parent's mailbox proof is stale; re-verify first.
+    Reverify,
+    /// The parent is a primary (E1) identity: its own IdP signs, never the
+    /// registrar — the page's primary hop supplies the cert.
+    DelegatePrimary,
+    /// The parent is bridged (E2) and no live bridge proof is on file: the
+    /// page must run the bridge (`/oidc/claim`, the Bluesky attestation)
+    /// and come back; the grant it records is redeemed once.
+    NeedBridgeProof,
 }
 
 /// An agent identity the host has minted for an account (used to flip
@@ -148,6 +190,17 @@ pub trait RegistrarHost: Send + Sync {
     /// Whether the account has a password (a policy floor input, §4.2).
     fn account_has_password(&self, _user_id: u64) -> Result<bool, RegistrarError> {
         Ok(false)
+    }
+
+    /// The host's mint chokepoint for an agent approval the REGISTRAR would
+    /// sign (W5-7 / Q6): `parent` is the approver's chosen delegating
+    /// identity; `agent` says a named (handle/standalone) agent identity is
+    /// being minted — its row does not exist until after signing, so the
+    /// host applies its agent rule from the parent's record — as opposed to
+    /// an as-you cert for `parent` itself. Hosts without a chokepoint keep
+    /// compiling by refusing.
+    fn authorize_agent_mint(&self, _user: &AuthedUser, _parent: &str, _agent: bool) -> Result<MintVerdict, RegistrarError> {
+        Err(RegistrarError::Internal("agent minting not supported by this host".into()))
     }
 
     /// The account's roster (§4.5): `(identity, "active" | "suspended")`.

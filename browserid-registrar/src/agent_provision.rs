@@ -1295,6 +1295,33 @@ async fn complete_device_cert(
         Some((warrant_jwss.to_vec(), config_jws.to_string(), warrants))
     };
 
+    // The host's mint chokepoint (audit 2026-11 W5-7, decision Q6): when
+    // the REGISTRAR is about to sign the agent cert — no primary-signed
+    // cert from the page — the approving session must pass the same bar
+    // `/device/issue` applies to the identity being certified: an as-you
+    // cert for the parent itself (E3: password session and a fresh mailbox
+    // proof; E2: a live bridge grant, redeemed here, whose TTL the cert
+    // takes), or a named agent under the parent (the host's agent rule:
+    // a password session). Decided BEFORE any side effect (handle
+    // reservation, signing). A primary (E1) parent never reaches this
+    // branch: the page's primary hop supplies the cert.
+    let registrar_signed_ttl = if req.device_cert.is_none() {
+        match state.host.authorize_agent_mint(user, &identity_email, name.is_some())? {
+            crate::host::MintVerdict::Allow { ttl } => Some(ttl),
+            crate::host::MintVerdict::NotAdmitted => return Err(RegistrarError::NotAdmitted),
+            crate::host::MintVerdict::NeedPassword => return Err(RegistrarError::PasswordRequired),
+            crate::host::MintVerdict::Reverify => return Err(RegistrarError::VerificationExpired),
+            crate::host::MintVerdict::NeedBridgeProof => return Err(RegistrarError::BridgeProofRequired),
+            crate::host::MintVerdict::DelegatePrimary => {
+                return Err(RegistrarError::PolicyRefused(
+                    "this identity's own IdP signs its agent certs; supply the primary-signed device cert".into(),
+                ))
+            }
+        }
+    } else {
+        None
+    };
+
     // Reserve the handle NOW (session-authenticated), same as the legacy path.
     // An as-you service has no handle to reserve — its identity IS the user's.
     if let Some(name) = &name {
@@ -1397,13 +1424,16 @@ async fn complete_device_cert(
         None => {
             let idx = state.store.get_or_allocate_status("device", &snapshot.provisioning_pubkey)?;
             let status = StatusRef { uri: status_list_uri(&state.domain), idx };
+            // The chokepoint's TTL: the host's own for a broker-vouched
+            // identity, the bridge's for a bridged parent (pr3a).
+            let ttl = registrar_signed_ttl.unwrap_or_else(|| chrono::Duration::days(DEVICE_CERT_VALIDITY_DAYS));
             let device_cert = DeviceCert::create(
                 &state.domain,
                 &device_pub,
                 Purpose::Authentication,
                 holder,
                 vec![agent_email.clone()],
-                chrono::Duration::days(DEVICE_CERT_VALIDITY_DAYS),
+                ttl,
                 &state.keypair,
                 Some(status),
             )

@@ -26,6 +26,9 @@ pub struct TestContext {
     /// `_browserid` DNSSEC record (the served `.well-known` carries no key,
     /// bean zexp); tests that verify broker-issued certs use it directly.
     pub broker_key: browserid_core::PublicKey,
+    /// The app state behind the server, for tests that drive host-side
+    /// machinery directly (e.g. recording a bridge grant).
+    pub state: Arc<AppState<InMemoryUserStore, InMemorySessionStore, MockEmailSender>>,
 }
 
 /// Mock email sender that captures verification codes
@@ -111,7 +114,7 @@ pub fn create_test_context() -> TestContext {
         email_sender.clone(),
     ));
 
-    let app = routes::create_router(state);
+    let app = routes::create_router(state.clone());
     let server = TestServer::new(app).expect("Failed to create test server");
 
     TestContext {
@@ -122,6 +125,7 @@ pub fn create_test_context() -> TestContext {
         user_store,
         session_store,
         broker_key,
+        state,
     }
 }
 
@@ -153,7 +157,8 @@ pub fn create_test_context_customized(
     );
     customize(&mut state);
 
-    let app = routes::create_router(Arc::new(state));
+    let state = Arc::new(state);
+    let app = routes::create_router(state.clone());
     let server = TestServer::new(app).expect("Failed to create test server");
 
     TestContext {
@@ -164,6 +169,7 @@ pub fn create_test_context_customized(
         user_store,
         session_store,
         broker_key,
+        state,
     }
 }
 
