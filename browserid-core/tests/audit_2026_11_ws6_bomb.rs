@@ -51,7 +51,6 @@ fn bomb(inflated: usize) -> String {
 const MIB: usize = 1024 * 1024;
 
 #[test]
-#[ignore] // AUDIT-2026-11 W6-3 (WS5 W5-8): fails today — `read_to_end` inflates everything, then checks the 4 MiB cap (status.rs:96-108)
 fn w6_3_oversized_status_list_is_rejected_without_inflating_it() {
     // 256 MiB of zeros compresses to ~256 KiB — far under the transport cap.
     let lst = bomb(256 * MIB);

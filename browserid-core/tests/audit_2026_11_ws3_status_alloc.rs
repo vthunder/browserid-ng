@@ -64,7 +64,6 @@ proptest! {
     /// whose inflated size is anywhere from 0 to 64 MiB. Inputs that inflate
     /// past the cap must be rejected WITHOUT the inflate.
     #[test]
-    #[ignore] // AUDIT-2026-11 W6-3 (WS5 W5-8): fails today — `read_to_end` inflates everything before the 4 MiB cap is compared (status.rs:96-108)
     fn decode_allocation_is_bounded_for_any_input(inflated_mib in 0usize..=64, fill in any::<u8>(), noise in proptest::collection::vec(any::<u8>(), 0..512)) {
         let lst = bomb(inflated_mib * MIB, fill);
         let peak = peak_of(|| { let _ = StatusList::decode(&lst); });

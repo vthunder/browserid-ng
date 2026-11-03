@@ -34,7 +34,10 @@ pub use device::{
 pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;
 pub use rp_auth::{RpChallenge, TokenRequest, TokenResponse};
-pub use status::{StatusList, StatusListToken, StatusRef, TYP_STATUS_LIST};
+pub use status::{
+    StatusList, StatusListToken, StatusRef, STATUS_LIST_MAX_BYTES, STATUS_LIST_MAX_INDEX,
+    TYP_STATUS_LIST,
+};
 pub use attestation::{HandleAttestation, HandleAttestationClaims, TYP_HANDLE_ATTESTATION};
 
 /// Result type for browserid-core operations
