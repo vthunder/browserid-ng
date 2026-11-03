@@ -146,7 +146,7 @@ test("D6 pin: the member is admitted under the owner's live policy row (single-s
   assert.equal(res.status, 200);
 });
 
-test("D6: single-server — a policy row the broker reports REVOKED must stop admitting a jwt-bearer subject", { skip: "AUDIT-2026-11 D6: fails today" }, async () => {
+test("D6: single-server — a policy row the broker reports REVOKED must stop admitting a jwt-bearer subject", async () => {
   validateMode.set(SINGLE_POLICY, "revoked");
   try {
     const res = await mcp(SINGLE, await bearer(SINGLE, "pres-member"));
@@ -154,7 +154,7 @@ test("D6: single-server — a policy row the broker reports REVOKED must stop ad
   } finally { validateMode.delete(SINGLE_POLICY); }
 });
 
-test("D6: single-server — an EXPIRED policy row must not admit", { skip: "AUDIT-2026-11 D6: fails today" }, async () => {
+test("D6: single-server — an EXPIRED policy row must not admit", async () => {
   const live = singleStore.raw.get(`${OWNER}|${MEMBER}|${SINGLE}`);
   singleStore.raw.set(`${OWNER}|${MEMBER}|${SINGLE}`, { ...live, exp: nowS() - 10 });
   try {
@@ -164,7 +164,7 @@ test("D6: single-server — an EXPIRED policy row must not admit", { skip: "AUDI
 });
 
 // ===========================================================================
-// D6 — gateway signed mode: isRowLive fails OPEN when the validator is unreachable
+// D6 — gateway signed mode: an unreachable validator is not fresh evidence
 // ===========================================================================
 
 test("D6 pin: gateway signed mode — the member is admitted under the admin's live policy row (validated fresh)", async () => {
@@ -172,19 +172,11 @@ test("D6 pin: gateway signed mode — the member is admitted under the admin's l
   assert.equal(res.status, 200);
 });
 
-test("D6: gateway signed mode — an UNREACHABLE validator must fail closed (last-known-good is not fresh evidence)", { skip: "AUDIT-2026-11 D6: fails today" }, async () => {
+test("D6: gateway signed mode — an UNREACHABLE validator must fail closed (last-known-good is not fresh evidence)", async () => {
   validateMode.set(GW_POLICY, "reset");
   try {
     const res = await mcp(NOTES, await bearer(NOTES, "pres-member"));
     assert.equal(res.status, 403);
-  } finally { validateMode.delete(GW_POLICY); }
-});
-
-test("D6 pin: gateway signed mode — today an unreachable validator ADMITS on last-known-good (isRowLive → cached?.ok ?? true)", async () => {
-  validateMode.set(GW_POLICY, "reset");
-  try {
-    const res = await mcp(NOTES, await bearer(NOTES, "pres-member"));
-    assert.equal(res.status, 200);
   } finally { validateMode.delete(GW_POLICY); }
 });
 
@@ -196,7 +188,7 @@ test("D6 pin: gateway signed mode — a REVOKED policy row refuses the member (d
   } finally { validateMode.delete(GW_POLICY); }
 });
 
-test("D6 pin: gateway signed mode — an HTTP 503 from the validator is read as DEFINITIVE (fails closed here; see W4-12)", async () => {
+test("D6 pin: gateway signed mode — an HTTP 503 from the validator is temporarily_unavailable and refuses (fail-closed; the row is kept, W4-12)", async () => {
   validateMode.set(GW_POLICY, "http503");
   try {
     const res = await mcp(NOTES, await bearer(NOTES, "pres-member"));

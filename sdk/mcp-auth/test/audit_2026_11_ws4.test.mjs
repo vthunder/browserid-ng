@@ -253,23 +253,16 @@ test("D6 pin: conjoinPolicy fails closed when the validator answers HTTP 503", a
   await assert.rejects(connect(lane, { scope: "notes:read" }), (e) => e instanceof McpAuthError);
 });
 
-// W4-12: validateRecord maps an HTTP 5xx from the validator to
-// `invalid_grant` (400) — a definitive-looking verdict — instead of
-// `temporarily_unavailable` (503); only a THROWN fetch is classed 503. The
-// gate's isRowLive keys on httpStatus === 503, so an HTTP 503 deletes the
-// signed policy row (grantsDiff custodial delete) while a connection failure
-// keeps it live (D6's fail-open branch).
-test("W4-12: an HTTP 5xx from /validate-record is 'temporarily_unavailable', not a definitive invalid_grant", { skip: "AUDIT-2026-11 W4-12: fails today" }, async () => {
+// W4-12: an HTTP 5xx (or 429) from the validator is an outage, classed
+// `temporarily_unavailable` (503) like a thrown fetch — never a definitive
+// `invalid_grant` that would let the gate delete a signed policy row.
+test("W4-12: an HTTP 5xx from /validate-record is 'temporarily_unavailable', not a definitive invalid_grant", async () => {
   const broker = fakeBroker({ validate: { [POLICY_OPEN]: { __status: 503, status: "failure", reason: "down" } } });
   const mcp = createMcpAuth({ resource: RESOURCE, broker: BROKER, fetch: broker.fetch });
   await assert.rejects(mcp.validateRecord(POLICY_OPEN), (e) => e instanceof McpAuthError && e.httpStatus === 503 && e.oauthError === "temporarily_unavailable");
 });
 
-test("W4-12 pin: today an HTTP 503 from the validator reads as invalid_grant (400)", async () => {
-  const broker = fakeBroker({ validate: { [POLICY_OPEN]: { __status: 503, status: "failure", reason: "down" } } });
-  const mcp = createMcpAuth({ resource: RESOURCE, broker: BROKER, fetch: broker.fetch });
-  await assert.rejects(mcp.validateRecord(POLICY_OPEN), (e) => e instanceof McpAuthError && e.httpStatus === 400 && e.oauthError === "invalid_grant");
-  // …while a thrown fetch is correctly classed 503.
+test("W4-12 pin: a thrown fetch (connection refused) is classed 503 too", async () => {
   const down = createMcpAuth({ resource: RESOURCE, broker: BROKER, fetch: async () => { throw new Error("ECONNREFUSED"); } });
   await assert.rejects(down.validateRecord(POLICY_OPEN), (e) => e.httpStatus === 503);
 });

@@ -268,6 +268,11 @@ export function createMcpAuth(opts) {
         }),
       });
       verified = await res.json().catch(() => ({}));
+      // A 5xx / 429 is an outage, not a verdict (same classing as the
+      // record validator, audit 2026-11 W4-12).
+      if (res.status >= 500 || res.status === 429) {
+        throw new McpAuthError("temporarily_unavailable", `verifier HTTP ${res.status}`, 503);
+      }
       if (!res.ok) {
         throw new McpAuthError("invalid_grant", `verifier HTTP ${res.status}`);
       }
@@ -344,6 +349,12 @@ export function createMcpAuth(opts) {
         }),
       });
       v = await res.json().catch(() => ({}));
+      // A 5xx or 429 is an OUTAGE, not a verdict (audit 2026-11 W4-12): it
+      // must never read as a definitive invalid_grant, or a held policy row
+      // would be deleted during a broker incident.
+      if (res.status >= 500 || res.status === 429) {
+        throw new McpAuthError("temporarily_unavailable", `record validator HTTP ${res.status}`, 503);
+      }
       if (!res.ok) {
         throw new McpAuthError("invalid_grant", `record validator HTTP ${res.status}`);
       }

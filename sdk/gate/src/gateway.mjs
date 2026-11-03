@@ -202,18 +202,23 @@ export function createGateway(opts) {
   // A stored row only counts as SIGNED while its record is still alive —
   // revocation at the broker (or expiry) must resurface it as pending, or
   // the console reads "in sync" over a dead grant (Dan's repro,
-  // 2026-08-15). Enforcement is already fail-closed per mint; this is the
-  // DIFF's view: definitive invalidity (revoked/expired) drops the row so
-  // it needs a fresh signature; an unreachable validator keeps last-known
-  // rather than churning the console.
-  const recordLiveness = new Map(); // record -> { at, ok }
+  // 2026-08-15). Two readers (audit 2026-11 D6, decision Q14 (a)):
+  // - ENFORCEMENT (`isRowLive`): fresh evidence only — a definitive
+  //   invalidity, an unreachable validator and a 5xx are all "not live";
+  //   last-known-good never admits.
+  // - the console DIFF (`rowVerdict`): definitive invalidity (revoked /
+  //   expired) drops the row so it needs a fresh signature; an unreachable
+  //   validator keeps last-known rather than churning the console and
+  //   NEVER deletes a signed row.
+  const recordLiveness = new Map(); // record -> { at, ok }  (definitive answers only)
   const LIVENESS_TTL_MS = (opts.grantsLivenessS ?? 60) * 1000;
-  async function isRowLive(row) {
-    if (row.exp != null && row.exp <= Math.floor(Date.now() / 1000)) return false;
+  /** @returns {Promise<{ok:boolean, definitive:boolean}>} */
+  async function rowVerdict(row) {
+    if (row.exp != null && row.exp <= Math.floor(Date.now() / 1000)) return { ok: false, definitive: true };
     const cached = recordLiveness.get(row.record);
-    if (cached && Date.now() - cached.at < LIVENESS_TTL_MS) return cached.ok;
+    if (cached && Date.now() - cached.at < LIVENESS_TTL_MS) return { ok: cached.ok, definitive: true };
     const anyMount = mounts.values().next().value;
-    if (!anyMount) return true; // nothing to validate with; leave the row be
+    if (!anyMount) return { ok: false, definitive: false }; // nothing to validate with
     let ok = true;
     try {
       const pv = await anyMount.mcpAuth.validateRecord(row.record, row.audience);
@@ -221,11 +226,16 @@ export function createGateway(opts) {
       // supported policy binding never admits.
       assertPolicyBinding(pv.binding);
     } catch (e) {
-      if (e?.httpStatus === 503) return cached?.ok ?? true; // unreachable
+      if (e?.httpStatus === 503) return { ok: cached?.ok ?? false, definitive: false }; // unreachable / 5xx
       ok = false; // revoked / expired / invalid — definitive
     }
     recordLiveness.set(row.record, { at: Date.now(), ok });
-    return ok;
+    return { ok, definitive: true };
+  }
+  /** Enforcement view: live only on a fresh (or recently cached) definitive OK. */
+  async function isRowLive(row) {
+    const v = await rowVerdict(row);
+    return v.ok && v.definitive;
   }
 
   /** desired vs signed (admin-signed rows only): what needs a signature, and
@@ -235,7 +245,9 @@ export function createGateway(opts) {
     let signed = (await policyStore.list()).filter((r) => r.grantor === adminEmail);
     const dead = [];
     for (const r of signed) {
-      if (!(await isRowLive(r))) dead.push(r);
+      // Only a DEFINITIVE invalidity drops a signed row; an outage keeps it.
+      const v = await rowVerdict(r);
+      if (v.definitive && !v.ok) dead.push(r);
     }
     for (const r of dead) {
       await policyStore.del(r.grantor, r.grantee, r.audience);
