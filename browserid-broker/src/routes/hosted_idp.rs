@@ -456,8 +456,21 @@ where
         return err(StatusCode::BAD_REQUEST, "invalid email".into());
     };
     let email = format!("{local}@{domain}");
-    if email != session_email {
+    // The identity the AUTHENTICATION cert names: the session's own base
+    // identity, or one of its `+tag` sub-identities (spec §4.6, bean 0246):
+    // an auth cert mints exactly, so a named agent `base+tag@tenant` needs
+    // its own auth cert, which the owner of `base@tenant` may have issued
+    // over the agent's key. The tag follows the agent-name rules.
+    let base = base_local(&local);
+    let base_email = format!("{base}@{domain}");
+    if base_email != session_email {
         return err(StatusCode::FORBIDDEN, "signed-in identity does not match".into());
+    }
+    if local != base {
+        let tag = &local[base.len() + 1..];
+        if tag.is_empty() || local.matches('+').count() != 1 || !browserid_registrar::registry::valid_agent_name(&local) {
+            return err(StatusCode::BAD_REQUEST, "invalid agent sub-identity".into());
+        }
     }
     if let Some(ro) = req.return_origin.as_deref().filter(|s| !s.trim().is_empty()) {
         if !state.return_origin_accepted(ro, &state.idp_host) {
@@ -468,7 +481,7 @@ where
         Ok(t) => t,
         Err(e) => return err(StatusCode::FORBIDDEN, e.to_string()),
     };
-    match state.user_store.get_roster_entry(tenant.id, &local) {
+    match state.user_store.get_roster_entry(tenant.id, base) {
         Ok(Some(entry)) if entry.state == RosterState::Active => {}
         _ => return err(StatusCode::FORBIDDEN, "roster entry is not active".into()),
     }
@@ -489,8 +502,17 @@ where
     // secret key, and binds the suffix to the device key: the same device
     // re-issued (the dialog's reissue hop) gets the same holder, two devices
     // get two, and nobody can stamp another device's holder on their certs.
-    // `req.holder` is accepted for compatibility and ignored.
-    let holder = match browserid_core::device::Holder::new(assigned_holder(&keypair, tenant.id, &local, &device_pub)) {
+    // One exception, still issuer-side: the co-located registrar's
+    // agent-provision `prepare` assigned a holder for THIS device key (the
+    // page's primary hop, bean 0246). That holder was chosen by the broker,
+    // not the page, so it is honoured — iff it matches the registrar's
+    // record for the key. Anything else the page sends is ignored.
+    let prepared = browserid_registrar::agent_provision::prepared_holder_for_pubkey(&device_pub.to_base64());
+    let holder_str = match (req.holder.as_deref().filter(|h| !h.is_empty()), prepared) {
+        (Some(sent), Some(prepared)) if sent == prepared => prepared,
+        _ => assigned_holder(&keypair, tenant.id, base, &device_pub),
+    };
+    let holder = match browserid_core::device::Holder::new(holder_str) {
         Ok(h) => h,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("holder: {e}")),
     };
@@ -517,7 +539,11 @@ where
         .and_then(|m| m.device_cert_ttl)
         .map(Duration::seconds)
         .unwrap_or_else(|| Duration::days(DEVICE_CERT_VALIDITY_DAYS));
-    let config_identities = vec![email.clone(), format!("{local}+*@{domain}")];
+    // The AUTHORIZATION (config) cert names the session's BASE identity and
+    // its sub-addresses (spec §4.6: a config cert for `base` may sign for
+    // `base+tag` grantors) — also when the auth cert is a sub-identity's, so
+    // the owner's browser keeps one config cert for the base identity.
+    let config_identities = vec![base_email.clone(), format!("{base}+*@{domain}")];
     // Managed marker (spec §4.7): stamped on EVERY device cert of a managed
     // identity, before the mint ever applies constraints — the durable,
     // issuance-time signal that drives UA disclosure.
@@ -634,8 +660,9 @@ where
     // The roster stays authoritative at mint time: a disabled (or vanished)
     // user stops minting immediately, bounding a live session by the access
     // cert's 24h TTL even without touching the status list. An agent identity
-    // (`dan+poster`) is checked against its base roster user (`dan`) — the
-    // device cert already proved the base authorizes the subaddress.
+    // (`dan+poster`) is checked against its base roster user (`dan`); its
+    // auth cert names the sub-identity exactly (spec §4.6, bean 0246), which
+    // `authorizes_identity` above already required.
     if let Some((local, _)) = split_email(&c.identity) {
         match state.user_store.get_roster_entry(tenant.id, base_local(&local))? {
             Some(entry) if entry.state == RosterState::Active => {}

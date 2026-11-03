@@ -112,6 +112,19 @@ impl Record {
 static PROVISIONS: LazyLock<Mutex<HashMap<String, Record>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static USER_CODES: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// The holder `prepare` assigned to a live, unresolved provisioning whose
+/// provisioning key is `pubkey_b64` — for a co-located issuer (the hosted
+/// IdP) that must stamp the registrar-assigned holder on the agent's cert
+/// without taking a holder from the page (audit 2026-11 D3 / bean 0246).
+/// `None` when no prepared, unexpired, pending record names that key.
+pub fn prepared_holder_for_pubkey(pubkey_b64: &str) -> Option<String> {
+    let map = PROVISIONS.lock().unwrap();
+    map.values()
+        .filter(|r| !r.is_expired() && matches!(r.status, Status::Pending | Status::IdentityIssued))
+        .find(|r| r.provisioning_pubkey == pubkey_b64)
+        .and_then(|r| r.holder.clone())
+}
+
 fn new_code() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
