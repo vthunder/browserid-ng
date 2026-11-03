@@ -208,9 +208,61 @@ pub struct IdpLoginRequest {
     pub password: String,
 }
 
+/// The roster password check shared by `/idp/login` and `/idp/password`
+/// (audit 2026-11 W5-2): throttled per client IP like the broker login
+/// (`login_attempts`, key `idp|<ip>`, 429 at the cap), and constant-shape —
+/// a missing tenant, a missing or disabled roster entry and a wrong
+/// password all cost one bcrypt verification (against a dummy hash when
+/// there is no real one), so timing tells the caller nothing about which.
+/// Returns the active entry on success; `Err(429)` or `Err(401)` otherwise,
+/// the latter already counted against the IP.
+fn check_roster_password<U: UserStore, S: SessionStore, E: EmailSender>(
+    state: &AppState<U, S, E>,
+    headers: &axum::http::HeaderMap,
+    email: &str,
+    password: &str,
+) -> Result<(String, String, Tenant, crate::store::RosterEntry), (StatusCode, Json<serde_json::Value>)> {
+    let ip = super::auth::client_ip(headers);
+    let key = format!("idp|{ip}");
+    if super::auth::login_throttled(state, &key) {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({"success": false, "reason": "too many attempts; try again later"})),
+        ));
+    }
+    let fail = || {
+        super::auth::record_login_failure(state, &key);
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"success": false, "reason": "invalid email or password"})),
+        )
+    };
+    let parsed = split_email(email);
+    let found = parsed.as_ref().and_then(|(local, domain)| {
+        let tenant = active_tenant(state.user_store.as_ref(), domain).ok()?;
+        let entry = state.user_store.get_roster_entry(tenant.id, local).ok().flatten()?;
+        Some((tenant, entry))
+    });
+    // One bcrypt verification on every path.
+    let hash = match &found {
+        Some((_, entry)) if entry.state == RosterState::Active && !entry.password_hash.is_empty() => {
+            entry.password_hash.as_str()
+        }
+        _ => super::auth::dummy_password_hash(),
+    };
+    let ok = crate::crypto::verify_password(password, hash).unwrap_or(false);
+    match (parsed, found) {
+        (Some((local, domain)), Some((tenant, entry))) if ok && entry.state == RosterState::Active => {
+            Ok((local, domain, tenant, entry))
+        }
+        _ => Err(fail()),
+    }
+}
+
 pub async fn idp_login<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
+    headers: axum::http::HeaderMap,
     Json(req): Json<IdpLoginRequest>,
 ) -> (StatusCode, Json<serde_json::Value>)
 where
@@ -218,27 +270,10 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    let fail = || {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"success": false, "reason": "invalid email or password"})),
-        )
+    let (local, domain, tenant, entry) = match check_roster_password(state.as_ref(), &headers, &req.email, &req.password) {
+        Ok(v) => v,
+        Err(e) => return e,
     };
-    let Some((local, domain)) = split_email(&req.email) else {
-        return fail();
-    };
-    let Ok(tenant) = active_tenant(state.user_store.as_ref(), &domain) else {
-        return fail();
-    };
-    let Ok(Some(entry)) = state.user_store.get_roster_entry(tenant.id, &local) else {
-        return fail();
-    };
-    if entry.state != RosterState::Active {
-        return fail();
-    }
-    if !crate::crypto::verify_password(&req.password, &entry.password_hash).unwrap_or(false) {
-        return fail();
-    }
     let email = format!("{local}@{domain}");
     issue_idp_cookie(state.as_ref(), &cookies, &email, entry.must_change_password);
     let _ = state.user_store.touch_roster_login(tenant.id, &local);
@@ -288,6 +323,7 @@ pub struct IdpPasswordRequest {
 pub async fn idp_password<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
+    headers: axum::http::HeaderMap,
     Json(req): Json<IdpPasswordRequest>,
 ) -> (StatusCode, Json<serde_json::Value>)
 where
@@ -295,12 +331,6 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    let fail = || {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"success": false, "reason": "invalid email or password"})),
-        )
-    };
     if req.new_password.len() < 8 {
         return (
             StatusCode::BAD_REQUEST,
@@ -313,21 +343,11 @@ where
             Json(json!({"success": false, "reason": "new password too long (maximum 80 characters)"})),
         );
     }
-    let Some((local, domain)) = split_email(&req.email) else {
-        return fail();
-    };
-    let Ok(tenant) = active_tenant(state.user_store.as_ref(), &domain) else {
-        return fail();
-    };
-    let Ok(Some(entry)) = state.user_store.get_roster_entry(tenant.id, &local) else {
-        return fail();
-    };
-    if entry.state != RosterState::Active
-        || !crate::crypto::verify_password(&req.current_password, &entry.password_hash)
-            .unwrap_or(false)
-    {
-        return fail();
-    }
+    let (local, domain, tenant, _entry) =
+        match check_roster_password(state.as_ref(), &headers, &req.email, &req.current_password) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
     let Ok(hash) = crate::crypto::hash_password(&req.new_password) else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -362,6 +382,7 @@ pub struct IdpDeviceCertRequest {
     /// Accepted and ignored (older dialogs send the browser's holder): the
     /// issuer assigns the holder (fb §3.2 / §7.4; audit 2026-11 D3).
     #[serde(default)]
+    #[allow(dead_code)]
     pub holder: Option<String>,
     /// The wallet's `return_origin` (fallback-idp-api-v1 §3.1); see
     /// `DeviceIssueRequest::return_origin`.

@@ -862,11 +862,9 @@ async fn poll_too_fast_is_429() {
     assert_eq!(second.status_code(), 429, "fast poll: {} {}", second.status_code(), second.text());
 }
 
-/// AUDIT-2026-11 W5-2: fails today. The hosted-primary password endpoint
-/// `/idp/login` has no throttle (July M6 covered only the broker login), so
-/// a tenant roster password can be guessed online, bounded by bcrypt alone.
+/// AUDIT-2026-11 W5-2: the hosted-primary password endpoint `/idp/login`
+/// is throttled per client IP like the broker login (July M6).
 #[tokio::test]
-#[ignore]
 async fn idp_login_is_throttled() {
     let r = rig();
     let ks = KeystoreKey::from_env_value(&"ab".repeat(32)).unwrap();

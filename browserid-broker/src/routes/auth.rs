@@ -39,8 +39,28 @@ pub struct AuthenticateResponse {
 /// this many FAILED attempts per client IP per window, then 429 until the
 /// window rolls over. Keyed by IP (not account) so no one can lock out a
 /// victim; auto-resets, so there is no permanent lockout.
-const LOGIN_MAX_FAILURES: u32 = 10;
-const LOGIN_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+pub(crate) const LOGIN_MAX_FAILURES: u32 = 10;
+pub(crate) const LOGIN_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Is `key`'s failed-attempt window at the cap? (The shared shape of every
+/// password throttle: `login_attempts` keyed by `<lane>|<ip>`.)
+pub(crate) fn login_throttled<U: UserStore, S: SessionStore, E: EmailSender>(state: &AppState<U, S, E>, key: &str) -> bool {
+    let mut attempts = state.login_attempts.write().unwrap();
+    let now = std::time::Instant::now();
+    attempts.retain(|_, (start, _)| now.duration_since(*start) < LOGIN_WINDOW);
+    matches!(attempts.get(key), Some((_, count)) if *count >= LOGIN_MAX_FAILURES)
+}
+
+/// Count one failed attempt against `key` (a fresh window if none/expired).
+pub(crate) fn record_login_failure<U: UserStore, S: SessionStore, E: EmailSender>(state: &AppState<U, S, E>, key: &str) {
+    let mut attempts = state.login_attempts.write().unwrap();
+    let now = std::time::Instant::now();
+    let entry = attempts.entry(key.to_string()).or_insert((now, 0));
+    if now.duration_since(entry.0) >= LOGIN_WINDOW {
+        *entry = (now, 0);
+    }
+    entry.1 += 1;
+}
 
 /// How many fronting proxies append to `X-Forwarded-For` before the
 /// request reaches the broker (`TRUSTED_PROXIES`, default 1: dokku's nginx).
@@ -125,7 +145,7 @@ pub(crate) async fn resolve_client_ip(mut req: axum::extract::Request, next: axu
 /// A real bcrypt hash of an unguessable random value, computed once per
 /// process. Failure paths verify against it so a caller cannot tell from
 /// timing whether the account existed or had a password at all.
-fn dummy_password_hash() -> &'static str {
+pub(crate) fn dummy_password_hash() -> &'static str {
     static DUMMY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     DUMMY.get_or_init(|| {
         hash_password(&uuid::Uuid::new_v4().to_string()).expect("bcrypt never fails on a uuid")
