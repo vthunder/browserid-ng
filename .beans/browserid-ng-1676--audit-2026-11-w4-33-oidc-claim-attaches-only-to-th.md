@@ -1,11 +1,11 @@
 ---
 # browserid-ng-1676
 title: '[Audit 2026-11] W4-33: OIDC claim attaches only to the session that began the flow'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-11-02T22:43:20Z
-updated_at: 2026-11-02T22:43:20Z
+updated_at: 2026-11-03T08:37:58Z
 parent: browserid-ng-ag1l
 ---
 
@@ -18,3 +18,10 @@ Change: enforce flow.session_id == the callback session (refuse otherwise), or d
 Acceptance (un-ignore): browserid-broker/tests/audit_2026_11_ws4.rs: w4_33_oidc_attaches_to_the_session_that_began_the_claim.
 
 Reports: ws4 §2. Ledger: docs/security-audit-2026-11.md. Decisions: docs/security-audit-2026-11-decisions.md.
+
+
+
+## Summary of Changes
+
+- routes/oidc.rs `oidc_callback`: after the flow-cookie (same browser) check, a claim begun under a broker session is refused unless the callback carries that same session (`FlowState.session_id` is now enforced, fail-closed): a changed session between the legs ends with `oidc_error=the sign-in must finish in the session it started in`. Cold claims (no session at begin) are unchanged.
+- Tests: un-ignored `w4_33_oidc_attaches_to_the_session_that_began_the_claim` (audit_2026_11_ws4 19 passed; oidc_claim_test 16 passed).

@@ -528,13 +528,11 @@ function holderMatches(matcher, holder) {
   return matcher.endsWith("*") ? holder.startsWith(matcher.slice(0, -1)) : matcher === holder;
 }
 
-/** A cert naming a base identity also authorizes its `+tag` sub-addresses. */
+/**
+ * An AUTH cert mints exactly (spec §4.6, audit 2026-11 D1): the identity
+ * must be named by the cert. A `+tag` agent holds its own cert naming the
+ * sub-identity; a base cert no longer covers its tags for authentication.
+ */
 function authorizesIdentity(claims, identity) {
-  const base = (id) => {
-    const at = id.lastIndexOf("@");
-    if (at < 0) return id;
-    const [local, domain] = [id.slice(0, at), id.slice(at + 1)];
-    return `${local.split("+")[0]}@${domain}`;
-  };
-  return (claims.identities ?? []).some((id) => id === identity || id === base(identity));
+  return (claims.identities ?? []).some((id) => id === identity);
 }

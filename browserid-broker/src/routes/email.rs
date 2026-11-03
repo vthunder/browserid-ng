@@ -462,6 +462,7 @@ pub struct CompleteEmailResponse {
 pub async fn complete_email_addition<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
+    headers: axum::http::HeaderMap,
     Json(req): Json<CompleteEmailRequest>,
 ) -> Result<Json<CompleteEmailResponse>, BrokerError>
 where
@@ -474,6 +475,8 @@ where
     // Session-mutating endpoint → require the CSRF token like every other one
     // (audit L7). The account page's `post()` helper already sends it.
     super::session::require_csrf(&session, &req.csrf)?;
+    // Per-IP cap on completion attempts (audit 2026-11, July C1 residual).
+    super::code_guard::completion_ip_allowed(&state, &headers)?;
 
     // Look up the pending record by its target email and verify the code with
     // the brute-force guard (binds the guess to one record, burns after N wrong

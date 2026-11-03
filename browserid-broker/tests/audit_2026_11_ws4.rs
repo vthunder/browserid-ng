@@ -110,8 +110,6 @@ async fn idp_device_cert(server: &TestServer, cookie: &str, body: Value) -> (u16
 /// well-formed holder on its certs — including the holder of another,
 /// already-approved device — and satisfy holder-pinned warrant matchers
 /// meant for that device.
-// AUDIT-2026-11 D3: fails today
-#[ignore]
 #[tokio::test]
 async fn d3_tenant_device_cert_does_not_take_a_caller_chosen_holder() {
     let (server, store) = tenant_server();
@@ -289,8 +287,6 @@ fn pin_sealed_tenant_key_is_bound_to_its_domain() {
 /// or `tenant/delete`. Adversary A4. Expected: a pending attempt by another
 /// account must not block the domain (expire pending rows, or let a fresh
 /// attempt replace a pending one and let DNS decide).
-// AUDIT-2026-11 W4-30: fails today
-#[ignore]
 #[tokio::test]
 async fn w4_30_pending_tenant_squat_does_not_block_the_domain_owner() {
     let ctx = create_test_context_customized(|state| {
@@ -355,8 +351,6 @@ async fn pin_pending_tenant_issues_nothing() {
 /// old password keeps issuing 90-day certs until the cookie expires. The
 /// roster's `Active` state IS re-read, so disabling works; the password
 /// reset does not.
-// AUDIT-2026-11 W4-31: fails today
-#[ignore]
 #[tokio::test]
 async fn w4_31_admin_password_reset_stops_an_open_idp_session_from_issuing() {
     let (server, store) = tenant_server();
@@ -419,8 +413,6 @@ async fn pin_roster_disable_stops_an_open_idp_session_from_issuing() {
 /// input contains a `.`), but the latent signing-confusion the July report
 /// flagged is back. Expected: a `typ` discriminator in the signed payload
 /// (or an HMAC under a derived cookie key, not the issuer key).
-// AUDIT-2026-11 W4-32: fails today
-#[ignore]
 #[tokio::test]
 async fn w4_32_idp_session_cookie_payload_carries_a_type_tag() {
     let (server, store) = tenant_server();
@@ -483,17 +475,14 @@ async fn fedcm_token(ctx: &TestContext, session: &str, email: &str) -> String {
     res.json::<Value>()["token"].as_str().unwrap().to_string()
 }
 
-/// Core §6.3 / fb §3.2: per-key status refs on both certs; S3 (decided):
-/// every warrant carries a status ref. The FedCM mint signs a throwaway
-/// config cert and the login warrant server-side with `status: None`, and
-/// registers the warrant with `status_idx: None` — so "forget this site"
-/// cannot revoke it. Mitigation today: the whole presentation lives 5 min
-/// (pinned below). Decision for Dan: accept as the documented FedCM
-/// exception (and say so in core §6.3), or allocate refs on the broker list.
-// AUDIT-2026-11 D19: fails today
-#[ignore]
+/// D19, decided Q20 (a): the FedCM mint's throwaway config cert and login
+/// warrant are the ONE documented exception to the per-key status refs of
+/// core §6.3 / fb §3.2 — they carry no ref because the whole presentation
+/// expires within five minutes (the pin below), so a ref would revoke
+/// nothing the expiry does not. This pin documents the exception; if the
+/// FedCM mint ever allocates refs (Q20 (b)), flip the assertions.
 #[tokio::test]
-async fn d19_fedcm_config_cert_and_warrant_carry_status_refs() {
+async fn d19_pin_fedcm_throwaway_objects_are_the_documented_status_ref_exception() {
     let ctx = common::create_test_context();
     let session = create_user(&ctx.server, &ctx.email_sender, "alice@example.com", "Password123!").await;
     let token = fedcm_token(&ctx, &session, "alice@example.com").await;
@@ -501,8 +490,8 @@ async fn d19_fedcm_config_cert_and_warrant_carry_status_refs() {
     assert_eq!(parts.len(), 4, "access~assertion~warrant~config");
     let warrant = Warrant::parse(parts[2]).unwrap();
     let config = DeviceCert::parse(parts[3]).unwrap();
-    assert!(config.claims().status.is_some(), "config cert has no status ref");
-    assert!(warrant.claims().status.is_some(), "login warrant has no status ref");
+    assert!(config.claims().status.is_none(), "throwaway config cert: documented exception (core §6.3)");
+    assert!(warrant.claims().status.is_none(), "throwaway login warrant: documented exception (core §6.3)");
 }
 
 /// Pin (passes today): the FedCM presentation is short-lived end to end —
@@ -696,8 +685,6 @@ async fn login_again(ctx: &TestContext, email: &str, password: &str) -> String {
 /// changes between the two legs, the proven identity attaches to the new
 /// session's account. Low today (no login-CSRF vector on the broker was
 /// found), but the recorded binding should be enforced or removed.
-// AUDIT-2026-11 W4-33: fails today
-#[ignore]
 #[tokio::test]
 async fn w4_33_oidc_attaches_to_the_session_that_began_the_claim() {
     let (ctx, mock) = oidc_context().await;
@@ -734,8 +721,6 @@ async fn w4_33_oidc_attaches_to_the_session_that_began_the_claim() {
 /// "a live bridge grant"; it does not say whose. Decision: bind the grant to
 /// the session that ran the ceremony (store the session id with it), or
 /// accept and document that a bridge proof is account-wide for 10 minutes.
-// AUDIT-2026-11 W4-34: fails today
-#[ignore]
 #[tokio::test]
 async fn w4_34_bridge_grant_is_redeemable_only_by_the_proving_session() {
     let (ctx, mock) = oidc_context().await;

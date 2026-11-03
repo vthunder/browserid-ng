@@ -626,7 +626,7 @@ async fn lookup(l: &Live, certs: &[(&str, &KeyPair)], identity: &str) -> (reqwes
 /// The broker's login page backend: the account password → one-time token.
 async fn login_token(l: &Live, account: &str, password: &str) -> (reqwest::StatusCode, Value) {
     let r = l.client.post(format!("{}/wsapi/registry_login", l.base))
-        .json(&json!({ "account": account, "password": password })).send().await.unwrap();
+        .json(&json!({ "account": account, "password": password, "return_origin": l.base })).send().await.unwrap();
     let status = r.status();
     (status, r.json().await.unwrap_or(json!(null)))
 }
@@ -1299,7 +1299,10 @@ async fn identity_proofs_log_a_device_in_after_masked_hints() {
     l.user_store.add_email_with_type(uid, second, true, EmailType::Secondary).unwrap();
     let (dc2, cc2, dkp2, ckp2) = issue_keys(&l, second).await;
     let p2 = presentation_from_pair(&l, second, &dkp2, &dc2, &ckp2, &cc2).await;
-    let post = |path: &str, body: Value| l.client.post(format!("{}{path}", l.base)).json(&body).send();
+    let post = |path: &str, mut body: Value| {
+        body["return_origin"] = json!(l.base);
+        l.client.post(format!("{}{path}", l.base)).json(&body).send()
+    };
 
     // Hints after one proof: the other identity, masked; the rule wants two.
     let r = post("/wsapi/registry_login_hints", json!({ "account": account, "presentations": [p1] })).await.unwrap();

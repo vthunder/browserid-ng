@@ -56,8 +56,18 @@ pub async fn buffer_body(req: Request, next: Next) -> Response {
         Err(_) => return ApiError::InvalidRequest("request body too large".into()).into_response(),
     };
     parts.extensions.insert(BodyHash(b64url_sha256(&bytes)));
+    // Log the matched route pattern, never the raw path: for
+    // `/api/v1/requests/:code` the path IS the filer's single-use pickup
+    // code, and for `/api/v1/approvals/:id` the approval id (audit 2026-11
+    // W7-10).
+    let route = parts
+        .extensions
+        .get::<axum::extract::MatchedPath>()
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_else(|| "<unmatched>".to_string());
+    let _ = path;
     let resp = next.run(Request::from_parts(parts, Body::from(bytes))).await;
-    tracing::info!(%method, %path, status = resp.status().as_u16(), "registry api");
+    tracing::info!(%method, route = %route, status = resp.status().as_u16(), "registry api");
     resp
 }
 

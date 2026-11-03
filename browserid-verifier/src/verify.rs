@@ -14,42 +14,100 @@ use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
 
-/// HTTP-based support document fetcher
+/// HTTP-based support document fetcher.
+///
+/// The target host is the DNS record's `host=` value — chosen by whoever
+/// signs the domain — and the fetch runs on every verification of a
+/// primary-issued bundle, so it follows the SSRF rules of spec §6.3 (audit
+/// 2026-11 W6-5): no redirects, only globally routable addresses (checked
+/// after resolution, production client), a connect/read timeout and a
+/// capped body. `allow_http()` (localhost dev and tests) keeps the
+/// redirect and size rules but admits loopback.
 pub struct HttpFetcher {
     client: Client,
     require_https: bool,
 }
 
+/// Largest support document the fetcher reads.
+pub const SUPPORT_DOCUMENT_MAX_BYTES: usize = 64 * 1024;
+
 impl HttpFetcher {
-    /// Create a new HTTP fetcher
-    pub fn new() -> Self {
-        let client = Client::builder()
+    fn client() -> Client {
+        Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(10))
             .build()
-            .expect("Failed to create HTTP client");
+            .expect("Failed to create HTTP client")
+    }
 
+    /// Create a new HTTP fetcher
+    pub fn new() -> Self {
         Self {
-            client,
+            client: Self::client(),
             require_https: true,
         }
     }
 
     /// Create a fetcher that allows HTTP (for testing/local development)
     pub fn allow_http() -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .expect("Failed to create HTTP client");
-
         Self {
-            client,
+            client: Self::client(),
             require_https: false,
         }
     }
+
+    /// Production rule: every address the host resolves to is globally
+    /// routable. (Resolution happens again inside reqwest; pinning the
+    /// checked address into the connection is a future hardening, as for
+    /// `validate_status_url`.)
+    fn check_public(&self, domain: &str) -> CoreResult<()> {
+        if !self.require_https {
+            return Ok(());
+        }
+        let url = reqwest::Url::parse(&format!("https://{domain}/")).map_err(|e| CoreError::DiscoveryFailed {
+            domain: domain.to_string(),
+            reason: format!("bad host: {e}"),
+        })?;
+        let host = url.host_str().ok_or_else(|| CoreError::DiscoveryFailed {
+            domain: domain.to_string(),
+            reason: "no host".into(),
+        })?;
+        let port = url.port_or_known_default().unwrap_or(443);
+        let addrs: Vec<std::net::SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))
+            .map_err(|e| CoreError::DiscoveryFailed {
+                domain: domain.to_string(),
+                reason: format!("resolve: {e}"),
+            })?
+            .collect();
+        if addrs.is_empty() {
+            return Err(CoreError::DiscoveryFailed { domain: domain.to_string(), reason: "did not resolve".into() });
+        }
+        if addrs.iter().any(|a| !is_global_ip(a.ip())) {
+            return Err(CoreError::DiscoveryFailed {
+                domain: domain.to_string(),
+                reason: "host resolves to a non-global address".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Read at most `SUPPORT_DOCUMENT_MAX_BYTES` of a response body.
+fn read_capped_blocking(mut response: reqwest::blocking::Response) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    let mut limited = (&mut response).take(SUPPORT_DOCUMENT_MAX_BYTES as u64 + 1);
+    limited.read_to_end(&mut buf)?;
+    if buf.len() > SUPPORT_DOCUMENT_MAX_BYTES {
+        return Err(std::io::Error::other(format!("support document exceeds {SUPPORT_DOCUMENT_MAX_BYTES} bytes")));
+    }
+    Ok(buf)
 }
 
 impl SupportDocumentFetcher for HttpFetcher {
     fn fetch(&self, domain: &str) -> CoreResult<SupportDocument> {
+        self.check_public(domain)?;
         // Try HTTPS first, then HTTP if allowed
         let https_url = format!("https://{}/.well-known/browserid", domain);
         let http_url = format!("http://{}/.well-known/browserid", domain);
@@ -88,7 +146,11 @@ impl SupportDocumentFetcher for HttpFetcher {
             });
         }
 
-        let doc: SupportDocument = response.json().map_err(|e| CoreError::DiscoveryFailed {
+        let bytes = read_capped_blocking(response).map_err(|e| CoreError::DiscoveryFailed {
+            domain: domain.to_string(),
+            reason: format!("read failed: {}", e),
+        })?;
+        let doc: SupportDocument = serde_json::from_slice(&bytes).map_err(|e| CoreError::DiscoveryFailed {
             domain: domain.to_string(),
             reason: format!("Invalid JSON: {}", e),
         })?;

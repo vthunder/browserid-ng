@@ -1,7 +1,7 @@
 // Hosted-primary device-authorization page (bean g5qt).
 //
 // The login dialog opens this in a popup with a URL fragment
-//   #email=…&device_pubkey=…&config_pubkey=…[&holder=…][&hold=1]
+//   #email=…&device_pubkey=…&config_pubkey=…[&hold=1]
 //     &return_origin=…[&return_url=…]
 // (never query — the fragment stays out of server logs). Here the tenant
 // user authenticates FIRST-PARTY with a password, this page calls the
@@ -20,7 +20,7 @@
   var email = params.get("email") || "";
   var devicePubkey = params.get("device_pubkey") || "";
   var configPubkey = params.get("config_pubkey") || "";
-  var holder = params.get("holder") || "";
+  // `holder` in the fragment is ignored: the issuer assigns it (fb §3.2).
   var hold = params.get("hold") === "1";
   var returnUrl = params.get("return_url") || "";
   var returnOriginRaw = params.get("return_origin") || "";
@@ -127,7 +127,6 @@
       email: email,
       device_pubkey: devicePubkey,
       config_pubkey: configPubkey,
-      holder: holder || undefined,
       return_origin: returnOriginRaw,
     }).then(function (res) {
       if (!res.ok || !res.body.success) {
@@ -152,11 +151,12 @@
       config_cert: certs.config_cert,
     });
     if (hold) {
-      // Keep open for a possible reissue hop under a corrected holder.
+      // Keep open for a possible reissue hop. The holder the dialog asks
+      // for is not honoured (the issuer assigns it, stable per device key);
+      // the re-issued certs carry the same holder as the first.
       window.addEventListener("message", function (ev) {
         if (ev.origin !== returnOrigin || !ev.data) return;
         if (ev.data.type === "browserid:reissue") {
-          holder = ev.data.holder || holder;
           issueCerts().then(function (c2) {
             post("browserid:device_certs", { device_cert: c2.device_cert, config_cert: c2.config_cert });
           }).catch(function (e) { post("browserid:device_error", { reason: String(e.message || e), device_pubkey: devicePubkey }); });

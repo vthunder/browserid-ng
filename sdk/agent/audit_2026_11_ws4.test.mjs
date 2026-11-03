@@ -131,7 +131,7 @@ test("the device cert must certify the held key and name the identity", async ()
 // IdP side moves (decision Q1), the SDK must refuse the same request locally
 // instead of minting into a server error.
 // ---------------------------------------------------------------------------
-test("D1 (client mirror): an auth cert for the base identity does not authorize a subaddress", { skip: "AUDIT-2026-11 D1: fails today" }, async () => {
+test("D1 (client mirror): an auth cert for the base identity does not authorize a subaddress", async () => {
   const { credential, http } = await provisioned();
   assert.throws(() => new DeviceAgent({ ...credential, identity: "alice+bot@idp.test" }, { http }), /does not authorize/);
 });

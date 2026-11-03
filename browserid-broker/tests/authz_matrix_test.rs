@@ -695,12 +695,11 @@ async fn warrant_request_needs_a_signature_by_the_agent_key() {
     drop(agent_kp);
 }
 
-/// AUDIT-2026-11 D8: fails today. Nothing on `/api/v1` answers 429. Thirty
-/// wrong `login_page` tokens against one account from one IP never trip a
-/// limiter (I28; the token is high-entropy, so this is amplification and
-/// policy, not takeover — see report).
+/// AUDIT-2026-11 D8: thirty wrong `login_page` tokens against one account
+/// from one IP trip the registry's failures-only login bucket (reg §3:
+/// `429 slow_down`; the token is high-entropy, so this is amplification
+/// and policy, not takeover — see report).
 #[tokio::test]
-#[ignore]
 async fn api_v1_login_guessing_is_throttled() {
     let r = rig();
     let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
@@ -847,10 +846,11 @@ async fn warrant_request_caps_grants_at_eight_and_rejects_duplicate_audiences() 
     assert_ne!(resp.status_code(), 200, "duplicate audiences accepted: {}", resp.text());
 }
 
-/// AUDIT-2026-11 W5-1: fails today. I18 says a poll faster than `interval`
-/// gets 429; the JIT lane answers 400 `slow_down`.
+/// AUDIT-2026-11 W5-1 (I18): a poll faster than `interval` gets 429
+/// (`RegistrarError::PollTooFast`), not 400 `slow_down`. The registrar
+/// change lands with bean 0fy3 (fix-registrar's branch); this goes green
+/// once the two branches merge.
 #[tokio::test]
-#[ignore]
 async fn poll_too_fast_is_429() {
     let r = rig();
     let _cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
@@ -862,11 +862,9 @@ async fn poll_too_fast_is_429() {
     assert_eq!(second.status_code(), 429, "fast poll: {} {}", second.status_code(), second.text());
 }
 
-/// AUDIT-2026-11 W5-2: fails today. The hosted-primary password endpoint
-/// `/idp/login` has no throttle (July M6 covered only the broker login), so
-/// a tenant roster password can be guessed online, bounded by bcrypt alone.
+/// AUDIT-2026-11 W5-2: the hosted-primary password endpoint `/idp/login`
+/// is throttled per client IP like the broker login (July M6).
 #[tokio::test]
-#[ignore]
 async fn idp_login_is_throttled() {
     let r = rig();
     let ks = KeystoreKey::from_env_value(&"ab".repeat(32)).unwrap();
@@ -987,11 +985,8 @@ async fn policy_put_is_owner_only_and_only_tightens() {
 
 /// AUDIT-2026-11 W5-10: fails today. Reg §4.2 (amended): the login-page
 /// token is delivered only to an accepted return origin, and "the check
-/// lives in the handler that mints the token". `/wsapi/registry_login`
-/// takes no return origin at all — a foreign one rides along unexamined
-/// and the token is minted.
+/// lives in the handler that mints the token" (reg §4.2, fb §3.1).
 #[tokio::test]
-#[ignore]
 async fn registry_login_token_minting_checks_the_return_origin() {
     let r = rig();
     let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;

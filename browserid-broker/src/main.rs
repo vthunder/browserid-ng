@@ -10,8 +10,8 @@ use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use browserid_broker::{
-    load_or_generate_keypair, routes, AppState, Config, ConsoleEmailSender, EmailSender,
-    SmtpConfig, SmtpEmailSender, SqliteStore,
+    choose_sender, load_or_generate_keypair, routes, AppState, Config, ConsoleEmailSender, EmailSender,
+    SenderChoice, SmtpConfig, SmtpEmailSender, SqliteStore,
 };
 
 #[tokio::main]
@@ -46,6 +46,19 @@ async fn main() -> Result<()> {
     let config = Config::from_env();
     tracing::info!(?config, "Loaded configuration");
 
+    // How many fronting proxies append to X-Forwarded-For (default 1: dokku's
+    // nginx). Every per-IP throttle keys on the hop they appended; `0` means
+    // the broker is reached directly and the peer address is the client.
+    let trusted_proxies: usize = match std::env::var("TRUSTED_PROXIES") {
+        Ok(v) => v
+            .trim()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("TRUSTED_PROXIES must be a small non-negative integer, got {v:?}"))?,
+        Err(_) => browserid_broker::routes::DEFAULT_TRUSTED_PROXIES,
+    };
+    browserid_broker::routes::set_trusted_proxies(trusted_proxies);
+    tracing::info!(trusted_proxies, "Client addresses taken from the trusted X-Forwarded-For hop");
+
     // Load or generate keypair
     let keypair = load_or_generate_keypair(&config.key_file)?;
     tracing::info!(
@@ -58,16 +71,26 @@ async fn main() -> Result<()> {
     let store = Arc::new(store);
     tracing::info!(path = %config.database_path, "Opened database");
 
-    // Create email sender (SMTP if configured, otherwise console)
-    let email_sender: Box<dyn EmailSender> = if let Some(smtp_config) = SmtpConfig::from_env() {
-        tracing::info!("Using SMTP email sender");
-        Box::new(
-            SmtpEmailSender::new(smtp_config)
-                .map_err(|e| anyhow::anyhow!("Failed to create SMTP sender: {}", e))?,
-        )
-    } else {
-        tracing::info!("Using console email sender (set SMTP_HOST to enable real emails)");
-        Box::new(ConsoleEmailSender::new())
+    // Create email sender: SMTP when configured; the console sender (which
+    // prints codes into the log) only in dev, or when asked for explicitly
+    // with EMAIL_SENDER=console. A production domain without SMTP refuses
+    // to start (audit 2026-11 W7-12).
+    let smtp_config = SmtpConfig::from_env();
+    let email_sender_env = std::env::var("EMAIL_SENDER").ok();
+    let choice = choose_sender(&config.domain, smtp_config.is_some(), email_sender_env.as_deref(), disable_smtp)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let email_sender: Box<dyn EmailSender> = match (choice, smtp_config) {
+        (SenderChoice::Smtp, Some(smtp_config)) => {
+            tracing::info!("Using SMTP email sender");
+            Box::new(
+                SmtpEmailSender::new(smtp_config)
+                    .map_err(|e| anyhow::anyhow!("Failed to create SMTP sender: {}", e))?,
+            )
+        }
+        _ => {
+            tracing::warn!("Using console email sender: verification codes are printed to stdout (dev only)");
+            Box::new(ConsoleEmailSender::new())
+        }
     };
 
     // Create app state
@@ -237,7 +260,11 @@ async fn main() -> Result<()> {
     tracing::info!("Broker listening on http://{}", addr);
     tracing::info!("Support document at http://{}/.well-known/browserid", config.domain);
 
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

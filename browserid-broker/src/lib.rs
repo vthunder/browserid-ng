@@ -26,7 +26,7 @@ pub mod verifier;
 
 pub use config::{load_or_generate_keypair, Config};
 pub use dns_fetcher::DnsFetcher;
-pub use email::{ConsoleEmailSender, EmailSender, SmtpConfig, SmtpEmailSender};
+pub use email::{choose_sender, ConsoleEmailSender, EmailSender, SenderChoice, SmtpConfig, SmtpEmailSender};
 pub use fallback_fetcher::{Discoverer, FallbackFetcher, FallbackResult};
 pub use state::AppState;
 pub use store::{

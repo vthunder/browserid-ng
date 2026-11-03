@@ -43,7 +43,7 @@ pub async fn api_login_with_key(server: &TestServer, cookie: &str, password: &st
     let origin = browserid_registrar::consent::public_origin(&domain);
     let t: Value = server
         .post("/wsapi/registry_login")
-        .json(&json!({ "account": account, "password": password }))
+        .json(&json!({ "account": account, "password": password, "return_origin": origin }))
         .await
         .json();
     let token = t["login"].as_str().unwrap_or_else(|| panic!("registry_login: {t}")).to_string();

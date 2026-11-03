@@ -1190,15 +1190,16 @@ async function pvApproveIdentity(mode) {
         status.textContent = 'Waiting for your identity provider…';
         // ONE hop shape for every mode: a standard user-mode visit with the
         // AGENT's key as the device key and the broker-assigned holder. The
-        // cert names the SESSION identity; the protocol's subaddress rule
-        // (base identity covers its +tags) authorizes a named agent, and the
-        // warrant pins the exact identity it may present as. The paired
-        // config key is a fresh keystore key — deposited below when this
-        // browser lacked a config cert (the permission screen signs with it),
-        // discarded otherwise.
+        // cert names the AGENT identity — the base for an as-you agent, the
+        // `base+tag` sub-identity for a named one (spec §4.6: an auth cert
+        // mints exactly, so a named agent needs its own; the IdP issues it
+        // because the session owns the base). The paired config key is a
+        // fresh keystore key — the IdP pairs it with a config cert for the
+        // BASE identity, deposited below when this browser lacked one (the
+        // permission screen signs with it), discarded otherwise.
         const k = await window.Keystore.generate();
         const hopReq = { keys: k, configPubkey: k.publicKeyX };
-        const res = await agentCertPopupFlow(popup, ai.device_auth, identityEmail, pv.pubkey, prep.holder, null, hopReq);
+        const res = await agentCertPopupFlow(popup, ai.device_auth, agentEmail, pv.pubkey, prep.holder, null, hopReq);
         popup = null; // closed by the flow
         deviceCert = res.device_cert;
         if (!configFor(identityEmail) && res.user_config_cert) {

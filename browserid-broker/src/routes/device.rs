@@ -76,6 +76,7 @@ const BROKER_VOUCHED_CERT_TTL_DAYS: i64 = 90;
 fn mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
     state: &AppState<U, S, E>,
     user_id: crate::store::UserId,
+    grant_session: Option<&str>,
     email: &str,
     decide: impl FnOnce(&crate::store::Email) -> Result<crate::mint::MintDecision, BrokerError>,
 ) -> Result<(String, Duration, &'static str), BrokerError> {
@@ -109,7 +110,13 @@ fn mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
             ))
         }
         crate::mint::MintDecision::Delegate(_) => {
-            match state.take_bridge_grant(user_id, &rec.email) {
+            // The grant belongs to the session that ran the bridge (W4-34);
+            // a caller with no cookie session redeems only an unbound one.
+            let grant = match grant_session {
+                Some(sid) => state.take_bridge_grant_for_session(user_id, &rec.email, sid),
+                None => state.take_bridge_grant(user_id, &rec.email),
+            };
+            match grant {
                 Some(ttl) => Ok((rec.email.clone(), ttl, prov)),
                 None => Err(BrokerError::PolicyRefused(
                     "a live bridge proof is required to mint this address".into(),
@@ -131,7 +138,7 @@ fn owned_mintable_email<U: UserStore, S: SessionStore, E: EmailSender>(
         .ok_or(BrokerError::NotAuthenticated)?;
     super::session::require_csrf(&session, csrf)?;
     let level = session.level;
-    mintable_email(state, session.user_id, email, |rec| Ok(crate::mint::authorize_mint(rec, level)))
+    mintable_email(state, session.user_id, Some(&session.id.0), email, |rec| Ok(crate::mint::authorize_mint(rec, level)))
 }
 
 fn device_status<U: UserStore, S: SessionStore, E: EmailSender>(
@@ -279,7 +286,7 @@ where
         }
         IssueCaller::Key { user_id, key } => {
             let store = state.user_store.as_ref();
-            let (email, ttl, prov) = mintable_email(&state, *user_id, &req.email, |rec| {
+            let (email, ttl, prov) = mintable_email(&state, *user_id, None, &req.email, |rec| {
                 let met = crate::account_auth::mint_rule_met(store, *user_id, key, &rec.email)?;
                 Ok(crate::mint::authorize_mint_on_login_key(rec, met))
             })?;
@@ -377,7 +384,7 @@ where
         _ => None,
     };
     if let IssueCaller::Key { key, .. } = &caller {
-        tracing::info!(kid = %key.kid, %email, "device/issue: minted on a login key");
+        tracing::info!(kid = %key.kid, identity = %crate::crypto::log_id(&email), "device/issue: minted on a login key");
     }
     Ok(Json(DeviceIssueResponse {
         success: true,

@@ -252,11 +252,27 @@ async fn agent_subaddress_mints_against_its_base_roster_user() {
     let (cookie, _) = idp_login(&server, &email, "correcthorse").await;
     let device_kp = KeyPair::generate();
     let config_kp = KeyPair::generate();
-    let issued: Value = server
+    // Spec §4.6 (audit 2026-11 D1, bean 0246): an auth cert mints exactly, so
+    // the agent needs its OWN auth cert naming `bob+poster` — issued by the
+    // hosted IdP because the session owns `bob`. The base cert does not cover it.
+    let base_issued: Value = server
         .post("/idp/device_cert")
-        .add_cookie(cookie::Cookie::new("idp_session", cookie))
+        .add_cookie(cookie::Cookie::new("idp_session", cookie.clone()))
         .json(&json!({
             "email": email,
+            "device_pubkey": KeyPair::generate().public_key().to_base64(),
+            "config_pubkey": KeyPair::generate().public_key().to_base64(),
+        }))
+        .await
+        .json();
+    assert_eq!(base_issued["success"], true, "{base_issued}");
+    let base_cert = DeviceCert::parse(base_issued["device_cert"].as_str().unwrap()).unwrap();
+    assert!(!base_cert.authorizes_identity(&agent), "a base auth cert must not cover the +tag agent");
+    let issued: Value = server
+        .post("/idp/device_cert")
+        .add_cookie(cookie::Cookie::new("idp_session", cookie.clone()))
+        .json(&json!({
+            "email": agent,
             "device_pubkey": device_kp.public_key().to_base64(),
             "config_pubkey": config_kp.public_key().to_base64(),
         }))
@@ -264,8 +280,25 @@ async fn agent_subaddress_mints_against_its_base_roster_user() {
         .json();
     assert_eq!(issued["success"], true, "{issued}");
     let device_cert = DeviceCert::parse(issued["device_cert"].as_str().unwrap()).unwrap();
-    // The base device cert covers the agent subaddress (RFC 5233).
+    assert_eq!(device_cert.claims().identities, vec![agent.clone()], "the auth cert names the agent identity");
     assert!(device_cert.authorizes_identity(&agent));
+    assert!(!device_cert.authorizes_identity(&email), "the agent cert does not cover the base identity");
+    // The paired config cert is the OWNER's (base + its sub-addresses).
+    let config_cert = DeviceCert::parse(issued["config_cert"].as_str().unwrap()).unwrap();
+    assert_eq!(config_cert.claims().identities[0], email);
+    // Someone else's base, a bad tag, or a second `+` are refused.
+    for bad in [format!("alice+poster@{TENANT}"), format!("bob+@{TENANT}"), format!("bob+a+b@{TENANT}"), format!("bob+po ster@{TENANT}")] {
+        let r = server
+            .post("/idp/device_cert")
+            .add_cookie(cookie::Cookie::new("idp_session", cookie.clone()))
+            .json(&json!({
+                "email": bad,
+                "device_pubkey": KeyPair::generate().public_key().to_base64(),
+                "config_pubkey": KeyPair::generate().public_key().to_base64(),
+            }))
+            .await;
+        assert_ne!(r.status_code(), 200, "{bad} issued: {}", r.text());
+    }
 
     // Mint an access cert AS THE AGENT subaddress: the roster check resolves
     // `bob+poster` to roster user `bob`, so it succeeds.
@@ -335,8 +368,9 @@ async fn managed_tenant_agent_subaddress_mints_per_audience() {
     let email = format!("dan@{TENANT}");
     let agent = format!("dan+poster@{TENANT}");
 
-    // The device cert the agent holds is issued by the user-mode hop: it
-    // names the SESSION (base) identity but is over the agent's key.
+    // The device cert the agent holds is issued by the user-mode hop under
+    // the owner's session: it names the AGENT sub-identity (spec §4.6, bean
+    // 0246) over the agent's key.
     let (cookie, _) = idp_login(&server, &email, "hunter2secret").await;
     let device_kp = KeyPair::generate();
     let config_kp = KeyPair::generate();
@@ -344,7 +378,7 @@ async fn managed_tenant_agent_subaddress_mints_per_audience() {
         .post("/idp/device_cert")
         .add_cookie(cookie::Cookie::new("idp_session", cookie))
         .json(&json!({
-            "email": email,
+            "email": agent,
             "device_pubkey": device_kp.public_key().to_base64(),
             "config_pubkey": config_kp.public_key().to_base64(),
         }))
@@ -355,7 +389,8 @@ async fn managed_tenant_agent_subaddress_mints_per_audience() {
     // The managed marker MUST be present — its absence is exactly what makes
     // the agent SDK skip the audience and the mint reject "audience required".
     assert_eq!(device_cert.claims().managed, Some(true), "agent device cert must be managed");
-    assert!(device_cert.authorizes_identity(&agent), "base cert covers the +tag agent");
+    assert_eq!(device_cert.claims().identities, vec![agent.clone()], "the auth cert names the +tag agent");
+    assert!(!device_cert.authorizes_identity(&email), "the agent cert does not cover the base");
 
     // The agent mints a per-audience access cert (what DeviceAgent.mint does
     // for a managed identity) naming its +tag subaddress.

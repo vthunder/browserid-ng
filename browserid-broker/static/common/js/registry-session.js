@@ -214,7 +214,7 @@
       // This registry's own page: its check is the account password, which
       // the page has just collected — post it straight to the page's
       // backend rather than rendering the page.
-      var lr = await postRaw("/wsapi/registry_login", JSON.stringify({ account: acct, password: password }), {});
+      var lr = await postRaw("/wsapi/registry_login", JSON.stringify({ account: acct, password: password, return_origin: window.location.origin }), {});
       if (!(lr.ok && lr.data.login)) throw error(lr, "/wsapi/registry_login");
       earned = lr.data.login;
     } else if (url.origin === window.location.origin && proveIdentities) {

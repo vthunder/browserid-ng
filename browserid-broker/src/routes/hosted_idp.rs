@@ -105,21 +105,63 @@ fn tenant_keypair<U: UserStore, S: SessionStore, E: EmailSender>(
         .map_err(|e| BrokerError::Internal(format!("tenant key unseal: {e}")))
 }
 
+/// The holder the hosted lane assigns a tenant user's device: namespace
+/// `<8 chars>` per (tenant, local part), suffix `<10 chars>` per device key,
+/// both derived from the tenant's secret signing key so neither is a
+/// caller's choice nor guessable from public data.
+fn assigned_holder(keypair: &browserid_core::KeyPair, tenant_id: u64, local: &str, device_pub: &PublicKey) -> String {
+    use sha2::{Digest, Sha256};
+    let secret = keypair.secret_bytes();
+    let mut h = Sha256::new();
+    h.update(b"browserid-hosted-holder-ns\0");
+    h.update(secret);
+    h.update(tenant_id.to_le_bytes());
+    h.update(local.to_lowercase().as_bytes());
+    let ns = URL_SAFE_NO_PAD.encode(h.finalize());
+    let mut h = Sha256::new();
+    h.update(b"browserid-hosted-holder-dev\0");
+    h.update(secret);
+    h.update(device_pub.to_base64().as_bytes());
+    let dev = URL_SAFE_NO_PAD.encode(h.finalize());
+    // Holder ids are `<prefix>.<suffix>` of URL-safe characters; `-`/`_`
+    // are fine for a holder but keep the alphabet to alphanumerics like
+    // `crypto::random_token` does.
+    let clean = |s: &str, n: usize| s.chars().filter(|c| c.is_ascii_alphanumeric()).take(n).collect::<String>();
+    format!("{}.{}", clean(&ns, 8), clean(&dev, 10))
+}
+
 // --- Tenant-user session cookie: stateless, signed by the broker key ------
-// Value: b64url(json{email, exp, mc}) + "." + b64url(sig). `mc` =
-// must-change-password: the session exists (so the page can drive the change
-// form) but cert issuance is refused until the password is changed.
+// Value: b64url(json{typ, email, exp, mc, pe}) + "." + b64url(sig).
+// `typ` = "idp-session": the signed payload names what it is, so no other
+// root-key signature (every other one is a JWS) can be confused with it
+// (audit 2026-11 W4-32). `mc` = must-change-password: the session exists (so
+// the page can drive the change form) but cert issuance is refused until the
+// password is changed. `pe` = the password epoch the session was opened
+// under (a hash of the roster password hash): issuance re-reads the roster
+// and refuses when the password has since been reset (W4-31), and re-reads
+// `mc` from the roster rather than trusting the cookie's copy.
+
+const IDP_COOKIE_TYP: &str = "idp-session";
+
+/// The password epoch of a roster entry: changes whenever its password
+/// hash does. A hash prefix, never the hash itself.
+fn password_epoch(password_hash: &str) -> String {
+    browserid_registrar::session::b64url_sha256_pub(password_hash.as_bytes())[..16].to_string()
+}
 
 fn issue_idp_cookie<U: UserStore, S: SessionStore, E: EmailSender>(
     state: &AppState<U, S, E>,
     cookies: &Cookies,
     email: &str,
     must_change: bool,
+    password_hash: &str,
 ) {
     let claims = json!({
+        "typ": IDP_COOKIE_TYP,
         "email": email,
         "exp": (Utc::now() + Duration::seconds(IDP_SESSION_SECONDS)).timestamp(),
         "mc": must_change,
+        "pe": password_epoch(password_hash),
     })
     .to_string();
     let payload = URL_SAFE_NO_PAD.encode(claims.as_bytes());
@@ -133,11 +175,12 @@ fn issue_idp_cookie<U: UserStore, S: SessionStore, E: EmailSender>(
     cookies.add(cookie);
 }
 
-/// (email, must_change) from a valid, unexpired idp session cookie.
+/// A valid, unexpired idp session cookie: (email, must_change as recorded
+/// at login, password epoch). Issuance must go through `idp_session_live`.
 fn idp_session<U: UserStore, S: SessionStore, E: EmailSender>(
     state: &AppState<U, S, E>,
     cookies: &Cookies,
-) -> Option<(String, bool)> {
+) -> Option<(String, bool, String)> {
     let raw = cookies.get(IDP_COOKIE)?.value().to_string();
     let (payload, sig) = raw.rsplit_once('.')?;
     let sig = URL_SAFE_NO_PAD.decode(sig).ok()?;
@@ -148,13 +191,34 @@ fn idp_session<U: UserStore, S: SessionStore, E: EmailSender>(
         .ok()?;
     let claims: serde_json::Value =
         serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).ok()?).ok()?;
+    if claims.get("typ")?.as_str()? != IDP_COOKIE_TYP {
+        return None;
+    }
     if claims.get("exp")?.as_i64()? < Utc::now().timestamp() {
         return None;
     }
     Some((
         claims.get("email")?.as_str()?.to_string(),
         claims.get("mc")?.as_bool().unwrap_or(false),
+        claims.get("pe")?.as_str()?.to_string(),
     ))
+}
+
+/// The session's roster entry as it is NOW: the cookie's email must still
+/// be an active roster entry of an active tenant whose password has not
+/// changed since login (W4-31). Returns (email, must_change from the roster).
+fn idp_session_live<U: UserStore, S: SessionStore, E: EmailSender>(
+    state: &AppState<U, S, E>,
+    cookies: &Cookies,
+) -> Option<(String, bool)> {
+    let (email, _mc_at_login, epoch) = idp_session(state, cookies)?;
+    let (local, domain) = split_email(&email)?;
+    let tenant = active_tenant(state.user_store.as_ref(), &domain).ok()?;
+    let entry = state.user_store.get_roster_entry(tenant.id, &local).ok().flatten()?;
+    if entry.state != RosterState::Active || password_epoch(&entry.password_hash) != epoch {
+        return None;
+    }
+    Some((email, entry.must_change_password))
 }
 
 // ---------------------------------------------------------------------------
@@ -183,9 +247,61 @@ pub struct IdpLoginRequest {
     pub password: String,
 }
 
+/// The roster password check shared by `/idp/login` and `/idp/password`
+/// (audit 2026-11 W5-2): throttled per client IP like the broker login
+/// (`login_attempts`, key `idp|<ip>`, 429 at the cap), and constant-shape —
+/// a missing tenant, a missing or disabled roster entry and a wrong
+/// password all cost one bcrypt verification (against a dummy hash when
+/// there is no real one), so timing tells the caller nothing about which.
+/// Returns the active entry on success; `Err(429)` or `Err(401)` otherwise,
+/// the latter already counted against the IP.
+fn check_roster_password<U: UserStore, S: SessionStore, E: EmailSender>(
+    state: &AppState<U, S, E>,
+    headers: &axum::http::HeaderMap,
+    email: &str,
+    password: &str,
+) -> Result<(String, String, Tenant, crate::store::RosterEntry), (StatusCode, Json<serde_json::Value>)> {
+    let ip = super::auth::client_ip(headers);
+    let key = format!("idp|{ip}");
+    if super::auth::login_throttled(state, &key) {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({"success": false, "reason": "too many attempts; try again later"})),
+        ));
+    }
+    let fail = || {
+        super::auth::record_login_failure(state, &key);
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"success": false, "reason": "invalid email or password"})),
+        )
+    };
+    let parsed = split_email(email);
+    let found = parsed.as_ref().and_then(|(local, domain)| {
+        let tenant = active_tenant(state.user_store.as_ref(), domain).ok()?;
+        let entry = state.user_store.get_roster_entry(tenant.id, local).ok().flatten()?;
+        Some((tenant, entry))
+    });
+    // One bcrypt verification on every path.
+    let hash = match &found {
+        Some((_, entry)) if entry.state == RosterState::Active && !entry.password_hash.is_empty() => {
+            entry.password_hash.as_str()
+        }
+        _ => super::auth::dummy_password_hash(),
+    };
+    let ok = crate::crypto::verify_password(password, hash).unwrap_or(false);
+    match (parsed, found) {
+        (Some((local, domain)), Some((tenant, entry))) if ok && entry.state == RosterState::Active => {
+            Ok((local, domain, tenant, entry))
+        }
+        _ => Err(fail()),
+    }
+}
+
 pub async fn idp_login<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
+    headers: axum::http::HeaderMap,
     Json(req): Json<IdpLoginRequest>,
 ) -> (StatusCode, Json<serde_json::Value>)
 where
@@ -193,29 +309,12 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    let fail = || {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"success": false, "reason": "invalid email or password"})),
-        )
+    let (local, domain, tenant, entry) = match check_roster_password(state.as_ref(), &headers, &req.email, &req.password) {
+        Ok(v) => v,
+        Err(e) => return e,
     };
-    let Some((local, domain)) = split_email(&req.email) else {
-        return fail();
-    };
-    let Ok(tenant) = active_tenant(state.user_store.as_ref(), &domain) else {
-        return fail();
-    };
-    let Ok(Some(entry)) = state.user_store.get_roster_entry(tenant.id, &local) else {
-        return fail();
-    };
-    if entry.state != RosterState::Active {
-        return fail();
-    }
-    if !crate::crypto::verify_password(&req.password, &entry.password_hash).unwrap_or(false) {
-        return fail();
-    }
     let email = format!("{local}@{domain}");
-    issue_idp_cookie(state.as_ref(), &cookies, &email, entry.must_change_password);
+    issue_idp_cookie(state.as_ref(), &cookies, &email, entry.must_change_password, &entry.password_hash);
     let _ = state.user_store.touch_roster_login(tenant.id, &local);
     (
         StatusCode::OK,
@@ -240,7 +339,7 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    match idp_session(state.as_ref(), &cookies) {
+    match idp_session_live(state.as_ref(), &cookies) {
         Some((email, mc)) => Json(json!({"email": email, "must_change_password": mc})),
         None => Json(json!({"email": null})),
     }
@@ -263,6 +362,7 @@ pub struct IdpPasswordRequest {
 pub async fn idp_password<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
+    headers: axum::http::HeaderMap,
     Json(req): Json<IdpPasswordRequest>,
 ) -> (StatusCode, Json<serde_json::Value>)
 where
@@ -270,12 +370,6 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    let fail = || {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"success": false, "reason": "invalid email or password"})),
-        )
-    };
     if req.new_password.len() < 8 {
         return (
             StatusCode::BAD_REQUEST,
@@ -288,21 +382,11 @@ where
             Json(json!({"success": false, "reason": "new password too long (maximum 80 characters)"})),
         );
     }
-    let Some((local, domain)) = split_email(&req.email) else {
-        return fail();
-    };
-    let Ok(tenant) = active_tenant(state.user_store.as_ref(), &domain) else {
-        return fail();
-    };
-    let Ok(Some(entry)) = state.user_store.get_roster_entry(tenant.id, &local) else {
-        return fail();
-    };
-    if entry.state != RosterState::Active
-        || !crate::crypto::verify_password(&req.current_password, &entry.password_hash)
-            .unwrap_or(false)
-    {
-        return fail();
-    }
+    let (local, domain, tenant, _entry) =
+        match check_roster_password(state.as_ref(), &headers, &req.email, &req.current_password) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
     let Ok(hash) = crate::crypto::hash_password(&req.new_password) else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -320,7 +404,7 @@ where
         );
     }
     let email = format!("{local}@{domain}");
-    issue_idp_cookie(state.as_ref(), &cookies, &email, false);
+    issue_idp_cookie(state.as_ref(), &cookies, &email, false, &hash);
     (StatusCode::OK, Json(json!({"success": true, "email": email})))
 }
 
@@ -334,8 +418,10 @@ pub struct IdpDeviceCertRequest {
     pub email: String,
     pub device_pubkey: String,
     pub config_pubkey: String,
-    /// Passthrough holder from the dialog; absent = cold login, self-assign.
+    /// Accepted and ignored (older dialogs send the browser's holder): the
+    /// issuer assigns the holder (fb §3.2 / §7.4; audit 2026-11 D3).
     #[serde(default)]
+    #[allow(dead_code)]
     pub holder: Option<String>,
     /// The wallet's `return_origin` (fallback-idp-api-v1 §3.1); see
     /// `DeviceIssueRequest::return_origin`.
@@ -355,8 +441,13 @@ where
 {
     let err = |code: StatusCode, reason: String| (code, Json(json!({"success": false, "reason": reason})));
 
-    let Some((session_email, must_change)) = idp_session(state.as_ref(), &cookies) else {
+    if idp_session(state.as_ref(), &cookies).is_none() {
         return err(StatusCode::UNAUTHORIZED, "not signed in".into());
+    }
+    // Live, not the cookie's snapshot: an admin password reset or a
+    // disable since login ends the session's issuing (W4-31).
+    let Some((session_email, must_change)) = idp_session_live(state.as_ref(), &cookies) else {
+        return err(StatusCode::FORBIDDEN, "session no longer valid; sign in again".into());
     };
     if must_change {
         return err(StatusCode::FORBIDDEN, "password change required".into());
@@ -365,8 +456,21 @@ where
         return err(StatusCode::BAD_REQUEST, "invalid email".into());
     };
     let email = format!("{local}@{domain}");
-    if email != session_email {
+    // The identity the AUTHENTICATION cert names: the session's own base
+    // identity, or one of its `+tag` sub-identities (spec §4.6, bean 0246):
+    // an auth cert mints exactly, so a named agent `base+tag@tenant` needs
+    // its own auth cert, which the owner of `base@tenant` may have issued
+    // over the agent's key. The tag follows the agent-name rules.
+    let base = base_local(&local);
+    let base_email = format!("{base}@{domain}");
+    if base_email != session_email {
         return err(StatusCode::FORBIDDEN, "signed-in identity does not match".into());
+    }
+    if local != base {
+        let tag = &local[base.len() + 1..];
+        if tag.is_empty() || local.matches('+').count() != 1 || !browserid_registrar::registry::valid_agent_name(&local) {
+            return err(StatusCode::BAD_REQUEST, "invalid agent sub-identity".into());
+        }
     }
     if let Some(ro) = req.return_origin.as_deref().filter(|s| !s.trim().is_empty()) {
         if !state.return_origin_accepted(ro, &state.idp_host) {
@@ -377,7 +481,7 @@ where
         Ok(t) => t,
         Err(e) => return err(StatusCode::FORBIDDEN, e.to_string()),
     };
-    match state.user_store.get_roster_entry(tenant.id, &local) {
+    match state.user_store.get_roster_entry(tenant.id, base) {
         Ok(Some(entry)) if entry.state == RosterState::Active => {}
         _ => return err(StatusCode::FORBIDDEN, "roster entry is not active".into()),
     }
@@ -392,19 +496,25 @@ where
         (Ok(d), Ok(c)) => (d, c),
         (Err(e), _) | (_, Err(e)) => return err(StatusCode::BAD_REQUEST, format!("bad pubkey: {e}")),
     };
-    // Holder: verbatim passthrough (the dialog supplies the browser's stable
-    // holder, and the reissue hop supplies a corrected one), else self-assign
-    // a standalone `<prefix>.<rand>` exactly like a cold fallback login.
-    let holder_str = req
-        .holder
-        .clone()
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| {
-            crate::crypto::assign_holder_id(&crate::crypto::generate_namespace_prefix())
-        });
+    // Holder: issuer-assigned, never the caller's (fb §3.2, §7.4; audit
+    // 2026-11 D3). A tenant user has no broker account namespace, so the
+    // hosted lane keeps one per roster entry, derived from the tenant's
+    // secret key, and binds the suffix to the device key: the same device
+    // re-issued (the dialog's reissue hop) gets the same holder, two devices
+    // get two, and nobody can stamp another device's holder on their certs.
+    // One exception, still issuer-side: the co-located registrar's
+    // agent-provision `prepare` assigned a holder for THIS device key (the
+    // page's primary hop, bean 0246). That holder was chosen by the broker,
+    // not the page, so it is honoured — iff it matches the registrar's
+    // record for the key. Anything else the page sends is ignored.
+    let prepared = browserid_registrar::agent_provision::prepared_holder_for_pubkey(&device_pub.to_base64());
+    let holder_str = match (req.holder.as_deref().filter(|h| !h.is_empty()), prepared) {
+        (Some(sent), Some(prepared)) if sent == prepared => prepared,
+        _ => assigned_holder(&keypair, tenant.id, base, &device_pub),
+    };
     let holder = match browserid_core::device::Holder::new(holder_str) {
         Ok(h) => h,
-        Err(e) => return err(StatusCode::BAD_REQUEST, format!("holder: {e}")),
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("holder: {e}")),
     };
     // Per-device status refs on the TENANT's list.
     let status_for = |pubkey: &PublicKey| -> Result<StatusRef, BrokerError> {
@@ -429,7 +539,11 @@ where
         .and_then(|m| m.device_cert_ttl)
         .map(Duration::seconds)
         .unwrap_or_else(|| Duration::days(DEVICE_CERT_VALIDITY_DAYS));
-    let config_identities = vec![email.clone(), format!("{local}+*@{domain}")];
+    // The AUTHORIZATION (config) cert names the session's BASE identity and
+    // its sub-addresses (spec §4.6: a config cert for `base` may sign for
+    // `base+tag` grantors) — also when the auth cert is a sub-identity's, so
+    // the owner's browser keeps one config cert for the base identity.
+    let config_identities = vec![base_email.clone(), format!("{base}+*@{domain}")];
     // Managed marker (spec §4.7): stamped on EVERY device cert of a managed
     // identity, before the mint ever applies constraints — the durable,
     // issuance-time signal that drives UA disclosure.
@@ -467,7 +581,7 @@ where
         (Ok(d), Ok(c)) => (d, c),
         (Err(e), _) | (_, Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("cert: {e}")),
     };
-    tracing::info!(email = %email, tenant = %tenant.domain, "hosted primary: issued device + config certs");
+    tracing::info!(identity = %crate::crypto::log_id(&email), tenant = %tenant.domain, "hosted primary: issued device + config certs");
     (
         StatusCode::OK,
         Json(json!({
@@ -546,8 +660,9 @@ where
     // The roster stays authoritative at mint time: a disabled (or vanished)
     // user stops minting immediately, bounding a live session by the access
     // cert's 24h TTL even without touching the status list. An agent identity
-    // (`dan+poster`) is checked against its base roster user (`dan`) — the
-    // device cert already proved the base authorizes the subaddress.
+    // (`dan+poster`) is checked against its base roster user (`dan`); its
+    // auth cert names the sub-identity exactly (spec §4.6, bean 0246), which
+    // `authorizes_identity` above already required.
     if let Some((local, _)) = split_email(&c.identity) {
         match state.user_store.get_roster_entry(tenant.id, base_local(&local))? {
             Some(entry) if entry.state == RosterState::Active => {}
@@ -779,6 +894,40 @@ pub struct TenantCreateRequest {
 /// record, ties the tenant to the onboarding account (owner), and — for a
 /// domain-local admin — pre-creates that login (hashed now, usable only once
 /// the tenant is active).
+/// How long a `PendingDns` tenant row holds a domain for the account that
+/// opened it (audit 2026-11 W4-30, Q17 (a)). After this it is replaceable
+/// by anyone; before it, only by an attempt the live DNS record does not
+/// contradict — see `pending_row_blocks`.
+pub const PENDING_TENANT_TTL_DAYS: i64 = 7;
+
+/// Does an existing `PendingDns` row for `domain` still block a fresh
+/// attempt by `user_id`? Only when (1) it is young, and (2) the live
+/// `_browserid` record (DNSSEC-validated) names ITS key — i.e. its opener is
+/// the domain's owner mid-activation. A row whose key DNS does not vouch
+/// for is a squat, or an abandoned attempt, and gives way: activation still
+/// needs DNS control, so the replacement cannot issue either. The opener's
+/// own repeat attempt is refused as before (409).
+async fn pending_row_blocks(idp_host: &str, existing: &Tenant, user_id: crate::store::UserId) -> bool {
+    if existing.status != TenantStatus::PendingDns {
+        return true;
+    }
+    if existing.owner_user_id == Some(user_id) {
+        return true;
+    }
+    if Utc::now() - existing.created_at > Duration::days(PENDING_TENANT_TTL_DAYS) {
+        return false;
+    }
+    let Ok(fetcher) = crate::dns_fetcher::DnsFetcher::new() else {
+        return false;
+    };
+    let result = fetcher.lookup(&existing.domain).await;
+    let _ = idp_host;
+    matches!(
+        (result.dnssec_status, result.record),
+        (browserid_core::DnssecStatus::Secure, Some(record)) if record.public_key.to_base64() == existing.public_key
+    )
+}
+
 pub async fn tenant_create<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
@@ -842,6 +991,15 @@ where
         .tenant_keystore
         .as_ref()
         .ok_or_else(|| BrokerError::PolicyRefused("tenant onboarding is not enabled here".into()))?;
+    // A pending row that is not the domain owner's does not hold the domain
+    // (W4-30): expired, or not vouched for by DNS, it is replaced.
+    if let Some(existing) = state.user_store.get_tenant(&domain)? {
+        if pending_row_blocks(&state.idp_host, &existing, session.user_id).await {
+            return Err(BrokerError::TenantExists);
+        }
+        tracing::info!(domain = %domain, "hosted primary: replacing a pending onboarding attempt");
+        state.user_store.delete_tenant(&domain)?;
+    }
     let (public_key, sealed) = keystore
         .generate_sealed(&domain)
         .map_err(BrokerError::Internal)?;
@@ -1011,7 +1169,7 @@ where
             Err(e) => tracing::warn!(domain = %domain, "revoke prior certs failed: {e}"),
         }
         state.analytics.capture("tenant_activated", crate::analytics::distinct_id_for_email(&tenant.created_by), serde_json::json!({}));
-        tracing::info!(domain = %domain, admin = %tenant.created_by, "hosted primary: tenant activated");
+        tracing::info!(domain = %domain, admin = %crate::crypto::log_id(&tenant.created_by), "hosted primary: tenant activated");
     }
     let tenant = state
         .user_store
@@ -1071,7 +1229,7 @@ where
     state
         .user_store
         .create_roster_entry(tenant.id, &local, &hash, must_change, &admin)?;
-    tracing::info!(tenant = %domain, local = %local, "hosted primary: roster user created");
+    tracing::info!(tenant = %domain, user = %crate::crypto::log_id(&local), "hosted primary: roster user created");
     Ok(Json(json!({"success": true, "email": format!("{local}@{domain}")})))
 }
 
@@ -1271,7 +1429,7 @@ where
         ));
     }
     state.user_store.remove_tenant_admin(&domain, &identity)?;
-    tracing::info!(tenant = %domain, removed = %identity, by = %admin, "hosted primary: admin removed");
+    tracing::info!(tenant = %domain, removed = %crate::crypto::log_id(&identity), by = %crate::crypto::log_id(&admin), "hosted primary: admin removed");
     Ok(Json(json!({"success": true})))
 }
 
@@ -1303,7 +1461,7 @@ where
         .ok_or(BrokerError::TenantNotFound)?;
     let mut revoked = state.user_store.tenant_status_revoke_all(tenant.id)?;
     revoked += state.user_store.revoke_domain_device_certs(&domain)?;
-    tracing::info!(tenant = %domain, by = %admin, revoked,
+    tracing::info!(tenant = %domain, by = %crate::crypto::log_id(&admin), revoked,
         "hosted primary: revoked all outstanding credentials");
     Ok(Json(json!({"success": true, "revoked": revoked})))
 }
@@ -1339,7 +1497,7 @@ where
     }
     let admin = session_admin_identity(state.as_ref(), &cookies, &req.csrf, &domain)?;
     state.user_store.delete_tenant(&domain)?;
-    tracing::info!(tenant = %domain, by = %admin, "hosted primary: tenant deleted");
+    tracing::info!(tenant = %domain, by = %crate::crypto::log_id(&admin), "hosted primary: tenant deleted");
     Ok(Json(json!({"success": true})))
 }
 
@@ -1467,10 +1625,10 @@ where
     if req.revoke_now || (policy.enabled && !was_enabled) {
         revoked = state.user_store.tenant_status_revoke_all(tenant.id)?;
         revoked += state.user_store.revoke_domain_device_certs(&domain)?;
-        tracing::info!(tenant = %domain, by = %admin, revoked,
+        tracing::info!(tenant = %domain, by = %crate::crypto::log_id(&admin), revoked,
             "management enabled: revoked outstanding certs for re-issue with managed marker");
     } else {
-        tracing::info!(tenant = %domain, by = %admin, enabled = policy.enabled,
+        tracing::info!(tenant = %domain, by = %crate::crypto::log_id(&admin), enabled = policy.enabled,
             "management policy updated");
     }
     Ok(Json(json!({"success": true, "revoked": revoked})))

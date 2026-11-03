@@ -518,7 +518,7 @@ pub(crate) async fn respond_core(
     for record in records {
         state.store.upsert_warrant(record)?;
     }
-    tracing::info!(delegator = %rec.delegator_email, grants = rec.grants.len(),
+    tracing::info!(delegator = %&crate::session::b64url_sha256_pub(rec.delegator_email.to_lowercase().as_bytes())[..12], grants = rec.grants.len(),
         "warrant consent approved");
     Ok(rec.return_url)
 }
@@ -1317,7 +1317,8 @@ pub(crate) fn revoke_warrant_core(
         message: "this warrant predates status lists — reissue it (which replaces it) or revoke the agent key".into(),
     })?;
     state.store.set_status_revoked_idx(idx)?;
-    tracing::info!(delegator = %record.delegator_email, audience = %record.audience,
+    tracing::info!(delegator = %&crate::session::b64url_sha256_pub(record.delegator_email.to_lowercase().as_bytes())[..12],
+        audience = %&crate::session::b64url_sha256_pub(record.audience.as_bytes())[..12],
         "warrant revoked (status bit set)");
     Ok(())
 }
@@ -1621,7 +1622,8 @@ pub(crate) async fn warrant_request_core(
     state.store.cleanup_expired_warrant_requests().ok();
 
     let origin = public_origin(&state.domain);
-    tracing::info!(agent = %identity, delegator = %delegator, "warrant request raised");
+    tracing::info!(agent = %&crate::session::b64url_sha256_pub(identity.to_lowercase().as_bytes())[..12],
+        delegator = %&crate::session::b64url_sha256_pub(delegator.to_lowercase().as_bytes())[..12], "warrant request raised");
     Ok(Json(WarrantRequestResponse {
         success: true,
         code: code.clone(),
