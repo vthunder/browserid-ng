@@ -31,10 +31,14 @@ struct Live {
     client: reqwest::Client,
     email_sender: MockEmailSender,
     user_store: Arc<InMemoryUserStore>,
+    /// The broker's IdP key, for tests that mint certs the issuer would
+    /// (an identity's own issuer re-certifying a device after a takeover).
+    idp: KeyPair,
 }
 
 async fn live_broker() -> Live {
     let keypair = KeyPair::generate();
+    let idp = keypair.clone();
     // 127.0.0.1 (not "localhost") end to end, so the server's own well-known
     // self-discovery and the test client can never split across v4/v6.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -61,6 +65,7 @@ async fn live_broker() -> Live {
         client: reqwest::Client::new(),
         email_sender: MockEmailSender { sent: email_sender.sent.clone() },
         user_store,
+        idp,
     }
 }
 
@@ -922,6 +927,66 @@ async fn accounts_attach_takeover_detach_and_delete() {
     assert_eq!(l.user_store.get_suspended_identity(new_user, email).unwrap().unwrap().reason, "deleted");
     let (status, _, _) = session_call(&l, &login_kp3, &token3, "GET", "/api/v1/requests", None).await;
     assert_eq!(status, 401);
+}
+
+/// registry-api-v1 §5.2.4 (audit 2026-11 W5-14, bean u6f2): restoring a
+/// suspended identity that another account now holds is a takeover too —
+/// it needs a carried config cert and `confirm_takeover`, else
+/// `409 identity_held`; a config cert the issuer never signed is refused
+/// by the validity bar before any case is considered.
+#[tokio::test]
+async fn restoring_a_suspended_identity_held_elsewhere_is_a_takeover() {
+    let l = live_broker().await;
+    let email = "restore-owner@gmail.com";
+    let (_pres, config_kp, _dc, config_cert) = broker_presentation(&l, email, vec!["registry".into()]).await;
+    let (token, account, login_kp) = login_session(&l, email, &config_kp, &config_cert).await;
+
+    // Another device takes the identity into a new account: the old
+    // account keeps it suspended.
+    let (dc2, cc2, dkp2, ckp2) = issue_keys(&l, email).await;
+    let (status, body) = accounts_create(&l, &[(&dc2, &dkp2), (&cc2, &ckp2)], &KeyPair::generate(), email, true).await;
+    assert_eq!(status, 200, "{body}");
+    let old_user = l.user_store.user_for_public_id(&account).unwrap().unwrap();
+    assert_eq!(l.user_store.get_suspended_identity(old_user, email).unwrap().unwrap().reason, "taken_over");
+
+    // The old device comes back with fresh issuer-signed certs (the
+    // issuer re-certified it; the broker's own mint refuses a suspended
+    // identity, so they are minted as the issuer would).
+    let fresh = |kp: &KeyPair, purpose: browserid_core::device::Purpose, signer: &KeyPair| {
+        browserid_core::device::DeviceCert::create(
+            &l.domain, &kp.public_key(), purpose, browserid_core::device::Holder::new("br.back").unwrap(),
+            vec![email.to_string()], Duration::days(90), signer, None,
+        ).unwrap().encoded().to_string()
+    };
+    let (akp, ckp) = (KeyPair::generate(), KeyPair::generate());
+    let auth = fresh(&akp, browserid_core::device::Purpose::Authentication, &l.idp);
+    let config = fresh(&ckp, browserid_core::device::Purpose::Authorization, &l.idp);
+
+    // Without confirm_takeover: refused, the holder keeps it.
+    let (status, body) = attach_call(&l, &login_kp, &token, &[(&auth, &akp), (&config, &ckp)], email, false).await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["reason"], "identity_held", "{body}");
+    assert!(l.user_store.get_suspended_identity(old_user, email).unwrap().is_some(), "still on hold");
+
+    // An auth cert alone, even confirmed: a takeover needs a config cert.
+    let (status, body) = attach_call(&l, &login_kp, &token, &[(&auth, &akp)], email, true).await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["reason"], "config_required", "{body}");
+
+    // A config cert the issuer never signed: the validity bar refuses it.
+    let rogue = KeyPair::generate();
+    let forged = fresh(&ckp, browserid_core::device::Purpose::Authorization, &rogue);
+    let (status, body) = attach_call(&l, &login_kp, &token, &[(&forged, &ckp)], email, true).await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["reason"], "signature_invalid", "{body}");
+
+    // Confirmed, with a real config cert: the identity transfers back.
+    let (status, body) = attach_call(&l, &login_kp, &token, &[(&auth, &akp), (&config, &ckp)], email, true).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(l.user_store.get_suspended_identity(old_user, email).unwrap().is_none(), "returned");
+    assert_eq!(l.user_store.get_email(email).unwrap().unwrap().user_id, old_user);
+    let (_, body) = login_stored(&l, &account, &login_kp).await;
+    assert_eq!(body["roster"], json!([{ "identity": email, "state": "active" }]), "{body}");
 }
 
 /// Bean noqd (registry-api-v1 §4.2): every enrolled key records how it got

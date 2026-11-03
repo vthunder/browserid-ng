@@ -699,14 +699,34 @@ pub async fn attach(
         Add,
         Restore,
     }
+    let identity_held = || ApiError::Conflict {
+        reason: "identity_held",
+        description: "another account holds this identity; set confirm_takeover to transfer it".into(),
+    };
     let pending = if holder == Some(acct) {
         None
     } else if state.host.identity_suspended_on(acct, &identity).map_err(host_err)? {
-        require_fresh()?;
-        Some(match holder {
-            Some(elsewhere) => Pending::Transfer(elsewhere),
-            None => Pending::Restore,
-        })
+        match holder {
+            // A restore that is also a takeover (§5.2.4, audit 2026-11
+            // W5-14): the suspended copy never pulls the identity off the
+            // account that now holds it silently — it needs what a
+            // takeover needs, a carried config cert and confirm_takeover.
+            // The carried config cert passed the validity bar (issuer
+            // signature, status) in carried_certs; it is not recorded yet,
+            // so the recorded-cert bar cannot apply before this call.
+            Some(elsewhere) => {
+                require_config()?;
+                if !req.confirm_takeover {
+                    return Err(identity_held());
+                }
+                require_fresh()?;
+                Some(Pending::Transfer(elsewhere))
+            }
+            None => {
+                require_fresh()?;
+                Some(Pending::Restore)
+            }
+        }
     } else if holder.is_none() {
         require_config()?;
         require_fresh()?;
@@ -714,10 +734,7 @@ pub async fn attach(
     } else {
         require_config()?;
         if !req.confirm_takeover {
-            return Err(ApiError::Conflict {
-                reason: "identity_held",
-                description: "another account holds this identity; set confirm_takeover to transfer it".into(),
-            });
+            return Err(identity_held());
         }
         require_fresh()?;
         Some(Pending::Transfer(holder.unwrap()))
