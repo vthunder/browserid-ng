@@ -161,6 +161,44 @@ async fn status_proxy_unreachable_foreign_uri_errors() {
         .add_query_param("uri", "http://127.0.0.1:9/.well-known/browserid-status")
         .await;
     assert!(!r.status_code().is_success(), "unreachable foreign list must error");
+    // Audit 2026-11 W5-5: the reason is generic — no address, resolver or
+    // connection detail an unauthenticated caller could use as an oracle.
+    let text = r.text();
+    assert!(text.contains("status list unavailable"), "{text}");
+    for leak in ["127.0.0.1", "connect", "resolv", "refused", "address"] {
+        assert!(!text.to_lowercase().contains(leak), "error leaks {leak:?}: {text}");
+    }
+}
+
+/// Audit 2026-11 W5-5: only status-list-shaped URIs are proxied, and the
+/// endpoint sits under the verification API's per-IP limit.
+#[tokio::test]
+async fn status_proxy_refuses_non_status_uris_and_rate_limits() {
+    let (server, _sender) = make_server();
+    for bad in [
+        "http://127.0.0.1:9/admin",
+        "http://127.0.0.1:9/.well-known/browserid-status?x=1",
+        "file:///etc/passwd",
+        "http://u:p@127.0.0.1:9/.well-known/browserid-status",
+    ] {
+        let r = server.get("/status/proxy").add_query_param("uri", bad).await;
+        assert_eq!(r.status_code(), 400, "{bad}: {}", r.text());
+        assert!(!r.text().contains("unavailable"), "{bad} reached the fetch: {}", r.text());
+    }
+    let mut saw_429 = false;
+    for _ in 0..(browserid_broker::routes::RATE_LIMIT + 1) {
+        let r = server
+            .get("/status/proxy")
+            .add_query_param("uri", "http://127.0.0.1:9/admin")
+            .add_header("x-forwarded-for", "203.0.113.55")
+            .await;
+        if r.status_code() == 429 {
+            saw_429 = true;
+            assert!(r.headers().get("retry-after").is_some());
+            break;
+        }
+    }
+    assert!(saw_429, "/status/proxy is not rate limited");
 }
 
 #[tokio::test]

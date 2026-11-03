@@ -42,6 +42,31 @@ pub struct StatusProxyQuery {
     pub uri: String,
 }
 
+/// The one error `/status/proxy` ever shows a page. The guard's and the
+/// fetcher's reasons ("resolves to non-global address 10.…", connection
+/// errors) would make the unauthenticated endpoint an internal-network
+/// oracle (audit 2026-11 W5-5); they go to the debug log instead.
+const PROXY_UNAVAILABLE: &str = "status list unavailable";
+
+/// Is `uri` shaped like an issuer's status-list URI? Only the two forms
+/// issuers publish are proxied: `/.well-known/browserid-status` (core §6.4)
+/// and the hosted lane's `/status/<tenant>`; https (http only on localhost
+/// dev), no userinfo, query or fragment. Narrows the unauthenticated GET
+/// from "any URL" to a status-list path (W5-5).
+pub fn status_list_uri_shape_ok(uri: &str, allow_private: bool) -> bool {
+    let Ok(url) = reqwest::Url::parse(uri) else { return false };
+    let scheme_ok = url.scheme() == "https" || (allow_private && url.scheme() == "http");
+    if !scheme_ok || url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return false;
+    }
+    let path = url.path();
+    path == "/.well-known/browserid-status"
+        || (path.starts_with("/status/") && path.len() > "/status/".len() && !path["/status/".len()..].contains('/'))
+}
+
 // GET /status/proxy?uri=<status-list-uri>
 pub async fn status_proxy<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
@@ -58,21 +83,43 @@ where
         // than duplicating the registrar's signing path here.
         return Ok(Redirect::temporary("/.well-known/browserid-status").into_response());
     }
+    let allow_private = allow_private(&state);
+    if !status_list_uri_shape_ok(&q.uri, allow_private) {
+        return Err(BrokerError::ValidationError("not a status list uri".into()));
+    }
 
-    let fetcher = state
-        .fallback_fetcher()
+    let fetcher = state.fallback_fetcher().await.map_err(|e| {
+        tracing::debug!(error = %e, "status proxy: fetcher unavailable");
+        BrokerError::ValidationError(PROXY_UNAVAILABLE.into())
+    })?;
+    let token = fetch_foreign_status_list(&q.uri, fetcher.as_ref(), &state.foreign_status_lists, allow_private)
         .await
-        .map_err(|e| BrokerError::ValidationError(format!("fetcher: {e}")))?;
-    let token = fetch_foreign_status_list(
-        &q.uri,
-        fetcher.as_ref(),
-        &state.foreign_status_lists,
-        allow_private(&state),
-    )
-    .await
-    .map_err(|e| BrokerError::ValidationError(format!("status list unavailable: {e}")))?;
+        .map_err(|e| {
+            tracing::debug!(error = %e, "status proxy: fetch refused or failed");
+            BrokerError::ValidationError(PROXY_UNAVAILABLE.into())
+        })?;
 
     Ok(token.encoded().to_string().into_response())
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::status_list_uri_shape_ok as ok;
+
+    #[test]
+    fn only_status_list_paths_pass() {
+        assert!(ok("https://idp.example/.well-known/browserid-status", false));
+        assert!(ok("https://idp.browserid.me/status/tenant.example", false));
+        assert!(ok("http://127.0.0.1:3000/.well-known/browserid-status", true));
+        assert!(!ok("http://idp.example/.well-known/browserid-status", false));
+        assert!(!ok("https://idp.example/", false));
+        assert!(!ok("https://idp.example/admin", false));
+        assert!(!ok("https://idp.example/status/", false));
+        assert!(!ok("https://idp.example/status/a/b", false));
+        assert!(!ok("https://idp.example/.well-known/browserid-status?x=1", false));
+        assert!(!ok("https://u:p@idp.example/.well-known/browserid-status", false));
+        assert!(!ok("file:///etc/passwd", true));
+    }
 }
 
 #[derive(Deserialize)]

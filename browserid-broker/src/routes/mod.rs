@@ -3,6 +3,7 @@
 mod account;
 mod auth;
 pub use auth::{set_trusted_proxies, DEFAULT_TRUSTED_PROXIES};
+pub use rate_limit::LIMIT as RATE_LIMIT;
 mod code_guard;
 mod device;
 mod email;
@@ -153,7 +154,12 @@ where
     // requires CORS on the module + .wasm fetches.
     let public_cors_routes = Router::new()
         .route("/.well-known/browserid", get(well_known::get_support_document))
-        .route("/status/proxy", get(status::status_proxy))
+        // Unauthenticated and it fetches: same per-IP limit as the
+        // verification API (audit 2026-11 W5-5).
+        .route(
+            "/status/proxy",
+            get(status::status_proxy).layer(axum::middleware::from_fn(rate_limit::verification_api)),
+        )
         // The marketing origin's home-page wall reads the guestbook feed
         // cross-origin (credentials: omit).
         .route("/guestbook/feed", get(guestbook::feed))

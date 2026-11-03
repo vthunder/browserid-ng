@@ -445,7 +445,6 @@ async fn w6_4_hosted_primary_may_point_at_its_dnssec_delegate() {
 /// `new()` client shares the redirect policy and address handling, so an
 /// `https` first hop redirecting to `http://169.254.169.254/…` is followed.)
 #[test]
-#[ignore] // AUDIT-2026-11 W6-5: fails today — discovery.rs:15-27,193-202 / verify.rs:25-47 use an unguarded client
 fn w6_5_discovery_fetch_refuses_redirects_and_private_hosts() {
     use browserid_core::discovery::SupportDocumentFetcher;
     use std::io::{Read, Write};
