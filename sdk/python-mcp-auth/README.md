@@ -18,7 +18,7 @@ DNSSEC-rooted hosted verifier (`POST /verify`) and `POST /status/check`
 from browserid_mcp_auth import McpAuth, McpAuthError
 
 auth = McpAuth(
-    resource="https://mcp.example.com",           # this server (OAuth resource + audience)
+    resource="https://mcp.example.com",           # this server (OAuth resource + audience), byte-exact: no trailing slash
     scopes_for_tool={"create_issue": ["issues:create"]},
 )
 

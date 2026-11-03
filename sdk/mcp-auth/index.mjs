@@ -206,7 +206,11 @@ export class McpAuthError extends Error {
  * @param {typeof fetch} [opts.fetch]  Injectable fetch (tests).
  */
 export function createMcpAuth(opts) {
-  const resource = req(opts, "resource").replace(/\/+$/, "");
+  // The resource is the audience the records name, BYTE-EXACT (spec §5;
+  // audit 2026-11 W2-1 / decision Q25 (a)): never normalized here. Configure
+  // it exactly as it appears in the warrants (web resources: no trailing
+  // slash; non-web audiences such as sbo+raw://host/ keep theirs).
+  const resource = req(opts, "resource");
   const broker = (opts.broker || "https://browserid.me").replace(/\/+$/, "");
   const scopesForTool = opts.scopesForTool || {};
   const tokenTtlS = opts.tokenTtlS ?? 3600;
@@ -971,7 +975,7 @@ export function createAuthCodeLane(opts) {
     }
     const grants = (args?.grants || []).map((g) => ({
       grantee: req(g, "grantee"),
-      audience: (g.audience || resource).replace(/\/+$/, ""),
+      audience: g.audience || resource, // byte-exact (Q25 (a))
       scopes: g.scopes || [],
     }));
     if (!grants.length) throw new McpAuthError("invalid_request", "authoring needs at least one grant");

@@ -132,7 +132,9 @@ class McpAuth:
     ) -> None:
         if not resource:
             raise ValueError("resource is required")
-        self.resource = resource.rstrip("/")
+        # Byte-exact audience (spec §5; audit 2026-11 W2-1 / Q25 (a)): never
+        # normalized; configure it exactly as the warrants name it.
+        self.resource = resource
         self.broker = broker.rstrip("/")
         self.scopes_for_tool = scopes_for_tool or {}
         self.token_ttl_s = token_ttl_s

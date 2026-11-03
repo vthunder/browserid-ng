@@ -20,7 +20,7 @@ Verification is delegated to the broker's DNSSEC-rooted hosted verifier
 import { createMcpAuth, McpAuthError } from "@browserid-ng/mcp-auth";
 
 const auth = createMcpAuth({
-  resource: "https://mcp.example.com",          // this server (OAuth resource + audience)
+  resource: "https://mcp.example.com",          // this server (OAuth resource + audience), byte-exact: no trailing slash
   scopesForTool: { create_issue: ["issues:create"] },
 });
 

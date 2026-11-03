@@ -313,12 +313,12 @@ test("pin: a replayed jwt-bearer assertion mints again (no AS-side jti cache; th
   assert.equal(broker.calls.verify, 2, "each redemption re-verifies at the broker, audience-pinned");
 });
 
-test("pin: /verify is always called with audience == this resource and the accepted fallbacks", async () => {
+test("pin: /verify is always called with audience == this resource BYTE-EXACT (W2-1 / Q25 (a): no trailing-slash normalization) and the accepted fallbacks", async () => {
   let seen;
   const broker = fakeBroker({ verify: (b) => { seen = b; return okVerify; } });
   const mcp = createMcpAuth({ resource: RESOURCE + "/", broker: BROKER, fetch: broker.fetch });
   await mcp.handleToken({ grant_type: JWT_BEARER_GRANT, assertion: "AC~AS~WR~CC" });
-  assert.equal(seen.audience, RESOURCE);
+  assert.equal(seen.audience, RESOURCE + "/");
   assert.deepEqual(seen.accepted_fallbacks, ["broker.example"]);
 });
 

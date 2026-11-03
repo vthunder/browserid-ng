@@ -35,10 +35,8 @@ EXPECTED_FAIL = {
     # AUDIT-2026-11 W4-14: an object scope entry (what a D7-fixed verifier returns) makes handle_token
     # raise TypeError from " ".join(scopes) (__init__.py:235) — an unhandled 500, not a refusal.
     "P-OK-08/entries": "W4-14",
-    # AUDIT-2026-11 W2-1: McpAuth strips trailing slashes from `resource`, so a warrant audience
-    # ending in `/` (non-web audiences such as sbo+raw://…/) is sent to the verifier altered.
     # AUDIT-2026-11 D7: scope entries arrive flattened and the package can only carry strings.
-    "P-OK-07": "W2-1,D7",
+    "P-OK-07": "D7",
     "P-OK-08": "D7",
     # AUDIT-2026-11 W6-1 (inherited from the hosted verifier).
     "P-OK-12": "W6-1",

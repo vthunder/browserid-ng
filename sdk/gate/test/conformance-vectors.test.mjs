@@ -33,9 +33,8 @@ const VECTORS = JSON.parse(readFileSync(new URL("../../../test-vectors/conforman
 const HOSTED = JSON.parse(readFileSync(new URL("../../../test-vectors/conformance-2026-11.hosted.json", import.meta.url), "utf8")).responses;
 
 const EXPECTED_FAIL = {
-  // AUDIT-2026-11 W2-1: createMount strips trailing slashes from `resource` (mount.mjs:55), so a
-  // warrant audience ending in `/` is sent to the verifier altered. AUDIT-2026-11 D7 (inherited).
-  "P-OK-07": "W2-1,D7",
+  // AUDIT-2026-11 D7 (inherited).
+  "P-OK-07": "D7",
   "P-OK-08": "D7",
   // AUDIT-2026-11 W6-1 (inherited from the hosted verifier).
   "P-OK-12": "W6-1",

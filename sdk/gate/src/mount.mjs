@@ -52,7 +52,9 @@ import { createMcpAuth, createAuthCodeLane, McpAuthError, identityEq, granteeCov
  * @returns {Promise<Mount>}
  */
 export async function createMount(opts) {
-  const resource = req(opts, "resource").replace(/\/+$/, "");
+  // Byte-exact audience (spec §5; audit 2026-11 W2-1 / Q25 (a)): the mount
+  // never normalizes its resource. Configure it exactly as the records name it.
+  const resource = req(opts, "resource");
   const name = opts.name || "mcp gateway";
   const broker = (opts.broker || "https://browserid.me").replace(/\/+$/, "");
   const statusCacheS = opts.statusCacheS ?? 5;
