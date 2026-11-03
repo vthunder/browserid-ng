@@ -28,8 +28,8 @@ jobs:
       id-token: write # OIDC for npm trusted publishing + --provenance
       contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -45,8 +45,8 @@ jobs:
       id-token: write # OIDC for PyPI trusted publishing
       contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - name: is the local version unpublished?
         id: status
         run: |
@@ -58,6 +58,6 @@ jobs:
         run: uv build --out-dir dist-ci
       - name: publish to PyPI (trusted publishing)
         if: steps.status.outputs.need != ''
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3 (release/v1)
         with:
           packages-dir: sdk/python-mcp-auth/dist-ci
