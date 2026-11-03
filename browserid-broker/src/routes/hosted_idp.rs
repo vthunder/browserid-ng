@@ -131,20 +131,37 @@ fn assigned_holder(keypair: &browserid_core::KeyPair, tenant_id: u64, local: &st
 }
 
 // --- Tenant-user session cookie: stateless, signed by the broker key ------
-// Value: b64url(json{email, exp, mc}) + "." + b64url(sig). `mc` =
-// must-change-password: the session exists (so the page can drive the change
-// form) but cert issuance is refused until the password is changed.
+// Value: b64url(json{typ, email, exp, mc, pe}) + "." + b64url(sig).
+// `typ` = "idp-session": the signed payload names what it is, so no other
+// root-key signature (every other one is a JWS) can be confused with it
+// (audit 2026-11 W4-32). `mc` = must-change-password: the session exists (so
+// the page can drive the change form) but cert issuance is refused until the
+// password is changed. `pe` = the password epoch the session was opened
+// under (a hash of the roster password hash): issuance re-reads the roster
+// and refuses when the password has since been reset (W4-31), and re-reads
+// `mc` from the roster rather than trusting the cookie's copy.
+
+const IDP_COOKIE_TYP: &str = "idp-session";
+
+/// The password epoch of a roster entry: changes whenever its password
+/// hash does. A hash prefix, never the hash itself.
+fn password_epoch(password_hash: &str) -> String {
+    browserid_registrar::session::b64url_sha256_pub(password_hash.as_bytes())[..16].to_string()
+}
 
 fn issue_idp_cookie<U: UserStore, S: SessionStore, E: EmailSender>(
     state: &AppState<U, S, E>,
     cookies: &Cookies,
     email: &str,
     must_change: bool,
+    password_hash: &str,
 ) {
     let claims = json!({
+        "typ": IDP_COOKIE_TYP,
         "email": email,
         "exp": (Utc::now() + Duration::seconds(IDP_SESSION_SECONDS)).timestamp(),
         "mc": must_change,
+        "pe": password_epoch(password_hash),
     })
     .to_string();
     let payload = URL_SAFE_NO_PAD.encode(claims.as_bytes());
@@ -158,11 +175,12 @@ fn issue_idp_cookie<U: UserStore, S: SessionStore, E: EmailSender>(
     cookies.add(cookie);
 }
 
-/// (email, must_change) from a valid, unexpired idp session cookie.
+/// A valid, unexpired idp session cookie: (email, must_change as recorded
+/// at login, password epoch). Issuance must go through `idp_session_live`.
 fn idp_session<U: UserStore, S: SessionStore, E: EmailSender>(
     state: &AppState<U, S, E>,
     cookies: &Cookies,
-) -> Option<(String, bool)> {
+) -> Option<(String, bool, String)> {
     let raw = cookies.get(IDP_COOKIE)?.value().to_string();
     let (payload, sig) = raw.rsplit_once('.')?;
     let sig = URL_SAFE_NO_PAD.decode(sig).ok()?;
@@ -173,13 +191,34 @@ fn idp_session<U: UserStore, S: SessionStore, E: EmailSender>(
         .ok()?;
     let claims: serde_json::Value =
         serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).ok()?).ok()?;
+    if claims.get("typ")?.as_str()? != IDP_COOKIE_TYP {
+        return None;
+    }
     if claims.get("exp")?.as_i64()? < Utc::now().timestamp() {
         return None;
     }
     Some((
         claims.get("email")?.as_str()?.to_string(),
         claims.get("mc")?.as_bool().unwrap_or(false),
+        claims.get("pe")?.as_str()?.to_string(),
     ))
+}
+
+/// The session's roster entry as it is NOW: the cookie's email must still
+/// be an active roster entry of an active tenant whose password has not
+/// changed since login (W4-31). Returns (email, must_change from the roster).
+fn idp_session_live<U: UserStore, S: SessionStore, E: EmailSender>(
+    state: &AppState<U, S, E>,
+    cookies: &Cookies,
+) -> Option<(String, bool)> {
+    let (email, _mc_at_login, epoch) = idp_session(state, cookies)?;
+    let (local, domain) = split_email(&email)?;
+    let tenant = active_tenant(state.user_store.as_ref(), &domain).ok()?;
+    let entry = state.user_store.get_roster_entry(tenant.id, &local).ok().flatten()?;
+    if entry.state != RosterState::Active || password_epoch(&entry.password_hash) != epoch {
+        return None;
+    }
+    Some((email, entry.must_change_password))
 }
 
 // ---------------------------------------------------------------------------
@@ -275,7 +314,7 @@ where
         Err(e) => return e,
     };
     let email = format!("{local}@{domain}");
-    issue_idp_cookie(state.as_ref(), &cookies, &email, entry.must_change_password);
+    issue_idp_cookie(state.as_ref(), &cookies, &email, entry.must_change_password, &entry.password_hash);
     let _ = state.user_store.touch_roster_login(tenant.id, &local);
     (
         StatusCode::OK,
@@ -300,7 +339,7 @@ where
     S: SessionStore,
     E: EmailSender,
 {
-    match idp_session(state.as_ref(), &cookies) {
+    match idp_session_live(state.as_ref(), &cookies) {
         Some((email, mc)) => Json(json!({"email": email, "must_change_password": mc})),
         None => Json(json!({"email": null})),
     }
@@ -365,7 +404,7 @@ where
         );
     }
     let email = format!("{local}@{domain}");
-    issue_idp_cookie(state.as_ref(), &cookies, &email, false);
+    issue_idp_cookie(state.as_ref(), &cookies, &email, false, &hash);
     (StatusCode::OK, Json(json!({"success": true, "email": email})))
 }
 
@@ -402,8 +441,13 @@ where
 {
     let err = |code: StatusCode, reason: String| (code, Json(json!({"success": false, "reason": reason})));
 
-    let Some((session_email, must_change)) = idp_session(state.as_ref(), &cookies) else {
+    if idp_session(state.as_ref(), &cookies).is_none() {
         return err(StatusCode::UNAUTHORIZED, "not signed in".into());
+    }
+    // Live, not the cookie's snapshot: an admin password reset or a
+    // disable since login ends the session's issuing (W4-31).
+    let Some((session_email, must_change)) = idp_session_live(state.as_ref(), &cookies) else {
+        return err(StatusCode::FORBIDDEN, "session no longer valid; sign in again".into());
     };
     if must_change {
         return err(StatusCode::FORBIDDEN, "password change required".into());

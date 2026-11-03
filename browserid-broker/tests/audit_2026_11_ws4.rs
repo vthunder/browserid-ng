@@ -353,8 +353,6 @@ async fn pin_pending_tenant_issues_nothing() {
 /// old password keeps issuing 90-day certs until the cookie expires. The
 /// roster's `Active` state IS re-read, so disabling works; the password
 /// reset does not.
-// AUDIT-2026-11 W4-31: fails today
-#[ignore]
 #[tokio::test]
 async fn w4_31_admin_password_reset_stops_an_open_idp_session_from_issuing() {
     let (server, store) = tenant_server();
@@ -417,8 +415,6 @@ async fn pin_roster_disable_stops_an_open_idp_session_from_issuing() {
 /// input contains a `.`), but the latent signing-confusion the July report
 /// flagged is back. Expected: a `typ` discriminator in the signed payload
 /// (or an HMAC under a derived cookie key, not the issuer key).
-// AUDIT-2026-11 W4-32: fails today
-#[ignore]
 #[tokio::test]
 async fn w4_32_idp_session_cookie_payload_carries_a_type_tag() {
     let (server, store) = tenant_server();
