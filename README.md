@@ -235,6 +235,8 @@ printed to the terminal (production wires up a real email sender).
 | `DATABASE_PATH` | `browserid.db` | SQLite database file |
 | `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` (+ `SMTP_PORT`=465, `SMTP_FROM_NAME`) | unset | Outbound mail. All four required for the SMTP sender; without them a loopback `BROKER_DOMAIN` prints codes to stdout, and any other domain **refuses to start** |
 | `EMAIL_SENDER` | unset | `console` forces the stdout sender (codes in the log) on a non-loopback domain — dev only |
+| `POSTHOG_TOKEN`, `POSTHOG_HOST` | unset | Server-side funnel analytics; off unless the token is set |
+| `POSTHOG_ID_SALT` | unset | Per-deployment secret that keys the PostHog distinct id (`HMAC-SHA256(salt, email)`). Unset keeps the historical unsalted `sha256(email)` id and logs a warning at startup on a non-loopback domain; turning it on means older ids no longer join |
 | `TRUSTED_PROXIES` | `1` | Fronting proxies that append to `X-Forwarded-For` (dokku's nginx = 1). Every per-IP throttle keys on the hop they appended; `0` = reached directly, the peer address is the client |
 
 ### Human sign-in (the supporting feature)

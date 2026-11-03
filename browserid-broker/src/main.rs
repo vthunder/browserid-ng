@@ -151,7 +151,17 @@ async fn main() -> Result<()> {
     // Server-side product analytics (auth-origin funnel). Enabled iff POSTHOG_TOKEN set.
     state.analytics = browserid_broker::analytics::Analytics::from_env();
     if state.analytics.enabled() {
-        tracing::info!("PostHog server-side analytics enabled");
+        tracing::info!(salted = state.analytics.salted(), "PostHog server-side analytics enabled");
+        // Audit 2026-11 Q13: without a per-deployment salt the distinct id
+        // is a bare sha256(email) that anyone with PostHog access can confirm
+        // from an email guess. Unset keeps the historical ids; production
+        // should set it.
+        if !state.analytics.salted() && browserid_broker::email::is_production_domain(&config.domain) {
+            tracing::warn!(
+                "{} is not set: PostHog distinct ids are unsalted sha256(email); set a per-deployment secret (audit 2026-11 Q13)",
+                browserid_broker::analytics::ID_SALT_ENV
+            );
+        }
     }
     if let Some(quota) = std::env::var("AGENT_MAX_IDENTITIES")
         .ok()

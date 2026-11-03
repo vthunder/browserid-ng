@@ -1022,7 +1022,7 @@ where
     }
     state.analytics.capture(
         "tenant_onboarding_started",
-        crate::analytics::distinct_id_for_email(&admin_email),
+        state.analytics.distinct_id(&admin_email),
         serde_json::json!({}),
     );
     Ok(Json(json!({
@@ -1168,7 +1168,7 @@ where
             Ok(_) => {}
             Err(e) => tracing::warn!(domain = %domain, "revoke prior certs failed: {e}"),
         }
-        state.analytics.capture("tenant_activated", crate::analytics::distinct_id_for_email(&tenant.created_by), serde_json::json!({}));
+        state.analytics.capture("tenant_activated", state.analytics.distinct_id(&tenant.created_by), serde_json::json!({}));
         tracing::info!(domain = %domain, admin = %crate::crypto::log_id(&tenant.created_by), "hosted primary: tenant activated");
     }
     let tenant = state

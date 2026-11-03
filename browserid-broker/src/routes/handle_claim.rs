@@ -260,7 +260,7 @@ where
 
     state.analytics.capture(
         "handle_claim_completed",
-        crate::analytics::distinct_id_for_email(&email),
+        state.analytics.distinct_id(&email),
         serde_json::json!({ "email_domain": crate::analytics::email_domain(&email) }),
     );
 
