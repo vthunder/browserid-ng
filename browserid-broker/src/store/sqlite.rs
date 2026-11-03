@@ -4384,6 +4384,33 @@ mod tests {
         (store, dir) // Return dir to keep it alive
     }
 
+    /// Audit 2026-11 W4-30: a pending tenant row is replaced by deleting it
+    /// and creating afresh (the squat path in `tenant_create`); the sqlite
+    /// row, its roster and admins go with it and the new row gets its own id.
+    #[test]
+    fn pending_tenant_row_can_be_replaced() {
+        let (store, _dir) = create_test_store();
+        let squatter = store.create_user("hash").unwrap();
+        let owner = store.create_user("hash").unwrap();
+        let first = store
+            .create_tenant("victim.example", "pk-squat", "sealed-squat", Some(squatter), "squatter@example.com")
+            .unwrap();
+        store.create_roster_entry(first.id, "admin", "hash", false, "squatter@example.com").unwrap();
+        assert!(matches!(
+            store.create_tenant("victim.example", "pk-owner", "sealed-owner", Some(owner), "owner@example.net"),
+            Err(BrokerError::TenantExists)
+        ));
+        store.delete_tenant("victim.example").unwrap();
+        let second = store
+            .create_tenant("victim.example", "pk-owner", "sealed-owner", Some(owner), "owner@example.net")
+            .unwrap();
+        assert_ne!(first.id, second.id);
+        assert_eq!(second.owner_user_id, Some(owner));
+        assert_eq!(second.public_key, "pk-owner");
+        assert!(store.get_roster_entry(second.id, "admin").unwrap().is_none(), "old roster must not carry over");
+        assert!(store.get_roster_entry(first.id, "admin").unwrap().is_none());
+    }
+
     #[test]
     fn test_create_user_and_email() {
         let (store, _dir) = create_test_store();

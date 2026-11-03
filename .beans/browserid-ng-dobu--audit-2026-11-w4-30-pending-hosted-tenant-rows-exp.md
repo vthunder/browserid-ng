@@ -1,11 +1,11 @@
 ---
 # browserid-ng-dobu
 title: '[Audit 2026-11] W4-30: pending hosted-tenant rows expire and a DNSSEC-validated owner can replace a squat'
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-11-02T22:43:20Z
-updated_at: 2026-11-02T22:43:20Z
+updated_at: 2026-11-03T08:30:50Z
 parent: browserid-ng-ag1l
 ---
 
@@ -18,3 +18,11 @@ Change: add created_at expiry to pending rows (sweep or check-on-read); on tenan
 Acceptance (un-ignore): browserid-broker/tests/audit_2026_11_ws4.rs: w4_30_pending_tenant_squat_does_not_block_the_domain_owner (pin pin_pending_tenant_issues_nothing keeps passing).
 
 Reports: ws4 §2. Ledger: docs/security-audit-2026-11.md. Decisions: docs/security-audit-2026-11-decisions.md.
+
+
+
+## Summary of Changes
+
+- routes/hosted_idp.rs `tenant_create`: an existing `PendingDns` row no longer holds the domain unconditionally. `pending_row_blocks` keeps the 409 only when the row is the caller's own, or when it is younger than `PENDING_TENANT_TTL_DAYS` (7) AND the live `_browserid` record (DNSSEC-validated, via the DoT fetcher) names the row's key — i.e. its opener is the real owner mid-activation. Otherwise (expired, no record, insecure, bogus, another key, or no resolver) the pending row is deleted and the caller's fresh attempt replaces it; activation still requires DNS control, so a replacement cannot issue. No schema change: `created_at` already exists.
+- store/sqlite.rs: unit test `pending_tenant_row_can_be_replaced` under the real sqlite constraints (delete + recreate: new id, new owner/key, old roster gone).
+- Tests: un-ignored `w4_30_pending_tenant_squat_does_not_block_the_domain_owner`; `pin_pending_tenant_issues_nothing` still passes. (The W4-30 test now performs one real DoT lookup for `victim.example`; offline it resolves as "not vouched for" and still passes.)

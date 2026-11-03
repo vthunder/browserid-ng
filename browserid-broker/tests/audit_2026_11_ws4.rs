@@ -287,8 +287,6 @@ fn pin_sealed_tenant_key_is_bound_to_its_domain() {
 /// or `tenant/delete`. Adversary A4. Expected: a pending attempt by another
 /// account must not block the domain (expire pending rows, or let a fresh
 /// attempt replace a pending one and let DNS decide).
-// AUDIT-2026-11 W4-30: fails today
-#[ignore]
 #[tokio::test]
 async fn w4_30_pending_tenant_squat_does_not_block_the_domain_owner() {
     let ctx = create_test_context_customized(|state| {

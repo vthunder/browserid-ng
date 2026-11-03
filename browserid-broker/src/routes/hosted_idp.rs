@@ -867,6 +867,40 @@ pub struct TenantCreateRequest {
 /// record, ties the tenant to the onboarding account (owner), and — for a
 /// domain-local admin — pre-creates that login (hashed now, usable only once
 /// the tenant is active).
+/// How long a `PendingDns` tenant row holds a domain for the account that
+/// opened it (audit 2026-11 W4-30, Q17 (a)). After this it is replaceable
+/// by anyone; before it, only by an attempt the live DNS record does not
+/// contradict — see `pending_row_blocks`.
+pub const PENDING_TENANT_TTL_DAYS: i64 = 7;
+
+/// Does an existing `PendingDns` row for `domain` still block a fresh
+/// attempt by `user_id`? Only when (1) it is young, and (2) the live
+/// `_browserid` record (DNSSEC-validated) names ITS key — i.e. its opener is
+/// the domain's owner mid-activation. A row whose key DNS does not vouch
+/// for is a squat, or an abandoned attempt, and gives way: activation still
+/// needs DNS control, so the replacement cannot issue either. The opener's
+/// own repeat attempt is refused as before (409).
+async fn pending_row_blocks(idp_host: &str, existing: &Tenant, user_id: crate::store::UserId) -> bool {
+    if existing.status != TenantStatus::PendingDns {
+        return true;
+    }
+    if existing.owner_user_id == Some(user_id) {
+        return true;
+    }
+    if Utc::now() - existing.created_at > Duration::days(PENDING_TENANT_TTL_DAYS) {
+        return false;
+    }
+    let Ok(fetcher) = crate::dns_fetcher::DnsFetcher::new() else {
+        return false;
+    };
+    let result = fetcher.lookup(&existing.domain).await;
+    let _ = idp_host;
+    matches!(
+        (result.dnssec_status, result.record),
+        (browserid_core::DnssecStatus::Secure, Some(record)) if record.public_key.to_base64() == existing.public_key
+    )
+}
+
 pub async fn tenant_create<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
@@ -930,6 +964,15 @@ where
         .tenant_keystore
         .as_ref()
         .ok_or_else(|| BrokerError::PolicyRefused("tenant onboarding is not enabled here".into()))?;
+    // A pending row that is not the domain owner's does not hold the domain
+    // (W4-30): expired, or not vouched for by DNS, it is replaced.
+    if let Some(existing) = state.user_store.get_tenant(&domain)? {
+        if pending_row_blocks(&state.idp_host, &existing, session.user_id).await {
+            return Err(BrokerError::TenantExists);
+        }
+        tracing::info!(domain = %domain, "hosted primary: replacing a pending onboarding attempt");
+        state.user_store.delete_tenant(&domain)?;
+    }
     let (public_key, sealed) = keystore
         .generate_sealed(&domain)
         .map_err(BrokerError::Internal)?;
