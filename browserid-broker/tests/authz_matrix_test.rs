@@ -987,11 +987,8 @@ async fn policy_put_is_owner_only_and_only_tightens() {
 
 /// AUDIT-2026-11 W5-10: fails today. Reg §4.2 (amended): the login-page
 /// token is delivered only to an accepted return origin, and "the check
-/// lives in the handler that mints the token". `/wsapi/registry_login`
-/// takes no return origin at all — a foreign one rides along unexamined
-/// and the token is minted.
+/// lives in the handler that mints the token" (reg §4.2, fb §3.1).
 #[tokio::test]
-#[ignore]
 async fn registry_login_token_minting_checks_the_return_origin() {
     let r = rig();
     let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;

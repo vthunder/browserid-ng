@@ -20,8 +20,9 @@
   var identityHint = params.get("identity") || "";
   try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
 
-  // Same-origin rule between return_origin and return_url (§4.2). No
-  // allowlist: the token is one-time and bound to the account.
+  // Same-origin rule between return_origin and return_url (§4.2). The
+  // accepted-origin allowlist is the backend's: every minting call sends
+  // return_origin (and return_url) and the handler refuses a foreign one.
   var returnOrigin = null;
   (function () {
     var m = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^\/?#]+)$/.exec(returnOriginRaw.trim());
@@ -79,7 +80,7 @@
     var btn = $("password-btn");
     btn.disabled = true;
     $("password-err").textContent = "";
-    postJson("/wsapi/registry_login", { account: account, password: $("password").value }).then(function (r) {
+    postJson("/wsapi/registry_login", { account: account, password: $("password").value, return_origin: returnOrigin, return_url: returnUrl }).then(function (r) {
       btn.disabled = false;
       if (r.ok && r.data.login) { dropApproval(); finish("login=" + encodeURIComponent(r.data.login)); return; }
       $("password-err").textContent = r.status === 429 ? "Too many attempts. Try again later." : "That didn't work. Check the password and try again.";
@@ -212,7 +213,7 @@
       proofs.proven = r.data.proven || []; proofs.hints = r.data.hints || []; proofs.needed = r.data.needed || 1;
       proofsUi();
       if (proofs.proven.length >= proofs.needed) {
-        return postJson("/wsapi/registry_login_proofs", { account: account, presentations: proofs.presentations }).then(function (t) {
+        return postJson("/wsapi/registry_login_proofs", { account: account, presentations: proofs.presentations, return_origin: returnOrigin, return_url: returnUrl }).then(function (t) {
           if (t.ok && t.data.login) { finish("login=" + encodeURIComponent(t.data.login)); return; }
           $("proofs-err").textContent = "That didn't work. Try the password instead.";
         });

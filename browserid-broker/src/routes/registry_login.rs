@@ -5,6 +5,12 @@
 //! enrol rule (`account_auth`, bean noqd); the token it mints records that
 //! so the registry enrols the key as `password`. Never reveals whether an
 //! account exists — every refusal is the same 403.
+//!
+//! The token goes only to an **accepted return origin** (registry-api-v1
+//! §4.2, fallback-idp-api-v1 §3.1): the minting handlers take the
+//! `return_origin` the page was opened with and refuse any other, so a
+//! page regression cannot deliver a token minted under the victim's
+//! password to an attacker-chosen target (audit 2026-11 S1 / W5-10).
 
 use std::sync::Arc;
 
@@ -26,6 +32,35 @@ pub struct LoginRequest {
     /// The account's public id (registry-api-v1 §3).
     pub account: String,
     pub password: String,
+    /// Where the page will deliver the token (§4.2): an accepted return
+    /// origin (`return_origin::is_accepted`), REQUIRED.
+    #[serde(default)]
+    pub return_origin: Option<String>,
+    /// The page's `return_url`, if any: must be same-origin to `return_origin`.
+    #[serde(default)]
+    pub return_url: Option<String>,
+}
+
+/// The accepted-return-origin rule, in the handler that mints the token
+/// (reg §4.2, S1): the origin must be one the issuer delivers to, and the
+/// return URL (when given) must sit on it. Refused with the same reason
+/// string the device-issue endpoint and the page use.
+fn check_return_origin<U: UserStore, S: SessionStore, E: EmailSender>(
+    state: &AppState<U, S, E>,
+    return_origin: Option<&str>,
+    return_url: Option<&str>,
+) -> Result<(), BrokerError> {
+    let refused = || BrokerError::PolicyRefused(crate::return_origin::REFUSAL.into());
+    let ro = return_origin.map(str::trim).filter(|s| !s.is_empty()).ok_or_else(refused)?;
+    if !state.return_origin_accepted(ro, &state.domain) {
+        return Err(refused());
+    }
+    if let Some(url) = return_url.map(str::trim).filter(|s| !s.is_empty()) {
+        if !crate::return_origin::same_origin(url, ro) {
+            return Err(refused());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -47,6 +82,7 @@ where
     S: SessionStore,
     E: EmailSender,
 {
+    check_return_origin(&state, req.return_origin.as_deref(), req.return_url.as_deref())?;
     let ip = super::auth::client_ip(&headers);
     {
         let mut attempts = state.login_attempts.write().unwrap();
@@ -94,6 +130,11 @@ where
 pub struct ProofsRequest {
     pub account: String,
     pub presentations: Vec<String>,
+    /// Required on `registry_login_proofs` (it mints); ignored by `hints`.
+    #[serde(default)]
+    pub return_origin: Option<String>,
+    #[serde(default)]
+    pub return_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -227,6 +268,7 @@ where
     S: SessionStore,
     E: EmailSender,
 {
+    check_return_origin(&state, req.return_origin.as_deref(), req.return_url.as_deref())?;
     let ip = super::auth::client_ip(&headers);
     rate_limited(&state, &ip)?;
     let Some(user_id) = state.user_store.user_for_public_id(req.account.trim())? else {

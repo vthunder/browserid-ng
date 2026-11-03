@@ -1,11 +1,11 @@
 ---
 # browserid-ng-rw5q
 title: '[Audit 2026-11] S1/W5-10: registry login token must be bound to an accepted return origin in the minting handler'
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-11-02T22:43:19Z
-updated_at: 2026-11-02T22:43:19Z
+updated_at: 2026-11-03T08:13:57Z
 parent: browserid-ng-ag1l
 ---
 
@@ -21,3 +21,13 @@ Update registry-login.js to send the origin. If a per-origin limiter is added, i
 Acceptance (un-ignore): browserid-broker/tests/authz_matrix_test.rs: registry_login_token_minting_checks_the_return_origin. Run the Playwright e2e for the registry login flow before deploying (CI does not run e2e).
 
 Reports: ws1 §2 S1, ws5 §1 (S1) and §2a (W5-10), ws8 §4. Ledger: docs/security-audit-2026-11.md. Decisions: docs/security-audit-2026-11-decisions.md.
+
+
+
+## Summary of Changes
+
+- routes/registry_login.rs: `POST /wsapi/registry_login` and `POST /wsapi/registry_login_proofs` take a REQUIRED `return_origin` (plus optional `return_url`) and refuse with `return_origin_not_allowed` (403) unless the origin passes the same accepted-return-origin rule as /device/issue (`state.return_origin_accepted`: loopback, custom scheme, own origin, TRUSTED_WALLET_ORIGINS) and `return_url` is same-origin to it. The check runs before any password work. `registry_login_hints` mints nothing and is unchanged.
+- return_origin.rs: new `same_origin(url, origin)` helper (default-port aware, rejects userinfo) with unit tests.
+- static/common/js/registry-login.js sends the fragment's return_origin/return_url on both minting calls; static/dialog.js and static/common/js/registry-session.js (same-origin wallet path) send `window.location.origin`.
+- Tests: un-ignored `registry_login_token_minting_checks_the_return_origin`; test helpers (tests/common/registry.rs, registry_api_test.rs) send the origin.
+- Deploy note: dialog.js and registry-login.js changed; run the Playwright registry-login e2e before deploying (CI does not run e2e).
