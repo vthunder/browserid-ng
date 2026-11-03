@@ -105,6 +105,31 @@ fn tenant_keypair<U: UserStore, S: SessionStore, E: EmailSender>(
         .map_err(|e| BrokerError::Internal(format!("tenant key unseal: {e}")))
 }
 
+/// The holder the hosted lane assigns a tenant user's device: namespace
+/// `<8 chars>` per (tenant, local part), suffix `<10 chars>` per device key,
+/// both derived from the tenant's secret signing key so neither is a
+/// caller's choice nor guessable from public data.
+fn assigned_holder(keypair: &browserid_core::KeyPair, tenant_id: u64, local: &str, device_pub: &PublicKey) -> String {
+    use sha2::{Digest, Sha256};
+    let secret = keypair.secret_bytes();
+    let mut h = Sha256::new();
+    h.update(b"browserid-hosted-holder-ns\0");
+    h.update(secret);
+    h.update(tenant_id.to_le_bytes());
+    h.update(local.to_lowercase().as_bytes());
+    let ns = URL_SAFE_NO_PAD.encode(h.finalize());
+    let mut h = Sha256::new();
+    h.update(b"browserid-hosted-holder-dev\0");
+    h.update(secret);
+    h.update(device_pub.to_base64().as_bytes());
+    let dev = URL_SAFE_NO_PAD.encode(h.finalize());
+    // Holder ids are `<prefix>.<suffix>` of URL-safe characters; `-`/`_`
+    // are fine for a holder but keep the alphabet to alphanumerics like
+    // `crypto::random_token` does.
+    let clean = |s: &str, n: usize| s.chars().filter(|c| c.is_ascii_alphanumeric()).take(n).collect::<String>();
+    format!("{}.{}", clean(&ns, 8), clean(&dev, 10))
+}
+
 // --- Tenant-user session cookie: stateless, signed by the broker key ------
 // Value: b64url(json{email, exp, mc}) + "." + b64url(sig). `mc` =
 // must-change-password: the session exists (so the page can drive the change
@@ -334,7 +359,8 @@ pub struct IdpDeviceCertRequest {
     pub email: String,
     pub device_pubkey: String,
     pub config_pubkey: String,
-    /// Passthrough holder from the dialog; absent = cold login, self-assign.
+    /// Accepted and ignored (older dialogs send the browser's holder): the
+    /// issuer assigns the holder (fb §3.2 / §7.4; audit 2026-11 D3).
     #[serde(default)]
     pub holder: Option<String>,
     /// The wallet's `return_origin` (fallback-idp-api-v1 §3.1); see
@@ -392,19 +418,16 @@ where
         (Ok(d), Ok(c)) => (d, c),
         (Err(e), _) | (_, Err(e)) => return err(StatusCode::BAD_REQUEST, format!("bad pubkey: {e}")),
     };
-    // Holder: verbatim passthrough (the dialog supplies the browser's stable
-    // holder, and the reissue hop supplies a corrected one), else self-assign
-    // a standalone `<prefix>.<rand>` exactly like a cold fallback login.
-    let holder_str = req
-        .holder
-        .clone()
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| {
-            crate::crypto::assign_holder_id(&crate::crypto::generate_namespace_prefix())
-        });
-    let holder = match browserid_core::device::Holder::new(holder_str) {
+    // Holder: issuer-assigned, never the caller's (fb §3.2, §7.4; audit
+    // 2026-11 D3). A tenant user has no broker account namespace, so the
+    // hosted lane keeps one per roster entry, derived from the tenant's
+    // secret key, and binds the suffix to the device key: the same device
+    // re-issued (the dialog's reissue hop) gets the same holder, two devices
+    // get two, and nobody can stamp another device's holder on their certs.
+    // `req.holder` is accepted for compatibility and ignored.
+    let holder = match browserid_core::device::Holder::new(assigned_holder(&keypair, tenant.id, &local, &device_pub)) {
         Ok(h) => h,
-        Err(e) => return err(StatusCode::BAD_REQUEST, format!("holder: {e}")),
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("holder: {e}")),
     };
     // Per-device status refs on the TENANT's list.
     let status_for = |pubkey: &PublicKey| -> Result<StatusRef, BrokerError> {

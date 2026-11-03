@@ -110,8 +110,6 @@ async fn idp_device_cert(server: &TestServer, cookie: &str, body: Value) -> (u16
 /// well-formed holder on its certs — including the holder of another,
 /// already-approved device — and satisfy holder-pinned warrant matchers
 /// meant for that device.
-// AUDIT-2026-11 D3: fails today
-#[ignore]
 #[tokio::test]
 async fn d3_tenant_device_cert_does_not_take_a_caller_chosen_holder() {
     let (server, store) = tenant_server();
