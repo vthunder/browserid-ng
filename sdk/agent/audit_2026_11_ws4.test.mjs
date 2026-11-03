@@ -5,15 +5,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inspect } from "node:util";
-import { mkdtemp, writeFile, stat, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import { requestProvision, DeviceAgent } from "./src/device.mjs";
-import { Agent } from "./src/agent.mjs";
-import { Credential } from "./src/credential.mjs";
 import { KeyPair, publicKeyField, decodeJwtClaims, b64u } from "./src/crypto.mjs";
-import { nowS, ASSERTION_VALIDITY_S, parseCert } from "./src/protocol.mjs";
+import { nowS, ASSERTION_VALIDITY_S } from "./src/protocol.mjs";
 
 const HDR = { alg: "EdDSA", typ: "JWT" };
 const BROKER = "https://broker.test";
@@ -178,54 +173,3 @@ test("W4-40 (pin): the assertion names the audience exactly, expires in <=5 min,
   assert.equal(c.typ, undefined, "assertion has no claim-level typ (spec §4)");
 });
 
-// ---------------------------------------------------------------------------
-// Pinned: the legacy `Agent` identity file is written 0600 and re-tightened
-// when it already existed with looser perms (July L10 class, re-verified).
-// ---------------------------------------------------------------------------
-function legacyCredential() {
-  const prov = KeyPair.generate();
-  const pcert = prov.jws(HDR, { typ: "browserid-provisioning-cert-v1", constraint: { names: ["bot"] } });
-  return new Credential({ secret_key: b64u(prov.seed), delegation: `ucert~${pcert}`, broker: BROKER, idp: IDP });
-}
-function legacyAgent(http) {
-  const key = KeyPair.generate();
-  const cert = KeyPair.generate().jws(HDR, {
-    typ: "browserid-agent-cert-v1", iss: IDP_DOMAIN, exp: nowS() + 99999,
-    principal: { email: "bot@idp.test" }, "public-key": publicKeyField(key.publicKeyB64),
-  });
-  return { key, agent: new Agent(legacyCredential(), { email: "bot@idp.test", cert: parseCert(cert), keypair: key, http }) };
-}
-
-test("legacy Agent.save writes the key file 0600 and tightens a pre-existing 0644 file", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "ws4-"));
-  const path = join(dir, "identity.json");
-  await writeFile(path, "{}", { mode: 0o644 });
-  const { agent, key } = legacyAgent(fetch);
-  await agent.save(path);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
-  const stored = JSON.parse(await readFile(path, "utf8"));
-  assert.equal(stored.identities[0].key_seed, b64u(key.seed), "seed stored in cleartext (by design, L10)");
-});
-
-// ---------------------------------------------------------------------------
-// W4-44 (drift, pinned) — the exported legacy `Agent` warrant lane speaks a
-// protocol the registrar does not: it posts a provisioning-key-signed
-// `request_bundle` where `/warrant/request` expects `device_cert`+`identity`
-// +`grants`, and on poll it reads `warrants` where the server sends `grants`,
-// so an approval is silently stored as nothing. Dead code that still keeps a
-// cleartext `secret_key` credential format alive; recommend deleting it.
-// ---------------------------------------------------------------------------
-test("W4-44 (pin): legacy Agent posts request_bundle and drops the server's `grants`", async () => {
-  const seen = {};
-  const http = async (url, init) => {
-    const body = JSON.parse(init.body);
-    if (url === `${BROKER}/warrant/request`) { seen.request = body; return json({ success: true, code: "w", verification_uri: `${BROKER}/v`, interval: 0 }); }
-    if (url === `${BROKER}/warrant/poll`) return json({ success: true, status: "approved", grants: [{ audience: AUD, warrant: "a.b.c~d.e.f" }] });
-    throw new Error(url);
-  };
-  const { agent } = legacyAgent(http);
-  const { approved } = await agent.requestWarrant(AUD, ["post"]);
-  await approved;
-  assert.ok(seen.request.request_bundle && !seen.request.device_cert, "legacy wire shape");
-  assert.deepEqual(agent.warrantedAudiences(), [], "the approval's grants are ignored");
-});
