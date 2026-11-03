@@ -1,11 +1,11 @@
 ---
 # browserid-ng-a7mx
 title: '[Audit 2026-11] W5-4: password change retires login keys enrolled by password and ends their sessions'
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-11-02T22:43:19Z
-updated_at: 2026-11-02T22:43:19Z
+updated_at: 2026-11-03T08:47:41Z
 parent: browserid-ng-ag1l
 ---
 
@@ -18,3 +18,9 @@ Change: in update_password, after the cookie-session eviction, revoke every logi
 Acceptance (un-ignore): browserid-broker/tests/authz_matrix_test.rs: password_change_ends_registry_sessions_enrolled_by_password. Wallet e2e: relogin must still work (memory: the relogin path forgets the key, never revokes).
 
 Reports: ws5 §2 and §4 (H2 row). Ledger: docs/security-audit-2026-11.md. Decisions: docs/security-audit-2026-11-decisions.md.
+
+
+## Summary of Changes
+
+- `/wsapi/update_password` (broker `routes/auth.rs`, outside registrar_glue — flagged, the handler lives there): after the cookie-session eviction, every login key with `enrolled_by = password` except the key the changing session is bound to is revoked and its registry sessions ended; proof- and approval-enrolled keys stay (decision Q4 (a)). The re-minted cookie session keeps its own key binding (recreate_session carries `login_key_id`), so the changing browser stays admitted and the device list is reachable right after.
+- Un-ignored `authz_matrix_test::password_change_ends_registry_sessions_enrolled_by_password`, extended: the other password-enrolled key is revoked, the changing session's key survives and the session stays admitted. Wallet relogin e2e not run here (Playwright lane).

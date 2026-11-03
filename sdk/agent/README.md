@@ -55,6 +55,10 @@ const { credential, grants, grantsDenied } = await pending.wait();
 - **`grantsDenied`** on the provisioning pickup means the human approved the
   identity but declined the permissions: the credential is real, ask again
   later with `requestWarrants`.
+- **`requestWarrants`** files a signed request: pass the `agent`
+  (`DeviceAgent`) — or `deviceCert` + `deviceKey` — and the SDK adds the
+  registry `Proof` header the device key signs over the body. The broker
+  refuses an unsigned filing (the device cert alone is public).
 - A denied `requestWarrants(...).wait()` throws with the broker's reason when
   it has one — `unknown_agent` means this account never met you: run
   `requestProvision` first.

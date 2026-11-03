@@ -132,10 +132,7 @@ fn agent_cert(idp: &KeyPair, agent_kp: &KeyPair, holder: &str) -> DeviceCert {
 /// File a JIT consent request for Alice's agent; returns the code.
 async fn file_agent_request(r: &Rig, agent_kp: &KeyPair) -> String {
     let cert = agent_cert(&r.idp, agent_kp, "ag.bot");
-    let resp = r
-        .server
-        .post("/warrant/request")
-        .json(&json!({
+    let resp = common::registry::warrant_request(&r.server, DOMAIN, agent_kp, json!({
             "device_cert": cert.encoded(),
             "identity": ALICE_BOT,
             "grants": [{ "audience": AUDIENCE, "scopes": ["post"] }],
@@ -567,13 +564,12 @@ async fn proof_jti_replay_is_rejected() {
 // 6. Findings that fail today (AUDIT-2026-11). Un-ignore when fixed.
 // ===========================================================================
 
-/// AUDIT-2026-11 D2: fails today. `respond` accepts a "config cert" that no
-/// issuer signed: it checks purpose, expiry, identity and that the warrant
-/// is signed by the cert's key, but never the issuer signature, nor that
-/// the key is a recorded, unretired cert of the account (I20, B4). The
-/// approval is stored and delivered to the filer.
+/// D2 (audit 2026-11, fixed in bean 0fy3): `respond` refuses a "config
+/// cert" no issuer signed. It used to check purpose, expiry, identity and
+/// that the warrant was signed by the cert's key, but never the issuer
+/// signature, nor that the key is a recorded, unretired cert of the
+/// account (I20, B4) — and the approval was delivered to the filer.
 #[tokio::test]
-#[ignore]
 async fn respond_refuses_a_config_cert_the_issuer_never_signed() {
     let r = rig();
     let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
@@ -609,12 +605,11 @@ async fn respond_refuses_a_config_cert_the_issuer_never_signed() {
     assert_ne!(poll["status"], "approved", "forged approval delivered: {poll}");
 }
 
-/// AUDIT-2026-11 D2 (variant): fails today. A config cert the issuer DID
-/// sign but which this registry has never recorded under the account — or
-/// has retired — signs approvals all the same. Here: a cert minted for a
-/// different holder than any the account has, never attached.
+/// D2 variant (fixed in bean 0fy3): a config cert the issuer DID sign but
+/// which this registry has never recorded under the account — or has
+/// retired — is refused `config_cert_not_recorded`. Here: a cert minted for
+/// a different holder than any the account has, never attached.
 #[tokio::test]
-#[ignore]
 async fn respond_refuses_a_config_cert_not_recorded_on_the_account() {
     let r = rig();
     let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
@@ -644,31 +639,60 @@ async fn respond_refuses_a_config_cert_not_recorded_on_the_account() {
     )
     .await;
     assert_ne!(resp.status_code(), 200, "unrecorded config cert accepted: {}", resp.text());
+    assert_eq!(resp.json::<Value>()["reason"], "config_cert_not_recorded", "{}", resp.text());
 }
 
-/// AUDIT-2026-11 D4: fails today. `/warrant/request` takes the agent's
-/// PUBLIC device cert and nothing signed by the agent's key, so anyone who
-/// has seen the cert (every audience it presented to) files consent
-/// requests in the agent's name (§7.5 step 1). The request below is filed
-/// by a party that never touches `agent_kp`'s private half.
+/// D4 (audit 2026-11, fixed in bean jvfr): `/warrant/request` used to take
+/// the agent's PUBLIC device cert and nothing signed by the agent's key, so
+/// anyone who had seen the cert (every audience it presented to) could
+/// file consent requests in the agent's name (§7.5 step 1). A filing now
+/// carries a `Proof` header the device key signs over the body: none, one
+/// by another key, one over different bytes, and a replayed one are all
+/// refused; the party below never touches `agent_kp`'s private half.
 #[tokio::test]
-#[ignore]
 async fn warrant_request_needs_a_signature_by_the_agent_key() {
     let r = rig();
     let _cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
     let agent_kp = KeyPair::generate();
     let cert = agent_cert(&r.idp, &agent_kp, "ag.bot");
-    drop(agent_kp); // the filer holds only the public cert
+    let body = json!({
+        "device_cert": cert.encoded(),
+        "identity": ALICE_BOT,
+        "grants": [{ "audience": AUDIENCE, "scopes": ["post"] }],
+    });
+    // No proof at all.
+    let resp = r.server.post("/warrant/request").json(&body).await;
+    assert_ne!(resp.status_code(), 200, "unsigned filing accepted: {}", resp.text());
+    // A proof by a key that is not the cert's.
+    let resp = common::registry::warrant_request(&r.server, DOMAIN, &KeyPair::generate(), body.clone()).await;
+    assert_ne!(resp.status_code(), 200, "foreign-key proof accepted: {}", resp.text());
+    // The right key over the wrong bytes (bh binds the body).
+    let htu = format!("{}/warrant/request", browserid_registrar::consent::public_origin(DOMAIN));
+    let other = json!({"x": 1}).to_string().into_bytes();
+    let header = browserid_registrar::session::build_proof_now("POST", &htu, Some(&other), &agent_kp);
     let resp = r
         .server
         .post("/warrant/request")
-        .json(&json!({
-            "device_cert": cert.encoded(),
-            "identity": ALICE_BOT,
-            "grants": [{ "audience": AUDIENCE, "scopes": ["post"] }],
-        }))
+        .add_header("proof", header)
+        .add_header("content-type", "application/json")
+        .bytes(body.to_string().into_bytes().into())
         .await;
-    assert_ne!(resp.status_code(), 200, "unsigned filing accepted: {}", resp.text());
+    assert_ne!(resp.status_code(), 200, "proof over other bytes accepted: {}", resp.text());
+    // The genuine filing, and its replay (same jti) refused.
+    let bytes = body.to_string().into_bytes();
+    let header = browserid_registrar::session::build_proof_now("POST", &htu, Some(&bytes), &agent_kp);
+    let send = |h: String| {
+        r.server
+            .post("/warrant/request")
+            .add_header("proof", h)
+            .add_header("content-type", "application/json")
+            .bytes(bytes.clone().into())
+    };
+    let first = send(header.clone()).await;
+    assert_eq!(first.status_code(), 200, "{}", first.text());
+    let replay = send(header).await;
+    assert_ne!(replay.status_code(), 200, "replayed proof accepted: {}", replay.text());
+    drop(agent_kp);
 }
 
 /// AUDIT-2026-11 D8: fails today. Nothing on `/api/v1` answers 429. Thirty
@@ -714,13 +738,11 @@ async fn api_v1_login_guessing_is_throttled() {
     assert!(saw_429, "30 bad login tokens from one IP were never rate-limited");
 }
 
-/// AUDIT-2026-11 D9: fails today (and reaches the network — keep ignored
-/// until the ordering is fixed). `accounts/lookup` runs issuer discovery
-/// for the carried cert before the possession proof is checked, so a
-/// garbage proof with a foreign-issuer cert produces a discovery error,
-/// not `invalid_proof` (I2).
+/// D9 (audit 2026-11, fixed in bean cd6r): `accounts/lookup` checks the
+/// possession proof under the cert's own key — and its claims and replay —
+/// before any issuer discovery, so a garbage proof with a foreign-issuer
+/// cert is `invalid_proof` with no network touched (I2).
 #[tokio::test]
-#[ignore]
 async fn lookup_checks_the_possession_proof_before_any_fetch() {
     let r = rig();
     let _cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
@@ -760,14 +782,14 @@ async fn lookup_checks_the_possession_proof_before_any_fetch() {
     assert_eq!(v["error"], "invalid_proof", "expected the local proof check first, got {v}");
 }
 
-/// AUDIT-2026-11 D11: fails today. The SQLite upsert on `pubkey` rewrites
-/// identities, holder and login key but keeps the OLD `user_id`, so a key
-/// already active on account A, attached from account B, leaves a row that
-/// belongs to A yet names B's identity, holder and login key. (The memory
-/// store moves the whole row to B instead — a different wrong answer, which
-/// is why this test runs on SqliteStore.)
+/// D11 (audit 2026-11, fixed in bean uphh): the SQLite upsert on `pubkey`
+/// used to rewrite identities, holder and login key but keep the OLD
+/// `user_id`, so a key already active on account A, recorded from account
+/// B, left a row that belonged to A yet named B's identity, holder and
+/// login key. Both stores now move the whole row (and the registrar only
+/// records a foreign active key when its identity moves with it). Runs on
+/// SqliteStore because the memory store never had the bug.
 #[test]
-#[ignore]
 fn sqlite_upsert_of_a_key_active_on_another_account_keeps_the_row_coherent() {
     let dir = tempfile::TempDir::new().unwrap();
     let store = SqliteStore::open(dir.path().join("t.db").to_str().unwrap()).unwrap();
@@ -802,31 +824,26 @@ fn sqlite_upsert_of_a_key_active_on_another_account_keeps_the_row_coherent() {
     );
 }
 
-/// AUDIT-2026-11 D18: fails today. The JIT lane accepts up to 10 grants
-/// (spec: 8) and does not reject duplicate audiences in one request.
+/// D18 (audit 2026-11, fixed in bean jvfr): the JIT lane takes at most 8
+/// grants (request-kinds/warrant) and refuses duplicate audiences in one
+/// request.
 #[tokio::test]
-#[ignore]
 async fn warrant_request_caps_grants_at_eight_and_rejects_duplicate_audiences() {
     let r = rig();
     let _cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
     let agent_kp = KeyPair::generate();
     let cert = agent_cert(&r.idp, &agent_kp, "ag.bot");
     let nine: Vec<Value> = (0..9).map(|i| json!({"audience": format!("https://a{i}.example.com"), "scopes": ["post"]})).collect();
-    let resp = r
-        .server
-        .post("/warrant/request")
-        .json(&json!({"device_cert": cert.encoded(), "identity": ALICE_BOT, "grants": nine}))
-        .await;
+    let resp = common::registry::warrant_request(&r.server, DOMAIN, &agent_kp, json!({"device_cert": cert.encoded(), "identity": ALICE_BOT, "grants": nine})).await;
     assert_ne!(resp.status_code(), 200, "nine grants accepted: {}", resp.text());
+    let eight: Vec<Value> = (0..8).map(|i| json!({"audience": format!("https://a{i}.example.com"), "scopes": ["post"]})).collect();
+    let resp = common::registry::warrant_request(&r.server, DOMAIN, &agent_kp, json!({"device_cert": cert.encoded(), "identity": ALICE_BOT, "grants": eight})).await;
+    assert_eq!(resp.status_code(), 200, "eight grants refused: {}", resp.text());
     let dup = vec![
         json!({"audience": AUDIENCE, "scopes": ["post"]}),
         json!({"audience": AUDIENCE, "scopes": ["read"]}),
     ];
-    let resp = r
-        .server
-        .post("/warrant/request")
-        .json(&json!({"device_cert": cert.encoded(), "identity": ALICE_BOT, "grants": dup}))
-        .await;
+    let resp = common::registry::warrant_request(&r.server, DOMAIN, &agent_kp, json!({"device_cert": cert.encoded(), "identity": ALICE_BOT, "grants": dup})).await;
     assert_ne!(resp.status_code(), 200, "duplicate audiences accepted: {}", resp.text());
 }
 
@@ -875,14 +892,13 @@ async fn idp_login_is_throttled() {
     assert!(saw_429, "25 wrong tenant passwords from one IP were never rate-limited");
 }
 
-/// AUDIT-2026-11 W5-3: fails today. `/wsapi/record_device_cert` is
-/// unauthenticated and looks the identity up BEFORE verifying the cert's
-/// signature, so an unsigned config cert naming an address answers "no
-/// account holds this identity" for strangers and something else for real
-/// accounts (July M7 class). Kept ignored: the existing-account path then
-/// tries issuer discovery over the network.
+/// W5-3 (audit 2026-11, fixed in bean imn6): `/wsapi/record_device_cert`
+/// is unauthenticated; it used to look the identity up BEFORE verifying
+/// the cert's signature, so an unsigned config cert naming an address
+/// answered "no account holds this identity" for strangers and something
+/// else for real accounts (July M7 class). The signature is checked first
+/// now and every refusal is the one generic answer.
 #[tokio::test]
-#[ignore]
 async fn record_device_cert_does_not_reveal_account_existence() {
     let r = rig();
     let _cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
@@ -907,19 +923,22 @@ async fn record_device_cert_does_not_reveal_account_existence() {
     assert_eq!(exists, absent, "existence oracle: {exists} vs {absent}");
 }
 
-/// AUDIT-2026-11 W5-4 (decision needed, see report): fails today. A
-/// password change on the cookie surface ends cookie sessions (July H2 fix)
-/// but leaves every enrolled registry login key — and its bearer sessions —
-/// live, so an attacker who enrolled a wallet keeps the account after the
-/// user "changes the password". I26 ties sessions to login keys; the spec
-/// does not say whether a password change retires keys enrolled by it.
+/// W5-4 (audit 2026-11, decision Q4 (a), fixed in bean a7mx): a password
+/// change on the cookie surface ends cookie sessions (July H2) AND retires
+/// every registry login key enrolled by password — with its bearer
+/// sessions — except the key the changing session is bound to; keys
+/// enrolled by identity proofs or approval stay. So a wallet an attacker
+/// enrolled with the old password does not keep the account.
 #[tokio::test]
-#[ignore]
 async fn password_change_ends_registry_sessions_enrolled_by_password() {
     let r = rig();
     let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
     let sess = common::registry::api_login(&r.server, &cookie, PASSWORD).await;
     assert_eq!(api_get(&r.server, &sess, "/api/v1/login-keys").await.status_code(), 200);
+    // The session making the change is admitted on its own password-enrolled
+    // key (create_user admits the browser): that key must survive.
+    let ctx: Value = cookie_call(&r.server, "GET", "/wsapi/session_context", Some(&cookie), None).await.json();
+    assert_eq!(ctx["admitted"], true, "{ctx}");
     let csrf = get_csrf(&r.server, &cookie).await;
     let resp = cookie_call(
         &r.server,
@@ -930,8 +949,19 @@ async fn password_change_ends_registry_sessions_enrolled_by_password() {
     )
     .await;
     assert_eq!(resp.status_code(), 200, "update_password: {}", resp.text());
+    // The change re-mints the caller's cookie session (July H2).
+    let fresh = resp.cookie("browserid_session").value().to_string();
     let after = api_get(&r.server, &sess, "/api/v1/login-keys").await;
     assert_eq!(after.status_code(), 401, "registry session survived the password change: {}", after.text());
+    // The changing browser is still admitted on its own key.
+    let ctx: Value = cookie_call(&r.server, "GET", "/wsapi/session_context", Some(&fresh), None).await.json();
+    assert_eq!(ctx["admitted"], true, "the changing session lost its own key: {ctx}");
+    // Its key is live; the other password-enrolled key is revoked.
+    let user = r.store.get_user_by_email(ALICE).unwrap().unwrap();
+    let keys = r.store.list_login_certs(user.id).unwrap();
+    let revoked = keys.iter().find(|k| k.kid == sess.key.public_key().kid()).expect("the wallet's key");
+    assert!(revoked.revoked_at.is_some(), "the other password-enrolled key survived");
+    assert!(keys.iter().any(|k| k.revoked_at.is_none() && k.enrolled_by == "password"), "the changing session's own key was retired");
 }
 
 /// Policy PUT is session-bound like every other mutation (I22) and only
@@ -975,33 +1005,63 @@ async fn registry_login_token_minting_checks_the_return_origin() {
     assert_ne!(resp.status_code(), 200, "token minted for a foreign return origin: {}", resp.text());
 }
 
-/// AUDIT-2026-11 W5-11: fails today. Reg §3 (amended) names one scope
-/// grammar `^[a-z0-9_:.\-/*@+]{1,128}$`; `validate_grant_shape` checks
-/// only count and length, so spaces, uppercase and punctuation pass.
+/// W5-11 (audit 2026-11, fixed in bean lu7i): reg §3 names one scope
+/// grammar `^[a-z0-9_:.\-/*@+]{1,128}$`; `validate_grant_shape` applies
+/// `browserid_core::validate_scope_string`, so spaces, uppercase,
+/// punctuation, non-ASCII and the empty string are refused at filing.
 #[tokio::test]
-#[ignore]
 async fn filed_scopes_must_match_the_one_scope_grammar() {
     let r = rig();
     let _cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
     let agent_kp = KeyPair::generate();
     let cert = agent_cert(&r.idp, &agent_kp, "ag.bot");
     for bad in ["Post", "read write", "x;y", "émoji", ""] {
-        let resp = r
-            .server
-            .post("/warrant/request")
-            .json(&json!({"device_cert": cert.encoded(), "identity": ALICE_BOT,
-                "grants": [{"audience": AUDIENCE, "scopes": [bad]}]}))
-            .await;
+        let resp = common::registry::warrant_request(&r.server, DOMAIN, &agent_kp, json!({"device_cert": cert.encoded(), "identity": ALICE_BOT,
+                "grants": [{"audience": AUDIENCE, "scopes": [bad]}]})).await;
         assert_ne!(resp.status_code(), 200, "scope {bad:?} accepted: {}", resp.text());
     }
+    let resp = common::registry::warrant_request(&r.server, DOMAIN, &agent_kp, json!({"device_cert": cert.encoded(), "identity": ALICE_BOT,
+            "grants": [{"audience": AUDIENCE, "scopes": ["tool:read_file", "as:alice@example.com", "path:/notes/*"]}]})).await;
+    assert_eq!(resp.status_code(), 200, "in-grammar scopes refused: {}", resp.text());
 }
 
-/// AUDIT-2026-11 W5-12: fails today. Reg §5.2.8 (amended): an account at
-/// its cap of open approvals answers the same 200 as an unknown account.
-/// Today the sixth open answers `403 login_rejected`, which tells the
-/// caller both that the account exists and that it is busy.
+/// S11 (audit 2026-11, bean imn6): enrolling a login key that is live on
+/// another account answers exactly what a bad login-page token answers —
+/// `403 login_rejected`, same body — not "this key is a login key on
+/// another account".
 #[tokio::test]
-#[ignore]
+async fn foreign_login_key_is_refused_like_a_bad_token() {
+    let r = rig();
+    let alice = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
+    let bob = create_user(&r.server, &r.sender, BOB, PASSWORD).await;
+    let shared = KeyPair::generate();
+    let _alice_sess = common::registry::api_login_with_key(&r.server, &alice, PASSWORD, shared.clone()).await.expect("alice enrols the key");
+    let foreign = match common::registry::api_login_with_key(&r.server, &bob, PASSWORD, shared).await {
+        Ok(_) => panic!("bob enrolled alice's live login key"),
+        Err(e) => e,
+    };
+    // The reference refusal: a bad token on bob's own account.
+    let ctx: Value = cookie_call(&r.server, "GET", "/wsapi/session_context", Some(&bob), None).await.json();
+    let account = ctx["account"].as_str().unwrap();
+    let origin = browserid_registrar::consent::public_origin(DOMAIN);
+    let htu = format!("{origin}/api/v1/login");
+    let key = KeyPair::generate();
+    let now = Utc::now().timestamp();
+    let body = json!({ "account": account, "method": "login_page", "token": "not-a-token",
+        "login_key": { "pubkey": key.public_key().to_base64(), "label": "x",
+            "proof": browserid_registrar::session::build_proof("POST", &htu, None, &key, now, "j-bad") } })
+        .to_string().into_bytes();
+    let header = browserid_registrar::session::build_proof("POST", &htu, Some(&body), &key, now, "j-bad");
+    let bad = r.server.post("/api/v1/login").add_header("proof", header).add_header("content-type", "application/json").bytes(body.into()).await;
+    assert_eq!(foreign.0, bad.status_code().as_u16(), "{:?} vs {}", foreign, bad.text());
+    assert_eq!(foreign.1, bad.json::<Value>(), "the two refusals must be indistinguishable");
+}
+
+/// W5-12 (audit 2026-11, fixed in bean imn6): reg §5.2.8 — an account at
+/// its cap of open approvals answers the same 200 as an unknown account
+/// (a code nothing will approve), not a `403` that told the caller both
+/// that the account exists and that it is busy.
+#[tokio::test]
 async fn approvals_at_the_cap_answer_like_an_unknown_account() {
     let r = rig();
     let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
@@ -1015,11 +1075,11 @@ async fn approvals_at_the_cap_answer_like_an_unknown_account() {
     assert!(sixth.json::<Value>()["code"].is_string());
 }
 
-/// AUDIT-2026-11 W5-13: fails today. Reg §5.3 (amended): `claim` claims a
-/// pending agent request too (binds it to the account, allocates indices).
-/// `claim_core` answers 404 for every `agent`-kind request.
+/// W5-13 (audit 2026-11, fixed in bean 1dy0): reg §5.3 — `claim` claims a
+/// pending agent request too (it is bound to the delegator's account at
+/// filing; the claim re-states that and answers the item with its
+/// allocated indices). Another account's claim is a 404.
 #[tokio::test]
-#[ignore]
 async fn claim_accepts_a_pending_agent_request() {
     let r = rig();
     let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
@@ -1028,4 +1088,16 @@ async fn claim_accepts_a_pending_agent_request() {
     let code = file_agent_request(&r, &agent_kp).await;
     let resp = api_post(&r.server, &sess, "/api/v1/requests/claim", json!({"code": code})).await;
     assert_eq!(resp.status_code(), 200, "claim of an agent code: {} {}", resp.status_code(), resp.text());
+    let item: Value = resp.json();
+    assert_eq!(item["code"], code, "{item}");
+    assert_eq!(item["kind"], "agent", "{item}");
+    assert!(item["grants"][0]["status_idx"].is_u64(), "indices allocated: {item}");
+    // Idempotent for the same account.
+    let again = api_post(&r.server, &sess, "/api/v1/requests/claim", json!({"code": code})).await;
+    assert_eq!(again.status_code(), 200, "{}", again.text());
+    // Not for another account.
+    let bob = create_user(&r.server, &r.sender, BOB, PASSWORD).await;
+    let bob_sess = common::registry::api_login(&r.server, &bob, PASSWORD).await;
+    let other = api_post(&r.server, &bob_sess, "/api/v1/requests/claim", json!({"code": code})).await;
+    assert_eq!(other.status_code(), 404, "{}", other.text());
 }

@@ -3,7 +3,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { requestProvision, DeviceAgent } from "./src/device.mjs";
+import { requestProvision, requestWarrants, requestProof, DeviceAgent } from "./src/device.mjs";
+import { createHash } from "node:crypto";
 import { KeyPair, publicKeyField, decodeJwtClaims, PublicKey, b64u } from "./src/crypto.mjs";
 import { nowS } from "./src/protocol.mjs";
 
@@ -280,4 +281,41 @@ test("signing is byte-identical to the Rust core (known-answer vector)", () => {
   assert.equal(kp.publicKeyB64, "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ");
   assert.equal(kp.sign("aGVhZGVy.cGF5bG9hZA"),
     "XXPvOzV0JK3iY3oG_fHIaieC3Kd9sstOtCOl8jmQIW9p8f_tDHPXaHJ-Qab_HvHOAwR706iOUcxzrl0YMDEpAw");
+});
+
+// ---------------------------------------------------------------------------
+// Audit 2026-11 D4: a warrant filing carries a registry §4.4 `Proof` header
+// by the DEVICE key over the exact body bytes — the cert alone is public.
+// ---------------------------------------------------------------------------
+test("requestWarrants signs the filing with the device key (Proof header, bh over the body)", async () => {
+  const { http: base, state } = mockServer();
+  const seen = {};
+  const http = async (url, init) => {
+    if (url === `${BROKER}/warrant/request`) {
+      seen.headers = init.headers; seen.body = init.body;
+      return json({ success: true, code: "w1", verification_uri: `${BROKER}/consent/w1`, interval: 0, expires_in: 900 });
+    }
+    return base(url, init);
+  };
+  const pending = await requestProvision(BROKER, { handle: "bot", http });
+  const { credential } = await pending.wait();
+  const agent = new DeviceAgent(credential, { http });
+  const r = await requestWarrants(BROKER, { agent, identity: agent.email, grants: [{ audience: AUD, scopes: ["post"] }], http });
+  assert.equal(r.code, "w1");
+  const [h, c, sig] = seen.headers.proof.split(".");
+  const header = decodeJwtClaims(`${h}.${c}.${sig}`);
+  const hdr = JSON.parse(Buffer.from(h, "base64url").toString());
+  assert.equal(hdr.typ, "browserid-registry-proof-v1");
+  const deviceKey = KeyPair.fromSeed(Buffer.from(credential.device_key, "base64url"));
+  assert.equal(hdr.kid, createHash("sha256").update(Buffer.from(deviceKey.publicRaw)).digest("base64url"), "kid = sha256(device public key)");
+  assert.equal(header.htm, "POST");
+  assert.equal(header.htu, `${BROKER}/warrant/request`);
+  assert.equal(header.bh, createHash("sha256").update(Buffer.from(seen.body, "utf8")).digest("base64url"), "bh binds the body bytes");
+  assert.ok(PublicKey.fromRaw(deviceKey.publicRaw).verify(`${h}.${c}`, sig), "signed by the device key");
+  // Without a signer the SDK refuses to file at all.
+  await assert.rejects(requestWarrants(BROKER, { deviceCert: state.deviceCert, identity: EMAIL, grants: [{ audience: AUD }], http }), /sign/);
+  // A bare KeyPair works too.
+  const r2 = await requestWarrants(BROKER, { deviceCert: state.deviceCert, deviceKey, identity: EMAIL, grants: [{ audience: AUD }], http });
+  assert.equal(r2.code, "w1");
+  assert.equal(typeof requestProof(deviceKey, "POST", "https://x", Buffer.from("{}")), "string");
 });

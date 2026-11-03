@@ -147,6 +147,20 @@ function startServer({ approveLogin, approveRequest, approvePair, notify, onStat
             const outcome = await require('./consent').hostConsent({ code, testAction: action || 'approve' });
             return json(req, res, 200, { outcome });
           }
+          if (url.pathname === '/test/file_request') {
+            // Files an agent request with THIS device's cert, signed by its
+            // device key (audit 2026-11 D4: /warrant/request needs a Proof
+            // header by the cert's key; the e2e used to post the bare cert).
+            const { audience, scopes } = await readBody(req);
+            const { proof } = require('./crypto');
+            const broker = require('./broker');
+            const s = store.state();
+            const path = '/warrant/request';
+            const body = JSON.stringify({ device_cert: s.deviceCert, identity: s.identity, grants: [{ audience, scopes: scopes || ['post'] }] });
+            const header = await proof(s.deviceKey, 'POST', broker.ORIGIN + path, { body, x: s.deviceKey.x });
+            const rr = await fetch(broker.BROKER + path, { method: 'POST', headers: { 'content-type': 'application/json', proof: header }, body });
+            return json(req, res, rr.status, await rr.json().catch(() => ({})));
+          }
           if (url.pathname === '/test/inbox') {
             // Drives the registry-API token lane end to end.
             return json(req, res, 200, await require('./registry').listRequests());

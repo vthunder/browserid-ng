@@ -1,10 +1,12 @@
-//! WS8 PoC — D2: consent `respond` accepts a config cert that the broker
-//! never signed. `validate_grant_warrants` (consent.rs:678) parses the config
-//! cert and checks only purpose + `authorizes_identity(grantor)` + that the
-//! warrant is signed by that same cert's key. It never verifies the cert
+//! WS8 PoC — D2, now a regression test (bean 0fy3): consent `respond` used
+//! to accept a config cert that the broker never signed. `validate_grant_warrants`
+//! parsed the config cert and checked only purpose + `authorizes_identity(grantor)`
+//! + that the warrant was signed by that same cert's key — never the cert
 //! against the account's IdP key, that it is enrolled on the account, or its
-//! status. So a fully self-minted (attacker-keyed) config cert is accepted.
-//! Full HTTP flow against an in-process broker. No production host.
+//! status. So a fully self-minted (attacker-keyed) config cert was accepted.
+//! Since the fix the shared `recorded_config_cert` bar refuses it and the
+//! forged grant never reaches the filer. Full HTTP flow against an
+//! in-process broker. No production host.
 mod common;
 
 use std::sync::Arc;
@@ -35,8 +37,7 @@ fn make_server() -> (TestServer, MockEmailSender, KeyPair) {
 }
 
 #[tokio::test]
-#[ignore] // AUDIT-2026-11 D2: PoC, passes today (respond accepts a non-IdP-signed config cert); flips when respond verifies the config cert
-async fn d2_poc_respond_accepts_a_self_minted_config_cert() {
+async fn d2_poc_respond_refuses_a_self_minted_config_cert() {
     let (server, sender, idp_kp) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
@@ -51,8 +52,7 @@ async fn d2_poc_respond_accepts_a_self_minted_config_cert() {
     ).unwrap();
 
     // File a request for a self-grant (grantor == grantee == agent).
-    let r = server.post("/warrant/request")
-        .json(&json!({ "device_cert": acert.encoded(), "identity": agent,
+    let r = common::registry::warrant_request(&server, DOMAIN, &agent_kp, json!({ "device_cert": acert.encoded(), "identity": agent,
             "grants": [{ "audience": AUDIENCE, "scopes": ["post"] }], "grantor": "self" }))
         .await;
     assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
@@ -89,11 +89,11 @@ async fn d2_poc_respond_accepts_a_self_minted_config_cert() {
             "warrants": [warrant.encoded()], "config_cert": forged_config.encoded() }))
         .await;
     println!("[D2] respond status = {} body = {}", r.status_code(), r.text());
-    assert_eq!(r.status_code(), 200,
-        "PoC: respond accepted a config cert the broker never signed");
+    assert_eq!(r.status_code(), 422, "respond accepted a config cert the broker never signed: {}", r.text());
+    assert_eq!(r.json::<Value>()["reason"], "config_cert_invalid", "{}", r.text());
 
-    // And the forged grant is delivered to the agent verbatim.
+    // And nothing is delivered to the agent: the request is still pending.
     let poll: Value = server.post("/warrant/poll").json(&json!({ "code": code })).await.json();
     println!("[D2] poll status = {}", poll["status"]);
-    assert_eq!(poll["status"], "approved", "the forged-config grant was delivered");
+    assert_ne!(poll["status"], "approved", "the forged-config grant was delivered");
 }

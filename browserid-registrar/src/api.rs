@@ -442,6 +442,7 @@ fn with_code_fields(mut v: serde_json::Value, code: &str, consent_uri: &str) -> 
 /// resource's audience proof, an anonymous provisioning pairing).
 pub async fn file_request(
     State(state): State<Arc<RegistrarState>>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
     let mut v: serde_json::Value = match serde_json::from_slice(&body) {
@@ -459,7 +460,7 @@ pub async fn file_request(
                 Ok(r) => r,
                 Err(e) => return ApiError::InvalidRequest(format!("bad warrant request: {e}")).into_response(),
             };
-            match crate::consent::warrant_request(State(state), Json(req)).await {
+            match crate::consent::warrant_request_core(&state, &headers, "/api/v1/requests", &body, req).await {
                 Ok(Json(r)) => {
                     let (code, uri) = (r.code.clone(), r.verification_uri_complete.clone());
                     let v = serde_json::to_value(r).unwrap_or_default();
@@ -556,7 +557,7 @@ pub async fn respond(
         grantor: req.grantor,
     };
     let return_url =
-        crate::consent::respond_core(&state, user.user_id, &core).map_err(consent_err)?;
+        crate::consent::respond_core(&state, user.user_id, &core).await.map_err(consent_err)?;
     let mut resp = serde_json::Map::new();
     if let Some(url) = return_url {
         resp.insert("return_url".into(), serde_json::Value::String(url));
@@ -656,6 +657,7 @@ pub async fn register_warrant(
         Some(_) => {}
     }
     crate::consent::register_warrant_core(&state, user.user_id, &req.warrant, &req.config_cert)
+        .await
         .map_err(consent_err)?;
     let id = state
         .store

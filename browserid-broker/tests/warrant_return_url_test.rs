@@ -24,19 +24,20 @@ const AGENT: &str = "alice+gate@example.com";
 const AUDIENCE: &str = "https://mcp.example.com";
 const RETURN_URL: &str = "https://mcp.example.com/authorize/return?st=abc123";
 
-fn make_server() -> (TestServer, MockEmailSender, KeyPair) {
+fn make_server() -> (TestServer, MockEmailSender, KeyPair, Arc<InMemoryUserStore>) {
     let keypair = KeyPair::generate();
     let email_sender = Arc::new(MockEmailSender::new());
+    let store = Arc::new(InMemoryUserStore::new());
     let mut state = AppState::new_with_arcs(
         keypair.clone(),
         DOMAIN.to_string(),
-        Arc::new(InMemoryUserStore::new()),
+        store.clone(),
         Arc::new(InMemorySessionStore::new()),
         email_sender.clone(),
     );
     state.agent_provisioning_enabled = true;
     let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
-    (server, MockEmailSender { sent: email_sender.sent.clone() }, keypair)
+    (server, MockEmailSender { sent: email_sender.sent.clone() }, keypair, store)
 }
 
 async fn csrf(server: &TestServer, session: &str) -> String {
@@ -70,7 +71,7 @@ fn certs(idp_kp: &KeyPair) -> (DeviceCert, KeyPair, DeviceCert, KeyPair) {
 }
 
 /// Raise a warrant request; returns the HTTP response.
-async fn raise(server: &TestServer, agent_cert: &DeviceCert, return_url: Option<&str>) -> axum_test::TestResponse {
+async fn raise(server: &TestServer, agent_cert: &DeviceCert, agent_kp: &KeyPair, return_url: Option<&str>) -> axum_test::TestResponse {
     let mut body = json!({
         "device_cert": agent_cert.encoded(),
         "identity": AGENT,
@@ -80,7 +81,7 @@ async fn raise(server: &TestServer, agent_cert: &DeviceCert, return_url: Option<
     if let Some(u) = return_url {
         body["return_url"] = json!(u);
     }
-    server.post("/warrant/request").json(&body).await
+    common::registry::warrant_request(server, DOMAIN, agent_kp, body).await
 }
 
 /// Approve the (single) pending request as the delegator; returns the
@@ -125,12 +126,13 @@ async fn approve(
 /// delivers over the normal poll.
 #[tokio::test]
 async fn return_url_persisted_and_echoed_on_approval() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
-    let (agent_cert, _agent_kp, config_cert, config_kp) = certs(&idp_kp);
+    let (agent_cert, agent_kp, config_cert, config_kp) = certs(&idp_kp);
+    common::record_config_cert(&store, DELEGATOR, &config_cert);
 
-    let r = raise(&server, &agent_cert, Some(RETURN_URL)).await;
+    let r = raise(&server, &agent_cert, &agent_kp, Some(RETURN_URL)).await;
     assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
     let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
 
@@ -151,12 +153,13 @@ async fn return_url_persisted_and_echoed_on_approval() {
 /// A request without a return_url responds without one (no field at all).
 #[tokio::test]
 async fn no_return_url_means_none_echoed() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
-    let (agent_cert, _agent_kp, config_cert, config_kp) = certs(&idp_kp);
+    let (agent_cert, agent_kp, config_cert, config_kp) = certs(&idp_kp);
+    common::record_config_cert(&store, DELEGATOR, &config_cert);
 
-    let r = raise(&server, &agent_cert, None).await;
+    let r = raise(&server, &agent_cert, &agent_kp, None).await;
     assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
     let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
 
@@ -169,10 +172,10 @@ async fn no_return_url_means_none_echoed() {
 /// the whole request up front.
 #[tokio::test]
 async fn foreign_return_url_is_refused() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, _store) = make_server();
     let _session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let _sess = common::registry::api_login(&server, &_session, "testpassword").await;
-    let (agent_cert, _agent_kp, _config_cert, _config_kp) = certs(&idp_kp);
+    let (agent_cert, agent_kp, _config_cert, _config_kp) = certs(&idp_kp);
 
     for bad in [
         "https://evil.example/phish",
@@ -185,7 +188,7 @@ async fn foreign_return_url_is_refused() {
         // Not a web URL at all.
         "javascript:alert(1)",
     ] {
-        let r = raise(&server, &agent_cert, Some(bad)).await;
+        let r = raise(&server, &agent_cert, &agent_kp, Some(bad)).await;
         assert_ne!(r.status_code(), 200, "return_url {bad} must be refused");
     }
 }
@@ -195,13 +198,13 @@ async fn foreign_return_url_is_refused() {
 /// shape).
 #[tokio::test]
 async fn identity_domain_return_url_is_accepted() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, _store) = make_server();
     let _session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let _sess = common::registry::api_login(&server, &_session, "testpassword").await;
-    let (agent_cert, _agent_kp, _config_cert, _config_kp) = certs(&idp_kp);
+    let (agent_cert, agent_kp, _config_cert, _config_kp) = certs(&idp_kp);
 
     // AGENT is alice+gate@example.com — example.com is the identity domain.
-    let r = raise(&server, &agent_cert, Some("https://example.com/agents/return")).await;
+    let r = raise(&server, &agent_cert, &agent_kp, Some("https://example.com/agents/return")).await;
     assert_eq!(r.status_code(), 200, "identity-domain return_url: {:?}", r.text());
 }
 
@@ -209,12 +212,12 @@ async fn identity_domain_return_url_is_accepted() {
 /// return link; it never auto-navigates on deny).
 #[tokio::test]
 async fn denial_echoes_return_url() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, _store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
-    let (agent_cert, _agent_kp, _config_cert, _config_kp) = certs(&idp_kp);
+    let (agent_cert, agent_kp, _config_cert, _config_kp) = certs(&idp_kp);
 
-    let r = raise(&server, &agent_cert, Some(RETURN_URL)).await;
+    let r = raise(&server, &agent_cert, &agent_kp, Some(RETURN_URL)).await;
     assert_eq!(r.status_code(), 200, "request: {:?}", r.text());
     let code = r.json::<Value>()["code"].as_str().unwrap().to_string();
 

@@ -268,6 +268,23 @@ where
     // one for the caller so the password change also logs out any other live
     // session (e.g. a co-resident attacker) without logging *this* user out.
     state.session_store.delete_by_user(session.user_id)?;
+    // And every registry login key the OLD password let in (audit 2026-11
+    // W5-4, decision Q4 (a)): a key enrolled through the login page by
+    // password — except the one this very session is bound to — is revoked
+    // and its bearer sessions ended, so a wallet an attacker enrolled with
+    // the old password does not keep the account. Keys enrolled by identity
+    // proofs or by approval stay: the password never vouched for them.
+    for k in state.user_store.list_login_certs(session.user_id)? {
+        if k.revoked_at.is_some()
+            || k.enrolled_by != browserid_registrar::policy::ENROLLED_BY_PASSWORD
+            || session.login_key_id == Some(k.id)
+        {
+            continue;
+        }
+        state.user_store.revoke_login_cert(session.user_id, k.id)?;
+        state.user_store.end_sessions_on_login_key(session.user_id, k.id).ok();
+        tracing::info!(kid = %k.kid, "update_password: retired a password-enrolled login key");
+    }
     let fresh = super::session::recreate_session(
         state.session_store.as_ref(),
         &session,

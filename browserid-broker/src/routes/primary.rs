@@ -287,27 +287,18 @@ where
         return refuse("cert expired");
     }
 
-    // Whose registry row is this? The first concrete identity with an account
-    // here. No account → nothing to record (not an error; the identity may
-    // simply never have used this broker).
-    let Some((identity, user_id)) = cc
-        .identities
-        .iter()
-        .filter(|i| !i.contains('*'))
-        .find_map(|i| {
-            state
-                .user_store
-                .get_email(i)
-                .ok()
-                .flatten()
-                .map(|rec| (i.clone(), rec.user_id))
-        })
-    else {
-        return refuse("no account holds this identity");
+    // The cert's own concrete identity names the issuer domain to check it
+    // against. The signature is verified BEFORE any account lookup, and
+    // every refusal from here on is the same one (audit 2026-11 W5-3 /
+    // S11): an unauthenticated caller must not learn from this endpoint
+    // whether an address has an account here.
+    const NOT_RECORDED: &str = "cert not recorded";
+    let Some(identity) = cc.identities.iter().find(|i| !i.contains('*')).cloned() else {
+        return refuse(NOT_RECORDED);
     };
     let Some(domain) = browserid_core::identity::email_domain(&identity).map(str::to_string)
     else {
-        return refuse("malformed identity");
+        return refuse(NOT_RECORDED);
     };
 
     // Issuer-conformant key from DNSSEC discovery; signature must verify.
@@ -316,11 +307,12 @@ where
         .await
         .map_err(|e| BrokerError::Internal(format!("DNS discovery not configured: {e}")))?;
     let accepted = vec![state.domain.clone()];
-    let key = crate::verifier::resolve_conformant_key(fetcher.as_ref(), &accepted, &domain, &cc.iss)
-        .await
-        .map_err(BrokerError::InvalidAssertion)?;
+    let Ok(key) = crate::verifier::resolve_conformant_key(fetcher.as_ref(), &accepted, &domain, &cc.iss).await
+    else {
+        return refuse(NOT_RECORDED);
+    };
     if cert.verify(&key).is_err() {
-        return refuse("signature does not verify under the issuer's key");
+        return refuse(NOT_RECORDED);
     }
 
     // Status: FAIL-CLOSED at the cert's own authority.
@@ -346,12 +338,24 @@ where
                 !crate::routes::session::cookie_secure(&state.domain),
             )
             .await
-            .map_err(|e| BrokerError::InvalidAssertion(format!("status unverifiable: {e}")))?
+            .unwrap_or(true)
         };
         if revoked {
-            return refuse("cert is revoked");
+            return refuse(NOT_RECORDED);
         }
     }
+
+    // Whose registry row is this? The first concrete identity with an account
+    // here. No account → nothing to record (same answer as every refusal,
+    // and only after the cert proved genuine).
+    let Some(user_id) = cc
+        .identities
+        .iter()
+        .filter(|i| !i.contains('*'))
+        .find_map(|i| state.user_store.get_email(i).ok().flatten().map(|rec| rec.user_id))
+    else {
+        return refuse(NOT_RECORDED);
+    };
 
     let rec = crate::store::DeviceCertRecord {
         id: 0,

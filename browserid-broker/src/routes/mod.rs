@@ -90,6 +90,10 @@ where
                 domain: state.domain.clone(),
                 idp_host: state.idp_host.clone(),
                 max_agent_identities: state.max_agent_identities_per_user,
+                bridge_grant: {
+                    let app = state.clone();
+                    Arc::new(move |user_id, email| app.take_bridge_grant(user_id, email))
+                },
             }),
             issuer_resolver,
             // Audience-proof fetching for record requests (spec §7.5): the

@@ -28,19 +28,20 @@ const DELEGATOR: &str = "alice@example.com";
 const AGENT: &str = "alice+poster@example.com";
 const AUDIENCE: &str = "sbo+raw://avail:turing:506/";
 
-fn make_server() -> (TestServer, MockEmailSender, KeyPair) {
+fn make_server() -> (TestServer, MockEmailSender, KeyPair, Arc<InMemoryUserStore>) {
     let keypair = KeyPair::generate();
     let email_sender = Arc::new(MockEmailSender::new());
+    let store = Arc::new(InMemoryUserStore::new());
     let mut state = AppState::new_with_arcs(
         keypair.clone(),
         DOMAIN.to_string(),
-        Arc::new(InMemoryUserStore::new()),
+        store.clone(),
         Arc::new(InMemorySessionStore::new()),
         email_sender.clone(),
     );
     state.agent_provisioning_enabled = true;
     let server = TestServer::new(routes::create_router(Arc::new(state))).unwrap();
-    (server, MockEmailSender { sent: email_sender.sent.clone() }, keypair)
+    (server, MockEmailSender { sent: email_sender.sent.clone() }, keypair, store)
 }
 
 async fn csrf(server: &TestServer, session: &str) -> String {
@@ -56,7 +57,7 @@ async fn csrf(server: &TestServer, session: &str) -> String {
 
 #[tokio::test]
 async fn merged_request_prepare_approve_single_pickup() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let sess = common::registry::api_login(&server, &session, "testpassword").await;
 
@@ -69,6 +70,7 @@ async fn merged_request_prepare_approve_single_pickup() {
         Duration::days(90), &idp_kp, None,
     )
     .unwrap();
+    common::record_config_cert(&store, DELEGATOR, &config_cert);
 
     // 1. The service starts pairing: pubkey + handle + namespace hint + grant.
     let device_kp = KeyPair::generate();
@@ -275,10 +277,11 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
     let primary_kp = KeyPair::generate();
     let keypair = KeyPair::generate();
     let email_sender = Arc::new(MockEmailSender::new());
+    let store = Arc::new(InMemoryUserStore::new());
     let mut state = AppState::new_with_arcs(
         keypair,
         DOMAIN.to_string(),
-        Arc::new(InMemoryUserStore::new()),
+        store.clone(),
         Arc::new(InMemorySessionStore::new()),
         email_sender.clone(),
     );
@@ -302,6 +305,7 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
         Duration::days(90), &primary_kp, None,
     )
     .unwrap();
+    common::record_config_cert(&store, P_DELEGATOR, &config_cert);
 
     let device_kp = KeyPair::generate();
     let r = server
@@ -330,12 +334,13 @@ async fn primary_signed_device_cert_is_validated_and_delivered() {
     let status_idx = prep["grants"][0]["status_idx"].as_u64().unwrap();
 
     // The primary signs a cert over the request's key + PREPARED holder,
-    // naming the SESSION (base) identity — the standard user-mode hop. The
-    // protocol's subaddress rule (base covers its +tags) makes it authorize
-    // the named agent; no agent-mode issuance or glob is needed.
+    // naming the AGENT identity exactly: since audit 2026-11 D1 an auth
+    // cert authorizes exact identities only (subaddressing is the config
+    // cert's grantor rule), so the page's primary hop asks for the +tag
+    // sub-identity.
     let primary_cert = DeviceCert::create(
         PRIMARY, &device_kp.public_key(), Purpose::Authentication,
-        Holder::new(holder.clone()).unwrap(), vec![P_DELEGATOR.to_string()],
+        Holder::new(holder.clone()).unwrap(), vec![P_AGENT.to_string()],
         Duration::days(90), &primary_kp, None,
     )
     .unwrap();
@@ -472,10 +477,11 @@ async fn hosted_tenant_agent_cert_allows_the_serving_host_mint() {
     let tenant_kp = KeyPair::generate();
     let keypair = KeyPair::generate();
     let email_sender = Arc::new(MockEmailSender::new());
+    let store = Arc::new(InMemoryUserStore::new());
     let mut state = AppState::new_with_arcs(
         keypair,
         DOMAIN.to_string(),
-        Arc::new(InMemoryUserStore::new()),
+        store.clone(),
         Arc::new(InMemorySessionStore::new()),
         email_sender.clone(),
     );
@@ -497,6 +503,7 @@ async fn hosted_tenant_agent_cert_allows_the_serving_host_mint() {
         Duration::days(90), &tenant_kp, None,
     )
     .unwrap();
+    common::record_config_cert(&store, T_DELEGATOR, &config_cert);
 
     let device_kp = KeyPair::generate();
     let r = server
@@ -525,7 +532,7 @@ async fn hosted_tenant_agent_cert_allows_the_serving_host_mint() {
 
     let tenant_cert = DeviceCert::create(
         TENANT, &device_kp.public_key(), Purpose::Authentication,
-        Holder::new(holder.clone()).unwrap(), vec![T_DELEGATOR.to_string()],
+        Holder::new(holder.clone()).unwrap(), vec![T_AGENT.to_string()],
         Duration::days(90), &tenant_kp, None,
     )
     .unwrap();
@@ -578,7 +585,7 @@ async fn hosted_tenant_agent_cert_allows_the_serving_host_mint() {
 /// warrant names the user, so writes stay owned by + attributed to the user.
 #[tokio::test]
 async fn as_you_service_provisions_under_the_users_own_identity() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let _sess = common::registry::api_login(&server, &session, "testpassword").await;
 
@@ -588,6 +595,7 @@ async fn as_you_service_provisions_under_the_users_own_identity() {
         vec![DELEGATOR.to_string()], Duration::days(90), &idp_kp, None,
     )
     .unwrap();
+    common::record_config_cert(&store, DELEGATOR, &config_cert);
 
     let device_kp = KeyPair::generate();
     let r = server
@@ -673,7 +681,7 @@ async fn as_you_service_provisions_under_the_users_own_identity() {
 /// assigns the holder itself, poll delivers just the credential.
 #[tokio::test]
 async fn grantless_request_still_completes_without_prepare() {
-    let (server, sender, _idp_kp) = make_server();
+    let (server, sender, _idp_kp, _store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let _sess = common::registry::api_login(&server, &session, "testpassword").await;
 
@@ -713,7 +721,7 @@ async fn grantless_request_still_completes_without_prepare() {
 /// agent; `identity_mode: "handle"` names a handle-less request.
 #[tokio::test]
 async fn user_chosen_identity_mode_overrides_the_request() {
-    let (server, sender, _idp) = make_server();
+    let (server, sender, _idp, _store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let _sess = common::registry::api_login(&server, &session, "testpassword").await;
     let c = csrf(&server, &session).await;
@@ -781,7 +789,7 @@ async fn user_chosen_identity_mode_overrides_the_request() {
 /// the grantor-signed warrant and the poll delivers only `warrant~config`.
 #[tokio::test]
 async fn delegated_foreign_grantee_is_warrant_only() {
-    let (server, sender, idp_kp) = make_server();
+    let (server, sender, idp_kp, store) = make_server();
     let session = create_user(&server, &sender, DELEGATOR, "testpassword").await;
     let _sess = common::registry::api_login(&server, &session, "testpassword").await;
 
@@ -792,6 +800,7 @@ async fn delegated_foreign_grantee_is_warrant_only() {
         vec![DELEGATOR.to_string()], Duration::days(90), &idp_kp, None,
     )
     .unwrap();
+    common::record_config_cert(&store, DELEGATOR, &config_cert);
 
     // The foreign service names ITSELF as grantee + supplies its own holder
     // (minted by its issuer, mingo.place). It pins the grantor to the approver.
@@ -857,12 +866,13 @@ async fn delegated_foreign_grantee_is_warrant_only() {
     assert_eq!(tail, format!("{}~{}", warrant.encoded(), config_cert.encoded()));
 
     // A warrant naming a DIFFERENT grantee than pinned is refused.
-    let (server2, sender2, idp2) = make_server();
+    let (server2, sender2, idp2, store2) = make_server();
     let s2 = create_user(&server2, &sender2, DELEGATOR, "testpassword").await;
     let cfg2 = DeviceCert::create(
         DOMAIN, &config_kp.public_key(), Purpose::Authorization, Holder::new("br.main").unwrap(),
         vec![DELEGATOR.to_string()], Duration::days(90), &idp2, None,
     ).unwrap();
+    common::record_config_cert(&store2, DELEGATOR, &cfg2);
     let r = server2.post("/agent-provision/request").json(&json!({
         "provisioning_pubkey": { "algorithm": "Ed25519", "publicKey": device_kp.public_key().to_base64() },
         "grantor": DELEGATOR, "grantee": GRANTEE, "grantee_holder": GRANTEE_HOLDER,

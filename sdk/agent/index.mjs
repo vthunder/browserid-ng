@@ -13,8 +13,8 @@
 //   for (const g of grants) agent.addGrant(g.grant);
 //   const presentation = await agent.assertionFor(audience);      // present this to the RP
 
-// The protocol: device certs, access certs, four-part presentations.
-export { requestProvision, PendingProvision, requestWarrants, PendingWarrants, DeviceAgent } from "./src/device.mjs";
+// The CURRENT protocol: device certs, access certs, four-part presentations.
+export { requestProvision, PendingProvision, requestWarrants, PendingWarrants, DeviceAgent, requestProof } from "./src/device.mjs";
 
 // Scope-entry helpers (protocol §5).
 export { scopeName, scopeEntryEq } from "./src/scopes.mjs";

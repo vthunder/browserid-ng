@@ -42,24 +42,24 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: CASES, ..ProptestConfig::default() })]
 
     /// registry-api-v1 §3 and request-kinds/warrant.json both pin the scope
-    /// string to the one grammar. The registrar's request-time check must
-    /// accept a bare scope iff it matches — today it only bounds the length.
+    /// string to the one grammar. The registrar's request-time check accepts
+    /// a bare scope iff it matches (W3-3, bean lu7i: it calls
+    /// `browserid_core::validate_scope_string`).
     #[test]
-    #[ignore] // AUDIT-2026-11 W3-3: fails today — `validate_grant_shape` checks `len() <= 128` only, not the grammar (consent.rs:868-889)
     fn grant_shape_accepts_exactly_the_scope_grammar(aud in good_audience(), s in "\\PC{0,140}", g in in_grammar()) {
         prop_assert!(validate_grant_shape(&aud, &[ScopeEntry::Bare(g)]).is_ok());
         prop_assert_eq!(validate_grant_shape(&aud, &[ScopeEntry::Bare(s.clone())]).is_ok(), scope_grammar(&s), "scope {:?}", s);
     }
 
     /// The shape check is total and bounds what it does bound: audience
-    /// non-empty, no `*`, no whitespace/control, ≤ 512 bytes; ≤ 32 scopes
-    /// of ≤ 128 bytes each.
+    /// non-empty, no `*`, no whitespace/control, ≤ 512 bytes; ≤ 32 scopes,
+    /// each in the grammar.
     #[test]
     fn grant_shape_is_total_and_bounds_sizes(aud in "\\PC{0,600}", scopes in proptest::collection::vec("\\PC{0,140}", 0..40)) {
         let entries: Vec<ScopeEntry> = scopes.iter().cloned().map(ScopeEntry::Bare).collect();
         let r = validate_grant_shape(&aud, &entries);
         let aud_ok = !aud.is_empty() && !aud.contains('*') && aud.len() <= 512 && !aud.chars().any(|c| c.is_whitespace() || c.is_control());
-        let scopes_ok = entries.len() <= 32 && scopes.iter().all(|s| s.len() <= 128);
+        let scopes_ok = entries.len() <= 32 && scopes.iter().all(|s| scope_grammar(s));
         prop_assert_eq!(r.is_ok(), aud_ok && scopes_ok);
     }
 

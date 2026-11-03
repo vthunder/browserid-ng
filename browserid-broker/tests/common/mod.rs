@@ -26,6 +26,9 @@ pub struct TestContext {
     /// `_browserid` DNSSEC record (the served `.well-known` carries no key,
     /// bean zexp); tests that verify broker-issued certs use it directly.
     pub broker_key: browserid_core::PublicKey,
+    /// The app state behind the server, for tests that drive host-side
+    /// machinery directly (e.g. recording a bridge grant).
+    pub state: Arc<AppState<InMemoryUserStore, InMemorySessionStore, MockEmailSender>>,
 }
 
 /// Mock email sender that captures verification codes
@@ -111,7 +114,7 @@ pub fn create_test_context() -> TestContext {
         email_sender.clone(),
     ));
 
-    let app = routes::create_router(state);
+    let app = routes::create_router(state.clone());
     let server = TestServer::new(app).expect("Failed to create test server");
 
     TestContext {
@@ -122,6 +125,7 @@ pub fn create_test_context() -> TestContext {
         user_store,
         session_store,
         broker_key,
+        state,
     }
 }
 
@@ -153,7 +157,8 @@ pub fn create_test_context_customized(
     );
     customize(&mut state);
 
-    let app = routes::create_router(Arc::new(state));
+    let state = Arc::new(state);
+    let app = routes::create_router(state.clone());
     let server = TestServer::new(app).expect("Failed to create test server");
 
     TestContext {
@@ -164,6 +169,7 @@ pub fn create_test_context_customized(
         user_store,
         session_store,
         broker_key,
+        state,
     }
 }
 
@@ -240,4 +246,44 @@ pub async fn get_csrf(server: &TestServer, session: &str) -> String {
         .as_str()
         .expect("session_context returned no csrf_token")
         .to_string()
+}
+
+/// Record `cert` as an unretired cert of `email`'s account — what
+/// `/device/issue` does at login issuance. Since audit 2026-11 (D2) the
+/// registrar signs approvals only with a config cert the account has
+/// recorded, so a test that mints its own IdP-signed config cert enrols it
+/// here before `respond` / `register` / `agent-provision/complete`.
+pub fn record_config_cert(
+    store: &InMemoryUserStore,
+    email: &str,
+    cert: &browserid_core::device::DeviceCert,
+) {
+    use browserid_broker::store::{DeviceCertRecord, UserStore};
+    let user = store
+        .get_user_by_email(email)
+        .unwrap()
+        .unwrap_or_else(|| panic!("no account for {email}"));
+    let c = cert.claims();
+    let ts = |secs: i64| chrono::DateTime::from_timestamp(secs, 0).unwrap();
+    store
+        .insert_device_cert(DeviceCertRecord {
+            id: 0,
+            user_id: user.id,
+            identities: c.identities.clone(),
+            purpose: match c.purpose {
+                browserid_core::device::Purpose::Authentication => "authentication".into(),
+                browserid_core::device::Purpose::Authorization => "authorization".into(),
+            },
+            holder: c.holder.as_str().to_string(),
+            pubkey: c.public_key.to_base64(),
+            iss: c.iss.clone(),
+            issued_at: ts(c.iat),
+            expires_at: ts(c.exp),
+            revoked_at: None,
+            status_uri: c.status.as_ref().map(|s| s.uri.clone()),
+            status_idx: c.status.as_ref().map(|s| s.idx),
+            prov: "smtp".into(),
+            login_key_id: None,
+        })
+        .unwrap();
 }
