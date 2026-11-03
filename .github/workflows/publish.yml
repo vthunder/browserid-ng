@@ -33,8 +33,11 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      # Trusted publishing needs npm >= 11.5.1.
-      - run: npm install -g npm@latest
+      # Trusted publishing needs npm >= 11.5.1. Pinned (audit 2026-11 W7-5):
+      # this job holds the OIDC publishing identity, so the npm it runs must
+      # be a version someone chose, not whatever `latest` resolves to. Bump
+      # deliberately.
+      - run: npm install -g npm@12.2.1
       - name: publish packages whose local version is ahead
         run: node scripts/publish-status.mjs --publish
 
