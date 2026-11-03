@@ -21,6 +21,7 @@ import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from "n
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { gateHome } from "./credential.mjs";
+import { canonicalIdentity } from "@browserid-ng/mcp-auth";
 
 export function configPath() {
   return join(gateHome(), "config.json");
@@ -107,7 +108,9 @@ export function normalizeConfig(doc) {
   return cfg;
 }
 
-const normEmail = (e) => String(e || "").trim().toLowerCase();
+// The §5 identity rule (audit 2026-11 D17): domain folded, local part byte-exact;
+// anything that is not local@domain with exactly one "@" normalizes to "".
+const normEmail = (e) => canonicalIdentity(String(e || "").trim()) || "";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9._-]*$/i;
 // Reserved top-level path segments the router owns — a mount can't shadow them.
@@ -148,7 +151,7 @@ export function normalizeMountDef(def) {
 /** Validate + normalize a person from the admin UI. */
 export function normalizePersonDef(def) {
   const email = normEmail(def?.email);
-  if (!email || !email.includes("@")) throw new Error("a valid email is required");
+  if (!email) throw new Error("a valid email is required (local@domain)");
   if (email.length > 254) throw new Error("email too long");
   const name = String(def?.name || "").trim().slice(0, 120) || email.split("@")[0];
   return { email, name };

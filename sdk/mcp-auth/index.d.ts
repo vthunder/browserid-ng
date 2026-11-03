@@ -47,6 +47,11 @@ export interface BearerStore {
 
 export function createMemoryStore(): BearerStore;
 
+/** The one identity rule (spec §5): exactly one `@`, non-empty parts, domain
+ *  case-folded, local part byte-exact. Null for anything else. */
+export function parseIdentity(s: unknown): { local: string; domain: string } | null;
+/** Canonical spelling (domain folded, local part untouched) or null. */
+export function canonicalIdentity(s: unknown): string | null;
 /** Exact identity comparison (spec §5): local byte-exact, domain lowercased. */
 export function identityEq(a: unknown, b: unknown): boolean;
 /** Does a grantee (exact email or `*` / `*@<domain>` matcher) cover an

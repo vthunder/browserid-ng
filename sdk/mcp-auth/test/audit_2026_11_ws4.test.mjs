@@ -145,12 +145,12 @@ test("D17 pin: identityEq is local-part byte-exact and domain case-insensitive",
   assert.equal(granteeCovers("*", "not-an-email"), false);
 });
 
-test("D17: a string with two '@' is not an identity (core rejects; splitEmail splits on the last '@')", { skip: "AUDIT-2026-11 D17: fails today" }, () => {
+test("D17: a string with two '@' is not an identity (core rejects; splitEmail splits on the last '@')", () => {
   assert.equal(identityEq("a@b@example.com", "a@b@example.com"), false);
   assert.equal(granteeCovers("*@example.com", "a@b@example.com"), false);
 });
 
-test("D17: granteeCovers('*') must not admit a malformed subject", { skip: "AUDIT-2026-11 D17: fails today" }, () => {
+test("D17: granteeCovers('*') must not admit a malformed subject", () => {
   assert.equal(granteeCovers("*", "@"), false);
   assert.equal(granteeCovers("*", "@example.com"), false);
   assert.equal(granteeCovers("*", "nobody@"), false);

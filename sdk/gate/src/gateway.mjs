@@ -36,7 +36,7 @@ import { createFilePolicyStore } from "./policystore.mjs";
 import { createConnectAuth } from "./connectauth.mjs";
 import { sharedPage } from "./sharedpage.mjs";
 import { gateHome } from "./credential.mjs";
-import { identityEq, granteeCovers, assertPolicyBinding } from "@browserid-ng/mcp-auth";
+import { identityEq, granteeCovers, assertPolicyBinding, canonicalIdentity } from "@browserid-ng/mcp-auth";
 import { loadConfig, saveConfig, normalizeConfig, normalizeMountDef, normalizePersonDef, normalizeGrants } from "./config.mjs";
 import { ensureFunnel } from "./tunnel.mjs";
 
@@ -46,7 +46,11 @@ const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "public")
  * @param {object} opts  see index.d.ts (GatewayOptions).
  */
 export function createGateway(opts) {
-  const adminEmail = String(reqOpt(opts, "adminEmail")).trim().toLowerCase();
+  // The admin identity in its canonical spelling (spec §5: domain folded,
+  // local part byte-exact — audit 2026-11 D17). Every comparison below is
+  // identityEq / canonicalIdentity, never a lowercased string.
+  const adminEmail = canonicalIdentity(String(reqOpt(opts, "adminEmail")).trim());
+  if (!adminEmail) throw new Error(`gate: adminEmail '${opts.adminEmail}' is not an identity (local@domain)`);
   // Optional since 0.6: with a broker that supports connection grants the
   // mounts run credential-less (spec §7.5); the credential is only the
   // agent-mode fallback for brokers without support.
@@ -107,7 +111,7 @@ export function createGateway(opts) {
    *  the identity-first authorize, and the /shared landing page. */
   async function entitlementForEmail(mount, email) {
     if (signedGrants) return entitlementAt(mount, email);
-    if (identityEq(email, adminEmail) || email === adminEmail) return "all";
+    if (identityEq(email, adminEmail)) return "all";
     const acc = accessFor(email, mount.id);
     if (acc === "all") return "all";
     if (!acc) return null;
@@ -117,7 +121,7 @@ export function createGateway(opts) {
   /** What the signed records entitle `email` to at `mount` ("all" for the
    *  admin, a scope list, or null = no access). */
   async function entitlementAt(mount, email) {
-    if (identityEq(email, adminEmail) || email === adminEmail) return "all";
+    if (identityEq(email, adminEmail)) return "all";
     const rows = (await policyStore.list(mount.resource)).filter((r) => granteeCovers(r.grantee, email));
     // Liveness (cached ≤60s): a broker-revoked grant must stop admitting
     // here too — connection bearers revalidate at every mint, but the
@@ -135,12 +139,11 @@ export function createGateway(opts) {
   // means every tool on that mount (legacy-allowlist migration).
 
   function accessFor(email, mountId) {
-    const e = String(email || "").toLowerCase();
-    if (e === adminEmail) return "all";
+    if (identityEq(email, adminEmail)) return "all";
     let all = false;
     const set = new Set();
     for (const role of startupRoles) {
-      if (!role.members.includes(e)) continue;
+      if (!role.members.some((m) => identityEq(m, email))) continue;
       if (role.builtin) return "all";
       for (const g of role.grants) {
         if (g.mountId !== mountId) continue;
@@ -242,7 +245,7 @@ export function createGateway(opts) {
    *  which signed rows are stale (no longer desired → custodial delete). */
   async function grantsDiff() {
     const desired = compileGrants();
-    let signed = (await policyStore.list()).filter((r) => r.grantor === adminEmail);
+    let signed = (await policyStore.list()).filter((r) => identityEq(r.grantor, adminEmail));
     const dead = [];
     for (const r of signed) {
       // Only a DEFINITIVE invalidity drops a signed row; an outage keeps it.
@@ -392,7 +395,7 @@ export function createGateway(opts) {
 
   function addPerson(rawDef) {
     const person = normalizePersonDef(rawDef);
-    if (person.email === adminEmail) throw badRequest("the admin identity is implicit — it can't be added");
+    if (identityEq(person.email, adminEmail)) throw badRequest("the admin identity is implicit — it can't be added");
     if (config.people.some((p) => p.email === person.email)) throw badRequest("that person is already in the address book");
     config.people.push(person);
     persistConfig();
@@ -401,7 +404,7 @@ export function createGateway(opts) {
 
   /** Remove a person everywhere: the address book AND every role's members. */
   function removePerson(email) {
-    const e = String(email || "").trim().toLowerCase();
+    const e = canonicalIdentity(String(email || "").trim());
     const idx = config.people.findIndex((p) => p.email === e);
     if (idx < 0) throw notFound("no such person");
     config.people.splice(idx, 1);
@@ -426,8 +429,8 @@ export function createGateway(opts) {
     const role = config.roles.find((r) => r.id === id);
     if (!role) throw notFound("no such role");
     if (Array.isArray(patch?.members)) {
-      const members = [...new Set(patch.members.map((e) => String(e).trim().toLowerCase()).filter((e) => e && e.includes("@")))];
-      if (members.includes(adminEmail)) throw badRequest("the admin identity is implicit — it can't join a role");
+      const members = [...new Set(patch.members.map((e) => canonicalIdentity(String(e).trim())).filter(Boolean))];
+      if (members.some((m) => identityEq(m, adminEmail))) throw badRequest("the admin identity is implicit — it can't join a role");
       // Address-book safety net: membership implies presence in people.
       for (const email of members) {
         if (!config.people.some((p) => p.email === email)) config.people.push({ email, name: email.split("@")[0] });
@@ -570,9 +573,9 @@ export function createGateway(opts) {
         // listeners route members there too instead of a bare 404.
         if (path === "/") {
           const adminSession = sessions.verify(parseCookies(rq.headers.cookie));
-          const isAdmin = !!adminSession && adminSession.email.toLowerCase() === adminEmail;
+          const isAdmin = !!adminSession && identityEq(adminSession.email, adminEmail);
           const member = connectAuth.userFor(rq);
-          if (!isAdmin && member && member !== adminEmail) {
+          if (!isAdmin && member && !identityEq(member, adminEmail)) {
             res.writeHead(302, { location: "/shared" });
             return res.end();
           }
@@ -681,7 +684,7 @@ export function createGateway(opts) {
 
     if (rq.method === "GET" && path === "/admin/bootstrap") {
       const s = sessions.verify(parseCookies(rq.headers.cookie));
-      const signedIn = !!s && s.email.toLowerCase() === adminEmail;
+      const signedIn = !!s && identityEq(s.email, adminEmail);
       return json(res, 200, { broker, origin: adminOrigin, signedIn, admin: signedIn ? s.email : null });
     }
 
@@ -699,7 +702,7 @@ export function createGateway(opts) {
       if (!result.ok) {
         return json(res, 403, { error: "access_denied", error_description: `verification failed: ${result.reason}` });
       }
-      if (String(result.email).toLowerCase() !== adminEmail) {
+      if (!identityEq(result.email, adminEmail)) {
         log(`[gate] admin login DENIED for ${result.email} (not ${adminEmail})`);
         // `attempted` is the caller's OWN verified email (never the admin's) —
         // the UI echoes it back in the wrong-identity error.
@@ -791,7 +794,7 @@ export function createGateway(opts) {
 
   function requireSession(rq, res) {
     const session = sessions.verify(parseCookies(rq.headers.cookie));
-    if (!session || session.email.toLowerCase() !== adminEmail) {
+    if (!session || !identityEq(session.email, adminEmail)) {
       json(res, 401, { error: "unauthorized", error_description: "admin session required" });
       return null;
     }

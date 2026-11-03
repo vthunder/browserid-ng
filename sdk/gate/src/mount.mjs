@@ -17,7 +17,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createMcpAuth, createAuthCodeLane, McpAuthError, identityEq, granteeCovers, assertPolicyBinding } from "@browserid-ng/mcp-auth";
+import { createMcpAuth, createAuthCodeLane, McpAuthError, identityEq, granteeCovers, assertPolicyBinding, canonicalIdentity } from "@browserid-ng/mcp-auth";
 
 /**
  * Build (and connect) a mount around a stdio MCP child.
@@ -58,7 +58,9 @@ export async function createMount(opts) {
   const statusCacheS = opts.statusCacheS ?? 5;
   const doFetch = opts.fetch || globalThis.fetch;
   const log = opts.log || (() => {});
-  const allow = new Set((opts.allow || []).map((e) => String(e).trim().toLowerCase()).filter(Boolean));
+  // Allowlist in canonical spelling (spec §5: domain folded, local part
+  // byte-exact — audit 2026-11 D17); matched with the same rule at /mcp.
+  const allow = new Set((opts.allow || []).map((e) => canonicalIdentity(String(e).trim())).filter(Boolean));
   const access = typeof opts.access === "function" ? opts.access : null;
   const owners = (opts.owners || []).map((e) => String(e).trim()).filter(Boolean);
   // Record-policy admission at the lane (§6.5). Library default: owners ⇒
@@ -348,7 +350,7 @@ export async function createMount(opts) {
       // Grantor gate — refused BEFORE any tool runs (403). Roles mode (access
       // resolver): the grantor must have ≥1 tool granted here. Allowlist mode:
       // exact email match.
-      const grantor = String(vctx.grantor || "").toLowerCase();
+      const grantor = canonicalIdentity(vctx.grantor);
       let granted = "all";
       if (owners.length) {
         // Policy mode (§6.5): the grantor must be an owner or covered by a
@@ -389,7 +391,7 @@ export async function createMount(opts) {
           });
           return true;
         }
-      } else if (!owners.length && !allow.has(grantor)) {
+      } else if (!owners.length && !(grantor && allow.has(grantor))) {
         log(`[gate] REFUSED grantor=${vctx.grantor} (not on the allowlist)`);
         json(res, 403, {
           error: "access_denied",

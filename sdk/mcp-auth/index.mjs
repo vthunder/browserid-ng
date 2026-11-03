@@ -68,27 +68,47 @@ const bearerToken = () => `bat_${randomBytes(32).toString("base64url")}`;
 // authenticated email. Permission, never attribution.
 // ---------------------------------------------------------------------------
 
-function splitEmail(s) {
-  const at = typeof s === "string" ? s.lastIndexOf("@") : -1;
-  if (at < 0) return null;
-  return [s.slice(0, at), s.slice(at + 1).toLowerCase()];
+/**
+ * The ONE identity rule (spec §5, core `identity::email_parts`; audit
+ * 2026-11 D17 / decision Q26 (a)): an identity is `local@domain` with exactly
+ * one `@` and non-empty parts; the domain is case-folded, the local part is
+ * byte-exact. Returns `{ local, domain }` (domain lowercased) or null for
+ * anything that is not an identity — `a@b@c`, `@x`, `nobody@`, non-strings.
+ * Every comparison in this package and in @browserid-ng/gate goes through
+ * here; nothing else may fold or split an identity.
+ */
+export function parseIdentity(s) {
+  if (typeof s !== "string") return null;
+  const at = s.indexOf("@");
+  if (at <= 0 || at !== s.lastIndexOf("@") || at === s.length - 1) return null;
+  return { local: s.slice(0, at), domain: s.slice(at + 1).toLowerCase() };
+}
+
+/** The canonical spelling of an identity under the §5 rule (domain folded,
+ *  local part untouched), or null when `s` is not an identity. Use it as a
+ *  map/set key; never compare raw strings. */
+export function canonicalIdentity(s) {
+  const p = parseIdentity(s);
+  return p ? `${p.local}@${p.domain}` : null;
 }
 
 /** Exact identity comparison under the §5 rule. */
 export function identityEq(a, b) {
-  const pa = splitEmail(a);
-  const pb = splitEmail(b);
-  return !!pa && !!pb && pa[0] === pb[0] && pa[1] !== "" && pa[1] === pb[1];
+  const pa = parseIdentity(a);
+  const pb = parseIdentity(b);
+  return !!pa && !!pb && pa.local === pb.local && pa.domain === pb.domain;
 }
 
 /** Does a grantee (exact email or `*` / `*@<domain>` matcher) cover an
- *  authenticated subject identity? (spec §6.4 step 3) */
+ *  authenticated subject identity? (spec §6.4 step 3). A subject that is
+ *  not an identity is covered by nothing, not even `*`. */
 export function granteeCovers(grantee, subject) {
-  if (grantee === "*") return typeof subject === "string" && subject.includes("@");
+  const ps = parseIdentity(subject);
+  if (!ps) return false;
+  if (grantee === "*") return true;
   if (typeof grantee === "string" && grantee.startsWith("*@")) {
     const domain = grantee.slice(2).toLowerCase();
-    const ps = splitEmail(subject);
-    return !!ps && domain !== "" && ps[1] === domain;
+    return domain !== "" && !domain.includes("@") && ps.domain === domain;
   }
   return identityEq(grantee, subject);
 }

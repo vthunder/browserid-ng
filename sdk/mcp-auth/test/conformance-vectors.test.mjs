@@ -58,11 +58,6 @@ const EXPECTED_FAIL = {
   // authors them (Q15 (b)). These two vectors expect the matcher to be evaluated.
   "A-OK-02": "Q15a",
   "A-OK-10": "Q15a",
-  // AUDIT-2026-11 D17 (= W2-3): granteeCovers("*") admits any string containing "@" and splitEmail
-  // splits on the LAST "@", so malformed subjects (a@b@c, @x) are covered (index.mjs:71-94).
-  "A-REJ-07": "D17",
-  "A-REJ-08": "D17",
-  "A-REJ-09": "D17",
 };
 
 const BROKER = "https://broker.test";

@@ -114,7 +114,7 @@ header's **"N staged" pill** opens a diff popover (`+`/`~`/`−` per change) wit
 
 - **`POST /admin/login`** verifies the presentation with `verifyPresentation(p,
   origin)` where the audience is **exactly the console origin** and the verified
-  `email` **exactly equals `--admin`** (no substring / domain / `+tag`
+  `email` **exactly equals `--admin`** under the spec §5 rule — domain case-folded, local part byte-exact (`Admin@` is not `admin@`); no substring / domain / `+tag`
   widening). Anything else → `403`.
 - **Session cookie**: a random nonce, **HMAC-signed** with a per-install secret
   persisted `0600` in `~/.browserid-gate/session-secret` (so restarts don't log

@@ -53,31 +53,12 @@ const EXPECTED_FAIL = {
   // AUDIT-2026-11 S5 (inherited).
   "P-CONS-01": "S5",
   "P-CONS-06": "S5",
-  // AUDIT-2026-11 D17 (= W2-4): the grantor gate lowercases both the allowlist (mount.mjs:61) and the
-  // verified grantor (mount.mjs:318) before comparing, so an allowlist entry differing only in the
-  // local part's case admits.
-  "P-OK-01/case": "D17",
-  "P-OK-02/case": "D17",
-  "P-OK-03/case": "D17",
-  "P-OK-04/case": "D17",
-  "P-OK-05/case": "D17",
-  "P-OK-06/case": "D17",
-  "P-OK-08/case": "D17",
-  "P-OK-09/case": "D17",
-  "P-OK-10/case": "D17",
-  "P-OK-11/case": "D17",
-  "P-OK-13/case": "D17",
   // --- op A, policy mode (held record in the mount's policy store, subject = the bearer's grantor) ---
   // Decision Q15 (a) (audit 2026-11 D5): a held policy record admits only with the one binding
   // {holder, "*"}; narrowed holder matchers are refused rather than evaluated until a wallet
   // authors them (Q15 (b)). These two vectors expect the matcher to be evaluated.
   "A-OK-02": "Q15a",
   "A-OK-10": "Q15a",
-  // AUDIT-2026-11 D17 (= W2-3/W2-4): malformed subjects covered by `*`/`*@domain`; grantor lowercased (mount.mjs:318).
-  "A-REJ-07": "D17",
-  "A-REJ-08": "D17",
-  "A-REJ-09": "D17",
-  "A-REJ-10": "D17",
   // Inherited from the hosted validator (the row is revalidated at admission since D5/D6):
   // AUDIT-2026-11 S3 (v1 records still validate) and D16 (no lower bound on iat).
   "A-REJ-13": "S3",

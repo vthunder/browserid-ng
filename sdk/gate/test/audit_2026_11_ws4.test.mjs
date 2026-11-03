@@ -219,24 +219,14 @@ test("D17 pin: the admin gate refuses a different exact identity", async () => {
   assert.equal(res.status, 403);
 });
 
-test("D17: the admin gate must not fold the local part — Admin@ is not admin@ (spec §5, I5)", { skip: "AUDIT-2026-11 D17: fails today" }, async () => {
+test("D17: the admin gate must not fold the local part — Admin@ is not admin@ (spec §5, I5)", async () => {
   const res = await fetch(`${GW}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ presentation: "pres-admin-cased" }) });
   assert.equal(res.status, 403);
 });
 
-test("D17 pin: today Admin@example.com signs in as the admin (local part folded)", async () => {
-  const res = await fetch(`${GW}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ presentation: "pres-admin-cased" }) });
-  assert.equal(res.status, 200);
-});
-
-test("D17: the grantor gate must not fold the local part — a row for erin@ must not admit Erin@", { skip: "AUDIT-2026-11 D17: fails today" }, async () => {
+test("D17: the grantor gate must not fold the local part — a row for erin@ must not admit Erin@", async () => {
   const res = await mcp(NOTES, await bearer(NOTES, "pres-member-cased"));
   assert.equal(res.status, 403);
-});
-
-test("D17 pin: today the gateway's /mcp lowercases the grantor before the entitlement lookup", async () => {
-  const res = await mcp(NOTES, await bearer(NOTES, "pres-member-cased"));
-  assert.equal(res.status, 200);
 });
 
 // ===========================================================================

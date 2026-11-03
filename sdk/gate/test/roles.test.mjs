@@ -356,10 +356,10 @@ test("a legacy per-mount allow list migrates to a role granting every tool", () 
   const cfg = normalizeConfig({
     mounts: [{ id: "m1", name: "Notes", mount: "notes", command: ["echo"], allow: ["Friend@Example.com "] }],
   });
-  assert.ok(cfg.people.some((p) => p.email === "friend@example.com"), "allowlisted email lands in people");
+  assert.ok(cfg.people.some((p) => p.email === "Friend@example.com"), "allowlisted email lands in people (domain folded, local part byte-exact — spec §5)");
   const migrated = cfg.roles.find((r) => !r.builtin);
   assert.equal(migrated.name, "Notes");
-  assert.deepEqual(migrated.members, ["friend@example.com"]);
+  assert.deepEqual(migrated.members, ["Friend@example.com"]);
   assert.deepEqual(migrated.grants, [{ mountId: "m1", on: ["*"] }], "granted every tool ('*' until discovery)");
   assert.ok(cfg.roles.some((r) => r.builtin), "the built-in role is ensured");
   // Idempotent: a v2 doc (roles present) is NOT re-migrated.
