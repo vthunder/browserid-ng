@@ -29,6 +29,30 @@ stalls fresh binaries). `cargo +nightly fuzz list` prints the targets;
 `cargo +nightly fuzz fmt <target> <artifact>` pretty-prints an
 `Arbitrary` input from a crash file.
 
+## Weekly run on the dev box
+
+Q29 of the audit (bean yk2z): the smoke run is scheduled, not just
+available. `make fuzz-smoke-install` copies
+`scripts/launchd/org.sandmill.fuzz-smoke.plist` into
+`~/Library/LaunchAgents/` and bootstraps it; every Sunday at 13:00 (an
+hour after the `org.sandmill.cargo-sweep` agent) launchd runs the inline
+job in that plist: `ssh localtest 'make fuzz-smoke'` with `FUZZ_SECS=60`
+from `~/src/browserid-ng`, output appended to `/tmp/fuzz-smoke.log`. Every run ends in a `fuzz-smoke: OK` or
+`fuzz-smoke: FAILED (exit N)` line, so `tail -1 /tmp/fuzz-smoke.log` is the
+weekly check and `grep FAILED /tmp/fuzz-smoke.log` the history; a failure's
+crash inputs are under `fuzz/artifacts/<target>/` in the checkout. Not
+mailed: there is no MTA on the box.
+
+```sh
+make fuzz-smoke-install                                   # (re)install
+launchctl list | grep fuzz                                # loaded? (login/ssh shell)
+launchctl print gui/$(id -u)/org.sandmill.fuzz-smoke      # works from any shell
+launchctl kickstart gui/$(id -u)/org.sandmill.fuzz-smoke  # run now
+tail -3 /tmp/fuzz-smoke.log
+```
+
+Nothing in CI: the nightly toolchain and ASAN stay off the hosted runners.
+
 Layout: `seeds/<target>/` is the committed seed corpus (regenerate with
 `cargo run --release --bin gen_seeds`); `corpus/<target>/` is the growing
 run corpus and `artifacts/<target>/` holds crashes — both ignored. A crash
