@@ -846,10 +846,11 @@ async fn warrant_request_caps_grants_at_eight_and_rejects_duplicate_audiences() 
     assert_ne!(resp.status_code(), 200, "duplicate audiences accepted: {}", resp.text());
 }
 
-/// AUDIT-2026-11 W5-1: fails today. I18 says a poll faster than `interval`
-/// gets 429; the JIT lane answers 400 `slow_down`.
+/// AUDIT-2026-11 W5-1 (I18): a poll faster than `interval` gets 429
+/// (`RegistrarError::PollTooFast`), not 400 `slow_down`. The registrar
+/// change lands with bean 0fy3 (fix-registrar's branch); this goes green
+/// once the two branches merge.
 #[tokio::test]
-#[ignore]
 async fn poll_too_fast_is_429() {
     let r = rig();
     let _cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
