@@ -688,8 +688,6 @@ async fn login_again(ctx: &TestContext, email: &str, password: &str) -> String {
 /// changes between the two legs, the proven identity attaches to the new
 /// session's account. Low today (no login-CSRF vector on the broker was
 /// found), but the recorded binding should be enforced or removed.
-// AUDIT-2026-11 W4-33: fails today
-#[ignore]
 #[tokio::test]
 async fn w4_33_oidc_attaches_to_the_session_that_began_the_claim() {
     let (ctx, mock) = oidc_context().await;
