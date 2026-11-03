@@ -39,15 +39,6 @@ async function postJson(http, url, body) {
   return { res, json };
 }
 
-/** Host of a URL — the `domain` an access request is pinned to. */
-function urlHost(u) {
-  try {
-    return new URL(u).host;
-  } catch {
-    return String(u).replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Provisioning: the human-in-the-loop half
 // ---------------------------------------------------------------------------
@@ -285,6 +276,10 @@ export class PendingWarrants {
  */
 export class DeviceAgent {
   #deviceKey;
+  // The credential holds the device key seed: a PRIVATE field (audit
+  // 2026-11 W4-42) so `console.log(agent)` / util.inspect / JSON.stringify
+  // never print it; `agent.credential` is an explicit read.
+  #credential;
   // Access certs by audience. Unmanaged identities always use the "" slot
   // (one shared, audience-free cert — the mint stays RP-blind). A MANAGED
   // identity (device cert `managed: true`, spec §4.7) mints per audience so
@@ -293,7 +288,7 @@ export class DeviceAgent {
   #grants = new Map(); // audience -> { warrant, configCert }
 
   constructor(credential, { http = fetch } = {}) {
-    this.credential = credential;
+    this.#credential = credential;
     this.http = http;
     this.#deviceKey = KeyPair.fromSeed(fromB64u(credential.device_key));
     this.deviceCert = credential.agent_device_cert;
@@ -311,7 +306,27 @@ export class DeviceAgent {
     if (credential.identity && !authorizesIdentity(claims, credential.identity)) {
       throw new AgentError(`device cert does not authorize '${credential.identity}'`);
     }
-    this.idpDomain = urlHost(credential.idp);
+    // The IdP is the SIGNED device cert's `iss` (audit 2026-11 W4-41) —
+    // never the registrar's poll body. A credential `idp` is accepted only
+    // when it names that host; the mint endpoint is checked the same way.
+    if (typeof claims.iss !== "string" || !claims.iss) {
+      throw new AgentError("device cert has no iss (the IdP that signed it)");
+    }
+    this.idpDomain = claims.iss;
+    if (credential.idp != null && !hostMatches(credential.idp, claims.iss)) {
+      throw new AgentError(`credential idp '${credential.idp}' does not match the device cert's iss '${claims.iss}'`);
+    }
+  }
+
+  /** The device credential (explicit read; holds the device key seed). */
+  get credential() {
+    return this.#credential;
+  }
+  toJSON() {
+    return { email: this.email, holder: this.holder, idpDomain: this.idpDomain, deviceCert: this.deviceCert, warrantedAudiences: this.warrantedAudiences() };
+  }
+  [Symbol.for("nodejs.util.inspect.custom")]() {
+    return `DeviceAgent { email: '${this.email}', holder: '${this.holder}', idp: '${this.idpDomain}', warrants: ${this.warrantedAudiences().length} }`;
   }
 
   /**
@@ -382,8 +397,7 @@ export class DeviceAgent {
       jti,
       ...(this.isManaged && audience ? { audience } : {}),
     });
-    const url =
-      this.credential.access_mint || `${trim(this.credential.idp)}/access/mint`;
+    const url = this.#mintUrl();
     const { res, json } = await postJson(this.http, url, {
       device_cert: this.deviceCert,
       access_request: request,
@@ -396,6 +410,25 @@ export class DeviceAgent {
     }
     this.#access.set(this.#audKey(audience), { key: accessKey, cert, claims: decodeJwtClaims(cert) });
     return cert;
+  }
+
+  /** The mint endpoint: a poll-supplied `access_mint` or `<idp>/access/mint`,
+   *  either way on the device cert's `iss` over https (loopback exempt) —
+   *  a lying registrar cannot redirect device-key-signed requests elsewhere. */
+  #mintUrl() {
+    const c = this.#credential;
+    // Scheme: the credential idp (already host-checked at construction; a
+    // loopback dev IdP may be http), else https on the iss.
+    const url = c.access_mint || (c.idp ? `${trim(c.idp)}/access/mint` : `https://${this.idpDomain}/access/mint`);
+    let u;
+    try { u = new URL(url); } catch { throw new AgentError(`access_mint '${url}' is not a URL`); }
+    if (!hostMatches(url, this.idpDomain)) {
+      throw new AgentError(`access_mint '${url}' is not on the device cert's iss '${this.idpDomain}'`);
+    }
+    if (u.protocol !== "https:" && !isLoopback(u.hostname)) {
+      throw new AgentError(`access_mint '${url}' must be https`);
+    }
+    return url;
   }
 
   async #ensureFreshAccess(audience) {
@@ -433,6 +466,17 @@ export class DeviceAgent {
     const access = this.#access.get(this.#audKey(audience));
     return { presentation, accessKey: access.key, accessCert: access.cert };
   }
+}
+
+const isLoopback = (h) => h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1";
+/** Does URL `u` sit on `domain` (a device cert `iss`)? Compared on the host
+ *  with and without its port, case-folded, so `localhost:3000` and
+ *  `idp.example` both pin. */
+function hostMatches(u, domain) {
+  let url;
+  try { url = new URL(u); } catch { return false; }
+  const d = String(domain).toLowerCase();
+  return url.host.toLowerCase() === d || url.hostname.toLowerCase() === d;
 }
 
 /** A warrant's holder may be an exact holder or a `*`-suffixed prefix matcher. */

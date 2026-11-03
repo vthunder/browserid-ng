@@ -78,14 +78,14 @@ async function provisioned(opts) {
 // (the raw seed), and `KeyPair.seed` is public too, so `console.log(agent)`,
 // util.inspect, or JSON.stringify of the agent prints the device key.
 // ---------------------------------------------------------------------------
-test("W4-42: inspecting a DeviceAgent does not print the device key seed", { skip: "AUDIT-2026-11 W4-42: fails today" }, async () => {
+test("W4-42: inspecting a DeviceAgent does not print the device key seed", async () => {
   const { credential, http } = await provisioned();
   const agent = new DeviceAgent(credential, { http });
   const dump = inspect(agent, { depth: 5 }) + JSON.stringify(agent);
   assert.ok(!dump.includes(credential.device_key), "device key seed leaked through inspect/JSON");
 });
 
-test("W4-42: inspecting a KeyPair does not print its seed", { skip: "AUDIT-2026-11 W4-42: fails today" }, () => {
+test("W4-42: inspecting a KeyPair does not print its seed", () => {
   const kp = KeyPair.generate();
   // The seed is a public Uint8Array property: inspect prints its bytes.
   assert.ok(!/seed/.test(inspect(kp)), "seed leaked through inspect");
@@ -100,7 +100,7 @@ test("W4-42: inspecting a KeyPair does not print its seed", { skip: "AUDIT-2026-
 // process and the request is unusable at the real IdP (it is pinned to the
 // wrong `domain`), so this is defence in depth, not an escalation.
 // ---------------------------------------------------------------------------
-test("W4-41: the agent mints only at the IdP that signed its device cert", { skip: "AUDIT-2026-11 W4-41: fails today" }, async () => {
+test("W4-41: the agent mints only at the IdP that signed its device cert", async () => {
   const { credential, http, state } = await provisioned({
     pollCredential: (dc) => ({ device_cert: dc, idp: EVIL, identity: EMAIL }),
   });
@@ -111,7 +111,7 @@ test("W4-41: the agent mints only at the IdP that signed its device cert", { ski
   assert.deepEqual(state.mintUrls, [], "no mint request may reach a host other than the cert's iss");
 });
 
-test("W4-41: a poll-supplied access_mint on another host or a cleartext scheme is refused", { skip: "AUDIT-2026-11 W4-41: fails today" }, async () => {
+test("W4-41: a poll-supplied access_mint on another host or a cleartext scheme is refused", async () => {
   for (const access_mint of [`${EVIL}/access/mint`, "http://idp.test/access/mint"]) {
     const { credential, http, state } = await provisioned({
       pollCredential: (dc) => ({ device_cert: dc, idp: IDP, identity: EMAIL, access_mint }),

@@ -236,7 +236,13 @@ export class DeviceAgent {
   email: string;
   holder: string;
   deviceCert: string;
-  credential: DeviceCredential;
+  /** The device credential (an explicit read; holds the device key seed —
+   *  never printed by util.inspect / JSON.stringify of the agent). */
+  readonly credential: DeviceCredential;
+  /** The IdP domain: the SIGNED device cert's `iss`. The agent mints only
+   *  there, over https (loopback exempt); a credential `idp` / `access_mint`
+   *  on another host is refused. */
+  readonly idpDomain: string;
   /** Accepts `warrant~config_cert` or the two parts separately. */
   addGrant(warrantOrPair: string, configCert?: string): string;
   warrantedAudiences(): string[];
@@ -258,7 +264,9 @@ export class KeyPair {
   static generate(): KeyPair;
   static fromSeed(seed: Uint8Array | Buffer): KeyPair;
   publicKeyB64: string;
-  seed: Uint8Array;
+  /** The raw seed (a copy) — an explicit read for persistence; inspect and
+   *  JSON never print it. */
+  readonly seed: Uint8Array | undefined;
   /** base64url Ed25519 signature over `message`. */
   sign(message: string | Uint8Array): string;
   signRaw(message: string | Uint8Array): Uint8Array;

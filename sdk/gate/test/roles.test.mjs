@@ -42,7 +42,7 @@ const nowS = () => Math.floor(Date.now() / 1000);
 const gatewayKp = KeyPair.generate();
 const credential = {
   device_key: Buffer.from(gatewayKp.seed).toString("base64url"),
-  agent_device_cert: fakeJws({ typ: "browserid-device-cert-v1", "public-key": { algorithm: "Ed25519", publicKey: gatewayKp.publicKeyB64 }, holder: "svc.gate1", identities: [GATEWAY], iat: nowS(), exp: nowS() + 8.64e6 }),
+  agent_device_cert: fakeJws({ typ: "browserid-device-cert-v1", iss: new URL(BROKER).host, "public-key": { algorithm: "Ed25519", publicKey: gatewayKp.publicKeyB64 }, holder: "svc.gate1", identities: [GATEWAY], iat: nowS(), exp: nowS() + 8.64e6 }),
   idp: BROKER, identity: GATEWAY,
 };
 
