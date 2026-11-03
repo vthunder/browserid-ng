@@ -1,11 +1,11 @@
 ---
 # browserid-ng-v8s0
 title: '[Audit 2026-11] D1: auth certs mint exact identities only; subaddress rule becomes authorizes_grantor (config certs)'
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-11-02T22:43:19Z
-updated_at: 2026-11-02T22:43:19Z
+updated_at: 2026-11-03T08:21:23Z
 parent: browserid-ng-ag1l
 ---
 
@@ -22,3 +22,14 @@ Acceptance (un-ignore / un-skip):
 - sdk/agent/audit_2026_11_ws4.test.mjs: "D1 (client mirror): an auth cert for the base identity does not authorize a subaddress"
 
 Reports: ws6 §1.1, ws3 §1.1, ws8 §1.1, ws4 §2 (client mirror note). Ledger: docs/security-audit-2026-11.md. Decisions: docs/security-audit-2026-11-decisions.md.
+
+
+
+## Summary of Changes
+
+- browserid-core/src/device.rs: `identity_matches` is now exact + glob only (the mint-side rule); the §4.6 subaddress widening moved to a new private `identity_matches_as_grantor`.
+- `DeviceCert::authorizes_identity` is purpose-aware: an authentication cert covers exactly its identities (no `+tag` widening); an authorization cert delegates to the new public `DeviceCert::authorizes_grantor(grantor)` (requires purpose == authorization; exact / glob / §4.6 subaddress). Purpose-aware rather than the literal 'drop the branch everywhere' split because the audit's own passing WS3 properties pin subaddress coverage through `authorizes_identity` on config certs; the mint gate (auth cert) is exact either way. No existing signature changed, so the broker's two mint call sites need no edit and now mint exact identities only.
+- `AccessPresentation::verify_at` (§6.1 step 5) and `RecordBundle::validate` (§6.4 step 1b) call `authorizes_grantor`.
+- Unit test `device::tests::base_identity_authorizes_subaddresses` replaced by `subaddressing_is_a_grantor_rule_only` (auth-purpose expectations inverted, purpose matrix on certs).
+- Un-ignored: ws6 `d1_authentication_cert_for_base_identity_does_not_authorize_subaddress`, ws3 `auth_cert_identity_is_exact`; WS8 PoC flipped (asserts no widening; the legitimately-minted subaddress presentation still verifies).
+- Not done here: sdk/agent `authorizesIdentity` mirror and its ws4 test (outside browserid-core); re-running the PoC against a live /access/mint.

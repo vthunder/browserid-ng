@@ -364,26 +364,49 @@ impl Fixture {
     }
 }
 
-/// RFC-style subaddressing as a protocol rule: a cert naming the BASE identity
-/// authorizes its `+tag` sub-addresses — no glob needed — while never matching
-/// a different local part, a bare-vs-base mixup, or a foreign domain.
+/// RFC-style subaddressing is an AUTHORIZATION-only rule (spec §4.6, audit
+/// 2026-11 D1): a config cert naming the BASE identity vouches for warrants
+/// whose grantor is a `+tag` sub-address — no glob needed — while never
+/// matching a different local part, a bare-vs-base mixup, or a foreign
+/// domain. The mint-side predicate never widens: an auth cert for `dan@`
+/// mints for `dan@` exactly.
 #[test]
-fn base_identity_authorizes_subaddresses() {
-    assert!(super::identity_matches("dan@mingo.place", "dan+claude@mingo.place"));
-    assert!(super::identity_matches("dan@mingo.place", "dan+a+b@mingo.place"));
+fn subaddressing_is_a_grantor_rule_only() {
+    use super::{identity_matches, identity_matches_as_grantor as as_grantor};
+    assert!(as_grantor("dan@mingo.place", "dan+claude@mingo.place"));
+    assert!(as_grantor("dan@mingo.place", "dan+a+b@mingo.place"));
     // Exact still matches; the base never matches a DIFFERENT base.
-    assert!(super::identity_matches("dan@mingo.place", "dan@mingo.place"));
-    assert!(!super::identity_matches("dan@mingo.place", "daniel@mingo.place"));
-    assert!(!super::identity_matches("dan@mingo.place", "danny+x@mingo.place"));
+    assert!(as_grantor("dan@mingo.place", "dan@mingo.place"));
+    assert!(!as_grantor("dan@mingo.place", "daniel@mingo.place"));
+    assert!(!as_grantor("dan@mingo.place", "danny+x@mingo.place"));
     // A sub-address does NOT authorize its base or siblings (only the base
     // implies downward, never upward/sideways).
-    assert!(!super::identity_matches("dan+claude@mingo.place", "dan@mingo.place"));
-    assert!(!super::identity_matches("dan+claude@mingo.place", "dan+other@mingo.place"));
-    // Domain must match exactly.
-    assert!(!super::identity_matches("dan@mingo.place", "dan+x@evil.place"));
+    assert!(!as_grantor("dan+claude@mingo.place", "dan@mingo.place"));
+    assert!(!as_grantor("dan+claude@mingo.place", "dan+other@mingo.place"));
+    // Domain must match.
+    assert!(!as_grantor("dan@mingo.place", "dan+x@evil.place"));
     // Degenerate empty tag ("dan+@") matches the base rule — harmless: the
     // warrant identifier still pins the exact presentable identity.
-    assert!(super::identity_matches("dan@mingo.place", "dan+@mingo.place"));
+    assert!(as_grantor("dan@mingo.place", "dan+@mingo.place"));
+    // The authentication-side predicate is exact (or glob) and never widens.
+    assert!(identity_matches("dan@mingo.place", "dan@mingo.place"));
+    assert!(!identity_matches("dan@mingo.place", "dan+claude@mingo.place"));
+    assert!(!identity_matches("dan@mingo.place", "dan+@mingo.place"));
+    assert!(identity_matches("dan+*@mingo.place", "dan+claude@mingo.place"));
+
+    // On certs: purpose decides. An auth cert for the base mints the base
+    // only; a config cert for the base vouches for its sub-addresses; an
+    // auth cert never vouches for a grantor at all.
+    let f = Fixture::new(); // identities: [danmills@sandmill.org]
+    let auth = DeviceCert::from_claims(f.auth_device_cert_claims(), &f.idp).unwrap();
+    assert!(auth.authorizes_identity("danmills@sandmill.org"));
+    assert!(!auth.authorizes_identity("danmills+claude@sandmill.org"));
+    assert!(!auth.authorizes_grantor("danmills@sandmill.org"));
+    let config = f.config_cert_signed_by(&f.idp, f.idp_domain());
+    assert!(config.authorizes_grantor("danmills@sandmill.org"));
+    assert!(config.authorizes_grantor("danmills+claude@sandmill.org"));
+    assert!(config.authorizes_identity("danmills+claude@sandmill.org"));
+    assert!(!config.authorizes_grantor("dan@sandmill.org"));
 }
 
 // --- constraints & managed identities (spec §4.7, §6.1 step 7) -------------

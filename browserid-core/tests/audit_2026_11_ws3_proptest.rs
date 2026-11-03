@@ -573,7 +573,6 @@ proptest! {
 
     /// Spec §4.6 / D1: an AUTHENTICATION cert for `l@d` mints for `l@d` exactly.
     #[test]
-    #[ignore] // AUDIT-2026-11 D1: fails today — `identity_matches` widens every base identity to its `+tag` subaddresses regardless of purpose (device.rs:96-111)
     fn auth_cert_identity_is_exact(l in local(), t in tag(), d in domain()) {
         let base = format!("{}@{}", l, d);
         let tagged = format!("{}+{}@{}", l, t, d);

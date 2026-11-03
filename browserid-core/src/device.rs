@@ -65,7 +65,11 @@ fn expired_at(exp: i64, at: i64) -> bool {
 
 /// Match an identity `email` against a device-cert `identities` entry: an
 /// exact email, or a single-`*` glob whose star is confined to the LOCAL part
-/// with an exactly-matching domain (e.g. `danmills+*@sandmill.org`).
+/// with an exactly-matching domain (e.g. `danmills+*@sandmill.org`). This is
+/// the whole rule for an AUTHENTICATION cert (spec §4.6: an auth cert for
+/// `user@d` mints for `user@d` exactly; speaking as `user+tag@d` needs an
+/// auth cert issued for that sub-identity). The §4.6 subaddress widening is
+/// an authorization-only rule — see [`identity_matches_as_grantor`].
 ///
 /// Domain-anchored (audit L5): a glob without an `@` (`admin*`), a bare `*`,
 /// or a star in the domain matches NOTHING — no issuer mints such patterns,
@@ -94,16 +98,26 @@ fn identity_matches(pattern: &str, email: &str) -> bool {
             && e_local.starts_with(pre)
             && e_local.ends_with(post);
     }
-    // RFC-style subaddressing is a PROTOCOL rule, not per-cert data: owning
-    // `user@domain` implies owning `user+anything@domain` (agent identities
-    // are `+tags` by definition — the same convention `delegator_of` inverts).
-    // A cert naming the base identity therefore authorizes its sub-addresses;
-    // no `user+*@domain` glob is needed. The identity an agent may PRESENT as
-    // stays pinned elsewhere: the warrant's grantee must exactly equal the
-    // access-cert identity, so a base-identity cert without a matching warrant
-    // authorizes nothing at any verifier.
+    false
+}
+
+/// [`identity_matches`] plus the §4.6 subaddress rule, for a CONFIG cert
+/// vouching for a warrant's `grantor`: owning `user@domain` implies owning
+/// `user+anything@domain` (RFC 5233 — agent identities are `+tags` by
+/// definition), so a config cert naming the base identity may sign warrants
+/// for its sub-addresses with no per-tag cert. Authorization only: the mint
+/// side ([`identity_matches`]) never widens, which is what keeps attribution
+/// and the per-agent revocation axis honest (audit 2026-11 D1). A glob
+/// pattern never widens further than its own star.
+fn identity_matches_as_grantor(pattern: &str, grantor: &str) -> bool {
+    if identity_matches(pattern, grantor) {
+        return true;
+    }
+    if pattern.contains('*') {
+        return false;
+    }
     if let (Some((p_local, p_domain)), Some((e_local, e_domain))) =
-        (crate::identity::email_parts(pattern), crate::identity::email_parts(email))
+        (crate::identity::email_parts(pattern), crate::identity::email_parts(grantor))
     {
         return p_domain == e_domain
             && e_local.len() > p_local.len()
@@ -446,8 +460,33 @@ impl DeviceCert {
     pub fn is_expired_at(&self, at: i64) -> bool {
         expired_at(self.claims.exp, at)
     }
+    /// Does this cert authorize acting as `email`? The rule depends on the
+    /// cert's purpose (spec §4.6): an AUTHENTICATION cert covers exactly its
+    /// `identities` (exact or glob) — the mint gate for `user@d` never widens
+    /// to `user+tag@d` (audit 2026-11 D1); an AUTHORIZATION (config) cert
+    /// additionally covers `+tag` sub-addresses of a listed base identity,
+    /// i.e. [`DeviceCert::authorizes_grantor`].
     pub fn authorizes_identity(&self, email: &str) -> bool {
-        self.claims.identities.iter().any(|p| identity_matches(p, email))
+        match self.claims.purpose {
+            Purpose::Authentication => {
+                self.claims.identities.iter().any(|p| identity_matches(p, email))
+            }
+            Purpose::Authorization => self.authorizes_grantor(email),
+        }
+    }
+
+    /// Does this CONFIG cert vouch for a warrant `grantor`? Requires
+    /// `purpose == authorization`, and the `identities` cover the grantor
+    /// exactly, by glob, or by §4.6 subaddressing (`user@d` covers
+    /// `user+tag@d`). The predicate behind §6.1 step 5 and §6.4 step 1b; an
+    /// authentication cert never vouches for a grantor.
+    pub fn authorizes_grantor(&self, grantor: &str) -> bool {
+        self.claims.purpose == Purpose::Authorization
+            && self
+                .claims
+                .identities
+                .iter()
+                .any(|p| identity_matches_as_grantor(p, grantor))
     }
     pub fn iss(&self) -> &str {
         &self.claims.iss
@@ -1607,7 +1646,7 @@ impl AccessPresentation {
         if cc.purpose != Purpose::Authorization {
             return Err(invalid("config cert", "not an authorization cert"));
         }
-        if !self.config_cert.authorizes_identity(&wc.grantor) {
+        if !self.config_cert.authorizes_grantor(&wc.grantor) {
             return Err(invalid("config cert", "not authorized for the warrant grantor"));
         }
 

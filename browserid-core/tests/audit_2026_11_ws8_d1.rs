@@ -22,16 +22,16 @@ fn key(s: u8) -> KeyPair { KeyPair::from_seed(&[s; 32]).unwrap() }
 fn sref(i: u64) -> Option<StatusRef> { Some(StatusRef { uri: STATUS.into(), idx: i }) }
 
 #[test]
-#[ignore] // AUDIT-2026-11 D1: PoC, passes today (demonstrates the vulnerable wide mint); flips when the D1 fix lands
-fn d1_poc_base_auth_cert_mints_and_presents_as_subaddress() {
+fn d1_poc_base_auth_cert_no_longer_mints_as_subaddress() {
     let idp = key(1);
     let access = key(3);
     let config = key(4);
     let idp_pub: PublicKey = idp.public_key();
 
     // 1) The mint gate. A base `user@` AUTHENTICATION cert (the browser/login
-    //    key) is what /access/mint checks via authorizes_identity. It should
-    //    only authorize `user@`, but today it widens to the subaddress.
+    //    key) is what /access/mint checks via authorizes_identity. It
+    //    authorizes `user@` only (D1 fixed, bean v8s0): it used to widen to
+    //    the subaddress.
     let auth = {
         let c = DeviceCertClaims {
             typ: TYP_DEVICE_CERT.into(), iss: IDP.into(), iat: IAT, exp: IAT + 90 * DAY,
@@ -43,11 +43,14 @@ fn d1_poc_base_auth_cert_mints_and_presents_as_subaddress() {
     };
     assert!(auth.authorizes_identity(BASE));
     let widens = auth.authorizes_identity(SUB);
-    println!("[D1] base-auth cert authorizes_identity({SUB}) = {widens}  (mint gate would issue an access cert for the subaddress)");
-    assert!(widens, "PoC: mint gate widens base identity to subaddress today");
+    println!("[D1] base-auth cert authorizes_identity({SUB}) = {widens}  (true would let the mint gate issue an access cert for the subaddress)");
+    assert!(!widens, "an auth cert for the base identity must not mint for a subaddress (spec §4.6)");
+    assert!(!auth.authorizes_grantor(SUB), "an auth cert never vouches for a grantor");
 
-    // 2) End-to-end accept. Access cert minted for the SUBADDRESS, presented
-    //    under a `*`-holder warrant whose grantee is the subaddress.
+    // 2) End-to-end accept STILL holds for a legitimately minted subaddress
+    //    access cert (one issued for `user+agent@` itself): a config cert for
+    //    the BASE identity signs the warrant for the subaddress (§4.6's
+    //    authorization-only rule), presented under a `*`-holder warrant.
     let access_cert = {
         let c = AccessCertClaims {
             typ: TYP_ACCESS_CERT.into(), iss: IDP.into(), iat: IAT, exp: IAT + 24 * HOUR,

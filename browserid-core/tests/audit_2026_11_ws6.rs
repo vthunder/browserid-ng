@@ -167,7 +167,6 @@ fn fixture_bundle_verifies() {
 /// `routes/hosted_idp.rs` `/idp/access_cert`) gate on this predicate, so it
 /// is the mint's whole identity check.
 #[test]
-#[ignore] // AUDIT-2026-11 D1: fails today — `identity_matches` widens every base identity to its `+tag` subaddresses regardless of purpose (device.rs:96-111)
 fn d1_authentication_cert_for_base_identity_does_not_authorize_subaddress() {
     let f = Fx::new();
     let auth = f.device_cert(Purpose::Authentication, |_| {});

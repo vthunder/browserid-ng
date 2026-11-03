@@ -114,7 +114,7 @@ impl RecordBundle {
         if cc.purpose != Purpose::Authorization {
             return Err(invalid("config cert", "not an authorization cert"));
         }
-        if !self.config_cert.authorizes_identity(&wc.grantor) {
+        if !self.config_cert.authorizes_grantor(&wc.grantor) {
             return Err(invalid("config cert", "not authorized for the warrant grantor"));
         }
 
