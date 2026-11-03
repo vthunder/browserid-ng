@@ -30,8 +30,6 @@ const EXPECTED_FAIL: &[(&str, &str)] = &[
     ("P-TYP-01", "S3"),
     ("P-TYP-02", "S3"),
     ("A-REJ-13", "S3"),
-    // AUDIT-2026-11 W6-4: cert `status.uri` host is never compared to the cert's `iss` (a verifier rule, §6.3; core surfaces the ref only).
-    ("P-STAT-06", "W6-4"),
 ];
 
 struct Env {
@@ -73,6 +71,19 @@ impl Env {
             return Ok(self.fallback.1.clone());
         }
         Err(format!("issuer '{iss}' is not an accepted fallback for '{domain}'"))
+    }
+
+    /// §6.3: a CERT's `status.uri` host must be the cert's own `iss` (the
+    /// environment's primaries declare no `host=` delegate). A verifier
+    /// rule — core surfaces the ref, the runner judges it as the hosted
+    /// verifier does (audit 2026-11 W6-4).
+    fn cert_status_host(&self, label: &str, r: &Option<StatusRef>, iss: &str) -> Result<(), String> {
+        let Some(r) = r else { return Ok(()) };
+        let host = r.uri.strip_prefix("https://").and_then(|rest| rest.split('/').next()).unwrap_or("");
+        if host != iss {
+            return Err(format!("{label} status.uri host '{host}' is not its issuer '{iss}'"));
+        }
+        Ok(())
     }
 
     /// §6.1 step 8: fail-closed against the environment's lists.
@@ -124,6 +135,11 @@ fn run_p(env: &Env, v: &Value) -> Verdict {
         Ok(v) => v,
         Err(e) => return Verdict::Reject(e.to_string()),
     };
+    for (label, r, iss) in [("access cert", &va.access_status, &ac_iss), ("config cert", &va.config_status, &cc_iss)] {
+        if let Err(e) = env.cert_status_host(label, r, iss) {
+            return Verdict::Reject(e);
+        }
+    }
     for (label, r) in [("access cert", &va.access_status), ("config cert", &va.config_status), ("warrant", &va.warrant_status)] {
         if let Err(e) = env.status(label, r) {
             return Verdict::Reject(e);
@@ -155,6 +171,9 @@ fn run_a(env: &Env, v: &Value) -> Verdict {
         Ok(r) => r,
         Err(e) => return Verdict::Reject(e.to_string()),
     };
+    if let Err(e) = env.cert_status_host("config cert", &vr.config_status, &cc_iss) {
+        return Verdict::Reject(e);
+    }
     for (label, r) in [("config cert", &vr.config_status), ("warrant", &vr.warrant_status)] {
         if let Err(e) = env.status(label, r) {
             return Verdict::Reject(e);

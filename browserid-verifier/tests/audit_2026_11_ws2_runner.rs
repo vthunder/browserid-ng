@@ -45,8 +45,6 @@ const EXPECTED_FAIL: &[(&str, &str)] = &[
     ("A-REJ-21", "D16"),
     // AUDIT-2026-11 W6-1: grantor domain compared byte-exact in core.
     ("P-OK-12", "W6-1"),
-    // AUDIT-2026-11 W6-4: cert status.uri host never compared to iss (verify.rs:754-771).
-    ("P-STAT-06", "W6-4"),
 ];
 
 struct Mock {

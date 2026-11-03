@@ -1319,34 +1319,15 @@
       "status": "failure"
     },
     "P-STAT-06": {
-      "email": "user@example.com",
-      "grantee": "user@example.com",
-      "grantee_issuer": "browserid.me",
-      "holder": "br.main",
-      "issuer": "browserid.me",
-      "scopes": [],
-      "status": "okay",
-      "status_refs": [
-        {
-          "idx": 7,
-          "uri": "https://primary.example/.well-known/browserid-status"
-        },
-        {
-          "idx": 2,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        },
-        {
-          "idx": 42,
-          "uri": "https://browserid.me/.well-known/browserid-status"
-        }
-      ]
+      "reason": "access cert status.uri host is not its issuer 'browserid.me' (or the host= its _browserid record delegates to): https://primary.example/.well-known/browserid-status",
+      "status": "failure"
     },
     "P-STAT-07": {
-      "reason": "access cert status unavailable",
+      "reason": "access cert status.uri host is not its issuer 'browserid.me' (or the host= its _browserid record delegates to): https://10.0.0.1/.well-known/browserid-status",
       "status": "failure"
     },
     "P-STAT-08": {
-      "reason": "access cert status unavailable",
+      "reason": "access cert status.uri host is not its issuer 'browserid.me' (or the host= its _browserid record delegates to): https://unreachable.invalid/.well-known/browserid-status",
       "status": "failure"
     },
     "P-STAT-09": {
