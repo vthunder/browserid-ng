@@ -287,6 +287,21 @@ test("D6 pin: a bearer minted from a record never outlives the record", async ()
 });
 
 // ===========================================================================
+// W4-13 — a Lane A bearer never outlives the presented warrant
+// ===========================================================================
+
+test("W4-13: a jwt-bearer bearer is capped at the verifier's expires_at (bean oa6s field), and falls back to tokenTtlS without it", async () => {
+  const soon = nowS() + 30;
+  const capped = createMcpAuth({ resource: RESOURCE, broker: BROKER, fetch: fakeBroker({ verify: { ...okVerify, expires_at: soon } }).fetch });
+  const t = await capped.handleToken({ grant_type: JWT_BEARER_GRANT, assertion: "AC~AS~WR~CC" });
+  assert.ok(t.expires_in > 0 && t.expires_in <= 30, `expires_in ${t.expires_in}`);
+  const legacy = createMcpAuth({ resource: RESOURCE, broker: BROKER, fetch: fakeBroker({ verify: okVerify }).fetch });
+  assert.equal((await legacy.handleToken({ grant_type: JWT_BEARER_GRANT, assertion: "AC~AS~WR~CC" })).expires_in, 3600);
+  const dead = createMcpAuth({ resource: RESOURCE, broker: BROKER, fetch: fakeBroker({ verify: { ...okVerify, expires_at: nowS() - 1 } }).fetch });
+  await assert.rejects(dead.handleToken({ grant_type: JWT_BEARER_GRANT, assertion: "AC~AS~WR~CC" }), (e) => e.oauthError === "invalid_grant");
+});
+
+// ===========================================================================
 // W4-11 — refresh_token exchange does not require client_id (public client)
 // ===========================================================================
 

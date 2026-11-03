@@ -322,7 +322,15 @@ export function createMcpAuth(opts) {
     }
 
     const token = bearerToken();
-    const exp = nowS() + tokenTtlS;
+    // The bearer never outlives what it was minted from (audit 2026-11
+    // W4-13): capped at the verifier's `expires_at` (the earliest of access
+    // cert, warrant and config cert, per bean oa6s) when it is returned;
+    // the tokenTtlS cap alone when the verifier predates that field.
+    const presentedExp = Number.isFinite(verified.expires_at) ? verified.expires_at : Infinity;
+    if (presentedExp <= nowS()) {
+      throw new McpAuthError("invalid_grant", "presentation expired");
+    }
+    const exp = Math.min(nowS() + tokenTtlS, presentedExp);
     await store.put(token, {
       grantor: verified.email || null, // attributed identity (human)
       grantee: verified.grantee || verified.email || null, // acting identity (agent)
@@ -344,7 +352,7 @@ export function createMcpAuth(opts) {
     return {
       access_token: token,
       token_type: "Bearer",
-      expires_in: tokenTtlS,
+      expires_in: exp - nowS(),
       scope: scopes.join(" "),
     };
   }

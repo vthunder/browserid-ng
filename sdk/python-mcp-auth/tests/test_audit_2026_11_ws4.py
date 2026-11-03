@@ -126,17 +126,23 @@ class AudienceAndScopes(unittest.TestCase):
 
 
 class LaneABearerLifetime(unittest.TestCase):
-    @unittest.skip("AUDIT-2026-11 W4-13: fails today")
     def test_bearer_never_outlives_the_presented_warrant(self):
-        # /verify returns no expiry today (verifier side, cf. WS6 D7 class);
-        # once it does, the bearer must be capped at it like record bearers are.
+        # W4-13: /verify returns `expires_at` (bean oa6s); the bearer is
+        # capped at it like record bearers are.
         m, _ = make(verify={**OK, "expires_at": int(time.time()) + 30})
         res = m.handle_token(REQ)
         self.assertLessEqual(res["expires_in"], 30)
+        self.assertGreater(res["expires_in"], 0)
 
-    def test_bearer_lifetime_is_token_ttl_today(self):
-        m, _ = make(verify={**OK, "expires_at": int(time.time()) + 30})
+    def test_bearer_lifetime_falls_back_to_token_ttl_without_expires_at(self):
+        m, _ = make(verify=dict(OK))
         self.assertEqual(m.handle_token(REQ)["expires_in"], 3600)
+
+    def test_an_already_expired_presentation_never_mints(self):
+        m, _ = make(verify={**OK, "expires_at": int(time.time()) - 1})
+        with self.assertRaises(McpAuthError) as c:
+            m.handle_token(REQ)
+        self.assertEqual(c.exception.oauth_error, "invalid_grant")
 
 
 if __name__ == "__main__":

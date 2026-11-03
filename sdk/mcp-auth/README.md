@@ -135,7 +135,8 @@ curl -s -X POST http://localhost:8787/token \
 ## API
 
 - `createMcpAuth(opts) -> auth` — `opts`: `resource` (required), `broker`
-  (default `https://browserid.me`), `scopesForTool`, `tokenTtlS` (3600),
+  (default `https://browserid.me`), `scopesForTool`, `tokenTtlS` (3600; a bearer is
+  further capped at the verifier's `expires_at` when it returns one),
   `statusCacheS` (60), `acceptedFallbacks`, `store`, `fetch`.
 - `auth.handleToken(params)` — redeem a presentation for a bearer.
 - `auth.redeemPresentation(presentation, scope?)` — the shared verify+mint

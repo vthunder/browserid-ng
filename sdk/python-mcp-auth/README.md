@@ -53,7 +53,7 @@ prefer `httpx`/`requests` over the stdlib `urllib` default.
 ## API
 
 `McpAuth(resource, broker="https://browserid.me", scopes_for_tool=None,
-token_ttl_s=3600, status_cache_s=60, accepted_fallbacks=None, store=None,
+token_ttl_s=3600 (capped further at the verifier's expires_at when returned), status_cache_s=60, accepted_fallbacks=None, store=None,
 http_post=None)`; `handle_token(params)`, `authenticate(header)`,
 `require_warrant(header, tool_or_scopes)`, `protected_resource_metadata()`,
 `authorization_server_metadata()`, `challenge()`. MPL-2.0.

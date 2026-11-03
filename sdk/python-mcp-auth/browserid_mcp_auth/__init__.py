@@ -244,6 +244,16 @@ class McpAuth:
 
         token = "bat_" + secrets.token_urlsafe(32)
         now = int(time.time())
+        # The bearer never outlives what it was minted from (audit 2026-11
+        # W4-13): capped at the verifier's ``expires_at`` (the earliest of
+        # access cert, warrant and config cert, bean oa6s) when returned; the
+        # token_ttl_s cap alone when the verifier predates that field.
+        presented_exp = verified.get("expires_at")
+        exp = now + self.token_ttl_s
+        if isinstance(presented_exp, (int, float)) and not isinstance(presented_exp, bool):
+            if int(presented_exp) <= now:
+                raise McpAuthError("invalid_grant", "presentation expired")
+            exp = min(exp, int(presented_exp))
         self.store.put(
             token,
             _Grant(
@@ -253,7 +263,7 @@ class McpAuth:
                 issuer=verified.get("issuer"),
                 scopes=scopes,
                 status_refs=verified.get("status_refs") or [],
-                exp=now + self.token_ttl_s,
+                exp=exp,
                 status_checked_at=now,
                 status_ok=True,
             ),
@@ -261,7 +271,7 @@ class McpAuth:
         return {
             "access_token": token,
             "token_type": "Bearer",
-            "expires_in": self.token_ttl_s,
+            "expires_in": exp - now,
             "scope": " ".join(_scope_name(s) for s in scopes),
         }
 
