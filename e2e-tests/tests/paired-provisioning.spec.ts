@@ -2,15 +2,15 @@
  * Paired agent provisioning end-to-end (bean 74u1).
  *
  * Drives BOTH sides in one test: the agent side is the Node SDK
- * (`Agent.bootstrap`), the human side is the browser (approve on
+ * (`requestProvision`, see helpers/agent-bootstrap), the human side is the browser (approve on
  * `/authorize?code=<code>`). Proves the full loop — pair → human approves →
  * agent picks up the delegation and mints — with the provisioning key never
  * leaving the SDK.
  */
 import { test, expect } from '@playwright/test';
 // The agent-side SDK, run in the Node test process.
-import { Agent } from '../../sdk/agent/index.mjs';
-import { requestProvision } from '../../sdk/agent/src/device.mjs';
+import { requestProvision } from '../../sdk/agent/index.mjs';
+import { bootstrapAgent } from './helpers/agent-bootstrap';
 
 const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 
@@ -46,11 +46,7 @@ test.describe('Paired agent provisioning (74u1)', () => {
     const handle = `agt${Date.now().toString(36)}`;
 
     // AGENT SIDE: start pairing (generates the provisioning key locally).
-    const pairing = await Agent.bootstrap({
-      broker: baseUrl,
-      requestedHandles: { names: [handle] },
-      label: 'e2e agent',
-    });
+    const pairing = await bootstrapAgent(baseUrl, { handle, label: 'e2e agent' });
     expect(pairing.verificationUriComplete).toContain('/authorize?code=');
     expect(pairing.fingerprint).toMatch(/^[0-9A-F]{2}-[0-9A-F]{2}-[0-9A-F]{2}$/);
 
@@ -129,7 +125,7 @@ test.describe('Paired agent provisioning (74u1)', () => {
     await signIn(page, email, pass);
     const handle = `agt${Date.now().toString(36)}d`;
 
-    const pairing = await Agent.bootstrap({ broker: baseUrl, requestedHandles: { names: [handle] }, label: 'e2e deny' });
+    const pairing = await bootstrapAgent(baseUrl, { handle, label: 'e2e deny' });
     await page.goto(pairing.verificationUriComplete);
     await expect(page.locator('#provision')).toBeVisible();
     // I1's "It doesn't — stop" is the deny path: nothing has been created.

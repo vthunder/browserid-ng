@@ -167,9 +167,9 @@ where
     // Per-IP cap first (one client spraying many addresses), then the code
     // check with the brute-force guard (binds the guess to one record,
     // burns after N wrong tries; expiry enforced inside).
-    super::code_guard::completion_ip_allowed(&state, &headers)?;
-    let pending = super::code_guard::verify_pending_code(
-        state.user_store.as_ref(),
+    let pending = super::code_guard::complete_from_ip(
+        &state,
+        &headers,
         &req.email,
         VerificationType::SigninCode,
         &req.token,

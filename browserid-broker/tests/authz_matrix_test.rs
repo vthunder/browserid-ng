@@ -737,6 +737,28 @@ async fn api_v1_login_guessing_is_throttled() {
     assert!(saw_429, "30 bad login tokens from one IP were never rate-limited");
 }
 
+/// The `403 login_required` answer is the first step of every page login
+/// (registry-api-v1 §4.2), not a failed guess: it must never feed the
+/// per-source failure bucket, or one shared address locks out after
+/// twenty sign-ins (regression found by e2e on 2026-11-06, bean 4r2j).
+#[tokio::test]
+async fn api_v1_login_required_is_not_a_failure() {
+    let r = rig();
+    let cookie = create_user(&r.server, &r.sender, ALICE, PASSWORD).await;
+    let sess = common::registry::api_login(&r.server, &cookie, PASSWORD).await;
+    for _ in 0..40 {
+        let resp = r
+            .server
+            .post("/api/v1/login")
+            .add_header("content-type", "application/json")
+            .add_header("x-forwarded-for", "203.0.113.8")
+            .json(&json!({ "account": sess.account, "method": "login_page" }))
+            .await;
+        assert_eq!(resp.status_code(), 403, "no token: expected login_required");
+        assert_eq!(resp.json::<serde_json::Value>()["reason"], "login_required");
+    }
+}
+
 /// D9 (audit 2026-11, fixed in bean cd6r): `accounts/lookup` checks the
 /// possession proof under the cert's own key — and its claims and replay —
 /// before any issuer discovery, so a garbage proof with a foreign-issuer

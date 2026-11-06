@@ -169,6 +169,12 @@ pub enum ApiError {
     Internal(String),
 }
 
+/// Marks the `403 login_required` answer on the response so the login
+/// throttle (broker `rate_limit::api_v1`) does not count it as a failure:
+/// it is the first, expected step of every page login, not a bad token.
+#[derive(Clone, Copy, Debug)]
+pub struct LoginRequiredAnswer;
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         if let ApiError::LoginRequired { url } = self {
@@ -177,7 +183,9 @@ impl IntoResponse for ApiError {
                 "error_description": "open the login page and retry with its token",
                 "url": url,
             });
-            return (StatusCode::FORBIDDEN, Json(body)).into_response();
+            let mut resp = (StatusCode::FORBIDDEN, Json(body)).into_response();
+            resp.extensions_mut().insert(LoginRequiredAnswer);
+            return resp;
         }
         let (status, error, description, reason) = match self {
             ApiError::InvalidRequest(d) => (StatusCode::BAD_REQUEST, "invalid_request", d, None),

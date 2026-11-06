@@ -171,7 +171,11 @@ pub async fn api_v1(req: Request, next: Next) -> Response {
         return slow_down(reset);
     }
     let resp = next.run(Request::from_parts(parts, Body::from(bytes))).await;
-    if !resp.status().is_success() {
+    // `login_required` is the expected first answer of every page login
+    // (registry-api-v1 §4.2), not a failed guess: counting it locked a
+    // shared address out after twenty sign-ins (found by e2e, 2026-11-06).
+    let login_required = resp.extensions().get::<browserid_registrar::api::LoginRequiredAnswer>().is_some();
+    if !resp.status().is_success() && !login_required {
         API_V1_LOGIN_FAILURES_PER_IP.record(&ip);
         if let Some(k) = account_key.as_deref() {
             API_V1_LOGIN_FAILURES_PER_ACCOUNT.record(k);

@@ -5,7 +5,8 @@
  * paired provisioning, warrant consent, the guestbook RP.
  */
 import { test, expect } from '@playwright/test';
-import { Agent, requestWarrants } from '../../sdk/agent/index.mjs';
+import { requestWarrants } from '../../sdk/agent/index.mjs';
+import { bootstrapAgent } from './helpers/agent-bootstrap';
 
 const baseUrl = process.env.BROKER_URL || 'http://localhost:3000';
 const guestbookAud = `${baseUrl}/guestbook`;
@@ -48,7 +49,7 @@ test('agent provisions, gets a sign warrant, and signs the public guestbook', as
   // 1. Provision (paired, Flow I: fingerprint check → name+address → done)
   //    → the delivered device-model agent. Agent identities sub-address
   //    their owner: `<owner-local>+<handle>@<owner-domain>`.
-  const pairing = await Agent.bootstrap({ broker: baseUrl, requestedHandles: { names: [handle] }, label: 'guestbook agent' });
+  const pairing = await bootstrapAgent(baseUrl, { handle, label: 'guestbook agent' });
   await page.goto(pairing.verificationUriComplete);
   await expect(page.locator('#provision')).toBeVisible();
   await expect(page.locator('#provision')).toContainText(pairing.fingerprint);
@@ -60,8 +61,9 @@ test('agent provisions, gets a sign warrant, and signs the public guestbook', as
   expect(agent.email).toBe(`${local}+${handle}@${email.split('@')[1]}`);
 
   // 2. Obtain a `sign` warrant for the guestbook (consent page approval).
+  // The filing is signed by the device key (audit 2026-11 D4): pass the agent.
   const pendingWarrant = await requestWarrants(baseUrl, {
-    deviceCert: agent.deviceCert,
+    agent,
     identity: agent.email,
     grants: [{ audience: guestbookAud, scopes: ['sign'] }],
     label: 'guestbook agent',

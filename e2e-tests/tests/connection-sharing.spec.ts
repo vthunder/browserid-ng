@@ -167,7 +167,9 @@ async function finishConnect(request: any, reg: any, p: any, codePromise: Promis
       },
     })
   ).json();
-  return tok;
+  // OAuth 2.1 §4.3.1 (audit 2026-11 W4-11): a public client sends its
+  // client_id on refresh; keep it with the tokens.
+  return { ...tok, client_id: reg.client_id };
 }
 
 const callTool = (request: any, token: string, name: string, args: any) =>
@@ -227,9 +229,9 @@ test('owner shares to a member email; member connects, works under S ∩ S′, b
   await revokeWarrant(memberPage, (w) => !!w.binding_id && String(w.audience).startsWith(GATE));
   await expect.poll(async () => (await callTool(request, tokens.access_token, 'read_text_file', { path: 'hello.txt' })).status(), { timeout: 15000 }).toBe(401);
   const deadRefresh = await (
-    await request.post(`${GATE}/token`, { data: { grant_type: 'refresh_token', refresh_token: tokens.refresh_token } })
+    await request.post(`${GATE}/token`, { data: { grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: tokens.client_id } })
   ).json();
-  expect(deadRefresh.error).toBe('invalid_grant');
+  expect(deadRefresh.error, JSON.stringify(deadRefresh)).toBe('invalid_grant');
   const tokens2 = await connectMember(memberPage, request, member, { expectLogin: false, noJs: true });
   expect(tokens2.access_token, JSON.stringify(tokens2)).toBeTruthy();
   const okAgain = await callTool(request, tokens2.access_token, 'read_text_file', { path: 'hello.txt' });
@@ -241,7 +243,7 @@ test('owner shares to a member email; member connects, works under S ∩ S′, b
   await revokeWarrant(ownerPage, (w) => !w.binding_id && String(w.audience).startsWith(GATE));
   await expect.poll(async () => (await callTool(request, tokens2.access_token, 'read_text_file', { path: 'hello.txt' })).status(), { timeout: 15000 }).toBe(401);
   const deadRefresh2 = await (
-    await request.post(`${GATE}/token`, { data: { grant_type: 'refresh_token', refresh_token: tokens2.refresh_token } })
+    await request.post(`${GATE}/token`, { data: { grant_type: 'refresh_token', refresh_token: tokens2.refresh_token, client_id: tokens2.client_id } })
   ).json();
   expect(deadRefresh2.error).toBe('invalid_grant');
 

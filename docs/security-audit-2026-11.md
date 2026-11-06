@@ -379,3 +379,18 @@ verify 0.4.0 / gate 0.11.0 before regenerating SDK lockfiles from the
 registry; MCP resource configs must have no trailing slash; set
 `POSTHOG_ID_SALT` and keep `TRUSTED_PROXIES=1` in the broker env;
 wallet-service and hosted wallet redeploy.
+
+### Pre-deploy e2e, 2026-11-06 (bean izsn)
+
+The Playwright run before the first deploy caught two of the new
+per-source throttles locking a shared address out under ordinary use:
+the registry's login failure bucket counted the expected `403
+login_required` first answer, and the code-completion cap counted right
+answers. Both are fixed (`login_required` is marked and skipped; only
+wrong completions count), with regression tests, and the e2e specs were
+moved to the agent SDK's 1.0.0 surface. Clean run on a warm broker: 131
+passed, 0 failed, 15 skipped. One transient DoT hiccup in ~10 reconnects
+surfaced as a hard `discovery failed` under D14, as decided; a negative
+cache for NXDOMAIN discovery would shrink that exposure (follow-up).
+`POSTHOG_ID_SALT` is set on the identity host and in sandmill-infra
+secrets ahead of the deploy.

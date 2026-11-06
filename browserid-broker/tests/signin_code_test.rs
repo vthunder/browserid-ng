@@ -288,8 +288,9 @@ fn sqlite_signin_code_pending_roundtrip() {
 
 /// Audit 2026-11 (July C1 residual): completion is capped per client IP —
 /// the per-address burn allows 5 guesses at one address; this bounds one
-/// client walking many addresses. Counted on every attempt, so the cap is
-/// not an existence signal.
+/// client walking many addresses. Only wrong guesses count (the answer
+/// already says whether a guess was right), so a shared address that
+/// signs in a lot is never locked out: see `successful_completions_are_not_throttled`.
 #[tokio::test]
 async fn completion_is_rate_limited_per_ip() {
     let ctx = create_test_context();
@@ -309,4 +310,31 @@ async fn completion_is_rate_limited_per_ip() {
         }
     }
     assert!(saw_429, "31 completion attempts from one IP were never throttled");
+}
+
+/// Regression (e2e, 2026-11-06): the per-IP completion cap counted right
+/// answers too, so 30 ordinary sign-ins from one address (an office NAT, a
+/// carrier NAT, the e2e suite) locked that address out for 15 minutes.
+#[tokio::test]
+async fn successful_completions_are_not_throttled() {
+    let ctx = create_test_context();
+    for i in 0..40 {
+        let email = format!("ok{i}@example.com");
+        let response = ctx
+            .server
+            .post("/wsapi/stage_signin_code")
+            // Staging has its own 10-an-hour source cap; vary the source there.
+            .add_header("x-forwarded-for", format!("198.51.100.{i}"))
+            .json(&json!({ "email": email, "pass": "chosen-password" }))
+            .await;
+        assert_eq!(response.status_code(), 200, "stage {i}");
+        let code = ctx.email_sender.get_code(&email).unwrap();
+        let response = ctx
+            .server
+            .post("/wsapi/complete_signin_code")
+            .add_header("x-forwarded-for", "203.0.113.78")
+            .json(&json!({ "email": email, "token": code }))
+            .await;
+        assert_eq!(response.status_code(), 200, "completion {i} was throttled");
+    }
 }

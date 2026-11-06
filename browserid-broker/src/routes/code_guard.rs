@@ -82,29 +82,42 @@ pub fn verify_pending_code<U: UserStore>(
     }
 }
 
-/// Wrong completion attempts allowed per client IP per window, counted on
-/// every attempt (right or wrong, so the cap is not itself an oracle). The
+/// Wrong completion attempts allowed per client IP per window. The
 /// per-target burn above allows 5 guesses per address; this bounds one
-/// client walking many addresses: 30 per 15 minutes.
+/// client walking many addresses: 30 wrong guesses per 15 minutes. Only
+/// failures count: the answer already tells the caller whether a guess was
+/// right, so counting successes adds no secrecy, and it locked every
+/// shared address (office NAT, carrier-grade NAT, the e2e suite) out after
+/// 30 ordinary sign-ins (found by e2e, 2026-11-06).
 pub const COMPLETION_MAX_PER_IP: u32 = 30;
 pub const COMPLETION_WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
-/// Per-IP cap on code completion (audit 2026-11, July C1 residual). Call
-/// BEFORE `verify_pending_code`. Counts the attempt; `Err(429)` at the cap.
-pub fn completion_ip_allowed<U: UserStore, S: crate::store::SessionStore, E: crate::email::EmailSender>(
+/// Per-IP cap on code completion (audit 2026-11, July C1 residual): refuse
+/// with 429 while the source's failure window is at the cap; then run
+/// `verify_pending_code` and count a wrong guess against the source.
+pub fn complete_from_ip<U: UserStore, S: crate::store::SessionStore, E: crate::email::EmailSender>(
     state: &crate::state::AppState<U, S, E>,
     headers: &axum::http::HeaderMap,
-) -> Result<(), BrokerError> {
+    email: &str,
+    vtype: VerificationType,
+    submitted_code: &str,
+) -> Result<PendingVerification, BrokerError> {
     let ip = super::auth::client_ip(headers);
-    let mut attempts = state.code_completion_attempts.write().unwrap();
     let now = std::time::Instant::now();
-    attempts.retain(|_, (start, _)| now.duration_since(*start) < COMPLETION_WINDOW);
-    let entry = attempts.entry(ip).or_insert((now, 0));
-    if entry.1 >= COMPLETION_MAX_PER_IP {
-        return Err(BrokerError::LoginRateLimited);
+    {
+        let mut attempts = state.code_completion_attempts.write().unwrap();
+        attempts.retain(|_, (start, _)| now.duration_since(*start) < COMPLETION_WINDOW);
+        if matches!(attempts.get(&ip), Some((_, n)) if *n >= COMPLETION_MAX_PER_IP) {
+            return Err(BrokerError::LoginRateLimited);
+        }
     }
-    entry.1 += 1;
-    Ok(())
+    let result = verify_pending_code(state.user_store.as_ref(), email, vtype, submitted_code);
+    if matches!(result, Err(BrokerError::InvalidVerificationCode)) {
+        let mut attempts = state.code_completion_attempts.write().unwrap();
+        let entry = attempts.entry(ip).or_insert((now, 0));
+        entry.1 += 1;
+    }
+    result
 }
 
 /// Increment the wrong-attempt counter for `key`; at the cap, burn the pending

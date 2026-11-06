@@ -476,13 +476,12 @@ where
     // (audit L7). The account page's `post()` helper already sends it.
     super::session::require_csrf(&session, &req.csrf)?;
     // Per-IP cap on completion attempts (audit 2026-11, July C1 residual).
-    super::code_guard::completion_ip_allowed(&state, &headers)?;
-
     // Look up the pending record by its target email and verify the code with
     // the brute-force guard (binds the guess to one record, burns after N wrong
     // tries). Expiry is enforced inside the guard.
-    let pending = super::code_guard::verify_pending_code(
-        state.user_store.as_ref(),
+    let pending = super::code_guard::complete_from_ip(
+        &state,
+        &headers,
         &req.email,
         VerificationType::AddEmail,
         &req.token,
