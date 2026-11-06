@@ -2,6 +2,7 @@
 name = "browserid-registrar"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Reusable registrar component: provisioning-cert registry, endorsement signing, warrant consent flow + registry, revocation status list (1pnf)"

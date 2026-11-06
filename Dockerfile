@@ -1,8 +1,10 @@
 # Stage 1: Build
 # Base image pinned by digest (audit 2026-11 W7-7): the tag names the
 # version a human chose, the digest makes the build reproducible. Bump by
-# re-resolving the tag (multi-arch manifest list, 2026-11-03).
-FROM rust:1.85-bookworm@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4 AS builder
+# re-resolving the tag (multi-arch manifest list, 2026-11-06). Keep the
+# version in step with the CI pin (.github/workflows) and Cargo.toml's
+# rust-version: scripts/release-check.sh builds with exactly this one.
+FROM rust:1.93-bookworm@sha256:7c4ae649a84014c467d79319bbf17ce2632ae8b8be123ac2fb2ea5be46823f31 AS builder
 
 WORKDIR /build
 

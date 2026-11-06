@@ -35,6 +35,19 @@ step() {
 }
 
 rust_workspace() { cargo test --workspace; }
+# The toolchain CI and the Docker image actually build with (Dockerfile
+# FROM rust:X). The dev box runs whatever rustup's stable is, which once
+# let a dependency that needed a newer compiler pass here and fail CI.
+rust_pinned() {
+  local v; v="$(sed -nE 's/^FROM rust:([0-9.]+)-.*/\1/p' Dockerfile | head -1)"
+  [ -n "$v" ] || { echo "no FROM rust:<version> in Dockerfile"; return 1; }
+  grep -q "rust-toolchain@.* # $v" .github/workflows/test.yml || { echo "CI pins a different toolchain than Dockerfile ($v)"; return 1; }
+  rustup toolchain install "$v" --profile minimal >/dev/null 2>&1 || rustup toolchain install "$v.0" --profile minimal
+  local tc; tc="$(rustup toolchain list | grep -oE "^$v(\.[0-9]+)?-" | head -1 | sed 's/-$//')"
+  [ -n "$tc" ] || { echo "toolchain $v not installed"; return 1; }
+  echo "building with $tc"
+  cargo "+$tc" check --workspace --all-targets --locked
+}
 rust_conformance() {
   cargo test -p browserid-core --test audit_2026_11_ws2_generate --test audit_2026_11_ws2_runner -- --nocapture &&
   cargo test -p browserid-verifier --test audit_2026_11_ws2_runner -- --nocapture
@@ -68,6 +81,7 @@ e2e() {
 }
 
 step rust-workspace    rust_workspace
+step rust-pinned       rust_pinned
 step rust-conformance  rust_conformance
 step sdk-js            node_suite sdk/js
 step sdk-agent         node_suite sdk/agent

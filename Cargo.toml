@@ -11,6 +11,10 @@ members = [
 ]
 
 [workspace.package]
+# The toolchain CI and the Docker image build with; scripts/release-check.sh
+# checks the workspace with exactly this version so a dependency that needs
+# a newer compiler fails here, not in CI or at deploy.
+rust-version = "1.93"
 version = "0.1.0"
 edition = "2021"
 license = "MPL-2.0"

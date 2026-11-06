@@ -2,6 +2,7 @@
 name = "browserid-verifier"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The BrowserID-NG verification algorithm: DNSSEC-rooted discovery, presentation/record verification, and fail-closed revocation checks"

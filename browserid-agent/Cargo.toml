@@ -3,6 +3,7 @@ name = "browserid-agent"
 description = "Headless browserid client for agents: provision an attributed identity via API key, sign assertions locally"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
