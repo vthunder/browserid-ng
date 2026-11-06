@@ -54,6 +54,8 @@ rust_conformance() {
 }
 node_suite() { (cd "$1" && node --test ${2:-}); }
 python_suite() { (cd sdk/python-mcp-auth && python3 -m unittest discover -s tests); }
+# CI's publish drift gate: a changed package must carry a new version.
+publish_drift() { node scripts/publish-status.mjs; }
 supply_chain() { scripts/supply-chain-audit.sh rust && scripts/supply-chain-audit.sh node && scripts/supply-chain-audit.sh python; }
 
 # Playwright against a broker built from THIS tree, started fresh (empty
@@ -94,6 +96,7 @@ step sdk-fastify       node_suite sdk/fastify 'test/*.test.mjs'
 step wallet-service    node_suite wallet-service
 step python-mcp-auth   python_suite
 step supply-chain      supply_chain
+step publish-drift     publish_drift
 step e2e               e2e
 
 # The Python run dirties tracked __pycache__ files; put them back.
