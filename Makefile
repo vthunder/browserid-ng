@@ -2,6 +2,7 @@
 #
 #   make build            compile the whole workspace
 #   make test             run the Rust + SDK test suites
+#   make release-check    everything CI runs plus the e2e on a fresh broker; required before a submission or deploy
 #   make audit            cargo-audit + npm audit + pip-audit + gitleaks (CI: supply-chain.yml)
 #   make fuzz-smoke       run every cargo-fuzz target for FUZZ_SECS (default 60) — see fuzz/README.md
 #   make fuzz-smoke-install  (dev box) install the weekly launchd agent org.sandmill.fuzz-smoke
@@ -23,7 +24,7 @@ HOST ?= dokku@browserid.me
 SSH  := ssh -i $(HOME)/.ssh/mini-ops -o StrictHostKeyChecking=accept-new
 REG  := ghcr.io/vthunder/browserid-ng
 
-.PHONY: build test audit fuzz-smoke fuzz-smoke-install push watch release deploy publish-status \
+.PHONY: release-check build test audit fuzz-smoke fuzz-smoke-install push watch release deploy publish-status \
         release-broker release-www release-wallet release-mcp-demo \
         release-python-mcp-demo release-guestbook
 
@@ -32,6 +33,9 @@ build:
 
 test:
 	cargo test --workspace
+
+release-check:
+	scripts/release-check.sh
 
 # Same script and ignore lists as .github/workflows/supply-chain.yml.
 audit:
