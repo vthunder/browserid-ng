@@ -60,6 +60,30 @@ mod parse_valid {
 mod parse_invalid {
     use super::*;
 
+    /// A repeated known field is ambiguous and rejects (audit 2026-11 W2-6):
+    /// `public-key=A; public-key=B` must not resolve to either key, and the
+    /// same for `v`, the algorithm, and `host` — even when the values agree.
+    #[test]
+    fn test_repeated_field_rejects() {
+        let a = KeyPair::generate().public_key().to_base64();
+        let b = KeyPair::generate().public_key().to_base64();
+        for txt in [
+            format!("v=browserid1; public-key-algorithm=Ed25519; public-key={a}; public-key={b}"),
+            format!("v=browserid1; public-key-algorithm=Ed25519; public-key={a}; public-key={a}"),
+            format!("v=browserid1; v=browserid1; public-key-algorithm=Ed25519; public-key={a}"),
+            format!("v=browserid1; public-key-algorithm=Ed25519; public-key-algorithm=Ed25519; public-key={a}"),
+            format!("v=browserid1; public-key-algorithm=Ed25519; public-key={a}; host=x.example; host=y.example"),
+        ] {
+            match DnsRecord::parse(&txt) {
+                Err(Error::InvalidDnsRecord(msg)) => assert!(msg.contains("repeated field"), "{txt}: {msg}"),
+                other => panic!("{txt}: expected repeated-field rejection, got {other:?}"),
+            }
+        }
+        // Repeating an UNKNOWN field stays ignored (forward compatibility).
+        let txt = format!("v=browserid1; public-key-algorithm=Ed25519; public-key={a}; x=1; x=2");
+        assert!(DnsRecord::parse(&txt).is_ok());
+    }
+
     #[test]
     fn test_missing_version() {
         let key = KeyPair::generate();

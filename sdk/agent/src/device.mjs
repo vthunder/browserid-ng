@@ -19,7 +19,8 @@
 // The device key never leaves the process; only signed requests cross the
 // wire. The assertion is signed with the ACCESS key (not the device key),
 // which is what binds a presentation to the cert the IdP just issued.
-import { KeyPair, fromB64u, b64u, publicKeyField, decodeJwtClaims } from "./crypto.mjs";
+import { KeyPair, fromB64u, b64u, b64uJson, publicKeyField, decodeJwtClaims } from "./crypto.mjs";
+import { createHash, randomBytes } from "node:crypto";
 import { accessRequest, assertion as makeAssertion, accessPresentation, nowS } from "./protocol.mjs";
 import { AgentError, RequestError, NoWarrantError } from "./errors.mjs";
 
@@ -29,14 +30,34 @@ const ACCESS_REFRESH_MARGIN_S = 60;
 const trim = (u) => String(u).replace(/\/$/, "");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function postJson(http, url, body) {
+async function postJson(http, url, body, headers = {}) {
   const res = await http(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    headers: { "content-type": "application/json", ...headers },
+    body: typeof body === "string" ? body : JSON.stringify(body),
   });
   const json = await res.json().catch(() => ({}));
   return { res, json };
+}
+
+const REQUEST_PROOF_TYP = "browserid-registry-proof-v1";
+const sha256b64u = (data) => createHash("sha256").update(data).digest("base64url");
+
+/**
+ * A registry-api-v1 §4.4 request proof, signed by `key`: a compact JWS
+ * (`typ: browserid-registry-proof-v1`, `kid` = base64url(SHA-256(raw public
+ * key))) over `{ htm, htu, iat, jti, bh }`, `bh` the base64url SHA-256 of
+ * the exact body bytes. `/warrant/request` requires one by the agent's
+ * device key (audit 2026-11 D4): the device cert alone is public — every
+ * audience it was presented to has seen it — so without this anyone could
+ * file consent requests in the agent's name.
+ */
+export function requestProof(key, method, htu, bodyBytes) {
+  const kid = sha256b64u(Buffer.from(key.publicRaw));
+  const claims = { htm: method, htu, iat: nowS(), jti: randomBytes(12).toString("hex") };
+  if (bodyBytes != null) claims.bh = sha256b64u(bodyBytes);
+  const signingInput = `${b64uJson({ alg: "EdDSA", typ: REQUEST_PROOF_TYP, kid })}.${b64uJson(claims)}`;
+  return `${signingInput}.${key.sign(signingInput)}`;
 }
 
 /** Host of a URL — the `domain` an access request is pinned to. */
@@ -218,9 +239,10 @@ export class PendingProvision {
  * identity's domain or a requested audience's origin — and refuses the whole
  * request otherwise.
  */
-export async function requestWarrants(broker, { deviceCert, identity, grants, label, message, grantor, returnUrl, http = fetch }) {
+export async function requestWarrants(broker, { agent, deviceCert = agent?.deviceCert, deviceKey, identity, grants, label, message, grantor, returnUrl, http = fetch }) {
   const base = trim(broker);
-  const { res, json } = await postJson(http, `${base}/warrant/request`, {
+  const url = `${base}/warrant/request`;
+  const body = JSON.stringify({
     device_cert: deviceCert,
     identity,
     grants: grants.map((g) => ({ audience: g.audience, scopes: g.scopes ?? [] })),
@@ -229,6 +251,14 @@ export async function requestWarrants(broker, { deviceCert, identity, grants, la
     ...(grantor ? { grantor } : {}),
     ...(returnUrl ? { return_url: returnUrl } : {}),
   });
+  // The filing is signed by the device key (audit 2026-11 D4): pass the
+  // `DeviceAgent` (it signs without exposing the key) or the `KeyPair`.
+  const bytes = Buffer.from(body, "utf8");
+  let proof;
+  if (agent) proof = agent.requestProof("POST", url, bytes);
+  else if (deviceKey) proof = requestProof(deviceKey, "POST", url, bytes);
+  else throw new AgentError("requestWarrants needs the agent (or its deviceKey) to sign the filing");
+  const { res, json } = await postJson(http, url, body, { proof });
   if (!res.ok || json.success !== true) {
     throw new RequestError("warrant request", res.status, json.reason || "no reason given");
   }
@@ -285,6 +315,10 @@ export class PendingWarrants {
  */
 export class DeviceAgent {
   #deviceKey;
+  // The credential holds the device key seed: a PRIVATE field (audit
+  // 2026-11 W4-42) so `console.log(agent)` / util.inspect / JSON.stringify
+  // never print it; `agent.credential` is an explicit read.
+  #credential;
   // Access certs by audience. Unmanaged identities always use the "" slot
   // (one shared, audience-free cert — the mint stays RP-blind). A MANAGED
   // identity (device cert `managed: true`, spec §4.7) mints per audience so
@@ -293,7 +327,7 @@ export class DeviceAgent {
   #grants = new Map(); // audience -> { warrant, configCert }
 
   constructor(credential, { http = fetch } = {}) {
-    this.credential = credential;
+    this.#credential = credential;
     this.http = http;
     this.#deviceKey = KeyPair.fromSeed(fromB64u(credential.device_key));
     this.deviceCert = credential.agent_device_cert;
@@ -311,7 +345,32 @@ export class DeviceAgent {
     if (credential.identity && !authorizesIdentity(claims, credential.identity)) {
       throw new AgentError(`device cert does not authorize '${credential.identity}'`);
     }
-    this.idpDomain = urlHost(credential.idp);
+    // The IdP is the SIGNED device cert's `iss` (audit 2026-11 W4-41) —
+    // never the registrar's poll body. A credential `idp` is accepted only
+    // when it names that host; the mint endpoint is checked the same way.
+    if (typeof claims.iss !== "string" || !claims.iss) {
+      throw new AgentError("device cert has no iss (the IdP that signed it)");
+    }
+    this.idpDomain = claims.iss;
+    if (credential.idp != null && !hostMatches(credential.idp, claims.iss)) {
+      throw new AgentError(`credential idp '${credential.idp}' does not match the device cert's iss '${claims.iss}'`);
+    }
+  }
+
+  /** The device credential (explicit read; holds the device key seed). */
+  get credential() {
+    return this.#credential;
+  }
+  toJSON() {
+    return { email: this.email, holder: this.holder, idpDomain: this.idpDomain, deviceCert: this.deviceCert, warrantedAudiences: this.warrantedAudiences() };
+  }
+  [Symbol.for("nodejs.util.inspect.custom")]() {
+    return `DeviceAgent { email: '${this.email}', holder: '${this.holder}', idp: '${this.idpDomain}', warrants: ${this.warrantedAudiences().length} }`;
+  }
+
+  /** A §4.4 request proof by this agent's device key (see `requestProof`). */
+  requestProof(method, htu, bodyBytes) {
+    return requestProof(this.#deviceKey, method, htu, bodyBytes);
   }
 
   /**
@@ -382,8 +441,7 @@ export class DeviceAgent {
       jti,
       ...(this.isManaged && audience ? { audience } : {}),
     });
-    const url =
-      this.credential.access_mint || `${trim(this.credential.idp)}/access/mint`;
+    const url = this.#mintUrl();
     const { res, json } = await postJson(this.http, url, {
       device_cert: this.deviceCert,
       access_request: request,
@@ -396,6 +454,25 @@ export class DeviceAgent {
     }
     this.#access.set(this.#audKey(audience), { key: accessKey, cert, claims: decodeJwtClaims(cert) });
     return cert;
+  }
+
+  /** The mint endpoint: a poll-supplied `access_mint` or `<idp>/access/mint`,
+   *  either way on the device cert's `iss` over https (loopback exempt) —
+   *  a lying registrar cannot redirect device-key-signed requests elsewhere. */
+  #mintUrl() {
+    const c = this.#credential;
+    // Scheme: the credential idp (already host-checked at construction; a
+    // loopback dev IdP may be http), else https on the iss.
+    const url = c.access_mint || (c.idp ? `${trim(c.idp)}/access/mint` : `https://${this.idpDomain}/access/mint`);
+    let u;
+    try { u = new URL(url); } catch { throw new AgentError(`access_mint '${url}' is not a URL`); }
+    if (!hostMatches(url, this.idpDomain)) {
+      throw new AgentError(`access_mint '${url}' is not on the device cert's iss '${this.idpDomain}'`);
+    }
+    if (u.protocol !== "https:" && !isLoopback(u.hostname)) {
+      throw new AgentError(`access_mint '${url}' must be https`);
+    }
+    return url;
   }
 
   async #ensureFreshAccess(audience) {
@@ -435,18 +512,27 @@ export class DeviceAgent {
   }
 }
 
+const isLoopback = (h) => h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1";
+/** Does URL `u` sit on `domain` (a device cert `iss`)? Compared on the host
+ *  with and without its port, case-folded, so `localhost:3000` and
+ *  `idp.example` both pin. */
+function hostMatches(u, domain) {
+  let url;
+  try { url = new URL(u); } catch { return false; }
+  const d = String(domain).toLowerCase();
+  return url.host.toLowerCase() === d || url.hostname.toLowerCase() === d;
+}
+
 /** A warrant's holder may be an exact holder or a `*`-suffixed prefix matcher. */
 function holderMatches(matcher, holder) {
   return matcher.endsWith("*") ? holder.startsWith(matcher.slice(0, -1)) : matcher === holder;
 }
 
-/** A cert naming a base identity also authorizes its `+tag` sub-addresses. */
+/**
+ * An AUTH cert mints exactly (spec §4.6, audit 2026-11 D1): the identity
+ * must be named by the cert. A `+tag` agent holds its own cert naming the
+ * sub-identity; a base cert no longer covers its tags for authentication.
+ */
 function authorizesIdentity(claims, identity) {
-  const base = (id) => {
-    const at = id.lastIndexOf("@");
-    if (at < 0) return id;
-    const [local, domain] = [id.slice(0, at), id.slice(at + 1)];
-    return `${local.split("+")[0]}@${domain}`;
-  };
-  return (claims.identities ?? []).some((id) => id === identity || id === base(identity));
+  return (claims.identities ?? []).some((id) => id === identity);
 }

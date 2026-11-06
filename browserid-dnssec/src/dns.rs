@@ -11,9 +11,13 @@
 //! which hard-rejects discovery rather than falling back to the broker.
 //!
 //! Residual trust: the configured resolver itself (default: Google Public
-//! DNS). An attacker who can merely block the TLS connection can force a
-//! downgrade to broker fallback (Insecure), but cannot forge a
-//! DNSSEC-validated primary IdP record.
+//! DNS). A **transport failure** — the resolver unreachable, a TLS or
+//! connect error, a timeout, no response, an unexpected rcode — carries no
+//! DNSSEC signal and is indistinguishable from an attack, so it is a hard
+//! reject (`Bogus`), never `Insecure` (spec §3, audit 2026-11 D14): an
+//! attacker who can block port 853 must not be able to demote a primary
+//! domain to the fallback path. One retry is made within a short budget
+//! ([`TRANSPORT_RETRY_BUDGET`]) before giving up.
 
 use browserid_core::{DnsLookupResult, DnsRecord, DnssecStatus};
 use futures_util::StreamExt;
@@ -36,6 +40,13 @@ const DEFAULT_TLS_NAME: &str = "dns.google";
 
 /// Default DNS-over-TLS port
 const DEFAULT_DOT_PORT: u16 = 853;
+
+/// Budget within which a failed DoT exchange is retried once (audit
+/// 2026-11 Q2 (b): "retry once with a short budget, then hard reject").
+/// The retry is attempted only while this much time has not yet elapsed
+/// since the first attempt began; each attempt is still bounded by the
+/// client's own query timeout.
+pub const TRANSPORT_RETRY_BUDGET: Duration = Duration::from_secs(2);
 
 /// Shared rustls config with WebPKI roots, built once
 fn tls_client_config() -> Arc<rustls::ClientConfig> {
@@ -123,26 +134,51 @@ impl DnsFetcher {
     /// - AD flag set (Secure) -> Domain operates as primary IdP
     /// - AD flag not set (Insecure) -> Fall back to broker
     /// - SERVFAIL (Bogus, DNSSEC validation failure at the resolver) -> Reject
+    /// - Transport failure (no answer at all, after one retry within
+    ///   [`TRANSPORT_RETRY_BUDGET`]) -> Reject (Bogus). An unanswered query
+    ///   is not an "insecure" answer (spec §3, audit 2026-11 D14).
     pub async fn lookup(&self, domain: &str) -> DnsLookupResult {
         let name_str = format!("_browserid.{}.", domain);
 
-        // Parse the domain name
+        // Parse the domain name. Not a transport failure, but not an answer
+        // either: nothing was asked, so nothing may be read as "not a primary".
         let name = match Name::from_str(&name_str) {
             Ok(n) => n,
             Err(e) => {
                 tracing::warn!("Invalid domain name {}: {}", domain, e);
-                return DnsLookupResult::insecure();
+                return DnsLookupResult::bogus();
             }
         };
 
-        // Create fresh client connection for this query
-        let client = match self.connect().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!("Failed to get DNS client: {}", e);
-                return DnsLookupResult::insecure();
+        let started = std::time::Instant::now();
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match self.exchange(&name, &name_str).await {
+                Ok(response) => return classify_response(&response, domain),
+                Err(e) if attempt == 1 && started.elapsed() < TRANSPORT_RETRY_BUDGET => {
+                    tracing::debug!("DoT lookup for {} failed ({}); retrying once", domain, e);
+                }
+                Err(e) => {
+                    // Transport-level failure (connect, TLS, timeout, reset, no
+                    // response). The channel carries no DNSSEC signal, and an
+                    // attacker who can block it must not be able to demote the
+                    // domain to the fallback path: hard reject.
+                    tracing::warn!(
+                        "DoT lookup for {} failed after {} attempt(s): {} - treating as Bogus (transport failure is a hard reject)",
+                        domain, attempt, e
+                    );
+                    return DnsLookupResult::bogus();
+                }
             }
-        };
+        }
+    }
+
+    /// One DoT exchange for the `_browserid` TXT record: fresh connection,
+    /// EDNS DO query, first response. `Err` is a transport failure.
+    async fn exchange(&self, name: &Name, name_str: &str) -> Result<Message, String> {
+        // Create fresh client connection for this query
+        let client = self.connect().await?;
 
         // Build query with EDNS and DO bit for DNSSEC
         let mut query = Query::new();
@@ -168,22 +204,11 @@ impl DnsFetcher {
 
         // Send the message over the authenticated channel
         let mut response_stream = client.send(message);
-        let response = match response_stream.next().await {
-            Some(Ok(r)) => r,
-            Some(Err(e)) => {
-                // Transport-level failure (timeout, TLS error, connection
-                // reset). The channel is authenticated, so this carries no
-                // DNSSEC signal — treat as insecure and fall back to broker.
-                tracing::debug!("DNS lookup failed for {}: {}", domain, e);
-                return DnsLookupResult::insecure();
-            }
-            None => {
-                tracing::debug!("No DNS response for {}", domain);
-                return DnsLookupResult::insecure();
-            }
-        };
-
-        classify_response(&response, domain)
+        match response_stream.next().await {
+            Some(Ok(r)) => Ok(r.into()),
+            Some(Err(e)) => Err(format!("DNS lookup failed: {e}")),
+            None => Err("no DNS response".to_string()),
+        }
     }
 
     /// Does `domain` publish a usable MX record — and which host takes its
@@ -271,8 +296,11 @@ fn classify_response(response: &Message, domain: &str) -> DnsLookupResult {
             return DnsLookupResult::bogus();
         }
         other => {
-            tracing::warn!("Unexpected response code {} for {}", other, domain);
-            return DnsLookupResult::insecure();
+            // REFUSED, NOTIMP, FORMERR, …: the resolver did not answer the
+            // question. No DNSSEC signal → not "insecure"; hard reject, like a
+            // transport failure (audit 2026-11 D14).
+            tracing::warn!("Unexpected response code {} for {} - treating as Bogus", other, domain);
+            return DnsLookupResult::bogus();
         }
     }
 
@@ -595,10 +623,16 @@ mod tests {
         assert_eq!(result.dnssec_status, DnssecStatus::Insecure);
     }
 
+    /// REFUSED (and any other non-answer rcode) is not an answer: it must
+    /// hard-reject, never demote the domain to the fallback path (audit
+    /// 2026-11 D14; this flips the pre-audit expectation).
     #[test]
-    fn test_refused_is_insecure_not_bogus() {
-        let result = classify_response(&response(ResponseCode::Refused, true, None), "example.com");
-        assert_eq!(result.dnssec_status, DnssecStatus::Insecure);
+    fn test_refused_is_bogus_not_insecure() {
+        for code in [ResponseCode::Refused, ResponseCode::NotImp, ResponseCode::FormErr] {
+            let result = classify_response(&response(code, true, None), "example.com");
+            assert_eq!(result.dnssec_status, DnssecStatus::Bogus, "{code}");
+            assert!(result.record.is_none());
+        }
     }
 }
 

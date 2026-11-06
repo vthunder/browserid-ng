@@ -2,6 +2,7 @@
 name = "browserid-verifier"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The BrowserID-NG verification algorithm: DNSSEC-rooted discovery, presentation/record verification, and fail-closed revocation checks"
@@ -11,5 +12,10 @@ browserid-core = { path = "../browserid-core" }
 browserid-dnssec = { path = "../browserid-dnssec" }
 reqwest.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+# Audit regression tests (tests/audit_2026_11_ws6.rs)
+chrono.workspace = true

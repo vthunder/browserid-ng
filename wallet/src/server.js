@@ -10,16 +10,34 @@ const store = require('./store');
 
 const PORT = 8873; // fixed so the extension needs no discovery
 
-// Browser origins allowed to talk to the bridge: the MV3 extension's service
-// worker, plus loopback pages for the e2e harness. Everything else — i.e.
-// any web page the user happens to visit — is refused outright, before the
+// Browser origins allowed to talk to the bridge (audit 2026-11 W4-21,
+// decision Q22 (a)): the MV3 extension's service worker — pinned to the
+// release extension ids when any are configured (RELEASE_EXTENSION_IDS below
+// or WALLET_EXTENSION_IDS=<id,id>), any 32-letter id otherwise (unpacked dev
+// builds have no stable id) — plus loopback pages ONLY under WALLET_TEST=1
+// (the e2e harness). Everything else — any web page the user happens to
+// visit, including local dev servers — is refused outright, before the
 // pairing dialog can fire. CORS headers reflect the specific caller, never *.
-const ALLOWED_ORIGIN = /^(chrome-extension:\/\/[a-p]{32}|https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?)$/;
+const RELEASE_EXTENSION_IDS = []; // fill in once the bridge extension is published
+const EXTENSION_RE = /^chrome-extension:\/\/([a-p]{32})$/;
+const LOOPBACK_RE = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/;
+function pinnedExtensionIds() {
+  const env = String(process.env.WALLET_EXTENSION_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  return env.length ? env : RELEASE_EXTENSION_IDS;
+}
+function originAllowed(origin) {
+  const ext = EXTENSION_RE.exec(origin || '');
+  if (ext) {
+    const pinned = pinnedExtensionIds();
+    return pinned.length === 0 || pinned.includes(ext[1]);
+  }
+  return process.env.WALLET_TEST === '1' && LOOPBACK_RE.test(origin || '');
+}
 
 function json(req, res, code, body) {
   const headers = { 'content-type': 'application/json', vary: 'origin' };
   const origin = req.headers.origin;
-  if (origin && ALLOWED_ORIGIN.test(origin)) {
+  if (origin && originAllowed(origin)) {
     headers['access-control-allow-origin'] = origin;
     headers['access-control-allow-headers'] = 'content-type, x-wallet-token';
   }
@@ -47,7 +65,7 @@ function startServer({ approveLogin, approveRequest, approvePair, notify, onStat
       const origin = req.headers.origin || null;
       // A browser caller outside the allowlist is refused before anything
       // else — no pairing dialog, no CORS headers to read the answer with.
-      if (origin && !ALLOWED_ORIGIN.test(origin)) {
+      if (origin && !originAllowed(origin)) {
         return json(req, res, 403, { error: 'origin not allowed' });
       }
       if (req.method === 'OPTIONS') return json(req, res, 204, {});
@@ -129,6 +147,20 @@ function startServer({ approveLogin, approveRequest, approvePair, notify, onStat
             const outcome = await require('./consent').hostConsent({ code, testAction: action || 'approve' });
             return json(req, res, 200, { outcome });
           }
+          if (url.pathname === '/test/file_request') {
+            // Files an agent request with THIS device's cert, signed by its
+            // device key (audit 2026-11 D4: /warrant/request needs a Proof
+            // header by the cert's key; the e2e used to post the bare cert).
+            const { audience, scopes } = await readBody(req);
+            const { proof } = require('./crypto');
+            const broker = require('./broker');
+            const s = store.state();
+            const path = '/warrant/request';
+            const body = JSON.stringify({ device_cert: s.deviceCert, identity: s.identity, grants: [{ audience, scopes: scopes || ['post'] }] });
+            const header = await proof(s.deviceKey, 'POST', broker.ORIGIN + path, { body, x: s.deviceKey.x });
+            const rr = await fetch(broker.BROKER + path, { method: 'POST', headers: { 'content-type': 'application/json', proof: header }, body });
+            return json(req, res, rr.status, await rr.json().catch(() => ({})));
+          }
           if (url.pathname === '/test/inbox') {
             // Drives the registry-API token lane end to end.
             return json(req, res, 200, await require('./registry').listRequests());
@@ -203,4 +235,4 @@ function startServer({ approveLogin, approveRequest, approvePair, notify, onStat
   });
 }
 
-module.exports = { startServer, PORT };
+module.exports = { startServer, PORT, originAllowed };

@@ -1,0 +1,1 @@
+{"device_cert":"a.b.c","identity":"agent@example.com","grants":[{"audience":"https://rp.example","scopes":["read"]}],"label":"l","grantor":"self","message":"m","return_url":"https://rp.example/cb"}

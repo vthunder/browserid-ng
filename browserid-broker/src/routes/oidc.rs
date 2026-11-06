@@ -285,6 +285,19 @@ where
         tracing::warn!("oidc callback state/cookie mismatch (possible forwarded callback URL)");
         return resume_err(&email, "the sign-in must finish in the browser it started in");
     }
+    // Session binding (audit 2026-11 W4-33): a claim begun under a broker
+    // session attaches only to that session. The flow cookie proves the
+    // same browser; this proves the same account — if the browser's session
+    // changed between the two legs (logout, another login), refuse rather
+    // than attach the proven identity to whichever account rides the
+    // callback. A cold claim (no session at begin) is unaffected.
+    if let Some(begun) = flow.session_id.as_deref() {
+        let now = super::session::get_session_from_cookies(&cookies, state.session_store.as_ref());
+        if now.as_ref().map(|s| s.id.0.as_str()) != Some(begun) {
+            tracing::warn!("oidc callback under a different broker session than the one that began the claim");
+            return resume_err(&email, "the sign-in must finish in the session it started in — sign in and try again");
+        }
+    }
 
     if let Some(err) = q.error.as_deref().filter(|e| !e.is_empty()) {
         // The user declined at Google (or Google refused) — not an attack.
@@ -482,17 +495,16 @@ where
     // This ceremony IS the live bridge proof the chokepoint demands for an
     // E2 mint (pr3a): grant a single-use redemption at /device/issue with the
     // bridge's TTL decision (default ~1wk; OAuth hints may refine it later).
-    state.record_bridge_grant(
-        user_id,
-        email,
-        chrono::Duration::days(crate::state::BRIDGE_DEFAULT_TTL_DAYS),
-    );
+    // The grant belongs to the session that saw Google (audit 2026-11
+    // W4-34): the one in the browser, or the one a cold claim opens below.
+    let ttl = chrono::Duration::days(crate::state::BRIDGE_DEFAULT_TTL_DAYS);
 
     // A cold claim ends signed in, like completing an email verification —
     // but only Lightweight: the bridge proof shows no account password.
     if let Some(s) = session.as_ref() {
         // The session proved one more identity (bean 160l).
         state.session_store.add_proved_email(&s.id, email)?;
+        state.record_bridge_grant_for_session(user_id, email, ttl, &s.id.0);
     } else {
         let new_session = state
             .session_store
@@ -502,11 +514,12 @@ where
             &new_session.id.0,
             super::session::cookie_secure(&state.domain),
         );
+        state.record_bridge_grant_for_session(user_id, email, ttl, &new_session.id.0);
     }
 
     state.analytics.capture(
         "oidc_claim_completed",
-        crate::analytics::distinct_id_for_email(email),
+        state.analytics.distinct_id(email),
         serde_json::json!({ "email_domain": crate::analytics::email_domain(email) }),
     );
     Ok(())

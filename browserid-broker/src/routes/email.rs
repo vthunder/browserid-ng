@@ -462,6 +462,7 @@ pub struct CompleteEmailResponse {
 pub async fn complete_email_addition<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
     cookies: Cookies,
+    headers: axum::http::HeaderMap,
     Json(req): Json<CompleteEmailRequest>,
 ) -> Result<Json<CompleteEmailResponse>, BrokerError>
 where
@@ -474,12 +475,13 @@ where
     // Session-mutating endpoint → require the CSRF token like every other one
     // (audit L7). The account page's `post()` helper already sends it.
     super::session::require_csrf(&session, &req.csrf)?;
-
+    // Per-IP cap on completion attempts (audit 2026-11, July C1 residual).
     // Look up the pending record by its target email and verify the code with
     // the brute-force guard (binds the guess to one record, burns after N wrong
     // tries). Expiry is enforced inside the guard.
-    let pending = super::code_guard::verify_pending_code(
-        state.user_store.as_ref(),
+    let pending = super::code_guard::complete_from_ip(
+        &state,
+        &headers,
         &req.email,
         VerificationType::AddEmail,
         &req.token,
@@ -512,7 +514,7 @@ where
     // Funnel: an additional email was verified and added to an existing account.
     state.analytics.capture(
         "email_verified",
-        crate::analytics::distinct_id_for_email(&pending.email),
+        state.analytics.distinct_id(&pending.email),
         serde_json::json!({ "email_domain": crate::analytics::email_domain(&pending.email) }),
     );
 

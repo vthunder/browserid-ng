@@ -1,5 +1,10 @@
 # Stage 1: Build
-FROM rust:1.85-bookworm AS builder
+# Base image pinned by digest (audit 2026-11 W7-7): the tag names the
+# version a human chose, the digest makes the build reproducible. Bump by
+# re-resolving the tag (multi-arch manifest list, 2026-11-06). Keep the
+# version in step with the CI pin (.github/workflows) and Cargo.toml's
+# rust-version: scripts/release-check.sh builds with exactly this one.
+FROM rust:1.93-bookworm@sha256:7c4ae649a84014c467d79319bbf17ce2632ae8b8be123ac2fb2ea5be46823f31 AS builder
 
 WORKDIR /build
 
@@ -42,7 +47,7 @@ RUN touch browserid-core/src/lib.rs browserid-dnssec/src/lib.rs browserid-regist
     cargo build --release --package browserid-broker
 
 # Stage 2: Runtime
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

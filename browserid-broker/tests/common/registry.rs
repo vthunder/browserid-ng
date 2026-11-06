@@ -27,6 +27,12 @@ fn rand_jti() -> String {
 /// `login_page`): the account id from `session_context`, a one-time token
 /// from the broker's login-page backend, then `login` with a fresh key.
 pub async fn api_login(server: &TestServer, cookie: &str, password: &str) -> ApiSession {
+    api_login_with_key(server, cookie, password, KeyPair::generate()).await.expect("login")
+}
+
+/// [`api_login`] bringing a caller-chosen login key; `Err` carries the
+/// refusal body when the registry does not open a session.
+pub async fn api_login_with_key(server: &TestServer, cookie: &str, password: &str, key: KeyPair) -> Result<ApiSession, (u16, Value)> {
     let ctx: Value = server
         .get("/wsapi/session_context")
         .add_cookie(cookie::Cookie::new("browserid_session", cookie.to_string()))
@@ -37,11 +43,10 @@ pub async fn api_login(server: &TestServer, cookie: &str, password: &str) -> Api
     let origin = browserid_registrar::consent::public_origin(&domain);
     let t: Value = server
         .post("/wsapi/registry_login")
-        .json(&json!({ "account": account, "password": password }))
+        .json(&json!({ "account": account, "password": password, "return_origin": origin }))
         .await
         .json();
     let token = t["login"].as_str().unwrap_or_else(|| panic!("registry_login: {t}")).to_string();
-    let key = KeyPair::generate();
     let path = "/api/v1/login";
     let htu = format!("{origin}{path}");
     let jti = rand_jti();
@@ -62,9 +67,11 @@ pub async fn api_login(server: &TestServer, cookie: &str, password: &str) -> Api
         .add_header("content-type", "application/json")
         .bytes(body.into())
         .await;
-    assert_eq!(r.status_code(), 200, "login: {}", r.text());
+    if r.status_code() != 200 {
+        return Err((r.status_code().as_u16(), r.json()));
+    }
     let session: Value = r.json();
-    ApiSession { token: session["token"].as_str().unwrap().to_string(), key, account, origin }
+    Ok(ApiSession { token: session["token"].as_str().unwrap().to_string(), key, account, origin })
 }
 
 /// Admit the browser behind `cookie` (bean 160l): log the account in to the
@@ -112,6 +119,22 @@ pub async fn api_post(server: &TestServer, sess: &ApiSession, path: &str, body: 
         .post(path)
         .add_header("authorization", format!("Bearer {}", sess.token))
         .add_header("proof", proof_for(sess, "POST", path, Some(&bytes)))
+        .add_header("content-type", "application/json")
+        .bytes(bytes.into())
+        .await
+}
+
+/// `POST /warrant/request` as the agent holding `device_kp` (audit 2026-11
+/// D4): the body bytes plus the `Proof` header the device key signs over
+/// them, bound to the broker at `domain`.
+pub async fn warrant_request(server: &TestServer, domain: &str, device_kp: &KeyPair, body: Value) -> TestResponse {
+    let path = "/warrant/request";
+    let htu = format!("{}{path}", browserid_registrar::consent::public_origin(domain));
+    let bytes = body.to_string().into_bytes();
+    let header = browserid_registrar::session::build_proof_now("POST", &htu, Some(&bytes), device_kp);
+    server
+        .post(path)
+        .add_header("proof", header)
         .add_header("content-type", "application/json")
         .bytes(bytes.into())
         .await

@@ -441,7 +441,7 @@
       // device or the password; a missing address is named as a hint.
       return await enrolStep(account, currentEmail, hints.filter(x => !proven.some(p => maskOf(p) === x)));
     }
-    const t = await post('/wsapi/registry_login_proofs', { account, presentations });
+    const t = await post('/wsapi/registry_login_proofs', { account, presentations, return_origin: window.location.origin });
     if (!(t.ok && t.data.login)) throw new Error('the registry refused the proofs');
     return t.data.login;
   }
@@ -558,7 +558,7 @@
       // The password.
       enrolPending.password = async (password) => {
         document.getElementById('enrol-error').textContent = '';
-        const r = await post('/wsapi/registry_login', { account, password });
+        const r = await post('/wsapi/registry_login', { account, password, return_origin: window.location.origin });
         if (r.ok && r.data.login) return finish(resolve, r.data.login);
         document.getElementById('enrol-error').textContent = r.status === 429 ? 'Too many attempts. Try again later.' : "That didn't work. Check the password and try again.";
       };
@@ -813,7 +813,7 @@
     }
 
     // 3. Assertion for the RP's audience, signed by the fresh access key.
-    const assertion = await signJws(access.privateKey, { exp: nowS() + 300, aud: audience });
+    const assertion = await signJws(access.privateKey, { iat: nowS(), exp: nowS() + 300, aud: audience });
 
     // Self-healing registry (fire-and-forget): re-register this device's
     // pair over the token lane so the account view converges to reality on

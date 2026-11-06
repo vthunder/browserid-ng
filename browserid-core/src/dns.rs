@@ -22,11 +22,26 @@ impl DnsRecord {
     /// Parse a DNS TXT record value
     ///
     /// Expected format: `v=browserid1; public-key-algorithm=Ed25519; public-key=<base64>; host=<optional>`
+    ///
+    /// A record that repeats one of the known fields (`v`,
+    /// `public-key-algorithm`, `public-key`, `host`) is ambiguous and
+    /// rejects (audit 2026-11 W2-6; the within-record twin of the
+    /// two-records-at-one-name rejection in `browserid-dnssec`): a zone
+    /// edit that leaves `public-key=A; public-key=B` live must not silently
+    /// resolve to either key. Unknown fields are still ignored.
     pub fn parse(txt: &str) -> Result<Self> {
         let mut version = None;
         let mut algorithm = None;
         let mut public_key = None;
         let mut host = None;
+
+        fn set_once(slot: &mut Option<String>, key: &str, value: &str) -> Result<()> {
+            if slot.is_some() {
+                return Err(Error::InvalidDnsRecord(format!("repeated field: {key}")));
+            }
+            *slot = Some(value.to_string());
+            Ok(())
+        }
 
         for part in txt.split(';') {
             let part = part.trim();
@@ -39,10 +54,10 @@ impl DnsRecord {
                 let value = value.trim();
 
                 match key {
-                    "v" => version = Some(value.to_string()),
-                    "public-key-algorithm" => algorithm = Some(value.to_string()),
-                    "public-key" => public_key = Some(value.to_string()),
-                    "host" => host = Some(value.to_string()),
+                    "v" => set_once(&mut version, key, value)?,
+                    "public-key-algorithm" => set_once(&mut algorithm, key, value)?,
+                    "public-key" => set_once(&mut public_key, key, value)?,
+                    "host" => set_once(&mut host, key, value)?,
                     _ => {} // Ignore unknown fields for forward compatibility
                 }
             }

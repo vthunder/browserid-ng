@@ -1,0 +1,20 @@
+# Dependabot, limited to GitHub Actions (security audit 2026-11, W7-2 /
+# decision Q11 (a)). Every `uses:` in .github/workflows is pinned by commit
+# SHA with the release in a trailing comment; Dependabot keeps the SHA and
+# the comment moving together, which is the only safe way to bump a pin.
+#
+# Deliberately NOT enabled for cargo, npm or pip: those are gated by
+# .github/workflows/supply-chain.yml and bumped on purpose (`cargo update`,
+# `npm audit fix`), so Dependabot would only open PRs nobody asked for.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci(actions)"

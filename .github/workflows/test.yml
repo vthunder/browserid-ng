@@ -18,6 +18,9 @@ on:
       - "browserid-broker/**"
       - "browserid-agent/**"
       - "browserid-rp/**"
+      - "browserid-verifier/**"
+      - "browserid-dnssec/**"
+      - "test-vectors/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/test.yml"
@@ -28,6 +31,9 @@ on:
       - "browserid-broker/**"
       - "browserid-agent/**"
       - "browserid-rp/**"
+      - "browserid-verifier/**"
+      - "browserid-dnssec/**"
+      - "test-vectors/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/test.yml"
@@ -49,15 +55,27 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Match the Rust version the release Dockerfile builds with.
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@48b64ba94bc1a6fe819fd9afc0799a7647efdc65 # 1.93.0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Test
         run: cargo test --workspace
+
+      # Security audit 2026-11 WS2: the conformance vector suite
+      # (test-vectors/conformance-2026-11.json) is regenerated and diffed, then
+      # run through the Rust core and the in-process hosted verifier (which
+      # also diffs the recorded hosted responses the SDK runners replay).
+      # Vectors a verifier gets wrong today are pinned per runner under
+      # `AUDIT-2026-11 <finding>`; un-listing one is the acceptance test for
+      # the fix. docs/security-audit-2026-11-ws2-conformance.md.
+      - name: Conformance vectors (core + hosted verifier)
+        run: |
+          cargo test -p browserid-core --test audit_2026_11_ws2_generate --test audit_2026_11_ws2_runner -- --nocapture
+          cargo test -p browserid-verifier --test audit_2026_11_ws2_runner -- --nocapture
 
   # fmt + clippy are deliberately NOT gated yet: the tree is not currently
   # rustfmt-clean and has a few dead-code warnings, so enabling `--check` /

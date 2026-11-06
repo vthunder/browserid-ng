@@ -3,6 +3,7 @@ name = "browserid-rp"
 description = "Relying-party library for BrowserID-NG: verify assertions, exchange them for bearer tokens, advertise the auth API"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

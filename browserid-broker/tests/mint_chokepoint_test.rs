@@ -315,6 +315,32 @@ fn issuance_call_sites_are_registered() {
             "{file} mints without consulting authorize_mint"
         );
     }
+
+    // The registrar signs agent device certs with the broker key too
+    // (`agent-provision/complete`, audit 2026-11 W5-7): it must ask the
+    // host's chokepoint (`authorize_agent_mint`, implemented in
+    // registrar_glue.rs over `authorize_mint`) before signing.
+    let registrar_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../browserid-registrar/src");
+    let mut registrar_minting = Vec::new();
+    for entry in std::fs::read_dir(&registrar_src).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "rs") {
+            let text = std::fs::read_to_string(&path).unwrap();
+            if text.contains("DeviceCert::create") || text.contains("AccessCert::create") {
+                registrar_minting.push(path.file_name().unwrap().to_string_lossy().to_string());
+            }
+        }
+    }
+    registrar_minting.sort();
+    assert_eq!(
+        registrar_minting,
+        vec!["agent_provision.rs".to_string()],
+        "unaudited registrar issuance call site — wire it through authorize_agent_mint and register it here"
+    );
+    let text = std::fs::read_to_string(registrar_src.join("agent_provision.rs")).unwrap();
+    assert!(text.contains("authorize_agent_mint"), "agent_provision.rs signs without the host's chokepoint");
+    let glue = std::fs::read_to_string(src.join("registrar_glue.rs")).unwrap();
+    assert!(glue.contains("authorize_mint("), "registrar_glue's authorize_agent_mint does not consult authorize_mint");
 }
 
 /// hg2j store scope: revoke_user_certs_for_email flips ONLY the (user, email)

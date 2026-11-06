@@ -1,0 +1,9 @@
+# npm audit allowlist (audit 2026-11 WS7). One GHSA id per line, followed by
+# the reason and a review date. Read by scripts/supply-chain-audit.sh; a
+# vulnerability of severity high or critical in a *production* dependency
+# fails the gate unless its id is listed here.
+#
+# Format:  GHSA-xxxx-xxxx-xxxx  reason ... (review YYYY-MM-DD)
+#
+# (empty: every finding on 2026-11-02 is fixable inside the current semver
+# ranges with `npm audit fix`; see docs/security-audit-2026-11-ws7-supply-chain.md)

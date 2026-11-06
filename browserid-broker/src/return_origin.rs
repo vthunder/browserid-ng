@@ -76,9 +76,47 @@ pub fn is_accepted(raw: &str, own: &str, trusted: &[String]) -> bool {
     trusted.iter().any(|t| t.trim_end_matches('/').eq_ignore_ascii_case(&norm))
 }
 
+/// Is `url` on the origin `origin` (scheme and authority equal, case-
+/// insensitively)? The §4.2 same-origin rule between `return_url` and
+/// `return_origin`; a custom-scheme origin compares as `scheme://rest`.
+pub fn same_origin(url: &str, origin: &str) -> bool {
+    let origin = origin.trim().trim_end_matches('/');
+    let Some((scheme, rest)) = url.trim().split_once("://") else { return false };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    let url_origin = format!("{}://{}", scheme.to_ascii_lowercase(), authority);
+    if url_origin.eq_ignore_ascii_case(origin) {
+        return true;
+    }
+    // Default ports: `https://h:443` == `https://h`, `http://h:80` == `http://h`.
+    let strip = |o: &str| -> String {
+        let o = o.to_ascii_lowercase();
+        match o.split_once("://") {
+            Some(("https", h)) => format!("https://{}", h.strip_suffix(":443").unwrap_or(h)),
+            Some(("http", h)) => format!("http://{}", h.strip_suffix(":80").unwrap_or(h)),
+            _ => o,
+        }
+    };
+    strip(&url_origin) == strip(origin)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_origin_rule() {
+        assert!(same_origin("https://wallet.example/cb#x", "https://wallet.example"));
+        assert!(same_origin("https://WALLET.example:443/cb", "https://wallet.example/"));
+        assert!(same_origin("mingo://wallet", "mingo://wallet"));
+        assert!(same_origin("http://127.0.0.1:4321/done?x=1", "http://127.0.0.1:4321"));
+        assert!(!same_origin("https://wallet.example.evil.example/cb", "https://wallet.example"));
+        assert!(!same_origin("https://wallet.example@evil.example/cb", "https://wallet.example"));
+        assert!(!same_origin("http://wallet.example/cb", "https://wallet.example"));
+        assert!(!same_origin("https://evil.example/?u=https://wallet.example", "https://wallet.example"));
+    }
 
     fn t(raw: &str) -> bool {
         is_accepted(raw, "https://idp.example", &["https://wallet.example".to_string()])

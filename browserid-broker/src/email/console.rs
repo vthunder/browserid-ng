@@ -26,7 +26,7 @@ impl EmailSender for ConsoleEmailSender {
         println!("========================================");
         println!();
 
-        tracing::info!(email = %email, code = %code, "Verification code sent");
+        tracing::info!(identity = %crate::crypto::log_id(email), "Verification code printed to stdout (console sender)");
 
         Ok(())
     }
@@ -39,7 +39,7 @@ impl EmailSender for ConsoleEmailSender {
         println!("========================================");
         println!();
 
-        tracing::info!(email = %email, code = %code, "Password reset code sent");
+        tracing::info!(identity = %crate::crypto::log_id(email), "Password reset code printed to stdout (console sender)");
 
         Ok(())
     }

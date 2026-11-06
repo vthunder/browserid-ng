@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use browserid_registrar::host::{AgentIdentity, AuthedUser, KnownAgent, RegistrarHost};
+use browserid_registrar::host::{AgentIdentity, AuthedUser, KnownAgent, MintVerdict, RegistrarHost};
 use browserid_registrar::models as reg;
 use browserid_registrar::{RegistrarError, RegistrarStore};
 use tower_cookies::Cookies;
@@ -557,6 +557,10 @@ pub struct BrokerRegistrarHost<U, S> {
     pub idp_host: String,
     /// Per-account cap on agent identities.
     pub max_agent_identities: usize,
+    /// Redeem (consume) a live bridge grant for `(user, email)` — the
+    /// app-state `take_bridge_grant` — so an as-you agent for a bridged
+    /// (E2) parent mints the way `/device/issue` does (W5-7 / Q6).
+    pub bridge_grant: Arc<dyn Fn(UserId, &str) -> Option<chrono::Duration> + Send + Sync>,
 }
 
 impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> {
@@ -564,8 +568,58 @@ impl<U: UserStore, S: SessionStore> RegistrarHost for BrokerRegistrarHost<U, S> 
         crate::routes::session::get_session_from_cookies(cookies, self.session_store.as_ref())
             .map(|s| AuthedUser {
                 user_id: s.user_id.0,
+                password_proven: s.level == crate::store::SessionLevel::Full,
+                admitted: s.admitted(),
+                proved_emails: s.proved_emails.clone(),
                 csrf_token: s.csrf_token,
             })
+    }
+
+    /// The `/device/issue` bar for an agent approval (W5-7 / Q6): the
+    /// session must be admitted or have proved the parent (bean 160l);
+    /// then `authorize_mint` on the parent's record — for a named agent,
+    /// on that record re-typed as an Agent identity, since the agent row
+    /// does not exist until after signing — and a bridged parent redeems
+    /// its live bridge grant for the bridge's TTL.
+    fn authorize_agent_mint(&self, user: &AuthedUser, parent: &str, agent: bool) -> Result<MintVerdict, RegistrarError> {
+        use crate::mint::{authorize_mint, MintDecision, Voucher};
+        use crate::store::SessionLevel;
+        if !user.admitted && !user.proved(parent) {
+            return Ok(MintVerdict::NotAdmitted);
+        }
+        let user_id = UserId(user.user_id);
+        let rec = self
+            .user_store
+            .list_emails(user_id)
+            .map_err(to_reg_err)?
+            .into_iter()
+            .find(|e| e.email.eq_ignore_ascii_case(parent) && e.verified)
+            .ok_or_else(|| RegistrarError::PolicyRefused("you don't own the delegating identity".into()))?;
+        if rec.is_suspended() {
+            return Err(RegistrarError::PolicyRefused(
+                "this identity is suspended: its parent identity has left the account".into(),
+            ));
+        }
+        let level = if user.password_proven { SessionLevel::Full } else { SessionLevel::Lightweight };
+        let decision = if agent {
+            // The agent rule, applied from the parent's record.
+            let as_agent = crate::store::Email { email_type: EmailType::Agent, ..rec.clone() };
+            authorize_mint(&as_agent, level)
+        } else {
+            authorize_mint(&rec, level)
+        };
+        Ok(match decision {
+            MintDecision::Allow => MintVerdict::Allow {
+                ttl: chrono::Duration::days(browserid_core::device::DEVICE_CERT_VALIDITY_DAYS),
+            },
+            MintDecision::NeedPassword => MintVerdict::NeedPassword,
+            MintDecision::Reverify => MintVerdict::Reverify,
+            MintDecision::Delegate(Voucher::Primary) => MintVerdict::DelegatePrimary,
+            MintDecision::Delegate(_) => match (self.bridge_grant)(user_id, &rec.email) {
+                Some(ttl) => MintVerdict::Allow { ttl },
+                None => MintVerdict::NeedBridgeProof,
+            },
+        })
     }
 
     fn record_agent_device_cert(
@@ -1049,7 +1103,7 @@ where
         })
     }
 
-    /// The §5.3 per-cert bar behind `devices/register` — the same pipeline
+    /// The §7.1 validity bar behind `attach` (§5.2.4) — the same pipeline
     /// as the cookie lane's `record_device_cert` (issuer-conformant key from
     /// DNSSEC discovery, signature, fail-closed status at the cert's own
     /// authority), with distinguishable refusals for §7.1's `invalid_cert`
@@ -1153,6 +1207,7 @@ mod reserve_tests {
             domain: "browserid.me".into(),
             idp_host: "idp.browserid.me".into(),
             max_agent_identities: max,
+            bridge_grant: Arc::new(|_, _| None),
         };
         (h, u1, u2)
     }

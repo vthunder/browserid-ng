@@ -5,8 +5,8 @@
 
 use browserid_core::{
     discovery::{SupportDocument, SupportDocumentFetcher},
-    BindingSet, Error as CoreError, RecordBundle, Result as CoreResult, StatusListToken,
-    StatusRef,
+    BindingSet, Error as CoreError, RecordBundle, Result as CoreResult, ScopeEntry,
+    StatusListToken, StatusRef,
 };
 use reqwest::blocking::Client;
 use std::collections::HashMap;
@@ -14,42 +14,100 @@ use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
 
-/// HTTP-based support document fetcher
+/// HTTP-based support document fetcher.
+///
+/// The target host is the DNS record's `host=` value — chosen by whoever
+/// signs the domain — and the fetch runs on every verification of a
+/// primary-issued bundle, so it follows the SSRF rules of spec §6.3 (audit
+/// 2026-11 W6-5): no redirects, only globally routable addresses (checked
+/// after resolution, production client), a connect/read timeout and a
+/// capped body. `allow_http()` (localhost dev and tests) keeps the
+/// redirect and size rules but admits loopback.
 pub struct HttpFetcher {
     client: Client,
     require_https: bool,
 }
 
+/// Largest support document the fetcher reads.
+pub const SUPPORT_DOCUMENT_MAX_BYTES: usize = 64 * 1024;
+
 impl HttpFetcher {
-    /// Create a new HTTP fetcher
-    pub fn new() -> Self {
-        let client = Client::builder()
+    fn client() -> Client {
+        Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(10))
             .build()
-            .expect("Failed to create HTTP client");
+            .expect("Failed to create HTTP client")
+    }
 
+    /// Create a new HTTP fetcher
+    pub fn new() -> Self {
         Self {
-            client,
+            client: Self::client(),
             require_https: true,
         }
     }
 
     /// Create a fetcher that allows HTTP (for testing/local development)
     pub fn allow_http() -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .expect("Failed to create HTTP client");
-
         Self {
-            client,
+            client: Self::client(),
             require_https: false,
         }
     }
+
+    /// Production rule: every address the host resolves to is globally
+    /// routable. (Resolution happens again inside reqwest; pinning the
+    /// checked address into the connection is a future hardening, as for
+    /// `validate_status_url`.)
+    fn check_public(&self, domain: &str) -> CoreResult<()> {
+        if !self.require_https {
+            return Ok(());
+        }
+        let url = reqwest::Url::parse(&format!("https://{domain}/")).map_err(|e| CoreError::DiscoveryFailed {
+            domain: domain.to_string(),
+            reason: format!("bad host: {e}"),
+        })?;
+        let host = url.host_str().ok_or_else(|| CoreError::DiscoveryFailed {
+            domain: domain.to_string(),
+            reason: "no host".into(),
+        })?;
+        let port = url.port_or_known_default().unwrap_or(443);
+        let addrs: Vec<std::net::SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))
+            .map_err(|e| CoreError::DiscoveryFailed {
+                domain: domain.to_string(),
+                reason: format!("resolve: {e}"),
+            })?
+            .collect();
+        if addrs.is_empty() {
+            return Err(CoreError::DiscoveryFailed { domain: domain.to_string(), reason: "did not resolve".into() });
+        }
+        if addrs.iter().any(|a| !is_global_ip(a.ip())) {
+            return Err(CoreError::DiscoveryFailed {
+                domain: domain.to_string(),
+                reason: "host resolves to a non-global address".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Read at most `SUPPORT_DOCUMENT_MAX_BYTES` of a response body.
+fn read_capped_blocking(mut response: reqwest::blocking::Response) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    let mut limited = (&mut response).take(SUPPORT_DOCUMENT_MAX_BYTES as u64 + 1);
+    limited.read_to_end(&mut buf)?;
+    if buf.len() > SUPPORT_DOCUMENT_MAX_BYTES {
+        return Err(std::io::Error::other(format!("support document exceeds {SUPPORT_DOCUMENT_MAX_BYTES} bytes")));
+    }
+    Ok(buf)
 }
 
 impl SupportDocumentFetcher for HttpFetcher {
     fn fetch(&self, domain: &str) -> CoreResult<SupportDocument> {
+        self.check_public(domain)?;
         // Try HTTPS first, then HTTP if allowed
         let https_url = format!("https://{}/.well-known/browserid", domain);
         let http_url = format!("http://{}/.well-known/browserid", domain);
@@ -88,7 +146,11 @@ impl SupportDocumentFetcher for HttpFetcher {
             });
         }
 
-        let doc: SupportDocument = response.json().map_err(|e| CoreError::DiscoveryFailed {
+        let bytes = read_capped_blocking(response).map_err(|e| CoreError::DiscoveryFailed {
+            domain: domain.to_string(),
+            reason: format!("read failed: {}", e),
+        })?;
+        let doc: SupportDocument = serde_json::from_slice(&bytes).map_err(|e| CoreError::DiscoveryFailed {
             domain: domain.to_string(),
             reason: format!("Invalid JSON: {}", e),
         })?;
@@ -118,8 +180,13 @@ pub struct AccessVerificationResult {
     /// things acted). Advisory; the old user/agent subject axis is gone.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holder: Option<String>,
+    /// The warrant's scope entries, **verbatim** (spec §5, audit 2026-11 D7 /
+    /// S7): a verifier is a relay for scope parameters, never a filter. On
+    /// the wire a parameterless entry is the bare scope string (unchanged
+    /// shape) and a parameterized entry is the object (`{"scope", …}`), so a
+    /// `cap` on a `pay:` entry reaches the audience that enforces it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scopes: Option<Vec<String>>,
+    pub scopes: Option<Vec<ScopeEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issuer: Option<String>,
     /// The grantee/actor's issuer (the access cert's `iss`). Equals `issuer`
@@ -483,8 +550,10 @@ pub struct RecordValidationResult {
     /// For `connection` entries, `client_name` is display-only and unverified.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binding: Option<BindingSet>,
+    /// The record's scope entries, verbatim — see
+    /// [`AccessVerificationResult::scopes`] for the wire shape.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scopes: Option<Vec<String>>,
+    pub scopes: Option<Vec<ScopeEntry>>,
     /// The grantor's IdP (the config cert's issuer).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issuer: Option<String>,
@@ -547,7 +616,7 @@ pub async fn validate_record_with_dns(
 
     // §6.4 step 1b: the config cert's issuer, DNSSEC-resolved and required
     // authoritative for the grantor's domain.
-    let config_key = match resolve_conformant_key(
+    let (config_key, config_host) = match resolve_conformant(
         discoverer,
         accepted_fallbacks,
         &grantor_domain,
@@ -571,6 +640,11 @@ pub async fn validate_record_with_dns(
         Ok(v) => v,
         Err(e) => return RecordValidationResult::fail(e.to_string()),
     };
+
+    // §6.3: the config cert's status authority must be its own issuer (W6-4).
+    if let Err(e) = check_cert_status_host("config cert", &v.config_status, &cc_iss, config_host.as_deref()) {
+        return RecordValidationResult::fail(e);
+    }
 
     // §6.4 step 1e: fail-closed status on each chain object that carries a
     // ref — config cert → its IdP; warrant → the hosted registry (always
@@ -599,7 +673,7 @@ pub async fn validate_record_with_dns(
         grantor: Some(v.grantor),
         grantee: Some(v.grantee),
         binding: Some(v.binding),
-        scopes: Some(v.scopes),
+        scopes: Some(v.scope_entries),
         issuer: Some(v.grantor_issuer),
         status_refs: if status_refs.is_empty() { None } else { Some(status_refs) },
         expires_at: Some(bundle.warrant.claims().exp),
@@ -619,30 +693,67 @@ pub async fn resolve_conformant_key(
     domain: &str,
     iss: &str,
 ) -> Result<browserid_core::PublicKey, String> {
+    resolve_conformant(discoverer, accepted_fallbacks, domain, iss).await.map(|(k, _)| k)
+}
+
+/// [`resolve_conformant_key`] plus the ISSUER's DNSSEC-declared `host=`
+/// serving host (`None` when the issuer serves its own surface) — the second
+/// host a cert's `status.uri` may name (§6.3, [`uri_matches_issuer`]).
+async fn resolve_conformant(
+    discoverer: &impl crate::discovery::Discoverer,
+    accepted_fallbacks: &[String],
+    domain: &str,
+    iss: &str,
+) -> Result<(browserid_core::PublicKey, Option<String>), String> {
     let disc = discoverer
         .discover(domain)
         .await
         .map_err(|e| format!("discovery failed: {e}"))?;
-    let key_doc = if disc.is_primary {
+    let (key_doc, serving_host) = if disc.is_primary {
         if iss != domain {
             return Err(format!("issuer '{iss}' is not authorized for primary domain '{domain}'"));
         }
-        disc.document
+        (disc.document, disc.serving_host)
     } else {
         if !accepted_fallbacks.iter().any(|f| f == iss) {
             return Err(format!("issuer '{iss}' is not an accepted fallback"));
         }
         if iss == disc.authoritative_domain {
-            disc.document
+            (disc.document, disc.serving_host)
         } else {
-            discoverer
+            let fb = discoverer
                 .discover(iss)
                 .await
-                .map_err(|e| format!("fallback discovery failed: {e}"))?
-                .document
+                .map_err(|e| format!("fallback discovery failed: {e}"))?;
+            (fb.document, fb.serving_host)
         }
     };
-    key_doc.public_key.ok_or_else(|| "issuer has no key".to_string())
+    let key = key_doc.public_key.ok_or_else(|| "issuer has no key".to_string())?;
+    Ok((key, serving_host))
+}
+
+/// §6.3 (2026-11 text), the cert-side clause of threat-model I9: a CERT's
+/// `status.uri` host MUST be the cert's own `iss` or the `host=` its `iss`
+/// domain's `_browserid` record delegates to. Without this a primary's cert
+/// could name any list — including this deployment's own, answered locally
+/// by the own-list shortcut — and its IdP's revocation would never be
+/// consulted. Warrants are exempt: their `status.uri` is signer-chosen (the
+/// registry that allocated the index; S4), bound by the list-signer rule
+/// instead. Audit 2026-11 W6-4.
+fn check_cert_status_host(
+    label: &str,
+    r: &Option<StatusRef>,
+    iss: &str,
+    serving_host: Option<&str>,
+) -> Result<(), String> {
+    let Some(r) = r else { return Ok(()) };
+    if !uri_matches_issuer(&r.uri, iss, serving_host) {
+        return Err(format!(
+            "{label} status.uri host is not its issuer '{iss}' (or the host= its _browserid record delegates to): {}",
+            r.uri
+        ));
+    }
+    Ok(())
 }
 
 /// Verify a device-cert `access_cert~assertion~warrant~config_cert` bundle.
@@ -685,7 +796,7 @@ pub async fn verify_access_with_dns(
         email: Some(v.email),
         grantee: Some(v.grantee),
         holder: Some(v.holder.as_str().to_string()),
-        scopes: Some(v.scopes),
+        scopes: Some(v.scope_entries),
         issuer: Some(v.issuer),
         grantee_issuer: Some(v.grantee_issuer),
         status_refs: if status_refs.is_empty() { None } else { Some(status_refs) },
@@ -728,15 +839,15 @@ pub async fn verify_access_core(
         .ok_or("warrant grantor is not an email")?
         .to_string();
 
-    let access_key =
-        resolve_conformant_key(discoverer, accepted_fallbacks, &email_domain, &iss).await?;
+    let (access_key, access_host) =
+        resolve_conformant(discoverer, accepted_fallbacks, &email_domain, &iss).await?;
     // Reuse only when the grantor is the SAME identity domain under the SAME
     // issuer; otherwise resolve the grantor's IdP with the same conformance
     // rule applied to the grantor's domain.
-    let config_key = if cc_iss == iss && grantor_domain == email_domain {
-        access_key.clone()
+    let (config_key, config_host) = if cc_iss == iss && grantor_domain == email_domain {
+        (access_key.clone(), access_host.clone())
     } else {
-        resolve_conformant_key(discoverer, accepted_fallbacks, &grantor_domain, &cc_iss).await?
+        resolve_conformant(discoverer, accepted_fallbacks, &grantor_domain, &cc_iss).await?
     };
 
     let v = pres
@@ -750,6 +861,11 @@ pub async fn verify_access_core(
             }
         })
         .map_err(|e| e.to_string())?;
+
+    // §6.3: each CERT's status authority must be its own issuer (W6-4); the
+    // warrant's is signer-chosen and bound by the list-signer rule below.
+    check_cert_status_host("access cert", &v.access_status, &iss, access_host.as_deref())?;
+    check_cert_status_host("config cert", &v.config_status, &cc_iss, config_host.as_deref())?;
 
     // Three fail-closed status authorities (§6.4, §6.2 step 8).
     for (label, r) in [

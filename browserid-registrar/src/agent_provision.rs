@@ -112,6 +112,19 @@ impl Record {
 static PROVISIONS: LazyLock<Mutex<HashMap<String, Record>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static USER_CODES: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// The holder `prepare` assigned to a live, unresolved provisioning whose
+/// provisioning key is `pubkey_b64` — for a co-located issuer (the hosted
+/// IdP) that must stamp the registrar-assigned holder on the agent's cert
+/// without taking a holder from the page (audit 2026-11 D3 / bean 0246).
+/// `None` when no prepared, unexpired, pending record names that key.
+pub fn prepared_holder_for_pubkey(pubkey_b64: &str) -> Option<String> {
+    let map = PROVISIONS.lock().unwrap();
+    map.values()
+        .filter(|r| !r.is_expired() && matches!(r.status, Status::Pending | Status::IdentityIssued))
+        .find(|r| r.provisioning_pubkey == pubkey_b64)
+        .and_then(|r| r.holder.clone())
+}
+
 fn new_code() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -935,7 +948,7 @@ pub async fn complete(
     }
 
     if stage == CompleteStage::Grants {
-        return complete_grants_stage(&state, &user, &req, snapshot);
+        return complete_grants_stage(&state, &user, &req, snapshot).await;
     }
 
     // Enforce the GRANTOR pin against the approver's chosen identity (both paths).
@@ -982,7 +995,7 @@ enum CompleteStage {
 /// validate and record the page-signed warrants under the grantor the
 /// permission screens chose — the agent itself, or an owned identity —
 /// honoring the request's grantor pin, then complete the request.
-fn complete_grants_stage(
+async fn complete_grants_stage(
     state: &Arc<RegistrarState>,
     user: &AuthedUser,
     req: &CompleteBody,
@@ -1054,6 +1067,8 @@ fn complete_grants_stage(
         }
     }
     let warrants = validate_grant_warrants(
+        state,
+        user.user_id,
         warrant_jwss,
         config_jws,
         &grantor,
@@ -1061,7 +1076,8 @@ fn complete_grants_stage(
         &holder,
         &snapshot.grants,
         &status_list_uri(&state.domain),
-    )?;
+    )
+    .await?;
     for (warrant, jws) in warrants.iter().zip(warrant_jwss) {
         state.store.upsert_warrant(warrant_to_record(
             user.user_id, &delegator, warrant, jws, config_jws,
@@ -1125,6 +1141,8 @@ async fn complete_delegated_warrant(
         RegistrarError::ValidationError("approve requires the signing config cert".into())
     })?;
     let warrants = validate_grant_warrants(
+        state,
+        user.user_id,
         warrant_jwss,
         config_jws,
         &grantor,
@@ -1132,7 +1150,8 @@ async fn complete_delegated_warrant(
         &holder,
         &snapshot.grants,
         &status_list_uri(&state.domain),
-    )?;
+    )
+    .await?;
 
     // Record each warrant in the approver's registry (an "external service").
     for (warrant, jws) in warrants.iter().zip(warrant_jwss) {
@@ -1275,6 +1294,8 @@ async fn complete_device_cert(
             &identity_email
         };
         let warrants = validate_grant_warrants(
+            state,
+            user.user_id,
             warrant_jwss,
             config_jws,
             grantor,
@@ -1282,8 +1303,36 @@ async fn complete_device_cert(
             &holder_id,
             &snapshot.grants,
             &status_list_uri(&state.domain),
-        )?;
+        )
+        .await?;
         Some((warrant_jwss.to_vec(), config_jws.to_string(), warrants))
+    };
+
+    // The host's mint chokepoint (audit 2026-11 W5-7, decision Q6): when
+    // the REGISTRAR is about to sign the agent cert — no primary-signed
+    // cert from the page — the approving session must pass the same bar
+    // `/device/issue` applies to the identity being certified: an as-you
+    // cert for the parent itself (E3: password session and a fresh mailbox
+    // proof; E2: a live bridge grant, redeemed here, whose TTL the cert
+    // takes), or a named agent under the parent (the host's agent rule:
+    // a password session). Decided BEFORE any side effect (handle
+    // reservation, signing). A primary (E1) parent never reaches this
+    // branch: the page's primary hop supplies the cert.
+    let registrar_signed_ttl = if req.device_cert.is_none() {
+        match state.host.authorize_agent_mint(user, &identity_email, name.is_some())? {
+            crate::host::MintVerdict::Allow { ttl } => Some(ttl),
+            crate::host::MintVerdict::NotAdmitted => return Err(RegistrarError::NotAdmitted),
+            crate::host::MintVerdict::NeedPassword => return Err(RegistrarError::PasswordRequired),
+            crate::host::MintVerdict::Reverify => return Err(RegistrarError::VerificationExpired),
+            crate::host::MintVerdict::NeedBridgeProof => return Err(RegistrarError::BridgeProofRequired),
+            crate::host::MintVerdict::DelegatePrimary => {
+                return Err(RegistrarError::PolicyRefused(
+                    "this identity's own IdP signs its agent certs; supply the primary-signed device cert".into(),
+                ))
+            }
+        }
+    } else {
+        None
     };
 
     // Reserve the handle NOW (session-authenticated), same as the legacy path.
@@ -1388,13 +1437,16 @@ async fn complete_device_cert(
         None => {
             let idx = state.store.get_or_allocate_status("device", &snapshot.provisioning_pubkey)?;
             let status = StatusRef { uri: status_list_uri(&state.domain), idx };
+            // The chokepoint's TTL: the host's own for a broker-vouched
+            // identity, the bridge's for a bridged parent (pr3a).
+            let ttl = registrar_signed_ttl.unwrap_or_else(|| chrono::Duration::days(DEVICE_CERT_VALIDITY_DAYS));
             let device_cert = DeviceCert::create(
                 &state.domain,
                 &device_pub,
                 Purpose::Authentication,
                 holder,
                 vec![agent_email.clone()],
-                chrono::Duration::days(DEVICE_CERT_VALIDITY_DAYS),
+                ttl,
                 &state.keypair,
                 Some(status),
             )

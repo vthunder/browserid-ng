@@ -38,23 +38,53 @@ impl EmailSender for MockEmailSender {
     }
 }
 
-async fn start_broker() -> (String, KeyPair, Arc<MockEmailSender>) {
+async fn start_broker() -> (String, KeyPair, Arc<MockEmailSender>, Arc<InMemoryUserStore>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let domain = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
     let keypair = KeyPair::generate();
     let idp_key = KeyPair::from_seed(&keypair.secret_bytes()[..]).unwrap();
     let sender = Arc::new(MockEmailSender::default());
+    let store = Arc::new(InMemoryUserStore::new());
     let mut state = AppState::new_with_arcs(
         keypair,
         domain.clone(),
-        Arc::new(InMemoryUserStore::new()),
+        store.clone(),
         Arc::new(InMemorySessionStore::new()),
         sender.clone(),
     );
     state.agent_provisioning_enabled = true;
     let app = routes::create_router(Arc::new(state));
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("http://{domain}"), idp_key, sender)
+    (format!("http://{domain}"), idp_key, sender, store)
+}
+
+/// Record `cert` as an unretired cert of `email`'s account — what
+/// `/device/issue` does at login issuance. Since audit 2026-11 (D2) the
+/// registrar signs approvals only with a config cert the account has
+/// recorded (mirror of the broker tests' `common::record_config_cert`).
+fn record_config_cert(store: &InMemoryUserStore, email: &str, cert: &DeviceCert) {
+    use browserid_broker::store::{DeviceCertRecord, UserStore};
+    let user = store.get_user_by_email(email).unwrap().expect("account");
+    let c = cert.claims();
+    let ts = |secs: i64| chrono::DateTime::from_timestamp(secs, 0).unwrap();
+    store
+        .insert_device_cert(DeviceCertRecord {
+            id: 0,
+            user_id: user.id,
+            identities: c.identities.clone(),
+            purpose: "authorization".into(),
+            holder: c.holder.as_str().to_string(),
+            pubkey: c.public_key.to_base64(),
+            iss: c.iss.clone(),
+            issued_at: ts(c.iat),
+            expires_at: ts(c.exp),
+            revoked_at: None,
+            status_uri: None,
+            status_idx: None,
+            prov: "smtp".into(),
+            login_key_id: None,
+        })
+        .unwrap();
 }
 
 /// The signed-in browser: create the account via the unified sign-in code
@@ -105,7 +135,7 @@ async fn create_user(base: &str, sender: &MockEmailSender, http: &reqwest::Clien
 
 #[tokio::test]
 async fn sdk_merged_provision_roundtrip() {
-    let (base, idp_key, sender) = start_broker().await;
+    let (base, idp_key, sender, store) = start_broker().await;
     let http = reqwest::Client::new();
     let session = create_user(&base, &sender, &http).await;
     let cookie = format!("browserid_session={session}");
@@ -162,6 +192,7 @@ async fn sdk_merged_provision_roundtrip() {
         Duration::days(90), &idp_key, None,
     )
     .unwrap();
+    record_config_cert(&store, DELEGATOR, &config_cert);
     // The page signs grantor = the APPROVING identity, grantee = the agent —
     // a named agent acts ON BEHALF OF the human who approved it. (It used to
     // sign AGENT for both, which made the on-behalf shape unreachable; the

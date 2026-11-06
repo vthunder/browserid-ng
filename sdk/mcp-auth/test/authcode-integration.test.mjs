@@ -37,6 +37,7 @@ const credential = {
   device_key: Buffer.from(gatewayKp.seed).toString("base64url"),
   agent_device_cert: fakeJws({
     typ: "browserid-device-cert-v1",
+    iss: new URL(BROKER).host, // the IdP that signed it: the only host the agent mints at (W4-41)
     "public-key": { algorithm: "Ed25519", publicKey: gatewayKp.publicKeyB64 },
     holder: "svc.gate1",
     identities: [GATEWAY],

@@ -17,7 +17,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createMcpAuth, createAuthCodeLane, McpAuthError, identityEq, granteeCovers } from "@browserid-ng/mcp-auth";
+import { createMcpAuth, createAuthCodeLane, McpAuthError, identityEq, granteeCovers, assertPolicyBinding, canonicalIdentity } from "@browserid-ng/mcp-auth";
 
 /**
  * Build (and connect) a mount around a stdio MCP child.
@@ -52,13 +52,17 @@ import { createMcpAuth, createAuthCodeLane, McpAuthError, identityEq, granteeCov
  * @returns {Promise<Mount>}
  */
 export async function createMount(opts) {
-  const resource = req(opts, "resource").replace(/\/+$/, "");
+  // Byte-exact audience (spec §5; audit 2026-11 W2-1 / Q25 (a)): the mount
+  // never normalizes its resource. Configure it exactly as the records name it.
+  const resource = req(opts, "resource");
   const name = opts.name || "mcp gateway";
   const broker = (opts.broker || "https://browserid.me").replace(/\/+$/, "");
   const statusCacheS = opts.statusCacheS ?? 5;
   const doFetch = opts.fetch || globalThis.fetch;
   const log = opts.log || (() => {});
-  const allow = new Set((opts.allow || []).map((e) => String(e).trim().toLowerCase()).filter(Boolean));
+  // Allowlist in canonical spelling (spec §5: domain folded, local part
+  // byte-exact — audit 2026-11 D17); matched with the same rule at /mcp.
+  const allow = new Set((opts.allow || []).map((e) => canonicalIdentity(String(e).trim())).filter(Boolean));
   const access = typeof opts.access === "function" ? opts.access : null;
   const owners = (opts.owners || []).map((e) => String(e).trim()).filter(Boolean);
   // Record-policy admission at the lane (§6.5). Library default: owners ⇒
@@ -81,8 +85,41 @@ export async function createMount(opts) {
           if (!store) return null;
           const rows = (await store.list(resource)).filter((r) => granteeCovers(r.grantee, email));
           if (!rows.length) return null;
-          return [...new Set(rows.flatMap((r) => r.scopes || []))];
+          // Every covering row is judged on FRESH evidence (spec §6.4,
+          // audit 2026-11 D5/D6): unexpired, revalidated at the broker
+          // (status included, fail-closed), carrying the one supported
+          // policy binding, and its validated grantee still covering the
+          // subject. Scopes come from the validation, never the stored row.
+          const live = [];
+          for (const r of rows) {
+            const pv = await liveRow(r);
+            if (pv && granteeCovers(pv.grantee, email)) live.push(pv);
+          }
+          if (!live.length) return null;
+          return [...new Set(live.flatMap((pv) => pv.scopes || []))];
         };
+  // Single-server liveness: a positive validation is reused for at most
+  // statusCacheS (the same bound as the bearer's status re-check); anything
+  // else — expired, revoked, unsupported binding, validator unreachable or
+  // 5xx — is "not live" right now. Never cached.
+  const liveRows = new Map(); // record -> { at, pv }
+  async function liveRow(row) {
+    const t = Math.floor(Date.now() / 1000);
+    if (row.exp != null && row.exp <= t) return null;
+    const cached = liveRows.get(row.record);
+    if (cached && t - cached.at < statusCacheS) return cached.pv;
+    let pv;
+    try {
+      pv = await mcpAuth.validateRecord(row.record, row.audience);
+      assertPolicyBinding(pv.binding);
+    } catch (e) {
+      log(`[gate] policy row for ${row.grantee} not live: ${e.message}`);
+      return null;
+    }
+    if (pv.expires_at != null && pv.expires_at <= t) return null;
+    liveRows.set(row.record, { at: t, pv });
+    return pv;
+  }
 
   // --- 1. connect to the wrapped stdio child --------------------------------
   let child = opts.client || null;
@@ -315,7 +352,7 @@ export async function createMount(opts) {
       // Grantor gate — refused BEFORE any tool runs (403). Roles mode (access
       // resolver): the grantor must have ≥1 tool granted here. Allowlist mode:
       // exact email match.
-      const grantor = String(vctx.grantor || "").toLowerCase();
+      const grantor = canonicalIdentity(vctx.grantor);
       let granted = "all";
       if (owners.length) {
         // Policy mode (§6.5): the grantor must be an owner or covered by a
@@ -356,7 +393,7 @@ export async function createMount(opts) {
           });
           return true;
         }
-      } else if (!owners.length && !allow.has(grantor)) {
+      } else if (!owners.length && !(grantor && allow.has(grantor))) {
         log(`[gate] REFUSED grantor=${vctx.grantor} (not on the allowlist)`);
         json(res, 403, {
           error: "access_denied",

@@ -34,6 +34,7 @@ function gatewayCredential() {
   const kp = KeyPair.generate();
   const cert = fakeJws({
     typ: "browserid-device-cert-v1",
+    iss: new URL(BROKER).host, // the IdP that signed it: the only host the agent mints at (W4-41)
     "public-key": { algorithm: "Ed25519", publicKey: kp.publicKeyB64 },
     holder: "svc.gate1",
     identities: [GATEWAY],

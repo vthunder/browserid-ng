@@ -50,7 +50,7 @@ class WarrantContext:
     grantee: Optional[str]
     holder: Optional[str]
     issuer: Optional[str]
-    scopes: List[str]
+    scopes: List[object]  # str, or a parameterised entry dict (relayed verbatim)
 
 
 @dataclass
@@ -59,7 +59,7 @@ class _Grant:
     grantee: Optional[str]
     holder: Optional[str]
     issuer: Optional[str]
-    scopes: List[str]
+    scopes: List[object]  # str, or a parameterised entry dict (relayed verbatim)
     status_refs: List[dict]
     exp: int
     status_checked_at: int
@@ -86,6 +86,24 @@ class MemoryStore:
 
     def delete(self, token: str) -> None:
         self._grants.pop(token, None)
+
+
+def _scope_name(entry) -> Optional[str]:
+    """The string form of a scope entry: the bare name, or the ``scope`` of a
+    parameterised object entry (``{"scope": "pay:usd", "cap": {...}}``, the
+    verifier's wire form) or of the ``{name: params}`` single-key form.
+    None when the entry cannot be represented (the AS then refuses it)."""
+    if isinstance(entry, str):
+        return entry or None
+    if isinstance(entry, dict):
+        name = entry.get("scope")
+        if isinstance(name, str) and name:
+            return name
+        if len(entry) == 1:
+            ((name, params),) = entry.items()
+            if isinstance(name, str) and name and isinstance(params, dict):
+                return name
+    return None
 
 
 def default_http_post(url: str, body: dict, timeout: float = 10.0):
@@ -132,7 +150,9 @@ class McpAuth:
     ) -> None:
         if not resource:
             raise ValueError("resource is required")
-        self.resource = resource.rstrip("/")
+        # Byte-exact audience (spec §5; audit 2026-11 W2-1 / Q25 (a)): never
+        # normalized; configure it exactly as the warrants name it.
+        self.resource = resource
         self.broker = broker.rstrip("/")
         self.scopes_for_tool = scopes_for_tool or {}
         self.token_ttl_s = token_ttl_s
@@ -203,7 +223,17 @@ class McpAuth:
         if verified.get("status") != "okay":
             raise McpAuthError("invalid_grant", verified.get("reason") or "presentation did not verify")
 
+        # Scope entries ride VERBATIM (spec S7 relay rule; audit 2026-11
+        # W4-14): a bare string, or an object entry carrying parameters as a
+        # D7-fixed verifier returns it. An object entry never satisfies a
+        # string scope (narrowing or a tool's requirement) — fail closed —
+        # and is rendered by its name in the OAuth scope string only.
         granted = verified.get("scopes") or []
+        if not isinstance(granted, list):
+            raise McpAuthError("invalid_grant", "verifier returned a malformed scopes list")
+        for entry in granted:
+            if _scope_name(entry) is None:
+                raise McpAuthError("invalid_grant", f"verifier returned an unrepresentable scope entry: {entry!r}")
         requested = (params.get("scope") or "").split()
         if requested:
             scopes = [s for s in requested if s in granted]
@@ -214,6 +244,16 @@ class McpAuth:
 
         token = "bat_" + secrets.token_urlsafe(32)
         now = int(time.time())
+        # The bearer never outlives what it was minted from (audit 2026-11
+        # W4-13): capped at the verifier's ``expires_at`` (the earliest of
+        # access cert, warrant and config cert, bean oa6s) when returned; the
+        # token_ttl_s cap alone when the verifier predates that field.
+        presented_exp = verified.get("expires_at")
+        exp = now + self.token_ttl_s
+        if isinstance(presented_exp, (int, float)) and not isinstance(presented_exp, bool):
+            if int(presented_exp) <= now:
+                raise McpAuthError("invalid_grant", "presentation expired")
+            exp = min(exp, int(presented_exp))
         self.store.put(
             token,
             _Grant(
@@ -223,7 +263,7 @@ class McpAuth:
                 issuer=verified.get("issuer"),
                 scopes=scopes,
                 status_refs=verified.get("status_refs") or [],
-                exp=now + self.token_ttl_s,
+                exp=exp,
                 status_checked_at=now,
                 status_ok=True,
             ),
@@ -231,8 +271,8 @@ class McpAuth:
         return {
             "access_token": token,
             "token_type": "Bearer",
-            "expires_in": self.token_ttl_s,
-            "scope": " ".join(scopes),
+            "expires_in": exp - now,
+            "scope": " ".join(_scope_name(s) for s in scopes),
         }
 
     # -- per-call validation -------------------------------------------------

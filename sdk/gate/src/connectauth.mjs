@@ -26,7 +26,8 @@ export function createConnectAuth({ broker, origin, sessions, fetch: doFetch = f
   /** The signed-in member on this request, or null. */
   function userFor(rq) {
     const s = sessions.verify(parseCookies(rq.headers.cookie));
-    return s ? s.email.toLowerCase() : null;
+    // The verified identity verbatim (spec §5: never fold the local part).
+    return s ? s.email : null;
   }
 
   /** Handle /connect/* routes. Returns true iff handled. */

@@ -260,7 +260,10 @@ where
     // docs/plans/2026-07-20-holder-authorization-model.md). Any authenticated
     // holder that carries the guestbook-sign scope below may sign; the
     // human/agent axis is no longer an RP-facing claim.
-    let scopes = result.scopes.clone().unwrap_or_default();
+    // Scope identity is the entry's scope string (§5); parameters ride along
+    // and are not the guestbook's concern.
+    let scopes: Vec<String> =
+        result.scopes.iter().flatten().map(|e| e.scope().to_string()).collect();
     if !scopes.iter().any(|s| s == REQUIRED_SCOPE || s == LEGACY_SCOPE) {
         return fail(
             StatusCode::FORBIDDEN,
@@ -317,13 +320,13 @@ where
         }
         persist(&entries);
     }
-    tracing::info!(agent = %agent_email, "guestbook signed");
+    tracing::info!(agent = %crate::crypto::log_id(&agent_email), "guestbook signed");
 
     // Funnel: an agent signed the guestbook. Keyed by the agent identity (which
     // itself attributes the human). No raw emails/codes leave the process.
     state.analytics.capture(
         "guestbook_signed",
-        crate::analytics::distinct_id_for_email(&agent_email),
+        state.analytics.distinct_id(&agent_email),
         serde_json::json!({
             "is_agent": true,
             "agent_domain": crate::analytics::email_domain(&agent_email),

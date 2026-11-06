@@ -22,6 +22,9 @@ struct MockDiscoverer {
     primaries: HashMap<String, PublicKey>,
     bogus: HashSet<String>,
     broker_key: PublicKey,
+    /// A primary's DNSSEC `host=` delegate (a hosted primary): the second
+    /// host its certs' `status.uri` may name (§6.3, audit 2026-11 W6-4).
+    serving_hosts: HashMap<String, String>,
 }
 
 impl MockDiscoverer {
@@ -30,11 +33,19 @@ impl MockDiscoverer {
             primaries: HashMap::new(),
             bogus: HashSet::new(),
             broker_key,
+            serving_hosts: HashMap::new(),
         }
     }
 
     fn with_primary(mut self, domain: &str, key: PublicKey) -> Self {
         self.primaries.insert(domain.to_string(), key);
+        self
+    }
+
+    /// Declare `domain`'s `host=` delegate, so its certs may point their
+    /// status refs at `host`'s list.
+    fn with_serving_host(mut self, domain: &str, host: &str) -> Self {
+        self.serving_hosts.insert(domain.to_string(), host.to_string());
         self
     }
 
@@ -54,7 +65,7 @@ impl MockDiscoverer {
                 document: SupportDocument::new().with_discovered_key(key.clone()),
                 authoritative_domain: domain.to_string(),
                 is_primary: true,
-                serving_host: None,
+                serving_host: self.serving_hosts.get(domain).cloned(),
             })
         } else {
             Ok(FallbackResult {
@@ -276,9 +287,14 @@ async fn verify_access_rejects_cross_issuer_with_rogue_grantor_idp() {
 // Status enforcement (core §6.4): three authorities, fail-closed (4lxl).
 // ---------------------------------------------------------------------------
 
+/// `sandmill.org` as a primary whose DNSSEC record delegates `host=` to the
+/// broker (a hosted primary): its certs may point at the broker's own list
+/// (§6.3 — the list host is the cert issuer's declared serving host).
 fn primary_setup() -> (KeyPair, MockDiscoverer) {
     let idp = KeyPair::generate();
-    let disc = MockDiscoverer::new(idp.public_key()).with_primary("sandmill.org", idp.public_key());
+    let disc = MockDiscoverer::new(idp.public_key())
+        .with_primary("sandmill.org", idp.public_key())
+        .with_serving_host("sandmill.org", "broker.example.com");
     (idp, disc)
 }
 
@@ -294,6 +310,23 @@ async fn verify_access_rejects_revoked_own_credential() {
     let r = verify_access_with_dns(&pres, "https://mingo.place", &disc, &[BROKER.to_string()], status_ctx!(&cache, &revoked_7)).await;
     assert_eq!(r.status, "failure", "{:?}", r);
     assert!(r.reason.as_deref().unwrap_or("").contains("revoked"), "{:?}", r);
+}
+
+/// Audit 2026-11 W6-4 (§6.3): a primary that does not delegate `host=` may
+/// not point its certs at the broker's own list; the own-list shortcut must
+/// not answer for it.
+#[tokio::test]
+async fn verify_access_rejects_primary_cert_pointing_at_the_brokers_list() {
+    let idp = KeyPair::generate();
+    let disc = MockDiscoverer::new(idp.public_key()).with_primary("sandmill.org", idp.public_key());
+    let pres = device_presentation_with_status(
+        "sandmill.org", "sandmill.org", "danmills@sandmill.org", "https://mingo.place", &idp,
+        Some(StatusRef { uri: OWN_STATUS_URI.into(), idx: 7 }),
+    );
+    let cache = RwLock::new(HashMap::new());
+    let r = verify_access_with_dns(&pres, "https://mingo.place", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
+    assert_eq!(r.status, "failure", "{:?}", r);
+    assert!(r.reason.as_deref().unwrap_or("").contains("status.uri host is not its issuer 'sandmill.org'"), "{:?}", r);
 }
 
 #[tokio::test]
@@ -312,6 +345,7 @@ async fn verify_access_own_store_error_fails_closed() {
 #[tokio::test]
 async fn verify_access_rejects_unreachable_foreign_status() {
     let (idp, disc) = primary_setup();
+    let disc = disc.with_serving_host("sandmill.org", "127.0.0.1:9");
     // Port 9 (discard) is closed: fetch fails fast → fail-closed reject.
     let pres = device_presentation_with_status(
         "sandmill.org", "sandmill.org", "danmills@sandmill.org", "https://mingo.place", &idp,
@@ -330,6 +364,7 @@ async fn failed_foreign_status_fetch_is_negative_cached() {
     // stalling on the network again. Distinct URI from the test above so the
     // process-wide negative cache can't couple the two tests.
     let (idp, disc) = primary_setup();
+    let disc = disc.with_serving_host("sandmill.org", "127.0.0.1:9");
     let pres = device_presentation_with_status(
         "sandmill.org", "sandmill.org", "danmills@sandmill.org", "https://mingo.place", &idp,
         Some(StatusRef { uri: "http://127.0.0.1:9/.well-known/browserid-status-negcache".into(), idx: 0 }),
@@ -367,9 +402,11 @@ async fn verify_access_checks_foreign_status_list() {
         .route("/.well-known/browserid-status", get(move || std::future::ready(body.clone())));
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-    // The discoverer knows both the IdP and the status authority's key.
+    // The discoverer knows both the IdP and the status authority's key, and
+    // the IdP's DNSSEC record delegates `host=` to the authority (W6-4).
     let disc = MockDiscoverer::new(idp.public_key())
         .with_primary("sandmill.org", idp.public_key())
+        .with_serving_host("sandmill.org", &authority)
         .with_primary(&authority, authority_key.public_key());
 
     let cache = RwLock::new(HashMap::new());
@@ -401,6 +438,7 @@ async fn verify_access_rejects_foreign_list_from_non_authoritative_signer() {
 
     let disc = MockDiscoverer::new(idp.public_key())
         .with_primary("sandmill.org", idp.public_key())
+        .with_serving_host("sandmill.org", &authority)
         .with_primary("evil.example", evil_key.public_key());
 
     let pres = device_presentation_with_status(
@@ -448,7 +486,9 @@ fn connection_record(config_iss: &str, email: &str, audience: &str, idp: &KeyPai
 #[tokio::test]
 async fn validate_record_conformance_okay() {
     let idp = KeyPair::generate();
-    let disc = MockDiscoverer::new(idp.public_key()).with_primary("sandmill.org", idp.public_key());
+    let disc = MockDiscoverer::new(idp.public_key())
+        .with_primary("sandmill.org", idp.public_key())
+        .with_serving_host("sandmill.org", "broker.example.com");
     let rec = connection_record("sandmill.org", "danmills@sandmill.org", "https://gate.dan.dev/notes", &idp, 168);
     let cache = RwLock::new(HashMap::new());
     let r = validate_record_with_dns(&rec, "https://gate.dan.dev/notes", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
@@ -456,7 +496,7 @@ async fn validate_record_conformance_okay() {
     assert_eq!(r.grantor.as_deref(), Some("danmills@sandmill.org"));
     assert_eq!(r.grantee.as_deref(), Some("danmills@sandmill.org"));
     assert!(matches!(r.binding.as_ref().map(|b| b.entries()), Some([Binding::Connection { .. }])), "{:?}", r.binding);
-    assert_eq!(r.scopes.as_deref(), Some(&["tool:read_file".to_string()][..]));
+    assert_eq!(r.scopes.as_deref(), Some(&[browserid_core::ScopeEntry::from("tool:read_file".to_string())][..]));
     // The warrant's registry ref rides back for the resource's per-use re-checks.
     assert_eq!(r.status_refs.as_ref().map(|s| s.len()), Some(1));
     assert!(r.expires_at.is_some());
@@ -465,7 +505,9 @@ async fn validate_record_conformance_okay() {
 #[tokio::test]
 async fn validate_record_rejects_wrong_audience() {
     let idp = KeyPair::generate();
-    let disc = MockDiscoverer::new(idp.public_key()).with_primary("sandmill.org", idp.public_key());
+    let disc = MockDiscoverer::new(idp.public_key())
+        .with_primary("sandmill.org", idp.public_key())
+        .with_serving_host("sandmill.org", "broker.example.com");
     let rec = connection_record("sandmill.org", "danmills@sandmill.org", "https://gate.dan.dev/notes", &idp, 168);
     let cache = RwLock::new(HashMap::new());
     let r = validate_record_with_dns(&rec, "https://other.example", &disc, &[BROKER.to_string()], status_ctx!(&cache, &never_revoked)).await;
@@ -486,7 +528,9 @@ async fn validate_record_rejects_nonauthoritative_issuer() {
 #[tokio::test]
 async fn validate_record_status_is_fail_closed() {
     let idp = KeyPair::generate();
-    let disc = MockDiscoverer::new(idp.public_key()).with_primary("sandmill.org", idp.public_key());
+    let disc = MockDiscoverer::new(idp.public_key())
+        .with_primary("sandmill.org", idp.public_key())
+        .with_serving_host("sandmill.org", "broker.example.com");
     let rec = connection_record("sandmill.org", "danmills@sandmill.org", "https://gate.dan.dev/notes", &idp, 168);
 
     // Revoked bit set → reject.

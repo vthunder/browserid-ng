@@ -2825,7 +2825,10 @@ impl UserStore for SqliteStore {
     fn insert_device_cert(&self, mut rec: DeviceCertRecord) -> StoreResult<u64> {
         let conn = self.conn.lock().unwrap();
         // Upsert on pubkey: the row is the registry entry for the LATEST cert
-        // certifying this key, so every field — including `revoked_at` —
+        // certifying this key, so every field — including `user_id` (D11,
+        // audit 2026-11: the row moves whole with the recording account, as
+        // the memory store does; the registrar refuses a foreign active key
+        // unless its identity is moving) and `revoked_at` —
         // reflects the incoming record. Clearing a stale revoked_at here is
         // safe because recording only happens after the presented cert passes
         // fail-closed verification (a revoked cert can never reach this code
@@ -2837,6 +2840,7 @@ impl UserStore for SqliteStore {
             "INSERT INTO device_certs (user_id, identities, purpose, holder, pubkey, iss, issued_at, expires_at, revoked_at, status_idx, status_uri, prov, login_key_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(pubkey) DO UPDATE SET
+               user_id = excluded.user_id,
                identities = excluded.identities,
                purpose = excluded.purpose,
                holder = excluded.holder,
@@ -4378,6 +4382,33 @@ mod tests {
         let path = dir.path().join("test.db");
         let store = SqliteStore::open(path.to_str().unwrap()).unwrap();
         (store, dir) // Return dir to keep it alive
+    }
+
+    /// Audit 2026-11 W4-30: a pending tenant row is replaced by deleting it
+    /// and creating afresh (the squat path in `tenant_create`); the sqlite
+    /// row, its roster and admins go with it and the new row gets its own id.
+    #[test]
+    fn pending_tenant_row_can_be_replaced() {
+        let (store, _dir) = create_test_store();
+        let squatter = store.create_user("hash").unwrap();
+        let owner = store.create_user("hash").unwrap();
+        let first = store
+            .create_tenant("victim.example", "pk-squat", "sealed-squat", Some(squatter), "squatter@example.com")
+            .unwrap();
+        store.create_roster_entry(first.id, "admin", "hash", false, "squatter@example.com").unwrap();
+        assert!(matches!(
+            store.create_tenant("victim.example", "pk-owner", "sealed-owner", Some(owner), "owner@example.net"),
+            Err(BrokerError::TenantExists)
+        ));
+        store.delete_tenant("victim.example").unwrap();
+        let second = store
+            .create_tenant("victim.example", "pk-owner", "sealed-owner", Some(owner), "owner@example.net")
+            .unwrap();
+        assert_ne!(first.id, second.id);
+        assert_eq!(second.owner_user_id, Some(owner));
+        assert_eq!(second.public_key, "pk-owner");
+        assert!(store.get_roster_entry(second.id, "admin").unwrap().is_none(), "old roster must not carry over");
+        assert!(store.get_roster_entry(first.id, "admin").unwrap().is_none());
     }
 
     #[test]

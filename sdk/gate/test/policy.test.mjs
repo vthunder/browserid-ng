@@ -212,7 +212,7 @@ async function connect(who, record) {
       client_id: reg.client_id, redirect_uri: REDIRECT, code_verifier: p.verifier,
     }),
   });
-  return tok.json();
+  return { ...(await tok.json()), client_id: reg.client_id };
 }
 
 const callTool = (token, name, args) =>
@@ -269,7 +269,7 @@ test("owner shares to the member's email; the member connects and works under S 
   policyRevoked = true;
   const refreshed = await (await fetch(`${RESOURCE}/token`, {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ grant_type: "refresh_token", refresh_token: tokens.refresh_token }),
+    body: JSON.stringify({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: tokens.client_id }),
   })).json();
   assert.equal(refreshed.error, "invalid_grant", JSON.stringify(refreshed));
   policyRevoked = false;

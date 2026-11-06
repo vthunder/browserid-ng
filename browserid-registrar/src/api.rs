@@ -1,13 +1,12 @@
 //! Registry API v1 (docs/specs/registry-api-v1.md): the token-authenticated
 //! wire surface that makes a native wallet a first-class registry client.
 //!
-//! Authentication is a two-step (§3): `POST /api/v1/token` exchanges a
-//! presentation bundle addressed to the registry's own origin for a
-//! short-lived, sender-constrained access token; every subsequent call
-//! carries the token plus a DPoP-style proof signed with the same config-cert
-//! key the presentation proved. There are no refresh tokens — re-exchanging a
-//! fresh presentation IS the refresh — and revocation rides the bound config
-//! cert's status bit, re-checked fail-closed on every call.
+//! Authentication is the login model (§4): a wallet opens a session with
+//! `POST /api/v1/login` (or `accounts`) under its login key, and every
+//! subsequent call carries the session plus a `browserid-registry-proof-v1`
+//! header signed by that key (§4.4). The earlier `POST /api/v1/token`
+//! presentation exchange was removed in a8337d1; the helpers below that
+//! still speak of tokens serve the session body.
 //!
 //! Errors are OAuth-shaped (§7): `{ "error": ..., "error_description": ...,
 //! "reason"?: ... }` — a deliberate departure from the legacy
@@ -59,7 +58,7 @@ pub trait PresentationVerifier: Send + Sync {
         idx: u64,
     ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>>;
 
-    /// Verify ONE device cert for §5.3 `devices/register`: parse, purpose,
+    /// Verify ONE device cert for §5.2.4 `attach` (the validity bar, §7.1): parse, purpose,
     /// expiry, issuer acceptance (the identity domain's DNSSEC key, or a
     /// fallback issuer in the operator's accepted set), signature, and a
     /// fail-closed status check. Refusals are distinguishable so the
@@ -162,13 +161,19 @@ pub enum ApiError {
     /// 422 — a client-signed warrant / admission record (or the claim
     /// precondition) failed the §5.1/§5.2 validation bar.
     InvalidWarrant { reason: &'static str, description: String },
-    /// 422 — the `devices/register` cert pair failed the §5.3 bar.
+    /// 422 — the `attach` cert pair failed the §7.1 validity bar.
     InvalidCert { reason: &'static str, description: String },
     /// 404 — owner-scoped miss, or the API is not served here.
     NotFound,
     /// 500 — a deployment fault, never a caller error.
     Internal(String),
 }
+
+/// Marks the `403 login_required` answer on the response so the login
+/// throttle (broker `rate_limit::api_v1`) does not count it as a failure:
+/// it is the first, expected step of every page login, not a bad token.
+#[derive(Clone, Copy, Debug)]
+pub struct LoginRequiredAnswer;
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -178,7 +183,9 @@ impl IntoResponse for ApiError {
                 "error_description": "open the login page and retry with its token",
                 "url": url,
             });
-            return (StatusCode::FORBIDDEN, Json(body)).into_response();
+            let mut resp = (StatusCode::FORBIDDEN, Json(body)).into_response();
+            resp.extensions_mut().insert(LoginRequiredAnswer);
+            return resp;
         }
         let (status, error, description, reason) = match self {
             ApiError::InvalidRequest(d) => (StatusCode::BAD_REQUEST, "invalid_request", d, None),
@@ -269,10 +276,10 @@ impl ReplayCache {
 }
 
 // ===========================================================================
-// POST /api/v1/token — the presentation → token exchange (§3.1)
+// Session tokens (§4.5) — opaque, ≥128-bit
 // ===========================================================================
 
-/// A fresh opaque token: 32 random bytes, base64url (≥128-bit entropy, §3.1).
+/// A fresh opaque token: 32 random bytes, base64url (≥128-bit entropy, §3).
 pub(crate) fn new_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 32];
@@ -443,6 +450,7 @@ fn with_code_fields(mut v: serde_json::Value, code: &str, consent_uri: &str) -> 
 /// resource's audience proof, an anonymous provisioning pairing).
 pub async fn file_request(
     State(state): State<Arc<RegistrarState>>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
     let mut v: serde_json::Value = match serde_json::from_slice(&body) {
@@ -460,7 +468,7 @@ pub async fn file_request(
                 Ok(r) => r,
                 Err(e) => return ApiError::InvalidRequest(format!("bad warrant request: {e}")).into_response(),
             };
-            match crate::consent::warrant_request(State(state), Json(req)).await {
+            match crate::consent::warrant_request_core(&state, &headers, "/api/v1/requests", &body, req).await {
                 Ok(Json(r)) => {
                     let (code, uri) = (r.code.clone(), r.verification_uri_complete.clone());
                     let v = serde_json::to_value(r).unwrap_or_default();
@@ -557,7 +565,7 @@ pub async fn respond(
         grantor: req.grantor,
     };
     let return_url =
-        crate::consent::respond_core(&state, user.user_id, &core).map_err(consent_err)?;
+        crate::consent::respond_core(&state, user.user_id, &core).await.map_err(consent_err)?;
     let mut resp = serde_json::Map::new();
     if let Some(url) = return_url {
         resp.insert("return_url".into(), serde_json::Value::String(url));
@@ -657,6 +665,7 @@ pub async fn register_warrant(
         Some(_) => {}
     }
     crate::consent::register_warrant_core(&state, user.user_id, &req.warrant, &req.config_cert)
+        .await
         .map_err(consent_err)?;
     let id = state
         .store

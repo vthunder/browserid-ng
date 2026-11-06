@@ -11,8 +11,11 @@
 //! Three pieces, composable with any HTTP framework:
 //!
 //! - [`Verifier`] — checks an `access_cert~assertion~warrant~config_cert`
-//!   presentation against the RP's audience and its trusted issuer keys
-//!   (pinned, or fetched from an IdP's `/.well-known/browserid`).
+//!   presentation against the RP's audience. Production RPs call
+//!   [`Verifier::verify_dnssec`] (keys DNSSEC-resolved, status lists fetched
+//!   through the hosted verifier's guarded path). The pinned-key
+//!   [`Verifier::verify`] + [`StatusCache`] path is **deprecated** (audit
+//!   2026-11 D15) and kept for offline tests only.
 //! - [`TokenStore`] — a minimal in-memory bearer-token issuer/authenticator
 //!   for RPs that don't already have one. RPs with existing token machinery
 //!   use [`Verifier`] + their own store.
@@ -49,7 +52,7 @@ use rand::RngCore;
 
 use browserid_core::device::{AccessPresentation, Holder};
 use browserid_core::rp_auth::{TokenErrorResponse, GRANT_TYPE_ASSERTION};
-use browserid_core::{PublicKey, RpChallenge, StatusListToken, StatusRef, TokenRequest, TokenResponse};
+use browserid_core::{PublicKey, RpChallenge, ScopeEntry, StatusListToken, StatusRef, TokenRequest, TokenResponse};
 
 pub use browserid_core::rp_auth;
 
@@ -109,9 +112,15 @@ pub struct VerifiedIdentity {
     /// The opaque broker-assigned holder that acted (which of the user's
     /// things); advisory — authorization keys off email + scopes, not this.
     pub holder: Holder,
-    /// The warrant's scopes, verbatim; [`exchange`] applies the RP scope
-    /// policy (intersection) when issuing a token
+    /// The warrant's scopes projected to their identity strings (§5);
+    /// [`exchange`] applies the RP scope policy (intersection) when issuing
+    /// a token. Parameters (a `cap` on `pay:`, `mode` on `sign:`, …) are in
+    /// [`scope_entries`](Self::scope_entries).
     pub scopes: Vec<String>,
+    /// The warrant's scope entries, **verbatim** (spec §5; audit 2026-11 D7):
+    /// a parameterized entry keeps its parameters so the RP — the audience
+    /// that enforces them — sees every attenuation the grantor wrote.
+    pub scope_entries: Vec<ScopeEntry>,
     /// The warrant's revocation ref, for RPs that re-check long-lived
     /// sessions out of band (the verify itself already checked it)
     pub warrant_status: Option<StatusRef>,
@@ -193,10 +202,15 @@ impl Verifier {
     }
 
     /// Check presented credentials against a revocation status cache
-    /// (core §6.4). Refresh the cache out of band ([`Verifier::refresh_status`]
-    /// or `StatusCache::refresh`); verification itself stays synchronous.
+    /// (core §6.4) on the pinned-table [`Verifier::verify`] path. Refresh the
+    /// cache out of band ([`Verifier::refresh_status`] or
+    /// [`StatusCache::refresh`]); verification itself stays synchronous.
     /// Without a cache, a presentation carrying a `status` ref is rejected
     /// fail-closed (unless `without_status_checks()` opted out).
+    ///
+    /// **Deprecated** (audit 2026-11 D15, Q3): production RPs use
+    /// [`Verifier::verify_dnssec`], whose status fetches run the hosted
+    /// verifier's guarded path. Removed at the next major.
     pub fn with_status_cache(mut self, cache: std::sync::Arc<StatusCache>) -> Self {
         self.status_cache = Some(cache);
         self
@@ -265,17 +279,23 @@ impl Verifier {
     }
 
     /// Fetch a status list from `uri`, verify it against this RP's trusted
-    /// issuer table (the list's `iss` claim must be a trusted issuer), and
-    /// cache it. Call at startup and on a refresh timer (reference: the
-    /// list's `ttl`, 5 min) — [`Verifier::verify`] stays synchronous and
-    /// rejects fail-closed while a needed list is missing or stale.
+    /// issuer table (the list's `iss` claim must be a trusted issuer AND the
+    /// URI's host, §6.3), and cache it. Call at startup and on a refresh
+    /// timer (reference: the list's `ttl`, 5 min) — [`Verifier::verify`]
+    /// stays synchronous and rejects fail-closed while a needed list is
+    /// missing or stale.
+    ///
+    /// The fetch follows the safe-fetch rules of §7.5 (no redirects, `https`
+    /// to a public address only, bounded size and time).
+    #[deprecated(
+        since = "0.1.0",
+        note = "pinned-table status path (audit 2026-11 D15): use Verifier::verify_dnssec, whose status fetches run the hosted verifier's guarded path"
+    )]
     pub async fn refresh_status(&self, uri: &str) -> Result<(), RpError> {
         let cache = self.status_cache.as_ref().ok_or_else(|| {
             RpError::WellKnown("no status cache configured (Verifier::with_status_cache)".into())
         })?;
-        let body = reqwest::get(uri).await?.error_for_status()?.text().await?;
-        let token = StatusListToken::parse(body.trim())
-            .map_err(|e| RpError::WellKnown(format!("status list: {e}")))?;
+        let token = fetch_status_list(uri).await?;
         let key = self.issuer_keys.get(&token.claims().iss).ok_or_else(|| {
             RpError::WellKnown(format!(
                 "status list at {uri} is signed by '{}', not a trusted issuer",
@@ -295,6 +315,10 @@ impl Verifier {
     /// cert; both certs ← one trusted issuer; identity/subject/audience
     /// consistent), issuer trust, and — when a status cache is configured —
     /// the three revocation refs (access cert, config cert, warrant).
+    ///
+    /// **Offline/testing only** — the pinned-key path. Production RPs use
+    /// [`Verifier::verify_dnssec`] (audit 2026-11 D15: the pinned path's
+    /// status machinery is deprecated and removed at the next major).
     pub fn verify(&self, presentation: &str) -> Result<VerifiedIdentity, ExchangeError> {
         let pres = AccessPresentation::parse(presentation)
             .map_err(|e| ExchangeError::InvalidAssertion(e.to_string()))?;
@@ -373,6 +397,7 @@ impl Verifier {
             grantee_issuer: verified.grantee_issuer,
             holder: verified.holder,
             scopes: verified.scopes,
+            scope_entries: verified.scope_entries,
             warrant_status: verified.warrant_status,
         })
     }
@@ -448,6 +473,7 @@ impl Verifier {
             grantee_issuer: verified.grantee_issuer,
             holder: verified.holder,
             scopes: verified.scopes,
+            scope_entries: verified.scope_entries,
             warrant_status: verified.warrant_status,
         })
     }
@@ -653,13 +679,22 @@ pub enum StatusVerdict {
     Unknown,
 }
 
-/// A cache of issuer-signed status lists (core §6.4). Refresh out of band —
-/// on a timer, or opportunistically when [`StatusCache::check`] returns
-/// `Unknown` — and verification stays synchronous. Callers that need
-/// revocation to be visible sooner than the issuer's `ttl` can bound staleness
-/// by time-since-fetch with [`StatusCache::check_within`]:
+/// A cache of issuer-signed status lists (core §6.4) for the pinned-table
+/// [`Verifier::verify`] path. Refresh out of band — on a timer, or
+/// opportunistically when [`StatusCache::check`] returns `Unknown` — and
+/// verification stays synchronous. Callers that need revocation to be
+/// visible sooner than the issuer's `ttl` can bound staleness by
+/// time-since-fetch with [`StatusCache::check_within`]. A list is honored
+/// for at most [`MAX_STATUS_TTL`] past its `iat` whatever `ttl` it declares.
+///
+/// **Deprecated** (audit 2026-11 D15, Q3): production RPs use
+/// [`Verifier::verify_dnssec`], which fetches, verifies and caches status
+/// lists through the hosted verifier's guarded path
+/// (`browserid_verifier::verify::fetch_foreign_status_list`). This type is
+/// kept for offline tests and removed at the next major.
 ///
 /// ```no_run
+/// # #[allow(deprecated)]
 /// # async fn demo(issuer_key: browserid_core::PublicKey) -> Result<(), browserid_rp::RpError> {
 /// let cache = std::sync::Arc::new(browserid_rp::StatusCache::new());
 /// cache.refresh("https://browserid.me/.well-known/browserid-status", &issuer_key).await?;
@@ -718,12 +753,16 @@ impl StatusCache {
         self.fail_closed
     }
 
-    /// Fetch `uri`, verify the token against `issuer_key` (and that it is
-    /// for `uri`), and cache it.
+    /// Fetch `uri` (safe-fetch rules of §7.5: no redirects, `https` to a
+    /// public address only, bounded size and time; the list's `iss` must be
+    /// the URI's host), verify the token against `issuer_key` (and that it
+    /// is for `uri`), and cache it.
+    #[deprecated(
+        since = "0.1.0",
+        note = "pinned-table status path (audit 2026-11 D15): use Verifier::verify_dnssec, whose status fetches run the hosted verifier's guarded path"
+    )]
     pub async fn refresh(&self, uri: &str, issuer_key: &PublicKey) -> Result<(), RpError> {
-        let body = reqwest::get(uri).await?.error_for_status()?.text().await?;
-        let token = StatusListToken::parse(body.trim())
-            .map_err(|e| RpError::WellKnown(format!("status list: {e}")))?;
+        let token = fetch_status_list(uri).await?;
         token
             .verify(issuer_key, uri)
             .map_err(|e| RpError::WellKnown(format!("status list: {e}")))?;
@@ -775,8 +814,10 @@ impl StatusCache {
     fn verdict(&self, r: &StatusRef, max_age: Option<std::time::Duration>) -> StatusVerdict {
         let lists = self.lists.read().unwrap();
         match lists.get(&r.uri) {
+            // The issuer-declared `ttl` is capped (audit M3 / 2026-11 D15): a
+            // ten-year `ttl` must not pin an all-clear list past a revocation.
             Some(c)
-                if c.token.is_fresh(self.grace_seconds)
+                if c.token.is_fresh_capped(self.grace_seconds, MAX_STATUS_TTL)
                     && max_age.is_none_or(|m| c.fetched.elapsed() <= m) =>
             {
                 if c.token.is_revoked(r.idx) {
@@ -788,6 +829,54 @@ impl StatusCache {
             _ => StatusVerdict::Unknown,
         }
     }
+}
+
+/// Ceiling on how long a cached status list is honored past its `iat`,
+/// regardless of the `ttl` its issuer declares — the hosted verifier's
+/// 5-minute reference window (audit M3; 2026-11 D15 for this path).
+pub const MAX_STATUS_TTL: i64 = 300;
+
+/// Max bytes read from a status list (a zlib-compressed bitstring; the
+/// decompressor is separately capped in core).
+const MAX_STATUS_BODY: usize = 4 * 1024 * 1024;
+
+/// The pinned-table path's status fetch, made safe by construction (audit
+/// 2026-11 D15; July H1 class): the URI is attacker-reachable only via an
+/// operator's configuration here, but the same §7.5 rules apply as on the
+/// hosted path — `https` only, no redirects, no private/loopback/link-local
+/// address (`browserid_verifier::verify::validate_status_url`), bounded body
+/// and time — and the list's `iss` must be the URI's host (§6.3).
+async fn fetch_status_list(uri: &str) -> Result<StatusListToken, RpError> {
+    browserid_verifier::verify::validate_status_url(uri, false)
+        .await
+        .map_err(RpError::WellKnown)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build()?;
+    let resp = client.get(uri).send().await?.error_for_status()?;
+    let body = browserid_verifier::verify::read_capped(resp, MAX_STATUS_BODY)
+        .await
+        .map_err(|e| RpError::WellKnown(format!("status list at {uri}: {e}")))?;
+    let token = StatusListToken::parse(body.trim())
+        .map_err(|e| RpError::WellKnown(format!("status list: {e}")))?;
+    let host = reqwest::Url::parse(uri)
+        .ok()
+        .and_then(|u| {
+            u.host_str().map(|h| match u.port() {
+                Some(p) => format!("{h}:{p}"),
+                None => h.to_string(),
+            })
+        })
+        .unwrap_or_default();
+    if token.claims().iss != host {
+        return Err(RpError::WellKnown(format!(
+            "status list at {uri} is signed by '{}', not the list host '{host}'",
+            token.claims().iss
+        )));
+    }
+    Ok(token)
 }
 
 /// RFC 8414 metadata including the RP's scope vocabulary

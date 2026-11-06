@@ -79,10 +79,11 @@ pub async fn open(
             .store
             .list_pending_approvals(uid)
             .map_err(|e| ApiError::Internal(format!("approvals: {e}")))?;
-        if pending.len() >= MAX_PENDING {
-            // Same shape as any other refusal the page could see.
-            return Err(ApiError::Forbidden { reason: "login_rejected", description: "too many open approvals".into() });
-        }
+        // At the cap (§5.2.8, amended 2026-11 — W5-12): the same 200 as an
+        // unknown account, a code nothing will ever approve. A distinct
+        // refusal told the caller both that the account exists and that it
+        // is busy.
+        if pending.len() < MAX_PENDING {
         state
             .store
             .create_approval(ApprovalRecord {
@@ -98,6 +99,7 @@ pub async fn open(
             })
             .map_err(|e| ApiError::Internal(format!("approvals: {e}")))?;
         tracing::info!("approval: opened");
+        }
     }
     Ok(Json(serde_json::json!({ "id": id, "code": code, "expires_at": expires_at.to_rfc3339() })))
 }

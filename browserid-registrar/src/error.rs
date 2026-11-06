@@ -35,6 +35,25 @@ pub enum RegistrarError {
     #[error("Internal error: {0}")]
     Internal(String),
 
+    /// The host's mint chokepoint wants the account password first
+    /// (401, the same reason the host's `/device/issue` answers).
+    #[error("password required")]
+    PasswordRequired,
+
+    /// The parent identity's mailbox proof is stale (403, as `/device/issue`).
+    #[error("Email verification expired (re-verification required)")]
+    VerificationExpired,
+
+    /// An identity session that did not prove the parent (403, as the
+    /// host's account-wide cookie endpoints).
+    #[error("not_admitted")]
+    NotAdmitted,
+
+    /// A bridged (E2) parent with no live bridge proof on file (403): the
+    /// page runs the bridge and retries.
+    #[error("a live bridge proof is required to mint this address")]
+    BridgeProofRequired,
+
     /// Owner-scoped holder miss (registry-api-v1 §5.4): the holder appears on
     /// none of the account's device certs. 404 on the token lane; the cookie
     /// lane renders its legacy "no such holder" refusal.
@@ -125,6 +144,14 @@ impl IntoResponse for RegistrarError {
             }
             RegistrarError::HolderNotFound => (StatusCode::NOT_FOUND, "No such holder"),
             RegistrarError::NamespaceNotFound => (StatusCode::NOT_FOUND, "No such namespace"),
+            RegistrarError::PasswordRequired => (StatusCode::UNAUTHORIZED, "password required"),
+            RegistrarError::VerificationExpired => {
+                (StatusCode::FORBIDDEN, "Email verification expired (re-verification required)")
+            }
+            RegistrarError::NotAdmitted => (StatusCode::FORBIDDEN, "not_admitted"),
+            RegistrarError::BridgeProofRequired => {
+                (StatusCode::FORBIDDEN, "a live bridge proof is required to mint this address")
+            }
         };
 
         let body = json!({

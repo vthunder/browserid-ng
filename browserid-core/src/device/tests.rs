@@ -13,6 +13,10 @@ use serde_json::json;
 
 // Fixed epoch so vectors are reproducible.
 const IAT: i64 = 1_800_000_000; // 2027-01-15T08:00:00Z
+/// The instant presentations are judged at: the fixtures are dated 2027, and
+/// the §6.1 clock rule (`iat ≤ now + skew`) makes wall-clock `verify` reject
+/// them as post-dated until then, so tests use `verify_at(AT)`.
+const AT: i64 = IAT + 60;
 const DAY: i64 = 86_400;
 const HOUR: i64 = 3_600;
 
@@ -106,16 +110,9 @@ impl Fixture {
         .unwrap()
     }
     fn assertion(&self) -> Assertion {
-        // Assertion::create uses Utc::now; build via the fresh access key with a
-        // far-future expiry so the vector doesn't age out.
-        use crate::assertion::AssertionClaims;
-        // Assertion has no from_claims; sign the 2-claim JWS directly is internal,
-        // so create() then override is not possible — use create() with a long
-        // validity from a fixed "now" is also not possible. Instead, the assertion
-        // is the one non-deterministic-time object; vectors pin the OTHER three and
-        // the assertion is regenerated live (its exp is checked, not byte-frozen).
-        let _ = AssertionClaims { exp: 0, aud: String::new(), req_origin: None }; // keep import honest
-        Assertion::create(self.audience(), chrono::Duration::days(3650), &self.access_key).unwrap()
+        // Deterministic like the other three objects: issued at the fixed
+        // epoch with a far-future expiry (W4-40: assertions carry `iat`).
+        Assertion::create_at(self.audience(), None, IAT, IAT + 3650 * DAY, &self.access_key).unwrap()
     }
     fn presentation(&self) -> AccessPresentation {
         AccessPresentation {
@@ -134,7 +131,7 @@ fn full_user_login_roundtrip() {
     let f = Fixture::new();
     let pres = AccessPresentation::parse(&f.presentation().encode()).unwrap();
     let idp_pub = f.idp.public_key();
-    let v = pres.verify(f.audience(), |iss| {
+    let v = pres.verify_at(f.audience(), AT, |iss| {
         assert_eq!(iss, f.idp_domain());
         Ok(idp_pub.clone())
     }).unwrap();
@@ -160,14 +157,14 @@ fn config_cert_from_rogue_idp_is_rejected() {
     // Even if the resolver would hand back a key for evil.example, the iss mismatch
     // against the access cert is caught first.
     let idp_pub = f.idp.public_key();
-    assert!(pres.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
+    assert!(pres.verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).is_err());
 }
 
 #[test]
 fn wrong_audience_rejected() {
     let f = Fixture::new();
     let idp_pub = f.idp.public_key();
-    assert!(f.presentation().verify("https://evil.example", |_| Ok(idp_pub.clone())).is_err());
+    assert!(f.presentation().verify_at("https://evil.example", AT, |_| Ok(idp_pub.clone())).is_err());
 }
 
 #[test]
@@ -185,7 +182,7 @@ fn config_not_authorized_for_identity_rejected() {
     ).unwrap();
     let pres = AccessPresentation { access_cert: f.access_cert(), assertion: f.assertion(), warrant: f.warrant(), config_cert: cc };
     let idp_pub = f.idp.public_key();
-    assert!(pres.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
+    assert!(pres.verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).is_err());
 }
 
 #[test]
@@ -202,7 +199,7 @@ fn authentication_purpose_config_cert_rejected() {
     ).unwrap();
     let pres = AccessPresentation { access_cert: f.access_cert(), assertion: f.assertion(), warrant: f.warrant(), config_cert: cc };
     let idp_pub = f.idp.public_key();
-    assert!(pres.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
+    assert!(pres.verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).is_err());
 }
 
 #[test]
@@ -269,7 +266,7 @@ fn holder_passthrough_copy_and_isolation() {
         warrant: isolated, config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
     };
     let idp_pub = f.idp.public_key();
-    assert!(pres.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
+    assert!(pres.verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).is_err());
 }
 
 // --- golden cross-language vectors ----------------------------------------
@@ -334,7 +331,7 @@ fn golden_vectors() {
         config_cert: DeviceCert::parse(config_cert.encoded()).unwrap(),
     };
     let idp_pub = f.idp.public_key();
-    pres.verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap();
+    pres.verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).unwrap();
 }
 
 fn base64_seed(byte: u8) -> String {
@@ -360,26 +357,56 @@ impl Fixture {
     }
 }
 
-/// RFC-style subaddressing as a protocol rule: a cert naming the BASE identity
-/// authorizes its `+tag` sub-addresses — no glob needed — while never matching
-/// a different local part, a bare-vs-base mixup, or a foreign domain.
+/// RFC-style subaddressing is an AUTHORIZATION-only rule (spec §4.6, audit
+/// 2026-11 D1): a config cert naming the BASE identity vouches for warrants
+/// whose grantor is a `+tag` sub-address — no glob needed — while never
+/// matching a different local part, a bare-vs-base mixup, or a foreign
+/// domain. The mint-side predicate never widens: an auth cert for `dan@`
+/// mints for `dan@` exactly.
 #[test]
-fn base_identity_authorizes_subaddresses() {
-    assert!(super::identity_matches("dan@mingo.place", "dan+claude@mingo.place"));
-    assert!(super::identity_matches("dan@mingo.place", "dan+a+b@mingo.place"));
+fn subaddressing_is_a_grantor_rule_only() {
+    use super::{identity_matches, identity_matches_as_grantor as as_grantor};
+    assert!(as_grantor("dan@mingo.place", "dan+claude@mingo.place"));
+    assert!(as_grantor("dan@mingo.place", "dan+a+b@mingo.place"));
     // Exact still matches; the base never matches a DIFFERENT base.
-    assert!(super::identity_matches("dan@mingo.place", "dan@mingo.place"));
-    assert!(!super::identity_matches("dan@mingo.place", "daniel@mingo.place"));
-    assert!(!super::identity_matches("dan@mingo.place", "danny+x@mingo.place"));
+    assert!(as_grantor("dan@mingo.place", "dan@mingo.place"));
+    assert!(!as_grantor("dan@mingo.place", "daniel@mingo.place"));
+    assert!(!as_grantor("dan@mingo.place", "danny+x@mingo.place"));
     // A sub-address does NOT authorize its base or siblings (only the base
     // implies downward, never upward/sideways).
-    assert!(!super::identity_matches("dan+claude@mingo.place", "dan@mingo.place"));
-    assert!(!super::identity_matches("dan+claude@mingo.place", "dan+other@mingo.place"));
-    // Domain must match exactly.
-    assert!(!super::identity_matches("dan@mingo.place", "dan+x@evil.place"));
+    assert!(!as_grantor("dan+claude@mingo.place", "dan@mingo.place"));
+    assert!(!as_grantor("dan+claude@mingo.place", "dan+other@mingo.place"));
+    // Domain must match — under the §5 comparison (case-insensitive A-label,
+    // W6-1); the local part stays byte-exact.
+    assert!(!as_grantor("dan@mingo.place", "dan+x@evil.place"));
+    assert!(as_grantor("dan@mingo.place", "dan+x@MINGO.place"));
+    assert!(as_grantor("dan@mingo.place", "dan@Mingo.PLACE"));
+    assert!(identity_matches("dan@mingo.place", "dan@Mingo.PLACE"));
+    assert!(!as_grantor("dan@mingo.place", "Dan@mingo.place"));
+    // Non-emails never match, even byte-equal ones (fail-closed).
+    assert!(!identity_matches("not-an-email", "not-an-email"));
     // Degenerate empty tag ("dan+@") matches the base rule — harmless: the
     // warrant identifier still pins the exact presentable identity.
-    assert!(super::identity_matches("dan@mingo.place", "dan+@mingo.place"));
+    assert!(as_grantor("dan@mingo.place", "dan+@mingo.place"));
+    // The authentication-side predicate is exact (or glob) and never widens.
+    assert!(identity_matches("dan@mingo.place", "dan@mingo.place"));
+    assert!(!identity_matches("dan@mingo.place", "dan+claude@mingo.place"));
+    assert!(!identity_matches("dan@mingo.place", "dan+@mingo.place"));
+    assert!(identity_matches("dan+*@mingo.place", "dan+claude@mingo.place"));
+
+    // On certs: purpose decides. An auth cert for the base mints the base
+    // only; a config cert for the base vouches for its sub-addresses; an
+    // auth cert never vouches for a grantor at all.
+    let f = Fixture::new(); // identities: [danmills@sandmill.org]
+    let auth = DeviceCert::from_claims(f.auth_device_cert_claims(), &f.idp).unwrap();
+    assert!(auth.authorizes_identity("danmills@sandmill.org"));
+    assert!(!auth.authorizes_identity("danmills+claude@sandmill.org"));
+    assert!(!auth.authorizes_grantor("danmills@sandmill.org"));
+    let config = f.config_cert_signed_by(&f.idp, f.idp_domain());
+    assert!(config.authorizes_grantor("danmills@sandmill.org"));
+    assert!(config.authorizes_grantor("danmills+claude@sandmill.org"));
+    assert!(config.authorizes_identity("danmills+claude@sandmill.org"));
+    assert!(!config.authorizes_grantor("dan@sandmill.org"));
 }
 
 // --- constraints & managed identities (spec §4.7, §6.1 step 7) -------------
@@ -412,7 +439,7 @@ fn constraints_satisfied_passes() {
         Some(91 * DAY),
     ));
     let idp_pub = f.idp.public_key();
-    let v = f.presentation().verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap();
+    let v = f.presentation().verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).unwrap();
     assert_eq!(v.email, f.email());
 }
 
@@ -422,7 +449,7 @@ fn constraints_audience_not_allowed_rejects() {
     f.access_constraints =
         Some(constraints(Some(aud_allow(&["https://only-this.example"])), None, None));
     let idp_pub = f.idp.public_key();
-    let err = f.presentation().verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+    let err = f.presentation().verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).unwrap_err();
     assert!(err.to_string().contains("audience not permitted"), "{err}");
 }
 
@@ -432,7 +459,7 @@ fn constraints_scope_outside_allowlist_rejects() {
     let mut f = Fixture::new();
     f.access_constraints = Some(constraints(None, Some(vec!["post".into()]), None));
     let idp_pub = f.idp.public_key();
-    let err = f.presentation().verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+    let err = f.presentation().verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).unwrap_err();
     assert!(err.to_string().contains("scope 'login' not permitted"), "{err}");
 }
 
@@ -442,7 +469,7 @@ fn constraints_max_ttl_exceeded_rejects() {
     let mut f = Fixture::new();
     f.access_constraints = Some(constraints(None, None, Some(DAY)));
     let idp_pub = f.idp.public_key();
-    let err = f.presentation().verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+    let err = f.presentation().verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).unwrap_err();
     assert!(err.to_string().contains("max-ttl"), "{err}");
 }
 
@@ -452,7 +479,7 @@ fn constraints_on_config_cert_enforced_too() {
     f.config_constraints =
         Some(constraints(Some(aud_allow(&["https://elsewhere.example"])), None, None));
     let idp_pub = f.idp.public_key();
-    let err = f.presentation().verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+    let err = f.presentation().verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).unwrap_err();
     assert!(err.to_string().contains("config cert"), "{err}");
 }
 
@@ -465,7 +492,7 @@ fn unknown_constraint_key_rejects_fail_closed() {
     let mut f = Fixture::new();
     f.access_constraints = Some(Constraints { aud: None, scopes: None, max_ttl: None, unknown });
     let idp_pub = f.idp.public_key();
-    let err = f.presentation().verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+    let err = f.presentation().verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).unwrap_err();
     assert!(err.to_string().contains("unrecognized constraint key"), "{err}");
 }
 
@@ -576,7 +603,7 @@ fn v2_holder_binding_presentation_verifies() {
         config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
     };
     let idp_pub = f.idp.public_key();
-    let v = pres.verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap();
+    let v = pres.verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).unwrap();
     assert_eq!(v.email, f.email());
     assert!(v.warrant_status.is_some());
 }
@@ -660,7 +687,7 @@ fn connection_bound_record_cannot_present() {
         config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
     };
     let idp_pub = f.idp.public_key();
-    let err = pres.verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+    let err = pres.verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).unwrap_err();
     assert!(err.to_string().contains("admission-only"), "{err}");
 }
 
@@ -676,7 +703,7 @@ fn matcher_grantee_record_cannot_present() {
             config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
         };
         let idp_pub = f.idp.public_key();
-        let err = pres.verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap_err();
+        let err = pres.verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).unwrap_err();
         assert!(err.to_string().contains("matcher-grantee"), "{err}");
     }
 }
@@ -693,7 +720,7 @@ fn presentation_join_uses_spec_identity_comparison() {
         warrant: f.warrant_v2_with("danmills@SANDMILL.ORG", Binding::Holder { matcher: HolderMatcher::new("br.*").unwrap() }),
         config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
     };
-    ok.verify(f.audience(), |_| Ok(idp_pub.clone())).unwrap();
+    ok.verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).unwrap();
 
     let bad = AccessPresentation {
         access_cert: f.access_cert(),
@@ -701,7 +728,7 @@ fn presentation_join_uses_spec_identity_comparison() {
         warrant: f.warrant_v2_with("DANMILLS@sandmill.org", Binding::Holder { matcher: HolderMatcher::new("br.*").unwrap() }),
         config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
     };
-    assert!(bad.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
+    assert!(bad.verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).is_err());
 }
 
 #[test]
@@ -790,13 +817,7 @@ impl Fixture {
         Warrant::from_claims(claims, &self.config_key).unwrap()
     }
     fn stamped_assertion(&self, req_origin: Option<&str>) -> Assertion {
-        Assertion::create_with_req_origin(
-            self.audience(),
-            req_origin,
-            chrono::Duration::days(3650),
-            &self.access_key,
-        )
-        .unwrap()
+        Assertion::create_at(self.audience(), req_origin, IAT, IAT + 3650 * DAY, &self.access_key).unwrap()
     }
 }
 
@@ -932,7 +953,7 @@ fn signing_grant_presentation_requires_matching_req_origin() {
     // Stamped with the record's requester origin: verifies, and the stamp +
     // scope entries ride back on the verified result.
     let v = pres(f.stamped_assertion(Some("https://mingo.example")))
-        .verify(f.audience(), |_| Ok(idp_pub.clone()))
+        .verify_at(f.audience(), AT, |_| Ok(idp_pub.clone()))
         .unwrap();
     assert_eq!(v.req_origin.as_deref(), Some("https://mingo.example"));
     assert_eq!(v.scopes, vec!["sign:sbo:post".to_string(), "sign:sbo:delete".to_string()]);
@@ -941,11 +962,11 @@ fn signing_grant_presentation_requires_matching_req_origin() {
     assert!(matches!(v.scope_entries[0].mode(), ScopeMode::Auto));
     // No stamp → reject (invariant 13).
     assert!(pres(f.stamped_assertion(None))
-        .verify(f.audience(), |_| Ok(idp_pub.clone()))
+        .verify_at(f.audience(), AT, |_| Ok(idp_pub.clone()))
         .is_err());
     // Wrong stamp → reject.
     assert!(pres(f.stamped_assertion(Some("https://evil.example")))
-        .verify(f.audience(), |_| Ok(idp_pub.clone()))
+        .verify_at(f.audience(), AT, |_| Ok(idp_pub.clone()))
         .is_err());
     // A stamp on a requester-less record → reject (present iff, §5).
     let plain = AccessPresentation {
@@ -954,7 +975,7 @@ fn signing_grant_presentation_requires_matching_req_origin() {
         warrant: Warrant::parse(f.warrant_v2().encoded()).unwrap(),
         config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
     };
-    assert!(plain.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
+    assert!(plain.verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).is_err());
     // Every holder entry is evaluated: a second, non-covering holder entry
     // fails the presentation even though the first covers.
     let strict = f.signing_grant_with(|c| {
@@ -970,7 +991,7 @@ fn signing_grant_presentation_requires_matching_req_origin() {
         warrant: Warrant::parse(strict.encoded()).unwrap(),
         config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
     };
-    assert!(p.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
+    assert!(p.verify_at(f.audience(), AT, |_| Ok(idp_pub.clone())).is_err());
 }
 
 // --- deterministic verification instant (verify_at) --------------------------
@@ -984,21 +1005,32 @@ fn verify_at_judges_expiry_at_the_given_instant_not_the_wall_clock() {
     // expiry-wise: at an instant after its exp.
     let f = Fixture::new();
     // Assertion that expired 10 minutes ago (wall clock).
-    let stale = Assertion::create(f.audience(), chrono::Duration::minutes(-10), &f.access_key).unwrap();
+    // Issued 15 min ago, expired 10 min ago (W4-40: `iat ≤ exp` must hold
+    // or the assertion rejects at EVERY instant).
+    let now = chrono::Utc::now().timestamp();
+    let stale = Assertion::create_at(f.audience(), None, now - 900, now - 600, &f.access_key).unwrap();
     let authored = stale.claims().exp - 60; // a valid instant during its life
+    // Certs/warrant dated before `authored` (the §6.1 clock rule rejects an
+    // object post-dated past `at + skew`, so the 2027 fixtures cannot be
+    // judged at a recent instant) and living past 2027.
+    let mut ac = f.access_cert().claims().clone();
+    ac.iat = authored - HOUR;
+    ac.exp = IAT + 24 * HOUR;
+    let mut cc = f.config_cert_signed_by(&f.idp, f.idp_domain()).claims().clone();
+    cc.iat = authored - DAY;
+    let mut wc = f.warrant().claims().clone();
+    wc.iat = authored - DAY;
     let pres = AccessPresentation {
-        access_cert: f.access_cert(),
+        access_cert: AccessCert::from_claims(ac, &f.idp).unwrap(),
         assertion: stale,
-        warrant: f.warrant(),
-        config_cert: f.config_cert_signed_by(&f.idp, f.idp_domain()),
+        warrant: Warrant::from_claims(wc, &f.config_key).unwrap(),
+        config_cert: DeviceCert::from_claims(cc, &f.idp).unwrap(),
     };
     let idp_pub = f.idp.public_key();
     // Wall-clock verify rejects (assertion expired now)…
     assert!(pres.verify(f.audience(), |_| Ok(idp_pub.clone())).is_err());
-    // …but at the authoring instant it verifies —
-    // NOTE: the fixture's certs/warrant have exp in 2027; `authored` (recent
-    // wall time) is inside every long-lived window, so only the assertion's
-    // clock is at issue.
+    // …but at the authoring instant it verifies — only the assertion's
+    // clock is at issue; the long-lived objects are inside their windows.
     let v = pres.verify_at(f.audience(), authored, |_| Ok(idp_pub.clone())).unwrap();
     assert_eq!(v.email, f.email());
     // And an instant after the assertion's exp rejects again.

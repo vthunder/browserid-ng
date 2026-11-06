@@ -1,0 +1,1481 @@
+{
+  "regenerate": "WS2_REGEN=1 cargo test -p browserid-verifier --test audit_2026_11_ws2_runner",
+  "responses": {
+    "A-OK-01": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-OK-02": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "br.*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-OK-03": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "*@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [
+        "tool:read"
+      ],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-OK-04": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "*@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-OK-05": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "*",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-OK-06": {
+      "binding": {
+        "client_host": "claude.ai",
+        "client_name": "Claude",
+        "id": "cn_8f3a",
+        "kind": "connection",
+        "protocol": "oauth"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [
+        "tool:read"
+      ],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-OK-07": {
+      "binding": [
+        {
+          "kind": "holder",
+          "matcher": "*"
+        }
+      ],
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-OK-08": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [
+        "sign:sbo:post",
+        {
+          "mode": "prompt",
+          "scope": "sign:sbo:delete"
+        }
+      ],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-OK-09": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-OK-10": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "agents.*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user+agent@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-01": {
+      "binding": [
+        {
+          "kind": "holder",
+          "matcher": "*"
+        },
+        {
+          "kind": "requester",
+          "origin": "https://site.example"
+        }
+      ],
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-02": {
+      "binding": {
+        "client_host": "claude.ai",
+        "client_name": "Claude",
+        "id": "cn_8f3a",
+        "kind": "connection",
+        "protocol": "oauth"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-03": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "svc.one"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-04": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "agents.*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-05": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "br.*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-06": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "*@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-07": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "*",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-08": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "*",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-09": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "*@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-10": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-11": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-12": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-13": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "user@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-14": {
+      "reason": "parse: Invalid provisioning material: warrant: connection-bound record must be a self-grant (grantor == grantee)",
+      "status": "failure"
+    },
+    "A-REJ-15": {
+      "reason": "parse: JSON error: data did not match any variant of untagged enum BindingSet at line 1 column 143",
+      "status": "failure"
+    },
+    "A-REJ-16": {
+      "reason": "parse: Invalid provisioning material: warrant: connection binding requires an id",
+      "status": "failure"
+    },
+    "A-REJ-17": {
+      "reason": "parse: JSON error: data did not match any variant of untagged enum BindingSet at line 1 column 118",
+      "status": "failure"
+    },
+    "A-REJ-18": {
+      "reason": "Invalid provisioning material: warrant: audience mismatch",
+      "status": "failure"
+    },
+    "A-REJ-19": {
+      "reason": "Invalid provisioning material: warrant: audience mismatch",
+      "status": "failure"
+    },
+    "A-REJ-20": {
+      "reason": "Invalid provisioning material: warrant: expired",
+      "status": "failure"
+    },
+    "A-REJ-21": {
+      "reason": "Invalid provisioning material: warrant: issued in the future (iat > now + skew)",
+      "status": "failure"
+    },
+    "A-REJ-22": {
+      "reason": "warrant revoked",
+      "status": "failure"
+    },
+    "A-REJ-23": {
+      "reason": "config cert revoked",
+      "status": "failure"
+    },
+    "A-REJ-24": {
+      "reason": "Signature verification failed",
+      "status": "failure"
+    },
+    "A-REJ-25": {
+      "reason": "Signature verification failed",
+      "status": "failure"
+    },
+    "A-REJ-26": {
+      "reason": "Invalid provisioning material: config cert: warrant scope 'tool:write' not permitted by constraints",
+      "status": "failure"
+    },
+    "A-REJ-27": {
+      "reason": "Invalid provisioning material: config cert: not authorized for the warrant grantor",
+      "status": "failure"
+    },
+    "A-REJ-28": {
+      "reason": "issuer 'browserid.me' is not authorized for primary domain 'primary.example'",
+      "status": "failure"
+    },
+    "A-REJ-29": {
+      "reason": "parse: Invalid provisioning material: warrant: v2 requires status",
+      "status": "failure"
+    },
+    "A-REJ-30": {
+      "reason": "parse: JSON error: data did not match any variant of untagged enum ScopeEntry at line 1 column 209",
+      "status": "failure"
+    },
+    "A-REJ-31": {
+      "reason": "parse: Invalid provisioning material: record: expected warrant~config_cert",
+      "status": "failure"
+    },
+    "A-REJ-32": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "*@EXAMPLE.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "A-REJ-33": {
+      "binding": {
+        "kind": "holder",
+        "matcher": "*"
+      },
+      "expires_at": 2075360000,
+      "grantee": "*@example.com",
+      "grantor": "user@example.com",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-AUD-01": {
+      "reason": "Invalid provisioning material: assertion: audience mismatch",
+      "status": "failure"
+    },
+    "P-AUD-02": {
+      "reason": "Invalid provisioning material: assertion: audience mismatch",
+      "status": "failure"
+    },
+    "P-AUD-03": {
+      "reason": "Invalid provisioning material: assertion: audience mismatch",
+      "status": "failure"
+    },
+    "P-AUD-04": {
+      "reason": "Invalid provisioning material: assertion: audience mismatch",
+      "status": "failure"
+    },
+    "P-AUD-05": {
+      "reason": "Invalid provisioning material: assertion: audience mismatch",
+      "status": "failure"
+    },
+    "P-AUD-06": {
+      "reason": "Invalid provisioning material: assertion: audience mismatch",
+      "status": "failure"
+    },
+    "P-AUD-07": {
+      "reason": "Invalid provisioning material: warrant: audience mismatch",
+      "status": "failure"
+    },
+    "P-AUD-08": {
+      "reason": "Invalid provisioning material: warrant: audience mismatch",
+      "status": "failure"
+    },
+    "P-AUD-09": {
+      "reason": "parse: JSON error: invalid type: sequence, expected a string at line 1 column 12",
+      "status": "failure"
+    },
+    "P-BIND-01": {
+      "reason": "Invalid provisioning material: warrant: connection-bound record cannot verify in a bundle (admission-only)",
+      "status": "failure"
+    },
+    "P-BIND-02": {
+      "reason": "Invalid provisioning material: warrant: connection-bound record cannot verify in a bundle (admission-only)",
+      "status": "failure"
+    },
+    "P-BIND-03": {
+      "reason": "parse: Invalid provisioning material: warrant: channel set satisfies no operation (dead paper)",
+      "status": "failure"
+    },
+    "P-BIND-04": {
+      "reason": "parse: Invalid provisioning material: warrant: binding set must be non-empty",
+      "status": "failure"
+    },
+    "P-BIND-05": {
+      "reason": "parse: Invalid provisioning material: warrant: v2 requires a binding",
+      "status": "failure"
+    },
+    "P-BIND-06": {
+      "reason": "parse: JSON error: data did not match any variant of untagged enum BindingSet at line 1 column 72",
+      "status": "failure"
+    },
+    "P-BIND-07": {
+      "reason": "parse: JSON error: data did not match any variant of untagged enum BindingSet at line 1 column 109",
+      "status": "failure"
+    },
+    "P-BIND-08": {
+      "reason": "parse: JSON error: data did not match any variant of untagged enum BindingSet at line 1 column 60",
+      "status": "failure"
+    },
+    "P-BIND-09": {
+      "reason": "Invalid provisioning material: warrant: holder does not match warrant matcher",
+      "status": "failure"
+    },
+    "P-BIND-10": {
+      "reason": "Invalid provisioning material: warrant: holder does not match warrant matcher",
+      "status": "failure"
+    },
+    "P-BIND-11": {
+      "reason": "Invalid provisioning material: warrant: holder does not match warrant matcher",
+      "status": "failure"
+    },
+    "P-BIND-12": {
+      "reason": "Invalid provisioning material: warrant: holder does not match warrant matcher",
+      "status": "failure"
+    },
+    "P-BIND-13": {
+      "reason": "Invalid provisioning material: assertion: req_origin does not match the record's requester entry",
+      "status": "failure"
+    },
+    "P-BIND-14": {
+      "reason": "Invalid provisioning material: assertion: record carries a requester entry but the assertion has no req_origin stamp",
+      "status": "failure"
+    },
+    "P-BIND-15": {
+      "reason": "Invalid provisioning material: assertion: req_origin stamped but the record has no requester entry",
+      "status": "failure"
+    },
+    "P-BIND-16": {
+      "reason": "parse: Invalid provisioning material: warrant: requester binding requires a web origin (scheme://host, no path)",
+      "status": "failure"
+    },
+    "P-BIND-17": {
+      "reason": "parse: Invalid provisioning material: warrant: delegated record must carry exactly one holder entry (multi-entry sets are self-grant-only)",
+      "status": "failure"
+    },
+    "P-BIND-18": {
+      "reason": "Invalid provisioning material: warrant: holder does not match warrant matcher",
+      "status": "failure"
+    },
+    "P-CONS-01": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-CONS-02": {
+      "reason": "Invalid provisioning material: access cert: audience not permitted by constraints",
+      "status": "failure"
+    },
+    "P-CONS-03": {
+      "reason": "Invalid provisioning material: config cert: warrant scope 'tool:write' not permitted by constraints",
+      "status": "failure"
+    },
+    "P-CONS-04": {
+      "reason": "Invalid provisioning material: config cert: warrant validity exceeds constraints max-ttl",
+      "status": "failure"
+    },
+    "P-CONS-05": {
+      "reason": "Invalid provisioning material: access cert: unrecognized constraint key(s): geo",
+      "status": "failure"
+    },
+    "P-CONS-06": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-ID-01": {
+      "reason": "Invalid provisioning material: warrant: a matcher-grantee record cannot verify in a bundle",
+      "status": "failure"
+    },
+    "P-ID-02": {
+      "reason": "Invalid provisioning material: warrant: a matcher-grantee record cannot verify in a bundle",
+      "status": "failure"
+    },
+    "P-ID-03": {
+      "reason": "Invalid provisioning material: warrant: grantee != access identity",
+      "status": "failure"
+    },
+    "P-ID-04": {
+      "reason": "Invalid provisioning material: warrant: grantee != access identity",
+      "status": "failure"
+    },
+    "P-ID-05": {
+      "reason": "Invalid provisioning material: warrant: grantee != access identity",
+      "status": "failure"
+    },
+    "P-ID-06": {
+      "reason": "Invalid provisioning material: config cert: not authorized for the warrant grantor",
+      "status": "failure"
+    },
+    "P-ID-07": {
+      "reason": "Invalid provisioning material: config cert: not authorized for the warrant grantor",
+      "status": "failure"
+    },
+    "P-ID-08": {
+      "reason": "Invalid provisioning material: config cert: not authorized for the warrant grantor",
+      "status": "failure"
+    },
+    "P-ID-09": {
+      "reason": "Invalid provisioning material: config cert: not authorized for the warrant grantor",
+      "status": "failure"
+    },
+    "P-ID-10": {
+      "reason": "parse: Invalid provisioning material: warrant: grantor must be an exact well-formed email",
+      "status": "failure"
+    },
+    "P-ID-11": {
+      "reason": "parse: Invalid provisioning material: warrant: grantor must be an exact well-formed email",
+      "status": "failure"
+    },
+    "P-ID-12": {
+      "reason": "parse: Invalid provisioning material: warrant: grantor must be an exact well-formed email",
+      "status": "failure"
+    },
+    "P-ID-13": {
+      "reason": "parse: Invalid provisioning material: warrant: grantor must be an exact well-formed email",
+      "status": "failure"
+    },
+    "P-ID-14": {
+      "reason": "parse: Invalid provisioning material: warrant: grantor must be an exact well-formed email",
+      "status": "failure"
+    },
+    "P-ID-15": {
+      "reason": "parse: Invalid provisioning material: warrant: grantee must be a well-formed email or a grantee matcher",
+      "status": "failure"
+    },
+    "P-ID-16": {
+      "reason": "parse: Invalid provisioning material: warrant: grantor must be an exact well-formed email",
+      "status": "failure"
+    },
+    "P-ID-17": {
+      "reason": "Invalid provisioning material: config cert: not authorized for the warrant grantor",
+      "status": "failure"
+    },
+    "P-ISS-01": {
+      "reason": "issuer 'browserid.me' is not authorized for primary domain 'primary.example'",
+      "status": "failure"
+    },
+    "P-ISS-02": {
+      "reason": "issuer 'browserid.me' is not authorized for primary domain 'primary.example'",
+      "status": "failure"
+    },
+    "P-ISS-03": {
+      "reason": "issuer 'rogue.example' is not an accepted fallback",
+      "status": "failure"
+    },
+    "P-ISS-04": {
+      "reason": "issuer 'primary.example' is not an accepted fallback",
+      "status": "failure"
+    },
+    "P-ISS-05": {
+      "reason": "issuer 'primary.example' is not an accepted fallback",
+      "status": "failure"
+    },
+    "P-ISS-06": {
+      "reason": "issuer 'primary.example' is not an accepted fallback",
+      "status": "failure"
+    },
+    "P-ISS-07": {
+      "reason": "parse: JSON error: missing field `iss` at line 1 column 289",
+      "status": "failure"
+    },
+    "P-OK-01": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-OK-02": {
+      "email": "pat@primary.example",
+      "grantee": "pat@primary.example",
+      "grantee_issuer": "primary.example",
+      "holder": "br.main",
+      "issuer": "primary.example",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://primary.example/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://primary.example/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-OK-03": {
+      "email": "user@example.com",
+      "grantee": "user+agent@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [
+        "tool:read"
+      ],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-OK-04": {
+      "email": "user@example.com",
+      "grantee": "pat@primary.example",
+      "grantee_issuer": "primary.example",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [
+        "tool:read"
+      ],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://primary.example/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-OK-05": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-OK-06": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-OK-07": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [
+        "sign:sbo:post",
+        {
+          "mode": "prompt",
+          "scope": "sign:sbo:delete"
+        }
+      ],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-OK-08": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [
+        {
+          "cap": {
+            "amount": "20.00",
+            "currency": "USD",
+            "window": "P1D"
+          },
+          "scope": "pay:usd"
+        }
+      ],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-OK-09": {
+      "email": "user+agent@example.com",
+      "grantee": "user+agent@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-OK-10": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-OK-11": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-OK-12": {
+      "email": "user@EXAMPLE.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-OK-13": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-SCOPE-01": {
+      "reason": "parse: JSON error: data did not match any variant of untagged enum ScopeEntry at line 1 column 212",
+      "status": "failure"
+    },
+    "P-SCOPE-02": {
+      "reason": "parse: JSON error: data did not match any variant of untagged enum ScopeEntry at line 1 column 198",
+      "status": "failure"
+    },
+    "P-SCOPE-03": {
+      "reason": "parse: JSON error: data did not match any variant of untagged enum ScopeEntry at line 1 column 220",
+      "status": "failure"
+    },
+    "P-SCOPE-04": {
+      "reason": "parse: JSON error: invalid type: string \"tool:read\", expected a sequence at line 1 column 190",
+      "status": "failure"
+    },
+    "P-SCOPE-05": {
+      "reason": "parse: Invalid provisioning material: warrant: unrecognized claim(s) on a set-form record: extra",
+      "status": "failure"
+    },
+    "P-SHAPE-01": {
+      "reason": "parse: Invalid provisioning material: presentation: expected access_cert~assertion~warrant~config_cert",
+      "status": "failure"
+    },
+    "P-SHAPE-02": {
+      "reason": "parse: Invalid provisioning material: presentation: expected access_cert~assertion~warrant~config_cert",
+      "status": "failure"
+    },
+    "P-SHAPE-03": {
+      "reason": "parse: JSON error: missing field `typ` at line 1 column 62",
+      "status": "failure"
+    },
+    "P-SHAPE-04": {
+      "reason": "parse: JSON error: missing field `grantor` at line 1 column 340",
+      "status": "failure"
+    },
+    "P-SHAPE-05": {
+      "reason": "parse: Invalid provisioning material: presentation: expected access_cert~assertion~warrant~config_cert",
+      "status": "failure"
+    },
+    "P-SHAPE-06": {
+      "reason": "parse: Invalid provisioning material: warrant: expected 3 JWT parts",
+      "status": "failure"
+    },
+    "P-SIG-01": {
+      "reason": "Signature verification failed",
+      "status": "failure"
+    },
+    "P-SIG-02": {
+      "reason": "Signature verification failed",
+      "status": "failure"
+    },
+    "P-SIG-03": {
+      "reason": "Signature verification failed",
+      "status": "failure"
+    },
+    "P-SIG-04": {
+      "reason": "Signature verification failed",
+      "status": "failure"
+    },
+    "P-SIG-05": {
+      "reason": "Signature verification failed",
+      "status": "failure"
+    },
+    "P-SIG-06": {
+      "reason": "Invalid provisioning material: warrant: unexpected JWS alg (only EdDSA is accepted)",
+      "status": "failure"
+    },
+    "P-SIG-07": {
+      "reason": "Invalid key: signature must be 64 bytes",
+      "status": "failure"
+    },
+    "P-STAT-01": {
+      "reason": "access cert revoked",
+      "status": "failure"
+    },
+    "P-STAT-02": {
+      "reason": "config cert revoked",
+      "status": "failure"
+    },
+    "P-STAT-03": {
+      "reason": "warrant revoked",
+      "status": "failure"
+    },
+    "P-STAT-04": {
+      "reason": "access cert revoked",
+      "status": "failure"
+    },
+    "P-STAT-05": {
+      "reason": "parse: Invalid provisioning material: warrant: v2 requires status",
+      "status": "failure"
+    },
+    "P-STAT-06": {
+      "reason": "access cert status.uri host is not its issuer 'browserid.me' (or the host= its _browserid record delegates to): https://primary.example/.well-known/browserid-status",
+      "status": "failure"
+    },
+    "P-STAT-07": {
+      "reason": "access cert status.uri host is not its issuer 'browserid.me' (or the host= its _browserid record delegates to): https://10.0.0.1/.well-known/browserid-status",
+      "status": "failure"
+    },
+    "P-STAT-08": {
+      "reason": "access cert status.uri host is not its issuer 'browserid.me' (or the host= its _browserid record delegates to): https://unreachable.invalid/.well-known/browserid-status",
+      "status": "failure"
+    },
+    "P-STAT-09": {
+      "reason": "parse: JSON error: missing field `idx` at line 1 column 268",
+      "status": "failure"
+    },
+    "P-TIME-01": {
+      "reason": "Invalid provisioning material: access cert: expired",
+      "status": "failure"
+    },
+    "P-TIME-02": {
+      "reason": "Invalid provisioning material: config cert: expired",
+      "status": "failure"
+    },
+    "P-TIME-03": {
+      "reason": "Invalid provisioning material: warrant: expired",
+      "status": "failure"
+    },
+    "P-TIME-04": {
+      "reason": "Invalid provisioning material: assertion: expired",
+      "status": "failure"
+    },
+    "P-TIME-05": {
+      "reason": "Invalid provisioning material: access cert: issued in the future (iat > now + skew)",
+      "status": "failure"
+    },
+    "P-TIME-06": {
+      "reason": "Invalid provisioning material: warrant: issued in the future (iat > now + skew)",
+      "status": "failure"
+    },
+    "P-TIME-07": {
+      "reason": "Invalid provisioning material: config cert: issued in the future (iat > now + skew)",
+      "status": "failure"
+    },
+    "P-TIME-08": {
+      "reason": "Invalid provisioning material: access cert: issued after its expiry (iat > exp)",
+      "status": "failure"
+    },
+    "P-TIME-09": {
+      "reason": "Invalid provisioning material: warrant: issued after its expiry (iat > exp)",
+      "status": "failure"
+    },
+    "P-TIME-10": {
+      "reason": "parse: JSON error: missing field `exp` at line 1 column 272",
+      "status": "failure"
+    },
+    "P-TIME-11": {
+      "reason": "Invalid provisioning material: assertion: issued in the future (iat > now + skew)",
+      "status": "failure"
+    },
+    "P-TIME-12": {
+      "reason": "Invalid provisioning material: assertion: issued after its expiry (iat > exp)",
+      "status": "failure"
+    },
+    "P-TIME-13": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-TYP-01": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-TYP-02": {
+      "email": "user@example.com",
+      "grantee": "user@example.com",
+      "grantee_issuer": "browserid.me",
+      "holder": "br.main",
+      "issuer": "browserid.me",
+      "scopes": [],
+      "status": "okay",
+      "status_refs": [
+        {
+          "idx": 7,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 2,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        },
+        {
+          "idx": 42,
+          "uri": "https://browserid.me/.well-known/browserid-status"
+        }
+      ]
+    },
+    "P-TYP-03": {
+      "reason": "parse: Invalid provisioning material: warrant: typ 'browserid-warrant-v3'",
+      "status": "failure"
+    },
+    "P-TYP-04": {
+      "reason": "parse: Invalid provisioning material: access cert: typ 'browserid-access-cert-v2'",
+      "status": "failure"
+    },
+    "P-TYP-05": {
+      "reason": "parse: Invalid provisioning material: device cert: typ 'browserid-access-cert-v1'",
+      "status": "failure"
+    },
+    "P-TYP-06": {
+      "reason": "Invalid provisioning material: config cert: not an authorization cert",
+      "status": "failure"
+    },
+    "P-TYP-07": {
+      "reason": "parse: JSON error: unknown variant `signing`, expected `authentication` or `authorization` at line 1 column 223",
+      "status": "failure"
+    },
+    "P-TYP-08": {
+      "reason": "parse: JSON error: missing field `holder` at line 1 column 321",
+      "status": "failure"
+    },
+    "P-TYP-09": {
+      "reason": "parse: JSON error: Invalid provisioning material: holder: empty at line 1 column 29",
+      "status": "failure"
+    }
+  },
+  "suite": "hosted /verify and /validate-record responses per conformance vector (recorded by browserid-verifier/tests/audit_2026_11_ws2_runner.rs)"
+}

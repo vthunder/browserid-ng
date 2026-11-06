@@ -48,12 +48,19 @@ pub fn verify_pending_code<U: UserStore>(
     submitted_code: &str,
 ) -> Result<PendingVerification, BrokerError> {
     let key = attempt_key(vtype, email);
+    // Atomic check-and-burn (audit 2026-11, July C1 residual): the counter
+    // lock is held across the lookup, the compare and the increment, so two
+    // parallel guesses cannot both observe "four wrong so far" and both get
+    // a fifth try — the Nth wrong guess burns the record before the (N+1)th
+    // can read it. The store calls are synchronous; the lock is never held
+    // across an await.
+    let mut attempts = VERIFY_ATTEMPTS.lock().unwrap();
 
     let pending = match store.get_pending_by_email(email, vtype)? {
         Some(p) => p,
         None => {
             // Nothing to burn, but still count so a per-email spray is bounded.
-            record_wrong(&key, None, store);
+            record_wrong(&mut attempts, &key, None, store);
             return Err(BrokerError::InvalidVerificationCode);
         }
     };
@@ -62,23 +69,61 @@ pub fn verify_pending_code<U: UserStore>(
     let age = chrono::Utc::now() - pending.created_at;
     if age.num_minutes() > CODE_TTL_MINUTES {
         store.delete_pending(&pending.secret)?;
-        VERIFY_ATTEMPTS.lock().unwrap().remove(&key);
+        attempts.remove(&key);
         return Err(BrokerError::VerificationExpired);
     }
 
     if pending.secret == submitted_code.trim() {
-        VERIFY_ATTEMPTS.lock().unwrap().remove(&key);
+        attempts.remove(&key);
         Ok(pending)
     } else {
-        record_wrong(&key, Some(&pending.secret), store);
+        record_wrong(&mut attempts, &key, Some(&pending.secret), store);
         Err(BrokerError::InvalidVerificationCode)
     }
 }
 
+/// Wrong completion attempts allowed per client IP per window. The
+/// per-target burn above allows 5 guesses per address; this bounds one
+/// client walking many addresses: 30 wrong guesses per 15 minutes. Only
+/// failures count: the answer already tells the caller whether a guess was
+/// right, so counting successes adds no secrecy, and it locked every
+/// shared address (office NAT, carrier-grade NAT, the e2e suite) out after
+/// 30 ordinary sign-ins (found by e2e, 2026-11-06).
+pub const COMPLETION_MAX_PER_IP: u32 = 30;
+pub const COMPLETION_WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Per-IP cap on code completion (audit 2026-11, July C1 residual): refuse
+/// with 429 while the source's failure window is at the cap; then run
+/// `verify_pending_code` and count a wrong guess against the source.
+pub fn complete_from_ip<U: UserStore, S: crate::store::SessionStore, E: crate::email::EmailSender>(
+    state: &crate::state::AppState<U, S, E>,
+    headers: &axum::http::HeaderMap,
+    email: &str,
+    vtype: VerificationType,
+    submitted_code: &str,
+) -> Result<PendingVerification, BrokerError> {
+    let ip = super::auth::client_ip(headers);
+    let now = std::time::Instant::now();
+    {
+        let mut attempts = state.code_completion_attempts.write().unwrap();
+        attempts.retain(|_, (start, _)| now.duration_since(*start) < COMPLETION_WINDOW);
+        if matches!(attempts.get(&ip), Some((_, n)) if *n >= COMPLETION_MAX_PER_IP) {
+            return Err(BrokerError::LoginRateLimited);
+        }
+    }
+    let result = verify_pending_code(state.user_store.as_ref(), email, vtype, submitted_code);
+    if matches!(result, Err(BrokerError::InvalidVerificationCode)) {
+        let mut attempts = state.code_completion_attempts.write().unwrap();
+        let entry = attempts.entry(ip).or_insert((now, 0));
+        entry.1 += 1;
+    }
+    result
+}
+
 /// Increment the wrong-attempt counter for `key`; at the cap, burn the pending
-/// record (if one exists) and reset the counter.
-fn record_wrong<U: UserStore>(key: &str, secret: Option<&str>, store: &U) {
-    let mut attempts = VERIFY_ATTEMPTS.lock().unwrap();
+/// record (if one exists) and reset the counter. `attempts` is the held
+/// counter lock.
+fn record_wrong<U: UserStore>(attempts: &mut HashMap<String, u32>, key: &str, secret: Option<&str>, store: &U) {
     let n = attempts.entry(key.to_string()).or_insert(0);
     *n += 1;
     if *n >= MAX_VERIFY_ATTEMPTS {
@@ -122,6 +167,31 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(verify_pending_code(&store, email, VerificationType::NewAccount, "123456").is_err());
+    }
+
+    /// Audit 2026-11 (July C1 residual): the check-and-burn is atomic. Eight
+    /// threads guess wrong at once; the record burns at the fifth and the
+    /// correct code is dead afterwards — no thread's guess rides a stale
+    /// "four so far" read past the cap.
+    #[test]
+    fn parallel_wrong_guesses_burn_atomically() {
+        let store = std::sync::Arc::new(InMemoryUserStore::new());
+        let email = "parallel-burn@example.com";
+        store.create_pending(pending(email, "123456")).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    verify_pending_code(store.as_ref(), email, VerificationType::NewAccount, &format!("00000{i}")).is_err()
+                })
+            })
+            .collect();
+        assert!(handles.into_iter().all(|h| h.join().unwrap()), "every wrong guess fails");
+        assert!(store.get_pending_by_email(email, VerificationType::NewAccount).unwrap().is_none(), "burned");
+        assert!(verify_pending_code(store.as_ref(), email, VerificationType::NewAccount, "123456").is_err());
     }
 
     #[test]

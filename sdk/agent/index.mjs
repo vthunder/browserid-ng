@@ -1,29 +1,27 @@
 // @browserid-ng/agent — the client (agent) side of browserid-ng.
 //
-// Provision a delegated agent identity, obtain human-approved warrants, and mint
-// warrant-backed assertions to present to relying parties / MCP servers. A
-// faithful Node port of the Rust `browserid-agent` crate (same wire formats).
+// Provision a device identity (human-approved pairing), obtain human-approved
+// warrants, and mint warrant-backed presentations to present to relying
+// parties / MCP servers. A faithful Node port of the Rust `browserid-agent`
+// crate (same wire formats).
 //
-//   import { Agent } from "@browserid-ng/agent";
-//   const agent = await Agent.open("agent-credential.json", "agent.identity.json");
-//   const { approveUrl, approved } = await agent.requestWarrant(audience, ["post","read"]);
-//   if (approveUrl) { console.log("approve:", approveUrl); await approved; }
-//   const assertion = await agent.assertionFor(audience);   // present this to the RP
-//   await agent.save("agent.identity.json");
+//   import { requestProvision, DeviceAgent } from "@browserid-ng/agent";
+//   const pending = await requestProvision(broker, { grants: [{ audience, scopes: ["post"] }] });
+//   show(pending.verificationUriComplete, pending.fingerprint);   // the human approves
+//   const { credential, grants } = await pending.wait();           // persist both
+//   const agent = new DeviceAgent(credential);
+//   for (const g of grants) agent.addGrant(g.grant);
+//   const presentation = await agent.assertionFor(audience);      // present this to the RP
 
 // The CURRENT protocol: device certs, access certs, four-part presentations.
-export { requestProvision, PendingProvision, requestWarrants, PendingWarrants, DeviceAgent } from "./src/device.mjs";
+export { requestProvision, PendingProvision, requestWarrants, PendingWarrants, DeviceAgent, requestProof } from "./src/device.mjs";
 
-// The legacy provisioning-cert path. The broker no longer serves the
-// endpoints this uses (`/provision/endorse` → 404); kept only for older
-// deployments, and not what a new integration should reach for.
-export { Agent, scopeName, scopeEntryEq } from "./src/agent.mjs";
-export { Credential } from "./src/credential.mjs";
+// Scope-entry helpers (protocol §5).
+export { scopeName, scopeEntryEq } from "./src/scopes.mjs";
 
 // Key primitives, so a consumer can verify a signature the agent made — or
 // sign its own payload with the access key `assertionWithAccessKey` returns.
 export { KeyPair, PublicKey } from "./src/crypto.mjs";
 export {
-  AgentError, NeedCredentialError, InvalidCredentialError, AmbiguousNameError,
-  RequestError, WarrantExpiredError, WarrantDeniedError, NoWarrantError,
+  AgentError, RequestError, WarrantExpiredError, WarrantDeniedError, NoWarrantError,
 } from "./src/errors.mjs";

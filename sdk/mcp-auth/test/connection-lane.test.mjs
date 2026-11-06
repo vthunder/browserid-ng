@@ -213,18 +213,18 @@ test("refresh rotates, reuse burns the family, and every mint revalidates", asyn
   });
 
   const callsBefore = validateCalls;
-  const t2 = await lane.handleToken({ grant_type: "refresh_token", refresh_token: t1.refresh_token });
+  const t2 = await lane.handleToken({ grant_type: "refresh_token", refresh_token: t1.refresh_token, client_id: reg.client_id });
   assert.ok(t2.access_token && t2.access_token !== t1.access_token);
   assert.ok(t2.refresh_token && t2.refresh_token !== t1.refresh_token);
   assert.ok(validateCalls > callsBefore, "refresh minted with fresh /validate-record evidence");
 
   // Reusing the rotated token is theft evidence: family burned.
   await assert.rejects(
-    lane.handleToken({ grant_type: "refresh_token", refresh_token: t1.refresh_token }),
+    lane.handleToken({ grant_type: "refresh_token", refresh_token: t1.refresh_token, client_id: reg.client_id }),
     (e) => e instanceof McpAuthError && e.oauthError === "invalid_grant"
   );
   await assert.rejects(
-    lane.handleToken({ grant_type: "refresh_token", refresh_token: t2.refresh_token }),
+    lane.handleToken({ grant_type: "refresh_token", refresh_token: t2.refresh_token, client_id: reg.client_id }),
     (e) => e instanceof McpAuthError && e.oauthError === "invalid_grant",
     "the successor dies with the family"
   );
@@ -245,13 +245,13 @@ test("freshness-backed mint: no fresh evidence ⇒ no tokens", async () => {
   // bearer TTL).
   validateMode = "revoked";
   await assert.rejects(
-    lane.handleToken({ grant_type: "refresh_token", refresh_token: t1.refresh_token }),
+    lane.handleToken({ grant_type: "refresh_token", refresh_token: t1.refresh_token, client_id: reg.client_id }),
     (e) => e instanceof McpAuthError && e.oauthError === "invalid_grant"
   );
   // Unreachable validator is not evidence either (fail-closed, 503).
   validateMode = "down";
   await assert.rejects(
-    lane.handleToken({ grant_type: "refresh_token", refresh_token: t1.refresh_token }),
+    lane.handleToken({ grant_type: "refresh_token", refresh_token: t1.refresh_token, client_id: reg.client_id }),
     (e) => e instanceof McpAuthError && e.httpStatus === 400 || e.httpStatus === 503
   );
   validateMode = "ok";
@@ -440,7 +440,7 @@ test("composition: revoking the policy record kills the member's refresh (two-si
   // covering row, even though the member's own connection record is fine.
   policyMode = "revoked";
   await assert.rejects(
-    lane.handleToken({ grant_type: "refresh_token", refresh_token: t1.refresh_token }),
+    lane.handleToken({ grant_type: "refresh_token", refresh_token: t1.refresh_token, client_id: reg.client_id }),
     (e) => e instanceof McpAuthError && e.oauthError === "invalid_grant"
   );
   policyMode = "ok";

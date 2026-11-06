@@ -39,6 +39,21 @@ const jws = (privJwk, claims) => signJws(privJwk, HDR, claims);
 
 const decodeJws = (j) => JSON.parse(Buffer.from(j.split('.')[1], 'base64url').toString());
 
+// Synchronous Ed25519 JWS check against a raw public key `x` (base64url):
+// true iff the signature covers `header.payload` under that key. Used to
+// refuse a stored grant the config key never signed (audit 2026-11 D12).
+const { createPublicKey, verify: nodeVerify } = require('node:crypto');
+function verifyJws(j, x) {
+  try {
+    const parts = String(j).split('.');
+    if (parts.length !== 3) return false;
+    const key = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x }, format: 'jwk' });
+    return nodeVerify(null, Buffer.from(`${parts[0]}.${parts[1]}`), key, Buffer.from(parts[2], 'base64url'));
+  } catch {
+    return false;
+  }
+}
+
 const sha256b64u = (s) => createHash('sha256').update(s).digest('base64url');
 
 // kid = base64url(SHA-256(raw public key)) (registry-api-v1 §4.4), from
@@ -53,4 +68,4 @@ function proof(privJwk, method, htu, { body = null, jti = null, x } = {}) {
   return signJws(privJwk, b64uj({ alg: 'EdDSA', typ: PROOF_TYP, kid: kidOf(x) }), claims);
 }
 
-module.exports = { generateKey, jws, signJws, proof, kidOf, decodeJws, nowS, randHex, sha256b64u };
+module.exports = { generateKey, jws, signJws, verifyJws, proof, kidOf, decodeJws, nowS, randHex, sha256b64u };

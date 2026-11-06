@@ -1,0 +1,1 @@
+{"type":"connection","audience":"https://rp.example","scopes":["read"],"client":{"client_host":"rp.example","client_name":"RP"},"grantor":"user@example.com","message":"m","return_url":"https://rp.example/cb"}

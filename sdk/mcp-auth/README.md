@@ -20,7 +20,7 @@ Verification is delegated to the broker's DNSSEC-rooted hosted verifier
 import { createMcpAuth, McpAuthError } from "@browserid-ng/mcp-auth";
 
 const auth = createMcpAuth({
-  resource: "https://mcp.example.com",          // this server (OAuth resource + audience)
+  resource: "https://mcp.example.com",          // this server (OAuth resource + audience), byte-exact: no trailing slash
   scopesForTool: { create_issue: ["issues:create"] },
 });
 
@@ -95,6 +95,13 @@ per-call fail-closed status checks are identical across both lanes.
 
 `@browserid-ng/agent` is loaded lazily — Lane-A-only users never pull it in.
 
+With `policy: { owners, store? }` on the lane, the §6.5 conjunction applies
+to BOTH lanes: a connection record's subject and a jwt-bearer presentation's
+grantor must be an owner or covered by a live, owner-signed policy row, and
+the bearer carries S ∩ S′, both records' status refs and `permittedBy`. A
+self-signed warrant alone is never an entitlement at a policy-mode server.
+Refreshes require `client_id` (OAuth 2.1 public clients).
+
 ### curl walkthrough (local broker)
 
 ```sh
@@ -135,7 +142,8 @@ curl -s -X POST http://localhost:8787/token \
 ## API
 
 - `createMcpAuth(opts) -> auth` — `opts`: `resource` (required), `broker`
-  (default `https://browserid.me`), `scopesForTool`, `tokenTtlS` (3600),
+  (default `https://browserid.me`), `scopesForTool`, `tokenTtlS` (3600; a bearer is
+  further capped at the verifier's `expires_at` when it returns one),
   `statusCacheS` (60), `acceptedFallbacks`, `store`, `fetch`.
 - `auth.handleToken(params)` — redeem a presentation for a bearer.
 - `auth.redeemPresentation(presentation, scope?)` — the shared verify+mint
@@ -151,5 +159,14 @@ curl -s -X POST http://localhost:8787/token \
   `lane.handleAuthorize(query)`, `lane.handleAuthorizeReturn(query)`,
   `lane.handleToken(params)`.
 - `verifyPkceS256(verifier, challenge)` — RFC 7636 S256 check.
+- `identityEq(a, b)` / `granteeCovers(grantee, subject)` — the spec §5
+  identity rule (exactly one `@`, non-empty parts, domain case-folded, local
+  part byte-exact) and the `*` / `*@domain` admission matchers.
+- `assertPolicyBinding(binding)` — the one binding a held policy record may
+  carry: exactly one `{kind:"holder", matcher:"*"}` entry. Any other entry
+  (a requester entry, a connection entry, a narrowed holder matcher) is
+  refused with an error naming it — at `requestAuthoring` before the row is
+  stored, by the policy stores on `put`, and at admission after the record
+  is revalidated (spec §6.4 step 3; decision Q15 (a) of the 2026-11 audit).
 
 MPL-2.0.

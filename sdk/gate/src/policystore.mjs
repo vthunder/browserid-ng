@@ -6,8 +6,9 @@
 
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
+import { assertPolicyBinding } from "@browserid-ng/mcp-auth";
 
-export function createFilePolicyStore(path) {
+export function createFilePolicyStore(path, { log = () => {} } = {}) {
   let rows = [];
   try {
     const j = JSON.parse(readFileSync(path, "utf8"));
@@ -15,6 +16,19 @@ export function createFilePolicyStore(path) {
   } catch {
     /* first run */
   }
+  // Audit 2026-11 D5 / Q15 (a): only rows with the one supported policy
+  // binding are loaded; a row stored without a binding (pre-0.11) is kept
+  // and judged at admission, where its record is revalidated.
+  rows = rows.filter((r) => {
+    if (r?.binding === undefined) return true;
+    try {
+      assertPolicyBinding(r.binding);
+      return true;
+    } catch (e) {
+      log(`[gate] policy row for ${r.grantee} @ ${r.audience} not loaded: ${e.message}`);
+      return false;
+    }
+  });
   const key = (r) => `${r.grantor}|${r.grantee}|${r.audience}`;
   const save = () => {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -23,6 +37,7 @@ export function createFilePolicyStore(path) {
   };
   return {
     async put(row) {
+      if (row.binding !== undefined) assertPolicyBinding(row.binding);
       rows = rows.filter((r) => key(r) !== key(row));
       rows.push(row);
       save();

@@ -43,6 +43,18 @@ pub fn generate_namespace_prefix() -> String {
     random_token(8)
 }
 
+/// An opaque, stable id for a log line (audit 2026-11 W7-11, Q10 (a)): the
+/// first 12 chars of sha256 over a fixed prefix and the value. Correlates
+/// across lines (same address, same tag) without printing the address.
+pub fn log_id(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"browserid-log-id\0");
+    h.update(value.trim().to_lowercase().as_bytes());
+    let digest = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, h.finalize());
+    digest[..12].to_string()
+}
+
 /// Assemble a broker-assigned holder id `<prefix>.<random>` under a namespace
 /// prefix. The random suffix (10 chars) makes the holder unforgeable and
 /// unguessable; the requester never chooses it.

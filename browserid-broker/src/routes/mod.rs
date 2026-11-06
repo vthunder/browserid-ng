@@ -2,6 +2,8 @@
 
 mod account;
 mod auth;
+pub use auth::{set_trusted_proxies, DEFAULT_TRUSTED_PROXIES};
+pub use rate_limit::LIMIT as RATE_LIMIT;
 mod code_guard;
 mod device;
 mod email;
@@ -90,6 +92,10 @@ where
                 domain: state.domain.clone(),
                 idp_host: state.idp_host.clone(),
                 max_agent_identities: state.max_agent_identities_per_user,
+                bridge_grant: {
+                    let app = state.clone();
+                    Arc::new(move |user_id, email| app.take_bridge_grant(user_id, email))
+                },
             }),
             issuer_resolver,
             // Audience-proof fetching for record requests (spec §7.5): the
@@ -115,7 +121,11 @@ where
         },
     );
     let _ = state.registrar.set(registrar_state.clone());
-    let registrar = browserid_registrar::router(registrar_state);
+    let registrar = browserid_registrar::router(registrar_state)
+        // Registry API abuse controls (registry-api-v1 §3; audit 2026-11
+        // D8/W5-9): per-source and per-account buckets on /api/v1, answered
+        // before the handler and so before any network fetch.
+        .layer(axum::middleware::from_fn(rate_limit::api_v1));
 
     // Cross-origin surfaces (audit L9): CORS is granted per surface, never
     // globally — /wsapi/* and the registrar answer same-origin (and
@@ -144,7 +154,12 @@ where
     // requires CORS on the module + .wasm fetches.
     let public_cors_routes = Router::new()
         .route("/.well-known/browserid", get(well_known::get_support_document))
-        .route("/status/proxy", get(status::status_proxy))
+        // Unauthenticated and it fetches: same per-IP limit as the
+        // verification API (audit 2026-11 W5-5).
+        .route(
+            "/status/proxy",
+            get(status::status_proxy).layer(axum::middleware::from_fn(rate_limit::verification_api)),
+        )
         // The marketing origin's home-page wall reads the guestbook feed
         // cross-origin (credentials: omit).
         .route("/guestbook/feed", get(guestbook::feed))
@@ -399,6 +414,9 @@ where
         // (the winchan relay); the consent page especially
         // must never render in an iframe (its one-click Approve signs a warrant).
         .layer(axum::middleware::from_fn(security_headers))
+        // Outermost of all: the client address every throttle keys on, from
+        // the trusted proxy hop (or the peer address), never a client header.
+        .layer(axum::middleware::from_fn(auth::resolve_client_ip))
 }
 
 /// sha256 hashes of the *inline* `<script>` blocks on the auth-origin pages, so
@@ -409,7 +427,7 @@ where
 /// hash to paste here.
 const INLINE_SCRIPT_HASHES: &[&str] = &[
     "'sha256-yPHucKYYWG0GBAOEhIRSHCANNYyeTJOvyHwxJ/0EUHY='", // account.html
-    "'sha256-remU3at+zAi06G6qcdzxUbyhB348phS21WwQqtFIu2g='", // authorize.html
+    "'sha256-3ItskFjbjhSp4FRZnBQU7Hygo9UePVrXEDHBZy5nBkY='", // authorize.html
     "'sha256-pR9ebbafpGYvx+PEfXddv4xnnnTj+6U9uhDHRKrHgbA='", // consent.html
     "'sha256-BsrrX7K7ju9+1BRkiBPUrOiGM3NRGzylCP/gwg5h22Y='", // /sign_in (SIGN_IN_HTML)
 ];

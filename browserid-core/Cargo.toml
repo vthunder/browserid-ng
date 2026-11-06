@@ -3,6 +3,7 @@ name = "browserid-core"
 description = "Core types and cryptography for BrowserID-NG"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
@@ -22,3 +23,6 @@ idna = "1"
 
 [dev-dependencies]
 anyhow.workspace = true
+# Audit 2026-11 WS3 property tests (tests/audit_2026_11_ws3_*.rs)
+proptest = "1"
+regex = "1"
