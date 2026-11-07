@@ -13,6 +13,9 @@
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
 export PATH="$HOME/.cargo/bin:$PATH"
+# Deterministic runs: no step may depend on a public DNS resolver (the
+# broker refuses this on a non-loopback domain).
+export BROWSERID_INSECURE_OFFLINE_DNS_FOR_TESTS=1
 LOGDIR="${RELEASE_CHECK_LOGDIR:-/tmp/release-check}"
 mkdir -p "$LOGDIR"
 SKIP=" ${RELEASE_CHECK_SKIP:-} "

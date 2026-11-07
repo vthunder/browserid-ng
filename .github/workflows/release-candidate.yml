@@ -25,6 +25,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Deterministic runs: no test may depend on a public DNS resolver. The
+  # broker refuses this switch on any non-loopback domain.
+  BROWSERID_INSECURE_OFFLINE_DNS_FOR_TESTS: "1"
 
 jobs:
   rust:
@@ -164,15 +167,22 @@ jobs:
       - name: production config without SMTP refuses to start
         run: |
           set +e
-          out="$(docker run --rm -e BROKER_DOMAIN=browserid.me -e DATABASE_PATH=/tmp/b.db -e BROKER_KEY_FILE=/tmp/k.json \
+          out="$(docker run --rm -e BROKER_DOMAIN=browserid.me -e DATABASE_PATH=/tmp/b.db -e BROKER_KEY_FILE=/tmp/k.json -e BROWSERID_INSECURE_OFFLINE_DNS_FOR_TESTS=0 \
             rc-broker timeout 20 /app/browserid-broker 2>&1)"; rc=$?
           echo "$out" | tail -5
           [ $rc -ne 0 ] && echo "$out" | grep -q "SMTP is not configured" || { echo "::error::expected the SMTP startup refusal (rc=$rc)"; exit 1; }
+      - name: offline-DNS test switch is refused on a production domain
+        run: |
+          set +e
+          out="$(docker run --rm -e BROKER_DOMAIN=browserid.me -e DATABASE_PATH=/tmp/b.db -e BROKER_KEY_FILE=/tmp/k.json -e BROWSERID_INSECURE_OFFLINE_DNS_FOR_TESTS=1 \
+            rc-broker timeout 20 /app/browserid-broker 2>&1)"; rc=$?
+          [ $rc -ne 0 ] && echo "$out" | grep -q "disables DNSSEC discovery" || { echo "::error::the offline-DNS switch was not refused on a production domain (rc=$rc)"; echo "$out" | tail -5; exit 1; }
       - name: start the broker image in test mode on :3000
         run: |
           docker run -d --name broker --network host \
             -e BROKER_PORT=3000 -e BROKER_DOMAIN=localhost:3000 \
             -e DISABLE_SMTP=1 -e AGENT_PROVISIONING=1 -e ADMIN_TOKEN=localtest-admin \
+            -e BROWSERID_INSECURE_OFFLINE_DNS_FOR_TESTS=1 \
             -e DATABASE_PATH=/tmp/browserid.db -e BROKER_KEY_FILE=/tmp/broker-key.json \
             rc-broker
           for i in $(seq 1 60); do curl -sf http://localhost:3000/.well-known/browserid >/dev/null && break; sleep 1; done

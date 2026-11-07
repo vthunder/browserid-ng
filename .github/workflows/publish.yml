@@ -64,9 +64,10 @@ jobs:
       - name: build sdist + wheel
         if: steps.status.outputs.need != ''
         working-directory: sdk/python-mcp-auth
-        run: uv build --out-dir dist-ci
+        # Outside the package dir, or the sdist packs the out-dir itself.
+        run: uv build --out-dir "$RUNNER_TEMP/dist-ci"
       - name: publish to PyPI (trusted publishing)
         if: steps.status.outputs.need != ''
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3 (release/v1)
         with:
-          packages-dir: sdk/python-mcp-auth/dist-ci
+          packages-dir: ${{ runner.temp }}/dist-ci

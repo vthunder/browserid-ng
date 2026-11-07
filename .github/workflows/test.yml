@@ -50,6 +50,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  BROWSERID_INSECURE_OFFLINE_DNS_FOR_TESTS: "1"
 
 jobs:
   test:

@@ -45,6 +45,8 @@ async fn main() -> Result<()> {
     // Load configuration
     let config = Config::from_env();
     tracing::info!(?config, "Loaded configuration");
+    browserid_broker::email::check_offline_dns(&config.domain, browserid_dnssec::offline_for_tests())
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     // How many fronting proxies append to X-Forwarded-For (default 1: dokku's
     // nginx). Every per-IP throttle keys on the hop they appended; `0` means
