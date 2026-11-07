@@ -42,6 +42,9 @@ env:
 
 jobs:
   build-and-deploy:
+    # Only the canonical repo deploys/publishes; the public staging mirror
+    # runs this file too and must never touch production (ip-approval PLAN).
+    if: github.repository == 'vthunder/browserid-ng'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -23,6 +23,9 @@ on:
 
 jobs:
   npm:
+    # Only the canonical repo deploys/publishes; the public staging mirror
+    # runs this file too and must never touch production (ip-approval PLAN).
+    if: github.repository == 'vthunder/browserid-ng'
     runs-on: ubuntu-latest
     permissions:
       id-token: write # OIDC for npm trusted publishing + --provenance
@@ -42,6 +45,9 @@ jobs:
         run: node scripts/publish-status.mjs --publish
 
   pypi:
+    # Only the canonical repo deploys/publishes; the public staging mirror
+    # runs this file too and must never touch production (ip-approval PLAN).
+    if: github.repository == 'vthunder/browserid-ng'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
