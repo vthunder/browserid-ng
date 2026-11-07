@@ -1028,18 +1028,12 @@ test.describe('Primary IdP: Network and Loading Issues', () => {
       await page.fill('#email', `test@${badDomain}`);
       await page.click('#email-form button[type="submit"]');
 
-      // Should eventually show error or timeout (provisioning has 30s timeout)
-      // We wait for either error screen or stay on loading (timeout will happen later)
-      await page.waitForFunction(() => {
-        return document.querySelector('#error-screen')?.classList.contains('active') ||
-               document.querySelector('#loading')?.classList.contains('active');
-      }, { timeout: 10000 });
-
-      // Either loading (waiting for timeout) or error is acceptable
-      // The important thing is the app doesn't crash
-      const hasError = await page.locator('#error-screen').isVisible();
-      const isLoading = await page.locator('#loading').isVisible();
-      expect(hasError || isLoading).toBe(true);
+      // The provisioning URL is unusable (port 99999), so the dialog must end
+      // on its error screen naming the provider failure, not crash or hang.
+      // Wait for that terminal state: sampling visibility once raced the
+      // loading -> error transition under CI timing (both briefly hidden).
+      await expect(page.locator('#error-screen.active')).toBeVisible({ timeout: 35000 });
+      await expect(page.locator('#error-screen .error-message')).toContainText('email provider failed');
     } finally {
       await removeMockIdp(request, badDomain);
     }
