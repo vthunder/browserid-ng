@@ -58,6 +58,10 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      # First, before any test can write into the tree (the Python package
+      # tracks __pycache__ files a test run rewrites).
+      - name: publish drift gate
+        run: node scripts/publish-status.mjs
       - name: verify (sdk/js)
         working-directory: sdk/js
         run: npm ci --ignore-scripts --no-audit --no-fund && node --test
@@ -87,9 +91,9 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund && node --test
       - name: python mcp-auth
         working-directory: sdk/python-mcp-auth
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
         run: python -m unittest discover -s tests -v
-      - name: publish drift gate
-        run: node scripts/publish-status.mjs
 
   audit:
     name: rc / audit
@@ -174,6 +178,11 @@ jobs:
           for i in $(seq 1 60); do curl -sf http://localhost:3000/.well-known/browserid >/dev/null && break; sleep 1; done
           curl -sf http://localhost:3000/.well-known/browserid >/dev/null || { docker logs broker; exit 1; }
           curl -sf http://localhost:3000/include.js >/dev/null || { echo "::error::broker image does not serve its static files"; exit 1; }
+      - name: copy the broker binary out of the image (specs that start a second broker)
+        run: |
+          docker create --name rc-broker-bin rc-broker >/dev/null
+          docker cp rc-broker-bin:/app/browserid-broker "$RUNNER_TEMP/browserid-broker"
+          docker rm rc-broker-bin >/dev/null
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -188,6 +197,7 @@ jobs:
         env:
           E2E_EXTERNAL_BROKER: "1"
           E2E_RETRIES: "0"
+          E2E_BROKER_BIN: ${{ runner.temp }}/browserid-broker
         run: npx playwright test --reporter=line
       - name: broker log on failure
         if: failure()

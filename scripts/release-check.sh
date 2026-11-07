@@ -53,7 +53,7 @@ rust_conformance() {
   cargo test -p browserid-verifier --test audit_2026_11_ws2_runner -- --nocapture
 }
 node_suite() { (cd "$1" && node --test ${2:-}); }
-python_suite() { (cd sdk/python-mcp-auth && python3 -m unittest discover -s tests); }
+python_suite() { (cd sdk/python-mcp-auth && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests); }
 # CI's publish drift gate: a changed package must carry a new version.
 publish_drift() { node scripts/publish-status.mjs; }
 supply_chain() { scripts/supply-chain-audit.sh rust && scripts/supply-chain-audit.sh node && scripts/supply-chain-audit.sh python; }
@@ -82,6 +82,8 @@ e2e() {
   return $rc
 }
 
+# First, before any step can write into the tree.
+step publish-drift     publish_drift
 step rust-workspace    rust_workspace
 step rust-pinned       rust_pinned
 step rust-conformance  rust_conformance
@@ -96,7 +98,6 @@ step sdk-fastify       node_suite sdk/fastify 'test/*.test.mjs'
 step wallet-service    node_suite wallet-service
 step python-mcp-auth   python_suite
 step supply-chain      supply_chain
-step publish-drift     publish_drift
 step e2e               e2e
 
 # The Python run dirties tracked __pycache__ files; put them back.
