@@ -9,10 +9,6 @@ on:
       - "sdk/**"
       - "test-vectors/**"
       - ".github/workflows/sdk-tests.yml"
-  pull_request:
-    paths:
-      - "sdk/**"
-      - "test-vectors/**"
   workflow_dispatch: {}
 
 jobs:

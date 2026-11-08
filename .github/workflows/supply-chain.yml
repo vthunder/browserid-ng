@@ -15,7 +15,6 @@ name: supply-chain
 on:
   push:
     branches: [main]
-  pull_request:
   schedule:
     # Weekly, so a new advisory against an unchanged tree still surfaces.
     - cron: "17 6 * * 1"
