@@ -74,7 +74,7 @@ e2e() {
   # Started from the repo root (it finds browserid-broker/static relative
   # to cwd), with its database and key in a throwaway directory.
   (DISABLE_SMTP=1 AGENT_PROVISIONING=1 ADMIN_TOKEN=localtest-admin DATABASE_PATH="$work/browserid.db" BROKER_KEY_FILE="$work/broker-key.json" \
-    nohup "$bin" >"$LOGDIR/e2e-broker.log" 2>&1 &)
+    "$bin" </dev/null >"$LOGDIR/e2e-broker.log" 2>&1 &)
   local i; for i in $(seq 1 60); do curl -sf http://localhost:3000/.well-known/browserid >/dev/null && break; sleep 1; done
   curl -sf http://localhost:3000/.well-known/browserid >/dev/null || { echo "broker did not come up"; return 1; }
   curl -sf http://localhost:3000/include.js >/dev/null || { echo "broker is up but does not serve its static files (started from the wrong directory?)"; pkill -f "debug/browserid-broker"; return 1; }
