@@ -42,6 +42,18 @@ pub fn is_production_domain(domain: &str) -> bool {
     !(host == "localhost" || host.starts_with("127.") || host == "[::1]" || host == "::1")
 }
 
+/// The offline-DNS test switch ([`browserid_dnssec::OFFLINE_DNS_ENV`]) turns
+/// DNSSEC discovery off; it is allowed only on a loopback broker domain.
+pub fn check_offline_dns(domain: &str, offline: bool) -> Result<(), String> {
+    if offline && is_production_domain(domain) {
+        return Err(format!(
+            "refusing to start: {}=1 disables DNSSEC discovery and is for tests only, but BROKER_DOMAIN={domain} is not a loopback domain",
+            browserid_dnssec::OFFLINE_DNS_ENV
+        ));
+    }
+    Ok(())
+}
+
 /// Decide the sender, or refuse to start. SMTP wins when configured.
 /// Without it, the console sender is allowed only in dev: a loopback
 /// domain, `DISABLE_SMTP` (the e2e/test switch), or an explicit

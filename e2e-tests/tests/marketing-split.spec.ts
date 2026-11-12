@@ -28,6 +28,8 @@ const marketingDir = join(__dirname, '..', '..', 'marketing');
 import { homedir } from 'os';
 import { existsSync } from 'fs';
 const brokerBinCandidates = [
+  // The release-candidate job copies the binary out of the broker image.
+  ...(process.env.E2E_BROKER_BIN ? [process.env.E2E_BROKER_BIN] : []),
   process.env.BROKER_BIN,
   process.env.CARGO_TARGET_DIR && join(process.env.CARGO_TARGET_DIR, 'debug', 'browserid-broker'),
   join(homedir(), '.cache', 'cargo-target', 'debug', 'browserid-broker'),

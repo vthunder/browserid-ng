@@ -13,6 +13,9 @@
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
 export PATH="$HOME/.cargo/bin:$PATH"
+# Deterministic runs: no step may depend on a public DNS resolver (the
+# broker refuses this on a non-loopback domain).
+export BROWSERID_INSECURE_OFFLINE_DNS_FOR_TESTS=1
 LOGDIR="${RELEASE_CHECK_LOGDIR:-/tmp/release-check}"
 mkdir -p "$LOGDIR"
 SKIP=" ${RELEASE_CHECK_SKIP:-} "
@@ -53,7 +56,7 @@ rust_conformance() {
   cargo test -p browserid-verifier --test audit_2026_11_ws2_runner -- --nocapture
 }
 node_suite() { (cd "$1" && node --test ${2:-}); }
-python_suite() { (cd sdk/python-mcp-auth && python3 -m unittest discover -s tests); }
+python_suite() { (cd sdk/python-mcp-auth && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests); }
 # CI's publish drift gate: a changed package must carry a new version.
 publish_drift() { node scripts/publish-status.mjs; }
 supply_chain() { scripts/supply-chain-audit.sh rust && scripts/supply-chain-audit.sh node && scripts/supply-chain-audit.sh python; }
@@ -71,7 +74,7 @@ e2e() {
   # Started from the repo root (it finds browserid-broker/static relative
   # to cwd), with its database and key in a throwaway directory.
   (DISABLE_SMTP=1 AGENT_PROVISIONING=1 ADMIN_TOKEN=localtest-admin DATABASE_PATH="$work/browserid.db" BROKER_KEY_FILE="$work/broker-key.json" \
-    nohup "$bin" >"$LOGDIR/e2e-broker.log" 2>&1 &)
+    "$bin" </dev/null >"$LOGDIR/e2e-broker.log" 2>&1 &)
   local i; for i in $(seq 1 60); do curl -sf http://localhost:3000/.well-known/browserid >/dev/null && break; sleep 1; done
   curl -sf http://localhost:3000/.well-known/browserid >/dev/null || { echo "broker did not come up"; return 1; }
   curl -sf http://localhost:3000/include.js >/dev/null || { echo "broker is up but does not serve its static files (started from the wrong directory?)"; pkill -f "debug/browserid-broker"; return 1; }
@@ -82,6 +85,8 @@ e2e() {
   return $rc
 }
 
+# First, before any step can write into the tree.
+step publish-drift     publish_drift
 step rust-workspace    rust_workspace
 step rust-pinned       rust_pinned
 step rust-conformance  rust_conformance
@@ -96,7 +101,6 @@ step sdk-fastify       node_suite sdk/fastify 'test/*.test.mjs'
 step wallet-service    node_suite wallet-service
 step python-mcp-auth   python_suite
 step supply-chain      supply_chain
-step publish-drift     publish_drift
 step e2e               e2e
 
 # The Python run dirties tracked __pycache__ files; put them back.

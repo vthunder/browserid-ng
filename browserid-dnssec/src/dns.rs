@@ -48,6 +48,26 @@ const DEFAULT_DOT_PORT: u16 = 853;
 /// client's own query timeout.
 pub const TRANSPORT_RETRY_BUDGET: Duration = Duration::from_secs(2);
 
+/// Env switch for deterministic test runs: every `_browserid` lookup answers
+/// as an authenticated NXDOMAIN (so discovery takes the fallback path)
+/// without touching the network. Test suites and the release-candidate
+/// pipeline set it so a public resolver's hiccup can never decide a run.
+/// The name is deliberately alarming: it disables DNSSEC discovery. The
+/// broker refuses to start with it set on a non-local domain.
+pub const OFFLINE_DNS_ENV: &str = "BROWSERID_INSECURE_OFFLINE_DNS_FOR_TESTS";
+
+/// Whether [`OFFLINE_DNS_ENV`] is set to `1` (read once per process).
+pub fn offline_for_tests() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var(OFFLINE_DNS_ENV).map(|v| v == "1").unwrap_or(false);
+        if on {
+            tracing::warn!("{OFFLINE_DNS_ENV}=1: DNSSEC discovery is OFF, every domain reads as having no _browserid record (tests only)");
+        }
+        on
+    })
+}
+
 /// Shared rustls config with WebPKI roots, built once
 fn tls_client_config() -> Arc<rustls::ClientConfig> {
     static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
@@ -74,12 +94,18 @@ fn tls_client_config() -> Arc<rustls::ClientConfig> {
 pub struct DnsFetcher {
     resolver_addr: SocketAddr,
     tls_name: String,
+    /// Only the default resolver ([`DnsFetcher::new`]) honours the offline
+    /// test switch; one built for an explicit resolver is a test of the
+    /// resolver itself and always talks to it.
+    honor_offline_switch: bool,
 }
 
 impl DnsFetcher {
     /// Create a new DNS fetcher using Google Public DNS over TLS
     pub fn new() -> Result<Self, String> {
-        Self::with_resolver(DEFAULT_RESOLVER, DEFAULT_TLS_NAME)
+        let mut f = Self::with_resolver(DEFAULT_RESOLVER, DEFAULT_TLS_NAME)?;
+        f.honor_offline_switch = true;
+        Ok(f)
     }
 
     /// Create a DNS fetcher with a custom DNS-over-TLS resolver
@@ -103,6 +129,7 @@ impl DnsFetcher {
         Ok(Self {
             resolver_addr,
             tls_name: tls_name.to_string(),
+            honor_offline_switch: false,
         })
     }
 
@@ -138,6 +165,10 @@ impl DnsFetcher {
     ///   [`TRANSPORT_RETRY_BUDGET`]) -> Reject (Bogus). An unanswered query
     ///   is not an "insecure" answer (spec §3, audit 2026-11 D14).
     pub async fn lookup(&self, domain: &str) -> DnsLookupResult {
+        if self.honor_offline_switch && offline_for_tests() {
+            tracing::debug!("offline DNS (tests): _browserid.{} answers as an authenticated NXDOMAIN", domain);
+            return DnsLookupResult::secure_nxdomain();
+        }
         let name_str = format!("_browserid.{}.", domain);
 
         // Parse the domain name. Not a transport failure, but not an answer

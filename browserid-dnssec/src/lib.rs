@@ -11,7 +11,7 @@
 
 pub mod dns;
 
-pub use dns::DnsFetcher;
+pub use dns::{offline_for_tests, DnsFetcher, OFFLINE_DNS_ENV};
 
 use browserid_core::{DnssecStatus, PublicKey};
 

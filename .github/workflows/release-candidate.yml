@@ -1,0 +1,230 @@
+# Release candidate: every check that decides a merge AND a deploy, run on
+# the exact commit (sandmill-infra/ip-approval/PLAN.md). The public staging
+# mirror runs it on every push, and sandmill-infra/bin/ip-submit.sh refuses
+# a commit unless all of these jobs passed there. The canonical repo runs
+# the identical workflow on every pull request to main, and branch
+# protection requires every job. No path filters: a job that does not run
+# is a failure, never a pass by absence.
+#
+# Beyond the older test / sdk-tests / supply-chain workflows this builds
+# every production image the deploy workflows build, starts each one and
+# requires its health endpoint, and runs the Playwright e2e against the
+# broker image itself.
+name: release-candidate
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Deterministic runs: no test may depend on a public DNS resolver. The
+  # broker refuses this switch on any non-loopback domain.
+  BROWSERID_INSECURE_OFFLINE_DNS_FOR_TESTS: "1"
+
+jobs:
+  rust:
+    name: rc / rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The same toolchain as the Dockerfile's builder stage; checked below.
+      - uses: dtolnay/rust-toolchain@633c1125191e55c620c8ae7d364073c0ead621c1 # 1.93.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: toolchain is exactly the one the Dockerfile's pinned image carries
+        run: |
+          ref="$(sed -nE 's/^FROM (rust:[^ ]+) AS builder.*/\1/p' Dockerfile | head -1)"
+          tag="$(sed -nE 's/^rust:([0-9.]+)-.*/\1/p' <<<"$ref")"
+          img="$(docker buildx imagetools inspect "$ref" --format '{{json .Image}}' | jq -r '."linux/amd64".config.Env[]? // .config.Env[]?' | sed -n 's/^RUST_VERSION=//p')"
+          have="$(rustc --version | awk '{print $2}')"
+          echo "Dockerfile tag $tag, image carries $img, this job runs $have"
+          [ "$tag" = "$img" ] && [ "$img" = "$have" ] || { echo "::error::toolchain mismatch: tag $tag, image $img, CI $have"; exit 1; }
+      - name: workspace tests
+        run: cargo test --workspace --locked
+      - name: conformance vectors (core + hosted verifier)
+        run: |
+          cargo test --locked -p browserid-core --test audit_2026_11_ws2_generate --test audit_2026_11_ws2_runner -- --nocapture
+          cargo test --locked -p browserid-verifier --test audit_2026_11_ws2_runner -- --nocapture
+
+  sdk:
+    name: rc / sdk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      # First, before any test can write into the tree (the Python package
+      # tracks __pycache__ files a test run rewrites).
+      - name: publish drift gate
+        run: node scripts/publish-status.mjs
+      - name: verify (sdk/js)
+        working-directory: sdk/js
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test
+      - name: agent (sdk/agent)
+        working-directory: sdk/agent
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test
+      - name: mcp-auth
+        working-directory: sdk/mcp-auth
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test test/*.test.mjs
+      - name: gate
+        working-directory: sdk/gate
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test test/*.test.mjs
+      - name: nextauth
+        working-directory: sdk/nextauth
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test test/*.test.mjs
+      - name: express
+        working-directory: sdk/express
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test test/*.test.mjs
+      - name: hono
+        working-directory: sdk/hono
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test test/*.test.mjs
+      - name: fastify
+        working-directory: sdk/fastify
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test test/*.test.mjs
+      - name: wallet-service
+        working-directory: wallet-service
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test
+      - name: python mcp-auth
+        working-directory: sdk/python-mcp-auth
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m unittest discover -s tests -v
+
+  audit:
+    name: rc / audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # gitleaks scans every commit
+      - uses: dtolnay/rust-toolchain@633c1125191e55c620c8ae7d364073c0ead621c1 # 1.93.1
+      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          tool: cargo-audit
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - run: scripts/supply-chain-audit.sh rust
+      - run: scripts/supply-chain-audit.sh node
+      - run: scripts/supply-chain-audit.sh python
+      # The gitleaks CLI over HEAD's full history, not the action: the action
+      # scans only the pushed range on a push and the PR range on a pull
+      # request, so a mirror push could pass what the PR then fails (found
+      # by the sbo pipeline). Pinned by version and checksum.
+      - name: gitleaks (full history of HEAD)
+        run: |
+          v=8.30.1; sum=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl -sSfL -o /tmp/gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v$v/gitleaks_${v}_linux_x64.tar.gz"
+          echo "$sum  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks git . --config .gitleaks.toml --redact --no-banner
+
+  # Every image a deploy workflow builds, built the same way (same file,
+  # same context), then started with a throwaway config and probed. A
+  # dependency needing a newer compiler, a missing COPY, or a startup
+  # refusal fails here instead of at deploy.
+  image:
+    name: rc / image ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { app: wallet,          file: wallet-service/Dockerfile,  context: .,         port: 3100, probe: /healthz, env: "-e WALLET_ENV=test -e WALLET_DATABASE_PATH=/tmp/wallet.db" }
+          - { app: guestbook-mcp,   file: guestbook-mcp/Dockerfile,   context: .,         port: 3200, probe: /healthz, env: "" }
+          - { app: mcp-demo,        file: mcp-demo/Dockerfile,        context: .,         port: 3300, probe: /healthz, env: "" }
+          - { app: python-mcp-demo, file: python-mcp-demo/Dockerfile, context: .,         port: 3400, probe: /healthz, env: "" }
+          - { app: www,             file: marketing/Dockerfile,       context: marketing, port: 80,   probe: /,        env: "" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: build
+        run: docker build -f ${{ matrix.file }} -t rc-${{ matrix.app }} ${{ matrix.context }}
+      - name: start and probe
+        run: |
+          docker run -d --name rc -p 18080:${{ matrix.port }} ${{ matrix.env }} rc-${{ matrix.app }}
+          for i in $(seq 1 60); do
+            curl -sf "http://127.0.0.1:18080${{ matrix.probe }}" >/dev/null && { echo "healthy after ${i}s"; exit 0; }
+            [ "$(docker inspect -f '{{.State.Running}}' rc)" = true ] || break
+            sleep 1
+          done
+          echo "::error::${{ matrix.app }} image did not become healthy"; docker logs rc; exit 1
+
+  # The broker image: built exactly as deploy-broker builds it, probed
+  # under the production-shaped config (it must refuse to start on a
+  # production domain without SMTP), then run in test mode for the
+  # Playwright suite. The e2e therefore exercises the image that ships.
+  broker:
+    name: rc / broker image + e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: build the broker image
+        run: docker build -f Dockerfile -t rc-broker .
+      - name: production config without SMTP refuses to start
+        run: |
+          set +e
+          out="$(docker run --rm -e BROKER_DOMAIN=browserid.me -e DATABASE_PATH=/tmp/b.db -e BROKER_KEY_FILE=/tmp/k.json -e BROWSERID_INSECURE_OFFLINE_DNS_FOR_TESTS=0 \
+            rc-broker timeout 20 /app/browserid-broker 2>&1)"; rc=$?
+          echo "$out" | tail -5
+          [ $rc -ne 0 ] && echo "$out" | grep -q "SMTP is not configured" || { echo "::error::expected the SMTP startup refusal (rc=$rc)"; exit 1; }
+      - name: offline-DNS test switch is refused on a production domain
+        run: |
+          set +e
+          out="$(docker run --rm -e BROKER_DOMAIN=browserid.me -e DATABASE_PATH=/tmp/b.db -e BROKER_KEY_FILE=/tmp/k.json -e BROWSERID_INSECURE_OFFLINE_DNS_FOR_TESTS=1 \
+            rc-broker timeout 20 /app/browserid-broker 2>&1)"; rc=$?
+          [ $rc -ne 0 ] && echo "$out" | grep -q "disables DNSSEC discovery" || { echo "::error::the offline-DNS switch was not refused on a production domain (rc=$rc)"; echo "$out" | tail -5; exit 1; }
+      - name: start the broker image in test mode on :3000
+        run: |
+          docker run -d --name broker --network host \
+            -e BROKER_PORT=3000 -e BROKER_DOMAIN=localhost:3000 \
+            -e DISABLE_SMTP=1 -e AGENT_PROVISIONING=1 -e ADMIN_TOKEN=localtest-admin \
+            -e BROWSERID_INSECURE_OFFLINE_DNS_FOR_TESTS=1 \
+            -e DATABASE_PATH=/tmp/browserid.db -e BROKER_KEY_FILE=/tmp/broker-key.json \
+            rc-broker
+          for i in $(seq 1 60); do curl -sf http://localhost:3000/.well-known/browserid >/dev/null && break; sleep 1; done
+          curl -sf http://localhost:3000/.well-known/browserid >/dev/null || { docker logs broker; exit 1; }
+          curl -sf http://localhost:3000/include.js >/dev/null || { echo "::error::broker image does not serve its static files"; exit 1; }
+      - name: copy the broker binary out of the image (specs that start a second broker)
+        run: |
+          docker create --name rc-broker-bin rc-broker >/dev/null
+          docker cp rc-broker-bin:/app/browserid-broker "$RUNNER_TEMP/browserid-broker"
+          docker rm rc-broker-bin >/dev/null
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: install the e2e suite and the SDKs it imports
+        run: |
+          for d in sdk/js sdk/agent sdk/mcp-auth sdk/gate e2e-tests; do
+            (cd "$d" && npm ci --ignore-scripts --no-audit --no-fund)
+          done
+          cd e2e-tests && npx playwright install --with-deps chromium
+      - name: playwright (no retries)
+        working-directory: e2e-tests
+        env:
+          E2E_EXTERNAL_BROKER: "1"
+          E2E_RETRIES: "0"
+          E2E_BROKER_BIN: ${{ runner.temp }}/browserid-broker
+        run: npx playwright test --reporter=line
+      - name: broker log on failure
+        if: failure()
+        run: docker logs broker 2>&1 | tail -200
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: playwright-report
+          path: e2e-tests/test-results
+          retention-days: 7
