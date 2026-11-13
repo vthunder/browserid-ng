@@ -71,4 +71,4 @@ tower = "0.5"
 uuid = { version = "1", features = ["v4"] }
 
 # Database
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint"] }

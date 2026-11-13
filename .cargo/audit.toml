@@ -19,4 +19,26 @@ ignore = [
     # change. Encode side is our own queries (short names), so not attacker
     # driven. Same review date as above.
     "RUSTSEC-2026-0119",
+    # hickory-proto 0.25.2, advisories published 2026-11 (fix: hickory-proto
+    # >= 0.26.2; hickory-client has no stable 0.26, so the fix is a rewrite of
+    # browserid-dnssec/src/dns.rs against hickory-proto 0.26: program logic,
+    # normal approval route; deferred bean browserid-ng-2n93).
+    # DNSSEC validation bugs: hickory's validator is not used. dns.rs sends the
+    # query over DoT and trusts the resolver's AD bit; nothing calls
+    # hickory's DNSSEC verification.
+    # Text-format parser panics: we parse wire format only.
+    # Header record-count memory amplification: needs a malicious answer
+    # inside the authenticated DoT session to the resolver.
+    # Review: 2026-12-15 (after the notice period: do the upgrade then).
+    "RUSTSEC-2026-0487", # SVCB/HTTPS alpn text parse panic
+    "RUSTSEC-2026-0489", # SVCB/HTTPS quote text parse panic
+    "RUSTSEC-2026-0490", # zone file lexer panic
+    "RUSTSEC-2026-0491", # header record-count memory amplification
+    "RUSTSEC-2026-0504", # DNSSEC validation (unused)
+    "RUSTSEC-2026-0505", # DNSSEC validation (unused)
+    "RUSTSEC-2026-0511", # DNSSEC validation (unused)
+    "RUSTSEC-2026-0512", # DNSSEC validation (unused)
+    "RUSTSEC-2026-0530", # DNSSEC validation (unused)
+    "RUSTSEC-2026-0531", # DNSSEC validation (unused)
+    "RUSTSEC-2026-0532", # DNSSEC validation (unused)
 ]
