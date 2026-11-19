@@ -3,8 +3,8 @@
 # no origin (keystore/cookies/wsapi) with the auth/issuer broker.
 # Base image pinned by digest (audit 2026-11 W7-7): the tag names the
 # version a human chose, the digest makes the build reproducible. Bump by
-# re-resolving the tag (multi-arch manifest list, 2026-11-03).
-FROM nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+# re-resolving the tag (multi-arch manifest list, 2026-11-19).
+FROM nginx:1.30.7-alpine@sha256:bef154735288bc38d99fac41ae63730684bcc661503673a04a0f9bc526ba8598
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY index.html developers.html domains.html demos.html gate.html mcp-demo.html about.html contact.html privacy.html principles.html config.js analytics.js fedcm-demo.html llms.txt site.css site.js /usr/share/nginx/html/
