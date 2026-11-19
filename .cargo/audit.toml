@@ -41,4 +41,7 @@ ignore = [
     "RUSTSEC-2026-0530", # DNSSEC validation (unused)
     "RUSTSEC-2026-0531", # DNSSEC validation (unused)
     "RUSTSEC-2026-0532", # DNSSEC validation (unused)
+    "RUSTSEC-2026-0549", # DNSSEC validation (unused): NSEC3 NODATA at apex
+    "RUSTSEC-2026-0550", # DNSSEC validation (unused): unsigned NSEC/NSEC3 in proof
+    "RUSTSEC-2026-0551", # DNSSEC validation (unused): other-class records marked secure
 ]
